@@ -1,4 +1,4 @@
-use crate::buffer::TensorBuffer;
+use crate::buffer::ViewBuffer;
 use crate::dtype::DType;
 use crate::ops::affine::AffineParams;
 use crate::ops::{ComputeOp, FilterType, ImageOp, ImageOpKind, ViewOp};
@@ -6,21 +6,21 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum ExprNode {
-    Source(Arc<TensorBuffer>),
-    View(ViewOp, Arc<TensorExpr>),
-    Compute(ComputeOp, Vec<Arc<TensorExpr>>),
-    Image(ImageOp, Arc<TensorExpr>),
+    Source(Arc<ViewBuffer>),
+    View(ViewOp, Arc<ViewExpr>),
+    Compute(ComputeOp, Vec<Arc<ViewExpr>>),
+    Image(ImageOp, Arc<ViewExpr>),
 }
 
 #[derive(Debug, Clone)]
-pub struct TensorExpr {
+pub struct ViewExpr {
     pub node: ExprNode,
     pub shape: Vec<usize>,
     pub dtype: DType,
 }
 
-impl TensorExpr {
-    pub fn new_source(buffer: TensorBuffer) -> Arc<Self> {
+impl ViewExpr {
+    pub fn new_source(buffer: ViewBuffer) -> Arc<Self> {
         Arc::new(Self {
             shape: buffer.shape().to_vec(),
             dtype: buffer.dtype(),
@@ -210,7 +210,7 @@ impl TensorExpr {
 
         match &self.node {
             ExprNode::Source(_) => {
-                info.push_str(&format!("{indent}  Source: TensorBuffer\n"));
+                info.push_str(&format!("{indent}  Source: ViewBuffer\n"));
             }
             ExprNode::View(op, child) => {
                 info.push_str(&format!("{indent}  Op: {op:?}\n"));

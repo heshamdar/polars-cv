@@ -1,26 +1,26 @@
-use crate::buffer::TensorBuffer;
+use crate::buffer::ViewBuffer;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgb};
 use std::path::Path;
 
 pub struct ImageAdapter;
 
 impl ImageAdapter {
-    /// Decodes raw image bytes (PNG, JPEG, etc.) into a TensorBuffer [H, W, C].
+    /// Decodes raw image bytes (PNG, JPEG, etc.) into a ViewBuffer [H, W, C].
     /// This performs the "unavoidable copy" to decompress the image into memory.
-    pub fn decode(encoded_bytes: &[u8]) -> Result<TensorBuffer, image::ImageError> {
+    pub fn decode(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
         let img = image::load_from_memory(encoded_bytes)?;
         Ok(Self::from_dynamic_image(img))
     }
 
-    /// Opens an image from disk and decodes it into a TensorBuffer.
-    pub fn open(path: impl AsRef<Path>) -> Result<TensorBuffer, image::ImageError> {
+    /// Opens an image from disk and decodes it into a ViewBuffer.
+    pub fn open(path: impl AsRef<Path>) -> Result<ViewBuffer, image::ImageError> {
         let img = image::open(path)?;
         Ok(Self::from_dynamic_image(img))
     }
 
-    /// Converts a loaded DynamicImage into a TensorBuffer.
+    /// Converts a loaded DynamicImage into a ViewBuffer.
     /// Standardizes to RGB8 (3 channels) for now.
-    pub fn from_dynamic_image(img: DynamicImage) -> TensorBuffer {
+    pub fn from_dynamic_image(img: DynamicImage) -> ViewBuffer {
         let (w, h) = img.dimensions();
         // Shape: [Height, Width, Channels]
         let shape = vec![h as usize, w as usize, 3];
@@ -30,15 +30,15 @@ impl ImageAdapter {
         let rgb_img = img.to_rgb8();
         let raw_bytes = rgb_img.into_raw();
 
-        // Create TensorBuffer directly from the bytes
+        // Create ViewBuffer directly from the bytes
         // We use the internal reshape helper from buffer.rs
-        TensorBuffer::from_vec(raw_bytes).reshape(shape)
+        ViewBuffer::from_vec(raw_bytes).reshape(shape)
     }
 
-    /// Encodes a TensorBuffer into bytes (PNG/JPEG/etc).
+    /// Encodes a ViewBuffer into bytes (PNG/JPEG/etc).
     /// Requires the buffer to be [H, W, 3] and U8.
     pub fn encode(
-        buffer: &TensorBuffer,
+        buffer: &ViewBuffer,
         format: image::ImageOutputFormat,
     ) -> Result<Vec<u8>, image::ImageError> {
         let dynamic_image = Self::to_dynamic_image(buffer)?;
@@ -48,14 +48,14 @@ impl ImageAdapter {
         Ok(bytes)
     }
 
-    /// Saves a TensorBuffer to a file.
-    pub fn save(buffer: &TensorBuffer, path: impl AsRef<Path>) -> Result<(), image::ImageError> {
+    /// Saves a ViewBuffer to a file.
+    pub fn save(buffer: &ViewBuffer, path: impl AsRef<Path>) -> Result<(), image::ImageError> {
         let dynamic_image = Self::to_dynamic_image(buffer)?;
         dynamic_image.save(path)
     }
 
-    /// Helper to convert TensorBuffer -> DynamicImage
-    fn to_dynamic_image(buffer: &TensorBuffer) -> Result<DynamicImage, image::ImageError> {
+    /// Helper to convert ViewBuffer -> DynamicImage
+    fn to_dynamic_image(buffer: &ViewBuffer) -> Result<DynamicImage, image::ImageError> {
         // 1. Validation
         if buffer.dtype() != crate::dtype::DType::U8 {
             return Err(image::ImageError::Parameter(
@@ -109,7 +109,7 @@ mod tests {
             255, 0, 0, 0, 255, 0, // Row 1
             0, 0, 255, 255, 255, 0, // Row 2
         ];
-        let tb = TensorBuffer::from_vec(data).reshape(vec![2, 2, 3]);
+        let tb = ViewBuffer::from_vec(data).reshape(vec![2, 2, 3]);
 
         // 2. Encode to PNG
         let encoded = ImageAdapter::encode(&tb, image::ImageOutputFormat::Png).unwrap();

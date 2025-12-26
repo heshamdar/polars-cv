@@ -1,4 +1,4 @@
-use crate::buffer::{BufferError, TensorBuffer};
+use crate::buffer::{BufferError, ViewBuffer};
 use crate::dtype::DType;
 use arrow::array::Float32Array;
 use arrow::array::{
@@ -8,12 +8,12 @@ use arrow::datatypes::{DataType, Float32Type, Float64Type, Int32Type, Int64Type,
 use std::sync::Arc;
 
 pub trait FromArrow {
-    fn from_arrow_array(array: &dyn Array) -> Result<TensorBuffer, BufferError>;
+    fn from_arrow_array(array: &dyn Array) -> Result<ViewBuffer, BufferError>;
 }
 
 // ... existing FromArrow implementation ...
-impl FromArrow for TensorBuffer {
-    fn from_arrow_array(array: &dyn Array) -> Result<TensorBuffer, BufferError> {
+impl FromArrow for ViewBuffer {
+    fn from_arrow_array(array: &dyn Array) -> Result<ViewBuffer, BufferError> {
         // 1. Validation: We cannot zero-copy Arrow arrays with nulls into dense tensors
         if array.null_count() > 0 {
             return Err(BufferError::NotContiguous);
@@ -106,11 +106,11 @@ impl FromArrow for TensorBuffer {
             }
         };
 
-        Ok(TensorBuffer::from_arrow_buffer(buffer, shape, dtype))
+        Ok(ViewBuffer::from_arrow_buffer(buffer, shape, dtype))
     }
 }
 
-// --- NEW: Output Strategy (TensorBuffer -> Arrow) ---
+// --- NEW: Output Strategy (ViewBuffer -> Arrow) ---
 
 pub trait ToArrow {
     /// Export as an Arrow BinaryArray (Opaque flat bytes).
@@ -122,7 +122,7 @@ pub trait ToArrow {
     fn to_arrow_list(&self) -> Arc<dyn Array>;
 }
 
-impl ToArrow for TensorBuffer {
+impl ToArrow for ViewBuffer {
     fn to_arrow_binary(&self) -> BinaryArray {
         // 1. Ensure Contiguous
         let contig = self.to_contiguous();

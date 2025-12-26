@@ -24,25 +24,25 @@ impl DType {
 }
 
 /// Trait to map Rust types to DType enum
-pub trait TensorType: 'static + Copy + Send + Sync + std::fmt::Debug {
+pub trait ViewType: 'static + Copy + Send + Sync + std::fmt::Debug {
     const DTYPE: DType;
 }
 
-macro_rules! impl_tensor_type {
+macro_rules! impl_view_type {
     ($rust_type:ty, $dtype:expr) => {
-        impl TensorType for $rust_type {
+        impl ViewType for $rust_type {
             const DTYPE: DType = $dtype;
         }
     };
 }
 
-impl_tensor_type!(u8, DType::U8);
-impl_tensor_type!(i8, DType::I8);
-impl_tensor_type!(u16, DType::U16);
-impl_tensor_type!(i16, DType::I16);
-impl_tensor_type!(u32, DType::U32);
-impl_tensor_type!(i32, DType::I32);
-impl_tensor_type!(f32, DType::F32);
-impl_tensor_type!(f64, DType::F64);
-impl_tensor_type!(u64, DType::U64);
-impl_tensor_type!(i64, DType::I64);
+impl_view_type!(u8, DType::U8);
+impl_view_type!(i8, DType::I8);
+impl_view_type!(u16, DType::U16);
+impl_view_type!(i16, DType::I16);
+impl_view_type!(u32, DType::U32);
+impl_view_type!(i32, DType::I32);
+impl_view_type!(f32, DType::F32);
+impl_view_type!(f64, DType::F64);
+impl_view_type!(u64, DType::U64);
+impl_view_type!(i64, DType::I64);

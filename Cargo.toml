@@ -1,9 +1,9 @@
 [package]
-name = "tensor_buffer"
+name = "view-buffer"
 version = "0.3.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
-description = "A zero-copy, stride-aware tensor orchestration framework for Rust."
+description = "A zero-copy, stride-aware array orchestration framework for Rust."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourusername/tensor_buffer"
 keywords = ["tensor", "zero-copy", "arrow", "ndarray", "image"]

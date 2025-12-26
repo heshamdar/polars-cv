@@ -1,4 +1,4 @@
-use crate::dtype::{DType, TensorType};
+use crate::dtype::{DType, ViewType};
 use crate::layout::{ExternalLayout, Layout, LayoutFacts, LayoutReport};
 use num_traits::AsPrimitive;
 use std::sync::Arc;
@@ -48,13 +48,13 @@ impl BufferStorage {
 }
 
 #[derive(Debug, Clone)]
-pub struct TensorBuffer {
+pub struct ViewBuffer {
     pub(crate) data: BufferStorage,
     pub(crate) layout: Layout,
 }
 
-impl TensorBuffer {
-    pub fn from_vec<T: TensorType>(data: Vec<T>) -> Self {
+impl ViewBuffer {
+    pub fn from_vec<T: ViewType>(data: Vec<T>) -> Self {
         let shape = vec![data.len()];
         let dtype = T::DTYPE;
         let layout = Layout::new_contiguous(shape, dtype);
@@ -103,7 +103,7 @@ impl TensorBuffer {
         &self.layout.strides
     }
 
-    /// Returns a raw pointer to the start of the tensor data.
+    /// Returns a raw pointer to the start of the view data.
     ///
     /// # Safety
     /// Caller must ensure that:
@@ -116,7 +116,7 @@ impl TensorBuffer {
         // We use debug_assert to catch this in testing/debug builds.
         debug_assert!(
             (ptr as usize) % std::mem::align_of::<T>() == 0,
-            "TensorBuffer pointer is not aligned for type {}; address={:p}, align={}",
+            "ViewBuffer pointer is not aligned for type {}; address={:p}, align={}",
             std::any::type_name::<T>(),
             ptr,
             std::mem::align_of::<T>()
@@ -308,8 +308,8 @@ impl TensorBuffer {
 
     fn cast_impl<S, D>(&self) -> Self
     where
-        S: TensorType + AsPrimitive<D>,
-        D: TensorType + Copy + 'static,
+        S: ViewType + AsPrimitive<D>,
+        D: ViewType + Copy + 'static,
     {
         let elem_count = self.layout.shape.iter().product();
 

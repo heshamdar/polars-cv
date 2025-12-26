@@ -1,10 +1,10 @@
 use std::path::Path;
-use tensor_buffer::io_image::ImageAdapter;
-use tensor_buffer::ops::image::FilterType;
-use tensor_buffer::{DType, TensorBuffer, TensorExpr};
+use view_buffer::io_image::ImageAdapter;
+use view_buffer::ops::image::FilterType;
+use view_buffer::{DType, ViewBuffer, ViewExpr};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("--- TensorBuffer Framework Demo ---");
+    println!("--- ViewBuffer Framework Demo ---");
 
     // 1. Generate Synthetic Image (800x600 RGB Gradient)
     println!("1. Generating synthetic 800x600 RGB image...");
@@ -21,10 +21,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Load into TensorBuffer (Raw 1D vector -> Reshape)
-    let raw_buf = TensorBuffer::from_vec(data);
+    // Load into ViewBuffer (Raw 1D vector -> Reshape)
+    let raw_buf = ViewBuffer::from_vec(data);
 
-    let source = TensorExpr::new_source(raw_buf).reshape(vec![height, width, 3]);
+    let source = ViewExpr::new_source(raw_buf).reshape(vec![height, width, 3]);
 
     println!(
         "   Source Layout: {:?}",
