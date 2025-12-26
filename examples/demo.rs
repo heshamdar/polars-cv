@@ -32,8 +32,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let first_plan = source.plan();
     let first_result = first_plan.execute();
-    match ImageAdapter::save(&first_result, "demo_input.png") {
-        Ok(_) => println!("   Success saving input image to 'demo_input.png'"),
+    match ImageAdapter::save(&first_result, "examples/demo_input.png") {
+        Ok(_) => println!("   Success saving input image to 'examples/demo_input.png'"),
         Err(e) => println!("   Error saving image: {}", e),
     }
 
@@ -85,12 +85,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 5. Output
-    println!("\n5. Saving output to 'demo_output.png'...");
+    println!("\n5. Saving output to 'examples/demo_output.png'...");
 
     // In a real run, this writes to disk.
     // ImageAdapter::save handles the final conversion to contiguous bytes if the
     // resulting view (from the flip/crop) is strided.
-    match ImageAdapter::save(&result, "demo_output.png") {
+    match ImageAdapter::save(&result, "examples/demo_output.png") {
         Ok(_) => println!("   Success!"),
         Err(e) => println!("   Error saving image: {}", e),
     }
