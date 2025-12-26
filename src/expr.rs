@@ -196,20 +196,20 @@ impl TensorExpr {
         
         match &self.node {
             ExprNode::Source(_) => {
-                 info.push_str(&format!("{}  Source: TensorBuffer\n", indent));
+                 info.push_str(&format!("{indent}  Source: TensorBuffer\n"));
             },
             ExprNode::View(op, child) => {
-                info.push_str(&format!("{}  Op: {:?}\n", indent, op));
+                info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 info.push_str(&child.explain_impl(depth + 1));
             },
             ExprNode::Compute(op, children) => {
-                info.push_str(&format!("{}  Op: {:?}\n", indent, op));
+                info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 for child in children {
                     info.push_str(&child.explain_impl(depth + 1));
                 }
             },
             ExprNode::Image(op, child) => {
-                info.push_str(&format!("{}  Op: {:?}\n", indent, op));
+                info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 info.push_str(&child.explain_impl(depth + 1));
             }
         }
