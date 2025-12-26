@@ -29,6 +29,19 @@ impl BufferStorage {
             BufferStorage::Arrow(b) => b.as_ptr(),
         }
     }
+
+    /// Returns the length of the underlying byte buffer.
+    pub fn len(&self) -> usize {
+        match self {
+            BufferStorage::Rust(v) => v.len(),
+            BufferStorage::Arrow(b) => b.len(),
+        }
+    }
+
+    /// Returns true if the buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +56,12 @@ impl TensorBuffer {
         let dtype = T::DTYPE;
         let layout = Layout::new_contiguous(shape, dtype);
 
+        // SAFETY: 
+        // 1. T is Copy, so no Drop glue is needed.
+        // 2. Alignment: The allocation is created by Vec<T>, so it is aligned for T.
+        //    Converting to Vec<u8> (align 1) is safe.
+        //    We must ensure we don't re-interpret these bytes as a type with higher 
+        //    alignment requirements than T later without checking (enforced by as_ptr check).
         let data_bytes = unsafe {
             let mut v_clone = std::mem::ManuallyDrop::new(data);
             let ptr = v_clone.as_mut_ptr() as *mut u8;
@@ -77,8 +96,26 @@ impl TensorBuffer {
         &self.layout.strides
     }
 
+    /// Returns a raw pointer to the start of the tensor data.
+    ///
+    /// # Safety
+    /// Caller must ensure that:
+    /// 1. The resulting pointer is not accessed out of bounds.
+    /// 2. The data at this pointer is valid for type T.
     pub unsafe fn as_ptr<T>(&self) -> *const T {
-        self.data.as_ptr().add(self.layout.offset) as *const T
+        let ptr = self.data.as_ptr().add(self.layout.offset);
+        
+        // Safety Recommendation 1: Alignment Check
+        // We use debug_assert to catch this in testing/debug builds.
+        debug_assert!(
+            (ptr as usize) % std::mem::align_of::<T>() == 0,
+            "TensorBuffer pointer is not aligned for type {}; address={:p}, align={}", 
+            std::any::type_name::<T>(), 
+            ptr, 
+            std::mem::align_of::<T>()
+        );
+        
+        ptr as *const T
     }
 
     pub fn as_raw_parts(&self) -> (*const u8, &[usize], &[isize], DType) {
@@ -90,13 +127,9 @@ impl TensorBuffer {
         )
     }
 
-    /// Returns a unique identifier for the underlying storage allocation.
-    /// Used to verify zero-copy behavior (views should share the same storage ID).
     pub fn storage_id(&self) -> usize {
         match &self.data {
             BufferStorage::Rust(arc) => Arc::as_ptr(arc) as usize,
-            // For Arrow, as_ptr returns the pointer to the data.
-            // Since we clone the buffer container on slice (but not data), this pointer remains constant.
             BufferStorage::Arrow(buf) => buf.as_ptr() as usize,
         }
     }
@@ -203,6 +236,7 @@ impl TensorBuffer {
         let strides = &self.layout.strides;
         let ptr = self.data.as_ptr();
         let base_offset = self.layout.offset;
+        let data_len = self.data.len();
 
         for _ in 0..total_elems {
             let mut offset = base_offset as isize;
@@ -210,8 +244,15 @@ impl TensorBuffer {
                 offset += (idx as isize) * strides[dim];
             }
             
+            // Safety Recommendation 2: Bounds Checking in Debug
+            debug_assert!(offset >= 0, "Negative offset calculation");
+            debug_assert!((offset as usize) < data_len, "Offset out of bounds: {offset} vs len {data_len}");
+
             unsafe {
                 let src = ptr.offset(offset);
+                // Ensure we don't read past end when reading the scalar value
+                debug_assert!((offset as usize) + dtype_size <= data_len, "Read overrun during compaction");
+                
                 for k in 0..dtype_size {
                     new_data.push(*src.add(k));
                 }
@@ -254,6 +295,10 @@ impl TensorBuffer {
         D: TensorType + Copy + 'static
     {
         let elem_count = self.layout.shape.iter().product();
+        
+        // Safety: as_ptr checks alignment. 
+        // We also need to ensure we don't read past the end, which is guaranteed 
+        // if self is contiguous (which it is, called from cast()) and elem_count matches.
         let src_slice = unsafe {
             std::slice::from_raw_parts(self.as_ptr::<S>(), elem_count)
         };
