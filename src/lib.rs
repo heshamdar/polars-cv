@@ -1,8 +1,8 @@
-pub mod dtype;
-pub mod layout;
 pub mod buffer;
-pub mod ops;
+pub mod dtype;
 pub mod expr;
+pub mod layout;
+pub mod ops;
 pub mod planner;
 pub mod views;
 
@@ -23,16 +23,16 @@ pub mod image_view;
 pub use buffer::ViewBuffer;
 pub use dtype::DType;
 pub use expr::ViewExpr;
+pub use layout::{ExternalLayout, LayoutFacts, LayoutReport};
 pub use ops::affine::AffineParams;
 pub use planner::{ExecutionPlan, PlanStep};
-pub use layout::{ExternalLayout, LayoutReport, LayoutFacts};
-pub use views::{ExternalView, validate_layout};
+pub use views::{validate_layout, ExternalView};
 
 #[cfg(feature = "image_interop")]
-pub use image_view::{ImageView, AsImageView, ImageViewAdapter};
+pub use image_view::{AsImageView, ImageView, ImageViewAdapter};
 
 #[cfg(feature = "ndarray_interop")]
-pub use ndarray_view::{NdArrayViewAdapter, AsNdarray, FromNdarray};
+pub use ndarray_view::{AsNdarray, FromNdarray, NdArrayViewAdapter};
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;

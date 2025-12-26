@@ -1,7 +1,7 @@
-use crate::buffer::{ViewBuffer, BufferError};
-use crate::dtype::{DType, ViewType};
-use crate::views::{ExternalView, validate_layout}; // Import shared traits
+use crate::buffer::{BufferError, ViewBuffer};
+use crate::dtype::ViewType;
 use crate::layout::ExternalLayout;
+use crate::views::{validate_layout, ExternalView}; // Import shared traits
 use image::Pixel;
 use std::marker::PhantomData;
 
@@ -15,8 +15,8 @@ pub struct ImageView<'a, P: Pixel> {
     _marker: PhantomData<P>,
 }
 
-impl<'a, P> ImageView<'a, P> 
-where 
+impl<'a, P> ImageView<'a, P>
+where
     P: Pixel,
     P::Subpixel: ViewType + 'static,
 {
@@ -30,10 +30,10 @@ where
 
 pub struct ImageViewAdapter<P>(PhantomData<P>);
 
-impl<'a, P> ExternalView<'a> for ImageViewAdapter<P> 
-where 
+impl<'a, P> ExternalView<'a> for ImageViewAdapter<P>
+where
     P: Pixel,
-    P::Subpixel: ViewType + 'static
+    P::Subpixel: ViewType + 'static,
 {
     type View = ImageView<'a, P>;
     const LAYOUT: ExternalLayout = ExternalLayout::ImageCrate;
@@ -42,9 +42,9 @@ where
         validate_layout(buf, Self::LAYOUT)?;
 
         if buf.dtype() != P::Subpixel::DTYPE {
-            return Err(BufferError::TypeMismatch { 
-                expected: P::Subpixel::DTYPE, 
-                got: buf.dtype() 
+            return Err(BufferError::TypeMismatch {
+                expected: P::Subpixel::DTYPE,
+                got: buf.dtype(),
             });
         }
 
@@ -56,10 +56,8 @@ where
 
         let total_elems = row_stride_elems * h;
         let ptr = unsafe { buf.as_ptr::<P::Subpixel>() };
-        
-        let data = unsafe {
-            std::slice::from_raw_parts(ptr, total_elems)
-        };
+
+        let data = unsafe { std::slice::from_raw_parts(ptr, total_elems) };
 
         Ok(ImageView {
             data,
@@ -74,14 +72,14 @@ where
 // --- Legacy / Helper Trait ---
 pub trait AsImageView {
     fn as_image_view<P>(&self) -> Result<ImageView<P>, BufferError>
-    where 
+    where
         P: Pixel,
         P::Subpixel: ViewType + 'static;
 }
 
 impl AsImageView for ViewBuffer {
     fn as_image_view<P>(&self) -> Result<ImageView<P>, BufferError>
-    where 
+    where
         P: Pixel,
         P::Subpixel: ViewType + 'static,
     {

@@ -1,5 +1,7 @@
-use view_buffer::{ViewBuffer, ImageViewAdapter, ExternalView, DType, NdArrayViewAdapter, ViewExpr};
 use image::Rgb;
+use view_buffer::{
+    DType, ExternalView, ImageViewAdapter, NdArrayViewAdapter, ViewBuffer, ViewExpr,
+};
 
 fn assert_zero_copy(a: &ViewBuffer, b: &ViewBuffer) {
     assert_eq!(
@@ -60,7 +62,7 @@ fn case_transpose_image_rejected() {
     let t = base.permute(&[1, 0, 2]);
     let err = ImageViewAdapter::<Rgb<u8>>::try_view(&t).unwrap_err();
     match err {
-        view_buffer::buffer::BufferError::IncompatibleLayout { .. } => {},
+        view_buffer::buffer::BufferError::IncompatibleLayout { .. } => {}
         _ => panic!("Expected IncompatibleLayout error, got {:?}", err),
     }
 }
@@ -68,17 +70,17 @@ fn case_transpose_image_rejected() {
 #[test]
 fn case_transpose_then_materialize_image() {
     let base = make_image_view();
-    let t = base.permute(&[1, 0, 2]); 
-    let m = t.to_contiguous(); 
+    let t = base.permute(&[1, 0, 2]);
+    let m = t.to_contiguous();
     let _img = ImageViewAdapter::<Rgb<u8>>::try_view(&m).expect("Materialized image view failed");
-    assert_zero_copy(&base, &t); 
+    assert_zero_copy(&base, &t);
     assert_copy(&t, &m);
 }
 
 #[test]
 fn test_storage_ids() {
     let a = make_image_view();
-    let b = a.clone(); 
+    let b = a.clone();
     assert_zero_copy(&a, &b);
     let c = a.to_contiguous();
     assert_zero_copy(&a, &c);

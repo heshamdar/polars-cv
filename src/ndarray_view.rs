@@ -1,7 +1,7 @@
-use crate::buffer::{ViewBuffer, BufferError};
-use crate::dtype::{DType, ViewType};
+use crate::buffer::{BufferError, ViewBuffer};
+use crate::dtype::ViewType;
 use crate::layout::ExternalLayout;
-use crate::views::{ExternalView, validate_layout};
+use crate::views::{validate_layout, ExternalView};
 use ndarray::{ArrayD, ArrayView, ArrayViewD, ShapeBuilder};
 use std::marker::PhantomData;
 
@@ -20,9 +20,9 @@ impl<'a, T: ViewType> ExternalView<'a> for NdArrayViewAdapter<T> {
 
         // 2. Type Check
         if buf.dtype() != T::DTYPE {
-            return Err(BufferError::TypeMismatch { 
-                expected: T::DTYPE, 
-                got: buf.dtype() 
+            return Err(BufferError::TypeMismatch {
+                expected: T::DTYPE,
+                got: buf.dtype(),
             });
         }
 
@@ -30,15 +30,22 @@ impl<'a, T: ViewType> ExternalView<'a> for NdArrayViewAdapter<T> {
         // This logic was previously hidden in ViewBuffer::as_array_view
         let shape = buf.layout.shape.clone();
         let elem_size = std::mem::size_of::<T>() as isize;
-        
-        let strides: Vec<usize> = buf.layout.strides.iter()
+
+        let strides: Vec<usize> = buf
+            .layout
+            .strides
+            .iter()
             .map(|&s| {
                 // Ensure stride matches element alignment
                 if s % elem_size != 0 {
                     // In a robust system, return generic error or handle this.
                     // For now, this invariant should be held by ViewBuffer construction.
-                    panic!("Misaligned stride for type {:?}: stride {} not divisible by {}", 
-                        T::DTYPE, s, elem_size); 
+                    panic!(
+                        "Misaligned stride for type {:?}: stride {} not divisible by {}",
+                        T::DTYPE,
+                        s,
+                        elem_size
+                    );
                 }
                 (s / elem_size) as usize
             })
@@ -80,10 +87,10 @@ impl FromNdarray for ViewBuffer {
         } else {
             array.as_standard_layout().into_owned()
         };
-        
+
         let shape = array.shape().to_vec();
         let vec = array.into_raw_vec();
-        
+
         ViewBuffer::from_vec(vec).reshape(shape)
     }
 }

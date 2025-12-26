@@ -1,4 +1,4 @@
-use crate::buffer::{ViewBuffer, BufferError};
+use crate::buffer::{BufferError, ViewBuffer};
 use crate::layout::ExternalLayout;
 
 /// Unified trait for external view adapters.
@@ -14,10 +14,7 @@ pub trait ExternalView<'a>: Sized {
 }
 
 /// Helper to validate layout against crate requirements.
-pub fn validate_layout(
-    buf: &ViewBuffer,
-    target: ExternalLayout,
-) -> Result<(), BufferError> {
+pub fn validate_layout(buf: &ViewBuffer, target: ExternalLayout) -> Result<(), BufferError> {
     if buf.is_compatible_with(target) {
         Ok(())
     } else {
