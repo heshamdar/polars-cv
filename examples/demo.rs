@@ -1,7 +1,6 @@
-use std::path::Path;
 use view_buffer::io_image::ImageAdapter;
 use view_buffer::ops::image::FilterType;
-use view_buffer::{DType, ViewBuffer, ViewExpr};
+use view_buffer::{ViewBuffer, ViewExpr};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- ViewBuffer Framework Demo ---");

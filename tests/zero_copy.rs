@@ -1,6 +1,6 @@
 use image::Rgb;
 use view_buffer::{
-    DType, ExternalView, ImageViewAdapter, NdArrayViewAdapter, ViewBuffer, ViewExpr,
+    ExternalView, ImageViewAdapter, NdArrayViewAdapter, ViewBuffer, ViewExpr,
 };
 
 fn assert_zero_copy(a: &ViewBuffer, b: &ViewBuffer) {
