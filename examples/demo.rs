@@ -57,7 +57,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .scale(0.5)
         .scale(-1.0)
         .scale(-1.0)
-
         .relu()
         .cast(DType::U8)
         .grayscale()

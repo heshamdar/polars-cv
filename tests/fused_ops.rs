@@ -1,5 +1,5 @@
-use view_buffer::{ViewBuffer, DType, ViewExpr};
 use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
+use view_buffer::{DType, ViewBuffer, ViewExpr};
 
 #[test]
 fn test_fused_execution_f32() {
@@ -24,9 +24,9 @@ fn test_fused_execution_f32() {
     // 4. Verify
     assert_eq!(result.dtype(), DType::F32);
     assert!(result.layout_facts().is_contiguous());
-    
-    // We need to inspect values. 
-    // Since as_slice is not exposed directly for generic types safely yet, 
+
+    // We need to inspect values.
+    // Since as_slice is not exposed directly for generic types safely yet,
     // we use a little unsafe helper or cast.
     // For this test, let's use the raw pointer since we know it's contiguous F32.
     let (ptr, _, _, _) = result.as_raw_parts();
@@ -40,7 +40,10 @@ fn test_fused_on_strided_input() {
     // 1. Input 2x2: [[1.0, 2.0], [3.0, 4.0]]
     //    Strides: [8, 4] bytes
     let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
-    let buf = ViewExpr::new_source(ViewBuffer::from_vec(input_data)).reshape(vec![2, 2]).plan().execute();
+    let buf = ViewExpr::new_source(ViewBuffer::from_vec(input_data))
+        .reshape(vec![2, 2])
+        .plan()
+        .execute();
 
     // 2. Transpose -> [[1.0, 3.0], [2.0, 4.0]]
     //    Strides: [4, 8] bytes.
@@ -60,7 +63,7 @@ fn test_fused_on_strided_input() {
 
     let (ptr, _, _, _) = result.as_raw_parts();
     let result_slice = unsafe { std::slice::from_raw_parts(ptr as *const f32, 4) };
-    
+
     // Row-major output of the transposed input
     assert_eq!(result_slice, &[11.0, 13.0, 12.0, 14.0]);
 }

@@ -21,7 +21,7 @@ impl FusedKernel {
     pub fn push(&mut self, op: ScalarOp) {
         self.ops.push(op);
     }
-    
+
     pub fn len(&self) -> usize {
         self.ops.len()
     }

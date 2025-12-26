@@ -1,11 +1,17 @@
 use crate::dtype::DType;
-use crate::ops::core::{Op, MemoryEffect};
+use crate::ops::core::{MemoryEffect, Op};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImageOpKind {
     Threshold(u8),
-    Resize { width: u32, height: u32, filter: FilterType },
-    Blur { sigma: f32 },
+    Resize {
+        width: u32,
+        height: u32,
+        filter: FilterType,
+    },
+    Blur {
+        sigma: f32,
+    },
     Grayscale,
 }
 
@@ -37,7 +43,7 @@ impl Op for ImageOp {
                     s.push(1);
                 }
                 s
-            },
+            }
             ImageOpKind::Resize { width, height, .. } => {
                 let mut s = input_shape.to_vec();
                 if s.len() >= 2 {
@@ -45,7 +51,7 @@ impl Op for ImageOp {
                     s[1] = *width as usize;
                 }
                 s
-            },
+            }
         }
     }
 

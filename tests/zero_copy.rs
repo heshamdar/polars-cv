@@ -1,7 +1,5 @@
 use image::Rgb;
-use view_buffer::{
-    ExternalView, ImageViewAdapter, NdArrayViewAdapter, ViewBuffer, ViewExpr,
-};
+use view_buffer::{ExternalView, ImageViewAdapter, NdArrayViewAdapter, ViewBuffer, ViewExpr};
 
 fn assert_zero_copy(a: &ViewBuffer, b: &ViewBuffer) {
     assert_eq!(
