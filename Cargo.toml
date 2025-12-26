@@ -1,0 +1,42 @@
+[package]
+name = "tensor_buffer"
+version = "0.3.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A zero-copy, stride-aware tensor orchestration framework for Rust."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/tensor_buffer"
+keywords = ["tensor", "zero-copy", "arrow", "ndarray", "image"]
+categories = ["science", "data-structures", "computer-vision"]
+
+[dependencies]
+thiserror = "1.0"
+num-traits = "0.2"
+
+# Optional dependencies (Feature Gated)
+# Users can disable these to keep the build light.
+ndarray = { version = "0.15", optional = true }
+image = { version = "0.24", optional = true }
+arrow = { version = "53.0", features = ["ffi"], optional = true }
+
+[dev-dependencies]
+anyhow = "1.0"
+# We need these enabled for tests/examples to run
+ndarray = "0.15"
+image = "0.24"
+arrow = { version = "53.0", features = ["ffi"] }
+
+[features]
+default = ["ndarray_interop", "image_interop", "arrow_interop"]
+
+# Feature flags to enable integrations
+ndarray_interop = ["dep:ndarray"]
+image_interop = ["dep:image"]
+arrow_interop = ["dep:arrow"]
+
+[profile.release]
+opt-level = 3       # Max optimization
+lto = "fat"         # Link Time Optimization (slower build, faster code)
+codegen-units = 1   # Reduce parallel code generation for better optimization
+panic = "abort"     # Remove unwinding symbols (optional, typically good for apps/libs)
+strip = true        # Strip symbols from binary
