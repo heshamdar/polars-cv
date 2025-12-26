@@ -1,5 +1,5 @@
 use crate::buffer::{TensorBuffer, BufferError};
-use crate::dtype::{DType, TensorType};
+use crate::dtype::TensorType;
 use crate::interop::{ExternalView, validate_layout};
 use crate::layout::ExternalLayout;
 use image::Pixel;

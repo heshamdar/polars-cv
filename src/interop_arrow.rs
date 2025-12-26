@@ -1,8 +1,7 @@
 use crate::buffer::{TensorBuffer, BufferError};
-use crate::dtype::{DType, TensorType};
+use crate::dtype::DType;
 use arrow::array::{Array, FixedSizeListArray, PrimitiveArray, FixedSizeBinaryArray, BinaryArray, LargeBinaryArray};
 use arrow::datatypes::{DataType, Float32Type, Float64Type, Int32Type, Int64Type, UInt8Type};
-use arrow::buffer::Buffer;
 use std::sync::Arc;
 use arrow::array::Float32Array;
 

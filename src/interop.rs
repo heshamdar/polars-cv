@@ -1,5 +1,5 @@
 use crate::buffer::{TensorBuffer, BufferError};
-use crate::dtype::{DType, TensorType};
+use crate::dtype::TensorType;
 use crate::layout::ExternalLayout;
 use ndarray::{ArrayD, ArrayView, ArrayViewD, ShapeBuilder};
 use std::marker::PhantomData;

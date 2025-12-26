@@ -1,4 +1,3 @@
-use std::mem::size_of;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DType {
