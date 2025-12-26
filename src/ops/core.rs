@@ -1,5 +1,6 @@
 use crate::dtype::DType;
 use crate::ops::affine::AffineParams;
+use crate::ops::scalar::FusedKernel; // NEW: Import FusedKernel
 
 /// Describes how an operation interacts with memory layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,14 +26,12 @@ pub enum ViewOp {
 
 impl Op for ViewOp {
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        let input_shape = inputs[0];
+        let input_shape = inputs[0]; 
         match self {
             ViewOp::Transpose(perm) => perm.iter().map(|&i| input_shape[i]).collect(),
             ViewOp::Reshape(new_shape) => new_shape.clone(),
             ViewOp::Flip(_) => input_shape.to_vec(),
-            ViewOp::Crop { start, end } => {
-                start.iter().zip(end.iter()).map(|(s, e)| e - s).collect()
-            }
+            ViewOp::Crop { start, end } => start.iter().zip(end.iter()).map(|(s, e)| e - s).collect(),
         }
     }
 
@@ -51,6 +50,8 @@ pub enum ComputeOp {
     Affine(AffineParams),
     Scale(f32),
     Relu,
+    /// A chain of scalar operations executed in a single pass.
+    Fused(FusedKernel), // NEW
 }
 
 impl Op for ComputeOp {
@@ -65,6 +66,7 @@ impl Op for ComputeOp {
             ComputeOp::Affine(_) => inputs[0],
             ComputeOp::Scale(_) => inputs[0], // Assuming scale preserves float type
             ComputeOp::Relu => inputs[0],
+            ComputeOp::Fused(_) => inputs[0], // Fused kernel preserves input type (currently F32)
         }
     }
 
@@ -73,6 +75,8 @@ impl Op for ComputeOp {
             ComputeOp::Cast(_) => MemoryEffect::StridePreserving,
             ComputeOp::Scale(_) => MemoryEffect::StridePreserving,
             ComputeOp::Relu => MemoryEffect::StridePreserving,
+            // Fused ops handle strides internally during the read phase
+            ComputeOp::Fused(_) => MemoryEffect::StridePreserving,
             ComputeOp::Affine(_) => MemoryEffect::RequiresContiguous,
         }
     }

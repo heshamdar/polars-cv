@@ -1,6 +1,8 @@
 pub mod affine;
 pub mod core;
-pub mod image; // NEW
+pub mod image;
+pub mod scalar; // NEW
 
-pub use core::{ComputeOp, MemoryEffect, Op, ViewOp};
-pub use image::{FilterType, ImageOp, ImageOpKind};
+pub use core::{ViewOp, ComputeOp, Op, MemoryEffect};
+pub use image::{ImageOp, ImageOpKind, FilterType};
+pub use scalar::{ScalarOp, FusedKernel}; // NEW

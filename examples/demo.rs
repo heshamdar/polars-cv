@@ -1,6 +1,6 @@
 use view_buffer::io_image::ImageAdapter;
 use view_buffer::ops::image::FilterType;
-use view_buffer::{ViewBuffer, ViewExpr};
+use view_buffer::{DType, ViewBuffer, ViewExpr};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- ViewBuffer Framework Demo ---");
@@ -51,7 +51,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .crop(vec![50, 100, 0], vec![250, 300, 3])
         // C. Flip: Horizontal Mirror (View Operation - Zero Copy)
         //    Axis 1 is width
-        .flip(vec![1]);
+        .flip(vec![1])
+        .cast(DType::F32)
+        .scale(2.0)
+        .scale(0.5)
+        .scale(-1.0)
+        .scale(-1.0)
+        .relu()
+        .cast(DType::U8)
+        .grayscale()
+        .threshold(128);
 
     // Note: We could add .threshold(128) here if we wanted a binary mask,
     // but let's keep it RGB for the visual demo.
@@ -69,6 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = result.to_contiguous();
     println!("   Result Shape: {:?}", result.shape());
     println!("   Result Strides: {:?}", result.strides_bytes());
+    println!("   Result Dtype: {:?}", result.dtype());
     println!(
         "   Result Layout Compatible with Image Crate? {}",
         result.layout_report().image_compatible
