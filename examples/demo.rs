@@ -1,7 +1,7 @@
-use tensor_buffer::{TensorBuffer, TensorExpr, DType};
 use std::path::Path;
 use tensor_buffer::io_image::ImageAdapter;
 use tensor_buffer::ops::image::FilterType;
+use tensor_buffer::{DType, TensorBuffer, TensorExpr};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- TensorBuffer Framework Demo ---");
@@ -24,12 +24,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load into TensorBuffer (Raw 1D vector -> Reshape)
     let raw_buf = TensorBuffer::from_vec(data);
 
+    let source = TensorExpr::new_source(raw_buf).reshape(vec![height, width, 3]);
 
-    let source = TensorExpr::new_source(raw_buf)
-        .reshape(vec![height, width, 3]);
-
-    println!("   Source Layout: {:?}", source.plan().source.layout_report());
-
+    println!(
+        "   Source Layout: {:?}",
+        source.plan().source.layout_report()
+    );
 
     let first_plan = source.plan();
     let first_result = first_plan.execute();
@@ -41,23 +41,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Define Processing Pipeline (Lazy)
     // Pipeline: Resize -> Crop -> Flip -> Threshold
     println!("\n2. Building lazy execution graph...");
-    
+
     let pipeline = source
         // A. Resize: Downscale to 400x300 (delegates to image crate)
         .resize(400, 300, FilterType::Triangle)
-        
         // B. Crop: Extract a region (View Operation - Zero Copy)
         //    Y: 50..250 (height 200)
         //    X: 100..300 (width 200)
         //    C: 0..3 (all channels)
         .crop(vec![50, 100, 0], vec![250, 300, 3])
-        
         // C. Flip: Horizontal Mirror (View Operation - Zero Copy)
         //    Axis 1 is width
         .flip(vec![1]);
 
-        // Note: We could add .threshold(128) here if we wanted a binary mask,
-        // but let's keep it RGB for the visual demo.
+    // Note: We could add .threshold(128) here if we wanted a binary mask,
+    // but let's keep it RGB for the visual demo.
 
     // 3. Introspection
     println!("\n3. Inspecting Plan:");
@@ -72,14 +70,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = result.to_contiguous();
     println!("   Result Shape: {:?}", result.shape());
     println!("   Result Strides: {:?}", result.strides_bytes());
-    println!("   Result Layout Compatible with Image Crate? {}", 
-            result.layout_report().image_compatible);
+    println!(
+        "   Result Layout Compatible with Image Crate? {}",
+        result.layout_report().image_compatible
+    );
 
     // 5. Output
     println!("\n5. Saving output to 'demo_output.png'...");
-    
-    // In a real run, this writes to disk. 
-    // ImageAdapter::save handles the final conversion to contiguous bytes if the 
+
+    // In a real run, this writes to disk.
+    // ImageAdapter::save handles the final conversion to contiguous bytes if the
     // resulting view (from the flip/crop) is strided.
     match ImageAdapter::save(&result, "demo_output.png") {
         Ok(_) => println!("   Success!"),

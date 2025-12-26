@@ -1,13 +1,16 @@
-use std::sync::Arc;
 use crate::dtype::{DType, TensorType};
-use crate::layout::{Layout, ExternalLayout, LayoutReport, LayoutFacts};
-use thiserror::Error;
+use crate::layout::{ExternalLayout, Layout, LayoutFacts, LayoutReport};
 use num_traits::AsPrimitive;
+use std::sync::Arc;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum BufferError {
     #[error("Shape mismatch: expected {expected:?}, got {got:?}")]
-    ShapeMismatch { expected: Vec<usize>, got: Vec<usize> },
+    ShapeMismatch {
+        expected: Vec<usize>,
+        got: Vec<usize>,
+    },
     #[error("Type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch { expected: DType, got: DType },
     #[error("Buffer is not contiguous")]
@@ -56,11 +59,11 @@ impl TensorBuffer {
         let dtype = T::DTYPE;
         let layout = Layout::new_contiguous(shape, dtype);
 
-        // SAFETY: 
+        // SAFETY:
         // 1. T is Copy, so no Drop glue is needed.
         // 2. Alignment: The allocation is created by Vec<T>, so it is aligned for T.
         //    Converting to Vec<u8> (align 1) is safe.
-        //    We must ensure we don't re-interpret these bytes as a type with higher 
+        //    We must ensure we don't re-interpret these bytes as a type with higher
         //    alignment requirements than T later without checking (enforced by as_ptr check).
         let data_bytes = unsafe {
             let mut v_clone = std::mem::ManuallyDrop::new(data);
@@ -75,8 +78,12 @@ impl TensorBuffer {
             layout,
         }
     }
-    
-    pub fn from_arrow_buffer(buffer: arrow::buffer::Buffer, shape: Vec<usize>, dtype: DType) -> Self {
+
+    pub fn from_arrow_buffer(
+        buffer: arrow::buffer::Buffer,
+        shape: Vec<usize>,
+        dtype: DType,
+    ) -> Self {
         let layout = Layout::new_contiguous(shape, dtype);
         Self {
             data: BufferStorage::Arrow(buffer),
@@ -104,17 +111,17 @@ impl TensorBuffer {
     /// 2. The data at this pointer is valid for type T.
     pub unsafe fn as_ptr<T>(&self) -> *const T {
         let ptr = self.data.as_ptr().add(self.layout.offset);
-        
+
         // Safety Recommendation 1: Alignment Check
         // We use debug_assert to catch this in testing/debug builds.
         debug_assert!(
             (ptr as usize) % std::mem::align_of::<T>() == 0,
-            "TensorBuffer pointer is not aligned for type {}; address={:p}, align={}", 
-            std::any::type_name::<T>(), 
-            ptr, 
+            "TensorBuffer pointer is not aligned for type {}; address={:p}, align={}",
+            std::any::type_name::<T>(),
+            ptr,
             std::mem::align_of::<T>()
         );
-        
+
         ptr as *const T
     }
 
@@ -123,7 +130,7 @@ impl TensorBuffer {
             unsafe { self.data.as_ptr().add(self.layout.offset) },
             &self.layout.shape,
             &self.layout.strides,
-            self.layout.dtype
+            self.layout.dtype,
         )
     }
 
@@ -179,7 +186,7 @@ impl TensorBuffer {
     pub fn slice(&self, start: &[usize], end: &[usize]) -> Self {
         let mut new_offset = self.layout.offset as isize;
         let mut new_shape = Vec::new();
-        
+
         for i in 0..self.layout.shape.len() {
             let s = start[i];
             let e = end[i];
@@ -243,16 +250,22 @@ impl TensorBuffer {
             for (dim, &idx) in indices.iter().enumerate() {
                 offset += (idx as isize) * strides[dim];
             }
-            
+
             // Safety Recommendation 2: Bounds Checking in Debug
             debug_assert!(offset >= 0, "Negative offset calculation");
-            debug_assert!((offset as usize) < data_len, "Offset out of bounds: {offset} vs len {data_len}");
+            debug_assert!(
+                (offset as usize) < data_len,
+                "Offset out of bounds: {offset} vs len {data_len}"
+            );
 
             unsafe {
                 let src = ptr.offset(offset);
                 // Ensure we don't read past end when reading the scalar value
-                debug_assert!((offset as usize) + dtype_size <= data_len, "Read overrun during compaction");
-                
+                debug_assert!(
+                    (offset as usize) + dtype_size <= data_len,
+                    "Read overrun during compaction"
+                );
+
                 for k in 0..dtype_size {
                     new_data.push(*src.add(k));
                 }
@@ -270,7 +283,7 @@ impl TensorBuffer {
         let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
         Self {
             data: BufferStorage::Rust(Arc::new(new_data)),
-            layout: new_layout
+            layout: new_layout,
         }
     }
 
@@ -285,23 +298,25 @@ impl TensorBuffer {
             (DType::F32, DType::U8) => contig.cast_impl::<f32, u8>(),
             (DType::I32, DType::F32) => contig.cast_impl::<i32, f32>(),
             (DType::F32, DType::I32) => contig.cast_impl::<f32, i32>(),
-            _ => unimplemented!("Cast pair {:?} -> {:?} not implemented", self.dtype(), target),
+            _ => unimplemented!(
+                "Cast pair {:?} -> {:?} not implemented",
+                self.dtype(),
+                target
+            ),
         }
     }
 
-    fn cast_impl<S, D>(&self) -> Self 
-    where 
+    fn cast_impl<S, D>(&self) -> Self
+    where
         S: TensorType + AsPrimitive<D>,
-        D: TensorType + Copy + 'static
+        D: TensorType + Copy + 'static,
     {
         let elem_count = self.layout.shape.iter().product();
-        
-        // Safety: as_ptr checks alignment. 
-        // We also need to ensure we don't read past the end, which is guaranteed 
+
+        // Safety: as_ptr checks alignment.
+        // We also need to ensure we don't read past the end, which is guaranteed
         // if self is contiguous (which it is, called from cast()) and elem_count matches.
-        let src_slice = unsafe {
-            std::slice::from_raw_parts(self.as_ptr::<S>(), elem_count)
-        };
+        let src_slice = unsafe { std::slice::from_raw_parts(self.as_ptr::<S>(), elem_count) };
 
         let new_data: Vec<D> = src_slice.iter().map(|&x| x.as_()).collect();
         Self::from_vec(new_data).reshape(self.layout.shape.clone())

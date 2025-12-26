@@ -1,8 +1,8 @@
-use std::sync::Arc;
 use crate::buffer::TensorBuffer;
 use crate::dtype::DType;
-use crate::ops::{ViewOp, ComputeOp, ImageOp, ImageOpKind, FilterType};
 use crate::ops::affine::AffineParams;
+use crate::ops::{ComputeOp, FilterType, ImageOp, ImageOpKind, ViewOp};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum ExprNode {
@@ -101,9 +101,19 @@ impl TensorExpr {
     // --- Image Ops ---
 
     pub fn resize(self: &Arc<Self>, width: u32, height: u32, filter: FilterType) -> Arc<Self> {
-        let op = ImageOp { kind: ImageOpKind::Resize { width, height, filter } };
-        let new_shape = vec![height as usize, width as usize, *self.shape.last().unwrap_or(&1)];
-        
+        let op = ImageOp {
+            kind: ImageOpKind::Resize {
+                width,
+                height,
+                filter,
+            },
+        };
+        let new_shape = vec![
+            height as usize,
+            width as usize,
+            *self.shape.last().unwrap_or(&1),
+        ];
+
         Arc::new(Self {
             node: ExprNode::Image(op, self.clone()),
             shape: new_shape,
@@ -112,7 +122,9 @@ impl TensorExpr {
     }
 
     pub fn blur(self: &Arc<Self>, sigma: f32) -> Arc<Self> {
-        let op = ImageOp { kind: ImageOpKind::Blur { sigma } };
+        let op = ImageOp {
+            kind: ImageOpKind::Blur { sigma },
+        };
         Arc::new(Self {
             node: ExprNode::Image(op, self.clone()),
             shape: self.shape.clone(),
@@ -121,7 +133,9 @@ impl TensorExpr {
     }
 
     pub fn threshold(self: &Arc<Self>, value: u8) -> Arc<Self> {
-        let op = ImageOp { kind: ImageOpKind::Threshold(value) };
+        let op = ImageOp {
+            kind: ImageOpKind::Threshold(value),
+        };
         Arc::new(Self {
             node: ExprNode::Image(op, self.clone()),
             shape: self.shape.clone(),
@@ -138,7 +152,7 @@ impl TensorExpr {
             ExprNode::Compute(op, children) => {
                 let opt_children: Vec<_> = children.iter().map(|c| c.optimize()).collect();
                 ExprNode::Compute(op.clone(), opt_children)
-            },
+            }
             ExprNode::Image(op, child) => ExprNode::Image(op.clone(), child.optimize()),
         };
 
@@ -146,11 +160,11 @@ impl TensorExpr {
             ExprNode::View(ViewOp::Flip(axes1), child) => {
                 if let ExprNode::View(ViewOp::Flip(ref axes2), ref grandchild) = &child.node {
                     if axes1 == *axes2 {
-                        return grandchild.clone(); 
+                        return grandchild.clone();
                     }
                 }
                 self.rebuild(ExprNode::View(ViewOp::Flip(axes1), child))
-            },
+            }
 
             ExprNode::View(ViewOp::Transpose(p1), child) => {
                 if let ExprNode::View(ViewOp::Transpose(ref p2), ref grandchild) = &child.node {
@@ -162,14 +176,14 @@ impl TensorExpr {
                         return Arc::new(Self {
                             node: ExprNode::View(ViewOp::Transpose(merged), grandchild.clone()),
                             shape: self.shape.clone(),
-                            dtype: self.dtype
+                            dtype: self.dtype,
                         });
                     }
                 }
                 self.rebuild(ExprNode::View(ViewOp::Transpose(p1), child))
-            },
+            }
 
-            _ => self.rebuild(optimized_node)
+            _ => self.rebuild(optimized_node),
         }
     }
 
@@ -193,21 +207,21 @@ impl TensorExpr {
         let mut info = format!("{}Node: {:?}\n", indent, self.node_type_name());
         info.push_str(&format!("{}  Shape: {:?}\n", indent, self.shape));
         info.push_str(&format!("{}  DType: {:?}\n", indent, self.dtype));
-        
+
         match &self.node {
             ExprNode::Source(_) => {
-                 info.push_str(&format!("{indent}  Source: TensorBuffer\n"));
-            },
+                info.push_str(&format!("{indent}  Source: TensorBuffer\n"));
+            }
             ExprNode::View(op, child) => {
                 info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 info.push_str(&child.explain_impl(depth + 1));
-            },
+            }
             ExprNode::Compute(op, children) => {
                 info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 for child in children {
                     info.push_str(&child.explain_impl(depth + 1));
                 }
-            },
+            }
             ExprNode::Image(op, child) => {
                 info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 info.push_str(&child.explain_impl(depth + 1));

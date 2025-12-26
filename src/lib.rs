@@ -1,8 +1,8 @@
-pub mod dtype;
-pub mod layout;
 pub mod buffer;
-pub mod ops;
+pub mod dtype;
 pub mod expr;
+pub mod layout;
+pub mod ops;
 pub mod planner;
 
 // Modules guarded by features
@@ -22,12 +22,12 @@ pub mod image_view;
 pub use buffer::TensorBuffer;
 pub use dtype::DType;
 pub use expr::TensorExpr;
+pub use layout::{ExternalLayout, LayoutFacts, LayoutReport};
 pub use ops::affine::AffineParams;
 pub use planner::{ExecutionPlan, PlanStep};
-pub use layout::{ExternalLayout, LayoutReport, LayoutFacts};
 
 #[cfg(feature = "image_interop")]
-pub use image_view::{ImageView, AsImageView, ImageViewAdapter};
+pub use image_view::{AsImageView, ImageView, ImageViewAdapter};
 
 #[cfg(feature = "ndarray_interop")]
-pub use interop::{ExternalView, NdArrayViewAdapter, validate_layout};
+pub use interop::{validate_layout, ExternalView, NdArrayViewAdapter};

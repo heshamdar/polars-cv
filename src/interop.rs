@@ -1,4 +1,4 @@
-use crate::buffer::{TensorBuffer, BufferError};
+use crate::buffer::{BufferError, TensorBuffer};
 use crate::dtype::TensorType;
 use crate::layout::ExternalLayout;
 use ndarray::{ArrayD, ArrayView, ArrayViewD, ShapeBuilder};
@@ -17,10 +17,7 @@ pub trait ExternalView<'a>: Sized {
 }
 
 /// Helper to validate layout against crate requirements.
-pub fn validate_layout(
-    buf: &TensorBuffer,
-    target: ExternalLayout,
-) -> Result<(), BufferError> {
+pub fn validate_layout(buf: &TensorBuffer, target: ExternalLayout) -> Result<(), BufferError> {
     if buf.is_compatible_with(target) {
         Ok(())
     } else {
@@ -55,18 +52,21 @@ pub trait AsNdarray {
 impl AsNdarray for TensorBuffer {
     fn as_array_view<T: TensorType>(&self) -> Result<ArrayViewD<T>, BufferError> {
         if self.dtype() != T::DTYPE {
-            return Err(BufferError::TypeMismatch { 
-                expected: T::DTYPE, 
-                got: self.dtype() 
+            return Err(BufferError::TypeMismatch {
+                expected: T::DTYPE,
+                got: self.dtype(),
             });
         }
 
         let shape = self.layout.shape.clone();
         let elem_size = std::mem::size_of::<T>() as isize;
-        let strides: Vec<usize> = self.layout.strides.iter()
+        let strides: Vec<usize> = self
+            .layout
+            .strides
+            .iter()
             .map(|&s| {
                 if s % elem_size != 0 {
-                    panic!("Misaligned stride for type"); 
+                    panic!("Misaligned stride for type");
                 }
                 (s / elem_size) as usize
             })
@@ -90,10 +90,10 @@ impl FromNdarray for TensorBuffer {
         } else {
             array.as_standard_layout().into_owned()
         };
-        
+
         let shape = array.shape().to_vec();
         let vec = array.into_raw_vec();
-        
+
         TensorBuffer::from_vec(vec).reshape(shape)
     }
 }

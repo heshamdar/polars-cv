@@ -15,7 +15,7 @@ pub struct LayoutFacts {
     pub shape: Vec<usize>,
     pub strides: Vec<isize>, // Strides in BYTES
     pub dtype: DType,
-    pub offset: usize,       // Offset in BYTES
+    pub offset: usize, // Offset in BYTES
 }
 
 impl LayoutFacts {
@@ -32,7 +32,7 @@ impl LayoutFacts {
     pub fn is_contiguous(&self) -> bool {
         let mut expected_strides = vec![0; self.rank];
         let mut current = self.dtype.size_of() as isize;
-        
+
         // Compute standard C-order (row-major) strides
         for i in (0..self.rank).rev() {
             expected_strides[i] = current;
@@ -51,7 +51,7 @@ impl LayoutFacts {
         // "rows contiguous but may have padding"
         // This checks if pixels are packed tightly within a row.
         let elem_size = self.dtype.size_of() as isize;
-        
+
         if self.rank == 2 {
             // [H, W]: Stride between pixels (W) must be element size
             self.strides[1] == elem_size
@@ -71,7 +71,7 @@ impl LayoutFacts {
             ExternalLayout::NdArray => {
                 // ndarray supports arbitrary strides (assuming element alignment)
                 true
-            },
+            }
             ExternalLayout::ImageCrate => {
                 // image crate requires:
                 // 1. Rank 2 (Grey) or 3 (RGB/A)
@@ -80,7 +80,7 @@ impl LayoutFacts {
                 (self.rank == 2 || self.rank == 3)
                     && (self.rank != 3 || self.is_channels_last())
                     && self.is_dense_rows()
-            },
+            }
             ExternalLayout::FastImageResize => {
                 // fast_image_resize usually requires strictly contiguous buffers
                 self.is_contiguous()
@@ -102,7 +102,7 @@ impl Layout {
     pub fn new_contiguous(shape: Vec<usize>, dtype: DType) -> Self {
         let mut strides = vec![0; shape.len()];
         let mut current_stride = dtype.size_of() as isize;
-        
+
         for i in (0..shape.len()).rev() {
             strides[i] = current_stride;
             current_stride *= shape[i] as isize;

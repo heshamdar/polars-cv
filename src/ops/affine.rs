@@ -8,8 +8,7 @@ pub struct AffineParams {
 impl AffineParams {
     pub fn identity() -> Self {
         Self {
-            matrix: [1.0, 0.0, 0.0, 
-                     0.0, 1.0, 0.0],
+            matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         }
     }
 

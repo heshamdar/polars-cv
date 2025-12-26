@@ -25,12 +25,14 @@ pub enum ViewOp {
 
 impl Op for ViewOp {
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        let input_shape = inputs[0]; 
+        let input_shape = inputs[0];
         match self {
             ViewOp::Transpose(perm) => perm.iter().map(|&i| input_shape[i]).collect(),
             ViewOp::Reshape(new_shape) => new_shape.clone(),
             ViewOp::Flip(_) => input_shape.to_vec(),
-            ViewOp::Crop { start, end } => start.iter().zip(end.iter()).map(|(s, e)| e - s).collect(),
+            ViewOp::Crop { start, end } => {
+                start.iter().zip(end.iter()).map(|(s, e)| e - s).collect()
+            }
         }
     }
 

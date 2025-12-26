@@ -23,8 +23,8 @@ impl ImageAdapter {
     pub fn from_dynamic_image(img: DynamicImage) -> TensorBuffer {
         let (w, h) = img.dimensions();
         // Shape: [Height, Width, Channels]
-        let shape = vec![h as usize, w as usize, 3]; 
-        
+        let shape = vec![h as usize, w as usize, 3];
+
         // Convert to RGB8 (contiguous bytes)
         // This is where the copy/conversion happens.
         let rgb_img = img.to_rgb8();
@@ -32,13 +32,15 @@ impl ImageAdapter {
 
         // Create TensorBuffer directly from the bytes
         // We use the internal reshape helper from buffer.rs
-        TensorBuffer::from_vec(raw_bytes)
-            .reshape(shape)
+        TensorBuffer::from_vec(raw_bytes).reshape(shape)
     }
 
     /// Encodes a TensorBuffer into bytes (PNG/JPEG/etc).
     /// Requires the buffer to be [H, W, 3] and U8.
-    pub fn encode(buffer: &TensorBuffer, format: image::ImageOutputFormat) -> Result<Vec<u8>, image::ImageError> {
+    pub fn encode(
+        buffer: &TensorBuffer,
+        format: image::ImageOutputFormat,
+    ) -> Result<Vec<u8>, image::ImageError> {
         let dynamic_image = Self::to_dynamic_image(buffer)?;
         let mut bytes: Vec<u8> = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut bytes);
@@ -56,33 +58,41 @@ impl ImageAdapter {
     fn to_dynamic_image(buffer: &TensorBuffer) -> Result<DynamicImage, image::ImageError> {
         // 1. Validation
         if buffer.dtype() != crate::dtype::DType::U8 {
-            return Err(image::ImageError::Parameter(image::error::ParameterError::from_kind(
-                image::error::ParameterErrorKind::Generic("Image export requires U8 dtype".to_string())
-            )));
+            return Err(image::ImageError::Parameter(
+                image::error::ParameterError::from_kind(image::error::ParameterErrorKind::Generic(
+                    "Image export requires U8 dtype".to_string(),
+                )),
+            ));
         }
         let shape = buffer.shape();
         if shape.len() != 3 || shape[2] != 3 {
-             return Err(image::ImageError::Parameter(image::error::ParameterError::from_kind(
-                image::error::ParameterErrorKind::DimensionMismatch
-            )));
+            return Err(image::ImageError::Parameter(
+                image::error::ParameterError::from_kind(
+                    image::error::ParameterErrorKind::DimensionMismatch,
+                ),
+            ));
         }
         let (h, w) = (shape[0] as u32, shape[1] as u32);
 
         // 2. Ensure Contiguous
         // We need a standard contiguous buffer for the image crate to consume
         let contiguous = buffer.to_contiguous();
-        
+
         // 3. Construct ImageBuffer
         // Safety: We checked dtype is U8.
-        let slice = unsafe { 
-            std::slice::from_raw_parts(contiguous.as_ptr::<u8>(), contiguous.layout.num_elements()) 
+        let slice = unsafe {
+            std::slice::from_raw_parts(contiguous.as_ptr::<u8>(), contiguous.layout.num_elements())
         };
-        
+
         // ImageBuffer::from_raw takes Vec<u8>, so we create a copy into image container
-        let img_buf = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
-            .ok_or_else(|| image::ImageError::Parameter(image::error::ParameterError::from_kind(
-                image::error::ParameterErrorKind::Generic("Failed to create ImageBuffer".to_string())
-            )))?;
+        let img_buf =
+            ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec()).ok_or_else(|| {
+                image::ImageError::Parameter(image::error::ParameterError::from_kind(
+                    image::error::ParameterErrorKind::Generic(
+                        "Failed to create ImageBuffer".to_string(),
+                    ),
+                ))
+            })?;
 
         Ok(DynamicImage::ImageRgb8(img_buf))
     }
@@ -96,8 +106,8 @@ mod tests {
     fn test_image_roundtrip() {
         // 1. Create Synthetic Image (2x2 RGB)
         let data: Vec<u8> = vec![
-            255, 0, 0,   0, 255, 0,    // Row 1
-            0, 0, 255,   255, 255, 0   // Row 2
+            255, 0, 0, 0, 255, 0, // Row 1
+            0, 0, 255, 255, 255, 0, // Row 2
         ];
         let tb = TensorBuffer::from_vec(data).reshape(vec![2, 2, 3]);
 
