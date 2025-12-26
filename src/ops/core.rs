@@ -1,7 +1,7 @@
 use crate::dtype::DType;
 use crate::ops::affine::AffineParams;
 use crate::ops::scalar::FusedKernel;
-use crate::layout::Layout; // Needed to calculate default strides
+ // Needed to calculate default strides
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 

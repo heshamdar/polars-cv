@@ -43,6 +43,6 @@ use pyo3::prelude::*;
 
 #[cfg(feature = "python")]
 #[pymodule]
-fn view_buffer(_py: Python, m: &PyModule) -> PyResult<()> {
+fn view_buffer(_m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }

@@ -1,4 +1,3 @@
-use std::mem::size_of;
 #[cfg(feature = "serde")]
 use serde::{Serialize, Deserialize};
 

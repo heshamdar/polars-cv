@@ -1,5 +1,6 @@
-use view_buffer::{ViewBuffer, execute_plan, DType, ViewDto};
+use view_buffer::{ViewBuffer, DType};
 use view_buffer::ops::{ComputeOp, ScalarOp, FusedKernel};
+use view_buffer::ViewDto;
 
 #[test]
 fn test_blob_roundtrip() {
@@ -68,7 +69,7 @@ fn test_plan_execution_from_json() {
     let deserialized_ops: Vec<ViewDto> = serde_json::from_str(&json_plan).expect("Failed to deserialize plan");
     
     // 4. Execute Engine
-    let result = execute_plan(source, deserialized_ops);
+    let result = view_buffer::engine::execute_plan(source, deserialized_ops);
     
     // 5. Verify Result: [2.0, 4.0, 6.0, 8.0]
     let (ptr, _, _, _) = result.as_raw_parts();

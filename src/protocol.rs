@@ -9,7 +9,6 @@ pub const HEADER_SIZE: usize = 64;
 /// Fixed-size header for binary transport (64 bytes).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "serde", derive(Pod, Zeroable))]
 pub struct ViewHeader {
     pub magic: [u8; 4],     // "VIEW"
     pub version: u16,       // 1
@@ -19,6 +18,12 @@ pub struct ViewHeader {
     pub flags: u64,         // Reserved for future flags (e.g. compression, endianness)
     pub reserved: [u8; 40], // Padding to reach 64 bytes
 }
+
+#[cfg(feature = "serde")]
+unsafe impl Zeroable for ViewHeader {}
+
+#[cfg(feature = "serde")]
+unsafe impl Pod for ViewHeader {}
 
 impl Default for ViewHeader {
     fn default() -> Self {
