@@ -1,12 +1,13 @@
-pub mod buffer;
 pub mod dtype;
-pub mod expr;
 pub mod layout;
+pub mod buffer;
 pub mod ops;
+pub mod expr;
 pub mod planner;
 pub mod views;
+pub mod protocol;
+pub mod engine; // NEW
 
-// Renamed module
 #[cfg(feature = "ndarray_interop")]
 pub mod ndarray_view;
 
@@ -23,16 +24,19 @@ pub mod image_view;
 pub use buffer::ViewBuffer;
 pub use dtype::DType;
 pub use expr::ViewExpr;
-pub use layout::{ExternalLayout, LayoutFacts, LayoutReport};
 pub use ops::affine::AffineParams;
 pub use planner::{ExecutionPlan, PlanStep};
-pub use views::{validate_layout, ExternalView};
+pub use layout::{ExternalLayout, LayoutReport, LayoutFacts};
+pub use views::{ExternalView, validate_layout};
+pub use protocol::{ViewHeader, dtype_to_u8, u8_to_dtype};
+pub use engine::execute_plan; // NEW
+pub use ops::ViewDto; // NEW: Export DTO for easier access
 
 #[cfg(feature = "image_interop")]
-pub use image_view::{AsImageView, ImageView, ImageViewAdapter};
+pub use image_view::{ImageView, AsImageView, ImageViewAdapter};
 
 #[cfg(feature = "ndarray_interop")]
-pub use ndarray_view::{AsNdarray, FromNdarray, NdArrayViewAdapter};
+pub use ndarray_view::{NdArrayViewAdapter, AsNdarray, FromNdarray};
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;

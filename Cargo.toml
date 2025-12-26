@@ -23,14 +23,22 @@ ndarray = { version = "0.15", optional = true }
 image = { version = "0.24", optional = true }
 arrow = { version = "53.0", features = ["ffi"], optional = true }
 
-# NEW: Python Bindings
+# Python Bindings
 pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
+
+# NEW: Serialization & Protocol dependencies (Phase 1)
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+bytemuck = { version = "1.14", features = ["derive"], optional = true }
 
 [dev-dependencies]
 anyhow = "1.0"
 ndarray = "0.15"
 image = "0.24"
 arrow = { version = "53.0", features = ["ffi"] }
+# Added for tests
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [features]
 default = ["ndarray_interop", "image_interop", "arrow_interop"]
@@ -38,8 +46,10 @@ default = ["ndarray_interop", "image_interop", "arrow_interop"]
 ndarray_interop = ["dep:ndarray"]
 image_interop = ["dep:image"]
 arrow_interop = ["dep:arrow"]
-# NEW: explicit feature for python
 python = ["dep:pyo3"]
+
+# NEW: Serde support
+serde = ["dep:serde", "dep:serde_json", "dep:bytemuck"]
 
 [profile.release]
 opt-level = 3

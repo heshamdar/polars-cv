@@ -1,5 +1,9 @@
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
+
 /// Elementary scalar operations that can be fused into a single kernel.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ScalarOp {
     Add(f32),
     Mul(f32),
@@ -9,6 +13,7 @@ pub enum ScalarOp {
 
 /// A sequence of scalar operations to be executed element-wise in a single pass.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct FusedKernel {
     pub ops: Vec<ScalarOp>,
 }
@@ -21,7 +26,7 @@ impl FusedKernel {
     pub fn push(&mut self, op: ScalarOp) {
         self.ops.push(op);
     }
-
+    
     pub fn len(&self) -> usize {
         self.ops.len()
     }

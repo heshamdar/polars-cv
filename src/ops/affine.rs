@@ -1,4 +1,8 @@
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
+
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct AffineParams {
     // A simplified 2x3 matrix for 2D affine transforms: [a, b, tx, c, d, ty]
     // Maps (x, y) -> (ax + by + tx, cx + dy + ty)
@@ -8,7 +12,8 @@ pub struct AffineParams {
 impl AffineParams {
     pub fn identity() -> Self {
         Self {
-            matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            matrix: [1.0, 0.0, 0.0, 
+                    0.0, 1.0, 0.0],
         }
     }
 

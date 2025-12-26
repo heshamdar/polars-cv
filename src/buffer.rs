@@ -1,23 +1,23 @@
-use crate::dtype::{DType, ViewType};
-use crate::layout::{ExternalLayout, Layout, LayoutFacts, LayoutReport};
-use crate::ops::scalar::{FusedKernel, ScalarOp}; // NEW: Import for fused ops
-use num_traits::AsPrimitive;
 use std::sync::Arc;
+use crate::dtype::{DType, ViewType};
+use crate::layout::{Layout, ExternalLayout, LayoutReport, LayoutFacts};
+use crate::protocol::{ViewHeader, MAGIC_BYTES, VERSION, HEADER_SIZE, dtype_to_u8, u8_to_dtype};
+use crate::ops::scalar::{FusedKernel, ScalarOp}; // RESTORED: Needed for apply_fused_kernel
 use thiserror::Error;
+use num_traits::AsPrimitive;
 
 #[derive(Error, Debug)]
 pub enum BufferError {
     #[error("Shape mismatch: expected {expected:?}, got {got:?}")]
-    ShapeMismatch {
-        expected: Vec<usize>,
-        got: Vec<usize>,
-    },
+    ShapeMismatch { expected: Vec<usize>, got: Vec<usize> },
     #[error("Type mismatch: expected {expected:?}, got {got:?}")]
     TypeMismatch { expected: DType, got: DType },
     #[error("Buffer is not contiguous")]
     NotContiguous,
     #[error("Layout incompatible with target: {target:?}")]
     IncompatibleLayout { target: ExternalLayout },
+    #[error("Invalid binary protocol: {0}")]
+    InvalidProtocol(String),
 }
 
 #[derive(Debug, Clone)]
@@ -60,11 +60,11 @@ impl ViewBuffer {
         let dtype = T::DTYPE;
         let layout = Layout::new_contiguous(shape, dtype);
 
-        // SAFETY:
+        // SAFETY: 
         // 1. T is Copy, so no Drop glue is needed.
         // 2. Alignment: The allocation is created by Vec<T>, so it is aligned for T.
         //    Converting to Vec<u8> (align 1) is safe.
-        //    We must ensure we don't re-interpret these bytes as a type with higher
+        //    We must ensure we don't re-interpret these bytes as a type with higher 
         //    alignment requirements than T later without checking (enforced by as_ptr check).
         let data_bytes = unsafe {
             let mut v_clone = std::mem::ManuallyDrop::new(data);
@@ -79,12 +79,8 @@ impl ViewBuffer {
             layout,
         }
     }
-
-    pub fn from_arrow_buffer(
-        buffer: arrow::buffer::Buffer,
-        shape: Vec<usize>,
-        dtype: DType,
-    ) -> Self {
+    
+    pub fn from_arrow_buffer(buffer: arrow::buffer::Buffer, shape: Vec<usize>, dtype: DType) -> Self {
         let layout = Layout::new_contiguous(shape, dtype);
         Self {
             data: BufferStorage::Arrow(buffer),
@@ -112,17 +108,17 @@ impl ViewBuffer {
     /// 2. The data at this pointer is valid for type T.
     pub unsafe fn as_ptr<T>(&self) -> *const T {
         let ptr = self.data.as_ptr().add(self.layout.offset);
-
+        
         // Safety Recommendation 1: Alignment Check
         // We use debug_assert to catch this in testing/debug builds.
         debug_assert!(
             (ptr as usize) % std::mem::align_of::<T>() == 0,
-            "ViewBuffer pointer is not aligned for type {}; address={:p}, align={}",
-            std::any::type_name::<T>(),
-            ptr,
+            "ViewBuffer pointer is not aligned for type {}; address={:p}, align={}", 
+            std::any::type_name::<T>(), 
+            ptr, 
             std::mem::align_of::<T>()
         );
-
+        
         ptr as *const T
     }
 
@@ -131,7 +127,7 @@ impl ViewBuffer {
             unsafe { self.data.as_ptr().add(self.layout.offset) },
             &self.layout.shape,
             &self.layout.strides,
-            self.layout.dtype,
+            self.layout.dtype
         )
     }
 
@@ -162,6 +158,150 @@ impl ViewBuffer {
         }
     }
 
+    // --- Serialization (Protocol) ---
+
+    /// Serializes the view to a binary blob (ViewBlob format).
+    /// Always forces materialization to contiguous layout for transport efficiency.
+    pub fn to_blob(&self) -> Vec<u8> {
+        // 1. Ensure Contiguous
+        let buffer = self.to_contiguous();
+        let shape = buffer.shape();
+        let strides = buffer.strides_bytes();
+        let dtype = buffer.dtype();
+        let rank = shape.len();
+
+        // 2. Prepare Metadata
+        let shape_bytes_len = rank * 8; // u64 per dim
+        let stride_bytes_len = rank * 8; // i64 per dim
+        let data_offset = (HEADER_SIZE + shape_bytes_len + stride_bytes_len) as u64;
+        
+        let header = ViewHeader {
+            magic: MAGIC_BYTES,
+            version: VERSION,
+            dtype: dtype_to_u8(dtype),
+            rank: rank as u8,
+            data_offset,
+            flags: 1, // 1 = Contiguous
+            reserved: [0; 40],
+        };
+
+        // 3. Allocate Output Vector
+        // Size = Header + ShapeArr + StrideArr + Data
+        let data_len = buffer.data.len();
+        let total_size = (data_offset as usize) + data_len;
+        let mut blob = Vec::with_capacity(total_size);
+
+        // 4. Write Parts
+        // Header
+        // Use unsafe copy to bytes for the #[repr(C)] struct
+        let header_slice = unsafe {
+            std::slice::from_raw_parts(
+                &header as *const ViewHeader as *const u8,
+                HEADER_SIZE
+            )
+        };
+        blob.extend_from_slice(header_slice);
+
+        // Shape (u64)
+        for &dim in shape {
+            blob.extend_from_slice(&(dim as u64).to_le_bytes());
+        }
+
+        // Strides (i64)
+        for &stride in strides {
+            blob.extend_from_slice(&(stride as i64).to_le_bytes());
+        }
+
+        // Data
+        // Since we called to_contiguous, the data is just the raw buffer content.
+        // We use the pointer to copy the bytes.
+        let raw_ptr = unsafe { buffer.as_ptr::<u8>() };
+        let raw_slice = unsafe { std::slice::from_raw_parts(raw_ptr, data_len) };
+        blob.extend_from_slice(raw_slice);
+
+        blob
+    }
+
+    /// Deserializes a ViewBuffer from a binary blob.
+    /// Currently performs a copy of the data payload into a new Vec<u8>.
+    pub fn from_blob(data: &[u8]) -> Result<ViewBuffer, BufferError> {
+        if data.len() < HEADER_SIZE {
+            return Err(BufferError::InvalidProtocol("Data too short for header".into()));
+        }
+
+        // 1. Read Header
+        // Unsafe cast from bytes to struct (valid due to #[repr(C)] and POD nature)
+        let header = unsafe { 
+            &*(data.as_ptr() as *const ViewHeader) 
+        };
+
+        // Validate Magic
+        if header.magic != MAGIC_BYTES {
+            return Err(BufferError::InvalidProtocol("Invalid magic bytes".into()));
+        }
+        if header.version != VERSION {
+            return Err(BufferError::InvalidProtocol(format!("Unsupported version: {}", header.version)));
+        }
+
+        let rank = header.rank as usize;
+        let dtype = u8_to_dtype(header.dtype)
+            .ok_or_else(|| BufferError::InvalidProtocol(format!("Unknown dtype code: {}", header.dtype)))?;
+        let data_offset = header.data_offset as usize;
+
+        // 2. Read Shape & Strides
+        let shape_start = HEADER_SIZE;
+        let stride_start = shape_start + (rank * 8);
+        
+        if data_offset > data.len() {
+             return Err(BufferError::InvalidProtocol("Data offset out of bounds".into()));
+        }
+
+        let mut shape = Vec::with_capacity(rank);
+        let mut strides = Vec::with_capacity(rank);
+
+        let mut pos = shape_start;
+        for _ in 0..rank {
+            if pos + 8 > data.len() { return Err(BufferError::InvalidProtocol("Truncated shape data".into())); }
+            let bytes: [u8; 8] = data[pos..pos+8].try_into().unwrap();
+            shape.push(u64::from_le_bytes(bytes) as usize);
+            pos += 8;
+        }
+
+        pos = stride_start;
+        for _ in 0..rank {
+            if pos + 8 > data.len() { return Err(BufferError::InvalidProtocol("Truncated stride data".into())); }
+            let bytes: [u8; 8] = data[pos..pos+8].try_into().unwrap();
+            strides.push(i64::from_le_bytes(bytes) as isize);
+            pos += 8;
+        }
+
+        // 3. Extract Data
+        // Safe Baseline: Copy into new Vec
+        let raw_data = &data[data_offset..];
+        
+        // Validate size against shape/dtype
+        let expected_elements: usize = shape.iter().product();
+        let expected_bytes = expected_elements * dtype.size_of();
+        
+        if raw_data.len() < expected_bytes {
+             return Err(BufferError::InvalidProtocol(format!(
+                 "Data payload too short. Expected {} bytes, got {}", 
+                 expected_bytes, raw_data.len()
+             )));
+        }
+
+        // Create owned buffer
+        let vec_data = raw_data[0..expected_bytes].to_vec();
+
+        // 4. Construct ViewBuffer
+        let layout = Layout::new_contiguous(shape, dtype);
+        
+        Ok(ViewBuffer {
+            data: BufferStorage::Rust(Arc::new(vec_data)),
+            layout,
+        })
+    }
+
     // --- Views ---
 
     pub fn permute(&self, dims: &[usize]) -> Self {
@@ -187,7 +327,7 @@ impl ViewBuffer {
     pub fn slice(&self, start: &[usize], end: &[usize]) -> Self {
         let mut new_offset = self.layout.offset as isize;
         let mut new_shape = Vec::new();
-
+        
         for i in 0..self.layout.shape.len() {
             let s = start[i];
             let e = end[i];
@@ -251,22 +391,16 @@ impl ViewBuffer {
             for (dim, &idx) in indices.iter().enumerate() {
                 offset += (idx as isize) * strides[dim];
             }
-
+            
             // Safety Recommendation 2: Bounds Checking in Debug
             debug_assert!(offset >= 0, "Negative offset calculation");
-            debug_assert!(
-                (offset as usize) < data_len,
-                "Offset out of bounds: {offset} vs len {data_len}"
-            );
+            debug_assert!((offset as usize) < data_len, "Offset out of bounds: {} vs len {}", offset, data_len);
 
             unsafe {
                 let src = ptr.offset(offset);
                 // Ensure we don't read past end when reading the scalar value
-                debug_assert!(
-                    (offset as usize) + dtype_size <= data_len,
-                    "Read overrun during compaction"
-                );
-
+                debug_assert!((offset as usize) + dtype_size <= data_len, "Read overrun during compaction");
+                
                 for k in 0..dtype_size {
                     new_data.push(*src.add(k));
                 }
@@ -284,26 +418,19 @@ impl ViewBuffer {
         let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
         Self {
             data: BufferStorage::Rust(Arc::new(new_data)),
-            layout: new_layout,
+            layout: new_layout
         }
     }
 
-    /// Applies a fused kernel of scalar operations element-wise.
-    ///
-    /// This method:
-    /// 1. Validates that the view is F32 (current limitation).
-    /// 2. Allocates a SINGLE output buffer.
-    /// 3. Iterates over the input (handling strides) and writes to the output in one pass.
+    // RESTORED: Fused Kernel Execution
     pub fn apply_fused_kernel(&self, kernel: &FusedKernel) -> ViewBuffer {
         if self.dtype() != DType::F32 {
             panic!("FusedKernel currently only supports F32 views");
         }
 
-        // Output will be contiguous F32
         let total_elems = self.layout.shape.iter().product();
         let mut new_data = Vec::with_capacity(total_elems * 4); // F32 = 4 bytes
 
-        // Iteration State
         let mut indices = vec![0; self.layout.shape.len()];
         let shape = &self.layout.shape;
         let strides = &self.layout.strides;
@@ -312,43 +439,29 @@ impl ViewBuffer {
         let data_len = self.data.len();
 
         for _ in 0..total_elems {
-            // Calculate input offset (Strided)
             let mut offset = base_offset as isize;
             for (dim, &idx) in indices.iter().enumerate() {
                 offset += (idx as isize) * strides[dim];
             }
 
-            debug_assert!(
-                offset >= 0 && (offset as usize) + 4 <= data_len,
-                "Fused kernel read OOB"
-            );
+            debug_assert!(offset >= 0 && (offset as usize) + 4 <= data_len, "Fused kernel read OOB");
 
             unsafe {
-                // 1. Read input F32
                 let src_ptr = ptr.offset(offset) as *const f32;
                 let mut acc = *src_ptr;
 
-                // 2. Apply Kernel Ops
                 for op in &kernel.ops {
                     match op {
                         ScalarOp::Add(c) => acc += c,
                         ScalarOp::Mul(c) => acc *= c,
-                        ScalarOp::Relu => {
-                            if acc < 0.0 {
-                                acc = 0.0
-                            }
-                        }
+                        ScalarOp::Relu => if acc < 0.0 { acc = 0.0 },
                     }
                 }
 
-                // 3. Write result (F32 bytes)
-                // We use extend_from_slice to append bytes to the Vec<u8>
-                // This builds a contiguous output buffer.
                 let val_bytes = acc.to_ne_bytes();
                 new_data.extend_from_slice(&val_bytes);
             }
 
-            // Advance Multi-Index
             for dim in (0..shape.len()).rev() {
                 indices[dim] += 1;
                 if indices[dim] < shape[dim] {
@@ -358,7 +471,6 @@ impl ViewBuffer {
             }
         }
 
-        // Construct result buffer
         let new_layout = Layout::new_contiguous(self.layout.shape.clone(), DType::F32);
         Self {
             data: BufferStorage::Rust(Arc::new(new_data)),
@@ -377,25 +489,19 @@ impl ViewBuffer {
             (DType::F32, DType::U8) => contig.cast_impl::<f32, u8>(),
             (DType::I32, DType::F32) => contig.cast_impl::<i32, f32>(),
             (DType::F32, DType::I32) => contig.cast_impl::<f32, i32>(),
-            _ => unimplemented!(
-                "Cast pair {:?} -> {:?} not implemented",
-                self.dtype(),
-                target
-            ),
+            _ => unimplemented!("Cast pair {:?} -> {:?} not implemented", self.dtype(), target),
         }
     }
 
-    fn cast_impl<S, D>(&self) -> Self
-    where
+    fn cast_impl<S, D>(&self) -> Self 
+    where 
         S: ViewType + AsPrimitive<D>,
-        D: ViewType + Copy + 'static,
+        D: ViewType + Copy + 'static
     {
         let elem_count = self.layout.shape.iter().product();
-
-        // Safety: as_ptr checks alignment.
-        // We also need to ensure we don't read past the end, which is guaranteed
-        // if self is contiguous (which it is, called from cast()) and elem_count matches.
-        let src_slice = unsafe { std::slice::from_raw_parts(self.as_ptr::<S>(), elem_count) };
+        let src_slice = unsafe {
+            std::slice::from_raw_parts(self.as_ptr::<S>(), elem_count)
+        };
 
         let new_data: Vec<D> = src_slice.iter().map(|&x| x.as_()).collect();
         Self::from_vec(new_data).reshape(self.layout.shape.clone())
