@@ -5,11 +5,13 @@
 //! - Zero-copy view operations
 //! - Compute operations and kernel fusion
 //! - Image processing pipelines
-//! - Cost analysis and introspection
+//! - Cost analysis and introspection (with fusion details)
 //! - Binary serialization
+//! - SIMD-aligned buffers
 //!
-//! Run with: cargo run --example comprehensive_demo --features image_interop
+//! Run with: cargo run --example comprehensive_demo --features "image_interop arrow_interop"
 
+use view_buffer::core::buffer::SIMD_ALIGNMENT;
 use view_buffer::interop::image::ImageAdapter;
 use view_buffer::ops::image::FilterType;
 use view_buffer::ops::scalar::{FusedKernel, ScalarOp};
@@ -220,23 +222,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let analysis_buf = ViewBuffer::from_vec(analysis_data);
     let expr = ViewExpr::new_source(analysis_buf);
 
+    // Clean pipeline: view ops -> scalar ops (fused) -> cast
     let analysis_pipeline = expr
         .reshape(vec![10, 10])
         .flip(vec![0]) // Zero-copy
         .transpose(vec![1, 0]) // Zero-copy
         .scale(2.0) // Allocating
-        .relu() // Allocating (will be fused)
+        .relu() // Will be fused with scale!
         .cast(DType::U8); // Allocating + dtype change
 
-    println!("Pipeline: reshape -> flip -> transpose -> scale -> relu -> cast(U8)");
-    println!("\nCost Report:");
-    println!("{}", analysis_pipeline.explain_costs());
+    // Optimize to trigger fusion
+    let optimized = analysis_pipeline.optimize();
 
-    let report = analysis_pipeline.cost_report();
+    println!("Pipeline: reshape -> flip -> transpose -> scale -> relu -> cast(U8)");
+    println!("\nCost Report (with fusion details):");
+    println!("{}", optimized.explain_costs());
+
+    let report = optimized.cost_report();
     println!("Summary:");
     println!("  Total operations: {}", report.operations.len());
+    println!("  Zero-copy operations: {}", report.zero_copy_operations);
     println!("  Allocating operations: {}", report.total_allocations);
     println!("  DType changes: {}", report.dtype_changes.len());
+    if !report.fusion_summary.is_empty() {
+        println!("  Fused operations: {:?}", report.fusion_summary);
+    }
+    if !report.dtype_flow.is_empty() {
+        println!(
+            "  DType flow: {}",
+            report
+                .dtype_flow
+                .iter()
+                .map(|d| format!("{:?}", d))
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        );
+    }
 
     // =========================================================================
     // Part 7: Binary Serialization
@@ -307,6 +328,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Contiguous: {}", report.contiguous);
     println!("  ndarray compatible: {}", report.ndarray_compatible);
     println!("  image crate compatible: {}", report.image_compatible);
+
+    // =========================================================================
+    // Part 9: SIMD-Aligned Buffers
+    // =========================================================================
+    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Part 9: SIMD-Aligned Buffers");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    // Regular buffer (may not be aligned)
+    let regular_data: Vec<f32> = (0..1024).map(|i| i as f32).collect();
+    let regular_buf = ViewBuffer::from_vec(regular_data.clone());
+    println!("Regular buffer:");
+    println!(
+        "  SIMD aligned ({}B): {}",
+        SIMD_ALIGNMENT,
+        regular_buf.is_simd_aligned()
+    );
+
+    // SIMD-aligned buffer
+    let aligned_buf = ViewBuffer::from_slice_simd_aligned(&regular_data);
+    println!("\nSIMD-aligned buffer:");
+    println!(
+        "  SIMD aligned ({}B): {}",
+        SIMD_ALIGNMENT,
+        aligned_buf.is_simd_aligned()
+    );
+    println!("  Aligned to 32B: {}", aligned_buf.is_aligned(32));
+    println!("  Aligned to 64B: {}", aligned_buf.is_aligned(64));
+
+    // Fused kernel on aligned buffer (uses SIMD fast path)
+    let mut simd_kernel = FusedKernel::new();
+    simd_kernel.push(ScalarOp::Mul(2.0));
+    simd_kernel.push(ScalarOp::Add(1.0));
+    simd_kernel.push(ScalarOp::Relu);
+
+    println!("\nApplying fused kernel on aligned buffer...");
+    println!("  Kernel: {}", simd_kernel.describe());
+
+    let result = aligned_buf.apply_fused_kernel(&simd_kernel);
+    println!("  Result shape: {:?}", result.shape());
+    println!("  Result SIMD aligned: {}", result.is_simd_aligned());
+
+    // Show first few values
+    let (ptr, _, _, _) = result.as_raw_parts();
+    let result_slice = unsafe { std::slice::from_raw_parts(ptr as *const f32, 8) };
+    println!("  First 8 values: {:?}", result_slice);
 
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║                    Demo Complete!                            ║");

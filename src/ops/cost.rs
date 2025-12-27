@@ -44,6 +44,9 @@ pub struct OpCostReport {
     /// Name of the operation (e.g., "Flip", "Scale", "Resize").
     pub op_name: &'static str,
 
+    /// Extended description for fused operations (e.g., "Fused(Scale(2.0), Relu)").
+    pub op_description: Option<String>,
+
     /// The intrinsic cost of this operation.
     pub intrinsic_cost: OpCost,
 
@@ -53,16 +56,33 @@ pub struct OpCostReport {
 
     /// True if this operation preserves the input dtype.
     pub preserves_dtype: bool,
+
+    /// Details of fused operations (if this is a Fused op).
+    pub fused_ops: Option<Vec<String>>,
+
+    /// Input dtype for this operation.
+    pub input_dtype: DType,
+
+    /// Output dtype for this operation.
+    pub output_dtype: DType,
+
+    /// Estimated bytes allocated by this operation (if known).
+    pub estimated_bytes: Option<usize>,
 }
 
 impl OpCostReport {
     /// Creates a new cost report for an operation that preserves dtype.
-    pub fn new(op_name: &'static str, cost: OpCost) -> Self {
+    pub fn new(op_name: &'static str, cost: OpCost, dtype: DType) -> Self {
         Self {
             op_name,
+            op_description: None,
             intrinsic_cost: cost,
             dtype_change: None,
             preserves_dtype: true,
+            fused_ops: None,
+            input_dtype: dtype,
+            output_dtype: dtype,
+            estimated_bytes: None,
         }
     }
 
@@ -70,10 +90,52 @@ impl OpCostReport {
     pub fn with_dtype_change(op_name: &'static str, cost: OpCost, from: DType, to: DType) -> Self {
         Self {
             op_name,
+            op_description: None,
             intrinsic_cost: cost,
             dtype_change: Some((from, to)),
             preserves_dtype: false,
+            fused_ops: None,
+            input_dtype: from,
+            output_dtype: to,
+            estimated_bytes: None,
         }
+    }
+
+    /// Creates a cost report for a fused operation with details of constituent ops.
+    pub fn fused(
+        fused_op_names: Vec<String>,
+        cost: OpCost,
+        input_dtype: DType,
+        output_dtype: DType,
+    ) -> Self {
+        let description = format!("Fused({})", fused_op_names.join(", "));
+        let dtype_change = if input_dtype != output_dtype {
+            Some((input_dtype, output_dtype))
+        } else {
+            None
+        };
+        Self {
+            op_name: "Fused",
+            op_description: Some(description),
+            intrinsic_cost: cost,
+            dtype_change,
+            preserves_dtype: input_dtype == output_dtype,
+            fused_ops: Some(fused_op_names),
+            input_dtype,
+            output_dtype,
+            estimated_bytes: None,
+        }
+    }
+
+    /// Sets the estimated bytes for this operation.
+    pub fn with_estimated_bytes(mut self, bytes: usize) -> Self {
+        self.estimated_bytes = Some(bytes);
+        self
+    }
+
+    /// Returns the display name (uses description if available, otherwise op_name).
+    pub fn display_name(&self) -> &str {
+        self.op_description.as_deref().unwrap_or(self.op_name)
     }
 }
 

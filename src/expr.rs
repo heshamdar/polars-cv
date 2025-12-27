@@ -588,11 +588,22 @@ impl ViewExpr {
     /// Generates a cost report for the entire pipeline.
     pub fn cost_report(&self) -> PipelineCostReport {
         let mut operations = Vec::new();
-        self.collect_costs(&mut operations);
+        let mut dtype_flow = Vec::new();
+
+        // Get source dtype
+        let source_dtype = self.get_source_dtype();
+        dtype_flow.push(source_dtype);
+
+        self.collect_costs(&mut operations, &mut dtype_flow);
 
         let total_allocations = operations
             .iter()
             .filter(|r| r.intrinsic_cost == OpCost::Allocating)
+            .count();
+
+        let zero_copy_operations = operations
+            .iter()
+            .filter(|r| r.intrinsic_cost == OpCost::ZeroCopy)
             .count();
 
         let io_operations = operations
@@ -604,48 +615,100 @@ impl ViewExpr {
             .iter()
             .filter_map(|r| {
                 r.dtype_change
-                    .map(|(from, to)| (r.op_name.to_string(), from, to))
+                    .map(|(from, to)| (r.display_name().to_string(), from, to))
             })
             .collect();
+
+        let fusion_summary: Vec<_> = operations
+            .iter()
+            .filter_map(|r| r.op_description.clone())
+            .collect();
+
+        // Estimate memory: sum of allocating ops
+        let estimated_memory_bytes: Option<usize> = {
+            let total: usize = operations.iter().filter_map(|r| r.estimated_bytes).sum();
+            if total > 0 {
+                Some(total)
+            } else {
+                None
+            }
+        };
 
         PipelineCostReport {
             operations,
             total_allocations,
             dtype_changes,
             io_operations,
+            zero_copy_operations,
+            estimated_memory_bytes,
+            dtype_flow,
+            fusion_summary,
         }
     }
 
-    fn collect_costs(&self, ops: &mut Vec<OpCostReport>) {
+    /// Gets the source dtype for this expression.
+    fn get_source_dtype(&self) -> DType {
+        match &self.node {
+            ExprNode::Source(buf) => buf.dtype(),
+            ExprNode::LazySource { .. } => DType::U8, // Default for lazy sources
+            ExprNode::Placeholder(_) => DType::U8,
+            ExprNode::View(_, child) => child.get_source_dtype(),
+            ExprNode::Compute(_, children) => children
+                .first()
+                .map(|c| c.get_source_dtype())
+                .unwrap_or(DType::U8),
+            ExprNode::Image(_, child) => child.get_source_dtype(),
+            ExprNode::Sink { input, .. } => input.get_source_dtype(),
+        }
+    }
+
+    fn collect_costs(&self, ops: &mut Vec<OpCostReport>, dtype_flow: &mut Vec<DType>) {
         match &self.node {
             ExprNode::Source(_) => {}
             ExprNode::LazySource { format, .. } => {
-                ops.push(OpCostReport::new(format.name(), format.cost()));
+                let dtype = DType::U8; // Lazy sources typically produce U8
+                ops.push(OpCostReport::new(format.name(), format.cost(), dtype));
+                dtype_flow.push(dtype);
             }
             ExprNode::Placeholder(_) => {}
             ExprNode::View(op, child) => {
-                child.collect_costs(ops);
-                ops.push(OpCostReport::new(op.name(), op.intrinsic_cost()));
+                child.collect_costs(ops, dtype_flow);
+                let current_dtype = *dtype_flow.last().unwrap_or(&DType::U8);
+                ops.push(OpCostReport::new(
+                    op.name(),
+                    op.intrinsic_cost(),
+                    current_dtype,
+                ));
+                // View ops don't change dtype
+                dtype_flow.push(current_dtype);
             }
             ExprNode::Compute(op, children) => {
                 for child in children {
-                    child.collect_costs(ops);
+                    child.collect_costs(ops, dtype_flow);
                 }
                 let input_dtype = children.first().map(|c| c.dtype).unwrap_or(DType::U8);
                 let output_dtype = op.infer_dtype(&[input_dtype]);
-                if input_dtype != output_dtype {
-                    ops.push(OpCostReport::with_dtype_change(
+
+                let report = if let ComputeOp::Fused(kernel) = op {
+                    // Create detailed fused operation report
+                    let fused_names: Vec<String> =
+                        kernel.ops.iter().map(|s| s.name().to_string()).collect();
+                    OpCostReport::fused(fused_names, op.intrinsic_cost(), input_dtype, output_dtype)
+                } else if input_dtype != output_dtype {
+                    OpCostReport::with_dtype_change(
                         op.name(),
                         op.intrinsic_cost(),
                         input_dtype,
                         output_dtype,
-                    ));
+                    )
                 } else {
-                    ops.push(OpCostReport::new(op.name(), op.intrinsic_cost()));
-                }
+                    OpCostReport::new(op.name(), op.intrinsic_cost(), input_dtype)
+                };
+                ops.push(report);
+                dtype_flow.push(output_dtype);
             }
             ExprNode::Image(op, child) => {
-                child.collect_costs(ops);
+                child.collect_costs(ops, dtype_flow);
                 let input_dtype = child.dtype;
                 let output_dtype = op.infer_dtype(&[input_dtype]);
                 if input_dtype != output_dtype {
@@ -656,12 +719,22 @@ impl ViewExpr {
                         output_dtype,
                     ));
                 } else {
-                    ops.push(OpCostReport::new(op.name(), op.intrinsic_cost()));
+                    ops.push(OpCostReport::new(
+                        op.name(),
+                        op.intrinsic_cost(),
+                        input_dtype,
+                    ));
                 }
+                dtype_flow.push(output_dtype);
             }
             ExprNode::Sink { format, input } => {
-                input.collect_costs(ops);
-                ops.push(OpCostReport::new(format.name(), format.cost()));
+                input.collect_costs(ops, dtype_flow);
+                let current_dtype = *dtype_flow.last().unwrap_or(&DType::U8);
+                ops.push(OpCostReport::new(
+                    format.name(),
+                    format.cost(),
+                    current_dtype,
+                ));
             }
         }
     }
@@ -672,26 +745,60 @@ impl ViewExpr {
         let mut output = String::new();
 
         output.push_str("Pipeline Cost Summary:\n");
-        output.push_str(&format!("  Operations: {}\n", report.operations.len()));
-        output.push_str(&format!("  Allocations: {}\n", report.total_allocations));
+        output.push_str(&format!(
+            "  Operations: {} ({} zero-copy, {} allocating)\n",
+            report.operations.len(),
+            report.zero_copy_operations,
+            report.total_allocations
+        ));
         output.push_str(&format!(
             "  DType changes: {}\n",
             report.dtype_changes.len()
         ));
         output.push_str(&format!("  I/O operations: {}\n", report.io_operations));
+
+        // Show memory estimate if available
+        if let Some(bytes) = report.estimated_memory_bytes {
+            output.push_str(&format!("  Estimated memory: {bytes} bytes\n"));
+        }
+
+        // Show dtype flow
+        if report.dtype_flow.len() > 1 {
+            let flow_str: Vec<String> =
+                report.dtype_flow.iter().map(|d| format!("{d:?}")).collect();
+            // Deduplicate consecutive duplicates
+            let deduped: Vec<&str> = flow_str
+                .iter()
+                .enumerate()
+                .filter(|(i, s)| *i == 0 || flow_str.get(i - 1).map(|p| p != *s).unwrap_or(true))
+                .map(|(_, s)| s.as_str())
+                .collect();
+            output.push_str(&format!("  DType flow: {}\n", deduped.join(" -> ")));
+        }
+
+        // Show fusion summary if any
+        if !report.fusion_summary.is_empty() {
+            output.push_str("\nFusion Summary:\n");
+            for fusion in &report.fusion_summary {
+                output.push_str(&format!("  {fusion}\n"));
+            }
+        }
+
         output.push_str("\nDetails:\n");
 
         for op in &report.operations {
-            let dtype_info = if let Some((from, to)) = op.dtype_change {
-                format!(" ({from:?} -> {to:?})")
-            } else {
-                String::new()
-            };
+            let display_name = op.display_name();
+            let dtype_info = format!(" {:?} -> {:?}", op.input_dtype, op.output_dtype);
+            let bytes_info = op
+                .estimated_bytes
+                .map(|b| format!(" ({b}B)"))
+                .unwrap_or_default();
             output.push_str(&format!(
-                "  {} [{}]{}\n",
-                op.op_name,
+                "  {} [{}]{}{}\n",
+                display_name,
                 op.intrinsic_cost.symbol(),
-                dtype_info
+                dtype_info,
+                bytes_info
             ));
         }
 
@@ -778,6 +885,14 @@ pub struct PipelineCostReport {
     pub dtype_changes: Vec<(String, DType, DType)>,
     /// Number of I/O operations.
     pub io_operations: usize,
+    /// Number of zero-copy operations.
+    pub zero_copy_operations: usize,
+    /// Estimated total memory allocation in bytes (if shape known).
+    pub estimated_memory_bytes: Option<usize>,
+    /// Chain of dtypes through the pipeline.
+    pub dtype_flow: Vec<DType>,
+    /// Human-readable fusion descriptions.
+    pub fusion_summary: Vec<String>,
 }
 
 // --- Helper for Fusion ---

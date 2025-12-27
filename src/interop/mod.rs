@@ -35,5 +35,8 @@ pub mod ndarray;
 #[cfg(feature = "arrow_interop")]
 pub mod arrow;
 
+#[cfg(feature = "arrow_interop")]
+pub mod arrow_ffi;
+
 #[cfg(feature = "image_interop")]
 pub mod image;

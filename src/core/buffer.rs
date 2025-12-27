@@ -70,6 +70,9 @@ pub struct ViewBuffer {
     pub(crate) layout: Layout,
 }
 
+/// Default SIMD alignment (64 bytes for AVX-512 compatibility).
+pub const SIMD_ALIGNMENT: usize = 64;
+
 impl ViewBuffer {
     /// Creates a ViewBuffer from a Vec of typed elements.
     pub fn from_vec<T: ViewType>(data: Vec<T>) -> Self {
@@ -95,6 +98,77 @@ impl ViewBuffer {
             data: BufferStorage::Rust(Arc::new(data_bytes)),
             layout,
         }
+    }
+
+    /// Creates a ViewBuffer from a slice of typed elements with SIMD-friendly alignment.
+    ///
+    /// The buffer is allocated with the specified alignment (default 64 bytes for AVX-512).
+    /// This enables efficient SIMD processing in fused kernels.
+    ///
+    /// # Arguments
+    /// * `data` - Slice of elements to copy into the aligned buffer.
+    /// * `alignment` - Alignment in bytes (must be power of 2, typically 32 or 64).
+    ///
+    /// # Example
+    /// ```
+    /// use view_buffer::ViewBuffer;
+    /// let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+    /// let aligned_buf = ViewBuffer::from_slice_aligned(&data, 64);
+    /// assert!(aligned_buf.is_aligned(64));
+    /// ```
+    pub fn from_slice_aligned<T: ViewType>(data: &[T], alignment: usize) -> Self {
+        debug_assert!(alignment.is_power_of_two(), "Alignment must be power of 2");
+        debug_assert!(
+            alignment >= std::mem::align_of::<T>(),
+            "Alignment must be >= type alignment"
+        );
+
+        let len_bytes = std::mem::size_of_val(data);
+        let alloc_layout = std::alloc::Layout::from_size_align(len_bytes, alignment)
+            .expect("Invalid layout parameters");
+
+        // Allocate aligned memory
+        let aligned_ptr = unsafe { std::alloc::alloc(alloc_layout) };
+        if aligned_ptr.is_null() {
+            std::alloc::handle_alloc_error(alloc_layout);
+        }
+
+        // Copy data to aligned buffer
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, aligned_ptr, len_bytes);
+        }
+
+        // Create a Vec from the aligned allocation
+        let aligned_vec = unsafe { Vec::from_raw_parts(aligned_ptr, len_bytes, len_bytes) };
+
+        let shape = vec![data.len()];
+        let dtype = T::DTYPE;
+        let layout = Layout::new_contiguous(shape, dtype);
+
+        Self {
+            data: BufferStorage::Rust(Arc::new(aligned_vec)),
+            layout,
+        }
+    }
+
+    /// Creates a ViewBuffer with default SIMD alignment (64 bytes).
+    pub fn from_slice_simd_aligned<T: ViewType>(data: &[T]) -> Self {
+        Self::from_slice_aligned(data, SIMD_ALIGNMENT)
+    }
+
+    /// Returns true if the buffer data is aligned to the specified boundary.
+    ///
+    /// # Arguments
+    /// * `alignment` - Alignment to check in bytes (must be power of 2).
+    pub fn is_aligned(&self, alignment: usize) -> bool {
+        debug_assert!(alignment.is_power_of_two(), "Alignment must be power of 2");
+        let ptr = self.data.as_ptr();
+        (ptr as usize) % alignment == 0
+    }
+
+    /// Returns true if the buffer is aligned for SIMD operations (64-byte alignment).
+    pub fn is_simd_aligned(&self) -> bool {
+        self.is_aligned(SIMD_ALIGNMENT)
     }
 
     /// Creates a ViewBuffer from an Arrow buffer (zero-copy).
@@ -474,12 +548,107 @@ impl ViewBuffer {
     }
 
     /// Applies a fused kernel of scalar operations element-wise.
+    ///
+    /// This function is optimized for SIMD processing when the buffer is contiguous.
+    /// For non-contiguous buffers, it falls back to a strided loop.
     pub fn apply_fused_kernel(&self, kernel: &FusedKernel) -> ViewBuffer {
         if self.dtype() != DType::F32 {
             panic!("FusedKernel currently only supports F32 views");
         }
 
-        let total_elems = self.layout.shape.iter().product();
+        let total_elems: usize = self.layout.shape.iter().product();
+
+        // Fast path: contiguous buffer - use SIMD-friendly processing
+        if self.layout.is_contiguous() {
+            return self.apply_fused_kernel_contiguous(kernel, total_elems);
+        }
+
+        // Slow path: strided buffer
+        self.apply_fused_kernel_strided(kernel, total_elems)
+    }
+
+    /// SIMD-optimized fused kernel for contiguous buffers.
+    #[inline]
+    fn apply_fused_kernel_contiguous(
+        &self,
+        kernel: &FusedKernel,
+        total_elems: usize,
+    ) -> ViewBuffer {
+        let mut output = Vec::with_capacity(total_elems);
+
+        let src_ptr = unsafe { self.data.as_ptr().add(self.layout.offset) as *const f32 };
+        let src = unsafe { std::slice::from_raw_parts(src_ptr, total_elems) };
+
+        // Process in chunks of 8 for better vectorization (f32 x 8 = 256 bits = AVX)
+        const CHUNK_SIZE: usize = 8;
+        let chunks = total_elems / CHUNK_SIZE;
+        let remainder = total_elems % CHUNK_SIZE;
+
+        // Process main chunks - compiler can auto-vectorize this
+        for chunk_idx in 0..chunks {
+            let base = chunk_idx * CHUNK_SIZE;
+
+            // Read chunk (hint for SIMD)
+            let mut acc = [0.0f32; CHUNK_SIZE];
+            acc.copy_from_slice(&src[base..base + CHUNK_SIZE]);
+
+            // Apply all operations to the chunk
+            for op in &kernel.ops {
+                match op {
+                    ScalarOp::Add(c) => {
+                        for v in &mut acc {
+                            *v += c;
+                        }
+                    }
+                    ScalarOp::Mul(c) => {
+                        for v in &mut acc {
+                            *v *= c;
+                        }
+                    }
+                    ScalarOp::Relu => {
+                        for v in &mut acc {
+                            *v = v.max(0.0);
+                        }
+                    }
+                }
+            }
+
+            // Write results
+            output.extend_from_slice(&acc);
+        }
+
+        // Handle remainder elements
+        let remainder_start = chunks * CHUNK_SIZE;
+        for i in 0..remainder {
+            let mut acc = src[remainder_start + i];
+            for op in &kernel.ops {
+                match op {
+                    ScalarOp::Add(c) => acc += c,
+                    ScalarOp::Mul(c) => acc *= c,
+                    ScalarOp::Relu => acc = acc.max(0.0),
+                }
+            }
+            output.push(acc);
+        }
+
+        // Convert f32 vec to bytes
+        let byte_data = unsafe {
+            let mut output = std::mem::ManuallyDrop::new(output);
+            let ptr = output.as_mut_ptr() as *mut u8;
+            let len = output.len() * 4;
+            let cap = output.capacity() * 4;
+            Vec::from_raw_parts(ptr, len, cap)
+        };
+
+        let new_layout = Layout::new_contiguous(self.layout.shape.clone(), DType::F32);
+        Self {
+            data: BufferStorage::Rust(Arc::new(byte_data)),
+            layout: new_layout,
+        }
+    }
+
+    /// Strided fused kernel for non-contiguous buffers.
+    fn apply_fused_kernel_strided(&self, kernel: &FusedKernel, total_elems: usize) -> ViewBuffer {
         let mut new_data = Vec::with_capacity(total_elems * 4); // F32 = 4 bytes
 
         let mut indices = vec![0; self.layout.shape.len()];
@@ -508,11 +677,7 @@ impl ViewBuffer {
                     match op {
                         ScalarOp::Add(c) => acc += c,
                         ScalarOp::Mul(c) => acc *= c,
-                        ScalarOp::Relu => {
-                            if acc < 0.0 {
-                                acc = 0.0
-                            }
-                        }
+                        ScalarOp::Relu => acc = acc.max(0.0),
                     }
                 }
 

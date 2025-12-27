@@ -11,6 +11,26 @@ pub enum ScalarOp {
     // We can add Clamp, Sigmoid, etc. later
 }
 
+impl ScalarOp {
+    /// Returns a human-readable name for this operation with parameters.
+    pub fn name(&self) -> String {
+        match self {
+            ScalarOp::Add(v) => format!("Add({v:.2})"),
+            ScalarOp::Mul(v) => format!("Mul({v:.2})"),
+            ScalarOp::Relu => "Relu".to_string(),
+        }
+    }
+
+    /// Returns the operation type name without parameters.
+    pub fn op_type(&self) -> &'static str {
+        match self {
+            ScalarOp::Add(_) => "Add",
+            ScalarOp::Mul(_) => "Mul",
+            ScalarOp::Relu => "Relu",
+        }
+    }
+}
+
 /// A sequence of scalar operations to be executed element-wise in a single pass.
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -19,20 +39,36 @@ pub struct FusedKernel {
 }
 
 impl FusedKernel {
+    /// Creates a new empty fused kernel.
     pub fn new() -> Self {
         Self { ops: Vec::new() }
     }
 
+    /// Adds an operation to the kernel.
     pub fn push(&mut self, op: ScalarOp) {
         self.ops.push(op);
     }
 
+    /// Returns the number of operations in the kernel.
     pub fn len(&self) -> usize {
         self.ops.len()
     }
 
+    /// Returns true if the kernel has no operations.
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
+    }
+
+    /// Returns a human-readable description of the fused operations.
+    /// Example: "Fused(Mul(2.00), Add(1.00), Relu)"
+    pub fn describe(&self) -> String {
+        let op_names: Vec<String> = self.ops.iter().map(|op| op.name()).collect();
+        format!("Fused({})", op_names.join(", "))
+    }
+
+    /// Returns a list of operation names for detailed reporting.
+    pub fn op_names(&self) -> Vec<String> {
+        self.ops.iter().map(|op| op.name()).collect()
     }
 }
 

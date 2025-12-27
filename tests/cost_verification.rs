@@ -300,6 +300,7 @@ fn test_cost_report_tracks_dtype_changes() {
     assert_eq!(*to, DType::U8);
 }
 
+/// Tests that the explain_costs output contains expected information.
 #[test]
 fn test_explain_costs_output() {
     let buf = make_2d_buffer();
@@ -309,8 +310,13 @@ fn test_explain_costs_output() {
 
     let explanation = pipeline.explain_costs();
 
+    // Check the summary header
     assert!(explanation.contains("Pipeline Cost Summary"));
-    assert!(explanation.contains("Allocations: 1"));
+    // The new format shows "Operations: X (Y zero-copy, Z allocating)"
+    assert!(explanation.contains("1 zero-copy, 1 allocating"));
+    // Check individual ops are listed with their cost symbols and dtype info
     assert!(explanation.contains("Flip [0]")); // ZeroCopy symbol
     assert!(explanation.contains("Scale [A]")); // Allocating symbol
+                                                // Check dtype flow is shown
+    assert!(explanation.contains("F32"));
 }
