@@ -21,6 +21,15 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "numpy>=1.20"]
+bench = [
+    "opencv-python>=4.8",
+    "pillow>=10.0",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "rich>=13.0",
+    "psutil>=5.9",
+    "numpy>=1.20",
+]
 
 [tool.maturin]
 python-source = "python"

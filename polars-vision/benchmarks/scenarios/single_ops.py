@@ -1,0 +1,348 @@
+"""
+Single operation benchmark scenarios.
+
+This module provides benchmarks for individual image processing operations
+across all framework adapters.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from benchmarks.frameworks import (
+    BaseFrameworkAdapter,
+    BenchmarkResult,
+    OperationParams,
+    OperationType,
+)
+from benchmarks.utils.data_gen import generate_image_set
+from benchmarks.utils.memory import run_timed_with_memory
+
+if TYPE_CHECKING:
+    pass
+
+
+@dataclass
+class SingleOpBenchmarkConfig:
+    """Configuration for a single operation benchmark."""
+
+    operation: OperationType
+    name: str
+    params: OperationParams
+    description: str
+
+
+def get_single_op_benchmarks(
+    source_height: int = 256,
+    source_width: int = 256,
+) -> list[SingleOpBenchmarkConfig]:
+    """
+    Get the list of single operation benchmarks to run.
+
+    Args:
+        source_height: Source image height.
+        source_width: Source image width.
+
+    Returns:
+        List of benchmark configurations.
+    """
+    return [
+        SingleOpBenchmarkConfig(
+            operation=OperationType.RESIZE,
+            name="resize",
+            params=OperationParams(
+                operation=OperationType.RESIZE,
+                height=224,
+                width=224,
+            ),
+            description="Resize from {source_height}x{source_width} to 224x224",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.GRAYSCALE,
+            name="grayscale",
+            params=OperationParams(operation=OperationType.GRAYSCALE),
+            description="Convert RGB to grayscale",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.NORMALIZE,
+            name="normalize",
+            params=OperationParams(operation=OperationType.NORMALIZE),
+            description="Min-max normalization to [0, 1]",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.FLIP_H,
+            name="flip_horizontal",
+            params=OperationParams(operation=OperationType.FLIP_H),
+            description="Horizontal flip",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.FLIP_V,
+            name="flip_vertical",
+            params=OperationParams(operation=OperationType.FLIP_V),
+            description="Vertical flip",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.CROP,
+            name="crop_center",
+            params=OperationParams(
+                operation=OperationType.CROP,
+                crop_top=(source_height - 128) // 2,
+                crop_left=(source_width - 128) // 2,
+                crop_height=128,
+                crop_width=128,
+            ),
+            description="Center crop to 128x128",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.BLUR,
+            name="blur",
+            params=OperationParams(
+                operation=OperationType.BLUR,
+                sigma=2.0,
+            ),
+            description="Gaussian blur with sigma=2.0",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.THRESHOLD,
+            name="threshold",
+            params=OperationParams(
+                operation=OperationType.THRESHOLD,
+                threshold_value=128,
+            ),
+            description="Binary threshold at 128",
+        ),
+    ]
+
+
+def run_single_op_benchmark(
+    adapter: BaseFrameworkAdapter,
+    benchmark: SingleOpBenchmarkConfig,
+    image_count: int,
+    image_size: tuple[int, int],
+    warmup_iterations: int = 3,
+    benchmark_iterations: int = 10,
+) -> BenchmarkResult:
+    """
+    Run a single operation benchmark on an adapter.
+
+    Args:
+        adapter: Framework adapter to benchmark.
+        benchmark: Benchmark configuration.
+        image_count: Number of images to process.
+        image_size: Image dimensions (width, height).
+        warmup_iterations: Number of warmup runs.
+        benchmark_iterations: Number of timed runs.
+
+    Returns:
+        Benchmark result with timing and memory statistics.
+    """
+    width, height = image_size
+
+    # Generate test images
+    image_set = generate_image_set(
+        count=image_count,
+        height=height,
+        width=width,
+        channels=3,
+        pattern="gradient",
+    )
+
+    operations = [benchmark.params]
+
+    # Warmup
+    for _ in range(warmup_iterations):
+        adapter.run_pipeline_batch(image_set.image_bytes[:10], operations)
+
+    # Benchmark
+    total_time = 0.0
+    peak_memory = 0.0
+
+    for _ in range(benchmark_iterations):
+        _, elapsed, mem_stats = run_timed_with_memory(
+            lambda: adapter.run_pipeline_batch(image_set.image_bytes, operations)
+        )
+        total_time += elapsed
+        peak_memory = max(peak_memory, mem_stats.peak_memory_mb)
+
+    avg_time = total_time / benchmark_iterations
+    throughput = image_count / avg_time
+    latency_ms = (avg_time / image_count) * 1000
+
+    return BenchmarkResult(
+        framework=adapter.name,
+        operation=benchmark.name,
+        image_count=image_count,
+        image_size=image_size,
+        total_time_seconds=avg_time,
+        throughput_images_per_second=throughput,
+        latency_ms_per_image=latency_ms,
+        peak_memory_mb=peak_memory,
+    )
+
+
+def run_single_op_benchmark_gpu(
+    adapter: Any,  # TorchvisionAdapter with GPU support
+    benchmark: SingleOpBenchmarkConfig,
+    image_count: int,
+    image_size: tuple[int, int],
+    warmup_iterations: int = 3,
+    benchmark_iterations: int = 10,
+) -> tuple[BenchmarkResult, BenchmarkResult]:
+    """
+    Run a single operation benchmark on a GPU adapter with cold and warm starts.
+
+    Args:
+        adapter: GPU-capable framework adapter.
+        benchmark: Benchmark configuration.
+        image_count: Number of images to process.
+        image_size: Image dimensions (width, height).
+        warmup_iterations: Number of warmup runs.
+        benchmark_iterations: Number of timed runs.
+
+    Returns:
+        Tuple of (cold_start_result, warm_start_result).
+    """
+    width, height = image_size
+
+    # Generate test images
+    image_set = generate_image_set(
+        count=image_count,
+        height=height,
+        width=width,
+        channels=3,
+        pattern="gradient",
+    )
+
+    operations = [benchmark.params]
+
+    # Warmup
+    for _ in range(warmup_iterations):
+        adapter.run_pipeline_batch(image_set.image_bytes[:10], operations)
+        adapter.synchronize()
+
+    # Cold start benchmark (includes data transfer)
+    cold_total_time = 0.0
+    cold_peak_memory = 0.0
+
+    for _ in range(benchmark_iterations):
+        start = time.perf_counter()
+        adapter.run_pipeline_batch(image_set.image_bytes, operations)
+        adapter.synchronize()
+        elapsed = time.perf_counter() - start
+
+        cold_total_time += elapsed
+        # Memory tracking less accurate for GPU
+
+    cold_avg_time = cold_total_time / benchmark_iterations
+    cold_throughput = image_count / cold_avg_time
+    cold_latency_ms = (cold_avg_time / image_count) * 1000
+
+    cold_result = BenchmarkResult(
+        framework=adapter.name,
+        operation=benchmark.name,
+        image_count=image_count,
+        image_size=image_size,
+        total_time_seconds=cold_avg_time,
+        throughput_images_per_second=cold_throughput,
+        latency_ms_per_image=cold_latency_ms,
+        peak_memory_mb=cold_peak_memory,
+        gpu_mode="cold",
+    )
+
+    # Warm start benchmark (data already on GPU)
+    preloaded = adapter.preload_to_device(image_set.image_bytes)
+    adapter.synchronize()
+
+    warm_total_time = 0.0
+    warm_peak_memory = 0.0
+
+    for _ in range(benchmark_iterations):
+        start = time.perf_counter()
+        adapter.run_pipeline_batch_warm(preloaded, operations)
+        adapter.synchronize()
+        elapsed = time.perf_counter() - start
+
+        warm_total_time += elapsed
+
+    warm_avg_time = warm_total_time / benchmark_iterations
+    warm_throughput = image_count / warm_avg_time
+    warm_latency_ms = (warm_avg_time / image_count) * 1000
+
+    warm_result = BenchmarkResult(
+        framework=adapter.name,
+        operation=benchmark.name,
+        image_count=image_count,
+        image_size=image_size,
+        total_time_seconds=warm_avg_time,
+        throughput_images_per_second=warm_throughput,
+        latency_ms_per_image=warm_latency_ms,
+        peak_memory_mb=warm_peak_memory,
+        gpu_mode="warm",
+    )
+
+    return cold_result, warm_result
+
+
+def run_all_single_ops(
+    adapters: list[BaseFrameworkAdapter],
+    image_counts: list[int],
+    image_sizes: list[tuple[int, int]],
+    warmup_iterations: int = 3,
+    benchmark_iterations: int = 10,
+) -> list[BenchmarkResult]:
+    """
+    Run all single operation benchmarks across all adapters and configurations.
+
+    Args:
+        adapters: List of framework adapters to benchmark.
+        image_counts: List of image counts to test.
+        image_sizes: List of image sizes to test.
+        warmup_iterations: Number of warmup runs.
+        benchmark_iterations: Number of timed runs.
+
+    Returns:
+        List of all benchmark results.
+    """
+    results: list[BenchmarkResult] = []
+
+    for size in image_sizes:
+        benchmarks = get_single_op_benchmarks(size[1], size[0])
+
+        for count in image_counts:
+            for benchmark in benchmarks:
+                for adapter in adapters:
+                    if not adapter.is_available():
+                        continue
+
+                    try:
+                        if adapter.supports_gpu and hasattr(adapter, "synchronize"):
+                            # GPU adapter - run both cold and warm
+                            cold, warm = run_single_op_benchmark_gpu(
+                                adapter,
+                                benchmark,
+                                count,
+                                size,
+                                warmup_iterations,
+                                benchmark_iterations,
+                            )
+                            results.append(cold)
+                            results.append(warm)
+                        else:
+                            # CPU adapter
+                            result = run_single_op_benchmark(
+                                adapter,
+                                benchmark,
+                                count,
+                                size,
+                                warmup_iterations,
+                                benchmark_iterations,
+                            )
+                            results.append(result)
+                    except Exception as e:
+                        print(
+                            f"Error benchmarking {adapter.name}/{benchmark.name}: {e}"
+                        )
+
+    return results
