@@ -208,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result_contig = result.to_contiguous();
     match ImageAdapter::save(&result_contig, "examples/comprehensive_output.png") {
         Ok(_) => println!("  Saved to 'examples/comprehensive_output.png'"),
-        Err(e) => println!("  Could not save: {}", e),
+        Err(e) => println!("  Could not save: {e}"),
     }
 
     // =========================================================================
@@ -253,7 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             report
                 .dtype_flow
                 .iter()
-                .map(|d| format!("{:?}", d))
+                .map(|d| format!("{d:?}"))
                 .collect::<Vec<_>>()
                 .join(" -> ")
         );
@@ -298,7 +298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Verify data integrity
     let (ptr, _, _, _) = recovered.as_raw_parts();
     let recovered_data = unsafe { std::slice::from_raw_parts(ptr as *const f32, 8) };
-    println!("  Data: {:?}", recovered_data);
+    println!("  Data: {recovered_data:?}");
 
     // =========================================================================
     // Part 8: Layout Compatibility
@@ -373,7 +373,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Show first few values
     let (ptr, _, _, _) = result.as_raw_parts();
     let result_slice = unsafe { std::slice::from_raw_parts(ptr as *const f32, 8) };
-    println!("  First 8 values: {:?}", result_slice);
+    println!("  First 8 values: {result_slice:?}");
 
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║                    Demo Complete!                            ║");
@@ -387,5 +387,5 @@ fn print_f32_buffer(label: &str, buffer: &ViewBuffer) {
     let count = buffer.shape().iter().product::<usize>().min(10);
     let (ptr, _, _, _) = buffer.as_raw_parts();
     let slice = unsafe { std::slice::from_raw_parts(ptr as *const f32, count) };
-    println!("{}: {:?}", label, slice);
+    println!("{label}: {slice:?}");
 }

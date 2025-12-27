@@ -132,6 +132,105 @@ impl PipelineSpec {
     pub fn sink_format(&self) -> &str {
         &self.sink.format
     }
+
+    /// Validate the pipeline for known issues.
+    ///
+    /// Returns a list of warnings for operations that may fail at runtime
+    /// due to dtype requirements (e.g., normalize requires F32 input).
+    ///
+    /// This method is intended to be exposed to Python for user feedback,
+    /// hence the allow(dead_code) until Python bindings are added.
+    #[allow(dead_code)]
+    pub fn validate_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        for op in &self.ops {
+            match op.op.as_str() {
+                "normalize" => {
+                    // normalize requires F32 dtype - check if there's a cast before it
+                    let has_prior_cast = self
+                        .ops
+                        .iter()
+                        .take_while(|o| o.op != op.op)
+                        .any(|o| o.op == "cast");
+                    if !has_prior_cast {
+                        warnings.push(
+                            "normalize operation requires F32 dtype. Consider adding .cast('f32') \
+                            before normalize, or use a U8-compatible operation like grayscale."
+                                .to_string(),
+                        );
+                    }
+                }
+                "scale" | "clamp" | "relu" => {
+                    // These also require F32
+                    let has_prior_cast = self
+                        .ops
+                        .iter()
+                        .take_while(|o| o.op != op.op)
+                        .any(|o| o.op == "cast");
+                    if !has_prior_cast {
+                        warnings.push(format!(
+                            "{} operation requires F32 dtype. Consider adding .cast('f32') before it.",
+                            op.op
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        warnings
+    }
+
+    /// Check if the pipeline uses any operations that are known to have restrictions.
+    ///
+    /// Returns Ok(()) if the pipeline is valid, or an error describing the issue.
+    pub fn validate(&self) -> PolarsResult<()> {
+        // Check for unsupported operation sequences
+        for op in &self.ops {
+            // Validate that all required parameters are present
+            match op.op.as_str() {
+                "resize" => {
+                    if !op.params.contains_key("height") || !op.params.contains_key("width") {
+                        return Err(
+                            polars_err!(ComputeError: "resize operation requires 'height' and 'width' parameters"),
+                        );
+                    }
+                }
+                "crop" => {
+                    if !op.params.contains_key("top") || !op.params.contains_key("left") {
+                        return Err(
+                            polars_err!(ComputeError: "crop operation requires 'top' and 'left' parameters"),
+                        );
+                    }
+                }
+                "normalize" => {
+                    if !op.params.contains_key("method") {
+                        return Err(
+                            polars_err!(ComputeError: "normalize operation requires 'method' parameter"),
+                        );
+                    }
+                }
+                "blur" => {
+                    if !op.params.contains_key("sigma") {
+                        return Err(
+                            polars_err!(ComputeError: "blur operation requires 'sigma' parameter"),
+                        );
+                    }
+                }
+                "threshold" => {
+                    if !op.params.contains_key("value") {
+                        return Err(
+                            polars_err!(ComputeError: "threshold operation requires 'value' parameter"),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

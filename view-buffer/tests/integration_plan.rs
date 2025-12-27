@@ -60,7 +60,7 @@ fn test_plan_execution_from_json() {
 
     // Simulate JSON Transport
     let json_plan = serde_json::to_string(&ops).expect("Failed to serialize plan");
-    println!("JSON Plan: {}", json_plan);
+    println!("JSON Plan: {json_plan}");
 
     // 3. Deserialize Plan
     let deserialized_ops: Vec<ViewDto> =

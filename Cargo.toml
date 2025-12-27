@@ -8,5 +8,8 @@ resolver = "2"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Use "unwind" to allow catch_unwind for graceful error handling in polars-vision plugin.
+# This is necessary because view-buffer uses panic!() for error conditions that need
+# to be caught and converted to Python exceptions instead of crashing.
+panic = "unwind"
 strip = true

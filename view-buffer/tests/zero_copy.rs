@@ -67,7 +67,7 @@ fn case_transpose_image_rejected() {
     let err = ImageViewAdapter::<Rgb<u8>>::try_view(&t).unwrap_err();
     match err {
         view_buffer::core::buffer::BufferError::IncompatibleLayout { .. } => {}
-        _ => panic!("Expected IncompatibleLayout error, got {:?}", err),
+        _ => panic!("Expected IncompatibleLayout error, got {err:?}"),
     }
 }
 

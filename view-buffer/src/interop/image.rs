@@ -224,7 +224,7 @@ mod tests {
         let tb = ViewBuffer::from_vec(data).reshape(vec![2, 2, 3]);
 
         let encoded = ImageAdapter::encode(&tb, image::ImageOutputFormat::Png).unwrap();
-        assert!(encoded.len() > 0);
+        assert!(!encoded.is_empty());
 
         let decoded = ImageAdapter::decode(&encoded).unwrap();
         assert_eq!(decoded.shape(), &[2, 2, 3]);

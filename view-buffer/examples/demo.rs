@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let first_result = first_plan.execute();
     match ImageAdapter::save(&first_result, "examples/demo_input.png") {
         Ok(_) => println!("   Success saving input image to 'examples/demo_input.png'"),
-        Err(e) => println!("   Error saving image: {}", e),
+        Err(e) => println!("   Error saving image: {e}"),
     }
 
     // 2. Define Processing Pipeline (Lazy)
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // resulting view (from the flip/crop) is strided.
     match ImageAdapter::save(&result, "examples/demo_output.png") {
         Ok(_) => println!("   Success!"),
-        Err(e) => println!("   Error saving image: {}", e),
+        Err(e) => println!("   Error saving image: {e}"),
     }
 
     Ok(())

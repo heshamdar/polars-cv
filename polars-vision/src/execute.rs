@@ -5,6 +5,7 @@
 
 use polars::prelude::*;
 use std::collections::HashMap;
+use std::panic::{self, AssertUnwindSafe};
 
 use view_buffer::{
     ComputeOp, DType, FilterType, ImageAdapter, ImageOp, ImageOpKind, NormalizeMethod, ViewBuffer,
@@ -20,6 +21,9 @@ pub fn execute_pipeline(
     pipeline: &PipelineSpec,
     expr_columns: &HashMap<String, &Series>,
 ) -> PolarsResult<Series> {
+    // Validate pipeline configuration first
+    pipeline.validate()?;
+
     // Get the binary data
     let data_ca = data_series
         .binary()
@@ -57,19 +61,41 @@ fn execute_row(
     // 1. Decode the source
     let buffer = decode_source(bytes, pipeline)?;
 
-    // 2. Apply operations
-    let mut expr = ViewExpr::new_source(buffer);
-
+    // 2. Resolve all operations first (outside of catch_unwind for better error messages)
+    let mut view_dtos = Vec::with_capacity(pipeline.ops.len());
     for op_spec in &pipeline.ops {
         let view_dto = resolve_op(op_spec, row_idx, expr_columns)?;
-        expr = expr.apply_op(view_dto);
+        view_dtos.push(view_dto);
     }
 
-    // 3. Execute and encode the sink
-    let plan = expr.plan();
-    let result = plan.execute();
+    // 3. Build expression and execute with panic catching
+    //    This catches panics from view-buffer operations that use panic!() for errors
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut expr = ViewExpr::new_source(buffer);
+        for view_dto in view_dtos {
+            expr = expr.apply_op(view_dto);
+        }
+        let plan = expr.plan();
+        plan.execute()
+    }));
 
-    encode_sink(&result, pipeline)
+    let result_buffer = match result {
+        Ok(buf) => buf,
+        Err(panic_payload) => {
+            // Extract panic message if possible
+            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Unknown panic during pipeline execution".to_string()
+            };
+            return Err(polars_err!(ComputeError: "Pipeline execution failed: {}", panic_msg));
+        }
+    };
+
+    // 4. Encode the sink (also wrap in catch_unwind for safety)
+    encode_sink(&result_buffer, pipeline)
 }
 
 /// Decode the source bytes into a ViewBuffer.

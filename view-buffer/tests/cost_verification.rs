@@ -64,8 +64,7 @@ fn test_view_ops_declare_zero_copy() {
         assert_eq!(
             op.intrinsic_cost(),
             OpCost::ZeroCopy,
-            "ViewOp {:?} should declare ZeroCopy cost",
-            op
+            "ViewOp {op:?} should declare ZeroCopy cost"
         );
     }
 }
@@ -84,8 +83,7 @@ fn test_compute_ops_declare_allocating() {
         assert_eq!(
             op.intrinsic_cost(),
             OpCost::Allocating,
-            "ComputeOp {:?} should declare Allocating cost",
-            op
+            "ComputeOp {op:?} should declare Allocating cost"
         );
     }
 }

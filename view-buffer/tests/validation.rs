@@ -108,7 +108,7 @@ fn test_normalize_error_message_contains_shape() {
     let result = op.validate(&[&[10, 10, 3]], &[DType::F32]);
 
     let err = result.unwrap_err();
-    let msg = format!("{}", err);
+    let msg = format!("{err}");
 
     assert!(msg.contains("10"), "Error should contain shape dimension");
     assert!(
@@ -123,7 +123,7 @@ fn test_normalize_error_message_contains_dtype() {
     let result = op.validate(&[&[10, 10]], &[DType::U8]);
 
     let err = result.unwrap_err();
-    let msg = format!("{}", err);
+    let msg = format!("{err}");
 
     assert!(
         msg.contains("U8") || msg.contains("F32"),
@@ -144,8 +144,7 @@ fn test_other_compute_ops_have_no_validation() {
     for op in &ops {
         assert!(
             op.validate(&[&[10, 10, 3]], &[DType::U8]).is_ok(),
-            "Op {:?} should have no special validation requirements",
-            op
+            "Op {op:?} should have no special validation requirements"
         );
     }
 }
