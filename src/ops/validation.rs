@@ -3,7 +3,7 @@
 //! Provides plan-time validation of shape and dtype constraints,
 //! allowing invalid pipelines to be rejected before execution.
 
-use crate::dtype::DType;
+use crate::core::dtype::DType;
 use thiserror::Error;
 
 #[cfg(feature = "serde")]
@@ -127,4 +127,3 @@ mod tests {
         assert!(!is_unsigned_dtype(DType::I8));
     }
 }
-

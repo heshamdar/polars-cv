@@ -67,7 +67,7 @@ fn test_plan_execution_from_json() {
         serde_json::from_str(&json_plan).expect("Failed to deserialize plan");
 
     // 4. Execute Engine
-    let result = view_buffer::engine::execute_plan(source, deserialized_ops);
+    let result = view_buffer::execute_plan(source, deserialized_ops);
 
     // 5. Verify Result: [2.0, 4.0, 6.0, 8.0]
     let (ptr, _, _, _) = result.as_raw_parts();

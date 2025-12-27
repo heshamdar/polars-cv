@@ -1,6 +1,9 @@
-#[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+//! Data type definitions for view-buffer.
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
+/// Supported data types for buffer elements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum DType {
@@ -17,6 +20,7 @@ pub enum DType {
 }
 
 impl DType {
+    /// Returns the size in bytes of this data type.
     pub fn size_of(&self) -> usize {
         match self {
             DType::U8 | DType::I8 => 1,
@@ -27,8 +31,9 @@ impl DType {
     }
 }
 
-/// Trait to map Rust types to DType enum
+/// Trait to map Rust types to DType enum.
 pub trait ViewType: 'static + Copy + Send + Sync + std::fmt::Debug {
+    /// The corresponding DType for this Rust type.
     const DTYPE: DType;
 }
 

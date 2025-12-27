@@ -2,7 +2,7 @@
 //!
 //! Tests for the plan-time validation framework.
 
-use view_buffer::ops::validation::{is_2d_like, is_image_like, is_float_dtype, is_integer_dtype};
+use view_buffer::ops::validation::{is_2d_like, is_float_dtype, is_image_like, is_integer_dtype};
 use view_buffer::ops::{ComputeOp, NormalizeMethod, Op};
 use view_buffer::DType;
 
@@ -40,8 +40,8 @@ fn test_is_image_like() {
     assert!(is_image_like(&[10, 10, 1])); // Grayscale
     assert!(is_image_like(&[10, 10, 3])); // RGB
     assert!(is_image_like(&[10, 10, 4])); // RGBA
-    
-    assert!(!is_image_like(&[10, 10]));    // 2D
+
+    assert!(!is_image_like(&[10, 10])); // 2D
     assert!(!is_image_like(&[10, 10, 2])); // Invalid channel count
     assert!(!is_image_like(&[10, 10, 5])); // Invalid channel count
 }
@@ -52,7 +52,7 @@ fn test_is_image_like() {
 fn test_is_float_dtype() {
     assert!(is_float_dtype(DType::F32));
     assert!(is_float_dtype(DType::F64));
-    
+
     assert!(!is_float_dtype(DType::U8));
     assert!(!is_float_dtype(DType::I32));
 }
@@ -67,7 +67,7 @@ fn test_is_integer_dtype() {
     assert!(is_integer_dtype(DType::I32));
     assert!(is_integer_dtype(DType::U64));
     assert!(is_integer_dtype(DType::I64));
-    
+
     assert!(!is_integer_dtype(DType::F32));
     assert!(!is_integer_dtype(DType::F64));
 }
@@ -77,12 +77,12 @@ fn test_is_integer_dtype() {
 #[test]
 fn test_normalize_validates_shape() {
     let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
-    
+
     // Valid shapes
     assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
     assert!(op.validate(&[&[100, 200]], &[DType::F32]).is_ok());
     assert!(op.validate(&[&[10, 10, 1]], &[DType::F32]).is_ok());
-    
+
     // Invalid shapes
     assert!(op.validate(&[&[10, 10, 3]], &[DType::F32]).is_err());
     assert!(op.validate(&[&[10, 10, 4]], &[DType::F32]).is_err());
@@ -92,10 +92,10 @@ fn test_normalize_validates_shape() {
 #[test]
 fn test_normalize_validates_dtype() {
     let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
-    
+
     // Valid dtype
     assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
-    
+
     // Invalid dtypes
     assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_err());
     assert!(op.validate(&[&[10, 10]], &[DType::I32]).is_err());
@@ -106,23 +106,29 @@ fn test_normalize_validates_dtype() {
 fn test_normalize_error_message_contains_shape() {
     let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
     let result = op.validate(&[&[10, 10, 3]], &[DType::F32]);
-    
+
     let err = result.unwrap_err();
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("10"), "Error should contain shape dimension");
-    assert!(msg.contains("HW") || msg.contains("2D"), "Error should mention required shape");
+    assert!(
+        msg.contains("HW") || msg.contains("2D"),
+        "Error should mention required shape"
+    );
 }
 
 #[test]
 fn test_normalize_error_message_contains_dtype() {
     let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
     let result = op.validate(&[&[10, 10]], &[DType::U8]);
-    
+
     let err = result.unwrap_err();
     let msg = format!("{}", err);
-    
-    assert!(msg.contains("U8") || msg.contains("F32"), "Error should mention dtype");
+
+    assert!(
+        msg.contains("U8") || msg.contains("F32"),
+        "Error should mention dtype"
+    );
 }
 
 #[test]
@@ -133,7 +139,7 @@ fn test_other_compute_ops_have_no_validation() {
         ComputeOp::Relu,
         ComputeOp::Clamp { min: 0.0, max: 1.0 },
     ];
-    
+
     // These should all pass validation with any input
     for op in &ops {
         assert!(
@@ -147,10 +153,9 @@ fn test_other_compute_ops_have_no_validation() {
 #[test]
 fn test_zscore_normalize_validates_same_as_minmax() {
     let op = ComputeOp::Normalize(NormalizeMethod::ZScore);
-    
+
     // Should have same requirements as MinMax
     assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
     assert!(op.validate(&[&[10, 10, 3]], &[DType::F32]).is_err());
     assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_err());
 }
-

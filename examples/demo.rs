@@ -1,4 +1,4 @@
-use view_buffer::io_image::ImageAdapter;
+use view_buffer::interop::image::ImageAdapter;
 use view_buffer::ops::image::FilterType;
 use view_buffer::{DType, ViewBuffer, ViewExpr};
 

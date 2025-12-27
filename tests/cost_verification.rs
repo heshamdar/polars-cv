@@ -159,7 +159,11 @@ fn test_scale_preserves_dtype() {
 
     let expr = ViewExpr::new_source(original);
     let scaled = expr.scale(2.0).plan().execute();
-    assert_eq!(scaled.dtype(), DType::F32, "Scale should preserve F32 dtype");
+    assert_eq!(
+        scaled.dtype(),
+        DType::F32,
+        "Scale should preserve F32 dtype"
+    );
 }
 
 #[test]
@@ -192,10 +196,7 @@ fn test_normalize_preserves_dtype() {
     assert_eq!(original.dtype(), DType::F32);
 
     let expr = ViewExpr::new_source(original);
-    let normalized = expr
-        .normalize(NormalizeMethod::MinMax)
-        .plan()
-        .execute();
+    let normalized = expr.normalize(NormalizeMethod::MinMax).plan().execute();
     assert_eq!(
         normalized.dtype(),
         DType::F32,
@@ -313,4 +314,3 @@ fn test_explain_costs_output() {
     assert!(explanation.contains("Flip [0]")); // ZeroCopy symbol
     assert!(explanation.contains("Scale [A]")); // Allocating symbol
 }
-

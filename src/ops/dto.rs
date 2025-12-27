@@ -1,6 +1,9 @@
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
-use crate::ops::{ViewOp, ComputeOp, ImageOp};
+use serde::{Deserialize, Serialize};
+
+use crate::ops::compute::ComputeOp;
+use crate::ops::image::ImageOp;
+use crate::ops::view::ViewOp;
 
 /// A pure Data Transfer Object (DTO) for operation plans.
 /// This separates the schema (what to do) from the execution graph (how to do it).

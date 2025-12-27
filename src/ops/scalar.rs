@@ -1,5 +1,5 @@
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Elementary scalar operations that can be fused into a single kernel.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,7 +26,7 @@ impl FusedKernel {
     pub fn push(&mut self, op: ScalarOp) {
         self.ops.push(op);
     }
-    
+
     pub fn len(&self) -> usize {
         self.ops.len()
     }

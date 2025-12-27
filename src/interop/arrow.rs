@@ -1,5 +1,7 @@
-use crate::buffer::{BufferError, ViewBuffer};
-use crate::dtype::DType;
+//! Apache Arrow interoperability.
+
+use crate::core::buffer::{BufferError, ViewBuffer};
+use crate::core::dtype::DType;
 use arrow::array::Float32Array;
 use arrow::array::{
     Array, BinaryArray, FixedSizeBinaryArray, FixedSizeListArray, LargeBinaryArray, PrimitiveArray,
@@ -7,11 +9,12 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Float32Type, Float64Type, Int32Type, Int64Type, UInt8Type};
 use std::sync::Arc;
 
+/// Trait for creating ViewBuffer from Arrow arrays.
 pub trait FromArrow {
+    /// Creates a ViewBuffer from an Arrow array.
     fn from_arrow_array(array: &dyn Array) -> Result<ViewBuffer, BufferError>;
 }
 
-// ... existing FromArrow implementation ...
 impl FromArrow for ViewBuffer {
     fn from_arrow_array(array: &dyn Array) -> Result<ViewBuffer, BufferError> {
         // 1. Validation: We cannot zero-copy Arrow arrays with nulls into dense tensors
@@ -110,8 +113,9 @@ impl FromArrow for ViewBuffer {
     }
 }
 
-// --- NEW: Output Strategy (ViewBuffer -> Arrow) ---
+// --- Output Strategy (ViewBuffer -> Arrow) ---
 
+/// Trait for converting ViewBuffer to Arrow arrays.
 pub trait ToArrow {
     /// Export as an Arrow BinaryArray (Opaque flat bytes).
     /// Used for Polars Binary Column integration.

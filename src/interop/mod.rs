@@ -1,5 +1,12 @@
-use crate::buffer::{BufferError, ViewBuffer};
-use crate::layout::ExternalLayout;
+//! External library interoperability.
+//!
+//! This module provides adapters for zero-copy integration with external libraries:
+//! - ndarray: N-dimensional array support
+//! - Arrow: Apache Arrow buffer interop
+//! - image: Image processing library support
+
+use crate::core::buffer::{BufferError, ViewBuffer};
+use crate::core::layout::ExternalLayout;
 
 /// Unified trait for external view adapters.
 /// Enforces compatibility and zero-copy semantics.
@@ -21,3 +28,12 @@ pub fn validate_layout(buf: &ViewBuffer, target: ExternalLayout) -> Result<(), B
         Err(BufferError::IncompatibleLayout { target })
     }
 }
+
+#[cfg(feature = "ndarray_interop")]
+pub mod ndarray;
+
+#[cfg(feature = "arrow_interop")]
+pub mod arrow;
+
+#[cfg(feature = "image_interop")]
+pub mod image;

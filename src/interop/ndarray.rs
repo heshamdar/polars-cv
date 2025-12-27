@@ -1,7 +1,9 @@
-use crate::buffer::{BufferError, ViewBuffer};
-use crate::dtype::ViewType;
-use crate::layout::ExternalLayout;
-use crate::views::{validate_layout, ExternalView};
+//! ndarray interoperability.
+
+use crate::core::buffer::{BufferError, ViewBuffer};
+use crate::core::dtype::ViewType;
+use crate::core::layout::ExternalLayout;
+use crate::interop::{validate_layout, ExternalView};
 use ndarray::{ArrayD, ArrayView, ArrayViewD, ShapeBuilder};
 use std::marker::PhantomData;
 
@@ -62,7 +64,9 @@ impl<'a, T: ViewType> ExternalView<'a> for NdArrayViewAdapter<T> {
 
 // --- Convenience Trait (Thin Wrapper) ---
 
+/// Trait for converting ViewBuffer to ndarray view.
 pub trait AsNdarray {
+    /// Attempts to create a zero-copy ndarray view.
     fn as_array_view<T: ViewType>(&self) -> Result<ArrayViewD<T>, BufferError>;
 }
 
@@ -75,7 +79,9 @@ impl AsNdarray for ViewBuffer {
 
 // --- Ownership Transfer (FromNdarray) ---
 
+/// Trait for creating ViewBuffer from ndarray.
 pub trait FromNdarray {
+    /// Creates a ViewBuffer from an owned ndarray.
     fn from_array<T: ViewType>(array: ArrayD<T>) -> ViewBuffer;
 }
 

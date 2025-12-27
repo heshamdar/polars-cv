@@ -1,6 +1,6 @@
-use crate::dtype::DType;
-use crate::ops::core::{MemoryEffect, Op};
+use crate::core::dtype::DType;
 use crate::ops::cost::OpCost;
+use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,14 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ImageOpKind {
     Threshold(u8),
-    Resize { width: u32, height: u32, filter: FilterType },
-    Blur { sigma: f32 },
+    Resize {
+        width: u32,
+        height: u32,
+        filter: FilterType,
+    },
+    Blur {
+        sigma: f32,
+    },
     Grayscale,
 }
 

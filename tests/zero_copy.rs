@@ -35,15 +35,13 @@ fn make_image_view() -> ViewBuffer {
 #[test]
 fn case_contiguous_ndarray() {
     let base = make_image_view();
-    let _view =
-        NdArrayViewAdapter::<u8>::try_view(&base).expect("Contiguous ndarray view failed");
+    let _view = NdArrayViewAdapter::<u8>::try_view(&base).expect("Contiguous ndarray view failed");
 }
 
 #[test]
 fn case_contiguous_image() {
     let base = make_image_view();
-    let _view =
-        ImageViewAdapter::<Rgb<u8>>::try_view(&base).expect("Contiguous image view failed");
+    let _view = ImageViewAdapter::<Rgb<u8>>::try_view(&base).expect("Contiguous image view failed");
 }
 
 #[test]
@@ -68,7 +66,7 @@ fn case_transpose_image_rejected() {
     let t = base.permute(&[1, 0, 2]);
     let err = ImageViewAdapter::<Rgb<u8>>::try_view(&t).unwrap_err();
     match err {
-        view_buffer::buffer::BufferError::IncompatibleLayout { .. } => {}
+        view_buffer::core::buffer::BufferError::IncompatibleLayout { .. } => {}
         _ => panic!("Expected IncompatibleLayout error, got {:?}", err),
     }
 }
@@ -78,8 +76,7 @@ fn case_transpose_then_materialize_image() {
     let base = make_image_view();
     let t = base.permute(&[1, 0, 2]);
     let m = t.to_contiguous();
-    let _img =
-        ImageViewAdapter::<Rgb<u8>>::try_view(&m).expect("Materialized image view failed");
+    let _img = ImageViewAdapter::<Rgb<u8>>::try_view(&m).expect("Materialized image view failed");
     assert_zero_copy(&base, &t);
     assert_copy(&t, &m);
 }

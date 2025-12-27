@@ -3,7 +3,7 @@
 //! Defines the formats that can be used to start and end a pipeline,
 //! enabling composition of pipelines and integration with external formats.
 
-use crate::dtype::DType;
+use crate::core::dtype::DType;
 use crate::ops::cost::OpCost;
 
 #[cfg(feature = "serde")]
@@ -211,4 +211,3 @@ mod tests {
         assert_eq!(with_shape.expected_shape, Some(vec![100, 100, 3]));
     }
 }
-

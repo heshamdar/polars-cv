@@ -1,35 +1,34 @@
-pub mod dtype;
-pub mod layout;
-pub mod buffer;
-pub mod ops;
+//! view-buffer: A zero-copy, stride-aware tensor orchestration framework for Rust.
+//!
+//! This crate provides a unified interface for working with multi-dimensional
+//! arrays (tensors) with zero-copy view operations and efficient compute operations.
+//!
+//! # Modules
+//!
+//! - [`core`] - Fundamental types (DType, Layout, ViewBuffer)
+//! - [`ops`] - Operations (View, Compute, Image)
+//! - [`expr`] - Expression graph for lazy evaluation
+//! - [`execution`] - Execution planning and running
+//! - [`protocol`] - Binary serialization format
+//! - [`interop`] - External library integrations (optional)
+
+pub mod core;
+pub mod execution;
 pub mod expr;
-pub mod planner;
-pub mod views;
+pub mod interop;
+pub mod ops;
 pub mod protocol;
-pub mod engine; // NEW
-
-#[cfg(feature = "ndarray_interop")]
-pub mod ndarray_view;
-
-#[cfg(feature = "arrow_interop")]
-pub mod interop_arrow;
-
-#[cfg(feature = "image_interop")]
-pub mod io_image;
-
-#[cfg(feature = "image_interop")]
-pub mod image_view;
 
 // Re-exports - Core types
-pub use buffer::ViewBuffer;
-pub use dtype::DType;
-pub use engine::execute_plan;
+pub use core::buffer::ViewBuffer;
+pub use core::dtype::DType;
+pub use core::layout::{ExternalLayout, LayoutFacts, LayoutReport};
+
+// Re-exports - Execution
+pub use execution::{execute_plan, ExecutionPlan, PlanStep};
+
+// Re-exports - Expression
 pub use expr::{PipelineCostReport, ViewExpr};
-pub use layout::{ExternalLayout, LayoutFacts, LayoutReport};
-pub use ops::affine::AffineParams;
-pub use planner::{ExecutionPlan, PlanStep};
-pub use protocol::{dtype_to_u8, u8_to_dtype, ViewHeader};
-pub use views::{validate_layout, ExternalView};
 
 // Re-exports - Ops
 pub use ops::{
@@ -37,11 +36,23 @@ pub use ops::{
     PlaceholderMeta, SinkFormat, SourceFormat, ValidationError, ViewDto, ViewOp,
 };
 
+// Re-exports - Protocol
+pub use protocol::{dtype_to_u8, u8_to_dtype, ViewHeader};
+
+// Re-exports - Interop
+pub use interop::{validate_layout, ExternalView};
+
+// Re-exports - Affine
+pub use ops::affine::AffineParams;
+
 #[cfg(feature = "image_interop")]
-pub use image_view::{ImageView, AsImageView, ImageViewAdapter};
+pub use interop::image::{AsImageView, ImageAdapter, ImageView, ImageViewAdapter};
 
 #[cfg(feature = "ndarray_interop")]
-pub use ndarray_view::{NdArrayViewAdapter, AsNdarray, FromNdarray};
+pub use interop::ndarray::{AsNdarray, FromNdarray, NdArrayViewAdapter};
+
+#[cfg(feature = "arrow_interop")]
+pub use interop::arrow::{FromArrow, ToArrow};
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;

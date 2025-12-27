@@ -1,4 +1,4 @@
-use crate::dtype::DType;
+use crate::core::dtype::DType;
 #[cfg(feature = "serde")]
 use bytemuck::{Pod, Zeroable};
 

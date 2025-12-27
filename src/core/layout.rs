@@ -1,5 +1,8 @@
-use crate::dtype::DType;
+//! Memory layout types for view-buffer.
 
+use crate::core::dtype::DType;
+
+/// External layout requirements for different libraries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalLayout {
     NdArray,
@@ -19,6 +22,7 @@ pub struct LayoutFacts {
 }
 
 impl LayoutFacts {
+    /// Creates a new LayoutFacts from the given parameters.
     pub fn new(shape: &[usize], strides: &[isize], dtype: DType, offset: usize) -> Self {
         Self {
             rank: shape.len(),
@@ -29,6 +33,7 @@ impl LayoutFacts {
         }
     }
 
+    /// Returns true if the layout is contiguous (C-order/row-major).
     pub fn is_contiguous(&self) -> bool {
         let mut expected_strides = vec![0; self.rank];
         let mut current = self.dtype.size_of() as isize;
@@ -42,11 +47,13 @@ impl LayoutFacts {
         self.strides == expected_strides
     }
 
+    /// Returns true if the layout is channels-last (HWC format).
     pub fn is_channels_last(&self) -> bool {
         // Rank 3 and stride of last dim (C) is exactly the element size (1 element)
         self.rank == 3 && self.strides[2] == self.dtype.size_of() as isize
     }
 
+    /// Returns true if rows are densely packed (may have padding between rows).
     pub fn is_dense_rows(&self) -> bool {
         // "rows contiguous but may have padding"
         // This checks if pixels are packed tightly within a row.
@@ -89,7 +96,7 @@ impl LayoutFacts {
     }
 }
 
-// Keep Layout struct as the persistent storage
+/// Persistent storage for layout information.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layout {
     pub shape: Vec<usize>,
@@ -99,6 +106,7 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Creates a new contiguous layout with the given shape and dtype.
     pub fn new_contiguous(shape: Vec<usize>, dtype: DType) -> Self {
         let mut strides = vec![0; shape.len()];
         let mut current_stride = dtype.size_of() as isize;
@@ -116,14 +124,17 @@ impl Layout {
         }
     }
 
+    /// Returns the total number of elements in the layout.
     pub fn num_elements(&self) -> usize {
         self.shape.iter().product()
     }
 
+    /// Returns true if the layout is contiguous.
     pub fn is_contiguous(&self) -> bool {
         LayoutFacts::from(self).is_contiguous()
     }
 
+    /// Returns true if the layout is compatible with the target external layout.
     pub fn is_compatible_with(&self, target: ExternalLayout) -> bool {
         LayoutFacts::from(self).compatible_with(target)
     }
@@ -136,7 +147,7 @@ impl From<&Layout> for LayoutFacts {
     }
 }
 
-// Reporting struct
+/// A report of layout properties for inspection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutReport {
     pub shape: Vec<usize>,

@@ -1,70 +1,41 @@
-//! Execution planning and running for ViewExpr graphs.
+//! Execution runners for applying operations.
 
-use std::sync::Arc;
-
-use crate::buffer::ViewBuffer;
-use crate::dtype::DType;
-use crate::expr::{ExprNode, ViewExpr};
-use crate::ops::{ComputeOp, ImageOp, MemoryEffect, Op, ViewOp};
+use crate::core::buffer::ViewBuffer;
+use crate::core::dtype::DType;
+use crate::expr::ViewExpr;
+use crate::ops::dto::ViewDto;
+use crate::ops::{ComputeOp, ImageOp, ViewOp};
 
 #[cfg(feature = "image_interop")]
-use crate::layout::ExternalLayout;
+use crate::core::layout::ExternalLayout;
 #[cfg(feature = "image_interop")]
 use crate::ops::{FilterType, ImageOpKind};
 
 #[cfg(feature = "image_interop")]
-use crate::image_view::AsImageView;
+use crate::interop::image::AsImageView;
 
 #[cfg(feature = "ndarray_interop")]
-use crate::ndarray_view::{AsNdarray, FromNdarray};
+use crate::interop::ndarray::{AsNdarray, FromNdarray};
 
 #[cfg(feature = "image_interop")]
 use image::imageops;
 #[cfg(feature = "image_interop")]
 use image::{ImageBuffer, Luma, Rgb};
 
-/// A step in the execution plan.
-#[derive(Debug, Clone)]
-pub enum PlanStep {
-    View(ViewOp),
-    Compute(ComputeOp),
-    Image(ImageOp),
-    MaterializeContiguous,
-}
-
-/// An execution plan built from a ViewExpr graph.
-#[derive(Debug)]
-pub struct ExecutionPlan {
-    pub source: ViewBuffer,
-    pub steps: Vec<PlanStep>,
-}
-
-impl ExecutionPlan {
-    /// Executes the plan and returns the resulting ViewBuffer.
-    pub fn execute(self) -> ViewBuffer {
-        let mut current_buffer = self.source;
-
-        for step in self.steps {
-            match step {
-                PlanStep::View(op) => {
-                    current_buffer = apply_view(current_buffer, op);
-                }
-                PlanStep::Compute(op) => {
-                    current_buffer = apply_compute(current_buffer, op);
-                }
-                PlanStep::Image(op) => {
-                    current_buffer = apply_image(current_buffer, op);
-                }
-                PlanStep::MaterializeContiguous => {
-                    current_buffer = current_buffer.to_contiguous();
-                }
-            }
-        }
-        current_buffer
+/// High-level entry point to execute a plan described by a sequence of ViewDto operations.
+/// This acts as the bridge between the serialized plan (e.g. from Python) and the
+/// execution engine.
+pub fn execute_plan(source: ViewBuffer, ops: Vec<ViewDto>) -> ViewBuffer {
+    let mut expr = ViewExpr::new_source(source);
+    for op in ops {
+        expr = expr.apply_op(op);
     }
+    // plan() performs optimization (fusion, etc) before execution
+    expr.plan().execute()
 }
 
-fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
+/// Applies a view operation to a buffer.
+pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
     match op {
         ViewOp::Transpose(perm) => buf.permute(&perm),
         ViewOp::Reshape(shape) => {
@@ -78,7 +49,8 @@ fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
     }
 }
 
-fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
+/// Applies a compute operation to a buffer.
+pub fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
     match op {
         ComputeOp::Cast(dtype) => buf.cast(dtype),
         ComputeOp::Affine(_params) => unimplemented!("Affine transform compute"),
@@ -90,10 +62,7 @@ fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
     }
 }
 
-fn apply_normalize(
-    buf: &ViewBuffer,
-    method: crate::ops::NormalizeMethod,
-) -> ViewBuffer {
+fn apply_normalize(buf: &ViewBuffer, method: crate::ops::NormalizeMethod) -> ViewBuffer {
     use crate::ops::NormalizeMethod;
 
     if buf.dtype() != DType::F32 {
@@ -159,13 +128,13 @@ where
     }
 }
 
+/// Applies an image operation to a buffer.
 #[cfg(feature = "image_interop")]
-fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
+pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
         ImageOpKind::Threshold(thresh) => {
             if let Ok(view) = buf.as_image_view::<Luma<u8>>() {
-                let mut new_data: Vec<u8> =
-                    Vec::with_capacity((view.width * view.height) as usize);
+                let mut new_data: Vec<u8> = Vec::with_capacity((view.width * view.height) as usize);
                 for y in 0..view.height {
                     let row_start = (y as usize) * view.row_stride;
                     let row_slice = &view.data[row_start..row_start + view.width as usize];
@@ -263,8 +232,8 @@ fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 unsafe { std::slice::from_raw_parts(work_buf.as_ptr::<u8>(), count).to_vec() };
 
             if c == 3 {
-                let img_buf: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_raw(w, h, raw_vec)
-                    .expect("Failed to create ImageBuffer");
+                let img_buf: ImageBuffer<Rgb<u8>, Vec<u8>> =
+                    ImageBuffer::from_raw(w, h, raw_vec).expect("Failed to create ImageBuffer");
                 let resized = imageops::resize(&img_buf, width, height, img_filter);
                 ViewBuffer::from_vec(resized.into_raw()).reshape(vec![
                     height as usize,
@@ -272,8 +241,8 @@ fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                     3,
                 ])
             } else if c == 1 {
-                let img_buf: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_raw(w, h, raw_vec)
-                    .expect("Failed to create ImageBuffer");
+                let img_buf: ImageBuffer<Luma<u8>, Vec<u8>> =
+                    ImageBuffer::from_raw(w, h, raw_vec).expect("Failed to create ImageBuffer");
                 let resized = imageops::resize(&img_buf, width, height, img_filter);
                 ViewBuffer::from_vec(resized.into_raw()).reshape(vec![
                     height as usize,
@@ -319,74 +288,6 @@ fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 }
 
 #[cfg(not(feature = "image_interop"))]
-fn apply_image(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
+pub fn apply_image(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
     panic!("Image operations require the 'image_interop' feature");
-}
-
-impl ViewExpr {
-    /// Builds and returns an execution plan from the expression graph.
-    pub fn plan(self: &Arc<Self>) -> ExecutionPlan {
-        let optimized_expr = self.optimize();
-        optimized_expr.build_plan()
-    }
-
-    fn build_plan(&self) -> ExecutionPlan {
-        match &self.node {
-            ExprNode::Source(buf) => ExecutionPlan {
-                source: buf.as_ref().clone(),
-                steps: Vec::new(),
-            },
-            ExprNode::LazySource { .. } => {
-                panic!("LazySource must be resolved before building plan");
-            }
-            ExprNode::Placeholder(_) => {
-                panic!("Placeholder must be bound to data before building plan");
-            }
-            ExprNode::View(op, child) => {
-                let mut plan = child.build_plan();
-                plan.steps.push(PlanStep::View(op.clone()));
-                plan
-            }
-            ExprNode::Compute(op, children) => {
-                let mut plan = children[0].build_plan();
-
-                match op.memory_effect() {
-                    MemoryEffect::RequiresContiguous => {
-                        if plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous() {
-                            plan.steps.push(PlanStep::MaterializeContiguous);
-                        }
-                    }
-                    MemoryEffect::StridePreserving => {}
-                    MemoryEffect::View => unreachable!(),
-                }
-
-                plan.steps.push(PlanStep::Compute(op.clone()));
-                plan
-            }
-            ExprNode::Image(op, child) => {
-                let mut plan = child.build_plan();
-
-                match op.memory_effect() {
-                    MemoryEffect::RequiresContiguous => {
-                        if plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous() {
-                            plan.steps.push(PlanStep::MaterializeContiguous);
-                        }
-                    }
-                    MemoryEffect::StridePreserving => {}
-                    MemoryEffect::View => unreachable!(),
-                }
-
-                plan.steps.push(PlanStep::Image(op.clone()));
-                plan
-            }
-            ExprNode::Sink { input, .. } => {
-                // Sink doesn't add steps; the format is handled after execution
-                input.build_plan()
-            }
-        }
-    }
-}
-
-fn plan_ends_in_view(plan: &ExecutionPlan) -> bool {
-    matches!(plan.steps.last(), Some(PlanStep::View(_)))
 }

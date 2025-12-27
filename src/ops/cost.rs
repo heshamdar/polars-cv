@@ -1,6 +1,6 @@
 //! Operation cost tracking for zero-copy verification and pipeline analysis.
 
-use crate::dtype::DType;
+use crate::core::dtype::DType;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -95,4 +95,3 @@ mod tests {
         assert!(OpCost::IO.allocates());
     }
 }
-
