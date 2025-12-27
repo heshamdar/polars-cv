@@ -320,6 +320,7 @@ def run_all_e2e_workflows(
     image_sizes: list[tuple[int, int]],
     warmup_iterations: int = 3,
     benchmark_iterations: int = 10,
+    verbose: bool = True,
 ) -> list[BenchmarkResult]:
     """
     Run all end-to-end workflow benchmarks.
@@ -330,6 +331,7 @@ def run_all_e2e_workflows(
         image_sizes: List of image sizes to test.
         warmup_iterations: Number of warmup runs.
         benchmark_iterations: Number of timed runs.
+        verbose: Whether to print progress output.
 
     Returns:
         List of all benchmark results.
@@ -337,11 +339,32 @@ def run_all_e2e_workflows(
     results: list[BenchmarkResult] = []
     workflows = get_e2e_workflows()
 
-    for size in image_sizes:
+    # Count total combinations for progress
+    total_combinations = (
+        len(image_sizes) * len(image_counts) * len(workflows) * len(adapters)
+    )
+    current = 0
+
+    for size_idx, size in enumerate(image_sizes):
         width, height = size
 
-        for count in image_counts:
+        if verbose:
+            print(
+                f"\n  Size {size_idx + 1}/{len(image_sizes)}: {size[0]}x{size[1]}",
+                flush=True,
+            )
+
+        for count_idx, count in enumerate(image_counts):
+            if verbose:
+                print(
+                    f"    Count {count_idx + 1}/{len(image_counts)}: {count} images",
+                    flush=True,
+                )
+
             # Create temporary image files
+            if verbose:
+                print("      Generating temporary image files...", end="", flush=True)
+
             with temporary_image_set(
                 count=count,
                 height=height,
@@ -350,14 +373,36 @@ def run_all_e2e_workflows(
                 pattern="gradient",
             ) as image_set:
                 if image_set.file_paths is None:
+                    if verbose:
+                        print(" FAILED", flush=True)
                     continue
+
+                if verbose:
+                    print(" done", flush=True)
 
                 file_paths = image_set.file_paths
 
                 for workflow in workflows:
                     for adapter in adapters:
+                        current += 1
+
                         if not adapter.is_available():
+                            if verbose:
+                                print(
+                                    f"      [{current}/{total_combinations}] "
+                                    f"{adapter.name}/{workflow.name}: "
+                                    f"SKIPPED (unavailable)",
+                                    flush=True,
+                                )
                             continue
+
+                        if verbose:
+                            print(
+                                f"      [{current}/{total_combinations}] "
+                                f"{adapter.name}/{workflow.name}...",
+                                end="",
+                                flush=True,
+                            )
 
                         try:
                             if adapter.supports_gpu and hasattr(adapter, "synchronize"):
@@ -371,6 +416,14 @@ def run_all_e2e_workflows(
                                 )
                                 results.append(cold)
                                 results.append(warm)
+                                if verbose:
+                                    print(
+                                        f" {cold.throughput_images_per_second:.1f} "
+                                        f"img/s (cold), "
+                                        f"{warm.throughput_images_per_second:.1f} "
+                                        f"img/s (warm)",
+                                        flush=True,
+                                    )
                             elif "polars" in adapter.name.lower():
                                 # Polars-vision adapter
                                 result = run_e2e_workflow_polars(
@@ -381,6 +434,12 @@ def run_all_e2e_workflows(
                                     benchmark_iterations,
                                 )
                                 results.append(result)
+                                if verbose:
+                                    print(
+                                        f" {result.throughput_images_per_second:.1f} "
+                                        f"img/s",
+                                        flush=True,
+                                    )
                             else:
                                 # Standard adapter
                                 result = run_e2e_workflow_standard(
@@ -391,10 +450,20 @@ def run_all_e2e_workflows(
                                     benchmark_iterations,
                                 )
                                 results.append(result)
+                                if verbose:
+                                    print(
+                                        f" {result.throughput_images_per_second:.1f} "
+                                        f"img/s",
+                                        flush=True,
+                                    )
                         except Exception as e:
-                            print(
-                                f"Error in E2E benchmark {adapter.name}/"
-                                f"{workflow.name}: {e}"
-                            )
+                            if verbose:
+                                print(f" ERROR: {e}", flush=True)
+                            else:
+                                print(
+                                    f"Error in E2E benchmark {adapter.name}/"
+                                    f"{workflow.name}: {e}",
+                                    flush=True,
+                                )
 
     return results

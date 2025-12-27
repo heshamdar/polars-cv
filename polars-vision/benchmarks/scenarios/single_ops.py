@@ -293,6 +293,7 @@ def run_all_single_ops(
     image_sizes: list[tuple[int, int]],
     warmup_iterations: int = 3,
     benchmark_iterations: int = 10,
+    verbose: bool = True,
 ) -> list[BenchmarkResult]:
     """
     Run all single operation benchmarks across all adapters and configurations.
@@ -303,20 +304,52 @@ def run_all_single_ops(
         image_sizes: List of image sizes to test.
         warmup_iterations: Number of warmup runs.
         benchmark_iterations: Number of timed runs.
+        verbose: Whether to print progress output.
 
     Returns:
         List of all benchmark results.
     """
     results: list[BenchmarkResult] = []
 
-    for size in image_sizes:
+    total_combinations = len(image_sizes) * len(image_counts) * 8 * len(adapters)
+    current = 0
+
+    for size_idx, size in enumerate(image_sizes):
         benchmarks = get_single_op_benchmarks(size[1], size[0])
 
-        for count in image_counts:
+        if verbose:
+            print(
+                f"\n  Size {size_idx + 1}/{len(image_sizes)}: {size[0]}x{size[1]}",
+                flush=True,
+            )
+
+        for count_idx, count in enumerate(image_counts):
+            if verbose:
+                print(
+                    f"    Count {count_idx + 1}/{len(image_counts)}: {count} images",
+                    flush=True,
+                )
+
             for benchmark in benchmarks:
                 for adapter in adapters:
+                    current += 1
+
                     if not adapter.is_available():
+                        if verbose:
+                            print(
+                                f"      [{current}/{total_combinations}] "
+                                f"{adapter.name}/{benchmark.name}: SKIPPED (unavailable)",
+                                flush=True,
+                            )
                         continue
+
+                    if verbose:
+                        print(
+                            f"      [{current}/{total_combinations}] "
+                            f"{adapter.name}/{benchmark.name}...",
+                            end="",
+                            flush=True,
+                        )
 
                     try:
                         if adapter.supports_gpu and hasattr(adapter, "synchronize"):
@@ -331,6 +364,13 @@ def run_all_single_ops(
                             )
                             results.append(cold)
                             results.append(warm)
+                            if verbose:
+                                print(
+                                    f" {cold.throughput_images_per_second:.1f} img/s "
+                                    f"(cold), {warm.throughput_images_per_second:.1f} "
+                                    f"img/s (warm)",
+                                    flush=True,
+                                )
                         else:
                             # CPU adapter
                             result = run_single_op_benchmark(
@@ -342,9 +382,19 @@ def run_all_single_ops(
                                 benchmark_iterations,
                             )
                             results.append(result)
+                            if verbose:
+                                print(
+                                    f" {result.throughput_images_per_second:.1f} img/s",
+                                    flush=True,
+                                )
                     except Exception as e:
-                        print(
-                            f"Error benchmarking {adapter.name}/{benchmark.name}: {e}"
-                        )
+                        if verbose:
+                            print(f" ERROR: {e}", flush=True)
+                        else:
+                            print(
+                                f"Error benchmarking {adapter.name}/{benchmark.name}: "
+                                f"{e}",
+                                flush=True,
+                            )
 
     return results

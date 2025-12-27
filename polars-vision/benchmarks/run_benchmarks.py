@@ -155,31 +155,53 @@ def list_available_frameworks() -> None:
     print()
 
 
-def get_adapters(framework_names: list[str] | None) -> list:
+def get_adapters(framework_names: list[str] | None, quiet: bool = False) -> list:
     """
     Get framework adapters by name or all available.
 
     Args:
         framework_names: List of framework names or None for all.
+        quiet: Whether to suppress progress output.
 
     Returns:
         List of framework adapters.
     """
+    if not quiet:
+        print("  Importing framework adapters (this may take a moment)...", flush=True)
+
     from benchmarks.frameworks import get_adapter, get_available_adapters
 
+    if not quiet:
+        print("  Framework adapters imported.", flush=True)
+
     if framework_names is None:
+        if not quiet:
+            print("  Checking adapter availability...", flush=True)
         return get_available_adapters()
 
     adapters = []
     for name in framework_names:
+        if not quiet:
+            print(f"  Loading adapter: {name}...", end="", flush=True)
         try:
             adapter = get_adapter(name.strip())
             if adapter.is_available():
                 adapters.append(adapter)
+                if not quiet:
+                    print(" OK", flush=True)
             else:
-                print(f"Warning: {name} is not available (missing dependencies)")
+                if not quiet:
+                    print(" UNAVAILABLE (missing dependencies)", flush=True)
+                else:
+                    print(
+                        f"Warning: {name} is not available (missing dependencies)",
+                        flush=True,
+                    )
         except ValueError as e:
-            print(f"Warning: {e}")
+            if not quiet:
+                print(f" ERROR: {e}", flush=True)
+            else:
+                print(f"Warning: {e}", flush=True)
 
     return adapters
 
@@ -194,6 +216,9 @@ def run_benchmarks(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, 1 for failure).
     """
+    if not args.quiet:
+        print("Loading benchmark modules...", flush=True)
+
     from benchmarks.scenarios.e2e_workflow import run_all_e2e_workflows
     from benchmarks.scenarios.pipelines import run_all_pipelines
     from benchmarks.scenarios.single_ops import run_all_single_ops
@@ -201,29 +226,38 @@ def run_benchmarks(args: argparse.Namespace) -> int:
     from benchmarks.utils.results import ResultsCollector
     from benchmarks.utils.validation import OutputValidator
 
+    if not args.quiet:
+        print("Modules loaded.", flush=True)
+
     # Parse configuration
+    if not args.quiet:
+        print("Parsing configuration...", flush=True)
+
     counts = [int(c.strip()) for c in args.counts.split(",")]
     sizes = [(int(s.strip()), int(s.strip())) for s in args.sizes.split(",")]
     framework_names = args.frameworks.split(",") if args.frameworks else None
 
     # Get adapters
-    adapters = get_adapters(framework_names)
+    if not args.quiet:
+        print("Loading framework adapters...", flush=True)
+
+    adapters = get_adapters(framework_names, quiet=args.quiet)
 
     if not adapters:
-        print("Error: No framework adapters available")
+        print("Error: No framework adapters available", flush=True)
         return 1
 
     if not args.quiet:
-        print("\n" + "=" * 60)
-        print("POLARS-VISION BENCHMARK SUITE")
-        print("=" * 60)
-        print(f"\nScenario: {args.scenario}")
-        print(f"Frameworks: {', '.join(a.name for a in adapters)}")
-        print(f"Image counts: {counts}")
-        print(f"Image sizes: {sizes}")
-        print(f"Warmup iterations: {args.warmup}")
-        print(f"Benchmark iterations: {args.iterations}")
-        print()
+        print("\n" + "=" * 60, flush=True)
+        print("POLARS-VISION BENCHMARK SUITE", flush=True)
+        print("=" * 60, flush=True)
+        print(f"\nScenario: {args.scenario}", flush=True)
+        print(f"Frameworks: {', '.join(a.name for a in adapters)}", flush=True)
+        print(f"Image counts: {counts}", flush=True)
+        print(f"Image sizes: {sizes}", flush=True)
+        print(f"Warmup iterations: {args.warmup}", flush=True)
+        print(f"Benchmark iterations: {args.iterations}", flush=True)
+        print(flush=True)
 
     # Collect results
     collector = ResultsCollector()
@@ -231,19 +265,20 @@ def run_benchmarks(args: argparse.Namespace) -> int:
     # Run benchmarks based on scenario
     if args.scenario in ("all", "single_ops"):
         if not args.quiet:
-            print("Running single operation benchmarks...")
+            print("\nRunning single operation benchmarks...", flush=True)
         results = run_all_single_ops(
             adapters=adapters,
             image_counts=counts,
             image_sizes=sizes,
             warmup_iterations=args.warmup,
             benchmark_iterations=args.iterations,
+            verbose=not args.quiet,
         )
         collector.add_many(results)
 
     if args.scenario in ("all", "pipelines"):
         if not args.quiet:
-            print("Running pipeline benchmarks...")
+            print("\nRunning pipeline benchmarks...", flush=True)
         results = run_all_pipelines(
             adapters=adapters,
             image_counts=counts,
@@ -251,18 +286,20 @@ def run_benchmarks(args: argparse.Namespace) -> int:
             warmup_iterations=args.warmup,
             benchmark_iterations=args.iterations,
             complexity_filter=args.complexity,
+            verbose=not args.quiet,
         )
         collector.add_many(results)
 
     if args.scenario in ("all", "e2e"):
         if not args.quiet:
-            print("Running end-to-end workflow benchmarks...")
+            print("\nRunning end-to-end workflow benchmarks...", flush=True)
         results = run_all_e2e_workflows(
             adapters=adapters,
             image_counts=counts,
             image_sizes=sizes,
             warmup_iterations=args.warmup,
             benchmark_iterations=args.iterations,
+            verbose=not args.quiet,
         )
         collector.add_many(results)
 
@@ -314,6 +351,9 @@ def main() -> int:
     Returns:
         Exit code.
     """
+    # Print immediately so user knows script started
+    print("Starting polars-vision benchmark suite...", flush=True)
+
     args = parse_args()
 
     if args.list_frameworks:

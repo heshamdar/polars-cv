@@ -317,6 +317,7 @@ def run_all_pipelines(
     warmup_iterations: int = 3,
     benchmark_iterations: int = 10,
     complexity_filter: str | None = None,
+    verbose: bool = True,
 ) -> list[BenchmarkResult]:
     """
     Run all pipeline benchmarks across all adapters and configurations.
@@ -328,24 +329,64 @@ def run_all_pipelines(
         warmup_iterations: Number of warmup runs.
         benchmark_iterations: Number of timed runs.
         complexity_filter: If set, only run pipelines of this complexity.
+        verbose: Whether to print progress output.
 
     Returns:
         List of all benchmark results.
     """
     results: list[BenchmarkResult] = []
 
-    for size in image_sizes:
+    # Count total combinations for progress
+    sample_benchmarks = get_pipeline_benchmarks()
+    if complexity_filter:
+        sample_benchmarks = [
+            b for b in sample_benchmarks if b.complexity == complexity_filter
+        ]
+    total_combinations = (
+        len(image_sizes) * len(image_counts) * len(sample_benchmarks) * len(adapters)
+    )
+    current = 0
+
+    for size_idx, size in enumerate(image_sizes):
         benchmarks = get_pipeline_benchmarks(size[1], size[0])
 
         # Filter by complexity if requested
         if complexity_filter:
             benchmarks = [b for b in benchmarks if b.complexity == complexity_filter]
 
-        for count in image_counts:
+        if verbose:
+            print(
+                f"\n  Size {size_idx + 1}/{len(image_sizes)}: {size[0]}x{size[1]}",
+                flush=True,
+            )
+
+        for count_idx, count in enumerate(image_counts):
+            if verbose:
+                print(
+                    f"    Count {count_idx + 1}/{len(image_counts)}: {count} images",
+                    flush=True,
+                )
+
             for benchmark in benchmarks:
                 for adapter in adapters:
+                    current += 1
+
                     if not adapter.is_available():
+                        if verbose:
+                            print(
+                                f"      [{current}/{total_combinations}] "
+                                f"{adapter.name}/{benchmark.name}: SKIPPED (unavailable)",
+                                flush=True,
+                            )
                         continue
+
+                    if verbose:
+                        print(
+                            f"      [{current}/{total_combinations}] "
+                            f"{adapter.name}/{benchmark.name}...",
+                            end="",
+                            flush=True,
+                        )
 
                     try:
                         if adapter.supports_gpu and hasattr(adapter, "synchronize"):
@@ -360,6 +401,13 @@ def run_all_pipelines(
                             )
                             results.append(cold)
                             results.append(warm)
+                            if verbose:
+                                print(
+                                    f" {cold.throughput_images_per_second:.1f} img/s "
+                                    f"(cold), {warm.throughput_images_per_second:.1f} "
+                                    f"img/s (warm)",
+                                    flush=True,
+                                )
                         else:
                             # CPU adapter
                             result = run_pipeline_benchmark(
@@ -371,9 +419,19 @@ def run_all_pipelines(
                                 benchmark_iterations,
                             )
                             results.append(result)
+                            if verbose:
+                                print(
+                                    f" {result.throughput_images_per_second:.1f} img/s",
+                                    flush=True,
+                                )
                     except Exception as e:
-                        print(
-                            f"Error benchmarking {adapter.name}/{benchmark.name}: {e}"
-                        )
+                        if verbose:
+                            print(f" ERROR: {e}", flush=True)
+                        else:
+                            print(
+                                f"Error benchmarking {adapter.name}/{benchmark.name}: "
+                                f"{e}",
+                                flush=True,
+                            )
 
     return results
