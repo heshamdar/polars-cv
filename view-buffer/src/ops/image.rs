@@ -1,4 +1,4 @@
-use crate::core::dtype::DType;
+use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::cost::OpCost;
 use crate::ops::traits::{MemoryEffect, Op};
 
@@ -99,5 +99,24 @@ impl Op for ImageOp {
             MemoryEffect::RequiresContiguous => None,
             MemoryEffect::View => unreachable!(),
         }
+    }
+
+    // --- Dtype Contract Methods ---
+
+    fn accepted_input_dtypes(&self) -> DTypeCategory {
+        // Image operations accept all numeric types and handle casting internally
+        // This allows pipelines like: normalize(f32) -> threshold to work automatically
+        DTypeCategory::Numeric
+    }
+
+    fn working_dtype(&self) -> Option<DType> {
+        // All image operations work internally with U8
+        // For float inputs, we scale and convert to U8 first
+        Some(DType::U8)
+    }
+
+    fn output_dtype_rule(&self) -> OutputDTypeRule {
+        // Image operations always output U8
+        OutputDTypeRule::Fixed(DType::U8)
     }
 }

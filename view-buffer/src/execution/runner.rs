@@ -152,12 +152,86 @@ where
     ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
 }
 
+/// Convert a buffer to U8 for image operations.
+///
+/// This handles dtype promotion for image operations:
+/// - F32/F64 in [0.0, 1.0] range: scale to [0, 255]
+/// - F32/F64 outside range: clamp then scale
+/// - Other integer types: cast directly
+/// - U8: pass through
+#[cfg(feature = "image_interop")]
+fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
+    if buf.dtype() == DType::U8 {
+        return buf;
+    }
+
+    let contig = buf.to_contiguous();
+    let count = contig.layout.num_elements();
+    let shape = contig.shape().to_vec();
+
+    match contig.dtype() {
+        DType::F32 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+            // Scale from [0.0, 1.0] to [0, 255], clamping values outside range
+            let new_data: Vec<u8> = src
+                .iter()
+                .map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8)
+                .collect();
+            ViewBuffer::from_vec(new_data).reshape(shape)
+        }
+        DType::F64 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+            let new_data: Vec<u8> = src
+                .iter()
+                .map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8)
+                .collect();
+            ViewBuffer::from_vec(new_data).reshape(shape)
+        }
+        DType::U16 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u16>(), count) };
+            // Scale from [0, 65535] to [0, 255]
+            let new_data: Vec<u8> = src.iter().map(|&x| (x >> 8) as u8).collect();
+            ViewBuffer::from_vec(new_data).reshape(shape)
+        }
+        DType::I16 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<i16>(), count) };
+            let new_data: Vec<u8> = src.iter().map(|&x| x.clamp(0, 255) as u8).collect();
+            ViewBuffer::from_vec(new_data).reshape(shape)
+        }
+        DType::U32 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u32>(), count) };
+            let new_data: Vec<u8> = src.iter().map(|&x| (x.min(255)) as u8).collect();
+            ViewBuffer::from_vec(new_data).reshape(shape)
+        }
+        DType::I32 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<i32>(), count) };
+            let new_data: Vec<u8> = src.iter().map(|&x| x.clamp(0, 255) as u8).collect();
+            ViewBuffer::from_vec(new_data).reshape(shape)
+        }
+        DType::I8 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<i8>(), count) };
+            let new_data: Vec<u8> = src.iter().map(|&x| x.max(0) as u8).collect();
+            ViewBuffer::from_vec(new_data).reshape(shape)
+        }
+        _ => {
+            // For other types, use the cast method
+            contig.cast(DType::U8)
+        }
+    }
+}
+
 /// Applies an image operation to a buffer.
+///
+/// Image operations accept any numeric input dtype and automatically convert
+/// to U8 as needed. For float inputs in [0.0, 1.0], values are scaled to [0, 255].
 #[cfg(feature = "image_interop")]
 pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
+    // Convert to U8 if needed (dtype promotion for image ops)
+    let work_buf = convert_to_u8_for_image(buf);
+
     match op.kind {
         ImageOpKind::Threshold(thresh) => {
-            if let Ok(view) = buf.as_image_view::<Luma<u8>>() {
+            if let Ok(view) = work_buf.as_image_view::<Luma<u8>>() {
                 let mut new_data: Vec<u8> = Vec::with_capacity((view.width * view.height) as usize);
                 for y in 0..view.height {
                     let row_start = (y as usize) * view.row_stride;
@@ -172,49 +246,43 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                     1,
                 ])
             } else {
-                let work_buf = if buf.layout.is_contiguous() {
-                    buf
+                let contig_buf = if work_buf.layout.is_contiguous() {
+                    work_buf
                 } else {
-                    buf.to_contiguous()
+                    work_buf.to_contiguous()
                 };
-                if work_buf.dtype() != DType::U8 {
-                    panic!("Threshold op requires U8 dtype");
-                }
-                let count = work_buf.layout.num_elements();
+                let count = contig_buf.layout.num_elements();
                 let src_slice =
-                    unsafe { std::slice::from_raw_parts(work_buf.as_ptr::<u8>(), count) };
+                    unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count) };
 
                 let new_data: Vec<u8> = src_slice
                     .iter()
                     .map(|&p| if p > thresh { 255 } else { 0 })
                     .collect();
 
-                ViewBuffer::from_vec(new_data).reshape(work_buf.shape().to_vec())
+                ViewBuffer::from_vec(new_data).reshape(contig_buf.shape().to_vec())
             }
         }
         ImageOpKind::Grayscale => {
-            let shape = buf.shape();
+            let shape = work_buf.shape();
             let channels = *shape.get(2).unwrap_or(&1);
 
             if channels == 1 {
-                return buf;
+                // Already grayscale, just ensure it's U8
+                return work_buf;
             }
 
-            let work_buf = if buf.is_compatible_with(ExternalLayout::ImageCrate)
-                && buf.layout.is_contiguous()
+            let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
+                && work_buf.layout.is_contiguous()
             {
-                buf
+                work_buf
             } else {
-                buf.to_contiguous()
+                work_buf.to_contiguous()
             };
 
-            if work_buf.dtype() != DType::U8 {
-                panic!("Grayscale op requires U8 dtype");
-            }
-
-            let (h, w) = (work_buf.shape()[0] as u32, work_buf.shape()[1] as u32);
-            let count = work_buf.layout.num_elements();
-            let raw_slice = unsafe { std::slice::from_raw_parts(work_buf.as_ptr::<u8>(), count) };
+            let (h, w) = (contig_buf.shape()[0] as u32, contig_buf.shape()[1] as u32);
+            let count = contig_buf.layout.num_elements();
+            let raw_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count) };
 
             if let Some(img_buf) = ImageBuffer::<Rgb<u8>, &[u8]>::from_raw(w, h, raw_slice) {
                 let gray = imageops::grayscale(&img_buf);
@@ -228,15 +296,15 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             height,
             filter,
         } => {
-            let work_buf = if buf.is_compatible_with(ExternalLayout::ImageCrate)
-                && buf.layout.is_contiguous()
+            let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
+                && work_buf.layout.is_contiguous()
             {
-                buf
+                work_buf
             } else {
-                buf.to_contiguous()
+                work_buf.to_contiguous()
             };
 
-            let shape = work_buf.shape();
+            let shape = contig_buf.shape();
             let (h, w, c) = (
                 shape[0] as u32,
                 shape[1] as u32,
@@ -251,9 +319,9 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 FilterType::Lanczos3 => imageops::FilterType::Lanczos3,
             };
 
-            let count = work_buf.layout.num_elements();
+            let count = contig_buf.layout.num_elements();
             let raw_vec =
-                unsafe { std::slice::from_raw_parts(work_buf.as_ptr::<u8>(), count).to_vec() };
+                unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count).to_vec() };
 
             if c == 3 {
                 let img_buf: ImageBuffer<Rgb<u8>, Vec<u8>> =
@@ -278,23 +346,23 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             }
         }
         ImageOpKind::Blur { sigma } => {
-            let work_buf = if buf.is_compatible_with(ExternalLayout::ImageCrate)
-                && buf.layout.is_contiguous()
+            let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
+                && work_buf.layout.is_contiguous()
             {
-                buf
+                work_buf
             } else {
-                buf.to_contiguous()
+                work_buf.to_contiguous()
             };
 
-            let shape = work_buf.shape();
+            let shape = contig_buf.shape();
             let (h, w, c) = (
                 shape[0] as u32,
                 shape[1] as u32,
                 *shape.get(2).unwrap_or(&1) as u32,
             );
-            let count = work_buf.layout.num_elements();
+            let count = contig_buf.layout.num_elements();
             let raw_vec =
-                unsafe { std::slice::from_raw_parts(work_buf.as_ptr::<u8>(), count).to_vec() };
+                unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count).to_vec() };
 
             if c == 3 {
                 let img_buf: ImageBuffer<Rgb<u8>, Vec<u8>> =

@@ -88,12 +88,14 @@ def get_single_op_benchmarks(
             name="crop_center",
             params=OperationParams(
                 operation=OperationType.CROP,
-                crop_top=(source_height - 128) // 2,
-                crop_left=(source_width - 128) // 2,
-                crop_height=128,
-                crop_width=128,
+                # Center crop - use smaller of source or 128 for crop size
+                # This ensures we don't try to crop larger than the source
+                crop_top=max(0, (source_height - min(128, source_height)) // 2),
+                crop_left=max(0, (source_width - min(128, source_width)) // 2),
+                crop_height=min(128, source_height),
+                crop_width=min(128, source_width),
             ),
-            description="Center crop to 128x128",
+            description="Center crop to 128x128 (or smaller if source is smaller)",
         ),
         SingleOpBenchmarkConfig(
             operation=OperationType.BLUR,

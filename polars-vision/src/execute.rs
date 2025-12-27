@@ -219,27 +219,44 @@ fn resolve_op(
             Ok(ViewDto::View(ViewOp::Flip(axes)))
         }
         "crop" => {
-            let top = get_param(&op_spec.params, "top")?.resolve_usize(row_idx, expr_columns)?;
-            let left = get_param(&op_spec.params, "left")?.resolve_usize(row_idx, expr_columns)?;
+            // Allow negative values for top/left and clamp to 0
+            // This makes the API more forgiving and follows NumPy/OpenCV conventions
+            let top_raw = get_param(&op_spec.params, "top")?.resolve_i64(row_idx, expr_columns)?;
+            let left_raw =
+                get_param(&op_spec.params, "left")?.resolve_i64(row_idx, expr_columns)?;
 
-            // Height and width might be optional
+            // Clamp negative values to 0
+            let top = top_raw.max(0) as usize;
+            let left = left_raw.max(0) as usize;
+
+            // Height and width might be optional - these should still be non-negative
             let height = op_spec
                 .params
                 .get("height")
-                .map(|p| p.resolve_usize(row_idx, expr_columns))
+                .map(|p| {
+                    let h = p.resolve_i64(row_idx, expr_columns)?;
+                    // Clamp negative height to 0 (will result in empty crop)
+                    Ok::<usize, PolarsError>(h.max(0) as usize)
+                })
                 .transpose()?;
             let width = op_spec
                 .params
                 .get("width")
-                .map(|p| p.resolve_usize(row_idx, expr_columns))
+                .map(|p| {
+                    let w = p.resolve_i64(row_idx, expr_columns)?;
+                    // Clamp negative width to 0 (will result in empty crop)
+                    Ok::<usize, PolarsError>(w.max(0) as usize)
+                })
                 .transpose()?;
 
             // For crop, we need start and end vectors
             // Assuming HWC layout: start = [top, left, 0], end = [top+height, left+width, C]
-            // But we don't know C here, so we'll use a simpler approach
+            // The slice operation in ViewBuffer will further clamp these to valid bounds
             let start = vec![top, left, 0];
             let end = match (height, width) {
-                (Some(h), Some(w)) => vec![top + h, left + w, usize::MAX],
+                (Some(h), Some(w)) => {
+                    vec![top.saturating_add(h), left.saturating_add(w), usize::MAX]
+                }
                 _ => vec![usize::MAX, usize::MAX, usize::MAX], // Full extent
             };
 
