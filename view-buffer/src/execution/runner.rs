@@ -62,14 +62,26 @@ pub fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
     }
 }
 
+/// Apply normalization to a buffer, accepting any numeric input type.
+///
+/// This function automatically casts the input to f32 for computation,
+/// as per the dtype promotion contract. The output is always f32.
+///
+/// ## Edge Case Behavior
+/// - **Constant array (min == max)**: Returns 0.0 for all elements (MinMax) or 0.0 (ZScore)
+/// - **NaN values**: Propagated according to IEEE 754 semantics
+/// - **Inf values**: Handled naturally by min/max/mean calculations
 fn apply_normalize(buf: &ViewBuffer, method: crate::ops::NormalizeMethod) -> ViewBuffer {
     use crate::ops::NormalizeMethod;
 
-    if buf.dtype() != DType::F32 {
-        panic!("Normalize requires F32 dtype");
-    }
+    // Cast to f32 working dtype if needed (dtype promotion)
+    let work_buf = if buf.dtype() != DType::F32 {
+        buf.cast(DType::F32)
+    } else {
+        buf.clone()
+    };
 
-    let contig = buf.to_contiguous();
+    let contig = work_buf.to_contiguous();
     let count = contig.layout.num_elements();
     let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
 
@@ -79,7 +91,9 @@ fn apply_normalize(buf: &ViewBuffer, method: crate::ops::NormalizeMethod) -> Vie
             let max = src.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let range = max - min;
             if range == 0.0 {
-                src.to_vec()
+                // Edge case: constant array - return 0.0 for all elements
+                // This avoids division by zero and gives a predictable result
+                vec![0.0; count]
             } else {
                 src.iter().map(|&x| (x - min) / range).collect()
             }
@@ -90,7 +104,8 @@ fn apply_normalize(buf: &ViewBuffer, method: crate::ops::NormalizeMethod) -> Vie
             let variance = src.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
             let std = variance.sqrt();
             if std == 0.0 {
-                src.iter().map(|_| 0.0).collect()
+                // Edge case: constant array - return 0.0 for all elements
+                vec![0.0; count]
             } else {
                 src.iter().map(|&x| (x - mean) / std).collect()
             }
@@ -100,32 +115,41 @@ fn apply_normalize(buf: &ViewBuffer, method: crate::ops::NormalizeMethod) -> Vie
     ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
 }
 
-/// Apply a scalar operation element-wise.
+/// Apply a scalar operation element-wise, accepting any numeric input type.
+///
+/// This function automatically casts the input to f32 for computation,
+/// as per the dtype promotion contract. The output is always f32.
+///
+/// This follows the pattern used by NumPy, PyTorch, and other numeric libraries:
+/// - Accept any numeric input dtype
+/// - Perform computation in f32 for numerical stability
+/// - Return f32 (can be cast to desired output type afterward)
 fn apply_scalar_op<F>(buf: &ViewBuffer, op: F) -> ViewBuffer
 where
     F: Fn(f32) -> f32,
 {
+    // Cast to f32 working dtype if needed (dtype promotion)
+    let work_buf = if buf.dtype() != DType::F32 {
+        buf.cast(DType::F32)
+    } else {
+        buf.clone()
+    };
+
     // Try to use ndarray if available for efficient strided iteration
     #[cfg(feature = "ndarray_interop")]
     {
-        if buf.dtype() == DType::F32 {
-            if let Ok(view) = buf.as_array_view::<f32>() {
-                let result_array = view.mapv(&op);
-                return ViewBuffer::from_array(result_array);
-            }
+        if let Ok(view) = work_buf.as_array_view::<f32>() {
+            let result_array = view.mapv(&op);
+            return ViewBuffer::from_array(result_array);
         }
     }
 
     // Fallback: use contiguous buffer
-    if buf.dtype() == DType::F32 {
-        let contig = buf.to_contiguous();
-        let count = contig.layout.num_elements();
-        let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
-        let new_data: Vec<f32> = src.iter().map(|&x| op(x)).collect();
-        ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
-    } else {
-        unimplemented!("Scalar ops only implemented for F32");
-    }
+    let contig = work_buf.to_contiguous();
+    let count = contig.layout.num_elements();
+    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+    let new_data: Vec<f32> = src.iter().map(|&x| op(x)).collect();
+    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
 }
 
 /// Applies an image operation to a buffer.

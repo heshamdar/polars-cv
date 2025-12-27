@@ -37,6 +37,7 @@ fn make_2d_buffer() -> ViewBuffer {
         .execute()
 }
 
+#[allow(dead_code)]
 fn make_3d_buffer() -> ViewBuffer {
     let data: Vec<u8> = (0..300).map(|i| (i % 256) as u8).collect();
     let buf = ViewBuffer::from_vec(data);
@@ -256,11 +257,32 @@ fn test_normalize_validation_rejects_hwc() {
 }
 
 #[test]
-fn test_normalize_validation_rejects_u8() {
-    let _buf = make_3d_buffer(); // U8 - kept to show we're testing against U8 data
+fn test_normalize_validation_accepts_all_numeric_types() {
+    // With the dtype promotion system, normalize now accepts all numeric types
+    // and handles casting internally. This test verifies that behavior.
     let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
-    let result = op.validate(&[&[10, 10]], &[DType::U8]);
-    assert!(result.is_err(), "Normalize should reject U8 dtype");
+
+    // Test that all numeric types are accepted
+    let numeric_dtypes = [
+        DType::U8,
+        DType::I8,
+        DType::U16,
+        DType::I16,
+        DType::U32,
+        DType::I32,
+        DType::U64,
+        DType::I64,
+        DType::F32,
+        DType::F64,
+    ];
+
+    for dtype in numeric_dtypes {
+        let result = op.validate(&[&[10, 10]], &[dtype]);
+        assert!(
+            result.is_ok(),
+            "Normalize should accept {dtype:?} dtype with dtype promotion"
+        );
+    }
 }
 
 // --- Cost Report Tests ---

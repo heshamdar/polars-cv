@@ -1,6 +1,6 @@
 //! Core operation traits and types.
 
-use crate::core::dtype::DType;
+use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::cost::OpCost;
 use crate::ops::validation::ValidationError;
 
@@ -27,6 +27,16 @@ impl From<MemoryEffect> for OpCost {
 ///
 /// Operations must provide shape/dtype inference, cost information,
 /// and optional validation for plan-time error checking.
+///
+/// ## Dtype Contract
+///
+/// Operations declare their dtype requirements through three methods:
+/// - `accepted_input_dtypes()`: What input types the operation can work with
+/// - `working_dtype()`: The dtype used for internal computation (accumulator)
+/// - `output_dtype_rule()`: How the output dtype is determined
+///
+/// This separates semantic operations from dtype mechanics, allowing the
+/// execution layer to handle automatic casting.
 pub trait Op {
     /// Returns the name of this operation for display/debugging.
     fn name(&self) -> &'static str;
@@ -35,6 +45,9 @@ pub trait Op {
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize>;
 
     /// Infers the output dtype given input dtypes.
+    ///
+    /// This is the legacy method. For new operations, prefer implementing
+    /// `output_dtype_rule()` and using `resolve_output_dtype()` instead.
     fn infer_dtype(&self, inputs: &[DType]) -> DType;
 
     /// Returns the legacy memory effect. Prefer `intrinsic_cost()`.
@@ -62,5 +75,51 @@ pub trait Op {
     ) -> Result<(), ValidationError> {
         // Default: no validation requirements
         Ok(())
+    }
+
+    // --- Dtype Contract Methods ---
+
+    /// Returns the categories of dtypes this operation accepts as input.
+    ///
+    /// The execution layer will automatically cast inputs to the working dtype
+    /// if the input dtype is accepted but different from the working dtype.
+    ///
+    /// Default: Accept all types.
+    fn accepted_input_dtypes(&self) -> DTypeCategory {
+        DTypeCategory::Any
+    }
+
+    /// Returns the dtype used for internal computation (accumulator).
+    ///
+    /// If Some(dtype), the execution layer will cast input to this dtype
+    /// before performing the operation. This ensures numerical stability
+    /// (e.g., using f32 for accumulation to avoid integer overflow).
+    ///
+    /// If None, the operation works directly with the input dtype.
+    ///
+    /// Default: None (preserve input dtype).
+    fn working_dtype(&self) -> Option<DType> {
+        None
+    }
+
+    /// Returns the rule for determining output dtype.
+    ///
+    /// This allows operations to declare whether they:
+    /// - Preserve input dtype
+    /// - Always output a fixed dtype
+    /// - Have a configurable output dtype
+    /// - Promote integers to floats
+    ///
+    /// Default: PreserveInput.
+    fn output_dtype_rule(&self) -> OutputDTypeRule {
+        OutputDTypeRule::PreserveInput
+    }
+
+    /// Resolves the actual output dtype given input dtype and optional override.
+    ///
+    /// This is a convenience method that uses `output_dtype_rule()`.
+    fn resolve_output_dtype(&self, input_dtype: DType, out_dtype_override: Option<DType>) -> DType {
+        self.output_dtype_rule()
+            .resolve(input_dtype, out_dtype_override)
     }
 }

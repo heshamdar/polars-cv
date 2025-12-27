@@ -1,6 +1,6 @@
 use view_buffer::interop::image::ImageAdapter;
 use view_buffer::ops::image::FilterType;
-use view_buffer::{DType, ViewBuffer, ViewExpr};
+use view_buffer::{DType, NormalizeMethod, ViewBuffer, ViewExpr};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- ViewBuffer Framework Demo ---");
@@ -59,6 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .scale(-1.0)
         .relu()
         .cast(DType::U8)
+        .cast(DType::F32)
+        .normalize(NormalizeMethod::MinMax)
         .grayscale()
         .threshold(128);
 

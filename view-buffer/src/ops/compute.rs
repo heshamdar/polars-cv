@@ -1,6 +1,6 @@
 //! Compute operations that transform data.
 
-use crate::core::dtype::DType;
+use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::affine::AffineParams;
 use crate::ops::cost::OpCost;
 use crate::ops::scalar::FusedKernel;
@@ -60,13 +60,14 @@ impl Op for ComputeOp {
     fn infer_dtype(&self, inputs: &[DType]) -> DType {
         match self {
             ComputeOp::Cast(target) => *target,
-            // All other ops preserve dtype
+            // Use the new output dtype rules for operations that need promotion
+            ComputeOp::Normalize(_) => self.output_dtype_rule().resolve(inputs[0], None),
+            ComputeOp::Scale(_) => self.output_dtype_rule().resolve(inputs[0], None),
+            ComputeOp::Relu => self.output_dtype_rule().resolve(inputs[0], None),
+            ComputeOp::Clamp { .. } => self.output_dtype_rule().resolve(inputs[0], None),
+            // Other ops preserve dtype
             ComputeOp::Affine(_) => inputs[0],
-            ComputeOp::Scale(_) => inputs[0],
-            ComputeOp::Relu => inputs[0],
             ComputeOp::Fused(_) => inputs[0],
-            ComputeOp::Normalize(_) => inputs[0],
-            ComputeOp::Clamp { .. } => inputs[0],
         }
     }
 
@@ -102,6 +103,7 @@ impl Op for ComputeOp {
     ) -> Result<(), ValidationError> {
         match self {
             ComputeOp::Normalize(_) => {
+                // Only validate shape - dtype handling is automatic now
                 let shape = input_shapes[0];
                 if !is_2d_like(shape) {
                     return Err(ValidationError::ShapeRequirement {
@@ -109,15 +111,65 @@ impl Op for ComputeOp {
                         got: shape.to_vec(),
                     });
                 }
-                if input_dtypes[0] != DType::F32 {
+                // Validate that input dtype is accepted
+                if !self.accepted_input_dtypes().accepts(input_dtypes[0]) {
                     return Err(ValidationError::DTypeRequirement {
-                        expected: vec![DType::F32],
+                        expected: vec![DType::F32, DType::F64], // Indicate numeric types accepted
                         got: input_dtypes[0],
                     });
                 }
                 Ok(())
             }
             _ => Ok(()),
+        }
+    }
+
+    // --- Dtype Contract Methods ---
+
+    fn accepted_input_dtypes(&self) -> DTypeCategory {
+        match self {
+            // These operations accept all numeric types and handle casting internally
+            ComputeOp::Normalize(_) => DTypeCategory::Numeric,
+            ComputeOp::Scale(_) => DTypeCategory::Numeric,
+            ComputeOp::Clamp { .. } => DTypeCategory::Numeric,
+            ComputeOp::Relu => DTypeCategory::Numeric,
+            // Cast accepts anything
+            ComputeOp::Cast(_) => DTypeCategory::Any,
+            // Others default to any
+            ComputeOp::Affine(_) => DTypeCategory::Any,
+            ComputeOp::Fused(_) => DTypeCategory::Any,
+        }
+    }
+
+    fn working_dtype(&self) -> Option<DType> {
+        match self {
+            // Normalize needs f32 for numerical stability (accumulator)
+            ComputeOp::Normalize(_) => Some(DType::F32),
+            // Scale uses f32 for the multiplication
+            ComputeOp::Scale(_) => Some(DType::F32),
+            // Clamp and Relu work in f32 for safety
+            ComputeOp::Clamp { .. } => Some(DType::F32),
+            ComputeOp::Relu => Some(DType::F32),
+            // Others work with whatever dtype they receive
+            _ => None,
+        }
+    }
+
+    fn output_dtype_rule(&self) -> OutputDTypeRule {
+        match self {
+            // Normalize: default to f32, but can be configured
+            ComputeOp::Normalize(_) => OutputDTypeRule::Configurable(DType::F32),
+            // Scale: promote integers to float, preserve floats
+            ComputeOp::Scale(_) => OutputDTypeRule::PromoteToFloat,
+            // Clamp: preserve input dtype (user expects same type back)
+            ComputeOp::Clamp { .. } => OutputDTypeRule::PromoteToFloat,
+            // Relu: promote to float for proper negative handling
+            ComputeOp::Relu => OutputDTypeRule::PromoteToFloat,
+            // Cast: always outputs the target dtype
+            ComputeOp::Cast(target) => OutputDTypeRule::Fixed(*target),
+            // Others preserve input
+            ComputeOp::Affine(_) => OutputDTypeRule::PreserveInput,
+            ComputeOp::Fused(_) => OutputDTypeRule::PreserveInput,
         }
     }
 }

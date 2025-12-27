@@ -135,51 +135,24 @@ impl PipelineSpec {
 
     /// Validate the pipeline for known issues.
     ///
-    /// Returns a list of warnings for operations that may fail at runtime
-    /// due to dtype requirements (e.g., normalize requires F32 input).
+    /// Returns a list of warnings for operations that may have unexpected behavior.
+    ///
+    /// Note: As of the dtype promotion system, operations like normalize, scale,
+    /// clamp, and relu now accept any numeric input dtype and automatically
+    /// handle type promotion. No warnings are generated for dtype requirements.
     ///
     /// This method is intended to be exposed to Python for user feedback,
     /// hence the allow(dead_code) until Python bindings are added.
+    ///
+    /// Future warnings could include:
+    /// - Potential precision loss (e.g., f64 -> f32 pipeline)
+    /// - Performance hints (e.g., redundant casts)
+    /// - Shape compatibility issues
     #[allow(dead_code)]
     pub fn validate_warnings(&self) -> Vec<String> {
-        let mut warnings = Vec::new();
-
-        for op in &self.ops {
-            match op.op.as_str() {
-                "normalize" => {
-                    // normalize requires F32 dtype - check if there's a cast before it
-                    let has_prior_cast = self
-                        .ops
-                        .iter()
-                        .take_while(|o| o.op != op.op)
-                        .any(|o| o.op == "cast");
-                    if !has_prior_cast {
-                        warnings.push(
-                            "normalize operation requires F32 dtype. Consider adding .cast('f32') \
-                            before normalize, or use a U8-compatible operation like grayscale."
-                                .to_string(),
-                        );
-                    }
-                }
-                "scale" | "clamp" | "relu" => {
-                    // These also require F32
-                    let has_prior_cast = self
-                        .ops
-                        .iter()
-                        .take_while(|o| o.op != op.op)
-                        .any(|o| o.op == "cast");
-                    if !has_prior_cast {
-                        warnings.push(format!(
-                            "{} operation requires F32 dtype. Consider adding .cast('f32') before it.",
-                            op.op
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        warnings
+        // With the dtype promotion system, operations automatically handle
+        // type casting internally. No dtype-related warnings are needed.
+        Vec::new()
     }
 
     /// Check if the pipeline uses any operations that are known to have restrictions.

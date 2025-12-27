@@ -498,6 +498,36 @@ impl ViewExpr {
             ExprNode::Compute(op1, children) => {
                 if children.len() == 1 {
                     let child = &children[0];
+
+                    // Cast optimization: eliminate redundant casts
+                    if let ComputeOp::Cast(target_dtype) = &op1 {
+                        // Optimization 1: Identity cast (cast to same dtype as child)
+                        // Example: u8 input -> cast(u8) -> output
+                        // Result: eliminate the cast entirely
+                        if child.dtype == *target_dtype {
+                            return child.clone();
+                        }
+
+                        // Optimization 2: Consecutive casts (cast(A) -> cast(B) -> cast(A))
+                        // Example: cast(f32) -> cast(u8) -> cast(f32)
+                        // Result: just cast(f32)
+                        if let ExprNode::Compute(ComputeOp::Cast(_), ref grand_children) =
+                            &child.node
+                        {
+                            // Skip the intermediate cast, cast directly from grandchild
+                            return Arc::new(Self {
+                                node: ExprNode::Compute(
+                                    ComputeOp::Cast(*target_dtype),
+                                    grand_children.clone(),
+                                ),
+                                shape: self.shape.clone(),
+                                strides: self.strides.clone(),
+                                dtype: *target_dtype,
+                            });
+                        }
+                    }
+
+                    // Try fusing scalar operations
                     if let ExprNode::Compute(ref op2, ref grand_children) = &child.node {
                         if let Some(fused) = try_fuse(&op1, op2) {
                             return Arc::new(Self {

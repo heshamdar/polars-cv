@@ -90,16 +90,17 @@ fn test_normalize_validates_shape() {
 }
 
 #[test]
-fn test_normalize_validates_dtype() {
+fn test_normalize_accepts_all_numeric_dtypes() {
     let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
 
-    // Valid dtype
+    // With dtype promotion, all numeric types are valid
+    // The operation internally casts to f32 for computation
     assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
-
-    // Invalid dtypes
-    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_err());
-    assert!(op.validate(&[&[10, 10]], &[DType::I32]).is_err());
-    assert!(op.validate(&[&[10, 10]], &[DType::F64]).is_err());
+    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok());
+    assert!(op.validate(&[&[10, 10]], &[DType::I32]).is_ok());
+    assert!(op.validate(&[&[10, 10]], &[DType::F64]).is_ok());
+    assert!(op.validate(&[&[10, 10]], &[DType::U16]).is_ok());
+    assert!(op.validate(&[&[10, 10]], &[DType::I16]).is_ok());
 }
 
 #[test]
@@ -118,17 +119,17 @@ fn test_normalize_error_message_contains_shape() {
 }
 
 #[test]
-fn test_normalize_error_message_contains_dtype() {
+fn test_normalize_dtype_promotion_behavior() {
+    // With dtype promotion, normalize accepts all numeric types
+    // This test verifies the working dtype is used correctly
     let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
-    let result = op.validate(&[&[10, 10]], &[DType::U8]);
 
-    let err = result.unwrap_err();
-    let msg = format!("{err}");
+    // All numeric types should be accepted - the operation handles casting internally
+    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok());
+    assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
 
-    assert!(
-        msg.contains("U8") || msg.contains("F32"),
-        "Error should mention dtype"
-    );
+    // The working dtype should be F32
+    assert_eq!(op.working_dtype(), Some(DType::F32));
 }
 
 #[test]
@@ -154,7 +155,8 @@ fn test_zscore_normalize_validates_same_as_minmax() {
     let op = ComputeOp::Normalize(NormalizeMethod::ZScore);
 
     // Should have same requirements as MinMax
+    // With dtype promotion, all numeric types are accepted
     assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
-    assert!(op.validate(&[&[10, 10, 3]], &[DType::F32]).is_err());
-    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_err());
+    assert!(op.validate(&[&[10, 10, 3]], &[DType::F32]).is_err()); // Shape still matters
+    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok()); // Now accepts U8
 }
