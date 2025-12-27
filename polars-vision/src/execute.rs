@@ -1,0 +1,341 @@
+//! Pipeline execution engine.
+//!
+//! This module handles the execution of vision pipelines on Polars Series,
+//! including parameter resolution and view-buffer integration.
+
+use polars::prelude::*;
+use std::collections::HashMap;
+
+use view_buffer::{
+    ComputeOp, DType, FilterType, ImageAdapter, ImageOp, ImageOpKind, NormalizeMethod, ViewBuffer,
+    ViewDto, ViewExpr, ViewOp,
+};
+
+use crate::params::ParamValue;
+use crate::pipeline::{OpSpec, PipelineSpec};
+
+/// Execute a pipeline on a Series, returning a new Series with results.
+pub fn execute_pipeline(
+    data_series: &Series,
+    pipeline: &PipelineSpec,
+    expr_columns: &HashMap<String, &Series>,
+) -> PolarsResult<Series> {
+    // Get the binary data
+    let data_ca = data_series
+        .binary()
+        .map_err(|_| polars_err!(ComputeError: "Expected Binary column for pipeline input"))?;
+
+    let len = data_ca.len();
+    let mut results: Vec<Option<Vec<u8>>> = Vec::with_capacity(len);
+
+    // Process each row
+    for row_idx in 0..len {
+        match data_ca.get(row_idx) {
+            Some(bytes) => {
+                let result = execute_row(bytes, row_idx, pipeline, expr_columns)?;
+                results.push(Some(result));
+            }
+            None => {
+                results.push(None);
+            }
+        }
+    }
+
+    // Build the output series
+    let output_ca =
+        BinaryChunked::from_iter_options(data_series.name().clone(), results.into_iter());
+    Ok(output_ca.into_series())
+}
+
+/// Execute the pipeline on a single row.
+fn execute_row(
+    bytes: &[u8],
+    row_idx: usize,
+    pipeline: &PipelineSpec,
+    expr_columns: &HashMap<String, &Series>,
+) -> PolarsResult<Vec<u8>> {
+    // 1. Decode the source
+    let buffer = decode_source(bytes, pipeline)?;
+
+    // 2. Apply operations
+    let mut expr = ViewExpr::new_source(buffer);
+
+    for op_spec in &pipeline.ops {
+        let view_dto = resolve_op(op_spec, row_idx, expr_columns)?;
+        expr = expr.apply_op(view_dto);
+    }
+
+    // 3. Execute and encode the sink
+    let plan = expr.plan();
+    let result = plan.execute();
+
+    encode_sink(&result, pipeline)
+}
+
+/// Decode the source bytes into a ViewBuffer.
+fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<ViewBuffer> {
+    match pipeline.source_format() {
+        "image_bytes" => {
+            // Use image crate to decode
+            ImageAdapter::decode(bytes)
+                .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))
+        }
+        "blob" => {
+            // Decode from VIEW protocol
+            ViewBuffer::from_blob(bytes)
+                .map_err(|e| polars_err!(ComputeError: "Failed to decode blob: {:?}", e))
+        }
+        "raw" => {
+            // Raw bytes - need dtype from source spec
+            let dtype_str = pipeline
+                .source
+                .dtype
+                .as_ref()
+                .ok_or_else(|| polars_err!(ComputeError: "Raw source format requires dtype"))?;
+            let dtype = parse_dtype(dtype_str)?;
+
+            // For raw format, we need shape from shape_hints
+            // For now, treat as 1D array
+            let element_size = dtype.size_of();
+            let num_elements = bytes.len() / element_size;
+
+            Ok(ViewBuffer::from_raw_bytes(
+                bytes.to_vec(),
+                vec![num_elements],
+                dtype,
+            ))
+        }
+        other => Err(polars_err!(ComputeError: "Unknown source format: {}", other)),
+    }
+}
+
+/// Encode the result buffer to the sink format.
+fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult<Vec<u8>> {
+    match pipeline.sink_format() {
+        "numpy" => {
+            // Export as NumPy-compatible format
+            // Format: dtype_code (1 byte) + ndim (1 byte) + shape (ndim * 8 bytes) + data
+            encode_sink_numpy_style(buffer)
+        }
+        "torch" => {
+            // Similar to numpy but with torch conventions
+            // For now, use same format
+            encode_sink_numpy_style(buffer)
+        }
+        "blob" => {
+            // VIEW protocol
+            Ok(buffer.to_blob())
+        }
+        "png" => ImageAdapter::encode(buffer, image::ImageOutputFormat::Png)
+            .map_err(|e| polars_err!(ComputeError: "Failed to encode PNG: {:?}", e)),
+        "jpeg" => {
+            let quality = pipeline.sink.quality;
+            ImageAdapter::encode(buffer, image::ImageOutputFormat::Jpeg(quality))
+                .map_err(|e| polars_err!(ComputeError: "Failed to encode JPEG: {:?}", e))
+        }
+        "array" | "list" => {
+            // For array/list, we return raw bytes that Polars will interpret
+            // The actual type conversion happens in the output dtype
+            let contig = buffer.to_contiguous();
+            let num_elements: usize = contig.shape().iter().product();
+            let data_len = num_elements * buffer.dtype().size_of();
+            let data_slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+            Ok(data_slice.to_vec())
+        }
+        other => Err(polars_err!(ComputeError: "Unknown sink format: {}", other)),
+    }
+}
+
+/// Encode buffer in numpy-style format.
+fn encode_sink_numpy_style(buffer: &ViewBuffer) -> PolarsResult<Vec<u8>> {
+    let shape = buffer.shape();
+    let dtype = buffer.dtype();
+
+    let mut output = Vec::new();
+    output.push(dtype_to_numpy_code(dtype));
+    output.push(shape.len() as u8);
+
+    for &dim in shape {
+        output.extend_from_slice(&(dim as u64).to_le_bytes());
+    }
+
+    let contig = buffer.to_contiguous();
+    let num_elements: usize = contig.shape().iter().product();
+    let data_len = num_elements * dtype.size_of();
+    let data_slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+    output.extend_from_slice(data_slice);
+
+    Ok(output)
+}
+
+/// Resolve an operation specification to a ViewDto.
+fn resolve_op(
+    op_spec: &OpSpec,
+    row_idx: usize,
+    expr_columns: &HashMap<String, &Series>,
+) -> PolarsResult<ViewDto> {
+    match op_spec.op.as_str() {
+        // View operations
+        "transpose" => {
+            let axes = get_param(&op_spec.params, "axes")?.as_int_list()?;
+            Ok(ViewDto::View(ViewOp::Transpose(axes)))
+        }
+        "reshape" => {
+            let shape_params = get_param(&op_spec.params, "shape")?.as_param_list()?;
+            let shape: Vec<usize> = shape_params
+                .iter()
+                .map(|p| p.resolve_usize(row_idx, expr_columns))
+                .collect::<PolarsResult<_>>()?;
+            Ok(ViewDto::View(ViewOp::Reshape(shape)))
+        }
+        "flip" => {
+            let axes = get_param(&op_spec.params, "axes")?.as_int_list()?;
+            Ok(ViewDto::View(ViewOp::Flip(axes)))
+        }
+        "crop" => {
+            let top = get_param(&op_spec.params, "top")?.resolve_usize(row_idx, expr_columns)?;
+            let left = get_param(&op_spec.params, "left")?.resolve_usize(row_idx, expr_columns)?;
+
+            // Height and width might be optional
+            let height = op_spec
+                .params
+                .get("height")
+                .map(|p| p.resolve_usize(row_idx, expr_columns))
+                .transpose()?;
+            let width = op_spec
+                .params
+                .get("width")
+                .map(|p| p.resolve_usize(row_idx, expr_columns))
+                .transpose()?;
+
+            // For crop, we need start and end vectors
+            // Assuming HWC layout: start = [top, left, 0], end = [top+height, left+width, C]
+            // But we don't know C here, so we'll use a simpler approach
+            let start = vec![top, left, 0];
+            let end = match (height, width) {
+                (Some(h), Some(w)) => vec![top + h, left + w, usize::MAX],
+                _ => vec![usize::MAX, usize::MAX, usize::MAX], // Full extent
+            };
+
+            Ok(ViewDto::View(ViewOp::Crop { start, end }))
+        }
+
+        // Compute operations
+        "cast" => {
+            let dtype_str = get_param(&op_spec.params, "dtype")?.resolve_string()?;
+            let dtype = parse_dtype(&dtype_str)?;
+            Ok(ViewDto::Compute(ComputeOp::Cast(dtype)))
+        }
+        "scale" => {
+            let factor =
+                get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, expr_columns)?;
+            Ok(ViewDto::Compute(ComputeOp::Scale(factor)))
+        }
+        "normalize" => {
+            let method_str = get_param(&op_spec.params, "method")?.resolve_string()?;
+            let method = match method_str.as_str() {
+                "minmax" => NormalizeMethod::MinMax,
+                "zscore" => NormalizeMethod::ZScore,
+                other => {
+                    return Err(polars_err!(ComputeError: "Unknown normalize method: {}", other))
+                }
+            };
+            Ok(ViewDto::Compute(ComputeOp::Normalize(method)))
+        }
+        "clamp" => {
+            let min = get_param(&op_spec.params, "min")?.resolve_f32(row_idx, expr_columns)?;
+            let max = get_param(&op_spec.params, "max")?.resolve_f32(row_idx, expr_columns)?;
+            Ok(ViewDto::Compute(ComputeOp::Clamp { min, max }))
+        }
+
+        // Image operations
+        "resize" => {
+            let height =
+                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, expr_columns)?;
+            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, expr_columns)?;
+            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
+            let filter = parse_filter(&filter_str)?;
+
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::Resize {
+                    width,
+                    height,
+                    filter,
+                },
+            }))
+        }
+        "grayscale" => Ok(ViewDto::Image(ImageOp {
+            kind: ImageOpKind::Grayscale,
+        })),
+        "threshold" => {
+            let value =
+                get_param(&op_spec.params, "value")?.resolve_usize(row_idx, expr_columns)? as u8;
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::Threshold(value),
+            }))
+        }
+        "blur" => {
+            let sigma = get_param(&op_spec.params, "sigma")?.resolve_f32(row_idx, expr_columns)?;
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::Blur { sigma },
+            }))
+        }
+
+        other => Err(polars_err!(ComputeError: "Unknown operation: {}", other)),
+    }
+}
+
+/// Get a required parameter from the params map.
+fn get_param<'a>(
+    params: &'a HashMap<String, ParamValue>,
+    name: &str,
+) -> PolarsResult<&'a ParamValue> {
+    params
+        .get(name)
+        .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: {}", name))
+}
+
+/// Parse a dtype string to DType.
+fn parse_dtype(s: &str) -> PolarsResult<DType> {
+    match s {
+        "u8" => Ok(DType::U8),
+        "i8" => Ok(DType::I8),
+        "u16" => Ok(DType::U16),
+        "i16" => Ok(DType::I16),
+        "u32" => Ok(DType::U32),
+        "i32" => Ok(DType::I32),
+        "u64" => Ok(DType::U64),
+        "i64" => Ok(DType::I64),
+        "f32" => Ok(DType::F32),
+        "f64" => Ok(DType::F64),
+        other => Err(polars_err!(ComputeError: "Unknown dtype: {}", other)),
+    }
+}
+
+/// Parse a filter type string.
+fn parse_filter(s: &str) -> PolarsResult<FilterType> {
+    match s {
+        "nearest" => Ok(FilterType::Nearest),
+        "bilinear" | "triangle" => Ok(FilterType::Triangle),
+        "lanczos3" => Ok(FilterType::Lanczos3),
+        "catmullrom" => Ok(FilterType::CatmullRom),
+        "gaussian" => Ok(FilterType::Gaussian),
+        other => Err(polars_err!(ComputeError: "Unknown filter type: {}", other)),
+    }
+}
+
+/// Convert DType to numpy dtype code.
+fn dtype_to_numpy_code(dtype: DType) -> u8 {
+    match dtype {
+        DType::U8 => 0,
+        DType::I8 => 1,
+        DType::U16 => 2,
+        DType::I16 => 3,
+        DType::U32 => 4,
+        DType::I32 => 5,
+        DType::U64 => 6,
+        DType::I64 => 7,
+        DType::F32 => 8,
+        DType::F64 => 9,
+    }
+}

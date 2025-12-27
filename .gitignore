@@ -24,3 +24,10 @@ target
 examples/*.png
 
 .cursor/
+
+# Python
+python/
+python/**
+polars-vision/python/
+polars-vision/python/**
+polars-vision/tests/__pycache__/

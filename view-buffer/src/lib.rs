@@ -53,12 +53,3 @@ pub use interop::ndarray::{AsNdarray, FromNdarray, NdArrayViewAdapter};
 
 #[cfg(feature = "arrow_interop")]
 pub use interop::arrow::{FromArrow, ToArrow};
-
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
-#[cfg(feature = "python")]
-#[pymodule]
-fn view_buffer(_m: &Bound<'_, PyModule>) -> PyResult<()> {
-    Ok(())
-}
