@@ -75,6 +75,8 @@ pub struct PipelineSpec {
 
 impl PipelineSpec {
     /// Determine the output Polars dtype based on the sink format.
+    /// Used for dynamic output type inference based on sink format.
+    #[allow(dead_code)]
     pub fn output_dtype(&self) -> PolarsResult<DataType> {
         match self.sink.format.as_str() {
             "numpy" | "torch" | "blob" | "png" | "jpeg" => Ok(DataType::Binary),
@@ -101,6 +103,8 @@ impl PipelineSpec {
     }
 
     /// Check if all parameters in this pipeline are literals (no expressions).
+    /// Used for optimization when we can pre-compute all parameters.
+    #[allow(dead_code)]
     pub fn is_all_literals(&self) -> bool {
         // Check shape hints
         if let Some(hints) = &self.shape_hints {

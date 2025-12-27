@@ -35,11 +35,15 @@ pub enum ParamValue {
 
 impl ParamValue {
     /// Check if this is a literal value.
+    /// Used for optimization when all parameters are known at planning time.
+    #[allow(dead_code)]
     pub fn is_literal(&self) -> bool {
         matches!(self, ParamValue::Literal { .. })
     }
 
     /// Get the column name if this is an expression reference.
+    /// Used for tracking which columns need to be passed to the plugin.
+    #[allow(dead_code)]
     pub fn column_name(&self) -> Option<&str> {
         match self {
             ParamValue::Expr { col, .. } => col.as_deref(),

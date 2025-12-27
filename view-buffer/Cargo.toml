@@ -69,10 +69,3 @@ required-features = ["image_interop"]
 [[example]]
 name = "comprehensive_demo"
 required-features = ["image_interop"]
-
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = true

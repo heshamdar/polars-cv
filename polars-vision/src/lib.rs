@@ -8,8 +8,18 @@ mod params;
 mod pipeline;
 
 use polars::prelude::*;
+use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
+
+/// Python module entry point for maturin.
+/// The module name `_lib` must match pyproject.toml's `module-name = "polars_vision._lib"`.
+#[pymodule]
+#[pyo3(name = "_lib")]
+fn polars_vision_lib(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Plugin functions are registered via polars_expr, not here
+    Ok(())
+}
 
 use crate::execute::execute_pipeline;
 use crate::pipeline::PipelineSpec;
