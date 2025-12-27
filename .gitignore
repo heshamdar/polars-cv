@@ -32,3 +32,5 @@ polars-vision/python/
 polars-vision/python/**
 polars-vision/tests/__pycache__/
 **__pycache__**
+
+.DS_Store
