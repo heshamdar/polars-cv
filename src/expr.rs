@@ -150,22 +150,21 @@ impl ViewExpr {
 
             // If Op returned None, but we know it produces contiguous output (RequiresContiguous),
             // we can calculate default strides here using self.dtype (or new dtype).
-            if res.is_none()
-                && op.memory_effect() == MemoryEffect::RequiresContiguous {
-                    let new_dtype = op.infer_dtype(&[self.dtype]);
-                    // Calculate default contiguous strides
-                    let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
-                    return Some(l.strides);
-                }
+            if res.is_none() && op.memory_effect() == MemoryEffect::RequiresContiguous {
+                let new_dtype = op.infer_dtype(&[self.dtype]);
+                // Calculate default contiguous strides
+                let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
+                return Some(l.strides);
+            }
 
-                // Special Check for Reshape:
-                // If it is a ViewOp::Reshape, we need to check contiguity.
-                // We use LayoutFacts logic.
-                // If contiguous, we return new contiguous strides.
-                // If NOT contiguous, Reshape as a view is INVALID.
-                // We can detect this here!
-                // (This check assumes we can cast Op to ViewOp to check variant, which is hard generically,
-                // but we are in builder methods below).
+            // Special Check for Reshape:
+            // If it is a ViewOp::Reshape, we need to check contiguity.
+            // We use LayoutFacts logic.
+            // If contiguous, we return new contiguous strides.
+            // If NOT contiguous, Reshape as a view is INVALID.
+            // We can detect this here!
+            // (This check assumes we can cast Op to ViewOp to check variant, which is hard generically,
+            // but we are in builder methods below).
             res
         } else {
             // If input strides are unknown, output usually unknown unless forced contiguous
