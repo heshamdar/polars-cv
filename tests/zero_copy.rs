@@ -1,3 +1,9 @@
+//! Zero-copy verification tests.
+//!
+//! These tests require the `image_interop` and `ndarray_interop` features.
+
+#![cfg(all(feature = "image_interop", feature = "ndarray_interop"))]
+
 use image::Rgb;
 use view_buffer::{ExternalView, ImageViewAdapter, NdArrayViewAdapter, ViewBuffer, ViewExpr};
 
@@ -29,13 +35,15 @@ fn make_image_view() -> ViewBuffer {
 #[test]
 fn case_contiguous_ndarray() {
     let base = make_image_view();
-    let _view = NdArrayViewAdapter::<u8>::try_view(&base).expect("Contiguous ndarray view failed");
+    let _view =
+        NdArrayViewAdapter::<u8>::try_view(&base).expect("Contiguous ndarray view failed");
 }
 
 #[test]
 fn case_contiguous_image() {
     let base = make_image_view();
-    let _view = ImageViewAdapter::<Rgb<u8>>::try_view(&base).expect("Contiguous image view failed");
+    let _view =
+        ImageViewAdapter::<Rgb<u8>>::try_view(&base).expect("Contiguous image view failed");
 }
 
 #[test]
@@ -70,7 +78,8 @@ fn case_transpose_then_materialize_image() {
     let base = make_image_view();
     let t = base.permute(&[1, 0, 2]);
     let m = t.to_contiguous();
-    let _img = ImageViewAdapter::<Rgb<u8>>::try_view(&m).expect("Materialized image view failed");
+    let _img =
+        ImageViewAdapter::<Rgb<u8>>::try_view(&m).expect("Materialized image view failed");
     assert_zero_copy(&base, &t);
     assert_copy(&t, &m);
 }

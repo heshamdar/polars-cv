@@ -1,14 +1,29 @@
+//! Execution planning and running for ViewExpr graphs.
+
+use std::sync::Arc;
+
 use crate::buffer::ViewBuffer;
 use crate::dtype::DType;
 use crate::expr::{ExprNode, ViewExpr};
-use crate::image_view::AsImageView;
-use crate::layout::ExternalLayout;
-use crate::ndarray_view::{AsNdarray, FromNdarray};
-use crate::ops::{ComputeOp, FilterType, ImageOp, ImageOpKind, MemoryEffect, Op, ViewOp};
-use image::imageops;
-use image::{ImageBuffer, Luma, Rgb};
-use std::sync::Arc;
+use crate::ops::{ComputeOp, ImageOp, MemoryEffect, Op, ViewOp};
 
+#[cfg(feature = "image_interop")]
+use crate::layout::ExternalLayout;
+#[cfg(feature = "image_interop")]
+use crate::ops::{FilterType, ImageOpKind};
+
+#[cfg(feature = "image_interop")]
+use crate::image_view::AsImageView;
+
+#[cfg(feature = "ndarray_interop")]
+use crate::ndarray_view::{AsNdarray, FromNdarray};
+
+#[cfg(feature = "image_interop")]
+use image::imageops;
+#[cfg(feature = "image_interop")]
+use image::{ImageBuffer, Luma, Rgb};
+
+/// A step in the execution plan.
 #[derive(Debug, Clone)]
 pub enum PlanStep {
     View(ViewOp),
@@ -17,6 +32,7 @@ pub enum PlanStep {
     MaterializeContiguous,
 }
 
+/// An execution plan built from a ViewExpr graph.
 #[derive(Debug)]
 pub struct ExecutionPlan {
     pub source: ViewBuffer,
@@ -24,6 +40,7 @@ pub struct ExecutionPlan {
 }
 
 impl ExecutionPlan {
+    /// Executes the plan and returns the resulting ViewBuffer.
     pub fn execute(self) -> ViewBuffer {
         let mut current_buffer = self.source;
 
@@ -65,20 +82,90 @@ fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
     match op {
         ComputeOp::Cast(dtype) => buf.cast(dtype),
         ComputeOp::Affine(_params) => unimplemented!("Affine transform compute"),
-        ComputeOp::Scale(factor) => apply_ndarray_op(&buf, |x: f32| x * factor),
-        ComputeOp::Relu => apply_ndarray_op(&buf, |x: f32| if x > 0.0 { x } else { 0.0 }),
-        // NEW: Delegate fused ops to the buffer implementation (efficient strided iterator)
+        ComputeOp::Scale(factor) => apply_scalar_op(&buf, |x: f32| x * factor),
+        ComputeOp::Relu => apply_scalar_op(&buf, |x: f32| if x > 0.0 { x } else { 0.0 }),
         ComputeOp::Fused(ref kernel) => buf.apply_fused_kernel(kernel),
+        ComputeOp::Normalize(method) => apply_normalize(&buf, method),
+        ComputeOp::Clamp { min, max } => apply_scalar_op(&buf, move |x: f32| x.clamp(min, max)),
     }
 }
 
+fn apply_normalize(
+    buf: &ViewBuffer,
+    method: crate::ops::NormalizeMethod,
+) -> ViewBuffer {
+    use crate::ops::NormalizeMethod;
+
+    if buf.dtype() != DType::F32 {
+        panic!("Normalize requires F32 dtype");
+    }
+
+    let contig = buf.to_contiguous();
+    let count = contig.layout.num_elements();
+    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+
+    let new_data: Vec<f32> = match method {
+        NormalizeMethod::MinMax => {
+            let min = src.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = src.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let range = max - min;
+            if range == 0.0 {
+                src.to_vec()
+            } else {
+                src.iter().map(|&x| (x - min) / range).collect()
+            }
+        }
+        NormalizeMethod::ZScore => {
+            let n = count as f32;
+            let mean = src.iter().sum::<f32>() / n;
+            let variance = src.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
+            let std = variance.sqrt();
+            if std == 0.0 {
+                src.iter().map(|_| 0.0).collect()
+            } else {
+                src.iter().map(|&x| (x - mean) / std).collect()
+            }
+        }
+    };
+
+    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
+}
+
+/// Apply a scalar operation element-wise.
+fn apply_scalar_op<F>(buf: &ViewBuffer, op: F) -> ViewBuffer
+where
+    F: Fn(f32) -> f32,
+{
+    // Try to use ndarray if available for efficient strided iteration
+    #[cfg(feature = "ndarray_interop")]
+    {
+        if buf.dtype() == DType::F32 {
+            if let Ok(view) = buf.as_array_view::<f32>() {
+                let result_array = view.mapv(&op);
+                return ViewBuffer::from_array(result_array);
+            }
+        }
+    }
+
+    // Fallback: use contiguous buffer
+    if buf.dtype() == DType::F32 {
+        let contig = buf.to_contiguous();
+        let count = contig.layout.num_elements();
+        let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+        let new_data: Vec<f32> = src.iter().map(|&x| op(x)).collect();
+        ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
+    } else {
+        unimplemented!("Scalar ops only implemented for F32");
+    }
+}
+
+#[cfg(feature = "image_interop")]
 fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
         ImageOpKind::Threshold(thresh) => {
             if let Ok(view) = buf.as_image_view::<Luma<u8>>() {
-                // EXPLICIT TYPE ANNOTATION: Vec<u8>
-                // This prevents '255' from being inferred as i32, ensuring the result is DType::U8
-                let mut new_data: Vec<u8> = Vec::with_capacity((view.width * view.height) as usize);
+                let mut new_data: Vec<u8> =
+                    Vec::with_capacity((view.width * view.height) as usize);
                 for y in 0..view.height {
                     let row_start = (y as usize) * view.row_stride;
                     let row_slice = &view.data[row_start..row_start + view.width as usize];
@@ -140,7 +227,7 @@ fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 let gray = imageops::grayscale(&img_buf);
                 ViewBuffer::from_vec(gray.into_raw()).reshape(vec![h as usize, w as usize, 1])
             } else {
-                panic!("Failed to create ImageBuffer for grayscale operation (layout mismatch)");
+                panic!("Failed to create ImageBuffer for grayscale operation");
             }
         }
         ImageOpKind::Resize {
@@ -177,7 +264,7 @@ fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 
             if c == 3 {
                 let img_buf: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_raw(w, h, raw_vec)
-                    .expect("Failed to create ImageBuffer from compatible buffer");
+                    .expect("Failed to create ImageBuffer");
                 let resized = imageops::resize(&img_buf, width, height, img_filter);
                 ViewBuffer::from_vec(resized.into_raw()).reshape(vec![
                     height as usize,
@@ -186,7 +273,7 @@ fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 ])
             } else if c == 1 {
                 let img_buf: ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_raw(w, h, raw_vec)
-                    .expect("Failed to create ImageBuffer from compatible buffer");
+                    .expect("Failed to create ImageBuffer");
                 let resized = imageops::resize(&img_buf, width, height, img_filter);
                 ViewBuffer::from_vec(resized.into_raw()).reshape(vec![
                     height as usize,
@@ -194,7 +281,7 @@ fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                     1,
                 ])
             } else {
-                panic!("Resize only supports 1 or 3 channels currently");
+                panic!("Resize only supports 1 or 3 channels");
             }
         }
         ImageOpKind::Blur { sigma } => {
@@ -231,21 +318,13 @@ fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     }
 }
 
-fn apply_ndarray_op<F>(buf: &ViewBuffer, op: F) -> ViewBuffer
-where
-    F: Fn(f32) -> f32,
-{
-    match buf.dtype() {
-        DType::F32 => {
-            let view = buf.as_array_view::<f32>().expect("Failed to create view");
-            let result_array = view.mapv(op);
-            ViewBuffer::from_array(result_array)
-        }
-        _ => unimplemented!("Math ops only implemented for F32 in this prototype"),
-    }
+#[cfg(not(feature = "image_interop"))]
+fn apply_image(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
+    panic!("Image operations require the 'image_interop' feature");
 }
 
 impl ViewExpr {
+    /// Builds and returns an execution plan from the expression graph.
     pub fn plan(self: &Arc<Self>) -> ExecutionPlan {
         let optimized_expr = self.optimize();
         optimized_expr.build_plan()
@@ -257,6 +336,12 @@ impl ViewExpr {
                 source: buf.as_ref().clone(),
                 steps: Vec::new(),
             },
+            ExprNode::LazySource { .. } => {
+                panic!("LazySource must be resolved before building plan");
+            }
+            ExprNode::Placeholder(_) => {
+                panic!("Placeholder must be bound to data before building plan");
+            }
             ExprNode::View(op, child) => {
                 let mut plan = child.build_plan();
                 plan.steps.push(PlanStep::View(op.clone()));
@@ -293,6 +378,10 @@ impl ViewExpr {
 
                 plan.steps.push(PlanStep::Image(op.clone()));
                 plan
+            }
+            ExprNode::Sink { input, .. } => {
+                // Sink doesn't add steps; the format is handled after execution
+                input.build_plan()
             }
         }
     }

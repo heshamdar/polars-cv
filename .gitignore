@@ -22,3 +22,5 @@ target
 
 # Examples
 examples/*.png
+
+.cursor/

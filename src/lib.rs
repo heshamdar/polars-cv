@@ -20,17 +20,22 @@ pub mod io_image;
 #[cfg(feature = "image_interop")]
 pub mod image_view;
 
-// Re-exports
+// Re-exports - Core types
 pub use buffer::ViewBuffer;
 pub use dtype::DType;
-pub use expr::ViewExpr;
+pub use engine::execute_plan;
+pub use expr::{PipelineCostReport, ViewExpr};
+pub use layout::{ExternalLayout, LayoutFacts, LayoutReport};
 pub use ops::affine::AffineParams;
 pub use planner::{ExecutionPlan, PlanStep};
-pub use layout::{ExternalLayout, LayoutReport, LayoutFacts};
-pub use views::{ExternalView, validate_layout};
-pub use protocol::{ViewHeader, dtype_to_u8, u8_to_dtype};
-pub use engine::execute_plan; // NEW
-pub use ops::ViewDto; // NEW: Export DTO for easier access
+pub use protocol::{dtype_to_u8, u8_to_dtype, ViewHeader};
+pub use views::{validate_layout, ExternalView};
+
+// Re-exports - Ops
+pub use ops::{
+    ComputeOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op, OpCost, OpCostReport,
+    PlaceholderMeta, SinkFormat, SourceFormat, ValidationError, ViewDto, ViewOp,
+};
 
 #[cfg(feature = "image_interop")]
 pub use image_view::{ImageView, AsImageView, ImageViewAdapter};

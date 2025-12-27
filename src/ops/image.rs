@@ -1,7 +1,9 @@
 use crate::dtype::DType;
-use crate::ops::core::{Op, MemoryEffect};
+use crate::ops::core::{MemoryEffect, Op};
+use crate::ops::cost::OpCost;
+
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -29,6 +31,15 @@ pub struct ImageOp {
 }
 
 impl Op for ImageOp {
+    fn name(&self) -> &'static str {
+        match &self.kind {
+            ImageOpKind::Threshold(_) => "Threshold",
+            ImageOpKind::Resize { .. } => "Resize",
+            ImageOpKind::Blur { .. } => "Blur",
+            ImageOpKind::Grayscale => "Grayscale",
+        }
+    }
+
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
         let input_shape = inputs[0];
         match &self.kind {
@@ -42,7 +53,7 @@ impl Op for ImageOp {
                     s.push(1);
                 }
                 s
-            },
+            }
             ImageOpKind::Resize { width, height, .. } => {
                 let mut s = input_shape.to_vec();
                 if s.len() >= 2 {
@@ -50,7 +61,7 @@ impl Op for ImageOp {
                     s[1] = *width as usize;
                 }
                 s
-            },
+            }
         }
     }
 
@@ -69,6 +80,11 @@ impl Op for ImageOp {
             ImageOpKind::Blur { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::Grayscale => MemoryEffect::RequiresContiguous,
         }
+    }
+
+    fn intrinsic_cost(&self) -> OpCost {
+        // All image ops allocate new buffers
+        OpCost::Allocating
     }
 
     fn infer_strides(&self, _input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>> {

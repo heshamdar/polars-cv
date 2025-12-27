@@ -41,15 +41,36 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [features]
-default = ["ndarray_interop", "image_interop", "arrow_interop"]
+# No interops by default - minimal core for fast compilation
+default = []
 
+# External crate interops (require dependencies)
 ndarray_interop = ["dep:ndarray"]
 image_interop = ["dep:image"]
 arrow_interop = ["dep:arrow"]
+
+# Output format support (no external deps, just format logic)
+numpy_interop = []
+torch_interop = []
+
+# Convenience bundles
+all_interops = [
+    "ndarray_interop",
+    "image_interop",
+    "arrow_interop",
+    "numpy_interop",
+    "torch_interop",
+]
+
+# Python bindings
 python = ["dep:pyo3"]
 
-# NEW: Serde support
+# Serialization support
 serde = ["dep:serde", "dep:serde_json", "dep:bytemuck"]
+
+[[example]]
+name = "demo"
+required-features = ["image_interop"]
 
 [profile.release]
 opt-level = 3

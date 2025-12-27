@@ -1,10 +1,12 @@
 use std::sync::Arc;
-use crate::dtype::{DType, ViewType};
-use crate::layout::{Layout, ExternalLayout, LayoutReport, LayoutFacts};
-use crate::protocol::{ViewHeader, MAGIC_BYTES, VERSION, HEADER_SIZE, dtype_to_u8, u8_to_dtype};
-use crate::ops::scalar::{FusedKernel, ScalarOp}; // RESTORED: Needed for apply_fused_kernel
-use thiserror::Error;
+
 use num_traits::AsPrimitive;
+use thiserror::Error;
+
+use crate::dtype::{DType, ViewType};
+use crate::layout::{ExternalLayout, Layout, LayoutFacts, LayoutReport};
+use crate::ops::scalar::{FusedKernel, ScalarOp};
+use crate::protocol::{dtype_to_u8, u8_to_dtype, ViewHeader, HEADER_SIZE, MAGIC_BYTES, VERSION};
 
 #[derive(Error, Debug)]
 pub enum BufferError {
@@ -20,9 +22,13 @@ pub enum BufferError {
     InvalidProtocol(String),
 }
 
+/// Storage backend for ViewBuffer data.
 #[derive(Debug, Clone)]
 pub enum BufferStorage {
+    /// Owned Rust Vec wrapped in Arc for cheap cloning.
     Rust(Arc<Vec<u8>>),
+    /// Arrow buffer for zero-copy interop.
+    #[cfg(feature = "arrow_interop")]
     Arrow(arrow::buffer::Buffer),
 }
 
@@ -30,6 +36,7 @@ impl BufferStorage {
     pub fn as_ptr(&self) -> *const u8 {
         match self {
             BufferStorage::Rust(v) => v.as_ptr(),
+            #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(b) => b.as_ptr(),
         }
     }
@@ -38,6 +45,7 @@ impl BufferStorage {
     pub fn len(&self) -> usize {
         match self {
             BufferStorage::Rust(v) => v.len(),
+            #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(b) => b.len(),
         }
     }
@@ -80,7 +88,13 @@ impl ViewBuffer {
         }
     }
     
-    pub fn from_arrow_buffer(buffer: arrow::buffer::Buffer, shape: Vec<usize>, dtype: DType) -> Self {
+    /// Creates a ViewBuffer from an Arrow buffer (zero-copy).
+    #[cfg(feature = "arrow_interop")]
+    pub fn from_arrow_buffer(
+        buffer: arrow::buffer::Buffer,
+        shape: Vec<usize>,
+        dtype: DType,
+    ) -> Self {
         let layout = Layout::new_contiguous(shape, dtype);
         Self {
             data: BufferStorage::Arrow(buffer),
@@ -131,9 +145,12 @@ impl ViewBuffer {
         )
     }
 
+    /// Returns a unique identifier for the underlying storage.
+    /// Used for zero-copy verification in tests.
     pub fn storage_id(&self) -> usize {
         match &self.data {
             BufferStorage::Rust(arc) => Arc::as_ptr(arc) as usize,
+            #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(buf) => buf.as_ptr() as usize,
         }
     }

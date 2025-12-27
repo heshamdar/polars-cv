@@ -1,17 +1,45 @@
 use std::sync::Arc;
+
 use crate::buffer::ViewBuffer;
 use crate::dtype::DType;
-use crate::ops::{ViewOp, ComputeOp, ImageOp, ImageOpKind, FilterType, Op, ViewDto};
-use crate::ops::affine::AffineParams;
-use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::layout::Layout;
+use crate::ops::affine::AffineParams;
+use crate::ops::cost::{OpCost, OpCostReport};
+use crate::ops::io::{PlaceholderMeta, SinkFormat, SourceFormat};
+use crate::ops::scalar::{FusedKernel, ScalarOp};
+use crate::ops::{
+    ComputeOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op, ViewDto, ViewOp,
+};
 
+/// A node in the expression graph.
 #[derive(Debug, Clone)]
 pub enum ExprNode {
+    /// Concrete source data.
     Source(Arc<ViewBuffer>),
+
+    /// Lazy source - data stored but not decoded until execution.
+    LazySource {
+        format: SourceFormat,
+        data: Arc<[u8]>,
+    },
+
+    /// Placeholder - pipeline defined without data, shape/dtype provided at bind time.
+    Placeholder(PlaceholderMeta),
+
+    /// View operation (zero-copy).
     View(ViewOp, Arc<ViewExpr>),
+
+    /// Compute operation (allocating).
     Compute(ComputeOp, Vec<Arc<ViewExpr>>),
+
+    /// Image processing operation.
     Image(ImageOp, Arc<ViewExpr>),
+
+    /// Terminal sink specifying output format.
+    Sink {
+        format: SinkFormat,
+        input: Arc<ViewExpr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -23,12 +51,53 @@ pub struct ViewExpr {
 }
 
 impl ViewExpr {
+    // --- Source Constructors ---
+
+    /// Creates a new expression from a concrete ViewBuffer.
     pub fn new_source(buffer: ViewBuffer) -> Arc<Self> {
         Arc::new(Self {
             shape: buffer.shape().to_vec(),
-            strides: Some(buffer.strides_bytes().to_vec()), // Initial strides known
+            strides: Some(buffer.strides_bytes().to_vec()),
             dtype: buffer.dtype(),
             node: ExprNode::Source(Arc::new(buffer)),
+        })
+    }
+
+    /// Creates a lazy source that will be decoded at execution time.
+    pub fn new_lazy_source(format: SourceFormat, data: Vec<u8>, dtype: DType) -> Arc<Self> {
+        Arc::new(Self {
+            shape: vec![], // Unknown until execution
+            strides: None,
+            dtype,
+            node: ExprNode::LazySource {
+                format,
+                data: data.into(),
+            },
+        })
+    }
+
+    /// Creates a placeholder for context-free pipeline definition.
+    pub fn new_placeholder(meta: PlaceholderMeta) -> Arc<Self> {
+        Arc::new(Self {
+            shape: meta.expected_shape.clone().unwrap_or_default(),
+            strides: None,
+            dtype: meta.expected_dtype.unwrap_or(DType::U8),
+            node: ExprNode::Placeholder(meta),
+        })
+    }
+
+    // --- Sink Operations ---
+
+    /// Terminates the pipeline with a specific output format.
+    pub fn sink(self: &Arc<Self>, format: SinkFormat) -> Arc<Self> {
+        Arc::new(Self {
+            shape: self.shape.clone(),
+            strides: self.strides.clone(),
+            dtype: self.dtype,
+            node: ExprNode::Sink {
+                format,
+                input: self.clone(),
+            },
         })
     }
 
@@ -48,19 +117,21 @@ impl ViewExpr {
                 ComputeOp::Scale(f) => self.scale(f),
                 ComputeOp::Relu => self.relu(),
                 ComputeOp::Fused(kernel) => self.fused(kernel),
+                ComputeOp::Normalize(method) => self.normalize(method),
+                ComputeOp::Clamp { min, max } => self.clamp(min, max),
             },
             ViewDto::Image(img) => match img.kind {
                 ImageOpKind::Threshold(val) => self.threshold(val),
-                ImageOpKind::Resize { width, height, filter } => self.resize(width, height, filter),
+                ImageOpKind::Resize {
+                    width,
+                    height,
+                    filter,
+                } => self.resize(width, height, filter),
                 ImageOpKind::Blur { sigma } => self.blur(sigma),
                 ImageOpKind::Grayscale => self.grayscale(),
             },
             ViewDto::Materialize => {
-                // Explicit materialization is generally handled by the Planner inserting 
-                // MaterializeContiguous steps where needed.
-                // If a client explicitly requests it (e.g. for debug), we treat it as a No-Op in the graph
-                // because the Planner ensures validity for the next step anyway. 
-                // Alternatively, we could add a `ForceContiguous` ViewOp, but for now we pass through.
+                // Explicit materialization handled by Planner
                 self.clone()
             }
         }
@@ -266,6 +337,32 @@ impl ViewExpr {
         })
     }
 
+    /// Normalize data using the specified method.
+    /// Only supports 2D (HW) or single-channel (HW1) shapes with F32 dtype.
+    pub fn normalize(self: &Arc<Self>, method: NormalizeMethod) -> Arc<Self> {
+        let op = ComputeOp::Normalize(method);
+        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_strides = self.calc_strides(&op, &new_shape);
+
+        Arc::new(Self {
+            node: ExprNode::Compute(op, vec![self.clone()]),
+            shape: new_shape,
+            strides: new_strides,
+            dtype: self.dtype,
+        })
+    }
+
+    /// Clamp values to [min, max] range.
+    pub fn clamp(self: &Arc<Self>, min: f32, max: f32) -> Arc<Self> {
+        let op = ComputeOp::Clamp { min, max };
+        Arc::new(Self {
+            node: ExprNode::Compute(op, vec![self.clone()]),
+            shape: self.shape.clone(),
+            strides: self.strides.clone(),
+            dtype: self.dtype,
+        })
+    }
+
     // --- Image Ops ---
 
     pub fn resize(self: &Arc<Self>, width: u32, height: u32, filter: FilterType) -> Arc<Self> {
@@ -333,12 +430,18 @@ impl ViewExpr {
     pub fn optimize(self: &Arc<Self>) -> Arc<Self> {
         let optimized_node = match &self.node {
             ExprNode::Source(_) => return self.clone(),
+            ExprNode::LazySource { .. } => return self.clone(),
+            ExprNode::Placeholder(_) => return self.clone(),
             ExprNode::View(op, child) => ExprNode::View(op.clone(), child.optimize()),
             ExprNode::Compute(op, children) => {
                 let opt_children: Vec<_> = children.iter().map(|c| c.optimize()).collect();
                 ExprNode::Compute(op.clone(), opt_children)
-            },
+            }
             ExprNode::Image(op, child) => ExprNode::Image(op.clone(), child.optimize()),
+            ExprNode::Sink { format, input } => ExprNode::Sink {
+                format: format.clone(),
+                input: input.optimize(),
+            },
         };
 
         match optimized_node {
@@ -416,24 +519,34 @@ impl ViewExpr {
         info.push_str(&format!("{}  Shape: {:?}\n", indent, self.shape));
         info.push_str(&format!("{}  Strides: {:?}\n", indent, self.strides));
         info.push_str(&format!("{}  DType: {:?}\n", indent, self.dtype));
-        
+
         match &self.node {
             ExprNode::Source(_) => {
                 info.push_str(&format!("{}  Source: ViewBuffer\n", indent));
-            },
+            }
+            ExprNode::LazySource { format, .. } => {
+                info.push_str(&format!("{}  Format: {:?}\n", indent, format));
+            }
+            ExprNode::Placeholder(meta) => {
+                info.push_str(&format!("{}  Expected: {:?}\n", indent, meta));
+            }
             ExprNode::View(op, child) => {
                 info.push_str(&format!("{}  Op: {:?}\n", indent, op));
                 info.push_str(&child.explain_impl(depth + 1));
-            },
+            }
             ExprNode::Compute(op, children) => {
                 info.push_str(&format!("{}  Op: {:?}\n", indent, op));
                 for child in children {
                     info.push_str(&child.explain_impl(depth + 1));
                 }
-            },
+            }
             ExprNode::Image(op, child) => {
                 info.push_str(&format!("{}  Op: {:?}\n", indent, op));
                 info.push_str(&child.explain_impl(depth + 1));
+            }
+            ExprNode::Sink { format, input } => {
+                info.push_str(&format!("{}  Format: {:?}\n", indent, format));
+                info.push_str(&input.explain_impl(depth + 1));
             }
         }
         info
@@ -442,11 +555,139 @@ impl ViewExpr {
     fn node_type_name(&self) -> &'static str {
         match &self.node {
             ExprNode::Source(_) => "Source",
+            ExprNode::LazySource { .. } => "LazySource",
+            ExprNode::Placeholder(_) => "Placeholder",
             ExprNode::View(_, _) => "View",
             ExprNode::Compute(_, _) => "Compute",
             ExprNode::Image(_, _) => "Image",
+            ExprNode::Sink { .. } => "Sink",
         }
     }
+
+    // --- Cost Reporting ---
+
+    /// Generates a cost report for the entire pipeline.
+    pub fn cost_report(&self) -> PipelineCostReport {
+        let mut operations = Vec::new();
+        self.collect_costs(&mut operations);
+
+        let total_allocations = operations
+            .iter()
+            .filter(|r| r.intrinsic_cost == OpCost::Allocating)
+            .count();
+
+        let io_operations = operations
+            .iter()
+            .filter(|r| r.intrinsic_cost == OpCost::IO)
+            .count();
+
+        let dtype_changes: Vec<_> = operations
+            .iter()
+            .filter_map(|r| {
+                r.dtype_change
+                    .map(|(from, to)| (r.op_name.to_string(), from, to))
+            })
+            .collect();
+
+        PipelineCostReport {
+            operations,
+            total_allocations,
+            dtype_changes,
+            io_operations,
+        }
+    }
+
+    fn collect_costs(&self, ops: &mut Vec<OpCostReport>) {
+        match &self.node {
+            ExprNode::Source(_) => {}
+            ExprNode::LazySource { format, .. } => {
+                ops.push(OpCostReport::new(format.name(), format.cost()));
+            }
+            ExprNode::Placeholder(_) => {}
+            ExprNode::View(op, child) => {
+                child.collect_costs(ops);
+                ops.push(OpCostReport::new(op.name(), op.intrinsic_cost()));
+            }
+            ExprNode::Compute(op, children) => {
+                for child in children {
+                    child.collect_costs(ops);
+                }
+                let input_dtype = children.first().map(|c| c.dtype).unwrap_or(DType::U8);
+                let output_dtype = op.infer_dtype(&[input_dtype]);
+                if input_dtype != output_dtype {
+                    ops.push(OpCostReport::with_dtype_change(
+                        op.name(),
+                        op.intrinsic_cost(),
+                        input_dtype,
+                        output_dtype,
+                    ));
+                } else {
+                    ops.push(OpCostReport::new(op.name(), op.intrinsic_cost()));
+                }
+            }
+            ExprNode::Image(op, child) => {
+                child.collect_costs(ops);
+                let input_dtype = child.dtype;
+                let output_dtype = op.infer_dtype(&[input_dtype]);
+                if input_dtype != output_dtype {
+                    ops.push(OpCostReport::with_dtype_change(
+                        op.name(),
+                        op.intrinsic_cost(),
+                        input_dtype,
+                        output_dtype,
+                    ));
+                } else {
+                    ops.push(OpCostReport::new(op.name(), op.intrinsic_cost()));
+                }
+            }
+            ExprNode::Sink { format, input } => {
+                input.collect_costs(ops);
+                ops.push(OpCostReport::new(format.name(), format.cost()));
+            }
+        }
+    }
+
+    /// Returns a human-readable cost explanation.
+    pub fn explain_costs(&self) -> String {
+        let report = self.cost_report();
+        let mut output = String::new();
+
+        output.push_str("Pipeline Cost Summary:\n");
+        output.push_str(&format!("  Operations: {}\n", report.operations.len()));
+        output.push_str(&format!("  Allocations: {}\n", report.total_allocations));
+        output.push_str(&format!("  DType changes: {}\n", report.dtype_changes.len()));
+        output.push_str(&format!("  I/O operations: {}\n", report.io_operations));
+        output.push_str("\nDetails:\n");
+
+        for op in &report.operations {
+            let dtype_info = if let Some((from, to)) = op.dtype_change {
+                format!(" ({:?} -> {:?})", from, to)
+            } else {
+                String::new()
+            };
+            output.push_str(&format!(
+                "  {} [{}]{}\n",
+                op.op_name,
+                op.intrinsic_cost.symbol(),
+                dtype_info
+            ));
+        }
+
+        output
+    }
+}
+
+/// Summary of costs for an entire pipeline.
+#[derive(Debug)]
+pub struct PipelineCostReport {
+    /// Cost reports for each operation.
+    pub operations: Vec<OpCostReport>,
+    /// Total number of allocating operations.
+    pub total_allocations: usize,
+    /// List of (op_name, from_dtype, to_dtype) for dtype changes.
+    pub dtype_changes: Vec<(String, DType, DType)>,
+    /// Number of I/O operations.
+    pub io_operations: usize,
 }
 
 // --- Helper for Fusion ---
