@@ -89,3 +89,37 @@ fn test_storage_ids() {
     let c = a.to_contiguous();
     assert_zero_copy(&a, &c);
 }
+
+#[test]
+fn test_slice_clamps_end_to_shape() {
+    // Test that slice clamps end values exceeding the shape
+    let base = make_image_view(); // 100x100x3
+    let crop = base.slice(&[10, 10, 0], &[90, 90, usize::MAX]);
+    // The usize::MAX should be clamped to the actual channel dimension (3)
+    assert_eq!(crop.shape(), &[80, 80, 3]);
+    assert_zero_copy(&base, &crop);
+
+    // Verify we can materialize without overflow
+    let contiguous = crop.to_contiguous();
+    assert_eq!(contiguous.shape(), &[80, 80, 3]);
+}
+
+#[test]
+fn test_slice_clamps_start_and_end() {
+    let base = make_image_view(); // 100x100x3
+                                  // Test with start > dimension size (should clamp to shape, resulting in 0-size dim)
+    let crop = base.slice(&[200, 0, 0], &[300, 50, 3]);
+    assert_eq!(crop.shape(), &[0, 50, 3]);
+
+    // Test with both start and end beyond bounds
+    let crop2 = base.slice(&[0, 0, 0], &[150, 150, 5]);
+    assert_eq!(crop2.shape(), &[100, 100, 3]);
+}
+
+#[test]
+fn test_slice_handles_reversed_bounds() {
+    let base = make_image_view(); // 100x100x3
+                                  // Test with start > end (should produce zero-size dimension via saturating_sub)
+    let crop = base.slice(&[50, 0, 0], &[30, 50, 3]);
+    assert_eq!(crop.shape(), &[0, 50, 3]);
+}

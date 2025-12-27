@@ -14,6 +14,11 @@ import polars as pl
 
 from .base import BaseFrameworkAdapter, OperationParams, OperationType
 
+# import os
+
+# os.environ["POLARS_VERBOSE"] = "1"
+
+
 if TYPE_CHECKING:
     import numpy.typing as npt
 
@@ -52,8 +57,8 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
             True if polars-vision can be imported, False otherwise.
         """
         try:
-            from polars_vision import Pipeline  # noqa: F401
             import polars_vision.expressions  # noqa: F401
+            from polars_vision import Pipeline  # noqa: F401
 
             return True
         except ImportError:
@@ -393,8 +398,9 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
         """
         # For blob format, we need to decode
         # This is a simplified version - full implementation would parse the blob
-        from PIL import Image
         import io
+
+        from PIL import Image
 
         # Try to load as standard image format first
         try:

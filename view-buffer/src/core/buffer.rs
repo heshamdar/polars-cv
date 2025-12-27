@@ -441,15 +441,25 @@ impl ViewBuffer {
     }
 
     /// Slices the buffer along all dimensions.
+    ///
+    /// Start and end indices are clamped to valid ranges. If an end index
+    /// exceeds the dimension size, it is clamped to the dimension size.
+    /// If a start index exceeds the dimension size, it is clamped and
+    /// the resulting dimension will have size 0.
     pub fn slice(&self, start: &[usize], end: &[usize]) -> Self {
         let mut new_offset = self.layout.offset as isize;
         let mut new_shape = Vec::new();
 
         for i in 0..self.layout.shape.len() {
-            let s = start[i];
-            let e = end[i];
+            let dim_size = self.layout.shape[i];
+            // Clamp start and end to valid bounds
+            let s = start[i].min(dim_size);
+            let e = end[i].min(dim_size);
+            // Ensure end >= start to avoid underflow
+            let dim_len = e.saturating_sub(s);
+
             new_offset += (s as isize) * self.layout.strides[i];
-            new_shape.push(e - s);
+            new_shape.push(dim_len);
         }
 
         Self {
@@ -489,14 +499,28 @@ impl ViewBuffer {
     // --- Compute / Materialization ---
 
     /// Converts the buffer to a contiguous layout, copying if necessary.
+    ///
+    /// # Panics
+    /// Panics if the total allocation size would overflow `usize`.
     pub fn to_contiguous(&self) -> Self {
         if self.layout.is_contiguous() {
             return self.clone();
         }
 
-        let total_elems = self.layout.shape.iter().product();
+        // Use checked arithmetic to detect overflow early with a clear error message
+        let total_elems: usize = self
+            .layout
+            .shape
+            .iter()
+            .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+            .expect("shape product overflow: buffer dimensions are too large");
+
         let dtype_size = self.dtype().size_of();
-        let mut new_data = Vec::with_capacity(total_elems * dtype_size);
+        let total_bytes = total_elems
+            .checked_mul(dtype_size)
+            .expect("allocation size overflow: buffer is too large to materialize");
+
+        let mut new_data = Vec::with_capacity(total_bytes);
 
         let mut indices = vec![0; self.layout.shape.len()];
         let shape = &self.layout.shape;
