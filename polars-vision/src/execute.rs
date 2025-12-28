@@ -99,7 +99,7 @@ fn execute_row(
 }
 
 /// Decode the source bytes into a ViewBuffer.
-fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<ViewBuffer> {
+pub fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<ViewBuffer> {
     match pipeline.source_format() {
         "image_bytes" => {
             // Use image crate to decode
@@ -136,7 +136,7 @@ fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<ViewBuff
 }
 
 /// Encode the result buffer to the sink format.
-fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult<Vec<u8>> {
+pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult<Vec<u8>> {
     match pipeline.sink_format() {
         "numpy" => {
             // Export as NumPy-compatible format

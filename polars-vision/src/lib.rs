@@ -4,6 +4,7 @@
 //! processing pipelines to Polars DataFrame columns, powered by view-buffer.
 
 mod execute;
+mod graph;
 mod params;
 mod pipeline;
 
@@ -22,6 +23,7 @@ fn polars_vision_lib(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> 
 }
 
 use crate::execute::execute_pipeline;
+use crate::graph::PipelineGraph;
 use crate::pipeline::PipelineSpec;
 
 /// Kwargs passed from Python to the plugin function.
@@ -63,4 +65,31 @@ fn vb_pipeline(inputs: &[Series], kwargs: PipelineKwargs) -> PolarsResult<Series
 
     // Execute the pipeline
     execute_pipeline(data_series, &pipeline, &expr_columns)
+}
+
+/// Kwargs for the graph-based pipeline function.
+#[derive(Debug, Deserialize)]
+pub struct GraphKwargs {
+    /// JSON-serialized pipeline graph specification.
+    pub graph_json: String,
+}
+
+/// Apply a pipeline graph (DAG) to multiple binary columns.
+///
+/// This enables composable pipelines where multiple pipelines can be
+/// fused into a single execution without intermediate serialization.
+///
+/// The graph is executed in topological order, with ViewBuffers passed
+/// directly between nodes.
+#[polars_expr(output_type=Binary)]
+fn vb_pipeline_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
+    // Parse the graph specification
+    let graph = PipelineGraph::from_json(&kwargs.graph_json)?;
+
+    // Build expression columns map (empty for now, may be used for dynamic params)
+    let expr_columns: std::collections::HashMap<String, &Series> =
+        std::collections::HashMap::new();
+
+    // Execute the graph
+    graph.execute(inputs, &expr_columns)
 }

@@ -31,6 +31,22 @@ pub enum ValidationError {
     /// Generic validation error.
     #[error("Validation failed: {message}")]
     Generic { message: String },
+
+    /// Insufficient inputs for operation.
+    #[error("Operation requires {expected} inputs, got {got}")]
+    InsufficientInputs { expected: usize, got: usize },
+
+    /// Shape mismatch between inputs.
+    #[error("Shape mismatch: expected {expected:?}, got {got:?}")]
+    ShapeMismatch { expected: Vec<usize>, got: Vec<usize> },
+
+    /// Invalid axis for operation.
+    #[error("Invalid axis {axis} for array with {ndim} dimensions")]
+    InvalidAxis { axis: usize, ndim: usize },
+
+    /// Invalid parameter value.
+    #[error("Invalid parameter '{param}': {reason}")]
+    InvalidParameter { param: String, reason: String },
 }
 
 // --- Shape Predicates ---

@@ -156,6 +156,122 @@ impl ViewBuffer {
         Self::from_slice_aligned(data, SIMD_ALIGNMENT)
     }
 
+    /// Creates a ViewBuffer from a Vec with a specific shape.
+    ///
+    /// # Arguments
+    /// * `data` - Vector of elements.
+    /// * `shape` - Shape of the resulting buffer.
+    ///
+    /// # Panics
+    /// Panics if the data length doesn't match the shape product.
+    pub fn from_vec_with_shape<T: ViewType>(data: Vec<T>, shape: Vec<usize>) -> Self {
+        let expected_len: usize = shape.iter().product();
+        assert_eq!(
+            data.len(),
+            expected_len,
+            "Data length {} doesn't match shape {:?} (expected {})",
+            data.len(),
+            shape,
+            expected_len
+        );
+
+        let dtype = T::DTYPE;
+        let layout = Layout::new_contiguous(shape, dtype);
+
+        let data_bytes = unsafe {
+            let mut v_clone = std::mem::ManuallyDrop::new(data);
+            let ptr = v_clone.as_mut_ptr() as *mut u8;
+            let len = v_clone.len() * std::mem::size_of::<T>();
+            let cap = v_clone.capacity() * std::mem::size_of::<T>();
+            Vec::from_raw_parts(ptr, len, cap)
+        };
+
+        Self {
+            data: BufferStorage::Rust(Arc::new(data_bytes)),
+            layout,
+        }
+    }
+
+    /// Creates a scalar ViewBuffer (shape [1]).
+    pub fn from_scalar<T: ViewType>(value: T) -> Self {
+        Self::from_vec_with_shape(vec![value], vec![1])
+    }
+
+    /// Cast buffer elements to a different dtype.
+    ///
+    /// This creates a new buffer with the converted values.
+    pub fn cast_to(&self, target_dtype: DType) -> Self {
+        if self.layout.dtype == target_dtype {
+            return self.clone();
+        }
+
+        let contig = self.to_contiguous();
+        let shape = contig.shape().to_vec();
+        let _len: usize = shape.iter().product();
+
+        // Macro to handle all dtype combinations
+        macro_rules! cast_impl {
+            ($src:ty, $dst_dtype:expr) => {{
+                let src_data = contig.as_slice::<$src>();
+                match $dst_dtype {
+                    DType::U8 => {
+                        let data: Vec<u8> = src_data.iter().map(|&x| x as u8).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                    DType::I8 => {
+                        let data: Vec<i8> = src_data.iter().map(|&x| x as i8).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                    DType::U16 => {
+                        let data: Vec<u16> = src_data.iter().map(|&x| x as u16).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                    DType::I16 => {
+                        let data: Vec<i16> = src_data.iter().map(|&x| x as i16).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                    DType::U32 => {
+                        let data: Vec<u32> = src_data.iter().map(|&x| x as u32).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                    DType::I32 => {
+                        let data: Vec<i32> = src_data.iter().map(|&x| x as i32).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                    DType::U64 => {
+                        let data: Vec<u64> = src_data.iter().map(|&x| x as u64).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                    DType::I64 => {
+                        let data: Vec<i64> = src_data.iter().map(|&x| x as i64).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                    DType::F32 => {
+                        let data: Vec<f32> = src_data.iter().map(|&x| x as f32).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                    DType::F64 => {
+                        let data: Vec<f64> = src_data.iter().map(|&x| x as f64).collect();
+                        Self::from_vec_with_shape(data, shape)
+                    }
+                }
+            }};
+        }
+
+        match self.layout.dtype {
+            DType::U8 => cast_impl!(u8, target_dtype),
+            DType::I8 => cast_impl!(i8, target_dtype),
+            DType::U16 => cast_impl!(u16, target_dtype),
+            DType::I16 => cast_impl!(i16, target_dtype),
+            DType::U32 => cast_impl!(u32, target_dtype),
+            DType::I32 => cast_impl!(i32, target_dtype),
+            DType::U64 => cast_impl!(u64, target_dtype),
+            DType::I64 => cast_impl!(i64, target_dtype),
+            DType::F32 => cast_impl!(f32, target_dtype),
+            DType::F64 => cast_impl!(f64, target_dtype),
+        }
+    }
+
     /// Returns true if the buffer data is aligned to the specified boundary.
     ///
     /// # Arguments
@@ -230,6 +346,26 @@ impl ViewBuffer {
             &self.layout.strides,
             self.layout.dtype,
         )
+    }
+
+    /// Returns a typed slice of the buffer data.
+    ///
+    /// # Panics
+    /// Panics if the buffer is not contiguous.
+    ///
+    /// # Safety Note
+    /// The caller must ensure the type T matches the buffer's dtype.
+    pub fn as_slice<T: ViewType>(&self) -> &[T] {
+        assert!(
+            self.layout.is_contiguous(),
+            "Buffer must be contiguous to get a slice. Call to_contiguous() first."
+        );
+
+        let len: usize = self.layout.shape.iter().product();
+        unsafe {
+            let ptr = self.as_ptr::<T>();
+            std::slice::from_raw_parts(ptr, len)
+        }
     }
 
     /// Returns a unique identifier for the underlying storage.

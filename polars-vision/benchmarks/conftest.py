@@ -26,7 +26,7 @@ class BenchmarkConfig:
     )
     warmup_iterations: int = 3
     benchmark_iterations: int = 10
-    output_format: str = "table"  # or "json", "csv"
+    output_format: str = "csv"  # or "json", "csv"
     frameworks: list[str] = field(
         default_factory=lambda: [
             "polars-vision-eager",

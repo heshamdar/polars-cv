@@ -78,6 +78,14 @@ pub enum OutputDTypeRule {
     Configurable(DType),
     /// Promote integers to float32, preserve float types.
     PromoteToFloat,
+    /// Force output to F64 (for reductions that need precision).
+    ForceF64,
+    /// Force output to I64 (for argmax/argmin).
+    ForceI64,
+    /// Force output to U64 (for count-based operations).
+    ForceU64,
+    /// Force output to U32 (for bin indices).
+    ForceU32,
 }
 
 impl OutputDTypeRule {
@@ -99,6 +107,10 @@ impl OutputDTypeRule {
                     DType::F32
                 }
             }
+            OutputDTypeRule::ForceF64 => DType::F64,
+            OutputDTypeRule::ForceI64 => DType::I64,
+            OutputDTypeRule::ForceU64 => DType::U64,
+            OutputDTypeRule::ForceU32 => DType::U32,
         }
     }
 }
