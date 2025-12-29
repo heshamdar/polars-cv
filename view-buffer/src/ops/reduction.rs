@@ -83,77 +83,120 @@ impl ReductionOp {
 
         match self {
             ReductionOp::Max { axis: None } => {
-                let max_val = data.iter().copied().fold(data[0], |a, b| if a > b { a } else { b });
+                let max_val = data
+                    .iter()
+                    .copied()
+                    .fold(data[0], |a, b| if a > b { a } else { b });
                 ViewBuffer::from_scalar(max_val)
             }
             ReductionOp::Min { axis: None } => {
-                let min_val = data.iter().copied().fold(data[0], |a, b| if a < b { a } else { b });
+                let min_val = data
+                    .iter()
+                    .copied()
+                    .fold(data[0], |a, b| if a < b { a } else { b });
                 ViewBuffer::from_scalar(min_val)
             }
             ReductionOp::Mean { axis: None } => {
-                let sum: f64 = data.iter().copied().map(|x| num_traits::NumCast::from(x).unwrap_or(0.0)).sum();
+                let sum: f64 = data
+                    .iter()
+                    .copied()
+                    .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
+                    .sum();
                 let mean = sum / data.len() as f64;
                 ViewBuffer::from_scalar(mean)
             }
             ReductionOp::Std { axis: None, ddof } => {
                 let n = data.len() as f64;
-                let sum: f64 = data.iter().copied().map(|x| num_traits::NumCast::from(x).unwrap_or(0.0)).sum();
+                let sum: f64 = data
+                    .iter()
+                    .copied()
+                    .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
+                    .sum();
                 let mean = sum / n;
-                let variance: f64 = data.iter()
+                let variance: f64 = data
+                    .iter()
                     .copied()
                     .map(|x| {
                         let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
                         (xf - mean).powi(2)
                     })
-                    .sum::<f64>() / (n - *ddof as f64);
+                    .sum::<f64>()
+                    / (n - *ddof as f64);
                 let std = variance.sqrt();
                 ViewBuffer::from_scalar(std)
             }
             ReductionOp::Sum { axis: None } => {
-                let sum: f64 = data.iter().copied().map(|x| num_traits::NumCast::from(x).unwrap_or(0.0)).sum();
+                let sum: f64 = data
+                    .iter()
+                    .copied()
+                    .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
+                    .sum();
                 ViewBuffer::from_scalar(sum)
             }
             // Axis-based reductions
-            ReductionOp::Max { axis: Some(ax) } => self.reduce_axis::<T, _>(buffer, *ax, |slice: &[T]| {
-                slice.iter().copied().fold(slice[0], |a, b| if a > b { a } else { b })
-            }),
-            ReductionOp::Min { axis: Some(ax) } => self.reduce_axis::<T, _>(buffer, *ax, |slice: &[T]| {
-                slice.iter().copied().fold(slice[0], |a, b| if a < b { a } else { b })
-            }),
+            ReductionOp::Max { axis: Some(ax) } => {
+                self.reduce_axis::<T, _>(buffer, *ax, |slice: &[T]| {
+                    slice
+                        .iter()
+                        .copied()
+                        .fold(slice[0], |a, b| if a > b { a } else { b })
+                })
+            }
+            ReductionOp::Min { axis: Some(ax) } => {
+                self.reduce_axis::<T, _>(buffer, *ax, |slice: &[T]| {
+                    slice
+                        .iter()
+                        .copied()
+                        .fold(slice[0], |a, b| if a < b { a } else { b })
+                })
+            }
             ReductionOp::Mean { axis: Some(ax) } => {
                 // For axis reduction, output is float
                 self.reduce_axis_to_f64::<T, _>(buffer, *ax, |slice: &[T]| {
-                    let sum: f64 = slice.iter().copied().map(|x| num_traits::NumCast::from(x).unwrap_or(0.0)).sum();
+                    let sum: f64 = slice
+                        .iter()
+                        .copied()
+                        .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
+                        .sum();
                     sum / slice.len() as f64
                 })
             }
-            ReductionOp::Std { axis: Some(ax), ddof } => {
+            ReductionOp::Std {
+                axis: Some(ax),
+                ddof,
+            } => {
                 let ddof_val = *ddof;
                 self.reduce_axis_to_f64::<T, _>(buffer, *ax, move |slice: &[T]| {
                     let n = slice.len() as f64;
-                    let sum: f64 = slice.iter().copied().map(|x| num_traits::NumCast::from(x).unwrap_or(0.0)).sum();
+                    let sum: f64 = slice
+                        .iter()
+                        .copied()
+                        .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
+                        .sum();
                     let mean = sum / n;
-                    let variance: f64 = slice.iter()
+                    let variance: f64 = slice
+                        .iter()
                         .copied()
                         .map(|x| {
                             let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
                             (xf - mean).powi(2)
                         })
-                        .sum::<f64>() / (n - ddof_val as f64);
+                        .sum::<f64>()
+                        / (n - ddof_val as f64);
                     variance.sqrt()
                 })
             }
             ReductionOp::Sum { axis: Some(ax) } => {
                 self.reduce_axis_to_f64::<T, _>(buffer, *ax, |slice: &[T]| {
-                    slice.iter().copied().map(|x| num_traits::NumCast::from(x).unwrap_or(0.0)).sum()
+                    slice
+                        .iter()
+                        .copied()
+                        .map(|x| num_traits::NumCast::from(x).unwrap_or(0.0))
+                        .sum()
                 })
             }
-            ReductionOp::ArgMax { axis } => {
-                self.reduce_axis_argmax::<T>(buffer, *axis, true)
-            }
-            ReductionOp::ArgMin { axis } => {
-                self.reduce_axis_argmax::<T>(buffer, *axis, false)
-            }
+            ReductionOp::ArgMax { axis } => self.reduce_axis_argmax::<T>(buffer, *axis, true),
+            ReductionOp::ArgMin { axis } => self.reduce_axis_argmax::<T>(buffer, *axis, false),
         }
     }
 
@@ -166,7 +209,7 @@ impl ReductionOp {
         let data = buffer.as_slice::<T>();
 
         // Calculate output shape (remove the reduced axis)
-        let mut out_shape: Vec<usize> = shape.iter().copied().collect();
+        let mut out_shape: Vec<usize> = shape.to_vec();
         let axis_size = out_shape.remove(axis);
 
         if out_shape.is_empty() {
@@ -180,7 +223,7 @@ impl ReductionOp {
         let strides = compute_strides(shape);
 
         // Iterate over output positions
-        for out_idx in 0..out_size {
+        for (out_idx, out) in output.iter_mut().enumerate() {
             // Convert to coordinates
             let out_coords = linear_to_coords(out_idx, &out_shape);
 
@@ -194,7 +237,7 @@ impl ReductionOp {
                 slice.push(data[in_idx]);
             }
 
-            output[out_idx] = f(&slice);
+            *out = f(&slice);
         }
 
         ViewBuffer::from_vec_with_shape(output, out_shape)
@@ -208,7 +251,7 @@ impl ReductionOp {
         let shape = buffer.shape();
         let data = buffer.as_slice::<T>();
 
-        let mut out_shape: Vec<usize> = shape.iter().copied().collect();
+        let mut out_shape: Vec<usize> = shape.to_vec();
         let axis_size = out_shape.remove(axis);
 
         if out_shape.is_empty() {
@@ -220,7 +263,7 @@ impl ReductionOp {
 
         let strides = compute_strides(shape);
 
-        for out_idx in 0..out_size {
+        for (out_idx, out) in output.iter_mut().enumerate() {
             let out_coords = linear_to_coords(out_idx, &out_shape);
 
             let mut slice = Vec::with_capacity(axis_size);
@@ -231,7 +274,7 @@ impl ReductionOp {
                 slice.push(data[in_idx]);
             }
 
-            output[out_idx] = f(&slice);
+            *out = f(&slice);
         }
 
         ViewBuffer::from_vec_with_shape(output, out_shape)
@@ -244,7 +287,7 @@ impl ReductionOp {
         let shape = buffer.shape();
         let data = buffer.as_slice::<T>();
 
-        let mut out_shape: Vec<usize> = shape.iter().copied().collect();
+        let mut out_shape: Vec<usize> = shape.to_vec();
         let axis_size = out_shape.remove(axis);
 
         if out_shape.is_empty() {
@@ -256,7 +299,7 @@ impl ReductionOp {
 
         let strides = compute_strides(shape);
 
-        for out_idx in 0..out_size {
+        for (out_idx, out) in output.iter_mut().enumerate() {
             let out_coords = linear_to_coords(out_idx, &out_shape);
 
             let mut best_idx = 0usize;
@@ -271,14 +314,18 @@ impl ReductionOp {
                 let in_idx = coords_to_linear(&in_coords, &strides);
                 let val = data[in_idx];
 
-                let is_better = if is_max { val > best_val } else { val < best_val };
+                let is_better = if is_max {
+                    val > best_val
+                } else {
+                    val < best_val
+                };
                 if is_better {
                     best_val = val;
                     best_idx = a;
                 }
             }
 
-            output[out_idx] = best_idx as i64;
+            *out = best_idx as i64;
         }
 
         ViewBuffer::from_vec_with_shape(output, out_shape)
@@ -313,7 +360,7 @@ impl Op for ReductionOp {
         match axis {
             None => vec![1], // Global reduction
             Some(ax) => {
-                let mut out_shape: Vec<usize> = input_shape.iter().copied().collect();
+                let mut out_shape: Vec<usize> = input_shape.to_vec();
                 if ax < out_shape.len() {
                     out_shape.remove(ax);
                 }
@@ -343,7 +390,11 @@ impl Op for ReductionOp {
         OpCost::Allocating
     }
 
-    fn infer_strides(&self, _input_shape: &[usize], _input_strides: &[isize]) -> Option<Vec<isize>> {
+    fn infer_strides(
+        &self,
+        _input_shape: &[usize],
+        _input_strides: &[isize],
+    ) -> Option<Vec<isize>> {
         None
     }
 
@@ -436,4 +487,3 @@ mod tests {
         assert!((result.as_slice::<f64>()[0] - 3.0).abs() < 1e-10);
     }
 }
-

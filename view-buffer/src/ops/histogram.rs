@@ -173,7 +173,11 @@ impl Op for HistogramOp {
         OpCost::Allocating
     }
 
-    fn infer_strides(&self, _input_shape: &[usize], _input_strides: &[isize]) -> Option<Vec<isize>> {
+    fn infer_strides(
+        &self,
+        _input_shape: &[usize],
+        _input_strides: &[isize],
+    ) -> Option<Vec<isize>> {
         None
     }
 
@@ -231,7 +235,9 @@ mod tests {
         let data = vec![0u8, 1, 2, 3, 4, 5, 6, 7];
         let buffer = ViewBuffer::from_vec_with_shape(data, vec![8]);
 
-        let op = HistogramOp::new(4).with_range(0.0, 8.0).with_output(HistogramOutput::Normalized);
+        let op = HistogramOp::new(4)
+            .with_range(0.0, 8.0)
+            .with_output(HistogramOutput::Normalized);
         let result = op.execute(&buffer);
 
         let normalized = result.as_slice::<f64>();
@@ -244,7 +250,9 @@ mod tests {
         let data = vec![0u8, 128, 255];
         let buffer = ViewBuffer::from_vec_with_shape(data, vec![3]);
 
-        let op = HistogramOp::new(4).with_range(0.0, 256.0).with_output(HistogramOutput::Quantized);
+        let op = HistogramOp::new(4)
+            .with_range(0.0, 256.0)
+            .with_output(HistogramOutput::Quantized);
         let result = op.execute(&buffer);
 
         let quantized = result.as_slice::<u32>();
@@ -254,4 +262,3 @@ mod tests {
         assert_eq!(quantized[2], 3); // 255 -> bin 3 (clamped)
     }
 }
-

@@ -45,8 +45,8 @@ impl BinaryOp {
     /// Both buffers must have broadcastable shapes.
     pub fn execute(&self, a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
         // Validate shapes are broadcastable
-        let output_shape = broadcast_shapes(a.shape(), b.shape())
-            .expect("Shapes must be broadcastable");
+        let output_shape =
+            broadcast_shapes(a.shape(), b.shape()).expect("Shapes must be broadcastable");
 
         match (a.dtype(), b.dtype()) {
             (DType::U8, DType::U8) => self.execute_typed::<u8>(a, b, &output_shape),
@@ -78,16 +78,16 @@ impl BinaryOp {
 
         // Simple implementation for same-shape case
         if a.shape() == b.shape() && a.shape() == output_shape {
-            for i in 0..total_elements {
-                output[i] = self.apply_op(a_data[i], b_data[i]);
+            for (i, out) in output.iter_mut().enumerate() {
+                *out = self.apply_op(a_data[i], b_data[i]);
             }
         } else {
             // Broadcasting case - use multi-dimensional indexing
-            for i in 0..total_elements {
+            for (i, out) in output.iter_mut().enumerate() {
                 let coords = linear_to_coords(i, output_shape);
                 let a_idx = broadcast_index(&coords, a.shape());
                 let b_idx = broadcast_index(&coords, b.shape());
-                output[i] = self.apply_op(a_data[a_idx], b_data[b_idx]);
+                *out = self.apply_op(a_data[a_idx], b_data[b_idx]);
             }
         }
 
@@ -110,10 +110,18 @@ impl BinaryOp {
                 }
             }
             BinaryOp::Maximum => {
-                if a > b { a } else { b }
+                if a > b {
+                    a
+                } else {
+                    b
+                }
             }
             BinaryOp::Minimum => {
-                if a < b { a } else { b }
+                if a < b {
+                    a
+                } else {
+                    b
+                }
             }
             // Bitwise ops - convert through integer
             BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
@@ -174,7 +182,11 @@ impl Op for BinaryOp {
         OpCost::Allocating
     }
 
-    fn infer_strides(&self, _input_shape: &[usize], _input_strides: &[isize]) -> Option<Vec<isize>> {
+    fn infer_strides(
+        &self,
+        _input_shape: &[usize],
+        _input_strides: &[isize],
+    ) -> Option<Vec<isize>> {
         // Binary ops produce new contiguous output
         None
     }
@@ -336,4 +348,3 @@ mod tests {
         assert_eq!(promote_dtypes(DType::F32, DType::F64), DType::F64);
     }
 }
-

@@ -38,7 +38,10 @@ pub enum ValidationError {
 
     /// Shape mismatch between inputs.
     #[error("Shape mismatch: expected {expected:?}, got {got:?}")]
-    ShapeMismatch { expected: Vec<usize>, got: Vec<usize> },
+    ShapeMismatch {
+        expected: Vec<usize>,
+        got: Vec<usize>,
+    },
 
     /// Invalid axis for operation.
     #[error("Invalid axis {axis} for array with {ndim} dimensions")]
