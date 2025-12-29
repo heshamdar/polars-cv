@@ -19,7 +19,7 @@ view-buffer = { path = "../view-buffer", default-features = false, features = [
 ] }
 
 # Polars plugin essentials - use pyo3 0.23 which is compatible with pyo3-polars 0.20
-polars = { version = "0.46", default-features = false, features = ["dtype-array"] }
+polars = { version = "0.46", default-features = false, features = ["dtype-array", "dtype-struct"] }
 polars-arrow = { version = "0.46" }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 pyo3-polars = { version = "0.20", features = ["derive"] }
@@ -36,4 +36,4 @@ thiserror = "1.0"
 
 [dev-dependencies]
 # For testing
-polars = { version = "0.46", features = ["dtype-array", "lazy"] }
+polars = { version = "0.46", features = ["dtype-array", "dtype-struct", "lazy"] }

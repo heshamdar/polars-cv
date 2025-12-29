@@ -23,7 +23,7 @@ fn polars_vision_lib(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> 
 }
 
 use crate::execute::execute_pipeline;
-use crate::graph::PipelineGraph;
+use crate::graph::{MultiPipelineGraph, PipelineGraph};
 use crate::pipeline::PipelineSpec;
 
 /// Kwargs passed from Python to the plugin function.
@@ -91,5 +91,49 @@ fn vb_pipeline_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Ser
         std::collections::HashMap::new();
 
     // Execute the graph
+    graph.execute(inputs, &expr_columns)
+}
+
+/// Compute the output dtype for multi-output graph.
+///
+/// This function is called by the polars_expr macro to determine the output type.
+/// It parses the graph JSON to extract output aliases and creates a Struct dtype.
+fn multi_output_dtype(input_fields: &[Field]) -> PolarsResult<Field> {
+    // For multi-output, we return a Struct with Binary fields
+    // The actual field names are determined at runtime based on the graph
+    // For now, we use a placeholder struct type - the actual execution will
+    // return the correct struct with named fields
+
+    // Default to returning a struct with the input field name
+    let name = if !input_fields.is_empty() {
+        input_fields[0].name().clone()
+    } else {
+        PlSmallStr::from_static("output")
+    };
+
+    // Create a placeholder struct type - the actual struct fields are dynamic
+    // and determined by the graph JSON at execution time
+    Ok(Field::new(name, DataType::Unknown(UnknownKind::Any)))
+}
+
+/// Apply a multi-output pipeline graph (DAG) to multiple binary columns.
+///
+/// Similar to `vb_pipeline_graph`, but returns a Struct column where each
+/// field is a named output from the graph. This enables extracting multiple
+/// intermediate results from a single pipeline execution.
+///
+/// The output is a Struct column where:
+/// - Each field name corresponds to an alias defined in the graph
+/// - Each field value is Binary data encoded in the specified format
+#[polars_expr(output_type_func=multi_output_dtype)]
+fn vb_pipeline_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
+    // Parse the multi-output graph specification
+    let graph = MultiPipelineGraph::from_json(&kwargs.graph_json)?;
+
+    // Build expression columns map (empty for now, may be used for dynamic params)
+    let expr_columns: std::collections::HashMap<String, &Series> =
+        std::collections::HashMap::new();
+
+    // Execute the graph and return Struct column
     graph.execute(inputs, &expr_columns)
 }
