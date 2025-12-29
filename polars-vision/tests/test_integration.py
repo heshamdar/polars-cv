@@ -200,11 +200,24 @@ class TestPolarsNamespace:
         assert hasattr(expr.cv, "pipeline")
 
 
-# Skip integration tests that require the compiled plugin if not available
-@pytest.mark.skipif(
-    True,  # Skip by default since plugin needs to be built with maturin
+# Check if plugin is available by checking if the .so file exists
+def _plugin_available() -> bool:
+    """Check if the compiled plugin is available."""
+    from pathlib import Path
+
+    lib_path = Path(__file__).parent.parent / "python" / "polars_vision"
+    so_files = list(lib_path.glob("*.so")) + list(lib_path.glob("*.pyd"))
+    return len(so_files) > 0
+
+
+# Mark tests with plugin_required marker for easy filtering
+plugin_required = pytest.mark.skipif(
+    not _plugin_available(),
     reason="Requires compiled plugin (run maturin develop first)",
 )
+
+
+@plugin_required
 class TestPluginExecution:
     """Tests that require the compiled Rust plugin."""
 

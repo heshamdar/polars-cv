@@ -1,6 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::geometry::ops::GeometryOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::image::ImageOp;
 use crate::ops::view::ViewOp;
@@ -13,6 +14,7 @@ pub enum ViewDto {
     View(ViewOp),
     Compute(ComputeOp),
     Image(ImageOp),
+    Geometry(GeometryOp),
     // Helper for plugins to request materialization explicitly
     Materialize,
 }

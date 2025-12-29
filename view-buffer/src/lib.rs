@@ -7,6 +7,7 @@
 //!
 //! - [`core`] - Fundamental types (DType, Layout, ViewBuffer)
 //! - [`ops`] - Operations (View, Compute, Image)
+//! - [`geometry`] - Geometry operations (Contour, Point, rasterization)
 //! - [`expr`] - Expression graph for lazy evaluation
 //! - [`execution`] - Execution planning and running
 //! - [`protocol`] - Binary serialization format
@@ -15,6 +16,7 @@
 pub mod core;
 pub mod execution;
 pub mod expr;
+pub mod geometry;
 pub mod interop;
 pub mod ops;
 pub mod protocol;
@@ -44,6 +46,9 @@ pub use interop::{validate_layout, ExternalView};
 
 // Re-exports - Affine
 pub use ops::affine::AffineParams;
+
+// Re-exports - Geometry
+pub use geometry::{BoundingBox, Contour, GeometryOp, Point, Winding};
 
 #[cfg(feature = "image_interop")]
 pub use interop::image::{AsImageView, ImageAdapter, ImageView, ImageViewAdapter};

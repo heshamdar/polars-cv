@@ -24,9 +24,9 @@ use polars::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
-use view_buffer::ViewBuffer;
+use view_buffer::{ViewBuffer, ViewExpr};
 
-use crate::execute::decode_source;
+use crate::execute::{decode_source, resolve_op};
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
 
 /// A node in the pipeline graph.
@@ -186,9 +186,32 @@ impl PipelineGraph {
                     // Decode source
                     let buffer = decode_source(bytes, &temp_spec)?;
 
-                    // For now, store the buffer directly
-                    // TODO: Apply operations and handle binary ops with buffers HashMap
-                    buffers.insert(node_id.clone(), buffer);
+                    // Resolve and apply operations
+                    let mut view_dtos = Vec::with_capacity(node.ops.len());
+                    for op_spec in &node.ops {
+                        let view_dto = resolve_op(op_spec, row_idx, _expr_columns)?;
+                        view_dtos.push(view_dto);
+                    }
+
+                    // Build expression and execute
+                    let result_buffer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut expr = ViewExpr::new_source(buffer);
+                        for view_dto in view_dtos {
+                            expr = expr.apply_op(view_dto);
+                        }
+                        expr.plan().execute()
+                    })).map_err(|e| {
+                        let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                            (*s).to_string()
+                        } else if let Some(s) = e.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "Unknown panic".to_string()
+                        };
+                        polars_err!(ComputeError: "Pipeline execution failed at node '{}': {}", node_id, msg)
+                    })?;
+
+                    buffers.insert(node_id.clone(), result_buffer);
                 }
             }
 
@@ -343,8 +366,32 @@ impl MultiPipelineGraph {
                     // Decode source
                     let buffer = decode_source(bytes, &temp_spec)?;
 
-                    // TODO: Apply operations and handle binary ops with buffers HashMap
-                    buffers.insert(node_id.clone(), buffer);
+                    // Resolve and apply operations
+                    let mut view_dtos = Vec::with_capacity(node.ops.len());
+                    for op_spec in &node.ops {
+                        let view_dto = resolve_op(op_spec, row_idx, _expr_columns)?;
+                        view_dtos.push(view_dto);
+                    }
+
+                    // Build expression and execute
+                    let result_buffer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut expr = ViewExpr::new_source(buffer);
+                        for view_dto in view_dtos {
+                            expr = expr.apply_op(view_dto);
+                        }
+                        expr.plan().execute()
+                    })).map_err(|e| {
+                        let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                            (*s).to_string()
+                        } else if let Some(s) = e.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "Unknown panic".to_string()
+                        };
+                        polars_err!(ComputeError: "Pipeline execution failed at node '{}': {}", node_id, msg)
+                    })?;
+
+                    buffers.insert(node_id.clone(), result_buffer);
                 }
             }
 

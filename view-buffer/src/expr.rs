@@ -136,6 +136,12 @@ impl ViewExpr {
                 // Explicit materialization handled by Planner
                 self.clone()
             }
+            ViewDto::Geometry(_geom) => {
+                // Geometry operations are handled separately at the polars-vision level
+                // They operate on contour data, not on ViewBuffers directly
+                // The plugin layer converts between contour representation and buffer
+                self.clone()
+            }
         }
     }
 

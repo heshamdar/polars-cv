@@ -4,6 +4,7 @@
 //! - View operations (zero-copy transformations)
 //! - Compute operations (data processing)
 //! - Image operations (image processing)
+//! - Geometry operations (contour, polygon, rasterization)
 //! - Binary operations (operations between two arrays)
 //! - Reduction operations (statistical aggregations)
 //! - Histogram operations (binning and quantization)
@@ -35,3 +36,6 @@ pub use scalar::{FusedKernel, ScalarOp};
 pub use traits::{MemoryEffect, Op};
 pub use validation::ValidationError;
 pub use view::ViewOp;
+
+// Re-export geometry types for convenience
+pub use crate::geometry::ops::GeometryOp;

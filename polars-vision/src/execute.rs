@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};
 
 use view_buffer::{
-    ComputeOp, DType, FilterType, ImageAdapter, ImageOp, ImageOpKind, NormalizeMethod, ViewBuffer,
-    ViewDto, ViewExpr, ViewOp,
+    ComputeOp, DType, FilterType, GeometryOp, ImageAdapter, ImageOp, ImageOpKind, NormalizeMethod,
+    ViewBuffer, ViewDto, ViewExpr, ViewOp,
 };
 
 use crate::params::ParamValue;
@@ -195,7 +195,7 @@ fn encode_sink_numpy_style(buffer: &ViewBuffer) -> PolarsResult<Vec<u8>> {
 }
 
 /// Resolve an operation specification to a ViewDto.
-fn resolve_op(
+pub fn resolve_op(
     op_spec: &OpSpec,
     row_idx: usize,
     expr_columns: &HashMap<String, &Series>,
@@ -321,6 +321,131 @@ fn resolve_op(
             let sigma = get_param(&op_spec.params, "sigma")?.resolve_f32(row_idx, expr_columns)?;
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Blur { sigma },
+            }))
+        }
+
+        // Geometry operations
+        "rasterize" => {
+            let width =
+                get_param(&op_spec.params, "width")?.resolve_usize(row_idx, expr_columns)? as u32;
+            let height =
+                get_param(&op_spec.params, "height")?.resolve_usize(row_idx, expr_columns)? as u32;
+            let fill_value = op_spec
+                .params
+                .get("fill_value")
+                .map(|p| p.resolve_usize(row_idx, expr_columns).unwrap_or(255) as u8)
+                .unwrap_or(255);
+            let background = op_spec
+                .params
+                .get("background")
+                .map(|p| p.resolve_usize(row_idx, expr_columns).unwrap_or(0) as u8)
+                .unwrap_or(0);
+            let anti_alias = op_spec
+                .params
+                .get("anti_alias")
+                .map(|p| matches!(p, ParamValue::Literal { value: serde_json::Value::Bool(true) }))
+                .unwrap_or(false);
+            Ok(ViewDto::Geometry(GeometryOp::Rasterize {
+                width,
+                height,
+                fill_value,
+                background,
+                anti_alias,
+            }))
+        }
+        "extract_contours" => {
+            use view_buffer::geometry::ops::{ApproxMethod, ExtractMode};
+
+            let mode = op_spec
+                .params
+                .get("mode")
+                .and_then(|p| match p {
+                    ParamValue::Literal { value: serde_json::Value::String(s) } => Some(s.as_str()),
+                    _ => None,
+                })
+                .map(|s| match s {
+                    "external" => ExtractMode::External,
+                    "tree" => ExtractMode::Tree,
+                    _ => ExtractMode::All,
+                })
+                .unwrap_or(ExtractMode::External);
+
+            let method = op_spec
+                .params
+                .get("method")
+                .and_then(|p| match p {
+                    ParamValue::Literal { value: serde_json::Value::String(s) } => Some(s.as_str()),
+                    _ => None,
+                })
+                .map(|s| match s {
+                    "none" => ApproxMethod::None,
+                    "approx" => ApproxMethod::Approx,
+                    _ => ApproxMethod::Simple,
+                })
+                .unwrap_or(ApproxMethod::Simple);
+
+            let min_area = op_spec.params.get("min_area").and_then(|p| match p {
+                ParamValue::Literal { value: serde_json::Value::Number(n) } => n.as_f64(),
+                _ => None,
+            });
+
+            Ok(ViewDto::Geometry(GeometryOp::ExtractContours {
+                mode,
+                method,
+                min_area,
+            }))
+        }
+
+        // Geometry measure operations
+        "contour_area" => {
+            let signed = op_spec
+                .params
+                .get("signed")
+                .map(|p| matches!(p, ParamValue::Literal { value: serde_json::Value::Bool(true) }))
+                .unwrap_or(false);
+            Ok(ViewDto::Geometry(GeometryOp::Area { signed }))
+        }
+        "contour_perimeter" => Ok(ViewDto::Geometry(GeometryOp::Perimeter)),
+        "contour_centroid" => Ok(ViewDto::Geometry(GeometryOp::Centroid)),
+        "contour_bounding_box" => Ok(ViewDto::Geometry(GeometryOp::BoundingBox)),
+        "contour_winding" => Ok(ViewDto::Geometry(GeometryOp::Winding)),
+        "contour_is_convex" => Ok(ViewDto::Geometry(GeometryOp::IsConvex)),
+        "contour_convex_hull" => Ok(ViewDto::Geometry(GeometryOp::ConvexHull)),
+
+        // Geometry transforms
+        "contour_translate" => {
+            let dx = get_param(&op_spec.params, "dx")?.resolve_f64(row_idx, expr_columns)?;
+            let dy = get_param(&op_spec.params, "dy")?.resolve_f64(row_idx, expr_columns)?;
+            Ok(ViewDto::Geometry(GeometryOp::Translate { dx, dy }))
+        }
+        "contour_scale" => {
+            let sx = get_param(&op_spec.params, "sx")?.resolve_f64(row_idx, expr_columns)?;
+            let sy = get_param(&op_spec.params, "sy")?.resolve_f64(row_idx, expr_columns)?;
+            Ok(ViewDto::Geometry(GeometryOp::Scale {
+                sx,
+                sy,
+                origin: view_buffer::geometry::ops::ScaleOrigin::Centroid,
+            }))
+        }
+        "contour_flip" => Ok(ViewDto::Geometry(GeometryOp::Flip)),
+        "contour_simplify" => {
+            let tolerance = get_param(&op_spec.params, "tolerance")?.resolve_f64(row_idx, expr_columns)?;
+            Ok(ViewDto::Geometry(GeometryOp::Simplify { tolerance }))
+        }
+        "contour_normalize" => {
+            let ref_width = get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, expr_columns)?;
+            let ref_height = get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, expr_columns)?;
+            Ok(ViewDto::Geometry(GeometryOp::Normalize {
+                ref_width,
+                ref_height,
+            }))
+        }
+        "contour_to_absolute" => {
+            let ref_width = get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, expr_columns)?;
+            let ref_height = get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, expr_columns)?;
+            Ok(ViewDto::Geometry(GeometryOp::ToAbsolute {
+                ref_width,
+                ref_height,
             }))
         }
 
