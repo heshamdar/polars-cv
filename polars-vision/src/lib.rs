@@ -102,24 +102,17 @@ fn vb_pipeline_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Ser
 
 /// Compute the output dtype for multi-output graph.
 ///
-/// This function is called by the polars_expr macro to determine the output type.
-/// It parses the graph JSON to extract output aliases and creates a Struct dtype.
+/// We return Struct with placeholder Binary fields. The actual field names
+/// are determined at runtime, but Polars needs a valid Struct type.
 fn multi_output_dtype(input_fields: &[Field]) -> PolarsResult<Field> {
-    // For multi-output, we return a Struct with Binary fields
-    // The actual field names are determined at runtime based on the graph
-    // For now, we use a placeholder struct type - the actual execution will
-    // return the correct struct with named fields
-
-    // Default to returning a struct with the input field name
     let name = if !input_fields.is_empty() {
         input_fields[0].name().clone()
     } else {
         PlSmallStr::from_static("output")
     };
 
-    // Create a placeholder struct type - the actual struct fields are dynamic
-    // and determined by the graph JSON at execution time
-    Ok(Field::new(name, DataType::Unknown(UnknownKind::Any)))
+    // Return an empty Struct type - the actual fields are populated at runtime
+    Ok(Field::new(name, DataType::Struct(vec![])))
 }
 
 /// Apply a multi-output pipeline graph (DAG) to multiple binary columns.
@@ -162,17 +155,20 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
 }
 
 /// Compute the output dtype for multi-output unified graph.
+///
+/// We return Struct with placeholder Binary fields. The actual field names
+/// are determined at runtime, but Polars needs a valid Struct type.
+/// Using empty Struct which gets populated at execution.
 fn unified_multi_output_dtype(input_fields: &[Field]) -> PolarsResult<Field> {
-    // For multi-output, we return a Struct with Binary fields
-    // The actual field names are determined at runtime based on the graph
     let name = if !input_fields.is_empty() {
         input_fields[0].name().clone()
     } else {
         PlSmallStr::from_static("output")
     };
 
-    // Use Unknown(Any) for dynamic struct type
-    Ok(Field::new(name, DataType::Unknown(UnknownKind::Any)))
+    // Return an empty Struct type - the actual fields are populated at runtime
+    // This works because StructChunked::from_series creates the proper type
+    Ok(Field::new(name, DataType::Struct(vec![])))
 }
 
 /// Unified pipeline graph execution for multiple outputs.

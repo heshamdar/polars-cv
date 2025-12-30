@@ -50,6 +50,15 @@
 # First, let's import the necessary packages and set up helper functions for displaying images.
 
 # %%
+# Set up non-interactive matplotlib backend for script execution
+# This prevents plt.show() from blocking when running as a script
+import os
+
+if os.environ.get("MPLBACKEND") is None and not hasattr(os, "_called_from_jupyter"):
+    import matplotlib
+
+    matplotlib.use("Agg")
+
 # Core imports
 import io
 import tempfile
@@ -67,6 +76,7 @@ from polars_vision import (
     CONTOUR_SCHEMA,
     POINT_SCHEMA,
     BBOX_SCHEMA,
+    numpy_from_bytes,
 )
 from polars_vision.geometry.schemas import contour_from_points
 
@@ -86,18 +96,8 @@ def bytes_to_image(data: bytes) -> Image.Image:
     return Image.open(io.BytesIO(data))
 
 
-def numpy_bytes_to_array(
-    data: bytes, shape: tuple[int, ...], dtype: Any = np.uint8
-) -> np.ndarray:
-    """Convert numpy-format bytes back to ndarray.
-
-    Note: The numpy sink includes a 26-byte header with shape/dtype info.
-    This function skips the header and extracts just the array data.
-    """
-    # Skip the 26-byte header that polars-vision adds
-    header_size = 26
-    array_data = data[header_size:]
-    return np.frombuffer(array_data, dtype=dtype).reshape(shape)
+# Note: numpy_from_bytes is imported from polars_vision
+# It automatically parses the header with dtype and shape info from numpy sink output
 
 
 def display_images(
@@ -261,7 +261,9 @@ print(f"Result DataFrame schema: {result.schema}")
 
 # Display original vs resized
 row = result.row(0, named=True)
-display_images([row["image"], row["resized"]], ["Original (256x256)", "Resized (128x128)"])
+display_images(
+    [row["image"], row["resized"]], ["Original (256x256)", "Resized (128x128)"]
+)
 
 # %% [markdown]
 # ### 2.2 Resize Filter Types
@@ -414,10 +416,10 @@ result = pl.DataFrame({"img": [test_images["gradient"]]}).with_columns(
     zscore=pl.col("img").cv.pipeline(zscore_pipe),
 )
 
-# Convert back to arrays for visualization
-# Note: After grayscale, shape is (256, 256, 1), after normalize dtype is f32
-minmax_arr = numpy_bytes_to_array(result["minmax"][0], (256, 256, 1), dtype=np.float32)
-zscore_arr = numpy_bytes_to_array(result["zscore"][0], (256, 256, 1), dtype=np.float32)
+# Convert back to arrays for visualization using numpy_from_bytes
+# It automatically parses the header with shape/dtype info
+minmax_arr = numpy_from_bytes(result["minmax"][0])
+zscore_arr = numpy_from_bytes(result["zscore"][0])
 
 print(f"MinMax range: [{minmax_arr.min():.3f}, {minmax_arr.max():.3f}]")
 print(f"ZScore mean: {zscore_arr.mean():.3f}, std: {zscore_arr.std():.3f}")
@@ -456,14 +458,15 @@ result = pl.DataFrame({"img": [test_images["gradient"]]}).with_columns(
 )
 
 # scale output is f32 (promoted from u8), clamp is also f32
-scaled_arr = numpy_bytes_to_array(result["scaled"][0], (256, 256, 1), dtype=np.float32)
-clamped_arr = numpy_bytes_to_array(result["clamped"][0], (256, 256, 1), dtype=np.float32)
+scaled_arr = numpy_from_bytes(result["scaled"][0])
+clamped_arr = numpy_from_bytes(result["clamped"][0])
 
 print(f"Scaled range: [{scaled_arr.min():.1f}, {scaled_arr.max():.1f}]")
 print(f"Clamped range: [{clamped_arr.min():.2f}, {clamped_arr.max():.2f}]")
 
 display_arrays(
-    [scaled_arr.squeeze(), clamped_arr.squeeze()], ["Scaled (×0.5)", "Clamped [0.2, 0.8]"]
+    [scaled_arr.squeeze(), clamped_arr.squeeze()],
+    ["Scaled (×0.5)", "Clamped [0.2, 0.8]"],
 )
 
 # %% [markdown]
@@ -602,134 +605,46 @@ print(contour_df)
 # ### 5.2 Geometric Measures
 #
 # The `.contour` namespace provides operations for computing geometric properties.
-#
-# > **Note**: The contour operations require Rust implementation. Below we show the API
-# > and compute measures manually using the Shoelace formula as a reference.
 
 # %%
-# Manual computation of geometric measures (reference implementation)
-# The .contour namespace would provide these directly once implemented
+# Compute geometric measures using the .contour namespace
+# Note: centroid() and bounding_box() are defined in the Python API but not yet
+# implemented in the Rust backend. We compute area, perimeter, and winding for now.
+measures_df = contour_df.with_columns(
+    area=pl.col("contour").contour.area(),
+    perimeter=pl.col("contour").contour.perimeter(),
+    winding=pl.col("contour").contour.winding(),
+    is_convex=pl.col("contour").contour.is_convex(),
+)
 
-
-def compute_contour_area(contour_dict: dict) -> float:
-    """Compute contour area using the Shoelace formula."""
-    points = contour_dict["exterior"]
-    n = len(points)
-    area = 0.0
-    for i in range(n):
-        j = (i + 1) % n
-        area += points[i]["x"] * points[j]["y"]
-        area -= points[j]["x"] * points[i]["y"]
-    return abs(area / 2)
-
-
-def compute_contour_perimeter(contour_dict: dict) -> float:
-    """Compute contour perimeter."""
-    points = contour_dict["exterior"]
-    n = len(points)
-    perimeter = 0.0
-    for i in range(n):
-        j = (i + 1) % n
-        dx = points[j]["x"] - points[i]["x"]
-        dy = points[j]["y"] - points[i]["y"]
-        perimeter += np.sqrt(dx * dx + dy * dy)
-    return perimeter
-
-
-def compute_contour_centroid(contour_dict: dict) -> tuple[float, float]:
-    """Compute contour centroid."""
-    points = contour_dict["exterior"]
-    cx = sum(p["x"] for p in points) / len(points)
-    cy = sum(p["y"] for p in points) / len(points)
-    return cx, cy
-
-
-# Compute measures for each contour
-measures = []
-for row in contour_df.iter_rows(named=True):
-    contour = row["contour"]
-    area = compute_contour_area(contour)
-    perimeter = compute_contour_perimeter(contour)
-    cx, cy = compute_contour_centroid(contour)
-    measures.append(
-        {
-            "name": row["name"],
-            "area": area,
-            "perimeter": perimeter,
-            "centroid_x": cx,
-            "centroid_y": cy,
-        }
-    )
-
-measures_df = pl.DataFrame(measures)
-print("Geometric Measures (computed manually):")
-print(measures_df)
-
-# %%
-# The polars-vision API would look like this once implemented:
-# measures = contour_df.with_columns(
-#     area=pl.col("contour").contour.area(),
-#     perimeter=pl.col("contour").contour.perimeter(),
-#     centroid=pl.col("contour").contour.centroid(),
-#     bbox=pl.col("contour").contour.bounding_box(),
-# )
-print("\nExpected API (once Rust backend is implemented):")
-print('  pl.col("contour").contour.area()')
-print('  pl.col("contour").contour.perimeter()')
-print('  pl.col("contour").contour.centroid()')
+print("Geometric Measures:")
+print(measures_df.select("name", "area", "perimeter", "winding", "is_convex"))
 
 # %% [markdown]
 # ### 5.3 Rasterizing Contours to Masks
 #
-# The `rasterize` operation converts contours to binary masks.
-#
-# > **Note**: This requires Rust backend implementation. Below we show manual rasterization
-# > using PIL as a reference.
+# The `source("contour")` operation rasterizes contours to binary masks.
+# You specify the output dimensions with width/height parameters.
 
 # %%
-# Manual rasterization using PIL (reference implementation)
-from PIL import ImageDraw  # noqa: E402
+# Rasterize contours to masks using polars-vision pipeline
+print("Contour rasterization with Pipeline().source('contour'):")
 
+# Create a pipeline that rasterizes contour to a 200x200 mask
+contour_pipe = Pipeline().source("contour", width=200, height=200).sink("numpy")
 
-def rasterize_contour(contour_dict: dict, width: int, height: int) -> bytes:
-    """Rasterize a contour to a binary mask PNG."""
-    points = contour_dict["exterior"]
-    polygon = [(p["x"], p["y"]) for p in points]
-
-    img = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(img)
-    draw.polygon(polygon, fill=255)
-
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-# Rasterize all contours
-masks = []
-for row in contour_df.iter_rows(named=True):
-    mask = rasterize_contour(row["contour"], 200, 200)
-    masks.append(mask)
-
-result = contour_df.with_columns(mask=pl.Series("mask", masks))
-
-display_images(
-    [result["mask"][i] for i in range(3)],
-    [f"{row['name']} mask" for row in result.iter_rows(named=True)],
-    cmap="gray",
+# Apply to contour DataFrame
+contour_raster_result = contour_df.with_columns(
+    mask=pl.col("contour").cv.pipeline(contour_pipe)
 )
+print(contour_raster_result.select("name", "mask"))
 
-# %%
-# The polars-vision API would look like this:
-# rasterize_pipe = (
-#     Pipeline()
-#     .source("contour")
-#     .rasterize(width=200, height=200, fill_value=255, background=0)
-#     .sink("png")
-# )
-# result = contour_df.with_columns(mask=pl.col("contour").cv.pipeline(rasterize_pipe))
-print("Contour rasterization pipeline API:")
-print('  Pipeline().source("contour").rasterize(width=200, height=200).sink("png")')
+# Verify the mask shape
+from polars_vision import numpy_from_bytes  # noqa: E402
+
+mask_bytes = contour_raster_result["mask"][0]
+mask_arr = numpy_from_bytes(mask_bytes)
+print(f"✅ Rasterized mask shape: {mask_arr.shape}, dtype: {mask_arr.dtype}")
 
 # %% [markdown]
 # ## 6. Lazy Pipeline Composition
@@ -749,68 +664,51 @@ print('  Pipeline().source("contour").rasterize(width=200, height=200).sink("png
 
 # Define pipelines WITHOUT sinks (lazy mode)
 img_pipe = Pipeline().source("image_bytes").resize(height=200, width=200)
-mask_pipe = Pipeline().source("contour").rasterize(width=200, height=200)
 
 # Create lazy expressions using .cv.pipe()
 img_expr = pl.col("image").cv.pipe(img_pipe)  # Returns LazyPipelineExpr
-mask_expr = pl.col("contour").cv.pipe(mask_pipe)  # Returns LazyPipelineExpr
 
 print(f"img_expr type: {type(img_expr)}")
-print(f"mask_expr type: {type(mask_expr)}")
 print()
 print("These are NOT Polars expressions yet - they need .sink() to materialize!")
 
 # %%
 # Compose operations and finalize with .sink()
 
-# The full apply_mask composition requires contour rasterization in Rust.
-# Here we demonstrate the image pipeline composition that works:
-
-# Simple lazy composition (single input)
+# Define pipeline for image processing
 img_pipe = Pipeline().source("image_bytes").resize(height=200, width=200)
+
+# Create lazy expressions using .cv.pipe()
 img_expr = pl.col("image").cv.pipe(img_pipe)
 
-# Add more operations through composition
-# (Note: apply_mask with contours requires Rust backend for contour source)
-final_expr = img_expr.sink("png")
-
-# Now it's a real Polars expression
-print(f"final_expr type: {type(final_expr)}")
-
-# Create test data and execute
-compose_df = pl.DataFrame({"image": [test_images["circles"]]})
-result = compose_df.with_columns(resized=final_expr)
-
-# For the full mask application demo, we use manual rasterization
-contour = contour_from_points([(50, 50), (50, 150), (150, 150), (150, 50)])
-mask_bytes = rasterize_contour(contour, 200, 200)
-
-# Apply mask manually in numpy
-resized_img = Image.open(io.BytesIO(result["resized"][0])).convert("RGB")
-mask_img = Image.open(io.BytesIO(mask_bytes)).convert("L")
-masked_arr = np.array(resized_img) * (np.array(mask_img)[:, :, np.newaxis] / 255)
-masked_pil = Image.fromarray(masked_arr.astype(np.uint8))
-buffer = io.BytesIO()
-masked_pil.save(buffer, format="PNG")
-masked_bytes = buffer.getvalue()
-
-display_images(
-    [result["resized"][0], mask_bytes, masked_bytes],
-    ["Resized Image", "Rasterized Mask", "Image × Mask (manual)"],
+# Create test data with image
+compose_df = pl.DataFrame(
+    {
+        "image": [test_images["circles"]],
+    }
 )
 
-# %%
-# The full API once Rust backend supports contour sources:
-print("Full mask application API (once contour source is implemented):")
+# Execute the composed pipeline - demonstrate lazy composition
+# For image-only operations (contour rasterization not yet implemented)
+result = compose_df.with_columns(
+    resized=pl.col("image").cv.pipe(img_pipe).sink("png"),
+)
+
+display_images(
+    [result["resized"][0]],
+    ["Resized Image (200x200)"],
+)
+
+print("\nLazy composition API:")
 print("""
 img_pipe = Pipeline().source("image_bytes").resize(height=200, width=200)
-mask_pipe = Pipeline().source("contour").rasterize(width=200, height=200)
 
 img_expr = pl.col("image").cv.pipe(img_pipe)
-mask_expr = pl.col("contour").cv.pipe(mask_pipe)
 
-masked_expr = img_expr.apply_mask(mask_expr).sink("png")
-result = df.with_columns(masked=masked_expr)
+# For demonstration with image operations:
+result = df.with_columns(resized=img_expr.sink("png"))
+
+# Note: Mask composition with source("contour") is planned but not yet implemented.
 """)
 
 # %% [markdown]
@@ -826,11 +724,10 @@ result = df.with_columns(masked=masked_expr)
 # - Single plugin call for all outputs
 
 # %%
-# Multi-output pipeline with aliases
-# This API is defined but requires Rust backend implementation
+# Multi-output pipeline with aliases - defining checkpoints
 
-# Show the Python API structure
-multi_pipe = (
+# Demonstrate the alias API for defining named checkpoints
+demo_pipe = (
     Pipeline()
     .source("image_bytes")
     .alias("original")  # Checkpoint: decoded image
@@ -843,19 +740,52 @@ multi_pipe = (
 )
 
 print("Pipeline with aliases:")
-print(f"Aliases defined: {multi_pipe.get_aliases()}")
+print(f"Aliases defined: {demo_pipe.get_aliases()}")
 
 # %%
-# Multi-output isn't implemented in Rust backend yet.
-# Workaround: Run separate pipelines for each checkpoint
+# Multi-output pipeline: return multiple intermediate results from one execution
+# NOTE: Multi-output pipeline execution is not yet fully implemented in the Rust backend.
+# The API is shown below for reference.
 
 df = pl.DataFrame({"image": [test_images["circles"]]})
 
-# Define separate pipelines for each checkpoint
+print("Multi-output API (planned):")
+multi_pipe = (
+    Pipeline()
+    .source("image_bytes")
+    .alias("original")
+    .resize(height=128, width=128)
+    .alias("resized")
+    .grayscale()
+    .alias("gray")
+).sink({"original": "png", "resized": "png", "gray": "png"})
+
+result = df.with_columns(outputs=pl.col("image").cv.pipeline(multi_pipe))
+print("✅ Multi-output result:")
+print(result)
+print("Schema:", result.schema)
+print("\nExtract individual outputs with: pl.col('outputs').struct.field('original')")
+
+# Demonstrate extracting individual fields
+extracted = result.select(
+    pl.col("outputs").struct.field("original").alias("original_png"),
+    pl.col("outputs").struct.field("resized").alias("resized_png"),
+    pl.col("outputs").struct.field("gray").alias("gray_png"),
+)
+print("\nExtracted fields:")
+print(extracted)
+
+# Alternative: demonstrate individual pipelines for comparison
 original_pipe = Pipeline().source("image_bytes").sink("png")
-resized_pipe = Pipeline().source("image_bytes").resize(height=128, width=128).sink("png")
+resized_pipe = (
+    Pipeline().source("image_bytes").resize(height=128, width=128).sink("png")
+)
 gray_pipe = (
-    Pipeline().source("image_bytes").resize(height=128, width=128).grayscale().sink("png")
+    Pipeline()
+    .source("image_bytes")
+    .resize(height=128, width=128)
+    .grayscale()
+    .sink("png")
 )
 binary_pipe = (
     Pipeline()
@@ -866,7 +796,6 @@ binary_pipe = (
     .sink("png")
 )
 
-# Run all pipelines
 result = df.with_columns(
     original=pl.col("image").cv.pipeline(original_pipe),
     resized=pl.col("image").cv.pipeline(resized_pipe),
@@ -874,34 +803,11 @@ result = df.with_columns(
     binary=pl.col("image").cv.pipeline(binary_pipe),
 )
 
-# Display all intermediate outputs
 row = result.row(0, named=True)
 display_images(
     [row["original"], row["resized"], row["gray"], row["binary"]],
     ["Original (decoded)", "Resized (128x128)", "Grayscale", "Binary (thresh=128)"],
 )
-
-# %%
-# Once implemented, the multi-output API would be:
-print("Multi-output API (once Rust backend is implemented):")
-print("""
-multi_pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .alias("original")
-    .resize(height=128, width=128)
-    .alias("resized")
-    .grayscale()
-    .alias("gray")
-).sink({
-    "original": "png",
-    "resized": "png",
-    "gray": "png"
-})
-
-result = df.with_columns(outputs=pl.col("image").cv.pipeline(multi_pipe))
-# Extract with: pl.col("outputs").struct.field("original")
-""")
 
 # %% [markdown]
 # ## 8. ML Workflow: IoU Calculation
@@ -977,18 +883,18 @@ pred_pipe = (
     .sink("png")
 )
 
-# Process predictions with polars-vision
-processed = ml_df.with_columns(
-    pred_mask=pl.col("prediction").cv.pipeline(pred_pipe),
+# Ground truth pipeline: rasterize contours to masks
+gt_pipe = (
+    Pipeline()
+    .source("contour", width=200, height=200, fill_value=255, background=0)
+    .sink("png")
 )
 
-# Ground truth: rasterize contours manually (contour source not implemented in Rust)
-gt_masks = []
-for row in ml_df.iter_rows(named=True):
-    gt_mask = rasterize_contour(row["ground_truth"], 200, 200)
-    gt_masks.append(gt_mask)
-
-processed = processed.with_columns(gt_mask=pl.Series("gt_mask", gt_masks))
+# Process both predictions and ground truth with polars-vision
+processed = ml_df.with_columns(
+    pred_mask=pl.col("prediction").cv.pipeline(pred_pipe),
+    gt_mask=pl.col("ground_truth").cv.pipeline(gt_pipe),
+)
 
 # Visualize first sample
 row = processed.row(0, named=True)
@@ -1000,15 +906,52 @@ display_images(
 
 # %%
 # Calculate IoU and Dice using contour operations
-# First, we need to extract contours from the prediction masks
+# We need to extract contours from the prediction masks first
 
-# For contour-based IoU, we can use the .contour.iou() operation directly
-# This requires having both as contour format
+# Extract contours from prediction masks
+extract_pipe = (
+    Pipeline()
+    .source("image_bytes")
+    .extract_contours(mode="external", method="simple")
+    .sink("blob")
+)
 
-# Alternative approach: compute IoU manually from rasterized masks
-# (This would be done in Python since we have the masks as images)
+# Process predictions to get contours for IoU calculation
+# For now, we can also directly compute IoU between contours if we have them
+# Using the ground_truth contours directly with .contour.iou()
+
+# Extract predicted contours (simplified approach: use first extracted contour)
+processed_with_pred_contours = processed.with_columns(
+    pred_contour=pl.col("pred_mask").cv.pipeline(extract_pipe),
+)
+
+# For the ML demo, we compute IoU/Dice directly on the ground truth contours
+# Since we have generated predictions as heatmaps and GT as contours,
+# we can compare ground truth contours with extracted prediction contours
+
+# Simpler approach: Create prediction contours from the heatmap centers
+# and compute IoU between ground_truth contours
+# For this demo, we'll compute metrics using the ground_truth contour vs itself
+# with slight perturbations to show the API
+
+# Compute IoU and Dice using the .contour namespace
+# Here we demonstrate the API by comparing ground_truth to itself
+# In practice, you would compare pred_contour to ground_truth
+metrics_df = ml_df.select(
+    "sample_id",
+    # IoU with itself should be 1.0
+    iou_self=pl.col("ground_truth").contour.iou(pl.col("ground_truth")),
+    # Dice with itself should be 1.0
+    dice_self=pl.col("ground_truth").contour.dice(pl.col("ground_truth")),
+    # Area of ground truth
+    gt_area=pl.col("ground_truth").contour.area(),
+)
+
+print("Contour-based Metrics (comparing GT with itself):")
+print(metrics_df)
 
 
+# For a realistic demo, compute pixel-based IoU manually for visualization
 def compute_iou_from_masks(mask1_bytes: bytes, mask2_bytes: bytes) -> float:
     """Compute IoU from two PNG mask bytes."""
     m1 = np.array(Image.open(io.BytesIO(mask1_bytes)).convert("L")) > 128
@@ -1027,18 +970,18 @@ def compute_dice_from_masks(mask1_bytes: bytes, mask2_bytes: bytes) -> float:
     return float(2 * intersection / denom) if denom > 0 else 0.0
 
 
-# Compute metrics for all samples
-metrics = []
+# Compute pixel-based metrics for prediction vs ground truth comparison
+pixel_metrics = []
 for row in processed.iter_rows(named=True):
     iou = compute_iou_from_masks(row["pred_mask"], row["gt_mask"])
     dice = compute_dice_from_masks(row["pred_mask"], row["gt_mask"])
-    metrics.append({"sample_id": row["sample_id"], "iou": iou, "dice": dice})
+    pixel_metrics.append({"sample_id": row["sample_id"], "iou": iou, "dice": dice})
 
-metrics_df = pl.DataFrame(metrics)
-print("Segmentation Metrics:")
-print(metrics_df)
-print(f"\nMean IoU: {metrics_df['iou'].mean():.3f}")
-print(f"Mean Dice: {metrics_df['dice'].mean():.3f}")
+pixel_metrics_df = pl.DataFrame(pixel_metrics)
+print("\nPixel-based Segmentation Metrics (pred vs GT masks):")
+print(pixel_metrics_df)
+print(f"\nMean IoU: {pixel_metrics_df['iou'].mean():.3f}")
+print(f"Mean Dice: {pixel_metrics_df['dice'].mean():.3f}")
 
 # %%
 # Visualize overlay of predictions vs ground truth
@@ -1067,7 +1010,7 @@ titles = []
 for i, row in enumerate(processed.head(3).iter_rows(named=True)):
     overlay = create_overlay(row["pred_mask"], row["gt_mask"])
     overlays.append(overlay)
-    titles.append(f"Sample {i} (IoU={metrics[i]['iou']:.2f})")
+    titles.append(f"Sample {i} (IoU={pixel_metrics[i]['iou']:.2f})")
 
 print("Overlay: Green=GT, Red=Pred, Yellow=Overlap")
 display_images(overlays, titles)
@@ -1182,9 +1125,9 @@ print(result.head())
 # Verify the processed data
 processed_data = pl.read_parquet(output_path)
 
-# Convert one sample back to array for visualization
+# Convert one sample back to array for visualization using numpy_from_bytes
 sample = processed_data.row(0, named=True)
-arr = numpy_bytes_to_array(sample["processed"], (64, 64, 1), dtype=np.float32)
+arr = numpy_from_bytes(sample["processed"])
 
 print(f"Processed array shape: {arr.shape}")
 print(f"Value range: [{arr.min():.3f}, {arr.max():.3f}]")
@@ -1193,7 +1136,7 @@ print(f"Value range: [{arr.min():.3f}, {arr.max():.3f}]")
 fig, axes = plt.subplots(1, 4, figsize=(12, 3))
 for i, ax in enumerate(axes):
     sample = processed_data.row(i, named=True)
-    arr = numpy_bytes_to_array(sample["processed"], (64, 64, 1), dtype=np.float32)
+    arr = numpy_from_bytes(sample["processed"])
     ax.imshow(arr.squeeze(), cmap="viridis")
     ax.set_title(f"ID={sample['id']}, {sample['pattern']}")
     ax.axis("off")
@@ -1261,12 +1204,10 @@ if TORCH_AVAILABLE:
 
 # %%
 if TORCH_AVAILABLE:
-    # Convert bytes to PyTorch tensors
-    def bytes_to_torch(
-        data: bytes, shape: tuple[int, ...], dtype: Any = torch.float32
-    ) -> torch.Tensor:
-        """Convert torch-format bytes to PyTorch tensor."""
-        arr = np.frombuffer(data, dtype=np.float32).reshape(shape)
+    # Convert bytes to PyTorch tensors using numpy_from_bytes
+    def bytes_to_torch(data: bytes) -> torch.Tensor:
+        """Convert torch-format bytes to PyTorch tensor using numpy_from_bytes."""
+        arr = numpy_from_bytes(data)
         return torch.from_numpy(arr.copy())
 
     # Create tensor batch
@@ -1275,7 +1216,7 @@ if TORCH_AVAILABLE:
 
     for row in processed.iter_rows(named=True):
         # Shape after processing: (224, 224, 3) for RGB, float32
-        tensor = bytes_to_torch(row["tensor_bytes"], (224, 224, 3))
+        tensor = bytes_to_torch(row["tensor_bytes"])
         # Transpose to PyTorch format: (C, H, W)
         tensor = tensor.permute(2, 0, 1)
         tensors.append(tensor)
@@ -1309,7 +1250,7 @@ if TORCH_AVAILABLE:
 
         def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
             row = self.df.row(idx, named=True)
-            tensor = bytes_to_torch(row["_tensor"], (224, 224, 3))
+            tensor = bytes_to_torch(row["_tensor"])
             tensor = tensor.permute(2, 0, 1)  # (C, H, W)
             label = row[self.label_col]
             return tensor, label
@@ -1321,7 +1262,9 @@ if TORCH_AVAILABLE:
     # Iterate through batches
     print("DataLoader iteration:")
     for batch_idx, (images, labels) in enumerate(dataloader):
-        print(f"  Batch {batch_idx}: images shape={images.shape}, labels={labels.tolist()}")
+        print(
+            f"  Batch {batch_idx}: images shape={images.shape}, labels={labels.tolist()}"
+        )
 
 # %% [markdown]
 # ## 11. Conclusion
@@ -1383,4 +1326,3 @@ print("   • High-performance image processing in Polars")
 print("   • Zero-copy operations where possible")
 print("   • Composable, reusable pipelines")
 print("   • Seamless ML framework integration")
-
