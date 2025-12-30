@@ -141,7 +141,7 @@ class TestContourArea:
 
     def test_area_with_hole(self, contour_with_hole: dict) -> None:
         """Area with hole - currently only exterior is parsed.
-        
+
         Note: Hole parsing is not yet implemented in the Rust backend,
         so this returns the exterior area only. When hole parsing is
         implemented, this should return 7500 (10000 - 2500).
@@ -199,9 +199,7 @@ class TestContourIsConvex:
 
     def test_square_is_convex(self, square_df: pl.DataFrame) -> None:
         """Square should be convex."""
-        result = square_df.with_columns(
-            is_convex=pl.col("contour").contour.is_convex()
-        )
+        result = square_df.with_columns(is_convex=pl.col("contour").contour.is_convex())
         assert result["is_convex"][0] is True
 
     def test_triangle_is_convex(self, triangle_contour: dict) -> None:
@@ -340,7 +338,9 @@ class TestContourNormalize:
     def test_normalize_returns_contour(self, square_df: pl.DataFrame) -> None:
         """Normalize should return a contour."""
         result = square_df.with_columns(
-            normalized=pl.col("contour").contour.normalize(ref_width=100, ref_height=100)
+            normalized=pl.col("contour").contour.normalize(
+                ref_width=100, ref_height=100
+            )
         )
         assert result["normalized"].dtype == result["contour"].dtype
 
@@ -529,4 +529,3 @@ class TestContourMultipleOperations:
         assert len(result) == 3
         assert result["area"].null_count() == 0
         assert result["perimeter"].null_count() == 0
-

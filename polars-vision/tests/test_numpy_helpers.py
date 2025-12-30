@@ -228,4 +228,3 @@ class TestRoundTrip:
         result = numpy_from_bytes(encoded)
 
         np.testing.assert_array_equal(result, arr)
-

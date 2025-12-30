@@ -269,7 +269,11 @@ class TestMultiSinkSerialization:
         assert "aliases" in data
 
     def test_graph_to_json_single_output(self) -> None:
-        """Test graph JSON serialization with single output."""
+        """Test graph JSON serialization with single output.
+
+        The unified format always uses "outputs" dict, with "_output"
+        as the key for single-output graphs.
+        """
         import json
 
         from polars_vision._graph import PipelineGraph
@@ -282,11 +286,16 @@ class TestMultiSinkSerialization:
         json_str = graph._to_json()
         data = json.loads(json_str)
 
-        assert "output" in data
-        assert "outputs" not in data
+        # Unified format uses "outputs" for both single and multi-output
+        assert "outputs" in data
+        assert "_output" in data["outputs"]
+        assert data["outputs"]["_output"]["node"] == "node1"
 
     def test_graph_to_json_multi_output(self) -> None:
-        """Test graph JSON serialization with multi-output."""
+        """Test graph JSON serialization with multi-output.
+
+        Multi-output graphs have named outputs in the "outputs" dict.
+        """
         import json
 
         from polars_vision._graph import PipelineGraph
@@ -301,7 +310,7 @@ class TestMultiSinkSerialization:
         data = json.loads(json_str)
 
         assert "outputs" in data
-        assert "output" not in data
-        assert "is_multi_output" in data
-        assert data["is_multi_output"] is True
-
+        assert "out1" in data["outputs"]
+        assert "out2" in data["outputs"]
+        assert data["outputs"]["out1"]["node"] == "node1"
+        assert data["outputs"]["out2"]["node"] == "node2"

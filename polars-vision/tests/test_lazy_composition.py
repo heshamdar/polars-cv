@@ -264,8 +264,11 @@ class TestPipelineGraphSerialization:
 
         assert "nodes" in parsed
         assert "node1" in parsed["nodes"]
-        assert parsed["output"]["node"] == "node1"
-        assert parsed["output"]["sink"]["format"] == "numpy"
+        # Unified format uses "outputs" with "_output" key for single output
+        assert "outputs" in parsed
+        assert "_output" in parsed["outputs"]
+        assert parsed["outputs"]["_output"]["node"] == "node1"
+        assert parsed["outputs"]["_output"]["sink"]["format"] == "numpy"
 
     def test_graph_topological_order(self) -> None:
         """Graph should compute correct topological order."""

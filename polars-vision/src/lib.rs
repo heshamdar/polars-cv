@@ -24,7 +24,7 @@ fn polars_vision_lib(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> 
 }
 
 use crate::execute::execute_pipeline;
-use crate::graph::{MultiPipelineGraph, PipelineGraph};
+use crate::graph::{MultiPipelineGraph, PipelineGraph, UnifiedGraph};
 use crate::pipeline::PipelineSpec;
 
 // Import geometry operations from view-buffer
@@ -140,6 +140,56 @@ fn vb_pipeline_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResu
     let expr_columns: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
 
     // Execute the graph and return Struct column
+    graph.execute(inputs, &expr_columns)
+}
+
+/// Unified pipeline graph execution for single output.
+///
+/// This function handles single-output graph execution using the unified
+/// graph format. It always returns a Binary column.
+///
+/// Use this when you know the graph has only one output ("_output" key).
+#[polars_expr(output_type=Binary)]
+fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
+    // Parse the unified graph specification
+    let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
+
+    // Build expression columns map (empty for now, may be used for dynamic params)
+    let expr_columns: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
+
+    // Execute the graph - should return Binary for single output
+    graph.execute(inputs, &expr_columns)
+}
+
+/// Compute the output dtype for multi-output unified graph.
+fn unified_multi_output_dtype(input_fields: &[Field]) -> PolarsResult<Field> {
+    // For multi-output, we return a Struct with Binary fields
+    // The actual field names are determined at runtime based on the graph
+    let name = if !input_fields.is_empty() {
+        input_fields[0].name().clone()
+    } else {
+        PlSmallStr::from_static("output")
+    };
+
+    // Use Unknown(Any) for dynamic struct type
+    Ok(Field::new(name, DataType::Unknown(UnknownKind::Any)))
+}
+
+/// Unified pipeline graph execution for multiple outputs.
+///
+/// This function handles multi-output graph execution using the unified
+/// graph format. It returns a Struct column with named Binary fields.
+///
+/// Use this when the graph has multiple outputs.
+#[polars_expr(output_type_func=unified_multi_output_dtype)]
+fn vb_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
+    // Parse the unified graph specification
+    let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
+
+    // Build expression columns map (empty for now, may be used for dynamic params)
+    let expr_columns: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
+
+    // Execute the graph - should return Struct for multi-output
     graph.execute(inputs, &expr_columns)
 }
 

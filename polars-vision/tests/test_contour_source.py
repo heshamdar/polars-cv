@@ -34,7 +34,9 @@ def create_square_contour(x: float, y: float, size: float) -> dict:
     }
 
 
-def create_triangle_contour(x1: float, y1: float, x2: float, y2: float, x3: float, y3: float) -> dict:
+def create_triangle_contour(
+    x1: float, y1: float, x2: float, y2: float, x3: float, y3: float
+) -> dict:
     """Create a triangle contour."""
     return {
         "exterior": [
@@ -52,9 +54,11 @@ class TestContourSourceExplicitDims:
 
     def test_basic_rasterization(self) -> None:
         """Basic contour rasterization produces correct output shape."""
-        df = pl.DataFrame({
-            "contour": [create_square_contour(10, 10, 50)],
-        }).cast({"contour": CONTOUR_SCHEMA})
+        df = pl.DataFrame(
+            {
+                "contour": [create_square_contour(10, 10, 50)],
+            }
+        ).cast({"contour": CONTOUR_SCHEMA})
 
         pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
@@ -70,13 +74,17 @@ class TestContourSourceExplicitDims:
 
     def test_rasterization_with_fill_values(self) -> None:
         """Fill value and background parameters work correctly."""
-        df = pl.DataFrame({
-            "contour": [create_square_contour(10, 10, 50)],
-        }).cast({"contour": CONTOUR_SCHEMA})
+        df = pl.DataFrame(
+            {
+                "contour": [create_square_contour(10, 10, 50)],
+            }
+        ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source(
-            "contour", width=100, height=100, fill_value=128, background=64
-        ).sink("numpy")
+        pipe = (
+            Pipeline()
+            .source("contour", width=100, height=100, fill_value=128, background=64)
+            .sink("numpy")
+        )
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
         arr = numpy_from_bytes(result["mask"][0])
@@ -88,12 +96,14 @@ class TestContourSourceExplicitDims:
 
     def test_rasterization_multiple_contours(self) -> None:
         """Multiple contours can be rasterized in a single operation."""
-        df = pl.DataFrame({
-            "contour": [
-                create_square_contour(10, 10, 20),
-                create_triangle_contour(50, 50, 80, 50, 65, 80),
-            ],
-        }).cast({"contour": CONTOUR_SCHEMA})
+        df = pl.DataFrame(
+            {
+                "contour": [
+                    create_square_contour(10, 10, 20),
+                    create_triangle_contour(50, 50, 80, 50, 65, 80),
+                ],
+            }
+        ).cast({"contour": CONTOUR_SCHEMA})
 
         pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
@@ -109,16 +119,15 @@ class TestContourSourceExplicitDims:
 
     def test_rasterization_with_operations(self) -> None:
         """Contour rasterization followed by pipeline operations."""
-        df = pl.DataFrame({
-            "contour": [create_square_contour(10, 10, 50)],
-        }).cast({"contour": CONTOUR_SCHEMA})
+        df = pl.DataFrame(
+            {
+                "contour": [create_square_contour(10, 10, 50)],
+            }
+        ).cast({"contour": CONTOUR_SCHEMA})
 
         # Rasterize and then blur
         pipe = (
-            Pipeline()
-            .source("contour", width=100, height=100)
-            .blur(2.0)
-            .sink("numpy")
+            Pipeline().source("contour", width=100, height=100).blur(2.0).sink("numpy")
         )
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
@@ -131,9 +140,11 @@ class TestContourSourceExplicitDims:
 
     def test_rasterization_resize(self) -> None:
         """Contour rasterization followed by resize."""
-        df = pl.DataFrame({
-            "contour": [create_square_contour(10, 10, 50)],
-        }).cast({"contour": CONTOUR_SCHEMA})
+        df = pl.DataFrame(
+            {
+                "contour": [create_square_contour(10, 10, 50)],
+            }
+        ).cast({"contour": CONTOUR_SCHEMA})
 
         pipe = (
             Pipeline()
@@ -152,18 +163,22 @@ class TestContourSourceDynamicDims:
 
     def test_dynamic_width_height(self) -> None:
         """Width and height from column expressions."""
-        df = pl.DataFrame({
-            "contour": [
-                create_square_contour(5, 5, 20),
-                create_square_contour(10, 10, 30),
-            ],
-            "w": [50, 100],
-            "h": [50, 100],
-        }).cast({"contour": CONTOUR_SCHEMA})
+        df = pl.DataFrame(
+            {
+                "contour": [
+                    create_square_contour(5, 5, 20),
+                    create_square_contour(10, 10, 30),
+                ],
+                "w": [50, 100],
+                "h": [50, 100],
+            }
+        ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source(
-            "contour", width=pl.col("w"), height=pl.col("h")
-        ).sink("numpy")
+        pipe = (
+            Pipeline()
+            .source("contour", width=pl.col("w"), height=pl.col("h"))
+            .sink("numpy")
+        )
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
         # First row: 50x50
@@ -193,9 +208,6 @@ class TestContourSourceValidation:
 
     def test_both_shape_and_dims_error(self) -> None:
         """Error when both shape and explicit dimensions provided."""
-        # Create a dummy LazyPipelineExpr for the shape parameter
-        dummy_pipe = Pipeline().source("image_bytes")
-
         # This should work (just width/height)
         Pipeline().source("contour", width=100, height=100)
 
@@ -207,13 +219,15 @@ class TestContourSourceNullHandling:
 
     def test_null_contour_produces_null_output(self) -> None:
         """Null contours should produce null outputs."""
-        df = pl.DataFrame({
-            "contour": [
-                create_square_contour(10, 10, 50),
-                None,
-                create_triangle_contour(20, 20, 60, 20, 40, 60),
-            ],
-        }).cast({"contour": CONTOUR_SCHEMA})
+        df = pl.DataFrame(
+            {
+                "contour": [
+                    create_square_contour(10, 10, 50),
+                    None,
+                    create_triangle_contour(20, 20, 60, 20, 40, 60),
+                ],
+            }
+        ).cast({"contour": CONTOUR_SCHEMA})
 
         pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
@@ -228,9 +242,11 @@ class TestContourSourceIntegration:
 
     def test_contour_to_threshold(self) -> None:
         """Rasterize contour and apply threshold."""
-        df = pl.DataFrame({
-            "contour": [create_square_contour(10, 10, 50)],
-        }).cast({"contour": CONTOUR_SCHEMA})
+        df = pl.DataFrame(
+            {
+                "contour": [create_square_contour(10, 10, 50)],
+            }
+        ).cast({"contour": CONTOUR_SCHEMA})
 
         pipe = (
             Pipeline()
@@ -245,4 +261,3 @@ class TestContourSourceIntegration:
         # Threshold should produce binary output
         unique_values = set(np.unique(arr))
         assert unique_values.issubset({0, 255}), f"Expected binary, got {unique_values}"
-
