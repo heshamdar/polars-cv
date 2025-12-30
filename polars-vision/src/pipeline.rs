@@ -17,6 +17,25 @@ pub struct SourceSpec {
     /// Data type for "raw" format.
     #[serde(default)]
     pub dtype: Option<String>,
+    /// Width for contour rasterization.
+    #[serde(default)]
+    pub width: Option<crate::params::ParamValue>,
+    /// Height for contour rasterization.
+    #[serde(default)]
+    pub height: Option<crate::params::ParamValue>,
+    /// Fill value for contour interior (default 255).
+    #[serde(default = "default_fill_value")]
+    pub fill_value: u8,
+    /// Background value for contour exterior (default 0).
+    #[serde(default)]
+    pub background: u8,
+    /// Serialized shape pipeline for dimension inference.
+    #[serde(default)]
+    pub shape_pipeline: Option<serde_json::Value>,
+}
+
+fn default_fill_value() -> u8 {
+    255
 }
 
 /// Sink format specification.
@@ -159,6 +178,30 @@ impl PipelineSpec {
     ///
     /// Returns Ok(()) if the pipeline is valid, or an error describing the issue.
     pub fn validate(&self) -> PolarsResult<()> {
+        // Validate contour source parameters
+        if self.source.format == "contour" {
+            let has_explicit_dims = self.source.width.is_some() || self.source.height.is_some();
+            let has_shape_pipeline = self.source.shape_pipeline.is_some();
+
+            if has_explicit_dims && has_shape_pipeline {
+                return Err(
+                    polars_err!(ComputeError: "Contour source: cannot specify both 'shape' pipeline and explicit dimensions"),
+                );
+            }
+
+            if !has_explicit_dims && !has_shape_pipeline {
+                return Err(
+                    polars_err!(ComputeError: "Contour source requires either explicit width/height or a shape pipeline"),
+                );
+            }
+
+            if has_explicit_dims && (self.source.width.is_none() || self.source.height.is_none()) {
+                return Err(
+                    polars_err!(ComputeError: "Contour source: both 'width' and 'height' must be specified together"),
+                );
+            }
+        }
+
         // Check for unsupported operation sequences
         for op in &self.ops {
             // Validate that all required parameters are present

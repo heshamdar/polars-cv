@@ -264,4 +264,3 @@ mod tests {
         assert!(contains_point(&contour, 1.0, 1.0)); // Inside exterior, not in hole
     }
 }
-

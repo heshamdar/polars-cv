@@ -154,23 +154,24 @@ impl PipelineGraph {
 
             // Execute nodes in order
             for node_id in &order {
-                let node = self.nodes.get(node_id).ok_or_else(|| {
-                    polars_err!(ComputeError: "Node '{}' not found in graph", node_id)
-                })?;
+                let node = self.nodes.get(node_id).ok_or_else(
+                    || polars_err!(ComputeError: "Node '{}' not found in graph", node_id),
+                )?;
 
                 // Get input column index for this node
                 let col_idx = self.column_bindings.get(node_id).copied().unwrap_or(0);
 
                 if col_idx >= inputs.len() {
-                    return Err(polars_err!(ComputeError: 
-                        "Column index {} out of bounds for node '{}'", col_idx, node_id));
+                    return Err(
+                        polars_err!(ComputeError: "Column index {} out of bounds for node '{}'", col_idx, node_id),
+                    );
                 }
 
                 // Get the input data
                 let input_series = &inputs[col_idx];
-                let input_ca = input_series.binary().map_err(|_| {
-                    polars_err!(ComputeError: "Expected Binary column for node '{}'", node_id)
-                })?;
+                let input_ca = input_series.binary().map_err(
+                    |_| polars_err!(ComputeError: "Expected Binary column for node '{}'", node_id),
+                )?;
 
                 let input_bytes = input_ca.get(row_idx);
 
@@ -218,7 +219,8 @@ impl PipelineGraph {
             // Get output buffer
             if let Some(output_buffer) = buffers.get(&self.output.node) {
                 // Encode using sink format
-                let encoded = crate::execute::encode_sink(output_buffer, &self.create_output_spec())?;
+                let encoded =
+                    crate::execute::encode_sink(output_buffer, &self.create_output_spec())?;
                 results.push(Some(encoded));
             } else {
                 results.push(None);
@@ -226,10 +228,8 @@ impl PipelineGraph {
         }
 
         // Build output series
-        let output_ca = BinaryChunked::from_iter_options(
-            inputs[0].name().clone(),
-            results.into_iter(),
-        );
+        let output_ca =
+            BinaryChunked::from_iter_options(inputs[0].name().clone(), results.into_iter());
         Ok(output_ca.into_series())
     }
 
@@ -242,6 +242,11 @@ impl PipelineGraph {
                 .unwrap_or_else(|| SourceSpec {
                     format: "blob".to_string(),
                     dtype: None,
+                    width: None,
+                    height: None,
+                    fill_value: 255,
+                    background: 0,
+                    shape_pipeline: None,
                 }),
             shape_hints: None,
             ops: vec![],
@@ -253,8 +258,9 @@ impl PipelineGraph {
 impl MultiPipelineGraph {
     /// Parse a multi-output graph from JSON.
     pub fn from_json(json: &str) -> PolarsResult<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| polars_err!(ComputeError: "Failed to parse multi-output pipeline graph: {}", e))
+        serde_json::from_str(json).map_err(
+            |e| polars_err!(ComputeError: "Failed to parse multi-output pipeline graph: {}", e),
+        )
     }
 
     /// Get all output node IDs.
@@ -332,23 +338,24 @@ impl MultiPipelineGraph {
 
             // Execute nodes in order
             for node_id in &order {
-                let node = self.nodes.get(node_id).ok_or_else(|| {
-                    polars_err!(ComputeError: "Node '{}' not found in graph", node_id)
-                })?;
+                let node = self.nodes.get(node_id).ok_or_else(
+                    || polars_err!(ComputeError: "Node '{}' not found in graph", node_id),
+                )?;
 
                 // Get input column index for this node
                 let col_idx = self.column_bindings.get(node_id).copied().unwrap_or(0);
 
                 if col_idx >= inputs.len() {
-                    return Err(polars_err!(ComputeError: 
-                        "Column index {} out of bounds for node '{}'", col_idx, node_id));
+                    return Err(
+                        polars_err!(ComputeError: "Column index {} out of bounds for node '{}'", col_idx, node_id),
+                    );
                 }
 
                 // Get the input data
                 let input_series = &inputs[col_idx];
-                let input_ca = input_series.binary().map_err(|_| {
-                    polars_err!(ComputeError: "Expected Binary column for node '{}'", node_id)
-                })?;
+                let input_ca = input_series.binary().map_err(
+                    |_| polars_err!(ComputeError: "Expected Binary column for node '{}'", node_id),
+                )?;
 
                 let input_bytes = input_ca.get(row_idx);
 
@@ -403,6 +410,11 @@ impl MultiPipelineGraph {
                         source: SourceSpec {
                             format: "blob".to_string(),
                             dtype: None,
+                            width: None,
+                            height: None,
+                            fill_value: 255,
+                            background: 0,
+                            shape_pipeline: None,
                         },
                         shape_hints: None,
                         ops: vec![],
@@ -420,10 +432,8 @@ impl MultiPipelineGraph {
         let mut fields: Vec<Series> = Vec::with_capacity(output_aliases.len());
         for alias in &output_aliases {
             let data = results.remove(*alias).unwrap();
-            let ca = BinaryChunked::from_iter_options(
-                PlSmallStr::from_str(alias),
-                data.into_iter(),
-            );
+            let ca =
+                BinaryChunked::from_iter_options(PlSmallStr::from_str(alias), data.into_iter());
             fields.push(ca.into_series());
         }
 
@@ -569,4 +579,3 @@ mod tests {
         assert!(output_ids.contains("b"));
     }
 }
-

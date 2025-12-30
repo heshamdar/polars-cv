@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};
 
 use view_buffer::{
+    geometry::{rasterize::rasterize, Contour, Point},
     ComputeOp, DType, FilterType, GeometryOp, ImageAdapter, ImageOp, ImageOpKind, NormalizeMethod,
     ViewBuffer, ViewDto, ViewExpr, ViewOp,
 };
@@ -24,7 +25,12 @@ pub fn execute_pipeline(
     // Validate pipeline configuration first
     pipeline.validate()?;
 
-    // Get the binary data
+    // Check if this is a contour source
+    if pipeline.source_format() == "contour" {
+        return execute_contour_pipeline(data_series, pipeline, expr_columns);
+    }
+
+    // Get the binary data for non-contour sources
     let data_ca = data_series
         .binary()
         .map_err(|_| polars_err!(ComputeError: "Expected Binary column for pipeline input"))?;
@@ -49,6 +55,279 @@ pub fn execute_pipeline(
     let output_ca =
         BinaryChunked::from_iter_options(data_series.name().clone(), results.into_iter());
     Ok(output_ca.into_series())
+}
+
+/// Execute a contour pipeline on a Struct Series.
+fn execute_contour_pipeline(
+    data_series: &Series,
+    pipeline: &PipelineSpec,
+    expr_columns: &HashMap<String, &Series>,
+) -> PolarsResult<Series> {
+    let len = data_series.len();
+    let mut results: Vec<Option<Vec<u8>>> = Vec::with_capacity(len);
+
+    // Process each row
+    for row_idx in 0..len {
+        let value = data_series.get(row_idx)?;
+        match value {
+            AnyValue::Null => {
+                results.push(None);
+            }
+            _ => {
+                let result = execute_contour_row(&value, row_idx, pipeline, expr_columns)?;
+                results.push(Some(result));
+            }
+        }
+    }
+
+    // Build the output series
+    let output_ca =
+        BinaryChunked::from_iter_options(data_series.name().clone(), results.into_iter());
+    Ok(output_ca.into_series())
+}
+
+/// Execute the contour pipeline on a single row.
+fn execute_contour_row(
+    value: &AnyValue,
+    row_idx: usize,
+    pipeline: &PipelineSpec,
+    expr_columns: &HashMap<String, &Series>,
+) -> PolarsResult<Vec<u8>> {
+    // 1. Decode the contour source (parse struct and rasterize)
+    let buffer = decode_contour_source(value, row_idx, pipeline, expr_columns)?;
+
+    // 2. Resolve all operations first
+    let mut view_dtos = Vec::with_capacity(pipeline.ops.len());
+    for op_spec in &pipeline.ops {
+        let view_dto = resolve_op(op_spec, row_idx, expr_columns)?;
+        view_dtos.push(view_dto);
+    }
+
+    // 3. Build expression and execute with panic catching
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut expr = ViewExpr::new_source(buffer);
+        for view_dto in view_dtos {
+            expr = expr.apply_op(view_dto);
+        }
+        let plan = expr.plan();
+        plan.execute()
+    }));
+
+    let result_buffer = match result {
+        Ok(buf) => buf,
+        Err(panic_payload) => {
+            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Unknown panic during pipeline execution".to_string()
+            };
+            return Err(polars_err!(ComputeError: "Pipeline execution failed: {}", panic_msg));
+        }
+    };
+
+    // 4. Encode the sink
+    encode_sink(&result_buffer, pipeline)
+}
+
+/// Decode a contour source by parsing the struct and rasterizing to ViewBuffer.
+fn decode_contour_source(
+    value: &AnyValue,
+    row_idx: usize,
+    pipeline: &PipelineSpec,
+    expr_columns: &HashMap<String, &Series>,
+) -> PolarsResult<ViewBuffer> {
+    // Parse the contour from the struct
+    let contour = parse_contour_from_anyvalue(value)?;
+
+    // Resolve dimensions
+    let (width, height) = resolve_contour_dimensions(row_idx, pipeline, expr_columns)?;
+
+    // Get fill and background values
+    let fill_value = pipeline.source.fill_value;
+    let background = pipeline.source.background;
+
+    // Rasterize the contour to a ViewBuffer
+    Ok(rasterize(
+        &contour, width, height, fill_value, background, false, // anti_alias not yet supported
+    ))
+}
+
+/// Parse a contour from an AnyValue (struct or list).
+fn parse_contour_from_anyvalue(value: &AnyValue) -> PolarsResult<Contour> {
+    match value {
+        AnyValue::StructOwned(boxed) => {
+            let (values, fields) = boxed.as_ref();
+
+            // Find the exterior field
+            for (i, field) in fields.iter().enumerate() {
+                if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
+                    if let Some(AnyValue::List(series)) = values.get(i) {
+                        let points = extract_points_from_series(series)?;
+                        // Look for holes field
+                        let holes = extract_holes_from_struct(values, fields)?;
+                        return Ok(Contour::with_holes(points, holes));
+                    }
+                }
+            }
+
+            // If no named field found, try to use the first list field
+            for av in values.iter() {
+                if let AnyValue::List(series) = av {
+                    let points = extract_points_from_series(series)?;
+                    return Ok(Contour::new(points));
+                }
+            }
+
+            Err(polars_err!(ComputeError: "Could not find contour points in struct"))
+        }
+        AnyValue::Struct(idx, array, fields) => {
+            // Handle struct array reference - convert to owned for easier handling
+            let owned = value.clone().into_static();
+            if let AnyValue::StructOwned(boxed) = owned {
+                let (values, flds) = boxed.as_ref();
+                for (i, field) in flds.iter().enumerate() {
+                    if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
+                        if let Some(AnyValue::List(series)) = values.get(i) {
+                            let points = extract_points_from_series(series)?;
+                            let holes = extract_holes_from_struct(values, flds)?;
+                            return Ok(Contour::with_holes(points, holes));
+                        }
+                    }
+                }
+            }
+            // Suppress unused variable warnings
+            let _ = (idx, array, fields);
+            Err(polars_err!(ComputeError: "Could not extract contour from struct array"))
+        }
+        _ => Err(polars_err!(ComputeError: "Expected Struct for contour, got {:?}", value.dtype())),
+    }
+}
+
+/// Extract holes from a struct's holes field.
+fn extract_holes_from_struct(
+    values: &[AnyValue],
+    fields: &[Field],
+) -> PolarsResult<Vec<Vec<Point>>> {
+    for (i, field) in fields.iter().enumerate() {
+        if field.name().as_str() == "holes" {
+            if let Some(AnyValue::List(holes_series)) = values.get(i) {
+                let mut holes = Vec::new();
+                for j in 0..holes_series.len() {
+                    if let Ok(AnyValue::List(hole_points_series)) = holes_series.get(j) {
+                        let points = extract_points_from_series(&hole_points_series)?;
+                        if !points.is_empty() {
+                            holes.push(points);
+                        }
+                    }
+                }
+                return Ok(holes);
+            }
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// Extract points from a Series containing point structs.
+fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
+    let mut points = Vec::new();
+
+    for i in 0..series.len() {
+        let value = series.get(i)?;
+        match value {
+            AnyValue::StructOwned(boxed) => {
+                let (vals, flds) = boxed.as_ref();
+                let (mut x, mut y) = (0.0, 0.0);
+                for (j, fld) in flds.iter().enumerate() {
+                    match fld.name().as_str() {
+                        "x" => x = extract_f64(&vals[j])?,
+                        "y" => y = extract_f64(&vals[j])?,
+                        _ => {}
+                    }
+                }
+                points.push(Point::new(x, y));
+            }
+            AnyValue::Struct(idx, array, fields) => {
+                // Convert to owned for easier handling
+                let owned = value.clone().into_static();
+                if let AnyValue::StructOwned(boxed) = owned {
+                    let (vals, flds) = boxed.as_ref();
+                    let (mut x, mut y) = (0.0, 0.0);
+                    for (j, fld) in flds.iter().enumerate() {
+                        match fld.name().as_str() {
+                            "x" => x = extract_f64(&vals[j])?,
+                            "y" => y = extract_f64(&vals[j])?,
+                            _ => {}
+                        }
+                    }
+                    points.push(Point::new(x, y));
+                }
+                // Suppress unused variable warnings
+                let _ = (idx, array, fields);
+            }
+            AnyValue::Null => {
+                // Skip null points
+            }
+            _ => {
+                return Err(
+                    polars_err!(ComputeError: "Expected struct for point, got {:?}", value.dtype()),
+                );
+            }
+        }
+    }
+
+    Ok(points)
+}
+
+/// Extract f64 from various numeric AnyValue types.
+fn extract_f64(value: &AnyValue) -> PolarsResult<f64> {
+    match value {
+        AnyValue::Float64(v) => Ok(*v),
+        AnyValue::Float32(v) => Ok(*v as f64),
+        AnyValue::Int64(v) => Ok(*v as f64),
+        AnyValue::Int32(v) => Ok(*v as f64),
+        AnyValue::Int16(v) => Ok(*v as f64),
+        AnyValue::Int8(v) => Ok(*v as f64),
+        AnyValue::UInt64(v) => Ok(*v as f64),
+        AnyValue::UInt32(v) => Ok(*v as f64),
+        AnyValue::UInt16(v) => Ok(*v as f64),
+        AnyValue::UInt8(v) => Ok(*v as f64),
+        _ => {
+            Err(polars_err!(ComputeError: "Expected numeric value for coordinate, got {:?}", value))
+        }
+    }
+}
+
+/// Resolve contour dimensions from pipeline source spec.
+fn resolve_contour_dimensions(
+    row_idx: usize,
+    pipeline: &PipelineSpec,
+    expr_columns: &HashMap<String, &Series>,
+) -> PolarsResult<(u32, u32)> {
+    // Check for shape_pipeline first (not yet implemented - just error)
+    if pipeline.source.shape_pipeline.is_some() {
+        return Err(
+            polars_err!(ComputeError: "Shape inference from pipeline not yet implemented. Use explicit width/height."),
+        );
+    }
+
+    // Get explicit width and height
+    let width = pipeline
+        .source
+        .width
+        .as_ref()
+        .ok_or_else(|| polars_err!(ComputeError: "Contour source requires 'width' parameter"))?
+        .resolve_usize(row_idx, expr_columns)? as u32;
+
+    let height = pipeline
+        .source
+        .height
+        .as_ref()
+        .ok_or_else(|| polars_err!(ComputeError: "Contour source requires 'height' parameter"))?
+        .resolve_usize(row_idx, expr_columns)? as u32;
+
+    Ok((width, height))
 }
 
 /// Execute the pipeline on a single row.
@@ -343,7 +622,14 @@ pub fn resolve_op(
             let anti_alias = op_spec
                 .params
                 .get("anti_alias")
-                .map(|p| matches!(p, ParamValue::Literal { value: serde_json::Value::Bool(true) }))
+                .map(|p| {
+                    matches!(
+                        p,
+                        ParamValue::Literal {
+                            value: serde_json::Value::Bool(true)
+                        }
+                    )
+                })
                 .unwrap_or(false);
             Ok(ViewDto::Geometry(GeometryOp::Rasterize {
                 width,
@@ -360,7 +646,9 @@ pub fn resolve_op(
                 .params
                 .get("mode")
                 .and_then(|p| match p {
-                    ParamValue::Literal { value: serde_json::Value::String(s) } => Some(s.as_str()),
+                    ParamValue::Literal {
+                        value: serde_json::Value::String(s),
+                    } => Some(s.as_str()),
                     _ => None,
                 })
                 .map(|s| match s {
@@ -374,7 +662,9 @@ pub fn resolve_op(
                 .params
                 .get("method")
                 .and_then(|p| match p {
-                    ParamValue::Literal { value: serde_json::Value::String(s) } => Some(s.as_str()),
+                    ParamValue::Literal {
+                        value: serde_json::Value::String(s),
+                    } => Some(s.as_str()),
                     _ => None,
                 })
                 .map(|s| match s {
@@ -385,7 +675,9 @@ pub fn resolve_op(
                 .unwrap_or(ApproxMethod::Simple);
 
             let min_area = op_spec.params.get("min_area").and_then(|p| match p {
-                ParamValue::Literal { value: serde_json::Value::Number(n) } => n.as_f64(),
+                ParamValue::Literal {
+                    value: serde_json::Value::Number(n),
+                } => n.as_f64(),
                 _ => None,
             });
 
@@ -401,7 +693,14 @@ pub fn resolve_op(
             let signed = op_spec
                 .params
                 .get("signed")
-                .map(|p| matches!(p, ParamValue::Literal { value: serde_json::Value::Bool(true) }))
+                .map(|p| {
+                    matches!(
+                        p,
+                        ParamValue::Literal {
+                            value: serde_json::Value::Bool(true)
+                        }
+                    )
+                })
                 .unwrap_or(false);
             Ok(ViewDto::Geometry(GeometryOp::Area { signed }))
         }
@@ -429,20 +728,25 @@ pub fn resolve_op(
         }
         "contour_flip" => Ok(ViewDto::Geometry(GeometryOp::Flip)),
         "contour_simplify" => {
-            let tolerance = get_param(&op_spec.params, "tolerance")?.resolve_f64(row_idx, expr_columns)?;
+            let tolerance =
+                get_param(&op_spec.params, "tolerance")?.resolve_f64(row_idx, expr_columns)?;
             Ok(ViewDto::Geometry(GeometryOp::Simplify { tolerance }))
         }
         "contour_normalize" => {
-            let ref_width = get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, expr_columns)?;
-            let ref_height = get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, expr_columns)?;
+            let ref_width =
+                get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, expr_columns)?;
+            let ref_height =
+                get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, expr_columns)?;
             Ok(ViewDto::Geometry(GeometryOp::Normalize {
                 ref_width,
                 ref_height,
             }))
         }
         "contour_to_absolute" => {
-            let ref_width = get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, expr_columns)?;
-            let ref_height = get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, expr_columns)?;
+            let ref_width =
+                get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, expr_columns)?;
+            let ref_height =
+                get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, expr_columns)?;
             Ok(ViewDto::Geometry(GeometryOp::ToAbsolute {
                 ref_width,
                 ref_height,

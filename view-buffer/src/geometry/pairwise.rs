@@ -247,12 +247,7 @@ mod tests {
     use super::*;
 
     fn square_contour(x: f64, y: f64, size: f64) -> Contour {
-        Contour::from_tuples(&[
-            (x, y),
-            (x + size, y),
-            (x + size, y + size),
-            (x, y + size),
-        ])
+        Contour::from_tuples(&[(x, y), (x + size, y), (x + size, y + size), (x, y + size)])
     }
 
     #[test]
@@ -312,4 +307,3 @@ mod tests {
         assert!((h - 5.0).abs() < 0.01);
     }
 }
-

@@ -161,7 +161,8 @@ class TestLazyComposition:
     def test_apply_contour_mask(self) -> None:
         """apply_contour_mask creates rasterize node automatically."""
         img_pipe = Pipeline().source("image_bytes")
-        contour_pipe = Pipeline().source("contour")
+        # Contour source now requires dimensions for rasterization
+        contour_pipe = Pipeline().source("contour", width=100, height=100)
 
         img = pl.col("image").cv.pipe(img_pipe)
         contour = pl.col("contour").cv.pipe(contour_pipe)

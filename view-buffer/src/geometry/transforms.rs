@@ -25,7 +25,11 @@ pub fn translate(contour: &Contour, dx: f64, dy: f64) -> Contour {
     let holes = contour
         .holes
         .iter()
-        .map(|hole| hole.iter().map(|p| Point::new(p.x + dx, p.y + dy)).collect())
+        .map(|hole| {
+            hole.iter()
+                .map(|p| Point::new(p.x + dx, p.y + dy))
+                .collect()
+        })
         .collect();
 
     Contour::with_holes(exterior, holes)
@@ -264,23 +268,23 @@ fn graham_scan(points: &[Point]) -> Vec<Point> {
     let start = points[start_idx];
 
     // Sort points by polar angle with respect to start
-    let mut sorted: Vec<Point> = points
-        .iter()
-        .copied()
-        .filter(|p| *p != start)
-        .collect();
+    let mut sorted: Vec<Point> = points.iter().copied().filter(|p| *p != start).collect();
 
     sorted.sort_by(|a, b| {
         let angle_a = (a.y - start.y).atan2(a.x - start.x);
         let angle_b = (b.y - start.y).atan2(b.x - start.x);
-        angle_a.partial_cmp(&angle_b).unwrap_or(std::cmp::Ordering::Equal)
+        angle_a
+            .partial_cmp(&angle_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     // Build hull
     let mut hull = vec![start];
 
     for point in sorted {
-        while hull.len() > 1 && cross_product(&hull[hull.len() - 2], &hull[hull.len() - 1], &point) <= 0.0 {
+        while hull.len() > 1
+            && cross_product(&hull[hull.len() - 2], &hull[hull.len() - 1], &point) <= 0.0
+        {
             hull.pop();
         }
         hull.push(point);
@@ -388,4 +392,3 @@ mod tests {
         assert!(hull.len() <= 5); // Depends on algorithm details
     }
 }
-

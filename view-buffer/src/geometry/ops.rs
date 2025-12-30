@@ -288,7 +288,9 @@ impl Op for GeometryOp {
             GeometryOp::Simplify { .. } | GeometryOp::ConvexHull => OpCost::Allocating,
 
             // Pairwise ops require rasterization or polygon clipping
-            GeometryOp::IoU | GeometryOp::Dice | GeometryOp::HausdorffDistance => OpCost::Allocating,
+            GeometryOp::IoU | GeometryOp::Dice | GeometryOp::HausdorffDistance => {
+                OpCost::Allocating
+            }
 
             // Rasterization is expensive
             GeometryOp::Rasterize { .. } => OpCost::Allocating,
@@ -298,7 +300,11 @@ impl Op for GeometryOp {
         }
     }
 
-    fn infer_strides(&self, _input_shape: &[usize], _input_strides: &[isize]) -> Option<Vec<isize>> {
+    fn infer_strides(
+        &self,
+        _input_shape: &[usize],
+        _input_strides: &[isize],
+    ) -> Option<Vec<isize>> {
         // Geometry ops don't preserve strides
         None
     }
@@ -426,4 +432,3 @@ mod tests {
         assert!(op.validate(&[], &[]).is_err());
     }
 }
-

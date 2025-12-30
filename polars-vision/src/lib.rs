@@ -9,6 +9,7 @@ mod params;
 mod pipeline;
 
 use polars::prelude::*;
+use polars_arrow::array::{ListArray, PrimitiveArray, StructArray as ArrowStructArray};
 use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
@@ -93,8 +94,7 @@ fn vb_pipeline_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Ser
     let graph = PipelineGraph::from_json(&kwargs.graph_json)?;
 
     // Build expression columns map (empty for now, may be used for dynamic params)
-    let expr_columns: std::collections::HashMap<String, &Series> =
-        std::collections::HashMap::new();
+    let expr_columns: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
 
     // Execute the graph
     graph.execute(inputs, &expr_columns)
@@ -137,8 +137,7 @@ fn vb_pipeline_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResu
     let graph = MultiPipelineGraph::from_json(&kwargs.graph_json)?;
 
     // Build expression columns map (empty for now, may be used for dynamic params)
-    let expr_columns: std::collections::HashMap<String, &Series> =
-        std::collections::HashMap::new();
+    let expr_columns: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
 
     // Execute the graph and return Struct column
     graph.execute(inputs, &expr_columns)
@@ -187,14 +186,14 @@ pub struct ContourKwargs {
 }
 
 /// Helper function to parse a contour from a Polars Struct value.
-/// 
+///
 /// Contours are stored as a struct column matching the schema:
 /// {exterior: List[{x: f64, y: f64}], holes: List[List[{x: f64, y: f64}]]}
 fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
     match value {
         AnyValue::StructOwned(boxed) => {
             let (values, fields) = boxed.as_ref();
-            
+
             // Find the exterior field
             for (i, field) in fields.iter().enumerate() {
                 if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
@@ -204,7 +203,7 @@ fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
                     }
                 }
             }
-            
+
             // If no named field found, try to use the first list field
             for av in values.iter() {
                 if let AnyValue::List(series) = av {
@@ -212,7 +211,36 @@ fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
                     return Ok(Contour::new(points));
                 }
             }
-            
+
+            Err(polars_err!(ComputeError: "Contour struct missing exterior/points field"))
+        }
+        // Handle AnyValue::Struct (non-owned variant with row index and array reference)
+        AnyValue::Struct(row_idx, struct_array, fields) => {
+            // Find the exterior field in the struct array
+            for (i, field) in fields.iter().enumerate() {
+                if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
+                    // Get the column from the struct array
+                    let column = struct_array.values()[i].clone();
+                    // Get the value at the row index
+                    let list_arr = column.as_any().downcast_ref::<ListArray<i64>>();
+                    if let Some(list_arr) = list_arr {
+                        // Extract the points from the list at this row
+                        let offsets = list_arr.offsets();
+                        let start = offsets[*row_idx] as usize;
+                        let end = offsets[*row_idx + 1] as usize;
+                        let values_arr = list_arr.values();
+
+                        // The values should be a struct array of points
+                        if let Some(struct_arr) =
+                            values_arr.as_any().downcast_ref::<ArrowStructArray>()
+                        {
+                            let points = extract_points_from_struct_array(struct_arr, start, end)?;
+                            return Ok(Contour::new(points));
+                        }
+                    }
+                }
+            }
+
             Err(polars_err!(ComputeError: "Contour struct missing exterior/points field"))
         }
         AnyValue::List(series) => {
@@ -224,24 +252,61 @@ fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
     }
 }
 
+/// Extract points from a StructArray slice (for use with AnyValue::Struct variant).
+fn extract_points_from_struct_array(
+    struct_arr: &ArrowStructArray,
+    start: usize,
+    end: usize,
+) -> PolarsResult<Vec<Point>> {
+    let mut points = Vec::with_capacity(end - start);
+
+    // Get x and y arrays from the struct
+    let values = struct_arr.values();
+    if values.len() < 2 {
+        return Err(polars_err!(ComputeError: "Point struct must have x and y fields"));
+    }
+
+    // Try to get x and y as Float64 arrays
+    let x_arr = values[0].as_any().downcast_ref::<PrimitiveArray<f64>>();
+    let y_arr = values[1].as_any().downcast_ref::<PrimitiveArray<f64>>();
+
+    match (x_arr, y_arr) {
+        (Some(x), Some(y)) => {
+            for i in start..end {
+                let x_val = x.get(i).unwrap_or(0.0);
+                let y_val = y.get(i).unwrap_or(0.0);
+                points.push(Point::new(x_val, y_val));
+            }
+            Ok(points)
+        }
+        _ => Err(polars_err!(ComputeError: "Point x/y fields must be Float64")),
+    }
+}
+
 /// Extract points from a Series of point structs.
 fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
     let len = series.len();
     let mut points = Vec::with_capacity(len);
-    
+
     // Try to get the struct columns directly
     if let Ok(struct_ca) = series.struct_() {
         // Get x and y columns from the struct
-        let x_col = struct_ca.field_by_name("x")
+        let x_col = struct_ca
+            .field_by_name("x")
             .or_else(|_| struct_ca.field_by_name("X"))
             .map_err(|_| polars_err!(ComputeError: "Point struct missing 'x' field"))?;
-        let y_col = struct_ca.field_by_name("y")
+        let y_col = struct_ca
+            .field_by_name("y")
             .or_else(|_| struct_ca.field_by_name("Y"))
             .map_err(|_| polars_err!(ComputeError: "Point struct missing 'y' field"))?;
-        
-        let x_ca = x_col.f64().map_err(|_| polars_err!(ComputeError: "x field must be f64"))?;
-        let y_ca = y_col.f64().map_err(|_| polars_err!(ComputeError: "y field must be f64"))?;
-        
+
+        let x_ca = x_col
+            .f64()
+            .map_err(|_| polars_err!(ComputeError: "x field must be f64"))?;
+        let y_ca = y_col
+            .f64()
+            .map_err(|_| polars_err!(ComputeError: "y field must be f64"))?;
+
         for i in 0..len {
             let x = x_ca.get(i).unwrap_or(0.0);
             let y = y_ca.get(i).unwrap_or(0.0);
@@ -254,8 +319,14 @@ fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
             match value {
                 AnyValue::StructOwned(boxed) => {
                     let (values, _) = boxed.as_ref();
-                    let x = values.first().and_then(|v| v.try_extract::<f64>().ok()).unwrap_or(0.0);
-                    let y = values.get(1).and_then(|v| v.try_extract::<f64>().ok()).unwrap_or(0.0);
+                    let x = values
+                        .first()
+                        .and_then(|v| v.try_extract::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let y = values
+                        .get(1)
+                        .and_then(|v| v.try_extract::<f64>().ok())
+                        .unwrap_or(0.0);
                     points.push(Point::new(x, y));
                 }
                 _ => {
@@ -264,7 +335,7 @@ fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
             }
         }
     }
-    
+
     Ok(points)
 }
 
@@ -274,7 +345,7 @@ fn contour_area(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series
     let series = &inputs[0];
     let len = series.len();
     let mut results = Vec::with_capacity(len);
-    
+
     for i in 0..len {
         let value = series.get(i)?;
         if value.is_null() {
@@ -285,7 +356,7 @@ fn contour_area(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series
             results.push(Some(area_val));
         }
     }
-    
+
     Ok(Float64Chunked::from_iter_options(series.name().clone(), results.into_iter()).into_series())
 }
 
@@ -295,7 +366,7 @@ fn contour_perimeter(inputs: &[Series]) -> PolarsResult<Series> {
     let series = &inputs[0];
     let len = series.len();
     let mut results = Vec::with_capacity(len);
-    
+
     for i in 0..len {
         let value = series.get(i)?;
         if value.is_null() {
@@ -306,7 +377,7 @@ fn contour_perimeter(inputs: &[Series]) -> PolarsResult<Series> {
             results.push(Some(perimeter));
         }
     }
-    
+
     Ok(Float64Chunked::from_iter_options(series.name().clone(), results.into_iter()).into_series())
 }
 
@@ -316,7 +387,7 @@ fn contour_winding(inputs: &[Series]) -> PolarsResult<Series> {
     let series = &inputs[0];
     let len = series.len();
     let mut results: Vec<Option<&str>> = Vec::with_capacity(len);
-    
+
     for i in 0..len {
         let value = series.get(i)?;
         if value.is_null() {
@@ -330,7 +401,7 @@ fn contour_winding(inputs: &[Series]) -> PolarsResult<Series> {
             }));
         }
     }
-    
+
     Ok(StringChunked::from_iter_options(series.name().clone(), results.into_iter()).into_series())
 }
 
@@ -340,7 +411,7 @@ fn contour_is_convex(inputs: &[Series]) -> PolarsResult<Series> {
     let series = &inputs[0];
     let len = series.len();
     let mut results = Vec::with_capacity(len);
-    
+
     for i in 0..len {
         let value = series.get(i)?;
         if value.is_null() {
@@ -351,7 +422,7 @@ fn contour_is_convex(inputs: &[Series]) -> PolarsResult<Series> {
             results.push(Some(is_convex));
         }
     }
-    
+
     Ok(BooleanChunked::from_iter_options(series.name().clone(), results.into_iter()).into_series())
 }
 
@@ -362,11 +433,11 @@ fn contour_iou(inputs: &[Series]) -> PolarsResult<Series> {
     let series_b = &inputs[1];
     let len = series_a.len();
     let mut results = Vec::with_capacity(len);
-    
+
     for i in 0..len {
         let value_a = series_a.get(i)?;
         let value_b = series_b.get(i)?;
-        
+
         if value_a.is_null() || value_b.is_null() {
             results.push(None);
         } else {
@@ -376,8 +447,11 @@ fn contour_iou(inputs: &[Series]) -> PolarsResult<Series> {
             results.push(Some(iou_val));
         }
     }
-    
-    Ok(Float64Chunked::from_iter_options(series_a.name().clone(), results.into_iter()).into_series())
+
+    Ok(
+        Float64Chunked::from_iter_options(series_a.name().clone(), results.into_iter())
+            .into_series(),
+    )
 }
 
 /// Compute Dice coefficient between two contours.
@@ -387,11 +461,11 @@ fn contour_dice(inputs: &[Series]) -> PolarsResult<Series> {
     let series_b = &inputs[1];
     let len = series_a.len();
     let mut results = Vec::with_capacity(len);
-    
+
     for i in 0..len {
         let value_a = series_a.get(i)?;
         let value_b = series_b.get(i)?;
-        
+
         if value_a.is_null() || value_b.is_null() {
             results.push(None);
         } else {
@@ -401,8 +475,11 @@ fn contour_dice(inputs: &[Series]) -> PolarsResult<Series> {
             results.push(Some(dice_val));
         }
     }
-    
-    Ok(Float64Chunked::from_iter_options(series_a.name().clone(), results.into_iter()).into_series())
+
+    Ok(
+        Float64Chunked::from_iter_options(series_a.name().clone(), results.into_iter())
+            .into_series(),
+    )
 }
 
 /// Compute Hausdorff distance between two contours.
@@ -412,11 +489,11 @@ fn contour_hausdorff(inputs: &[Series]) -> PolarsResult<Series> {
     let series_b = &inputs[1];
     let len = series_a.len();
     let mut results = Vec::with_capacity(len);
-    
+
     for i in 0..len {
         let value_a = series_a.get(i)?;
         let value_b = series_b.get(i)?;
-        
+
         if value_a.is_null() || value_b.is_null() {
             results.push(None);
         } else {
@@ -426,8 +503,11 @@ fn contour_hausdorff(inputs: &[Series]) -> PolarsResult<Series> {
             results.push(Some(hausdorff));
         }
     }
-    
-    Ok(Float64Chunked::from_iter_options(series_a.name().clone(), results.into_iter()).into_series())
+
+    Ok(
+        Float64Chunked::from_iter_options(series_a.name().clone(), results.into_iter())
+            .into_series(),
+    )
 }
 
 /// Translate contour by offset.
@@ -435,7 +515,10 @@ fn contour_translate_output_type(input_fields: &[Field]) -> PolarsResult<Field> 
     if let Some(field) = input_fields.first() {
         Ok(field.clone())
     } else {
-        Ok(Field::new(PlSmallStr::from_static("output"), DataType::Unknown(UnknownKind::Any)))
+        Ok(Field::new(
+            PlSmallStr::from_static("output"),
+            DataType::Unknown(UnknownKind::Any),
+        ))
     }
 }
 
@@ -443,11 +526,11 @@ fn contour_translate_output_type(input_fields: &[Field]) -> PolarsResult<Field> 
 fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
     let dx = kwargs.dx.unwrap_or(0.0);
     let dy = kwargs.dy.unwrap_or(0.0);
-    
+
     let series = &inputs[0];
     let len = series.len();
     let mut results: Vec<AnyValue> = Vec::with_capacity(len);
-    
+
     for i in 0..len {
         let value = series.get(i)?;
         if value.is_null() {
@@ -460,7 +543,7 @@ fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
             results.push(value.clone().into_static());
         }
     }
-    
+
     // For now, return the original series - proper transform output requires schema work
     Ok(series.clone())
 }
@@ -470,7 +553,10 @@ fn contour_scale_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     if let Some(field) = input_fields.first() {
         Ok(field.clone())
     } else {
-        Ok(Field::new(PlSmallStr::from_static("output"), DataType::Unknown(UnknownKind::Any)))
+        Ok(Field::new(
+            PlSmallStr::from_static("output"),
+            DataType::Unknown(UnknownKind::Any),
+        ))
     }
 }
 
@@ -478,18 +564,23 @@ fn contour_scale_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
 fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
     let sx = kwargs.sx.unwrap_or(1.0);
     let sy = kwargs.sy.unwrap_or(1.0);
-    
+
     let series = &inputs[0];
     let len = series.len();
-    
+
     for i in 0..len {
         let value = series.get(i)?;
         if !value.is_null() {
             let contour = parse_contour(&value)?;
-            let _scaled = transforms::scale(&contour, sx, sy, view_buffer::geometry::ops::ScaleOrigin::Centroid);
+            let _scaled = transforms::scale(
+                &contour,
+                sx,
+                sy,
+                view_buffer::geometry::ops::ScaleOrigin::Centroid,
+            );
         }
     }
-    
+
     // For now, return the original series - proper transform output requires schema work
     Ok(series.clone())
 }
@@ -499,17 +590,20 @@ fn contour_simplify_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     if let Some(field) = input_fields.first() {
         Ok(field.clone())
     } else {
-        Ok(Field::new(PlSmallStr::from_static("output"), DataType::Unknown(UnknownKind::Any)))
+        Ok(Field::new(
+            PlSmallStr::from_static("output"),
+            DataType::Unknown(UnknownKind::Any),
+        ))
     }
 }
 
 #[polars_expr(output_type_func=contour_simplify_output_type)]
 fn contour_simplify(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
     let tolerance = kwargs.tolerance.unwrap_or(1.0);
-    
+
     let series = &inputs[0];
     let len = series.len();
-    
+
     for i in 0..len {
         let value = series.get(i)?;
         if !value.is_null() {
@@ -517,7 +611,7 @@ fn contour_simplify(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Se
             let _simplified = transforms::simplify(&contour, tolerance);
         }
     }
-    
+
     // For now, return the original series - proper transform output requires schema work
     Ok(series.clone())
 }
@@ -527,7 +621,10 @@ fn contour_flip_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     if let Some(field) = input_fields.first() {
         Ok(field.clone())
     } else {
-        Ok(Field::new(PlSmallStr::from_static("output"), DataType::Unknown(UnknownKind::Any)))
+        Ok(Field::new(
+            PlSmallStr::from_static("output"),
+            DataType::Unknown(UnknownKind::Any),
+        ))
     }
 }
 
@@ -535,7 +632,7 @@ fn contour_flip_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
 fn contour_flip(inputs: &[Series]) -> PolarsResult<Series> {
     let series = &inputs[0];
     let len = series.len();
-    
+
     for i in 0..len {
         let value = series.get(i)?;
         if !value.is_null() {
@@ -543,7 +640,7 @@ fn contour_flip(inputs: &[Series]) -> PolarsResult<Series> {
             let _flipped = transforms::flip(&contour);
         }
     }
-    
+
     // For now, return the original series - proper transform output requires schema work
     Ok(series.clone())
 }
@@ -553,7 +650,10 @@ fn contour_convex_hull_output_type(input_fields: &[Field]) -> PolarsResult<Field
     if let Some(field) = input_fields.first() {
         Ok(field.clone())
     } else {
-        Ok(Field::new(PlSmallStr::from_static("output"), DataType::Unknown(UnknownKind::Any)))
+        Ok(Field::new(
+            PlSmallStr::from_static("output"),
+            DataType::Unknown(UnknownKind::Any),
+        ))
     }
 }
 
@@ -561,7 +661,7 @@ fn contour_convex_hull_output_type(input_fields: &[Field]) -> PolarsResult<Field
 fn contour_convex_hull(inputs: &[Series]) -> PolarsResult<Series> {
     let series = &inputs[0];
     let len = series.len();
-    
+
     for i in 0..len {
         let value = series.get(i)?;
         if !value.is_null() {
@@ -569,7 +669,250 @@ fn contour_convex_hull(inputs: &[Series]) -> PolarsResult<Series> {
             let _hull = transforms::convex_hull(&contour);
         }
     }
-    
+
     // For now, return the original series - proper transform output requires schema work
     Ok(series.clone())
+}
+
+/// Compute contour centroid - returns a Struct with x and y fields.
+fn contour_centroid_output_type(_input_fields: &[Field]) -> PolarsResult<Field> {
+    let fields = vec![
+        Field::new(PlSmallStr::from_static("x"), DataType::Float64),
+        Field::new(PlSmallStr::from_static("y"), DataType::Float64),
+    ];
+    Ok(Field::new(
+        PlSmallStr::from_static("centroid"),
+        DataType::Struct(fields),
+    ))
+}
+
+#[polars_expr(output_type_func=contour_centroid_output_type)]
+fn contour_centroid(inputs: &[Series]) -> PolarsResult<Series> {
+    let series = &inputs[0];
+    let len = series.len();
+    let mut x_results: Vec<Option<f64>> = Vec::with_capacity(len);
+    let mut y_results: Vec<Option<f64>> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let value = series.get(i)?;
+        if value.is_null() {
+            x_results.push(None);
+            y_results.push(None);
+        } else {
+            let contour = parse_contour(&value)?;
+            let center = measures::centroid(&contour);
+            x_results.push(Some(center.x));
+            y_results.push(Some(center.y));
+        }
+    }
+
+    // Build struct column
+    let x_col =
+        Float64Chunked::from_iter_options(PlSmallStr::from_static("x"), x_results.into_iter())
+            .into_series();
+    let y_col =
+        Float64Chunked::from_iter_options(PlSmallStr::from_static("y"), y_results.into_iter())
+            .into_series();
+
+    StructChunked::from_series(
+        PlSmallStr::from_static("centroid"),
+        len,
+        [x_col, y_col].iter(),
+    )
+    .map(|ca| ca.into_series())
+}
+
+/// Compute contour bounding box - returns a Struct with x, y, width, height fields.
+fn contour_bbox_output_type(_input_fields: &[Field]) -> PolarsResult<Field> {
+    let fields = vec![
+        Field::new(PlSmallStr::from_static("x"), DataType::Float64),
+        Field::new(PlSmallStr::from_static("y"), DataType::Float64),
+        Field::new(PlSmallStr::from_static("width"), DataType::Float64),
+        Field::new(PlSmallStr::from_static("height"), DataType::Float64),
+    ];
+    Ok(Field::new(
+        PlSmallStr::from_static("bbox"),
+        DataType::Struct(fields),
+    ))
+}
+
+#[polars_expr(output_type_func=contour_bbox_output_type)]
+fn contour_bbox(inputs: &[Series]) -> PolarsResult<Series> {
+    let series = &inputs[0];
+    let len = series.len();
+    let mut x_results: Vec<Option<f64>> = Vec::with_capacity(len);
+    let mut y_results: Vec<Option<f64>> = Vec::with_capacity(len);
+    let mut w_results: Vec<Option<f64>> = Vec::with_capacity(len);
+    let mut h_results: Vec<Option<f64>> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let value = series.get(i)?;
+        if value.is_null() {
+            x_results.push(None);
+            y_results.push(None);
+            w_results.push(None);
+            h_results.push(None);
+        } else {
+            let contour = parse_contour(&value)?;
+            if let Some(bbox) = measures::bounding_box(&contour) {
+                x_results.push(Some(bbox.x));
+                y_results.push(Some(bbox.y));
+                w_results.push(Some(bbox.width));
+                h_results.push(Some(bbox.height));
+            } else {
+                x_results.push(None);
+                y_results.push(None);
+                w_results.push(None);
+                h_results.push(None);
+            }
+        }
+    }
+
+    // Build struct column
+    let x_col =
+        Float64Chunked::from_iter_options(PlSmallStr::from_static("x"), x_results.into_iter())
+            .into_series();
+    let y_col =
+        Float64Chunked::from_iter_options(PlSmallStr::from_static("y"), y_results.into_iter())
+            .into_series();
+    let w_col =
+        Float64Chunked::from_iter_options(PlSmallStr::from_static("width"), w_results.into_iter())
+            .into_series();
+    let h_col =
+        Float64Chunked::from_iter_options(PlSmallStr::from_static("height"), h_results.into_iter())
+            .into_series();
+
+    StructChunked::from_series(
+        PlSmallStr::from_static("bbox"),
+        len,
+        [x_col, y_col, w_col, h_col].iter(),
+    )
+    .map(|ca| ca.into_series())
+}
+
+/// Normalize contour coordinates to [0, 1] range.
+#[polars_expr(output_type_func=contour_translate_output_type)]
+fn contour_normalize(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
+    let ref_width = kwargs.ref_width.unwrap_or(1.0);
+    let ref_height = kwargs.ref_height.unwrap_or(1.0);
+
+    let series = &inputs[0];
+    let len = series.len();
+
+    for i in 0..len {
+        let value = series.get(i)?;
+        if !value.is_null() {
+            let contour = parse_contour(&value)?;
+            let _normalized = transforms::normalize(&contour, ref_width, ref_height);
+        }
+    }
+
+    // For now, return the original series - proper transform output requires schema work
+    Ok(series.clone())
+}
+
+/// Convert normalized coordinates to absolute pixel coordinates.
+#[polars_expr(output_type_func=contour_translate_output_type)]
+fn contour_to_absolute(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
+    let ref_width = kwargs.ref_width.unwrap_or(1.0);
+    let ref_height = kwargs.ref_height.unwrap_or(1.0);
+
+    let series = &inputs[0];
+    let len = series.len();
+
+    for i in 0..len {
+        let value = series.get(i)?;
+        if !value.is_null() {
+            let contour = parse_contour(&value)?;
+            let _absolute = transforms::to_absolute(&contour, ref_width, ref_height);
+        }
+    }
+
+    // For now, return the original series - proper transform output requires schema work
+    Ok(series.clone())
+}
+
+/// Ensure contour has specified winding direction.
+#[polars_expr(output_type_func=contour_translate_output_type)]
+fn contour_ensure_winding(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
+    let direction = match kwargs.direction.as_deref() {
+        Some("cw") | Some("clockwise") => Winding::Clockwise,
+        Some("ccw") | Some("counterclockwise") => Winding::CounterClockwise,
+        _ => Winding::CounterClockwise, // Default to CCW
+    };
+
+    let series = &inputs[0];
+    let len = series.len();
+
+    for i in 0..len {
+        let value = series.get(i)?;
+        if !value.is_null() {
+            let contour = parse_contour(&value)?;
+            let _ensured = transforms::ensure_winding(&contour, direction);
+        }
+    }
+
+    // For now, return the original series - proper transform output requires schema work
+    Ok(series.clone())
+}
+
+/// Check if contour contains a specific point.
+#[polars_expr(output_type=Boolean)]
+fn contour_contains_point(inputs: &[Series]) -> PolarsResult<Series> {
+    let contour_series = &inputs[0];
+    let point_series = &inputs[1];
+    let len = contour_series.len();
+    let mut results: Vec<Option<bool>> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let contour_value = contour_series.get(i)?;
+        let point_value = point_series.get(i)?;
+
+        if contour_value.is_null() || point_value.is_null() {
+            results.push(None);
+        } else {
+            let contour = parse_contour(&contour_value)?;
+            // Parse point from struct
+            let (x, y) = match &point_value {
+                AnyValue::StructOwned(boxed) => {
+                    let (values, _) = boxed.as_ref();
+                    let x = values
+                        .first()
+                        .and_then(|v| v.try_extract::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let y = values
+                        .get(1)
+                        .and_then(|v| v.try_extract::<f64>().ok())
+                        .unwrap_or(0.0);
+                    (x, y)
+                }
+                AnyValue::Struct(row_idx, struct_arr, _) => {
+                    let values = struct_arr.values();
+                    if values.len() >= 2 {
+                        let x_arr = values[0].as_any().downcast_ref::<PrimitiveArray<f64>>();
+                        let y_arr = values[1].as_any().downcast_ref::<PrimitiveArray<f64>>();
+                        match (x_arr, y_arr) {
+                            (Some(x), Some(y)) => (
+                                x.get(*row_idx).unwrap_or(0.0),
+                                y.get(*row_idx).unwrap_or(0.0),
+                            ),
+                            _ => (0.0, 0.0),
+                        }
+                    } else {
+                        (0.0, 0.0)
+                    }
+                }
+                _ => {
+                    return Err(polars_err!(ComputeError: "Expected Struct for point"));
+                }
+            };
+            let contains = predicates::contains_point(&contour, x, y);
+            results.push(Some(contains));
+        }
+    }
+
+    Ok(
+        BooleanChunked::from_iter_options(contour_series.name().clone(), results.into_iter())
+            .into_series(),
+    )
 }

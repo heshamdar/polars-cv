@@ -96,7 +96,11 @@ pub fn perimeter_of_ring(points: &[Point]) -> f64 {
 pub fn perimeter(contour: &Contour) -> f64 {
     let exterior_perimeter = perimeter_of_ring(&contour.exterior);
 
-    let holes_perimeter: f64 = contour.holes.iter().map(|hole| perimeter_of_ring(hole)).sum();
+    let holes_perimeter: f64 = contour
+        .holes
+        .iter()
+        .map(|hole| perimeter_of_ring(hole))
+        .sum();
 
     exterior_perimeter + holes_perimeter
 }
@@ -310,4 +314,3 @@ mod tests {
         assert_eq!(contour_winding(&contour), Winding::Clockwise);
     }
 }
-

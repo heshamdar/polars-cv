@@ -51,4 +51,3 @@ pub mod transforms;
 // Re-exports
 pub use contour::{BoundingBox, Contour, Point, Winding};
 pub use ops::GeometryOp;
-

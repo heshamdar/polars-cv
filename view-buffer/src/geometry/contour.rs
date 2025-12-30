@@ -335,4 +335,3 @@ mod tests {
         assert_eq!(contour.holes.len(), 1);
     }
 }
-

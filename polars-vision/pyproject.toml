@@ -30,10 +30,16 @@ bench = [
     "psutil>=5.9",
     "numpy>=1.20",
     "matplotlib>=3.9.4",
+    "jupyterlab",
 ]
 
 [tool.maturin]
 python-source = "python"
 module-name = "polars_vision._lib"
 features = ["pyo3/extension-module"]
+
+[dependency-groups]
+dev = [
+    "jupytext>=1.18.1",
+]
 

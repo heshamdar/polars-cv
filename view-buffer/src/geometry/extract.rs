@@ -305,8 +305,12 @@ mod tests {
         let image = create_test_image(100, 100);
 
         // With high min_area, should filter out the square (60x60 = 3600)
-        let contours =
-            extract_contours(&image, ExtractMode::External, ApproxMethod::None, Some(5000.0));
+        let contours = extract_contours(
+            &image,
+            ExtractMode::External,
+            ApproxMethod::None,
+            Some(5000.0),
+        );
 
         // May or may not have the contour depending on actual traced area
         // This is more of a smoke test
@@ -321,4 +325,3 @@ mod tests {
         assert!(is_boundary_pixel(&data, 10, 10, 5, 5));
     }
 }
-
