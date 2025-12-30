@@ -100,19 +100,31 @@ fn vb_pipeline_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Ser
     graph.execute(inputs, &expr_columns)
 }
 
-/// Compute the output dtype for multi-output graph.
+/// Compute the output dtype for legacy multi-output graph.
 ///
-/// We return Struct with placeholder Binary fields. The actual field names
-/// are determined at runtime, but Polars needs a valid Struct type.
-fn multi_output_dtype(input_fields: &[Field]) -> PolarsResult<Field> {
+/// This function receives kwargs and parses the graph JSON to determine
+/// the exact output Struct type with named Binary fields.
+fn multi_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsResult<Field> {
     let name = if !input_fields.is_empty() {
         input_fields[0].name().clone()
     } else {
         PlSmallStr::from_static("output")
     };
 
-    // Return an empty Struct type - the actual fields are populated at runtime
-    Ok(Field::new(name, DataType::Struct(vec![])))
+    // Parse the graph JSON to extract output field names
+    let graph = MultiPipelineGraph::from_json(&kwargs.graph_json)?;
+
+    // Get sorted output names to ensure deterministic field order
+    let mut output_names: Vec<&String> = graph.outputs.keys().collect();
+    output_names.sort();
+
+    // Build struct fields - each output is a Binary field
+    let fields: Vec<Field> = output_names
+        .into_iter()
+        .map(|name| Field::new(PlSmallStr::from(name.as_str()), DataType::Binary))
+        .collect();
+
+    Ok(Field::new(name, DataType::Struct(fields)))
 }
 
 /// Apply a multi-output pipeline graph (DAG) to multiple binary columns.
@@ -124,7 +136,7 @@ fn multi_output_dtype(input_fields: &[Field]) -> PolarsResult<Field> {
 /// The output is a Struct column where:
 /// - Each field name corresponds to an alias defined in the graph
 /// - Each field value is Binary data encoded in the specified format
-#[polars_expr(output_type_func=multi_output_dtype)]
+#[polars_expr(output_type_func_with_kwargs=multi_output_dtype)]
 fn vb_pipeline_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
     // Parse the multi-output graph specification
     let graph = MultiPipelineGraph::from_json(&kwargs.graph_json)?;
@@ -156,19 +168,32 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
 
 /// Compute the output dtype for multi-output unified graph.
 ///
-/// We return Struct with placeholder Binary fields. The actual field names
-/// are determined at runtime, but Polars needs a valid Struct type.
-/// Using empty Struct which gets populated at execution.
-fn unified_multi_output_dtype(input_fields: &[Field]) -> PolarsResult<Field> {
+/// This function receives kwargs and parses the graph JSON to determine
+/// the exact output Struct type with named Binary fields.
+fn unified_multi_output_dtype(
+    input_fields: &[Field],
+    kwargs: GraphKwargs,
+) -> PolarsResult<Field> {
     let name = if !input_fields.is_empty() {
         input_fields[0].name().clone()
     } else {
         PlSmallStr::from_static("output")
     };
 
-    // Return an empty Struct type - the actual fields are populated at runtime
-    // This works because StructChunked::from_series creates the proper type
-    Ok(Field::new(name, DataType::Struct(vec![])))
+    // Parse the graph JSON to extract output field names
+    let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
+
+    // Get sorted output names to ensure deterministic field order
+    let mut output_names: Vec<&String> = graph.outputs.keys().collect();
+    output_names.sort();
+
+    // Build struct fields - each output is a Binary field
+    let fields: Vec<Field> = output_names
+        .into_iter()
+        .map(|name| Field::new(PlSmallStr::from(name.as_str()), DataType::Binary))
+        .collect();
+
+    Ok(Field::new(name, DataType::Struct(fields)))
 }
 
 /// Unified pipeline graph execution for multiple outputs.
@@ -177,7 +202,7 @@ fn unified_multi_output_dtype(input_fields: &[Field]) -> PolarsResult<Field> {
 /// graph format. It returns a Struct column with named Binary fields.
 ///
 /// Use this when the graph has multiple outputs.
-#[polars_expr(output_type_func=unified_multi_output_dtype)]
+#[polars_expr(output_type_func_with_kwargs=unified_multi_output_dtype)]
 fn vb_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
     // Parse the unified graph specification
     let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
