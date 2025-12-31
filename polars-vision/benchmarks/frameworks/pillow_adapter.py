@@ -109,7 +109,8 @@ class PillowAdapter(BaseFrameworkAdapter):
             Resized image.
         """
         Image, _ = self._get_modules()
-        return img.resize((width, height), Image.Resampling.LANCZOS)
+        # Use bilinear interpolation for consistency across frameworks
+        return img.resize((width, height), Image.Resampling.BILINEAR)
 
     def grayscale(self, img: "PILImageModule.Image") -> "PILImageModule.Image":
         """

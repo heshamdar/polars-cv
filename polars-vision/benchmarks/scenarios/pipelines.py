@@ -103,7 +103,9 @@ def get_pipeline_benchmarks(
                 OperationParams(operation=OperationType.NORMALIZE),
                 OperationParams(
                     operation=OperationType.THRESHOLD,
-                    threshold_value=128,
+                    # Use 127 instead of 128 to avoid boundary issues between
+                    # integer (OpenCV) and floating-point (Torchvision) implementations
+                    threshold_value=127,
                 ),
             ],
             description="Resize + flip + grayscale + blur + normalize + threshold",

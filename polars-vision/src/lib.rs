@@ -170,10 +170,7 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
 ///
 /// This function receives kwargs and parses the graph JSON to determine
 /// the exact output Struct type with named Binary fields.
-fn unified_multi_output_dtype(
-    input_fields: &[Field],
-    kwargs: GraphKwargs,
-) -> PolarsResult<Field> {
+fn unified_multi_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsResult<Field> {
     let name = if !input_fields.is_empty() {
         input_fields[0].name().clone()
     } else {

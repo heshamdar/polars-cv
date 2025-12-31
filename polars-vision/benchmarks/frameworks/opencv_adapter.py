@@ -108,7 +108,8 @@ class OpenCVAdapter(BaseFrameworkAdapter):
             Resized image.
         """
         cv2 = self._get_cv2()
-        return cv2.resize(img, (width, height), interpolation=cv2.INTER_LANCZOS4)
+        # Use bilinear interpolation for consistency across frameworks
+        return cv2.resize(img, (width, height), interpolation=cv2.INTER_LINEAR)
 
     def grayscale(self, img: "npt.NDArray[np.uint8]") -> "npt.NDArray[np.uint8]":
         """

@@ -123,7 +123,8 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
 
         for op in operations:
             if op.operation == OperationType.RESIZE:
-                pipe = pipe.resize(height=op.height, width=op.width)
+                # Use bilinear interpolation for consistency across frameworks
+                pipe = pipe.resize(height=op.height, width=op.width, filter="bilinear")
             elif op.operation == OperationType.GRAYSCALE:
                 pipe = pipe.grayscale()
             elif op.operation == OperationType.NORMALIZE:
@@ -142,7 +143,8 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
             elif op.operation == OperationType.BLUR:
                 pipe = pipe.blur(sigma=op.sigma)
             elif op.operation == OperationType.THRESHOLD:
-                pipe = pipe.threshold(value=op.threshold_value)
+                # adding specific handling for comparison since other frameworks implicitly convert to grayscale
+                pipe = pipe.grayscale().threshold(value=op.threshold_value)
             elif op.operation == OperationType.CAST:
                 pipe = pipe.cast(dtype=op.dtype)
             elif op.operation == OperationType.SCALE:
@@ -168,7 +170,7 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .resize(height=height, width=width)
+            .resize(height=height, width=width, filter="bilinear")
             .sink("blob")
         )
 
@@ -388,27 +390,37 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
         """
         Convert image bytes to NumPy array.
 
-        For polars-vision, we output to numpy format and decode.
+        For polars-vision, we output to numpy format and decode using
+        the numpy_from_bytes helper which properly parses the header.
 
         Args:
-            img: Image bytes (blob format).
+            img: Image bytes (numpy sink format).
 
         Returns:
             NumPy array.
         """
-        # For blob format, we need to decode
-        # This is a simplified version - full implementation would parse the blob
-        import io
-
-        from PIL import Image
-
-        # Try to load as standard image format first
+        # Use numpy_from_bytes to properly parse the numpy sink format
+        # (has header: dtype code, ndim, shape, then data)
         try:
+            from polars_vision import numpy_from_bytes
+
+            return numpy_from_bytes(img)
+        except Exception:
+            pass
+
+        # Fallback: try to load as standard image format (PNG/JPEG)
+        try:
+            import io
+
+            from PIL import Image
+
             pil_img = Image.open(io.BytesIO(img))
             return np.array(pil_img)
         except Exception:
-            # Assume it's raw numpy bytes
-            return np.frombuffer(img, dtype=np.uint8)
+            pass
+
+        # Last resort: raw bytes (likely incorrect shape)
+        return np.frombuffer(img, dtype=np.uint8)
 
     def run_pipeline_batch(
         self,
@@ -429,7 +441,7 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
             List of processed image bytes.
         """
         self._ensure_expressions_registered()
-        pipe = self._build_pipeline(operations, sink_format="blob")
+        pipe = self._build_pipeline(operations, sink_format="numpy")
 
         df = pl.DataFrame({"images": image_bytes_list})
 

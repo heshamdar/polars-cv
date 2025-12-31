@@ -41,7 +41,9 @@ pub struct GraphNode {
     #[serde(default)]
     pub upstream: Vec<String>,
     /// Optional user-defined alias for multi-output.
+    /// Note: Used for deserialization; alias becomes the key in outputs map.
     #[serde(default)]
+    #[allow(dead_code)]
     pub alias: Option<String>,
 }
 
@@ -85,6 +87,7 @@ impl UnifiedGraph {
     }
 
     /// Get all output node IDs.
+    #[allow(dead_code)]
     pub fn output_node_ids(&self) -> HashSet<String> {
         self.outputs.values().map(|s| s.node.clone()).collect()
     }
@@ -279,8 +282,7 @@ impl UnifiedGraph {
             }
 
             let output_name = inputs[0].name().clone();
-            StructChunked::from_series(output_name, len, fields.iter())
-                .map(|sc| sc.into_series())
+            StructChunked::from_series(output_name, len, fields.iter()).map(|sc| sc.into_series())
         }
     }
 }
@@ -327,7 +329,9 @@ pub struct MultiPipelineGraph {
     /// Mapping from node IDs to input column indices.
     pub column_bindings: HashMap<String, usize>,
     /// Flag indicating multi-output mode (for serde).
+    /// Note: Used for deserialization to distinguish from single-output graphs.
     #[serde(default)]
+    #[allow(dead_code)]
     pub is_multi_output: bool,
 }
 
@@ -643,8 +647,7 @@ impl MultiPipelineGraph {
         }
 
         let output_name = inputs[0].name().clone();
-        StructChunked::from_series(output_name, len, fields.iter())
-            .map(|sc| sc.into_series())
+        StructChunked::from_series(output_name, len, fields.iter()).map(|sc| sc.into_series())
     }
 }
 

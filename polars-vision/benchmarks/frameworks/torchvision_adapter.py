@@ -195,8 +195,14 @@ class TorchvisionAdapter(BaseFrameworkAdapter):
         Returns:
             Resized image tensor.
         """
-        _, _, F = self._get_modules()
-        return F.resize(img, [height, width], antialias=True)
+        torch, _, F = self._get_modules()
+        # Use bilinear interpolation for consistency across frameworks
+        return F.resize(
+            img,
+            [height, width],
+            interpolation=torch.nn.functional.InterpolationMode.BILINEAR,
+            antialias=True,
+        )
 
     def grayscale(self, img: "torch.Tensor") -> "torch.Tensor":
         """

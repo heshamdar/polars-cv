@@ -66,6 +66,11 @@ def normalize_output(
     if arr.max() > 1.0:
         arr = arr / 255.0
 
+    # Squeeze trailing singleton dimension (e.g., (H, W, 1) -> (H, W))
+    # This aligns grayscale outputs from different frameworks
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        arr = arr.squeeze(axis=2)
+
     # Ensure 2D or 3D array
     if arr.ndim == 1:
         # Try to infer shape from size (assume square)
@@ -76,10 +81,31 @@ def normalize_output(
     return arr
 
 
+def is_binary_image(arr: "npt.NDArray[np.float32]") -> bool:
+    """
+    Check if an array appears to be a binary image (only 0 and 1 values).
+
+    Args:
+        arr: Array to check.
+
+    Returns:
+        True if the array contains only 0 and 1 values (within tolerance).
+    """
+    unique_vals = np.unique(arr)
+    if len(unique_vals) > 2:
+        return False
+    # Check if values are approximately 0 and/or 1
+    return all(
+        np.isclose(v, 0.0, atol=0.01) or np.isclose(v, 1.0, atol=0.01)
+        for v in unique_vals
+    )
+
+
 def compare_arrays(
     arr1: "npt.NDArray[np.float32]",
     arr2: "npt.NDArray[np.float32]",
     tolerance: float = 1e-5,
+    binary_tolerance: float = 0.01,
 ) -> tuple[bool, float, float]:
     """
     Compare two arrays for approximate equality.
@@ -88,6 +114,7 @@ def compare_arrays(
         arr1: First array.
         arr2: Second array.
         tolerance: Maximum allowed relative difference.
+        binary_tolerance: For binary images, max fraction of differing pixels allowed.
 
     Returns:
         Tuple of (is_equal, max_absolute_error, max_relative_error).
@@ -112,8 +139,19 @@ def compare_arrays(
     rel_error = abs_error / denom
     max_rel_error = float(rel_error.max())
 
-    # Check if within tolerance
-    is_equal = np.allclose(arr1, arr2, rtol=tolerance, atol=tolerance)
+    # For binary images, use fraction of differing pixels instead of max error
+    # This is because grayscale boundary differences cause individual pixels
+    # to differ by 1.0, but the overall image is still correct
+    if is_binary_image(arr1) and is_binary_image(arr2):
+        num_diff = np.sum(abs_error > 0.5)
+        diff_fraction = num_diff / arr1.size
+        is_equal = diff_fraction <= binary_tolerance
+        # Report the fraction as the error for binary images
+        max_abs_error = diff_fraction
+        max_rel_error = diff_fraction
+    else:
+        # Check if within tolerance
+        is_equal = np.allclose(arr1, arr2, rtol=tolerance, atol=tolerance)
 
     return is_equal, max_abs_error, max_rel_error
 

@@ -280,16 +280,30 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 work_buf.to_contiguous()
             };
 
-            let (h, w) = (contig_buf.shape()[0] as u32, contig_buf.shape()[1] as u32);
+            let (h, w) = (
+                contig_buf.shape()[0] as usize,
+                contig_buf.shape()[1] as usize,
+            );
             let count = contig_buf.layout.num_elements();
             let raw_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count) };
 
-            if let Some(img_buf) = ImageBuffer::<Rgb<u8>, &[u8]>::from_raw(w, h, raw_slice) {
-                let gray = imageops::grayscale(&img_buf);
-                ViewBuffer::from_vec(gray.into_raw()).reshape(vec![h as usize, w as usize, 1])
-            } else {
-                panic!("Failed to create ImageBuffer for grayscale operation");
+            // Use BT.601 coefficients (same as OpenCV, Pillow, etc.)
+            // Y = 0.299*R + 0.587*G + 0.114*B
+            // Using fixed-point math for speed: Y = (77*R + 150*G + 29*B) >> 8
+            let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
+            for y in 0..h {
+                for x in 0..w {
+                    let idx = (y * w + x) * channels;
+                    let r = raw_slice[idx] as u32;
+                    let g = raw_slice[idx + 1] as u32;
+                    let b = raw_slice[idx + 2] as u32;
+                    // BT.601: 0.299*R + 0.587*G + 0.114*B
+                    // Fixed-point: (77*R + 150*G + 29*B + 128) >> 8
+                    let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
+                    gray_data.push(gray);
+                }
             }
+            ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1])
         }
         ImageOpKind::Resize {
             width,

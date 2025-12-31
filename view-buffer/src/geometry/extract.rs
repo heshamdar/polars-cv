@@ -151,9 +151,9 @@ fn trace_contour(
     let mut dir = 0; // Start looking right
 
     // Find initial backtrack direction
-    for d in 0..8 {
-        let nx = x + directions[d].0;
-        let ny = y + directions[d].1;
+    for (d, &(dx, dy)) in directions.iter().enumerate() {
+        let nx = x + dx;
+        let ny = y + dy;
         if nx >= 0
             && ny >= 0
             && (nx as usize) < width
