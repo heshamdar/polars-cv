@@ -376,3 +376,38 @@ class BaseFrameworkAdapter(ABC):
         """
         for _ in range(3):
             self.run_pipeline_batch([sample_image], operations)
+
+    def prepare_decoded_images(self, png_bytes_list: list[bytes]) -> list[Any]:
+        """
+        Pre-decode PNG bytes to the framework's native format.
+
+        This removes image decoding overhead from subsequent benchmark runs,
+        allowing for fairer comparison of pure operation performance.
+
+        Args:
+            png_bytes_list: List of PNG image bytes.
+
+        Returns:
+            List of images in the framework's native format (decoded).
+        """
+        return [self.load_from_bytes(data) for data in png_bytes_list]
+
+    def run_pipeline_on_decoded(
+        self,
+        decoded_images: list[Any],
+        operations: list[OperationParams],
+    ) -> list[Any]:
+        """
+        Run operations on pre-decoded images (skips decode overhead).
+
+        This is the counterpart to run_pipeline_batch for benchmarking
+        pure operation performance without image decoding.
+
+        Args:
+            decoded_images: List of pre-decoded images in native format.
+            operations: Operations to apply.
+
+        Returns:
+            List of processed images.
+        """
+        return self.run_pipeline(decoded_images, operations)

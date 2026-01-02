@@ -161,6 +161,10 @@ def run_pipeline_benchmark(
     """
     Run a pipeline benchmark on an adapter.
 
+    This benchmarks pure pipeline performance by pre-decoding images
+    before timing. This removes PNG decode overhead for fair comparison
+    across frameworks.
+
     Args:
         adapter: Framework adapter to benchmark.
         benchmark: Pipeline benchmark configuration.
@@ -183,18 +187,22 @@ def run_pipeline_benchmark(
         pattern="gradient",
     )
 
+    # Pre-decode images to native format (removes decode overhead from timing)
+    decoded_images = adapter.prepare_decoded_images(image_set.image_bytes)
+    warmup_decoded = adapter.prepare_decoded_images(image_set.image_bytes[:10])
+
     # Warmup
     for _ in range(warmup_iterations):
-        adapter.run_pipeline_batch(image_set.image_bytes[:10], benchmark.operations)
+        adapter.run_pipeline_on_decoded(warmup_decoded, benchmark.operations)
 
-    # Benchmark
+    # Benchmark (using pre-decoded images for fair comparison)
     total_time = 0.0
     peak_memory = 0.0
 
     for _ in range(benchmark_iterations):
         _, elapsed, mem_stats = run_timed_with_memory(
-            lambda: adapter.run_pipeline_batch(
-                image_set.image_bytes, benchmark.operations
+            lambda: adapter.run_pipeline_on_decoded(
+                decoded_images, benchmark.operations
             )
         )
         total_time += elapsed
@@ -227,6 +235,11 @@ def run_pipeline_benchmark_gpu(
     """
     Run a pipeline benchmark on a GPU adapter with cold and warm starts.
 
+    Cold start: Uses pre-decoded images (decode overhead removed, but includes
+    transfer to GPU). This is comparable to other frameworks' pre-decoded benchmarks.
+
+    Warm start: Data already resident on GPU (pure operation performance).
+
     Args:
         adapter: GPU-capable framework adapter.
         benchmark: Pipeline benchmark configuration.
@@ -249,17 +262,21 @@ def run_pipeline_benchmark_gpu(
         pattern="gradient",
     )
 
+    # Pre-decode images to native format (removes PNG decode overhead)
+    decoded_images = adapter.prepare_decoded_images(image_set.image_bytes)
+    warmup_decoded = adapter.prepare_decoded_images(image_set.image_bytes[:10])
+
     # Warmup
     for _ in range(warmup_iterations):
-        adapter.run_pipeline_batch(image_set.image_bytes[:10], benchmark.operations)
+        adapter.run_pipeline_on_decoded(warmup_decoded, benchmark.operations)
         adapter.synchronize()
 
-    # Cold start benchmark (includes data transfer)
+    # Cold start benchmark (pre-decoded but includes transfer to GPU)
     cold_total_time = 0.0
 
     for _ in range(benchmark_iterations):
         start = time.perf_counter()
-        adapter.run_pipeline_batch(image_set.image_bytes, benchmark.operations)
+        adapter.run_pipeline_on_decoded(decoded_images, benchmark.operations)
         adapter.synchronize()
         elapsed = time.perf_counter() - start
         cold_total_time += elapsed

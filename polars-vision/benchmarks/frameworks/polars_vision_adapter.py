@@ -598,6 +598,41 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
 
         return outputs
 
+    def prepare_decoded_images(self, png_bytes_list: list[bytes]) -> list[bytes]:
+        """
+        Pre-decode PNG bytes to blob format for fair benchmarking.
+
+        This converts PNG bytes to VIEW protocol blob format, removing
+        image decoding overhead from subsequent benchmark runs.
+
+        Args:
+            png_bytes_list: List of PNG image bytes.
+
+        Returns:
+            List of blob-encoded image bytes.
+        """
+        return self.prepare_blob_images(png_bytes_list)
+
+    def run_pipeline_on_decoded(
+        self,
+        decoded_images: list[bytes],
+        operations: list[OperationParams],
+    ) -> list[bytes]:
+        """
+        Run operations on pre-decoded blob images (skips PNG decode overhead).
+
+        This uses the blob source pipeline for fair comparison with other
+        frameworks that start from decoded arrays.
+
+        Args:
+            decoded_images: List of blob-encoded image bytes.
+            operations: Operations to apply.
+
+        Returns:
+            List of processed image bytes.
+        """
+        return self.apply_operations_blob(decoded_images, operations)
+
 
 class PolarsVisionEagerAdapter(PolarsVisionAdapter):
     """Polars-vision adapter with eager execution."""
