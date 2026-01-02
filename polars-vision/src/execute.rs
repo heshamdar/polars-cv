@@ -132,7 +132,7 @@ fn execute_contour_row(
 }
 
 /// Decode a contour source by parsing the struct and rasterizing to ViewBuffer.
-fn decode_contour_source(
+pub fn decode_contour_source(
     value: &AnyValue,
     row_idx: usize,
     pipeline: &PipelineSpec,
@@ -441,11 +441,21 @@ pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult
         "array" | "list" => {
             // For array/list, we return raw bytes that Polars will interpret
             // The actual type conversion happens in the output dtype
-            let contig = buffer.to_contiguous();
-            let num_elements: usize = contig.shape().iter().product();
+            //
+            // Optimization: Check if already contiguous to avoid unnecessary copy
+            let num_elements: usize = buffer.shape().iter().product();
             let data_len = num_elements * buffer.dtype().size_of();
-            let data_slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-            Ok(data_slice.to_vec())
+
+            if buffer.layout_facts().is_contiguous() {
+                // Already contiguous - avoid copy
+                let data_slice = unsafe { std::slice::from_raw_parts(buffer.as_ptr::<u8>(), data_len) };
+                Ok(data_slice.to_vec())
+            } else {
+                // Need to materialize to contiguous layout
+                let contig = buffer.to_contiguous();
+                let data_slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+                Ok(data_slice.to_vec())
+            }
         }
         other => Err(polars_err!(ComputeError: "Unknown sink format: {}", other)),
     }
@@ -456,7 +466,10 @@ fn encode_sink_numpy_style(buffer: &ViewBuffer) -> PolarsResult<Vec<u8>> {
     let shape = buffer.shape();
     let dtype = buffer.dtype();
 
-    let mut output = Vec::new();
+    let num_elements: usize = shape.iter().product();
+    let data_len = num_elements * dtype.size_of();
+
+    let mut output = Vec::with_capacity(1 + 1 + shape.len() * 8 + data_len);
     output.push(dtype_to_numpy_code(dtype));
     output.push(shape.len() as u8);
 
@@ -464,11 +477,15 @@ fn encode_sink_numpy_style(buffer: &ViewBuffer) -> PolarsResult<Vec<u8>> {
         output.extend_from_slice(&(dim as u64).to_le_bytes());
     }
 
-    let contig = buffer.to_contiguous();
-    let num_elements: usize = contig.shape().iter().product();
-    let data_len = num_elements * dtype.size_of();
-    let data_slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-    output.extend_from_slice(data_slice);
+    // Optimization: Check if already contiguous to avoid unnecessary copy
+    if buffer.layout_facts().is_contiguous() {
+        let data_slice = unsafe { std::slice::from_raw_parts(buffer.as_ptr::<u8>(), data_len) };
+        output.extend_from_slice(data_slice);
+    } else {
+        let contig = buffer.to_contiguous();
+        let data_slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+        output.extend_from_slice(data_slice);
+    }
 
     Ok(output)
 }

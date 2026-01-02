@@ -23,9 +23,7 @@ fn polars_vision_lib(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> 
     Ok(())
 }
 
-use crate::execute::execute_pipeline;
-use crate::graph::{MultiPipelineGraph, PipelineGraph, UnifiedGraph};
-use crate::pipeline::PipelineSpec;
+use crate::graph::UnifiedGraph;
 
 // Import geometry operations from view-buffer
 use view_buffer::geometry::{
@@ -33,45 +31,127 @@ use view_buffer::geometry::{
     measures, pairwise, predicates, transforms,
 };
 
-/// Kwargs passed from Python to the plugin function.
-#[derive(Debug, Deserialize)]
-pub struct PipelineKwargs {
-    /// JSON-serialized pipeline specification.
-    pub pipeline_json: String,
-    /// Names of expression columns (for resolving dynamic parameters).
-    #[serde(default)]
-    pub expr_column_names: Vec<String>,
-}
+// ============================================================================
+// Contour Serialization Helpers
+// ============================================================================
 
-/// Apply a vision pipeline to a binary column.
+/// Convert a Contour to a Polars AnyValue matching CONTOUR_SCHEMA.
 ///
-/// This is the main entry point for the plugin. It receives:
-/// - inputs[0]: The main data column (Binary)
-/// - inputs[1..]: Expression columns referenced in the pipeline
-///
-/// The pipeline is deserialized from JSON and executed for each row.
-///
-/// Output type is always Binary for now - the sink format determines
-/// how the bytes should be interpreted.
-#[polars_expr(output_type=Binary)]
-fn vb_pipeline(inputs: &[Series], kwargs: PipelineKwargs) -> PolarsResult<Series> {
-    // Parse the pipeline specification
-    let pipeline: PipelineSpec = serde_json::from_str(&kwargs.pipeline_json)
-        .map_err(|e| polars_err!(ComputeError: "Failed to parse pipeline: {}", e))?;
-
-    // Get the main data column
-    let data_series = &inputs[0];
-
-    // Build a map of expression column names to their series
-    let expr_columns: std::collections::HashMap<String, &Series> = kwargs
-        .expr_column_names
+/// The schema is:
+/// - exterior: List[{x: Float64, y: Float64}]
+/// - holes: List[List[{x: Float64, y: Float64}]]
+/// - is_closed: Boolean
+fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
+    // Build exterior points as list of structs
+    let exterior_points: Vec<AnyValue> = contour
+        .exterior
         .iter()
-        .enumerate()
-        .filter_map(|(i, name)| inputs.get(i + 1).map(|s| (name.clone(), s)))
+        .map(|p| {
+            AnyValue::StructOwned(Box::new((
+                vec![AnyValue::Float64(p.x), AnyValue::Float64(p.y)],
+                vec![
+                    Field::new(PlSmallStr::from_static("x"), DataType::Float64),
+                    Field::new(PlSmallStr::from_static("y"), DataType::Float64),
+                ],
+            )))
+        })
         .collect();
 
-    // Execute the pipeline
-    execute_pipeline(data_series, &pipeline, &expr_columns)
+    // Build holes as list of list of structs
+    let holes_list: Vec<AnyValue> = contour
+        .holes
+        .iter()
+        .map(|hole| {
+            let hole_points: Vec<AnyValue> = hole
+                .iter()
+                .map(|p| {
+                    AnyValue::StructOwned(Box::new((
+                        vec![AnyValue::Float64(p.x), AnyValue::Float64(p.y)],
+                        vec![
+                            Field::new(PlSmallStr::from_static("x"), DataType::Float64),
+                            Field::new(PlSmallStr::from_static("y"), DataType::Float64),
+                        ],
+                    )))
+                })
+                .collect();
+            // Create a Series from hole points for the inner list
+            let point_schema = DataType::Struct(vec![
+                Field::new(PlSmallStr::from_static("x"), DataType::Float64),
+                Field::new(PlSmallStr::from_static("y"), DataType::Float64),
+            ]);
+            let hole_series = Series::from_any_values_and_dtype(
+                PlSmallStr::from_static("hole"),
+                &hole_points,
+                &point_schema,
+                false,
+            )
+            .unwrap_or_else(|_| Series::new_empty(PlSmallStr::from_static("hole"), &point_schema));
+            AnyValue::List(hole_series)
+        })
+        .collect();
+
+    // Build the exterior series
+    let point_schema = DataType::Struct(vec![
+        Field::new(PlSmallStr::from_static("x"), DataType::Float64),
+        Field::new(PlSmallStr::from_static("y"), DataType::Float64),
+    ]);
+    let exterior_series = Series::from_any_values_and_dtype(
+        PlSmallStr::from_static("exterior"),
+        &exterior_points,
+        &point_schema,
+        false,
+    )
+    .unwrap_or_else(|_| Series::new_empty(PlSmallStr::from_static("exterior"), &point_schema));
+
+    // Build the holes series (list of lists)
+    let hole_list_schema = DataType::List(Box::new(point_schema.clone()));
+    let holes_series = Series::from_any_values_and_dtype(
+        PlSmallStr::from_static("holes"),
+        &holes_list,
+        &hole_list_schema,
+        false,
+    )
+    .unwrap_or_else(|_| Series::new_empty(PlSmallStr::from_static("holes"), &hole_list_schema));
+
+    // Create the outer contour struct
+    AnyValue::StructOwned(Box::new((
+        vec![
+            AnyValue::List(exterior_series),
+            AnyValue::List(holes_series),
+            AnyValue::Boolean(true), // is_closed
+        ],
+        vec![
+            Field::new(
+                PlSmallStr::from_static("exterior"),
+                DataType::List(Box::new(point_schema.clone())),
+            ),
+            Field::new(
+                PlSmallStr::from_static("holes"),
+                DataType::List(Box::new(hole_list_schema)),
+            ),
+            Field::new(PlSmallStr::from_static("is_closed"), DataType::Boolean),
+        ],
+    )))
+}
+
+/// Build a contour Series from a vector of Contours.
+///
+/// This is used by contour transform operations that need to return
+/// a properly typed Series.
+fn build_contour_series(
+    name: PlSmallStr,
+    contours: Vec<Option<Contour>>,
+    input_dtype: &DataType,
+) -> PolarsResult<Series> {
+    let any_values: Vec<AnyValue> = contours
+        .into_iter()
+        .map(|opt_c| match opt_c {
+            Some(c) => contour_to_anyvalue(&c),
+            None => AnyValue::Null,
+        })
+        .collect();
+
+    Series::from_any_values_and_dtype(name, &any_values, input_dtype, true)
 }
 
 /// Kwargs for the graph-based pipeline function.
@@ -79,73 +159,9 @@ fn vb_pipeline(inputs: &[Series], kwargs: PipelineKwargs) -> PolarsResult<Series
 pub struct GraphKwargs {
     /// JSON-serialized pipeline graph specification.
     pub graph_json: String,
-}
-
-/// Apply a pipeline graph (DAG) to multiple binary columns.
-///
-/// This enables composable pipelines where multiple pipelines can be
-/// fused into a single execution without intermediate serialization.
-///
-/// The graph is executed in topological order, with ViewBuffers passed
-/// directly between nodes.
-#[polars_expr(output_type=Binary)]
-fn vb_pipeline_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
-    // Parse the graph specification
-    let graph = PipelineGraph::from_json(&kwargs.graph_json)?;
-
-    // Build expression columns map (empty for now, may be used for dynamic params)
-    let expr_columns: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
-
-    // Execute the graph
-    graph.execute(inputs, &expr_columns)
-}
-
-/// Compute the output dtype for legacy multi-output graph.
-///
-/// This function receives kwargs and parses the graph JSON to determine
-/// the exact output Struct type with named Binary fields.
-fn multi_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsResult<Field> {
-    let name = if !input_fields.is_empty() {
-        input_fields[0].name().clone()
-    } else {
-        PlSmallStr::from_static("output")
-    };
-
-    // Parse the graph JSON to extract output field names
-    let graph = MultiPipelineGraph::from_json(&kwargs.graph_json)?;
-
-    // Get sorted output names to ensure deterministic field order
-    let mut output_names: Vec<&String> = graph.outputs.keys().collect();
-    output_names.sort();
-
-    // Build struct fields - each output is a Binary field
-    let fields: Vec<Field> = output_names
-        .into_iter()
-        .map(|name| Field::new(PlSmallStr::from(name.as_str()), DataType::Binary))
-        .collect();
-
-    Ok(Field::new(name, DataType::Struct(fields)))
-}
-
-/// Apply a multi-output pipeline graph (DAG) to multiple binary columns.
-///
-/// Similar to `vb_pipeline_graph`, but returns a Struct column where each
-/// field is a named output from the graph. This enables extracting multiple
-/// intermediate results from a single pipeline execution.
-///
-/// The output is a Struct column where:
-/// - Each field name corresponds to an alias defined in the graph
-/// - Each field value is Binary data encoded in the specified format
-#[polars_expr(output_type_func_with_kwargs=multi_output_dtype)]
-fn vb_pipeline_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
-    // Parse the multi-output graph specification
-    let graph = MultiPipelineGraph::from_json(&kwargs.graph_json)?;
-
-    // Build expression columns map (empty for now, may be used for dynamic params)
-    let expr_columns: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
-
-    // Execute the graph and return Struct column
-    graph.execute(inputs, &expr_columns)
+    /// Names of expression columns (for resolving dynamic parameters).
+    #[serde(default)]
+    pub expr_column_names: Vec<String>,
 }
 
 /// Unified pipeline graph execution for single output.
@@ -159,8 +175,20 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
     // Parse the unified graph specification
     let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
 
-    // Build expression columns map (empty for now, may be used for dynamic params)
-    let expr_columns: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
+    // Count the number of root node column bindings to determine where expression columns start
+    let num_source_columns = graph.column_bindings.len().max(1);
+
+    // Build expression columns map from inputs after the source columns
+    let expr_columns: std::collections::HashMap<String, &Series> = kwargs
+        .expr_column_names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, name)| {
+            inputs
+                .get(num_source_columns + i)
+                .map(|s| (name.clone(), s))
+        })
+        .collect();
 
     // Execute the graph - should return Binary for single output
     graph.execute(inputs, &expr_columns)
@@ -204,8 +232,20 @@ fn vb_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series
     // Parse the unified graph specification
     let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
 
-    // Build expression columns map (empty for now, may be used for dynamic params)
-    let expr_columns: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
+    // Count the number of root node column bindings to determine where expression columns start
+    let num_source_columns = graph.column_bindings.len().max(1);
+
+    // Build expression columns map from inputs after the source columns
+    let expr_columns: std::collections::HashMap<String, &Series> = kwargs
+        .expr_column_names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, name)| {
+            inputs
+                .get(num_source_columns + i)
+                .map(|s| (name.clone(), s))
+        })
+        .collect();
 
     // Execute the graph - should return Struct for multi-output
     graph.execute(inputs, &expr_columns)
@@ -597,23 +637,20 @@ fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 
     let series = &inputs[0];
     let len = series.len();
-    let mut results: Vec<AnyValue> = Vec::with_capacity(len);
+    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
 
     for i in 0..len {
         let value = series.get(i)?;
         if value.is_null() {
-            results.push(AnyValue::Null);
+            results.push(None);
         } else {
             let contour = parse_contour(&value)?;
             let translated = transforms::translate(&contour, dx, dy);
-            // For now, return the original value - proper serialization would need schema work
-            let _ = translated;
-            results.push(value.clone().into_static());
+            results.push(Some(translated));
         }
     }
 
-    // For now, return the original series - proper transform output requires schema work
-    Ok(series.clone())
+    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
 /// Scale contour.
@@ -635,22 +672,25 @@ fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Serie
 
     let series = &inputs[0];
     let len = series.len();
+    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
 
     for i in 0..len {
         let value = series.get(i)?;
-        if !value.is_null() {
+        if value.is_null() {
+            results.push(None);
+        } else {
             let contour = parse_contour(&value)?;
-            let _scaled = transforms::scale(
+            let scaled = transforms::scale(
                 &contour,
                 sx,
                 sy,
                 view_buffer::geometry::ops::ScaleOrigin::Centroid,
             );
+            results.push(Some(scaled));
         }
     }
 
-    // For now, return the original series - proper transform output requires schema work
-    Ok(series.clone())
+    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
 /// Simplify contour.
@@ -671,17 +711,20 @@ fn contour_simplify(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Se
 
     let series = &inputs[0];
     let len = series.len();
+    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
 
     for i in 0..len {
         let value = series.get(i)?;
-        if !value.is_null() {
+        if value.is_null() {
+            results.push(None);
+        } else {
             let contour = parse_contour(&value)?;
-            let _simplified = transforms::simplify(&contour, tolerance);
+            let simplified = transforms::simplify(&contour, tolerance);
+            results.push(Some(simplified));
         }
     }
 
-    // For now, return the original series - proper transform output requires schema work
-    Ok(series.clone())
+    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
 /// Flip contour (reverse winding).
@@ -700,17 +743,20 @@ fn contour_flip_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
 fn contour_flip(inputs: &[Series]) -> PolarsResult<Series> {
     let series = &inputs[0];
     let len = series.len();
+    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
 
     for i in 0..len {
         let value = series.get(i)?;
-        if !value.is_null() {
+        if value.is_null() {
+            results.push(None);
+        } else {
             let contour = parse_contour(&value)?;
-            let _flipped = transforms::flip(&contour);
+            let flipped = transforms::flip(&contour);
+            results.push(Some(flipped));
         }
     }
 
-    // For now, return the original series - proper transform output requires schema work
-    Ok(series.clone())
+    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
 /// Compute convex hull.
@@ -729,17 +775,20 @@ fn contour_convex_hull_output_type(input_fields: &[Field]) -> PolarsResult<Field
 fn contour_convex_hull(inputs: &[Series]) -> PolarsResult<Series> {
     let series = &inputs[0];
     let len = series.len();
+    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
 
     for i in 0..len {
         let value = series.get(i)?;
-        if !value.is_null() {
+        if value.is_null() {
+            results.push(None);
+        } else {
             let contour = parse_contour(&value)?;
-            let _hull = transforms::convex_hull(&contour);
+            let hull = transforms::convex_hull(&contour);
+            results.push(Some(hull));
         }
     }
 
-    // For now, return the original series - proper transform output requires schema work
-    Ok(series.clone())
+    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
 /// Compute contour centroid - returns a Struct with x and y fields.
@@ -866,17 +915,20 @@ fn contour_normalize(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 
     let series = &inputs[0];
     let len = series.len();
+    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
 
     for i in 0..len {
         let value = series.get(i)?;
-        if !value.is_null() {
+        if value.is_null() {
+            results.push(None);
+        } else {
             let contour = parse_contour(&value)?;
-            let _normalized = transforms::normalize(&contour, ref_width, ref_height);
+            let normalized = transforms::normalize(&contour, ref_width, ref_height);
+            results.push(Some(normalized));
         }
     }
 
-    // For now, return the original series - proper transform output requires schema work
-    Ok(series.clone())
+    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
 /// Convert normalized coordinates to absolute pixel coordinates.
@@ -887,17 +939,20 @@ fn contour_to_absolute(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult
 
     let series = &inputs[0];
     let len = series.len();
+    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
 
     for i in 0..len {
         let value = series.get(i)?;
-        if !value.is_null() {
+        if value.is_null() {
+            results.push(None);
+        } else {
             let contour = parse_contour(&value)?;
-            let _absolute = transforms::to_absolute(&contour, ref_width, ref_height);
+            let absolute = transforms::to_absolute(&contour, ref_width, ref_height);
+            results.push(Some(absolute));
         }
     }
 
-    // For now, return the original series - proper transform output requires schema work
-    Ok(series.clone())
+    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
 /// Ensure contour has specified winding direction.
@@ -911,17 +966,20 @@ fn contour_ensure_winding(inputs: &[Series], kwargs: ContourKwargs) -> PolarsRes
 
     let series = &inputs[0];
     let len = series.len();
+    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
 
     for i in 0..len {
         let value = series.get(i)?;
-        if !value.is_null() {
+        if value.is_null() {
+            results.push(None);
+        } else {
             let contour = parse_contour(&value)?;
-            let _ensured = transforms::ensure_winding(&contour, direction);
+            let ensured = transforms::ensure_winding(&contour, direction);
+            results.push(Some(ensured));
         }
     }
 
-    // For now, return the original series - proper transform output requires schema work
-    Ok(series.clone())
+    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
 /// Check if contour contains a specific point.

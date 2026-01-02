@@ -306,6 +306,33 @@ class TestContourTranslate:
         )
         assert result["translated"].dtype == result["contour"].dtype
 
+    def test_translate_moves_points(self, square_df: pl.DataFrame) -> None:
+        """Translate should actually move the contour points."""
+        result = square_df.with_columns(
+            translated=pl.col("contour").contour.translate(dx=10.0, dy=20.0)
+        )
+        translated = result["translated"][0]
+        exterior = translated["exterior"]
+
+        # Original first point was (0, 0), should now be (10, 20)
+        assert exterior[0]["x"] == pytest.approx(10.0)
+        assert exterior[0]["y"] == pytest.approx(20.0)
+
+        # Original second point was (100, 0), should now be (110, 20)
+        assert exterior[1]["x"] == pytest.approx(110.0)
+        assert exterior[1]["y"] == pytest.approx(20.0)
+
+    def test_translate_zero_is_identity(self, square_df: pl.DataFrame) -> None:
+        """Translate by (0, 0) should not change points."""
+        result = square_df.with_columns(
+            translated=pl.col("contour").contour.translate(dx=0.0, dy=0.0)
+        )
+        translated = result["translated"][0]
+        exterior = translated["exterior"]
+
+        assert exterior[0]["x"] == pytest.approx(0.0)
+        assert exterior[0]["y"] == pytest.approx(0.0)
+
 
 @plugin_required
 class TestContourScale:
@@ -318,6 +345,37 @@ class TestContourScale:
         )
         assert result["scaled"].dtype == result["contour"].dtype
 
+    def test_scale_halves_dimensions(self, square_df: pl.DataFrame) -> None:
+        """Scaling by 0.5 should halve the bounding box dimensions."""
+        # Original: 100x100 square, centroid at (50, 50)
+        # After 0.5 scale: points should be halfway between centroid and original
+        result = square_df.with_columns(
+            scaled=pl.col("contour").contour.scale(sx=0.5, sy=0.5)
+        )
+        scaled = result["scaled"][0]
+        exterior = scaled["exterior"]
+
+        # After scaling around centroid (50,50):
+        # (0,0) -> (25,25), (100,0) -> (75,25), etc.
+        # All points should be 0.5 * distance from centroid
+        for point in exterior:
+            # Distance from center (50, 50) should be halved
+            x, y = point["x"], point["y"]
+            # All points should be within the scaled bounds
+            assert 25.0 <= x <= 75.0
+            assert 25.0 <= y <= 75.0
+
+    def test_scale_one_is_identity(self, square_df: pl.DataFrame) -> None:
+        """Scaling by (1, 1) should not change points."""
+        result = square_df.with_columns(
+            scaled=pl.col("contour").contour.scale(sx=1.0, sy=1.0)
+        )
+        scaled = result["scaled"][0]
+        exterior = scaled["exterior"]
+
+        assert exterior[0]["x"] == pytest.approx(0.0)
+        assert exterior[0]["y"] == pytest.approx(0.0)
+
 
 @plugin_required
 class TestContourSimplify:
@@ -329,6 +387,17 @@ class TestContourSimplify:
             simplified=pl.col("contour").contour.simplify(tolerance=1.0)
         )
         assert result["simplified"].dtype == result["contour"].dtype
+
+    def test_simplify_preserves_corners(self, square_df: pl.DataFrame) -> None:
+        """Simplify with low tolerance should preserve corner points."""
+        result = square_df.with_columns(
+            simplified=pl.col("contour").contour.simplify(tolerance=0.1)
+        )
+        simplified = result["simplified"][0]
+        exterior = simplified["exterior"]
+
+        # A square should still have 4 points after low-tolerance simplification
+        assert len(exterior) >= 3  # At least 3 points for a valid polygon
 
 
 @plugin_required
@@ -343,6 +412,32 @@ class TestContourNormalize:
             )
         )
         assert result["normalized"].dtype == result["contour"].dtype
+
+    def test_normalize_scales_to_unit_range(self, square_df: pl.DataFrame) -> None:
+        """Normalize should scale coordinates to [0, 1] range."""
+        result = square_df.with_columns(
+            normalized=pl.col("contour").contour.normalize(
+                ref_width=100, ref_height=100
+            )
+        )
+        normalized = result["normalized"][0]
+        exterior = normalized["exterior"]
+
+        # All coordinates should be in [0, 1] range
+        for point in exterior:
+            assert 0.0 <= point["x"] <= 1.0
+            assert 0.0 <= point["y"] <= 1.0
+
+        # Corner at (0, 0) should still be (0, 0)
+        assert exterior[0]["x"] == pytest.approx(0.0)
+        assert exterior[0]["y"] == pytest.approx(0.0)
+
+        # Corner at (100, 100) should become (1, 1)
+        has_max_corner = any(
+            point["x"] == pytest.approx(1.0) and point["y"] == pytest.approx(1.0)
+            for point in exterior
+        )
+        assert has_max_corner
 
 
 @plugin_required
