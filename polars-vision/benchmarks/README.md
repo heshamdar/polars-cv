@@ -99,14 +99,27 @@ uv run python -m benchmarks.run_benchmarks --validate --tolerance 1e-5
 ```
 
 **Validation Notes:**
+- **Reference framework**: OpenCV is used as the baseline for all comparisons
 - All frameworks now use aligned configurations for fair comparison:
   - **Grayscale**: BT.601 coefficients (0.299R + 0.587G + 0.114B) - matches OpenCV/Pillow/Torchvision
   - **Resize**: Bilinear interpolation for all frameworks
   - **Threshold**: Uses 127 instead of 128 to avoid boundary edge cases
 - Binary image comparisons (like threshold) use a percentage-based metric (fraction of differing pixels) instead of max absolute error
 - Grayscale outputs are squeezed from (H, W, 1) to (H, W) for consistent shape comparison
-- A tolerance of 0.15 (15%) passes all 8 single_ops validations
-- Minor differences (~5-10%) exist due to different algorithm implementations (blur kernels, resize sub-pixel sampling)
+
+**Expected errors by operation** (these are inherent algorithmic differences):
+
+| Operation | Max Error | Reason |
+|-----------|-----------|--------|
+| resize | ~10-27% | Different bilinear implementations (sub-pixel sampling, boundary handling) |
+| grayscale | ~0.4% | Float precision differences in coefficient calculations |
+| blur | ~5-8% | Different Gaussian blur kernel implementations |
+| threshold | ~0-1% | Integer vs float precision at boundaries |
+| flip/crop/normalize | ~0% | Identical implementations across libraries |
+
+**Recommended tolerances:**
+- `--tolerance 0.05` passes 6/8 operations (excludes resize, blur)
+- `--tolerance 0.15` passes all 8 operations
 
 ### Pipeline Complexity Filter
 

@@ -30,12 +30,14 @@ class ValidationResult:
     tolerance_used: float
     failures: list[str]
     details: str
+    operation_name: str = "unknown"
 
     def __repr__(self) -> str:
         """Return string representation."""
         status = "PASS" if self.passed else "FAIL"
         return (
             f"ValidationResult({status}, "
+            f"op={self.operation_name}, "
             f"max_abs_err={self.max_absolute_error:.6f}, "
             f"failures={len(self.failures)})"
         )
@@ -345,6 +347,9 @@ class OutputValidator:
             reference_adapter_name=self.reference_framework,
         )
 
+        # Store the operation name in the result
+        result.operation_name = operation_name
+
         self.validation_results.append(result)
         return result
 
@@ -357,15 +362,17 @@ class OutputValidator:
         print("\n" + "=" * 50)
         print("VALIDATION SUMMARY")
         print("=" * 50)
+        print(f"Reference framework: {self.reference_framework}")
+        print(f"Tolerance: {self.tolerance:.1e}")
         print(f"Total validations: {total}")
         print(f"Passed: {passed}")
         print(f"Failed: {failed}")
 
         if failed > 0:
             print("\nFailed validations:")
-            for i, result in enumerate(self.validation_results):
+            for result in self.validation_results:
                 if not result.passed:
-                    print(f"  [{i}] {result.details}")
+                    print(f"  [{result.operation_name}] {result.details}")
 
         print("=" * 50)
 

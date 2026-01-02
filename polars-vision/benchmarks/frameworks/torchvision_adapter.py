@@ -195,12 +195,13 @@ class TorchvisionAdapter(BaseFrameworkAdapter):
         Returns:
             Resized image tensor.
         """
-        torch, _, F = self._get_modules()
+        torch, transforms, F = self._get_modules()
+        
         # Use bilinear interpolation for consistency across frameworks
         return F.resize(
             img,
             [height, width],
-            interpolation=torch.nn.functional.InterpolationMode.BILINEAR,
+            interpolation=transforms.InterpolationMode.BILINEAR,
             antialias=True,
         )
 
