@@ -154,6 +154,26 @@ pub fn decode_contour_source(
     ))
 }
 
+/// Decode a contour source with explicit dimensions (for graph execution with shape inference).
+///
+/// This variant is used when dimensions are resolved from a shape reference (another node's buffer)
+/// rather than from explicit width/height parameters.
+pub fn decode_contour_source_with_dims(
+    value: &AnyValue,
+    width: u32,
+    height: u32,
+    fill_value: u8,
+    background: u8,
+) -> PolarsResult<ViewBuffer> {
+    // Parse the contour from the struct
+    let contour = parse_contour_from_anyvalue(value)?;
+
+    // Rasterize the contour to a ViewBuffer
+    Ok(rasterize(
+        &contour, width, height, fill_value, background, false, // anti_alias not yet supported
+    ))
+}
+
 /// Parse a contour from an AnyValue (struct or list).
 fn parse_contour_from_anyvalue(value: &AnyValue) -> PolarsResult<Contour> {
     match value {

@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 
 use view_buffer::{BinaryOp, ViewBuffer, ViewDto, ViewExpr};
 
-use crate::execute::{decode_contour_source, decode_source, resolve_op};
+use crate::execute::{decode_contour_source, decode_contour_source_with_dims, decode_source, resolve_op};
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
 
 /// Apply a mask to a buffer.
@@ -282,7 +282,10 @@ impl UnifiedGraph {
                     };
 
                     // Determine input source for this node
-                    let buffer = if node.upstream.is_empty() {
+                    // A node is a "root" if it has a column binding (reads from DataFrame column)
+                    // Nodes can have both column bindings AND upstream (e.g., contour with shape inference)
+                    let has_column_binding = self.column_bindings.contains_key(node_id);
+                    let buffer = if has_column_binding {
                         // Root node: get input from column binding
                         let col_idx = self.column_bindings.get(node_id).copied().unwrap_or(0);
 
@@ -301,22 +304,62 @@ impl UnifiedGraph {
                             // Contour source: parse struct and rasterize
                             match input_series.get(row_idx) {
                                 Ok(value) if !value.is_null() => {
-                                    // Create temp spec for contour decoding
-                                    let first_output = self.outputs.values().next().unwrap();
-                                    let temp_spec = PipelineSpec {
-                                        source: node.source.clone(),
-                                        shape_hints: None,
-                                        ops: vec![],
-                                        sink: first_output.sink.clone(),
-                                    };
-                                    match decode_contour_source(
-                                        &value,
-                                        row_idx,
-                                        &temp_spec,
-                                        expr_columns,
-                                    ) {
-                                        Ok(buf) => Some(buf),
-                                        Err(e) => return Err(format!("Contour decode error: {e}")),
+                                    // Check if we have shape_pipeline for dimension inference
+                                    if let Some(ref shape_pipeline) = node.source.shape_pipeline {
+                                        // Extract node_id from shape_pipeline JSON
+                                        let shape_node_id = shape_pipeline
+                                            .get("node_id")
+                                            .and_then(|v| v.as_str())
+                                            .ok_or_else(|| {
+                                                "shape_pipeline missing 'node_id'".to_string()
+                                            })?;
+
+                                        // Look up the referenced buffer
+                                        let shape_buffer = buffers.get(shape_node_id).ok_or_else(|| {
+                                            format!(
+                                                "Shape reference '{shape_node_id}' not found. Ensure the shape source is defined before this contour pipeline."
+                                            )
+                                        })?;
+
+                                        // Get dimensions from buffer shape (HWC layout: [height, width, channels])
+                                        let shape = shape_buffer.shape();
+                                        if shape.len() < 2 {
+                                            return Err(format!(
+                                                "Shape buffer has invalid dimensions: expected at least 2D, got {}D",
+                                                shape.len()
+                                            ));
+                                        }
+                                        let height = shape[0] as u32;
+                                        let width = shape[1] as u32;
+
+                                        // Get fill and background values
+                                        let fill_value = node.source.fill_value;
+                                        let background = node.source.background;
+
+                                        match decode_contour_source_with_dims(
+                                            &value, width, height, fill_value, background,
+                                        ) {
+                                            Ok(buf) => Some(buf),
+                                            Err(e) => return Err(format!("Contour decode error: {e}")),
+                                        }
+                                    } else {
+                                        // Use explicit width/height parameters
+                                        let first_output = self.outputs.values().next().unwrap();
+                                        let temp_spec = PipelineSpec {
+                                            source: node.source.clone(),
+                                            shape_hints: None,
+                                            ops: vec![],
+                                            sink: first_output.sink.clone(),
+                                        };
+                                        match decode_contour_source(
+                                            &value,
+                                            row_idx,
+                                            &temp_spec,
+                                            expr_columns,
+                                        ) {
+                                            Ok(buf) => Some(buf),
+                                            Err(e) => return Err(format!("Contour decode error: {e}")),
+                                        }
                                     }
                                 }
                                 _ => None,

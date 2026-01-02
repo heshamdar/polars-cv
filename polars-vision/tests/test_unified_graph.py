@@ -60,9 +60,7 @@ def create_synthetic_image_blob(
     # Create a simple gradient image
     arr = np.zeros((height, width, channels), dtype=np.uint8)
     for c in range(channels):
-        arr[:, :, c] = np.tile(
-            np.linspace(0, 255, width, dtype=np.uint8), (height, 1)
-        )
+        arr[:, :, c] = np.tile(np.linspace(0, 255, width, dtype=np.uint8), (height, 1))
 
     shape = arr.shape
     rank = len(shape)
@@ -85,7 +83,7 @@ def create_synthetic_image_blob(
     output = bytearray()
 
     # Magic bytes (4 bytes)
-    output.extend(b'VIEW')
+    output.extend(b"VIEW")
     # Version (u16, 2 bytes)
     output.extend(struct.pack("<H", 1))
     # DType (u8, 1 byte) - U8 = 1
@@ -123,36 +121,44 @@ def synthetic_image_df() -> pl.DataFrame:
     img2 = create_synthetic_image_blob(60, 40, 3)
     img3 = create_synthetic_image_blob(30, 80, 3)
 
-    return pl.DataFrame({
-        "id": [1, 2, 3],
-        "images": [img1, img2, img3],
-    })
+    return pl.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "images": [img1, img2, img3],
+        }
+    )
 
 
 @pytest.fixture
 def contour_df() -> pl.DataFrame:
     """Create a DataFrame with contour data."""
     # Simple square contour
-    square = contour_from_points([
-        (10.0, 10.0),
-        (90.0, 10.0),
-        (90.0, 90.0),
-        (10.0, 90.0),
-    ])
+    square = contour_from_points(
+        [
+            (10.0, 10.0),
+            (90.0, 10.0),
+            (90.0, 90.0),
+            (10.0, 90.0),
+        ]
+    )
 
     # Triangle contour
-    triangle = contour_from_points([
-        (50.0, 10.0),
-        (90.0, 90.0),
-        (10.0, 90.0),
-    ])
+    triangle = contour_from_points(
+        [
+            (50.0, 10.0),
+            (90.0, 90.0),
+            (10.0, 90.0),
+        ]
+    )
 
-    return pl.DataFrame({
-        "id": [1, 2],
-        "contour": [square, triangle],
-        "target_width": [100, 200],
-        "target_height": [100, 150],
-    })
+    return pl.DataFrame(
+        {
+            "id": [1, 2],
+            "contour": [square, triangle],
+            "target_width": [100, 200],
+            "target_height": [100, 150],
+        }
+    )
 
 
 class TestUnifiedGraphSingleOutput:
@@ -160,12 +166,7 @@ class TestUnifiedGraphSingleOutput:
 
     def test_basic_pipeline(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test a basic pipeline through the graph path."""
-        pipe = (
-            Pipeline()
-            .source("blob")
-            .transpose([2, 0, 1])
-            .sink("numpy")
-        )
+        pipe = Pipeline().source("blob").transpose([2, 0, 1]).sink("numpy")
 
         result = synthetic_image_df.with_columns(
             processed=pl.col("images").cv.pipeline(pipe)
@@ -176,12 +177,7 @@ class TestUnifiedGraphSingleOutput:
 
     def test_resize_pipeline(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test resize operation through the graph path."""
-        pipe = (
-            Pipeline()
-            .source("blob")
-            .resize(height=32, width=32)
-            .sink("numpy")
-        )
+        pipe = Pipeline().source("blob").resize(height=32, width=32).sink("numpy")
 
         result = synthetic_image_df.with_columns(
             resized=pl.col("images").cv.pipeline(pipe)
@@ -230,11 +226,7 @@ class TestUnifiedGraphMultiOutput:
     def test_multi_output_fields(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test multi-output has correct field names."""
         pipe = (
-            Pipeline()
-            .source("blob")
-            .alias("raw")
-            .transpose([2, 0, 1])
-            .alias("chw")
+            Pipeline().source("blob").alias("raw").transpose([2, 0, 1]).alias("chw")
         ).sink({"raw": "numpy", "chw": "numpy"})
 
         result = synthetic_image_df.with_columns(
@@ -253,15 +245,9 @@ class TestContourSourceGraph:
 
     def test_contour_source_rasterization(self, contour_df: pl.DataFrame) -> None:
         """Test contour source is properly rasterized through graph."""
-        pipe = (
-            Pipeline()
-            .source("contour", width=100, height=100)
-            .sink("numpy")
-        )
+        pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
 
-        result = contour_df.with_columns(
-            rasterized=pl.col("contour").cv.pipeline(pipe)
-        )
+        result = contour_df.with_columns(rasterized=pl.col("contour").cv.pipeline(pipe))
 
         assert "rasterized" in result.columns
         assert result["rasterized"].dtype == pl.Binary
@@ -275,9 +261,7 @@ class TestContourSourceGraph:
             .sink("numpy")
         )
 
-        result = contour_df.with_columns(
-            processed=pl.col("contour").cv.pipeline(pipe)
-        )
+        result = contour_df.with_columns(processed=pl.col("contour").cv.pipeline(pipe))
 
         assert "processed" in result.columns
 
@@ -289,13 +273,13 @@ class TestExpressionArgumentsGraph:
         """Test dynamic resize with expression arguments."""
         pipe = (
             Pipeline()
-            .source("contour", width=pl.col("target_width"), height=pl.col("target_height"))
+            .source(
+                "contour", width=pl.col("target_width"), height=pl.col("target_height")
+            )
             .sink("numpy")
         )
 
-        result = contour_df.with_columns(
-            rasterized=pl.col("contour").cv.pipeline(pipe)
-        )
+        result = contour_df.with_columns(rasterized=pl.col("contour").cv.pipeline(pipe))
 
         assert "rasterized" in result.columns
         assert result["rasterized"].null_count() == 0
@@ -340,9 +324,7 @@ class TestGraphEdgeCases:
 
         pipe = Pipeline().source("blob").sink("numpy")
 
-        result = df.with_columns(
-            processed=pl.col("images").cv.pipeline(pipe)
-        )
+        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
         assert len(result) == 0
         assert "processed" in result.columns
@@ -350,15 +332,15 @@ class TestGraphEdgeCases:
     def test_null_values(self) -> None:
         """Test pipeline handles null values gracefully."""
         img = create_synthetic_image_blob(10, 10, 3)
-        df = pl.DataFrame({
-            "images": [img, None, img],
-        })
+        df = pl.DataFrame(
+            {
+                "images": [img, None, img],
+            }
+        )
 
         pipe = Pipeline().source("blob").sink("numpy")
 
-        result = df.with_columns(
-            processed=pl.col("images").cv.pipeline(pipe)
-        )
+        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
         assert result["processed"].null_count() == 1
         assert result["processed"][1] is None
@@ -373,4 +355,3 @@ class TestGraphEdgeCases:
 
         # Output should be same shape as input
         assert result["identity"].null_count() == 0
-

@@ -577,3 +577,95 @@ class TestLazyCompositionExecution:
         assert np.all(output[0, 0] == 0)
         # Pixels inside contour should have original values
         assert np.any(output[50, 50] > 0)
+
+    def test_contour_source_with_shape_inference(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+    ) -> None:
+        """Contour source with shape= infers dimensions from another LazyPipelineExpr."""
+        img_bytes = create_test_png(120, 80, (200, 100, 50))
+
+        # Create a contour that spans most of the image
+        contour_data = {
+            "exterior": [
+                {"x": 10.0, "y": 10.0},
+                {"x": 10.0, "y": 70.0},
+                {"x": 110.0, "y": 70.0},
+                {"x": 110.0, "y": 10.0},
+            ],
+            "holes": [],
+            "is_closed": True,
+        }
+
+        df = pl.DataFrame(
+            {
+                "image": [img_bytes],
+                "contour": [contour_data],
+            }
+        )
+
+        # Define the image pipeline first
+        img_pipe = Pipeline().source("image_bytes")
+        img = pl.col("image").cv.pipe(img_pipe)
+
+        # Contour source with shape= infers dimensions from the image
+        contour_pipe = Pipeline().source("contour", shape=img)
+        mask = pl.col("contour").cv.pipe(contour_pipe)
+
+        # Apply the mask
+        result_expr = img.apply_mask(mask).sink("numpy")
+
+        result = df.select(output=result_expr)
+        output = numpy_from_bytes(result.row(0)[0])
+
+        # Image is 120x80 (WxH), so output should be (80, 120, 3) in HWC
+        assert output.shape == (80, 120, 3)
+        # Pixels outside contour should be zeroed
+        assert np.all(output[0, 0] == 0)
+        # Pixels inside contour (center) should have original values
+        assert np.any(output[40, 60] > 0)
+
+    def test_apply_contour_mask_convenience(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+    ) -> None:
+        """apply_contour_mask convenience method auto-infers dimensions."""
+        img_bytes = create_test_png(100, 100, (200, 100, 50))
+
+        # Create a simple square contour
+        contour_data = {
+            "exterior": [
+                {"x": 25.0, "y": 25.0},
+                {"x": 25.0, "y": 75.0},
+                {"x": 75.0, "y": 75.0},
+                {"x": 75.0, "y": 25.0},
+            ],
+            "holes": [],
+            "is_closed": True,
+        }
+
+        df = pl.DataFrame(
+            {
+                "image": [img_bytes],
+                "contour": [contour_data],
+            }
+        )
+
+        img_pipe = Pipeline().source("image_bytes")
+        # For apply_contour_mask, we don't need dimensions - they're inferred
+        contour_pipe = Pipeline().source("contour", width=1, height=1)  # Dummy dims
+
+        img = pl.col("image").cv.pipe(img_pipe)
+        contour = pl.col("contour").cv.pipe(contour_pipe)
+
+        # apply_contour_mask should auto-infer dimensions from the image
+        result_expr = img.apply_contour_mask(contour).sink("numpy")
+
+        result = df.select(output=result_expr)
+        output = numpy_from_bytes(result.row(0)[0])
+
+        assert output.shape == (100, 100, 3)
+        # Pixels outside contour should be zeroed
+        assert np.all(output[0, 0] == 0)
+        # Pixels inside contour should have original values
+        assert np.any(output[50, 50] > 0)

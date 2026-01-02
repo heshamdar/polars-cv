@@ -74,10 +74,7 @@ class TestLiteralPipelineCorrectness:
     def test_literal_resize_produces_correct_dimensions(self) -> None:
         """Fixed resize dimensions should produce correct output shape."""
         pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .resize(height=50, width=50)
-            .sink("numpy")
+            Pipeline().source("image_bytes").resize(height=50, width=50).sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100)
@@ -137,10 +134,7 @@ class TestLiteralPipelineCorrectness:
     def test_literal_batch_consistency(self) -> None:
         """Large batch with literal pipeline should produce consistent results."""
         pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .resize(height=32, width=32)
-            .sink("numpy")
+            Pipeline().source("image_bytes").resize(height=32, width=32).sink("numpy")
         )
 
         png_bytes = create_test_png(50, 50)
@@ -170,11 +164,13 @@ class TestExpressionPipelineCorrectness:
         )
 
         png_bytes = create_test_png(100, 100)
-        df = pl.DataFrame({
-            "images": [png_bytes, png_bytes, png_bytes],
-            "h": [10, 20, 30],
-            "w": [15, 25, 35],
-        })
+        df = pl.DataFrame(
+            {
+                "images": [png_bytes, png_bytes, png_bytes],
+                "h": [10, 20, 30],
+                "w": [15, 25, 35],
+            }
+        )
 
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
@@ -183,9 +179,15 @@ class TestExpressionPipelineCorrectness:
         shape1 = numpy_shape(result["processed"][1])
         shape2 = numpy_shape(result["processed"][2])
 
-        assert shape0[0] == 10 and shape0[1] == 15, f"Row 0: expected (10,15), got {shape0[:2]}"
-        assert shape1[0] == 20 and shape1[1] == 25, f"Row 1: expected (20,25), got {shape1[:2]}"
-        assert shape2[0] == 30 and shape2[1] == 35, f"Row 2: expected (30,35), got {shape2[:2]}"
+        assert shape0[0] == 10 and shape0[1] == 15, (
+            f"Row 0: expected (10,15), got {shape0[:2]}"
+        )
+        assert shape1[0] == 20 and shape1[1] == 25, (
+            f"Row 1: expected (20,25), got {shape1[:2]}"
+        )
+        assert shape2[0] == 30 and shape2[1] == 35, (
+            f"Row 2: expected (30,35), got {shape2[:2]}"
+        )
 
     def test_expression_crop_per_row(self) -> None:
         """Expression-based crop should use different params per row."""
@@ -197,11 +199,13 @@ class TestExpressionPipelineCorrectness:
         )
 
         png_bytes = create_test_png(100, 100)
-        df = pl.DataFrame({
-            "images": [png_bytes, png_bytes],
-            "t": [0, 50],
-            "l": [0, 50],
-        })
+        df = pl.DataFrame(
+            {
+                "images": [png_bytes, png_bytes],
+                "t": [0, 50],
+                "l": [0, 50],
+            }
+        )
 
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
@@ -227,10 +231,12 @@ class TestExpressionPipelineCorrectness:
         )
 
         png_bytes = create_test_png(100, 100)
-        df = pl.DataFrame({
-            "images": [png_bytes, png_bytes, png_bytes, png_bytes],
-            "target_size": [10, 20, 30, 40],  # Each row should have different size
-        })
+        df = pl.DataFrame(
+            {
+                "images": [png_bytes, png_bytes, png_bytes, png_bytes],
+                "target_size": [10, 20, 30, 40],  # Each row should have different size
+            }
+        )
 
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
@@ -261,10 +267,12 @@ class TestMixedLiteralExpressionPipeline:
         )
 
         png_bytes = create_test_png(100, 100)
-        df = pl.DataFrame({
-            "images": [png_bytes, png_bytes, png_bytes],
-            "w": [20, 40, 60],
-        })
+        df = pl.DataFrame(
+            {
+                "images": [png_bytes, png_bytes, png_bytes],
+                "w": [20, 40, 60],
+            }
+        )
 
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
@@ -293,17 +301,19 @@ class TestMixedLiteralExpressionPipeline:
                 top=pl.col("crop_t"),
                 left=pl.col("crop_l"),
                 height=32,  # literal
-                width=32,   # literal
+                width=32,  # literal
             )
             .sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100)
-        df = pl.DataFrame({
-            "images": [png_bytes, png_bytes],
-            "crop_t": [0, 16],
-            "crop_l": [0, 16],
-        })
+        df = pl.DataFrame(
+            {
+                "images": [png_bytes, png_bytes],
+                "crop_t": [0, 16],
+                "crop_l": [0, 16],
+            }
+        )
 
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
@@ -322,10 +332,7 @@ class TestStreamingVsEagerPrecompile:
     def test_literal_pipeline_streaming(self) -> None:
         """Literal pipeline with streaming execution."""
         pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .resize(height=32, width=32)
-            .sink("numpy")
+            Pipeline().source("image_bytes").resize(height=32, width=32).sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100)
@@ -353,11 +360,13 @@ class TestStreamingVsEagerPrecompile:
         )
 
         png_bytes = create_test_png(100, 100)
-        df = pl.DataFrame({
-            "images": [png_bytes, png_bytes],
-            "h": [25, 50],
-            "w": [25, 50],
-        })
+        df = pl.DataFrame(
+            {
+                "images": [png_bytes, png_bytes],
+                "h": [25, 50],
+                "w": [25, 50],
+            }
+        )
 
         # Use streaming execution
         result = (
@@ -371,4 +380,3 @@ class TestStreamingVsEagerPrecompile:
 
         assert shape0[0] == 25 and shape0[1] == 25
         assert shape1[0] == 50 and shape1[1] == 50
-
