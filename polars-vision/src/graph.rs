@@ -220,7 +220,9 @@ impl UnifiedGraph {
                                     ops: vec![],
                                     sink: first_output.sink.clone(),
                                 };
-                                Some(decode_source(bytes, &temp_spec)?)
+                                // Copy the bytes to avoid any lifetime issues
+                                let bytes_owned = bytes.to_vec();
+                                Some(decode_source(&bytes_owned, &temp_spec)?)
                             }
                             None => None,
                         }
@@ -241,25 +243,12 @@ impl UnifiedGraph {
                         view_dtos.push(view_dto);
                     }
 
-                    // Build expression and execute
-                    let result_buffer =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut expr = ViewExpr::new_source(input_buffer);
-                            for view_dto in view_dtos {
-                                expr = expr.apply_op(view_dto);
-                            }
-                            expr.plan().execute()
-                        }))
-                        .map_err(|e| {
-                            let msg = if let Some(s) = e.downcast_ref::<&str>() {
-                                (*s).to_string()
-                            } else if let Some(s) = e.downcast_ref::<String>() {
-                                s.clone()
-                            } else {
-                                "Unknown panic".to_string()
-                            };
-                            polars_err!(ComputeError: "Pipeline execution failed at node '{}': {}", node_id, msg)
-                        })?;
+                    // Build expression and execute (no catch_unwind for debugging)
+                    let mut expr = ViewExpr::new_source(input_buffer);
+                    for view_dto in view_dtos {
+                        expr = expr.apply_op(view_dto);
+                    }
+                    let result_buffer = expr.plan().execute();
 
                     buffers.insert(node_id.clone(), result_buffer);
                 }

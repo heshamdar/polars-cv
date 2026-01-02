@@ -152,6 +152,111 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
 
         return pipe.sink(sink_format)
 
+    def _build_pipeline_blob_source(
+        self, operations: list[OperationParams], sink_format: str = "numpy"
+    ) -> Any:
+        """
+        Build a polars-vision pipeline with blob source (for in-memory benchmarks).
+
+        This creates a pipeline that reads from already-decoded blob format,
+        avoiding the PNG decode overhead for fair comparison with OpenCV.
+
+        Args:
+            operations: List of operations to apply.
+            sink_format: Output format for the sink.
+
+        Returns:
+            Pipeline instance.
+        """
+        Pipeline = self._get_pipeline_class()
+        pipe = Pipeline().source("blob")
+
+        for op in operations:
+            if op.operation == OperationType.RESIZE:
+                pipe = pipe.resize(height=op.height, width=op.width, filter="bilinear")
+            elif op.operation == OperationType.GRAYSCALE:
+                pipe = pipe.grayscale()
+            elif op.operation == OperationType.NORMALIZE:
+                pipe = pipe.normalize(method="minmax")
+            elif op.operation == OperationType.FLIP_H:
+                pipe = pipe.flip_h()
+            elif op.operation == OperationType.FLIP_V:
+                pipe = pipe.flip_v()
+            elif op.operation == OperationType.CROP:
+                pipe = pipe.crop(
+                    top=op.crop_top,
+                    left=op.crop_left,
+                    height=op.crop_height,
+                    width=op.crop_width,
+                )
+            elif op.operation == OperationType.BLUR:
+                pipe = pipe.blur(sigma=op.sigma)
+            elif op.operation == OperationType.THRESHOLD:
+                pipe = pipe.grayscale().threshold(value=op.threshold_value)
+            elif op.operation == OperationType.CAST:
+                pipe = pipe.cast(dtype=op.dtype)
+            elif op.operation == OperationType.SCALE:
+                pipe = pipe.scale(factor=op.scale_factor)
+
+        return pipe.sink(sink_format)
+
+    def prepare_blob_images(self, png_bytes_list: list[bytes]) -> list[bytes]:
+        """
+        Convert PNG bytes to blob format for in-memory benchmarking.
+
+        This method decodes PNG images and re-encodes them as VIEW protocol blobs,
+        removing the image decode overhead from subsequent benchmarks.
+
+        Args:
+            png_bytes_list: List of PNG image bytes.
+
+        Returns:
+            List of blob-encoded image bytes.
+        """
+        self._ensure_expressions_registered()
+        Pipeline = self._get_pipeline_class()
+
+        # Pipeline: decode PNG, encode to blob
+        pipe = Pipeline().source("image_bytes").sink("blob")
+
+        df = pl.DataFrame({"images": png_bytes_list})
+        result = df.with_columns(blob=pl.col("images").cv.pipeline(pipe))
+        return result["blob"].to_list()
+
+    def apply_operations_blob(
+        self,
+        blob_images: list[bytes],
+        operations: list[OperationParams],
+    ) -> list[bytes]:
+        """
+        Apply operations to blob-encoded images (for in-memory benchmarks).
+
+        This is the counterpart to OpenCV's direct array processing - it starts
+        from already-decoded images rather than PNG bytes.
+
+        Args:
+            blob_images: List of blob-encoded image bytes (from prepare_blob_images).
+            operations: List of operations to apply.
+
+        Returns:
+            List of processed image bytes.
+        """
+        self._ensure_expressions_registered()
+        pipe = self._build_pipeline_blob_source(operations, sink_format="numpy")
+
+        df = pl.DataFrame({"images": blob_images})
+
+        if self.streaming:
+            result = (
+                df.lazy()
+                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .collect(engine="streaming")
+            )
+        else:
+            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+
+        return result["processed"].to_list()
+
     def resize(self, img: bytes, height: int, width: int) -> bytes:
         """
         Resize an image.
