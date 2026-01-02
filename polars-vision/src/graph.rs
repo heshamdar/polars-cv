@@ -32,14 +32,16 @@ use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
 /// Apply a mask to a buffer.
 ///
 /// The mask should be a single-channel buffer where:
-/// - Non-zero values keep the original pixel
-/// - Zero values zero out the pixel
+/// - 255 values keep the original pixel (fully visible)
+/// - 0 values zero out the pixel (fully hidden)
+/// - Intermediate values provide weighted blending
 ///
-/// If `invert` is true, the behavior is reversed.
+/// If `invert` is true, the behavior is reversed:
+/// - 0 values keep the original pixel
+/// - 255 values zero out the pixel
+///
+/// Uses normalized blending: pixel * (mask / 255)
 fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffer {
-    // Convert mask to a binary mask (0 or 1) for multiplication
-    // For now, we use a simple threshold approach
-
     // Get shapes
     let buf_shape = buffer.shape();
     let mask_shape = mask.shape();
@@ -55,15 +57,12 @@ fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffe
         let mask_contig = mask.to_contiguous();
         let mask_data = mask_contig.as_slice::<u8>();
 
-        // Create expanded mask
+        // Create expanded mask with inversion applied if needed
         let mut expanded: Vec<u8> = Vec::with_capacity(h * w * c);
         for y in 0..h {
             for x in 0..w {
-                let mask_val = if invert {
-                    if mask_data[y * w + x] == 0 { 255 } else { 0 }
-                } else {
-                    mask_data[y * w + x]
-                };
+                let raw_val = mask_data[y * w + x];
+                let mask_val = if invert { 255 - raw_val } else { raw_val };
                 // Replicate across channels
                 for _ in 0..c {
                     expanded.push(mask_val);
@@ -77,15 +76,17 @@ fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffe
         if invert {
             let mask_contig = mask.to_contiguous();
             let mask_data = mask_contig.as_slice::<u8>();
-            let inverted: Vec<u8> = mask_data.iter().map(|&v| if v == 0 { 255 } else { 0 }).collect();
+            let inverted: Vec<u8> = mask_data.iter().map(|&v| 255 - v).collect();
             ViewBuffer::from_vec_with_shape(inverted, mask_shape.to_vec())
         } else {
             mask.clone()
         }
     };
 
-    // Apply the mask using element-wise multiplication
-    BinaryOp::Multiply.execute(buffer, &effective_mask)
+    // Apply the mask using normalized blend: pixel * (mask / 255)
+    // BinaryOp::Blend computes: (a/255) * (b/255) * 255 = a * b / 255
+    // This gives us the desired: pixel * (mask / 255)
+    BinaryOp::Blend.execute(buffer, &effective_mask)
 }
 
 /// A node in the pipeline graph.

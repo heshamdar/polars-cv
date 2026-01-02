@@ -820,6 +820,20 @@ pub fn resolve_op(
                 other_node_id,
             })
         }
+        "blend" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::Blend,
+                other_node_id,
+            })
+        }
+        "ratio" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::Ratio,
+                other_node_id,
+            })
+        }
         "maximum" => {
             let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
             Ok(ViewDto::Binary {

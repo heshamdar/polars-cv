@@ -363,12 +363,12 @@ class TestBinaryOpsPolarsVision:
         sample_images: tuple[np.ndarray, np.ndarray],
         encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
-        """polars-vision multiply should match NumPy reference."""
+        """polars-vision multiply should match saturating multiplication semantics."""
         img1, img2 = sample_images
 
-        # NumPy reference: normalize to [0,1], multiply, scale back
-        expected = (
-            (img1.astype(np.float32) / 255) * (img2.astype(np.float32) / 255) * 255
+        # NumPy reference: saturating multiplication (clamp to 255)
+        expected = np.clip(
+            img1.astype(np.uint16) * img2.astype(np.uint16), 0, 255
         ).astype(np.uint8)
 
         # polars-vision implementation
@@ -385,27 +385,24 @@ class TestBinaryOpsPolarsVision:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        # This will FAIL until multiply is implemented in execute.rs
         result = df.select(output=expr1.multiply(expr2).sink("numpy"))
         actual = numpy_from_bytes(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
-    def test_divide_matches_reference(
+    def test_blend_matches_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],
         encode_png: Callable[[np.ndarray], bytes],
     ) -> None:
-        """polars-vision divide should match NumPy reference."""
+        """polars-vision blend should match normalized multiplication semantics."""
         img1, img2 = sample_images
 
-        # NumPy reference: handle zeros, divide, clamp
-        img2_safe = img2.astype(np.float32)
-        img2_safe[img2_safe == 0] = 1  # Avoid division by zero
-
-        expected = np.clip(img1.astype(np.float32) / img2_safe * 255, 0, 255).astype(
-            np.uint8
-        )
+        # NumPy reference: normalize to [0,1], multiply, scale back
+        # Using rounding division to match Rust: (a * b + 127) / 255
+        expected = (
+            (img1.astype(np.uint32) * img2.astype(np.uint32) + 127) // 255
+        ).astype(np.uint8)
 
         # polars-vision implementation
         df = pl.DataFrame(
@@ -421,8 +418,83 @@ class TestBinaryOpsPolarsVision:
         expr1 = pl.col("img1").cv.pipe(pipe1)
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
-        # This will FAIL until divide is implemented in execute.rs
+        result = df.select(output=expr1.blend(expr2).sink("numpy"))
+        actual = numpy_from_bytes(result.row(0)[0])
+
+        np.testing.assert_allclose(actual, expected, atol=1)
+
+    def test_divide_matches_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """polars-vision divide should match integer division semantics."""
+        img1, img2 = sample_images
+
+        # NumPy reference: integer division with zero protection (returns 0)
+        expected = np.zeros_like(img1)
+        nonzero_mask = img2 != 0
+        expected[nonzero_mask] = img1[nonzero_mask] // img2[nonzero_mask]
+
+        # polars-vision implementation
+        df = pl.DataFrame(
+            {
+                "img1": [encode_png(img1)],
+                "img2": [encode_png(img2)],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
         result = df.select(output=expr1.divide(expr2).sink("numpy"))
+        actual = numpy_from_bytes(result.row(0)[0])
+
+        np.testing.assert_allclose(actual, expected, atol=1)
+
+    def test_ratio_matches_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """polars-vision ratio should match scaled division semantics."""
+        img1, img2 = sample_images
+
+        # NumPy reference: (a/b) * 255, clamped to [0, 255]
+        # With zero protection: returns 0 if a==0 and b==0, else 255 if b==0
+        expected = np.zeros_like(img1, dtype=np.uint8)
+        zero_mask = img2 == 0
+        nonzero_mask = ~zero_mask
+
+        # Where denominator is non-zero: compute scaled ratio
+        expected[nonzero_mask] = np.clip(
+            (img1[nonzero_mask].astype(np.uint32) * 255) // img2[nonzero_mask].astype(np.uint32),
+            0,
+            255,
+        ).astype(np.uint8)
+
+        # Where denominator is zero: 0 if numerator is 0, else 255
+        expected[zero_mask & (img1 == 0)] = 0
+        expected[zero_mask & (img1 != 0)] = 255
+
+        # polars-vision implementation
+        df = pl.DataFrame(
+            {
+                "img1": [encode_png(img1)],
+                "img2": [encode_png(img2)],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
+        result = df.select(output=expr1.ratio(expr2).sink("numpy"))
         actual = numpy_from_bytes(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)

@@ -2,9 +2,23 @@
 //!
 //! This module provides element-wise operations between two ViewBuffers,
 //! including arithmetic operations and bitwise operations for mask manipulation.
+//!
+//! # Operation Semantics
+//!
+//! Operations have type-dependent semantics to match common library expectations:
+//!
+//! ## For integer types (u8, u16):
+//! - `Add`/`Subtract`: Saturating arithmetic (clamps to valid range)
+//! - `Multiply`: Saturating multiplication (clamps to max value)
+//! - `Blend`: Normalized multiplication ((a/max) * (b/max) * max)
+//! - `Divide`: Integer division with zero protection
+//! - `Ratio`: Scaled division ((a/b) * max, clamped)
+//!
+//! ## For float types (f32, f64):
+//! - All operations use standard IEEE 754 arithmetic
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
+use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::cost::OpCost;
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -16,17 +30,45 @@ use serde::{Deserialize, Serialize};
 ///
 /// All operations are element-wise and support broadcasting.
 /// The output shape is the broadcast result of both input shapes.
+///
+/// Operations have type-dependent semantics:
+/// - For `u8`/`u16`: Image-processing semantics (saturating, normalized)
+/// - For `f32`/`f64`: Standard numerical semantics
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum BinaryOp {
-    /// Element-wise addition with saturation for integer types.
+    /// Element-wise addition.
+    ///
+    /// For u8/u16: Saturating addition (clamps to max value).
+    /// For f32/f64: Standard addition.
     Add,
-    /// Element-wise subtraction with saturation for integer types.
+    /// Element-wise subtraction.
+    ///
+    /// For u8/u16: Saturating subtraction (clamps to 0).
+    /// For f32/f64: Standard subtraction.
     Subtract,
     /// Element-wise multiplication.
+    ///
+    /// For u8/u16: Saturating multiplication (clamps to max value).
+    /// For f32/f64: Standard multiplication.
     Multiply,
-    /// Element-wise division (with zero handling).
+    /// Normalized blend (element-wise).
+    ///
+    /// For u8: (a/255) * (b/255) * 255
+    /// For u16: (a/65535) * (b/65535) * 65535
+    /// For f32/f64: Standard multiplication (same as Multiply).
+    Blend,
+    /// Element-wise division.
+    ///
+    /// For u8/u16: Integer division with zero protection (returns 0).
+    /// For f32/f64: Standard division.
     Divide,
+    /// Scaled ratio division.
+    ///
+    /// For u8: (a/b) * 255, clamped to [0, 255]
+    /// For u16: (a/b) * 65535, clamped to [0, 65535]
+    /// For f32/f64: Standard division (same as Divide).
+    Ratio,
     /// Element-wise maximum.
     Maximum,
     /// Element-wise minimum.
@@ -43,100 +85,287 @@ impl BinaryOp {
     /// Execute the binary operation on two buffers.
     ///
     /// Both buffers must have broadcastable shapes.
+    /// The operation semantics depend on the data type:
+    /// - For u8/u16: Image-processing semantics (saturating, normalized)
+    /// - For f32/f64: Standard numerical semantics
     pub fn execute(&self, a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
         // Validate shapes are broadcastable
         let output_shape =
             broadcast_shapes(a.shape(), b.shape()).expect("Shapes must be broadcastable");
 
         match (a.dtype(), b.dtype()) {
-            (DType::U8, DType::U8) => self.execute_typed::<u8>(a, b, &output_shape),
-            (DType::F32, DType::F32) => self.execute_typed::<f32>(a, b, &output_shape),
-            (DType::F64, DType::F64) => self.execute_typed::<f64>(a, b, &output_shape),
+            (DType::U8, DType::U8) => self.execute_u8(a, b, &output_shape),
+            (DType::U16, DType::U16) => self.execute_u16(a, b, &output_shape),
+            (DType::F32, DType::F32) => self.execute_f32(a, b, &output_shape),
+            (DType::F64, DType::F64) => self.execute_f64(a, b, &output_shape),
             // For mixed types, promote to the wider type
             _ => {
                 // For now, cast to f32 for mixed types
                 let a_f32 = a.cast_to(DType::F32);
                 let b_f32 = b.cast_to(DType::F32);
-                self.execute_typed::<f32>(&a_f32, &b_f32, &output_shape)
+                self.execute_f32(&a_f32, &b_f32, &output_shape)
             }
         }
     }
 
-    fn execute_typed<T>(&self, a: &ViewBuffer, b: &ViewBuffer, output_shape: &[usize]) -> ViewBuffer
-    where
-        T: Copy + Default + num_traits::Num + num_traits::NumCast + PartialOrd + ViewType + 'static,
-    {
+    /// Execute operation on u8 buffers with image-processing semantics.
+    fn execute_u8(&self, a: &ViewBuffer, b: &ViewBuffer, output_shape: &[usize]) -> ViewBuffer {
         let total_elements: usize = output_shape.iter().product();
-        let mut output = vec![T::default(); total_elements];
+        let mut output = vec![0u8; total_elements];
 
-        // Get contiguous data
         let a_contig = a.to_contiguous();
         let b_contig = b.to_contiguous();
+        let a_data = a_contig.as_slice::<u8>();
+        let b_data = b_contig.as_slice::<u8>();
 
-        let a_data = a_contig.as_slice::<T>();
-        let b_data = b_contig.as_slice::<T>();
+        let same_shape = a.shape() == b.shape() && a.shape() == output_shape;
 
-        // Simple implementation for same-shape case
-        if a.shape() == b.shape() && a.shape() == output_shape {
-            for (i, out) in output.iter_mut().enumerate() {
-                *out = self.apply_op(a_data[i], b_data[i]);
-            }
-        } else {
-            // Broadcasting case - use multi-dimensional indexing
-            for (i, out) in output.iter_mut().enumerate() {
+        for (i, out) in output.iter_mut().enumerate() {
+            let (a_val, b_val) = if same_shape {
+                (a_data[i], b_data[i])
+            } else {
                 let coords = linear_to_coords(i, output_shape);
                 let a_idx = broadcast_index(&coords, a.shape());
                 let b_idx = broadcast_index(&coords, b.shape());
-                *out = self.apply_op(a_data[a_idx], b_data[b_idx]);
-            }
+                (a_data[a_idx], b_data[b_idx])
+            };
+
+            *out = match self {
+                BinaryOp::Add => a_val.saturating_add(b_val),
+                BinaryOp::Subtract => a_val.saturating_sub(b_val),
+                BinaryOp::Multiply => {
+                    // Saturating multiply: clamp to 255
+                    let result = (a_val as u16) * (b_val as u16);
+                    if result > 255 {
+                        255
+                    } else {
+                        result as u8
+                    }
+                }
+                BinaryOp::Blend => {
+                    // Normalized blend: (a/255) * (b/255) * 255
+                    // = (a * b) / 255
+                    let product = (a_val as u32) * (b_val as u32);
+                    // Use rounding division: (product + 127) / 255
+                    ((product + 127) / 255) as u8
+                }
+                BinaryOp::Divide => {
+                    // Integer division with zero protection
+                    if b_val == 0 {
+                        0
+                    } else {
+                        a_val / b_val
+                    }
+                }
+                BinaryOp::Ratio => {
+                    // Scaled ratio: (a/b) * 255, clamped
+                    if b_val == 0 {
+                        if a_val == 0 {
+                            0
+                        } else {
+                            255 // a/0 where a > 0 saturates to max
+                        }
+                    } else {
+                        let ratio = (a_val as u32) * 255 / (b_val as u32);
+                        if ratio > 255 {
+                            255
+                        } else {
+                            ratio as u8
+                        }
+                    }
+                }
+                BinaryOp::Maximum => a_val.max(b_val),
+                BinaryOp::Minimum => a_val.min(b_val),
+                BinaryOp::BitwiseAnd => a_val & b_val,
+                BinaryOp::BitwiseOr => a_val | b_val,
+                BinaryOp::BitwiseXor => a_val ^ b_val,
+            };
         }
 
         ViewBuffer::from_vec_with_shape(output, output_shape.to_vec())
     }
 
-    fn apply_op<T>(&self, a: T, b: T) -> T
-    where
-        T: Copy + num_traits::Num + num_traits::NumCast + PartialOrd,
-    {
-        match self {
-            BinaryOp::Add => a + b,
-            BinaryOp::Subtract => a - b,
-            BinaryOp::Multiply => a * b,
-            BinaryOp::Divide => {
-                if b.is_zero() {
-                    T::zero()
-                } else {
-                    a / b
+    /// Execute operation on u16 buffers with image-processing semantics.
+    fn execute_u16(&self, a: &ViewBuffer, b: &ViewBuffer, output_shape: &[usize]) -> ViewBuffer {
+        let total_elements: usize = output_shape.iter().product();
+        let mut output = vec![0u16; total_elements];
+
+        let a_contig = a.to_contiguous();
+        let b_contig = b.to_contiguous();
+        let a_data = a_contig.as_slice::<u16>();
+        let b_data = b_contig.as_slice::<u16>();
+
+        let same_shape = a.shape() == b.shape() && a.shape() == output_shape;
+
+        for (i, out) in output.iter_mut().enumerate() {
+            let (a_val, b_val) = if same_shape {
+                (a_data[i], b_data[i])
+            } else {
+                let coords = linear_to_coords(i, output_shape);
+                let a_idx = broadcast_index(&coords, a.shape());
+                let b_idx = broadcast_index(&coords, b.shape());
+                (a_data[a_idx], b_data[b_idx])
+            };
+
+            *out = match self {
+                BinaryOp::Add => a_val.saturating_add(b_val),
+                BinaryOp::Subtract => a_val.saturating_sub(b_val),
+                BinaryOp::Multiply => {
+                    // Saturating multiply: clamp to 65535
+                    let result = (a_val as u32) * (b_val as u32);
+                    if result > 65535 {
+                        65535
+                    } else {
+                        result as u16
+                    }
                 }
-            }
-            BinaryOp::Maximum => {
-                if a > b {
-                    a
-                } else {
-                    b
+                BinaryOp::Blend => {
+                    // Normalized blend: (a/65535) * (b/65535) * 65535
+                    // = (a * b) / 65535
+                    let product = (a_val as u64) * (b_val as u64);
+                    // Use rounding division
+                    ((product + 32767) / 65535) as u16
                 }
-            }
-            BinaryOp::Minimum => {
-                if a < b {
-                    a
-                } else {
-                    b
+                BinaryOp::Divide => {
+                    // Integer division with zero protection
+                    if b_val == 0 {
+                        0
+                    } else {
+                        a_val / b_val
+                    }
                 }
-            }
-            // Bitwise ops - convert through integer
-            BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
-                // For float types, this will truncate
-                let a_int: i64 = num_traits::NumCast::from(a).unwrap_or(0);
-                let b_int: i64 = num_traits::NumCast::from(b).unwrap_or(0);
-                let result = match self {
-                    BinaryOp::BitwiseAnd => a_int & b_int,
-                    BinaryOp::BitwiseOr => a_int | b_int,
-                    BinaryOp::BitwiseXor => a_int ^ b_int,
-                    _ => unreachable!(),
-                };
-                num_traits::NumCast::from(result).unwrap_or(T::zero())
-            }
+                BinaryOp::Ratio => {
+                    // Scaled ratio: (a/b) * 65535, clamped
+                    if b_val == 0 {
+                        if a_val == 0 {
+                            0
+                        } else {
+                            65535
+                        }
+                    } else {
+                        let ratio = (a_val as u64) * 65535 / (b_val as u64);
+                        if ratio > 65535 {
+                            65535
+                        } else {
+                            ratio as u16
+                        }
+                    }
+                }
+                BinaryOp::Maximum => a_val.max(b_val),
+                BinaryOp::Minimum => a_val.min(b_val),
+                BinaryOp::BitwiseAnd => a_val & b_val,
+                BinaryOp::BitwiseOr => a_val | b_val,
+                BinaryOp::BitwiseXor => a_val ^ b_val,
+            };
         }
+
+        ViewBuffer::from_vec_with_shape(output, output_shape.to_vec())
+    }
+
+    /// Execute operation on f32 buffers with standard numerical semantics.
+    fn execute_f32(&self, a: &ViewBuffer, b: &ViewBuffer, output_shape: &[usize]) -> ViewBuffer {
+        let total_elements: usize = output_shape.iter().product();
+        let mut output = vec![0.0f32; total_elements];
+
+        let a_contig = a.to_contiguous();
+        let b_contig = b.to_contiguous();
+        let a_data = a_contig.as_slice::<f32>();
+        let b_data = b_contig.as_slice::<f32>();
+
+        let same_shape = a.shape() == b.shape() && a.shape() == output_shape;
+
+        for (i, out) in output.iter_mut().enumerate() {
+            let (a_val, b_val) = if same_shape {
+                (a_data[i], b_data[i])
+            } else {
+                let coords = linear_to_coords(i, output_shape);
+                let a_idx = broadcast_index(&coords, a.shape());
+                let b_idx = broadcast_index(&coords, b.shape());
+                (a_data[a_idx], b_data[b_idx])
+            };
+
+            *out = match self {
+                BinaryOp::Add => a_val + b_val,
+                BinaryOp::Subtract => a_val - b_val,
+                BinaryOp::Multiply | BinaryOp::Blend => a_val * b_val,
+                BinaryOp::Divide | BinaryOp::Ratio => {
+                    if b_val == 0.0 {
+                        0.0
+                    } else {
+                        a_val / b_val
+                    }
+                }
+                BinaryOp::Maximum => a_val.max(b_val),
+                BinaryOp::Minimum => a_val.min(b_val),
+                BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
+                    // For floats, truncate to i64 for bitwise ops
+                    let a_int = a_val as i64;
+                    let b_int = b_val as i64;
+                    let result = match self {
+                        BinaryOp::BitwiseAnd => a_int & b_int,
+                        BinaryOp::BitwiseOr => a_int | b_int,
+                        BinaryOp::BitwiseXor => a_int ^ b_int,
+                        _ => unreachable!(),
+                    };
+                    result as f32
+                }
+            };
+        }
+
+        ViewBuffer::from_vec_with_shape(output, output_shape.to_vec())
+    }
+
+    /// Execute operation on f64 buffers with standard numerical semantics.
+    fn execute_f64(&self, a: &ViewBuffer, b: &ViewBuffer, output_shape: &[usize]) -> ViewBuffer {
+        let total_elements: usize = output_shape.iter().product();
+        let mut output = vec![0.0f64; total_elements];
+
+        let a_contig = a.to_contiguous();
+        let b_contig = b.to_contiguous();
+        let a_data = a_contig.as_slice::<f64>();
+        let b_data = b_contig.as_slice::<f64>();
+
+        let same_shape = a.shape() == b.shape() && a.shape() == output_shape;
+
+        for (i, out) in output.iter_mut().enumerate() {
+            let (a_val, b_val) = if same_shape {
+                (a_data[i], b_data[i])
+            } else {
+                let coords = linear_to_coords(i, output_shape);
+                let a_idx = broadcast_index(&coords, a.shape());
+                let b_idx = broadcast_index(&coords, b.shape());
+                (a_data[a_idx], b_data[b_idx])
+            };
+
+            *out = match self {
+                BinaryOp::Add => a_val + b_val,
+                BinaryOp::Subtract => a_val - b_val,
+                BinaryOp::Multiply | BinaryOp::Blend => a_val * b_val,
+                BinaryOp::Divide | BinaryOp::Ratio => {
+                    if b_val == 0.0 {
+                        0.0
+                    } else {
+                        a_val / b_val
+                    }
+                }
+                BinaryOp::Maximum => a_val.max(b_val),
+                BinaryOp::Minimum => a_val.min(b_val),
+                BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
+                    // For floats, truncate to i64 for bitwise ops
+                    let a_int = a_val as i64;
+                    let b_int = b_val as i64;
+                    let result = match self {
+                        BinaryOp::BitwiseAnd => a_int & b_int,
+                        BinaryOp::BitwiseOr => a_int | b_int,
+                        BinaryOp::BitwiseXor => a_int ^ b_int,
+                        _ => unreachable!(),
+                    };
+                    result as f64
+                }
+            };
+        }
+
+        ViewBuffer::from_vec_with_shape(output, output_shape.to_vec())
     }
 }
 
@@ -146,7 +375,9 @@ impl Op for BinaryOp {
             BinaryOp::Add => "Add",
             BinaryOp::Subtract => "Subtract",
             BinaryOp::Multiply => "Multiply",
+            BinaryOp::Blend => "Blend",
             BinaryOp::Divide => "Divide",
+            BinaryOp::Ratio => "Ratio",
             BinaryOp::Maximum => "Maximum",
             BinaryOp::Minimum => "Minimum",
             BinaryOp::BitwiseAnd => "BitwiseAnd",
@@ -346,5 +577,75 @@ mod tests {
         assert_eq!(promote_dtypes(DType::U8, DType::U8), DType::U8);
         assert_eq!(promote_dtypes(DType::U8, DType::F32), DType::F32);
         assert_eq!(promote_dtypes(DType::F32, DType::F64), DType::F64);
+    }
+
+    #[test]
+    fn test_u8_saturating_add() {
+        let a = ViewBuffer::from_vec_with_shape(vec![200u8, 100, 50], vec![3]);
+        let b = ViewBuffer::from_vec_with_shape(vec![100u8, 50, 10], vec![3]);
+        let result = BinaryOp::Add.execute(&a, &b);
+        let data = result.as_slice::<u8>();
+        assert_eq!(data[0], 255); // 200 + 100 = 255 (saturated)
+        assert_eq!(data[1], 150); // 100 + 50 = 150
+        assert_eq!(data[2], 60); // 50 + 10 = 60
+    }
+
+    #[test]
+    fn test_u8_saturating_subtract() {
+        let a = ViewBuffer::from_vec_with_shape(vec![50u8, 100, 200], vec![3]);
+        let b = ViewBuffer::from_vec_with_shape(vec![100u8, 50, 50], vec![3]);
+        let result = BinaryOp::Subtract.execute(&a, &b);
+        let data = result.as_slice::<u8>();
+        assert_eq!(data[0], 0); // 50 - 100 = 0 (saturated)
+        assert_eq!(data[1], 50); // 100 - 50 = 50
+        assert_eq!(data[2], 150); // 200 - 50 = 150
+    }
+
+    #[test]
+    fn test_u8_saturating_multiply() {
+        let a = ViewBuffer::from_vec_with_shape(vec![10u8, 16, 20], vec![3]);
+        let b = ViewBuffer::from_vec_with_shape(vec![10u8, 16, 20], vec![3]);
+        let result = BinaryOp::Multiply.execute(&a, &b);
+        let data = result.as_slice::<u8>();
+        assert_eq!(data[0], 100); // 10 * 10 = 100
+        assert_eq!(data[1], 255); // 16 * 16 = 256 -> 255 (saturated)
+        assert_eq!(data[2], 255); // 20 * 20 = 400 -> 255 (saturated)
+    }
+
+    #[test]
+    fn test_u8_blend() {
+        let a = ViewBuffer::from_vec_with_shape(vec![255u8, 128, 0], vec![3]);
+        let b = ViewBuffer::from_vec_with_shape(vec![255u8, 128, 255], vec![3]);
+        let result = BinaryOp::Blend.execute(&a, &b);
+        let data = result.as_slice::<u8>();
+        assert_eq!(data[0], 255); // (255/255) * (255/255) * 255 = 255
+        assert_eq!(data[1], 64); // (128/255) * (128/255) * 255 ≈ 64
+        assert_eq!(data[2], 0); // (0/255) * (255/255) * 255 = 0
+    }
+
+    #[test]
+    fn test_u8_ratio() {
+        let a = ViewBuffer::from_vec_with_shape(vec![128u8, 64, 255], vec![3]);
+        let b = ViewBuffer::from_vec_with_shape(vec![64u8, 128, 255], vec![3]);
+        let result = BinaryOp::Ratio.execute(&a, &b);
+        let data = result.as_slice::<u8>();
+        assert_eq!(data[0], 255); // (128/64) * 255 = 510 -> 255 (clamped)
+        assert_eq!(data[1], 127); // (64/128) * 255 = 127.5 -> 127
+        assert_eq!(data[2], 255); // (255/255) * 255 = 255
+    }
+
+    #[test]
+    fn test_f32_standard_arithmetic() {
+        let a = ViewBuffer::from_vec_with_shape(vec![1.0f32, 2.0, 3.0], vec![3]);
+        let b = ViewBuffer::from_vec_with_shape(vec![0.5f32, 0.5, 0.5], vec![3]);
+
+        let add_result = BinaryOp::Add.execute(&a, &b);
+        let add_data = add_result.as_slice::<f32>();
+        assert!((add_data[0] - 1.5).abs() < 1e-6);
+
+        let mul_result = BinaryOp::Multiply.execute(&a, &b);
+        let mul_data = mul_result.as_slice::<f32>();
+        assert!((mul_data[0] - 0.5).abs() < 1e-6);
+        assert!((mul_data[1] - 1.0).abs() < 1e-6);
     }
 }
