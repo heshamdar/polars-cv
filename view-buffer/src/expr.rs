@@ -142,6 +142,15 @@ impl ViewExpr {
                 // The plugin layer converts between contour representation and buffer
                 self.clone()
             }
+            ViewDto::Binary { .. } | ViewDto::ApplyMask { .. } => {
+                // Binary and ApplyMask operations are graph-level operations
+                // They require access to other nodes' buffers and are handled
+                // by the graph executor, not ViewExpr
+                panic!(
+                    "Binary and ApplyMask operations cannot be applied via ViewExpr. \
+                     Use graph-level execution to resolve node references."
+                )
+            }
         }
     }
 

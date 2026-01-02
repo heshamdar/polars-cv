@@ -2,18 +2,39 @@
 Reference tests for binary array operations using NumPy.
 
 These tests establish the expected behavior for element-wise operations
-between arrays, serving as ground truth for polars-vision implementations.
+between arrays, and verify that polars-vision implementations match
+the NumPy reference behavior.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
+import polars as pl
 import pytest
+
+from polars_vision import Pipeline, numpy_from_bytes
 
 if TYPE_CHECKING:
     pass
+
+
+# Check if plugin is available
+def _plugin_available() -> bool:
+    """Check if the compiled plugin is available."""
+    from pathlib import Path
+
+    lib_path = Path(__file__).parent.parent.parent / "python" / "polars_vision"
+    so_files = list(lib_path.glob("*.so")) + list(lib_path.glob("*.pyd"))
+    return len(so_files) > 0
+
+
+# Mark tests with plugin_required marker
+plugin_required = pytest.mark.skipif(
+    not _plugin_available(),
+    reason="Requires compiled plugin (run maturin develop first)",
+)
 
 
 class TestBinaryOpsReference:
@@ -244,3 +265,202 @@ class TestBinaryOpsReference:
         # NumPy raises ValueError for shape mismatch that can't broadcast
         with pytest.raises(ValueError):
             _ = img1 + img2
+
+
+@plugin_required
+class TestBinaryOpsPolarsVision:
+    """
+    Tests that compare polars-vision binary operations against NumPy reference.
+
+    These tests will FAIL until binary operations are implemented in the Rust backend.
+    This is the expected behavior - we're testing that polars-vision matches NumPy.
+    """
+
+    @pytest.fixture
+    def encode_png(self) -> Callable[[np.ndarray], bytes]:
+        """Encode a numpy array as PNG bytes."""
+
+        def _encode(arr: np.ndarray) -> bytes:
+            from io import BytesIO
+
+            from PIL import Image
+
+            img = Image.fromarray(arr)
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+
+        return _encode
+
+    def test_add_matches_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """polars-vision add should match NumPy reference (saturating addition)."""
+        img1, img2 = sample_images
+
+        # NumPy reference behavior - saturating addition
+        expected = np.clip(
+            img1.astype(np.int16) + img2.astype(np.int16), 0, 255
+        ).astype(np.uint8)
+
+        # polars-vision implementation
+        df = pl.DataFrame(
+            {
+                "img1": [encode_png(img1)],
+                "img2": [encode_png(img2)],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
+        # This will FAIL until add is implemented in execute.rs
+        result = df.select(output=expr1.add(expr2).sink("numpy"))
+        actual = numpy_from_bytes(result.row(0)[0])
+
+        np.testing.assert_allclose(actual, expected, atol=1)
+
+    def test_subtract_matches_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """polars-vision subtract should match NumPy reference (saturating subtraction)."""
+        img1, img2 = sample_images
+
+        # NumPy reference behavior - saturating subtraction
+        expected = np.clip(
+            img1.astype(np.int16) - img2.astype(np.int16), 0, 255
+        ).astype(np.uint8)
+
+        # polars-vision implementation
+        df = pl.DataFrame(
+            {
+                "img1": [encode_png(img1)],
+                "img2": [encode_png(img2)],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
+        # This will FAIL until subtract is implemented in execute.rs
+        result = df.select(output=expr1.subtract(expr2).sink("numpy"))
+        actual = numpy_from_bytes(result.row(0)[0])
+
+        np.testing.assert_allclose(actual, expected, atol=1)
+
+    def test_multiply_matches_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """polars-vision multiply should match NumPy reference."""
+        img1, img2 = sample_images
+
+        # NumPy reference: normalize to [0,1], multiply, scale back
+        expected = (
+            (img1.astype(np.float32) / 255) * (img2.astype(np.float32) / 255) * 255
+        ).astype(np.uint8)
+
+        # polars-vision implementation
+        df = pl.DataFrame(
+            {
+                "img1": [encode_png(img1)],
+                "img2": [encode_png(img2)],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
+        # This will FAIL until multiply is implemented in execute.rs
+        result = df.select(output=expr1.multiply(expr2).sink("numpy"))
+        actual = numpy_from_bytes(result.row(0)[0])
+
+        np.testing.assert_allclose(actual, expected, atol=1)
+
+    def test_divide_matches_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """polars-vision divide should match NumPy reference."""
+        img1, img2 = sample_images
+
+        # NumPy reference: handle zeros, divide, clamp
+        img2_safe = img2.astype(np.float32)
+        img2_safe[img2_safe == 0] = 1  # Avoid division by zero
+
+        expected = np.clip(img1.astype(np.float32) / img2_safe * 255, 0, 255).astype(
+            np.uint8
+        )
+
+        # polars-vision implementation
+        df = pl.DataFrame(
+            {
+                "img1": [encode_png(img1)],
+                "img2": [encode_png(img2)],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
+        # This will FAIL until divide is implemented in execute.rs
+        result = df.select(output=expr1.divide(expr2).sink("numpy"))
+        actual = numpy_from_bytes(result.row(0)[0])
+
+        np.testing.assert_allclose(actual, expected, atol=1)
+
+    def test_apply_mask_matches_reference(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        binary_mask: np.ndarray,
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """polars-vision apply_mask should match NumPy reference."""
+        img, _ = sample_images
+
+        # For polars-vision, the mask needs to be a grayscale image
+        # Convert binary mask (0/1) to 0/255 grayscale
+        mask_image = (binary_mask * 255).astype(np.uint8)
+
+        # polars-vision implementation
+        df = pl.DataFrame(
+            {
+                "image": [encode_png(img)],
+                "mask": [encode_png(np.stack([mask_image] * 3, axis=-1))],
+            }
+        )
+
+        img_pipe = Pipeline().source("image_bytes")
+        mask_pipe = Pipeline().source("image_bytes").grayscale()
+
+        img_expr = pl.col("image").cv.pipe(img_pipe)
+        mask_expr = pl.col("mask").cv.pipe(mask_pipe)
+
+        # This will FAIL until apply_mask is implemented in execute.rs
+        result = df.select(output=img_expr.apply_mask(mask_expr).sink("numpy"))
+        actual = numpy_from_bytes(result.row(0)[0])
+
+        # Scale expected to match normalized mask behavior (0/1 -> 0/255)
+        expected_scaled = (img.astype(np.float32) * (binary_mask[:, :, None])).astype(
+            np.uint8
+        )
+
+        np.testing.assert_allclose(actual, expected_scaled, atol=1)

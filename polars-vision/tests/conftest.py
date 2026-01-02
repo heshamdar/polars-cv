@@ -4,10 +4,12 @@ Pytest configuration and fixtures for polars-vision tests.
 
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
+import numpy as np
 import pytest
 
 # Add the python source to the path for testing without installation
@@ -16,6 +18,92 @@ sys.path.insert(0, str(python_src))
 
 if TYPE_CHECKING:
     pass
+
+
+def _plugin_available() -> bool:
+    """Check if the compiled plugin is available."""
+    lib_path = Path(__file__).parent.parent / "python" / "polars_vision"
+    so_files = list(lib_path.glob("*.so")) + list(lib_path.glob("*.pyd"))
+    return len(so_files) > 0
+
+
+# Mark tests with plugin_required marker for easy filtering
+plugin_required = pytest.mark.skipif(
+    not _plugin_available(),
+    reason="Requires compiled plugin (run maturin develop first)",
+)
+
+
+@pytest.fixture
+def create_test_png() -> Callable[[int, int, tuple[int, int, int]], bytes]:
+    """
+    Factory for creating test PNG images.
+
+    Returns:
+        A callable that creates PNG bytes for a given width, height, and color.
+    """
+
+    def _create(
+        width: int = 100,
+        height: int = 100,
+        color: tuple[int, int, int] = (128, 128, 128),
+    ) -> bytes:
+        """
+        Create a test PNG image.
+
+        Args:
+            width: Image width.
+            height: Image height.
+            color: RGB color tuple.
+
+        Returns:
+            PNG bytes.
+        """
+        try:
+            from PIL import Image
+
+            img = Image.new("RGB", (width, height), color)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+        except ImportError:
+            pytest.skip("PIL/Pillow required for this test")
+            return b""
+
+    return _create
+
+
+@pytest.fixture
+def encode_png() -> Callable[[np.ndarray], bytes]:
+    """
+    Encode a numpy array as PNG bytes.
+
+    Returns:
+        A callable that encodes a numpy array as PNG bytes.
+    """
+
+    def _encode(arr: np.ndarray) -> bytes:
+        """
+        Encode numpy array as PNG bytes.
+
+        Args:
+            arr: NumPy array with shape (H, W, 3) or (H, W) and dtype uint8.
+
+        Returns:
+            PNG bytes.
+        """
+        try:
+            from PIL import Image
+
+            img = Image.fromarray(arr)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+        except ImportError:
+            pytest.skip("PIL/Pillow required for this test")
+            return b""
+
+    return _encode
 
 
 @pytest.fixture

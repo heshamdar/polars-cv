@@ -9,8 +9,8 @@ use std::panic::{self, AssertUnwindSafe};
 
 use view_buffer::{
     geometry::{rasterize::rasterize, Contour, Point},
-    ComputeOp, DType, FilterType, GeometryOp, ImageAdapter, ImageOp, ImageOpKind, NormalizeMethod,
-    ViewBuffer, ViewDto, ViewExpr, ViewOp,
+    BinaryOp, ComputeOp, DType, FilterType, GeometryOp, ImageAdapter, ImageOp, ImageOpKind,
+    NormalizeMethod, ViewBuffer, ViewDto, ViewExpr, ViewOp,
 };
 
 use crate::params::ParamValue;
@@ -586,6 +586,7 @@ pub fn resolve_op(
             let max = get_param(&op_spec.params, "max")?.resolve_f32(row_idx, expr_columns)?;
             Ok(ViewDto::Compute(ComputeOp::Clamp { min, max }))
         }
+        "relu" => Ok(ViewDto::Compute(ComputeOp::Relu)),
 
         // Image operations
         "resize" => {
@@ -768,6 +769,71 @@ pub fn resolve_op(
                 ref_width,
                 ref_height,
             }))
+        }
+
+        // Binary operations
+        "add" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::Add,
+                other_node_id,
+            })
+        }
+        "subtract" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::Subtract,
+                other_node_id,
+            })
+        }
+        "multiply" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::Multiply,
+                other_node_id,
+            })
+        }
+        "divide" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::Divide,
+                other_node_id,
+            })
+        }
+        "maximum" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::Maximum,
+                other_node_id,
+            })
+        }
+        "minimum" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::Minimum,
+                other_node_id,
+            })
+        }
+
+        // Mask operation
+        "apply_mask" => {
+            let mask_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let invert = op_spec
+                .params
+                .get("invert")
+                .map(|p| {
+                    matches!(
+                        p,
+                        ParamValue::Literal {
+                            value: serde_json::Value::Bool(true)
+                        }
+                    )
+                })
+                .unwrap_or(false);
+            Ok(ViewDto::ApplyMask {
+                mask_node_id,
+                invert,
+            })
         }
 
         other => Err(polars_err!(ComputeError: "Unknown operation: {}", other)),

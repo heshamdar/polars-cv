@@ -24,10 +24,69 @@ use polars::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
-use view_buffer::{ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{BinaryOp, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::execute::{decode_contour_source, decode_source, resolve_op};
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
+
+/// Apply a mask to a buffer.
+///
+/// The mask should be a single-channel buffer where:
+/// - Non-zero values keep the original pixel
+/// - Zero values zero out the pixel
+///
+/// If `invert` is true, the behavior is reversed.
+fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffer {
+    // Convert mask to a binary mask (0 or 1) for multiplication
+    // For now, we use a simple threshold approach
+
+    // Get shapes
+    let buf_shape = buffer.shape();
+    let mask_shape = mask.shape();
+
+    // Handle broadcasting: mask might be 2D (H, W) while buffer is 3D (H, W, C)
+    // We need to broadcast the mask to match the buffer's channels
+    let effective_mask = if mask_shape.len() == 2 && buf_shape.len() == 3 {
+        // Need to expand mask from (H, W) to (H, W, C)
+        let h = mask_shape[0];
+        let w = mask_shape[1];
+        let c = buf_shape[2];
+
+        let mask_contig = mask.to_contiguous();
+        let mask_data = mask_contig.as_slice::<u8>();
+
+        // Create expanded mask
+        let mut expanded: Vec<u8> = Vec::with_capacity(h * w * c);
+        for y in 0..h {
+            for x in 0..w {
+                let mask_val = if invert {
+                    if mask_data[y * w + x] == 0 { 255 } else { 0 }
+                } else {
+                    mask_data[y * w + x]
+                };
+                // Replicate across channels
+                for _ in 0..c {
+                    expanded.push(mask_val);
+                }
+            }
+        }
+
+        ViewBuffer::from_vec_with_shape(expanded, vec![h, w, c])
+    } else {
+        // Same dimensionality - just use as-is, possibly inverting
+        if invert {
+            let mask_contig = mask.to_contiguous();
+            let mask_data = mask_contig.as_slice::<u8>();
+            let inverted: Vec<u8> = mask_data.iter().map(|&v| if v == 0 { 255 } else { 0 }).collect();
+            ViewBuffer::from_vec_with_shape(inverted, mask_shape.to_vec())
+        } else {
+            mask.clone()
+        }
+    };
+
+    // Apply the mask using element-wise multiplication
+    BinaryOp::Multiply.execute(buffer, &effective_mask)
+}
 
 /// A node in the pipeline graph.
 #[derive(Debug, Deserialize)]
@@ -317,14 +376,47 @@ impl UnifiedGraph {
                             dtos
                         };
 
-                        // Build expression and execute
-                        let mut expr = ViewExpr::new_source(input_buffer);
-                        for view_dto in view_dtos {
-                            expr = expr.apply_op(view_dto);
-                        }
-                        let result_buffer = expr.plan().execute();
+                        // Build expression and execute, handling binary ops specially
+                        let mut current_buffer = input_buffer;
 
-                        buffers.insert(node_id.clone(), result_buffer);
+                        for view_dto in view_dtos {
+                            current_buffer = match view_dto {
+                                ViewDto::Binary { op, other_node_id } => {
+                                    // Binary operation: fetch the other buffer and apply
+                                    match buffers.get(&other_node_id) {
+                                        Some(other_buffer) => op.execute(&current_buffer, other_buffer),
+                                        None => {
+                                            return Err(format!(
+                                                "Binary op references unknown node '{other_node_id}'"
+                                            ))
+                                        }
+                                    }
+                                }
+                                ViewDto::ApplyMask {
+                                    mask_node_id,
+                                    invert,
+                                } => {
+                                    // Mask operation: fetch the mask buffer and apply
+                                    match buffers.get(&mask_node_id) {
+                                        Some(mask_buffer) => {
+                                            apply_mask(&current_buffer, mask_buffer, invert)
+                                        }
+                                        None => {
+                                            return Err(format!(
+                                                "ApplyMask references unknown node '{mask_node_id}'"
+                                            ))
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // Regular operation: use ViewExpr
+                                    let expr = ViewExpr::new_source(current_buffer);
+                                    expr.apply_op(view_dto).plan().execute()
+                                }
+                            };
+                        }
+
+                        buffers.insert(node_id.clone(), current_buffer);
                     }
                 }
 

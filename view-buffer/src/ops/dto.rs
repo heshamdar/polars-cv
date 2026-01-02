@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::ops::GeometryOp;
+use crate::ops::binary::BinaryOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::image::ImageOp;
 use crate::ops::view::ViewOp;
@@ -15,6 +16,18 @@ pub enum ViewDto {
     Compute(ComputeOp),
     Image(ImageOp),
     Geometry(GeometryOp),
+    /// Binary operation between two buffers.
+    /// The second buffer is referenced by node ID (for graph execution).
+    Binary {
+        op: BinaryOp,
+        other_node_id: String,
+    },
+    /// Apply a mask to the current buffer.
+    /// The mask buffer is referenced by node ID (for graph execution).
+    ApplyMask {
+        mask_node_id: String,
+        invert: bool,
+    },
     // Helper for plugins to request materialization explicitly
     Materialize,
 }

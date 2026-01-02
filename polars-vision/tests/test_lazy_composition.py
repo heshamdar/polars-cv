@@ -2,18 +2,25 @@
 Tests for lazy pipeline composition.
 
 These tests verify the LazyPipelineExpr class and graph-based pipeline fusion.
+Tests in TestLazyCompositionExecution MUST actually execute the plugin to verify
+that binary operations are correctly implemented in the Rust backend.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
+import numpy as np
 import polars as pl
 
-from polars_vision import LazyPipelineExpr, Pipeline
+from polars_vision import LazyPipelineExpr, Pipeline, numpy_from_bytes
 
 if TYPE_CHECKING:
     pass
+
+
+# Import plugin_required marker from conftest
+from tests.conftest import plugin_required
 
 
 class TestLazyPipelineExpr:
@@ -323,3 +330,250 @@ class TestPipelineGraphSerialization:
         assert len(columns) == 1
         # Both nodes should point to same index
         assert graph._column_bindings["node1"] == graph._column_bindings["node2"]
+
+
+@plugin_required
+class TestLazyCompositionExecution:
+    """
+    Tests that verify binary operations EXECUTE correctly through the plugin.
+
+    These tests will FAIL until binary operations are implemented in the Rust backend.
+    This is the expected and correct behavior - tests should fail for unimplemented features.
+    """
+
+    def test_apply_mask_execution(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+    ) -> None:
+        """apply_mask should execute and produce correct output."""
+        # Create a color image and a grayscale mask (as 3-channel for simplicity)
+        img_bytes = create_test_png(100, 100, (200, 100, 50))
+        # Mask: white (255) means keep, black (0) means zero out
+        mask_bytes = create_test_png(100, 100, (255, 255, 255))
+
+        df = pl.DataFrame(
+            {
+                "image": [img_bytes],
+                "mask": [mask_bytes],
+            }
+        )
+
+        img_pipe = Pipeline().source("image_bytes")
+        mask_pipe = Pipeline().source("image_bytes").grayscale()
+
+        img = pl.col("image").cv.pipe(img_pipe)
+        mask = pl.col("mask").cv.pipe(mask_pipe)
+
+        result_expr = img.apply_mask(mask).sink("numpy")
+
+        # This will FAIL until apply_mask is implemented in execute.rs
+        result = df.select(output=result_expr)
+        output = numpy_from_bytes(result.row(0)[0])
+
+        assert output.shape == (100, 100, 3)
+        assert output.dtype == np.uint8
+
+    def test_add_execution(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+    ) -> None:
+        """add should execute and produce correct output."""
+        img1_bytes = create_test_png(100, 100, (100, 100, 100))
+        img2_bytes = create_test_png(100, 100, (50, 50, 50))
+
+        df = pl.DataFrame(
+            {
+                "img1": [img1_bytes],
+                "img2": [img2_bytes],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
+        result_expr = expr1.add(expr2).sink("numpy")
+
+        # This will FAIL until add is implemented in execute.rs
+        result = df.select(output=result_expr)
+        output = numpy_from_bytes(result.row(0)[0])
+
+        assert output.shape == (100, 100, 3)
+        assert output.dtype == np.uint8
+        # Verify addition: 100 + 50 = 150
+        np.testing.assert_array_equal(output[0, 0], [150, 150, 150])
+
+    def test_subtract_execution(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+    ) -> None:
+        """subtract should execute and produce correct output."""
+        img1_bytes = create_test_png(100, 100, (150, 150, 150))
+        img2_bytes = create_test_png(100, 100, (50, 50, 50))
+
+        df = pl.DataFrame(
+            {
+                "img1": [img1_bytes],
+                "img2": [img2_bytes],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
+        result_expr = expr1.subtract(expr2).sink("numpy")
+
+        # This will FAIL until subtract is implemented in execute.rs
+        result = df.select(output=result_expr)
+        output = numpy_from_bytes(result.row(0)[0])
+
+        assert output.shape == (100, 100, 3)
+        assert output.dtype == np.uint8
+        # Verify subtraction: 150 - 50 = 100
+        np.testing.assert_array_equal(output[0, 0], [100, 100, 100])
+
+    def test_multiply_execution(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+    ) -> None:
+        """multiply should execute and produce correct output."""
+        img1_bytes = create_test_png(100, 100, (100, 100, 100))
+        img2_bytes = create_test_png(100, 100, (128, 128, 128))
+
+        df = pl.DataFrame(
+            {
+                "img1": [img1_bytes],
+                "img2": [img2_bytes],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
+        result_expr = expr1.multiply(expr2).sink("numpy")
+
+        # This will FAIL until multiply is implemented in execute.rs
+        result = df.select(output=result_expr)
+        output = numpy_from_bytes(result.row(0)[0])
+
+        assert output.shape == (100, 100, 3)
+        assert output.dtype == np.uint8
+
+    def test_divide_execution(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+    ) -> None:
+        """divide should execute and produce correct output."""
+        img1_bytes = create_test_png(100, 100, (200, 200, 200))
+        img2_bytes = create_test_png(100, 100, (100, 100, 100))
+
+        df = pl.DataFrame(
+            {
+                "img1": [img1_bytes],
+                "img2": [img2_bytes],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+
+        result_expr = expr1.divide(expr2).sink("numpy")
+
+        # This will FAIL until divide is implemented in execute.rs
+        result = df.select(output=result_expr)
+        output = numpy_from_bytes(result.row(0)[0])
+
+        assert output.shape == (100, 100, 3)
+        assert output.dtype == np.uint8
+
+    def test_chained_composition_execution(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+    ) -> None:
+        """Chained operations (add then multiply) should execute correctly."""
+        img1_bytes = create_test_png(100, 100, (50, 50, 50))
+        img2_bytes = create_test_png(100, 100, (50, 50, 50))
+        img3_bytes = create_test_png(100, 100, (128, 128, 128))
+
+        df = pl.DataFrame(
+            {
+                "img1": [img1_bytes],
+                "img2": [img2_bytes],
+                "img3": [img3_bytes],
+            }
+        )
+
+        pipe1 = Pipeline().source("image_bytes")
+        pipe2 = Pipeline().source("image_bytes")
+        pipe3 = Pipeline().source("image_bytes")
+
+        expr1 = pl.col("img1").cv.pipe(pipe1)
+        expr2 = pl.col("img2").cv.pipe(pipe2)
+        expr3 = pl.col("img3").cv.pipe(pipe3)
+
+        # Chain: (expr1 + expr2) * expr3
+        result_expr = expr1.add(expr2).multiply(expr3).sink("numpy")
+
+        # This will FAIL until both add and multiply are implemented
+        result = df.select(output=result_expr)
+        output = numpy_from_bytes(result.row(0)[0])
+
+        assert output.shape == (100, 100, 3)
+        assert output.dtype == np.uint8
+
+    def test_apply_contour_mask_execution(
+        self,
+        create_test_png: Callable[[int, int, tuple[int, int, int]], bytes],
+    ) -> None:
+        """Apply a rasterized contour as mask to an image."""
+        img_bytes = create_test_png(100, 100, (200, 100, 50))
+
+        # Create a simple square contour using CONTOUR_SCHEMA format
+        contour_data = {
+            "exterior": [
+                {"x": 25.0, "y": 25.0},
+                {"x": 25.0, "y": 75.0},
+                {"x": 75.0, "y": 75.0},
+                {"x": 75.0, "y": 25.0},
+            ],
+            "holes": [],
+            "is_closed": True,
+        }
+
+        df = pl.DataFrame(
+            {
+                "image": [img_bytes],
+                "contour": [contour_data],
+            }
+        )
+
+        img_pipe = Pipeline().source("image_bytes")
+        # Contour source with explicit dimensions rasterizes the contour to a mask
+        contour_pipe = Pipeline().source("contour", width=100, height=100)
+
+        img = pl.col("image").cv.pipe(img_pipe)
+        # The contour source already produces a rasterized mask
+        mask = pl.col("contour").cv.pipe(contour_pipe)
+
+        # Use apply_mask directly (contour source already rasterizes)
+        result_expr = img.apply_mask(mask).sink("numpy")
+
+        result = df.select(output=result_expr)
+        output = numpy_from_bytes(result.row(0)[0])
+
+        assert output.shape == (100, 100, 3)
+        # Pixels outside contour should be zeroed
+        assert np.all(output[0, 0] == 0)
+        # Pixels inside contour should have original values
+        assert np.any(output[50, 50] > 0)
