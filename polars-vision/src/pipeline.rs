@@ -78,6 +78,16 @@ pub struct OpSpec {
     pub params: HashMap<String, ParamValue>,
 }
 
+impl OpSpec {
+    /// Check if all parameters in this op are literals (no expressions).
+    ///
+    /// Used for per-node precompilation optimization: when all params are
+    /// literals, the ViewDto can be resolved once and reused for all rows.
+    pub fn is_all_literal(&self) -> bool {
+        self.params.values().all(|p| p.is_literal())
+    }
+}
+
 /// Complete pipeline specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineSpec {

@@ -24,7 +24,7 @@ use polars::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
-use view_buffer::{ViewBuffer, ViewExpr};
+use view_buffer::{ViewBuffer, ViewDto, ViewExpr};
 
 use crate::execute::{decode_contour_source, decode_source, resolve_op};
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
@@ -72,13 +72,25 @@ pub struct UnifiedGraph {
     /// Only root nodes (no upstream) have bindings.
     #[serde(default)]
     pub column_bindings: HashMap<String, usize>,
+    /// Cached topological order (computed once during parsing).
+    /// Not serialized - computed on load.
+    #[serde(skip)]
+    cached_order: Vec<String>,
 }
 
 impl UnifiedGraph {
     /// Parse a graph from JSON.
+    ///
+    /// This also computes and caches the topological order for efficient
+    /// repeated execution.
     pub fn from_json(json: &str) -> PolarsResult<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| polars_err!(ComputeError: "Failed to parse pipeline graph: {}", e))
+        let mut graph: Self = serde_json::from_str(json)
+            .map_err(|e| polars_err!(ComputeError: "Failed to parse pipeline graph: {}", e))?;
+        
+        // Pre-compute and cache the topological order
+        graph.cached_order = graph.compute_topological_order()?;
+        
+        Ok(graph)
     }
 
     /// Check if this is a single-output graph (returns Binary instead of Struct).
@@ -92,9 +104,15 @@ impl UnifiedGraph {
         self.outputs.values().map(|s| s.node.clone()).collect()
     }
 
-    /// Get nodes in topological order (dependencies first).
+    /// Get cached topological order.
+    /// The order is computed once during parsing and reused for all executions.
+    fn topological_order(&self) -> &[String] {
+        &self.cached_order
+    }
+
+    /// Compute nodes in topological order (dependencies first).
     /// Includes all nodes reachable from any output.
-    pub fn topological_order(&self) -> PolarsResult<Vec<String>> {
+    fn compute_topological_order(&self) -> PolarsResult<Vec<String>> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut order: Vec<String> = Vec::new();
 
@@ -133,13 +151,21 @@ impl UnifiedGraph {
     /// Returns:
     /// - Binary column if single output ("_output" only)
     /// - Struct column with named Binary fields if multiple outputs
+    ///
+    /// # Optimizations
+    ///
+    /// 1. **Per-node precompilation**: Nodes where all op params are literals
+    ///    have their ViewDtos resolved once before the row loop and reused.
+    /// 2. **Batch-level panic catching**: A single catch_unwind wraps the
+    ///    entire batch for reduced overhead vs per-row catching.
+    /// 3. **Cached topological order**: Computed once during from_json().
     pub fn execute(
         &self,
         inputs: &[Series],
-        _expr_columns: &HashMap<String, &Series>,
+        expr_columns: &HashMap<String, &Series>,
     ) -> PolarsResult<Series> {
-        // Get topological order
-        let order = self.topological_order()?;
+        // Get cached topological order
+        let order = self.topological_order();
 
         // Get length from first input
         let len = if !inputs.is_empty() {
@@ -152,138 +178,212 @@ impl UnifiedGraph {
         let mut output_aliases: Vec<&String> = self.outputs.keys().collect();
         output_aliases.sort();
 
+        // ============================================================
+        // OPTIMIZATION: Per-node precompilation
+        // ============================================================
+        // For nodes where all op params are literals, precompile ViewDtos
+        // once and reuse for all rows. This avoids repeated parameter
+        // resolution in the hot loop.
+        let precompiled: HashMap<String, Vec<ViewDto>> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.ops.iter().all(|op| op.is_all_literal()))
+            .filter_map(|(node_id, node)| {
+                // Resolve ops with row_idx=0 and empty expr_columns (all literal anyway)
+                let ops: Result<Vec<ViewDto>, _> = node
+                    .ops
+                    .iter()
+                    .map(|op| resolve_op(op, 0, &HashMap::new()))
+                    .collect();
+                ops.ok().map(|v| (node_id.clone(), v))
+            })
+            .collect();
+
         // Prepare result vectors for each output
         let mut results: HashMap<String, Vec<Option<Vec<u8>>>> = HashMap::new();
         for alias in &output_aliases {
             results.insert((*alias).clone(), Vec::with_capacity(len));
         }
 
-        for row_idx in 0..len {
-            // Buffer cache for this row
-            let mut buffers: HashMap<String, ViewBuffer> = HashMap::new();
+        // ============================================================
+        // OPTIMIZATION: Batch-level panic catching
+        // ============================================================
+        // Wrap the entire row loop in a single catch_unwind to reduce
+        // the overhead of setting up unwinding machinery per-row.
+        let batch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for row_idx in 0..len {
+                // Buffer cache for this row
+                let mut buffers: HashMap<String, ViewBuffer> = HashMap::new();
 
-            // Execute nodes in order
-            for node_id in &order {
-                let node = self.nodes.get(node_id).ok_or_else(
-                    || polars_err!(ComputeError: "Node '{}' not found in graph", node_id),
-                )?;
+                // Execute nodes in order
+                for node_id in order {
+                    let node = match self.nodes.get(node_id) {
+                        Some(n) => n,
+                        None => continue, // Skip missing nodes (shouldn't happen)
+                    };
 
-                // Determine input source for this node
-                let buffer = if node.upstream.is_empty() {
-                    // Root node: get input from column binding
-                    let col_idx = self.column_bindings.get(node_id).copied().unwrap_or(0);
+                    // Determine input source for this node
+                    let buffer = if node.upstream.is_empty() {
+                        // Root node: get input from column binding
+                        let col_idx = self.column_bindings.get(node_id).copied().unwrap_or(0);
 
-                    if col_idx >= inputs.len() {
-                        return Err(
-                            polars_err!(ComputeError: "Column index {} out of bounds for node '{}'", col_idx, node_id),
-                        );
-                    }
+                        if col_idx >= inputs.len() {
+                            // Return error as None to indicate failure
+                            return Err(format!(
+                                "Column index {col_idx} out of bounds for node '{node_id}'"
+                            ));
+                        }
 
-                    let input_series = &inputs[col_idx];
+                        let input_series = &inputs[col_idx];
 
-                    // Check if this is a contour source (Struct input) vs binary source
-                    let source_format = node.source.format.as_str();
-                    if source_format == "contour" {
-                        // Contour source: parse struct and rasterize
-                        let value = input_series.get(row_idx)?;
-                        if value.is_null() {
-                            None
+                        // Check if this is a contour source (Struct input) vs binary source
+                        let source_format = node.source.format.as_str();
+                        if source_format == "contour" {
+                            // Contour source: parse struct and rasterize
+                            match input_series.get(row_idx) {
+                                Ok(value) if !value.is_null() => {
+                                    // Create temp spec for contour decoding
+                                    let first_output = self.outputs.values().next().unwrap();
+                                    let temp_spec = PipelineSpec {
+                                        source: node.source.clone(),
+                                        shape_hints: None,
+                                        ops: vec![],
+                                        sink: first_output.sink.clone(),
+                                    };
+                                    match decode_contour_source(
+                                        &value,
+                                        row_idx,
+                                        &temp_spec,
+                                        expr_columns,
+                                    ) {
+                                        Ok(buf) => Some(buf),
+                                        Err(e) => return Err(format!("Contour decode error: {e}")),
+                                    }
+                                }
+                                _ => None,
+                            }
                         } else {
-                            // Create temp spec for contour decoding
-                            let first_output = self.outputs.values().next().unwrap();
-                            let temp_spec = PipelineSpec {
-                                source: node.source.clone(),
-                                shape_hints: None,
-                                ops: vec![],
-                                sink: first_output.sink.clone(),
+                            // Binary source: decode from bytes
+                            let input_ca = match input_series.binary() {
+                                Ok(ca) => ca,
+                                Err(_) => {
+                                    return Err(format!(
+                                        "Expected Binary column for node '{node_id}'"
+                                    ))
+                                }
                             };
-                            Some(decode_contour_source(
-                                &value,
-                                row_idx,
-                                &temp_spec,
-                                _expr_columns,
-                            )?)
+
+                            match input_ca.get(row_idx) {
+                                Some(bytes) => {
+                                    // Create temp spec for decoding
+                                    let first_output = self.outputs.values().next().unwrap();
+                                    let temp_spec = PipelineSpec {
+                                        source: node.source.clone(),
+                                        shape_hints: None,
+                                        ops: vec![],
+                                        sink: first_output.sink.clone(),
+                                    };
+                                    // Copy the bytes to avoid any lifetime issues
+                                    let bytes_owned = bytes.to_vec();
+                                    match decode_source(&bytes_owned, &temp_spec) {
+                                        Ok(buf) => Some(buf),
+                                        Err(e) => return Err(format!("Decode error: {e}")),
+                                    }
+                                }
+                                None => None,
+                            }
                         }
                     } else {
-                        // Binary source: decode from bytes
-                        let input_ca = input_series.binary().map_err(
-                            |_| polars_err!(ComputeError: "Expected Binary column for node '{}'", node_id),
-                        )?;
-
-                        match input_ca.get(row_idx) {
-                            Some(bytes) => {
-                                // Create temp spec for decoding
-                                let first_output = self.outputs.values().next().unwrap();
-                                let temp_spec = PipelineSpec {
-                                    source: node.source.clone(),
-                                    shape_hints: None,
-                                    ops: vec![],
-                                    sink: first_output.sink.clone(),
-                                };
-                                // Copy the bytes to avoid any lifetime issues
-                                let bytes_owned = bytes.to_vec();
-                                Some(decode_source(&bytes_owned, &temp_spec)?)
-                            }
-                            None => None,
-                        }
-                    }
-                } else {
-                    // Non-root node: get input from upstream node's buffer
-                    // For now, we use the first upstream node's buffer
-                    // The source should be "blob" for these nodes
-                    let upstream_id = &node.upstream[0];
-                    buffers.get(upstream_id).cloned()
-                };
-
-                if let Some(input_buffer) = buffer {
-                    // Resolve and apply operations
-                    let mut view_dtos = Vec::with_capacity(node.ops.len());
-                    for op_spec in &node.ops {
-                        let view_dto = resolve_op(op_spec, row_idx, _expr_columns)?;
-                        view_dtos.push(view_dto);
-                    }
-
-                    // Build expression and execute (no catch_unwind for debugging)
-                    let mut expr = ViewExpr::new_source(input_buffer);
-                    for view_dto in view_dtos {
-                        expr = expr.apply_op(view_dto);
-                    }
-                    let result_buffer = expr.plan().execute();
-
-                    buffers.insert(node_id.clone(), result_buffer);
-                }
-            }
-
-            // Encode each output
-            for (alias, spec) in &self.outputs {
-                if let Some(buffer) = buffers.get(&spec.node) {
-                    // Create pipeline spec for encoding
-                    let encode_spec = PipelineSpec {
-                        source: SourceSpec {
-                            format: "blob".to_string(),
-                            dtype: None,
-                            width: None,
-                            height: None,
-                            fill_value: 255,
-                            background: 0,
-                            shape_pipeline: None,
-                        },
-                        shape_hints: None,
-                        ops: vec![],
-                        sink: spec.sink.clone(),
+                        // Non-root node: get input from upstream node's buffer
+                        let upstream_id = &node.upstream[0];
+                        buffers.get(upstream_id).cloned()
                     };
-                    let encoded = crate::execute::encode_sink(buffer, &encode_spec)?;
-                    results.get_mut(alias).unwrap().push(Some(encoded));
-                } else {
-                    results.get_mut(alias).unwrap().push(None);
+
+                    if let Some(input_buffer) = buffer {
+                        // Get ViewDtos - use precompiled if available, otherwise resolve per-row
+                        let view_dtos: Vec<ViewDto> = if let Some(cached) = precompiled.get(node_id)
+                        {
+                            // Fast path: clone precompiled ops
+                            cached.clone()
+                        } else {
+                            // Slow path: resolve per-row for expression parameters
+                            let mut dtos = Vec::with_capacity(node.ops.len());
+                            for op_spec in &node.ops {
+                                match resolve_op(op_spec, row_idx, expr_columns) {
+                                    Ok(dto) => dtos.push(dto),
+                                    Err(e) => return Err(format!("Op resolution error: {e}")),
+                                }
+                            }
+                            dtos
+                        };
+
+                        // Build expression and execute
+                        let mut expr = ViewExpr::new_source(input_buffer);
+                        for view_dto in view_dtos {
+                            expr = expr.apply_op(view_dto);
+                        }
+                        let result_buffer = expr.plan().execute();
+
+                        buffers.insert(node_id.clone(), result_buffer);
+                    }
+                }
+
+                // Encode each output
+                for (alias, spec) in &self.outputs {
+                    if let Some(buffer) = buffers.get(&spec.node) {
+                        // Create pipeline spec for encoding
+                        let encode_spec = PipelineSpec {
+                            source: SourceSpec {
+                                format: "blob".to_string(),
+                                dtype: None,
+                                width: None,
+                                height: None,
+                                fill_value: 255,
+                                background: 0,
+                                shape_pipeline: None,
+                            },
+                            shape_hints: None,
+                            ops: vec![],
+                            sink: spec.sink.clone(),
+                        };
+                        match crate::execute::encode_sink(buffer, &encode_spec) {
+                            Ok(encoded) => {
+                                results.get_mut(alias).unwrap().push(Some(encoded));
+                            }
+                            Err(e) => return Err(format!("Encode error: {e}")),
+                        }
+                    } else {
+                        results.get_mut(alias).unwrap().push(None);
+                    }
                 }
             }
-        }
+
+            Ok(results)
+        }));
+
+        // Handle batch result
+        let results = match batch_result {
+            Ok(Ok(r)) => r,
+            Ok(Err(msg)) => {
+                return Err(polars_err!(ComputeError: "Pipeline execution failed: {}", msg));
+            }
+            Err(panic_payload) => {
+                // Extract panic message
+                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "Unknown panic during batch execution".to_string()
+                };
+                return Err(polars_err!(ComputeError: "Pipeline batch failed: {}", panic_msg));
+            }
+        };
 
         // Build output based on single vs multi output
         if self.is_single_output() {
             // Single output: return Binary column directly
-            let data = results.remove("_output").unwrap();
+            let data = results.get("_output").unwrap().clone();
             let output_ca =
                 BinaryChunked::from_iter_options(inputs[0].name().clone(), data.into_iter());
             Ok(output_ca.into_series())
@@ -291,7 +391,7 @@ impl UnifiedGraph {
             // Multi output: return Struct column
             let mut fields: Vec<Series> = Vec::with_capacity(output_aliases.len());
             for alias in &output_aliases {
-                let data = results.remove(*alias).unwrap();
+                let data = results.get(*alias).unwrap().clone();
                 let ca =
                     BinaryChunked::from_iter_options(PlSmallStr::from_str(alias), data.into_iter());
                 fields.push(ca.into_series());
@@ -373,7 +473,8 @@ mod tests {
         }"#;
 
         let graph = UnifiedGraph::from_json(json).unwrap();
-        let order = graph.topological_order().unwrap();
+        // The order is now cached during from_json, access via private method
+        let order = graph.topological_order();
 
         assert!(order.contains(&"a".to_string()));
         assert!(order.contains(&"b".to_string()));
