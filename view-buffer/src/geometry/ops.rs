@@ -7,6 +7,7 @@ use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::cost::OpCost;
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
+use crate::ops::Domain;
 
 use super::contour::Winding;
 
@@ -386,6 +387,75 @@ impl Op for GeometryOp {
     }
 }
 
+impl GeometryOp {
+    /// Get the input domain this geometry operation expects.
+    pub fn input_domain(&self) -> Domain {
+        match self {
+            // Extraction: Buffer → Contour
+            GeometryOp::ExtractContours { .. } => Domain::Buffer,
+
+            // Rasterization: Contour → Buffer
+            GeometryOp::Rasterize { .. } => Domain::Contour,
+
+            // Measures: Contour → Scalar/Vector
+            GeometryOp::Area { .. }
+            | GeometryOp::Perimeter
+            | GeometryOp::Centroid
+            | GeometryOp::BoundingBox
+            | GeometryOp::Winding
+            | GeometryOp::IsConvex
+            | GeometryOp::ContainsPoint { .. } => Domain::Contour,
+
+            // Contour transforms: Contour → Contour
+            GeometryOp::Translate { .. }
+            | GeometryOp::Scale { .. }
+            | GeometryOp::Flip
+            | GeometryOp::EnsureWinding { .. }
+            | GeometryOp::Simplify { .. }
+            | GeometryOp::ConvexHull
+            | GeometryOp::Normalize { .. }
+            | GeometryOp::ToAbsolute { .. } => Domain::Contour,
+
+            // Pairwise operations: Contour (+ Contour) → Scalar
+            GeometryOp::IoU | GeometryOp::Dice | GeometryOp::HausdorffDistance => Domain::Contour,
+        }
+    }
+
+    /// Get the output domain this geometry operation produces.
+    pub fn output_domain(&self) -> Domain {
+        match self {
+            // Extraction: Buffer → Contour
+            GeometryOp::ExtractContours { .. } => Domain::Contour,
+
+            // Rasterization: Contour → Buffer
+            GeometryOp::Rasterize { .. } => Domain::Buffer,
+
+            // Scalar measures
+            GeometryOp::Area { .. }
+            | GeometryOp::Perimeter
+            | GeometryOp::IsConvex
+            | GeometryOp::ContainsPoint { .. }
+            | GeometryOp::Winding
+            | GeometryOp::IoU
+            | GeometryOp::Dice
+            | GeometryOp::HausdorffDistance => Domain::Scalar,
+
+            // Vector measures (multi-value)
+            GeometryOp::Centroid | GeometryOp::BoundingBox => Domain::Vector,
+
+            // Contour transforms preserve contour domain
+            GeometryOp::Translate { .. }
+            | GeometryOp::Scale { .. }
+            | GeometryOp::Flip
+            | GeometryOp::EnsureWinding { .. }
+            | GeometryOp::Simplify { .. }
+            | GeometryOp::ConvexHull
+            | GeometryOp::Normalize { .. }
+            | GeometryOp::ToAbsolute { .. } => Domain::Contour,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +500,42 @@ mod tests {
             anti_alias: false,
         };
         assert!(op.validate(&[], &[]).is_err());
+    }
+
+    #[test]
+    fn test_geometry_op_domains() {
+        // ExtractContours: Buffer → Contour
+        let extract = GeometryOp::ExtractContours {
+            mode: ExtractMode::External,
+            method: ApproxMethod::Simple,
+            min_area: None,
+        };
+        assert_eq!(extract.input_domain(), Domain::Buffer);
+        assert_eq!(extract.output_domain(), Domain::Contour);
+
+        // Rasterize: Contour → Buffer
+        let rasterize = GeometryOp::Rasterize {
+            width: 100,
+            height: 100,
+            fill_value: 255,
+            background: 0,
+            anti_alias: false,
+        };
+        assert_eq!(rasterize.input_domain(), Domain::Contour);
+        assert_eq!(rasterize.output_domain(), Domain::Buffer);
+
+        // Area: Contour → Scalar
+        let area = GeometryOp::Area { signed: false };
+        assert_eq!(area.input_domain(), Domain::Contour);
+        assert_eq!(area.output_domain(), Domain::Scalar);
+
+        // Translate: Contour → Contour
+        let translate = GeometryOp::Translate { dx: 10.0, dy: 20.0 };
+        assert_eq!(translate.input_domain(), Domain::Contour);
+        assert_eq!(translate.output_domain(), Domain::Contour);
+
+        // Centroid: Contour → Vector
+        assert_eq!(GeometryOp::Centroid.input_domain(), Domain::Contour);
+        assert_eq!(GeometryOp::Centroid.output_domain(), Domain::Vector);
     }
 }

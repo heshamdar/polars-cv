@@ -9,6 +9,7 @@
 //! - Passes ViewBuffers between nodes without serialization
 //! - Supports binary operations between nodes
 //! - Returns Binary for single output ("_output") or Struct for multiple outputs
+//! - Supports typed nodes with domain transitions (Buffer → Contour → Buffer)
 //!
 //! # Optimization Boundaries
 //!
@@ -19,14 +20,31 @@
 //! - Output nodes produce exactly the buffer state at their alias point
 //! - Shared subexpressions are computed once and reused
 //! - No mutation safety issues since each node produces a new buffer
+//!
+//! # Typed Node Outputs
+//!
+//! The graph supports multiple data domains via [`NodeOutput`]:
+//! - Buffer (images/arrays)
+//! - Contours (geometry)
+//! - Scalar (single values)
+//! - Vector (multiple values)
+//!
+//! Domain transitions are validated at execution time, and the "native" sink
+//! format dispatches to the appropriate encoding based on the output domain.
 
 use polars::prelude::*;
+use polars::chunked_array::builder::ListPrimitiveChunkedBuilder;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use view_buffer::{BinaryOp, ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Contour};
+use view_buffer::ops::{Domain, NodeOutput};
+use view_buffer::{BinaryOp, GeometryOp, Op, ViewBuffer, ViewDto, ViewExpr};
 
-use crate::execute::{decode_contour_source, decode_contour_source_with_dims, decode_source, resolve_op};
+use crate::execute::{
+    decode_contour_source, decode_contour_source_with_dims, decode_source, resolve_op,
+};
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
 
 /// Apply a mask to a buffer.
@@ -87,6 +105,336 @@ fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffe
     // BinaryOp::Blend computes: (a/255) * (b/255) * 255 = a * b / 255
     // This gives us the desired: pixel * (mask / 255)
     BinaryOp::Blend.execute(buffer, &effective_mask)
+}
+
+// ============================================================
+// Typed Node Execution Helpers
+// ============================================================
+
+/// Execute a geometry operation with typed domain dispatch.
+///
+/// This handles domain transitions like Buffer → Contour (extract_contours)
+/// and Contour → Buffer (rasterize).
+fn execute_geometry_op(
+    input: NodeOutput,
+    op: &GeometryOp,
+) -> Result<NodeOutput, String> {
+    // Validate input domain
+    let expected_domain = op.input_domain();
+    let actual_domain = input.domain();
+    
+    if !expected_domain.accepts(actual_domain) {
+        return Err(format!(
+            "{}() expects {} input but received {}. Add a domain-converting operation.",
+            op.name(),
+            expected_domain.name(),
+            actual_domain.name()
+        ));
+    }
+
+    match op {
+        GeometryOp::ExtractContours { mode, method, min_area } => {
+            // Buffer → Contour
+            let buffer = input.as_buffer()
+                .ok_or_else(|| "ExtractContours requires Buffer input".to_string())?;
+            let contours = extract_contours(buffer, *mode, *method, *min_area);
+            Ok(NodeOutput::from_contours(contours))
+        }
+        
+        GeometryOp::Rasterize { width, height, fill_value, background, anti_alias } => {
+            // Contour → Buffer
+            let contours = input.as_contours()
+                .ok_or_else(|| "Rasterize requires Contour input".to_string())?;
+            
+            // Rasterize the first contour (primary contour for mask operations)
+            if contours.is_empty() {
+                // Empty contours → empty mask (all background)
+                let mask = ViewBuffer::from_vec_with_shape(
+                    vec![*background; (*height as usize) * (*width as usize)],
+                    vec![*height as usize, *width as usize, 1],
+                );
+                Ok(NodeOutput::from_buffer(mask))
+            } else {
+                // Use the first contour
+                let buffer = rasterize(
+                    &contours[0],
+                    *width,
+                    *height,
+                    *fill_value,
+                    *background,
+                    *anti_alias,
+                );
+                Ok(NodeOutput::from_buffer(buffer))
+            }
+        }
+        
+        // Contour → Scalar measures
+        GeometryOp::Area { signed } => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "Area requires Contour input".to_string())?;
+            let area = if contours.is_empty() {
+                0.0
+            } else {
+                view_buffer::geometry::measures::area(&contours[0], *signed)
+            };
+            Ok(NodeOutput::from_scalar(area))
+        }
+        
+        GeometryOp::Perimeter => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "Perimeter requires Contour input".to_string())?;
+            let perimeter = if contours.is_empty() {
+                0.0
+            } else {
+                view_buffer::geometry::measures::perimeter(&contours[0])
+            };
+            Ok(NodeOutput::from_scalar(perimeter))
+        }
+        
+        GeometryOp::Centroid => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "Centroid requires Contour input".to_string())?;
+            let (cx, cy) = if contours.is_empty() {
+                (0.0, 0.0)
+            } else {
+                let pt = view_buffer::geometry::measures::centroid(&contours[0]);
+                (pt.x, pt.y)
+            };
+            Ok(NodeOutput::from_vector(vec![cx, cy]))
+        }
+        
+        GeometryOp::BoundingBox => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "BoundingBox requires Contour input".to_string())?;
+            let bbox = if contours.is_empty() || contours[0].bounding_box().is_none() {
+                vec![0.0, 0.0, 0.0, 0.0]
+            } else {
+                let bb = contours[0].bounding_box().unwrap();
+                vec![bb.x, bb.y, bb.width, bb.height]
+            };
+            Ok(NodeOutput::from_vector(bbox))
+        }
+        
+        // Contour → Contour transforms
+        GeometryOp::Translate { dx, dy } => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "Translate requires Contour input".to_string())?;
+            let translated: Vec<Contour> = contours
+                .iter()
+                .map(|c| view_buffer::geometry::transforms::translate(c, *dx, *dy))
+                .collect();
+            Ok(NodeOutput::from_contours(translated))
+        }
+        
+        GeometryOp::Scale { sx, sy, origin } => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "Scale requires Contour input".to_string())?;
+            let scaled: Vec<Contour> = contours
+                .iter()
+                .map(|c| view_buffer::geometry::transforms::scale(c, *sx, *sy, *origin))
+                .collect();
+            Ok(NodeOutput::from_contours(scaled))
+        }
+        
+        GeometryOp::Flip => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "Flip requires Contour input".to_string())?;
+            let flipped: Vec<Contour> = contours
+                .iter()
+                .map(|c| view_buffer::geometry::transforms::flip(c))
+                .collect();
+            Ok(NodeOutput::from_contours(flipped))
+        }
+        
+        GeometryOp::Simplify { tolerance } => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "Simplify requires Contour input".to_string())?;
+            let simplified: Vec<Contour> = contours
+                .iter()
+                .map(|c| view_buffer::geometry::transforms::simplify(c, *tolerance))
+                .collect();
+            Ok(NodeOutput::from_contours(simplified))
+        }
+        
+        GeometryOp::ConvexHull => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "ConvexHull requires Contour input".to_string())?;
+            let hulls: Vec<Contour> = contours
+                .iter()
+                .map(|c| view_buffer::geometry::transforms::convex_hull(c))
+                .collect();
+            Ok(NodeOutput::from_contours(hulls))
+        }
+        
+        GeometryOp::Normalize { ref_width, ref_height } => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "Normalize requires Contour input".to_string())?;
+            let normalized: Vec<Contour> = contours
+                .iter()
+                .map(|c| view_buffer::geometry::transforms::normalize(c, *ref_width, *ref_height))
+                .collect();
+            Ok(NodeOutput::from_contours(normalized))
+        }
+        
+        GeometryOp::ToAbsolute { ref_width, ref_height } => {
+            let contours = input.as_contours()
+                .ok_or_else(|| "ToAbsolute requires Contour input".to_string())?;
+            let absolute: Vec<Contour> = contours
+                .iter()
+                .map(|c| view_buffer::geometry::transforms::to_absolute(c, *ref_width, *ref_height))
+                .collect();
+            Ok(NodeOutput::from_contours(absolute))
+        }
+        
+        // For other geometry ops, return an error for now
+        // These can be implemented as needed
+        _ => Err(format!("Geometry operation {} not yet implemented for typed execution", op.name()))
+    }
+}
+
+/// Encode a NodeOutput to bytes based on sink format.
+///
+/// Dispatches to the appropriate encoding based on the output domain.
+fn encode_node_output(
+    output: &NodeOutput,
+    sink: &SinkSpec,
+) -> Result<OutputValue, String> {
+    let format = sink.format.as_str();
+    
+    match (output, format) {
+        // Buffer outputs
+        (NodeOutput::Buffer(buf), "numpy" | "torch") => {
+            let pipeline = PipelineSpec {
+                source: SourceSpec {
+                    format: "blob".to_string(),
+                    dtype: None,
+                    width: None,
+                    height: None,
+                    fill_value: 255,
+                    background: 0,
+                    shape_pipeline: None,
+                },
+                shape_hints: None,
+                ops: vec![],
+                sink: sink.clone(),
+            };
+            crate::execute::encode_sink(buf, &pipeline)
+                .map(OutputValue::Binary)
+                .map_err(|e| format!("Encode error: {e}"))
+        }
+        (NodeOutput::Buffer(buf), "png" | "jpeg" | "blob") => {
+            let pipeline = PipelineSpec {
+                source: SourceSpec {
+                    format: "blob".to_string(),
+                    dtype: None,
+                    width: None,
+                    height: None,
+                    fill_value: 255,
+                    background: 0,
+                    shape_pipeline: None,
+                },
+                shape_hints: None,
+                ops: vec![],
+                sink: sink.clone(),
+            };
+            crate::execute::encode_sink(buf, &pipeline)
+                .map(OutputValue::Binary)
+                .map_err(|e| format!("Encode error: {e}"))
+        }
+        
+        // Native format dispatches based on domain
+        (NodeOutput::Buffer(_), "native") => {
+            Err("Buffer outputs require explicit format (numpy/png/jpeg). Use 'native' for contours/scalars.".to_string())
+        }
+        (NodeOutput::Contours(contours), "native") => {
+            // Return as contour struct data
+            Ok(OutputValue::Contours(contours.clone()))
+        }
+        (NodeOutput::Scalar(val), "native") => {
+            Ok(OutputValue::Scalar(*val))
+        }
+        (NodeOutput::Vector(vals), "native") => {
+            Ok(OutputValue::Vector(vals.clone()))
+        }
+        
+        // Type mismatches
+        (NodeOutput::Contours(_), "numpy" | "png" | "jpeg") => {
+            Err(format!(
+                "Cannot encode Contours as {}. Use 'native' or add .rasterize() first.",
+                format
+            ))
+        }
+        (NodeOutput::Scalar(_), "numpy" | "png" | "jpeg") => {
+            Err(format!(
+                "Cannot encode Scalar as {}. Use 'native' format.",
+                format
+            ))
+        }
+        (NodeOutput::Vector(_), "numpy" | "png" | "jpeg") => {
+            Err(format!(
+                "Cannot encode Vector as {}. Use 'native' format.",
+                format
+            ))
+        }
+        
+        _ => Err(format!("Unsupported sink format: {}", format))
+    }
+}
+
+/// Output value from encoding - can be binary, contour struct, or scalar.
+#[derive(Debug)]
+enum OutputValue {
+    Binary(Vec<u8>),
+    Contours(Arc<Vec<Contour>>),
+    Scalar(f64),
+    Vector(Arc<Vec<f64>>),
+}
+
+/// Convert contours to Polars AnyValue representation.
+fn contours_to_polars_value(contours: &[Contour]) -> PolarsResult<AnyValue<'static>> {
+    if contours.is_empty() {
+        // Return null for empty contours
+        return Ok(AnyValue::Null);
+    }
+    
+    // Use the first contour (primary contour)
+    let contour = &contours[0];
+    
+    // Build exterior points as List of Struct {x: f64, y: f64}
+    let points: Vec<AnyValue<'static>> = contour.exterior.iter()
+        .map(|p| {
+            let values = vec![AnyValue::Float64(p.x), AnyValue::Float64(p.y)];
+            let fields = vec![
+                Field::new("x".into(), DataType::Float64),
+                Field::new("y".into(), DataType::Float64),
+            ];
+            AnyValue::StructOwned(Box::new((values, fields)))
+        })
+        .collect();
+    
+    // Create exterior as List
+    let point_dtype = DataType::Struct(vec![
+        Field::new("x".into(), DataType::Float64),
+        Field::new("y".into(), DataType::Float64),
+    ]);
+    let exterior_series = Series::from_any_values_and_dtype(
+        "exterior".into(),
+        &points,
+        &point_dtype,
+        true,
+    )?;
+    
+    // Build the contour struct: {exterior: List<{x, y}>, interiors: null}
+    let contour_values = vec![
+        AnyValue::List(exterior_series),
+        AnyValue::Null, // interiors (holes) - not yet implemented
+    ];
+    let contour_fields = vec![
+        Field::new("exterior".into(), DataType::List(Box::new(point_dtype.clone()))),
+        Field::new("interiors".into(), DataType::Null),
+    ];
+    
+    Ok(AnyValue::StructOwned(Box::new((contour_values, contour_fields))))
 }
 
 /// A node in the pipeline graph.
@@ -210,7 +558,7 @@ impl UnifiedGraph {
     ///
     /// Returns:
     /// - Binary column if single output ("_output" only)
-    /// - Struct column with named Binary fields if multiple outputs
+    /// - Struct column with named fields (Binary/Float64/Struct) if multiple outputs
     ///
     /// # Optimizations
     ///
@@ -219,6 +567,14 @@ impl UnifiedGraph {
     /// 2. **Batch-level panic catching**: A single catch_unwind wraps the
     ///    entire batch for reduced overhead vs per-row catching.
     /// 3. **Cached topological order**: Computed once during from_json().
+    ///
+    /// # Typed Node Support
+    ///
+    /// The executor now handles typed nodes via `NodeOutput`, supporting:
+    /// - Buffer (images/arrays) → Binary encoding
+    /// - Contours (geometry) → Struct encoding with "native" format
+    /// - Scalar (single values) → Float64 with "native" format
+    /// - Vector (multiple values) → List/Struct with "native" format
     pub fn execute(
         &self,
         inputs: &[Series],
@@ -259,8 +615,17 @@ impl UnifiedGraph {
             })
             .collect();
 
-        // Prepare result vectors for each output
-        let mut results: HashMap<String, Vec<Option<Vec<u8>>>> = HashMap::new();
+        // Prepare result storage for typed outputs
+        // Each output can be Binary, Scalar, or Contour data
+        #[derive(Clone)]
+        enum RowResult {
+            Binary(Option<Vec<u8>>),
+            Scalar(Option<f64>),
+            Vector(Option<Vec<f64>>),
+            Contours(Option<Vec<Contour>>),
+        }
+        
+        let mut results: HashMap<String, Vec<RowResult>> = HashMap::new();
         for alias in &output_aliases {
             results.insert((*alias).clone(), Vec::with_capacity(len));
         }
@@ -272,8 +637,8 @@ impl UnifiedGraph {
         // the overhead of setting up unwinding machinery per-row.
         let batch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for row_idx in 0..len {
-                // Buffer cache for this row
-                let mut buffers: HashMap<String, ViewBuffer> = HashMap::new();
+                // Node output cache for this row (typed outputs)
+                let mut node_outputs: HashMap<String, NodeOutput> = HashMap::new();
 
                 // Execute nodes in order
                 for node_id in order {
@@ -286,7 +651,7 @@ impl UnifiedGraph {
                     // A node is a "root" if it has a column binding (reads from DataFrame column)
                     // Nodes can have both column bindings AND upstream (e.g., contour with shape inference)
                     let has_column_binding = self.column_bindings.contains_key(node_id);
-                    let buffer = if has_column_binding {
+                    let node_input: Option<NodeOutput> = if has_column_binding {
                         // Root node: get input from column binding
                         let col_idx = self.column_bindings.get(node_id).copied().unwrap_or(0);
 
@@ -315,11 +680,16 @@ impl UnifiedGraph {
                                                 "shape_pipeline missing 'node_id'".to_string()
                                             })?;
 
-                                        // Look up the referenced buffer
-                                        let shape_buffer = buffers.get(shape_node_id).ok_or_else(|| {
+                                        // Look up the referenced output
+                                        let shape_output = node_outputs.get(shape_node_id).ok_or_else(|| {
                                             format!(
                                                 "Shape reference '{shape_node_id}' not found. Ensure the shape source is defined before this contour pipeline."
                                             )
+                                        })?;
+                                        
+                                        // Get buffer from output
+                                        let shape_buffer = shape_output.as_buffer().ok_or_else(|| {
+                                            format!("Shape reference '{shape_node_id}' must be a Buffer, not {:?}", shape_output.domain())
                                         })?;
 
                                         // Get dimensions from buffer shape (HWC layout: [height, width, channels])
@@ -340,7 +710,7 @@ impl UnifiedGraph {
                                         match decode_contour_source_with_dims(
                                             &value, width, height, fill_value, background,
                                         ) {
-                                            Ok(buf) => Some(buf),
+                                            Ok(buf) => Some(NodeOutput::from_buffer(buf)),
                                             Err(e) => return Err(format!("Contour decode error: {e}")),
                                         }
                                     } else {
@@ -358,7 +728,7 @@ impl UnifiedGraph {
                                             &temp_spec,
                                             expr_columns,
                                         ) {
-                                            Ok(buf) => Some(buf),
+                                            Ok(buf) => Some(NodeOutput::from_buffer(buf)),
                                             Err(e) => return Err(format!("Contour decode error: {e}")),
                                         }
                                     }
@@ -389,7 +759,7 @@ impl UnifiedGraph {
                                     // Copy the bytes to avoid any lifetime issues
                                     let bytes_owned = bytes.to_vec();
                                     match decode_source(&bytes_owned, &temp_spec) {
-                                        Ok(buf) => Some(buf),
+                                        Ok(buf) => Some(NodeOutput::from_buffer(buf)),
                                         Err(e) => return Err(format!("Decode error: {e}")),
                                     }
                                 }
@@ -397,12 +767,12 @@ impl UnifiedGraph {
                             }
                         }
                     } else {
-                        // Non-root node: get input from upstream node's buffer
+                        // Non-root node: get input from upstream node's output
                         let upstream_id = &node.upstream[0];
-                        buffers.get(upstream_id).cloned()
+                        node_outputs.get(upstream_id).cloned()
                     };
 
-                    if let Some(input_buffer) = buffer {
+                    if let Some(input) = node_input {
                         // Get ViewDtos - use precompiled if available, otherwise resolve per-row
                         let view_dtos: Vec<ViewDto> = if let Some(cached) = precompiled.get(node_id)
                         {
@@ -420,76 +790,74 @@ impl UnifiedGraph {
                             dtos
                         };
 
-                        // Build expression and execute, handling binary ops specially
-                        let mut current_buffer = input_buffer;
+                        // Execute operations with typed dispatch
+                        let mut current_output = input;
 
                         for view_dto in view_dtos {
-                            current_buffer = match view_dto {
-                                ViewDto::Binary { op, other_node_id } => {
-                                    // Binary operation: fetch the other buffer and apply
-                                    match buffers.get(&other_node_id) {
-                                        Some(other_buffer) => op.execute(&current_buffer, other_buffer),
-                                        None => {
-                                            return Err(format!(
-                                                "Binary op references unknown node '{other_node_id}'"
-                                            ))
-                                        }
+                            current_output = match &view_dto {
+                                ViewDto::Geometry(geo_op) => {
+                                    // Use typed geometry execution
+                                    match execute_geometry_op(current_output, geo_op) {
+                                        Ok(out) => out,
+                                        Err(e) => return Err(e),
                                     }
                                 }
-                                ViewDto::ApplyMask {
-                                    mask_node_id,
-                                    invert,
-                                } => {
-                                    // Mask operation: fetch the mask buffer and apply
-                                    match buffers.get(&mask_node_id) {
-                                        Some(mask_buffer) => {
-                                            apply_mask(&current_buffer, mask_buffer, invert)
-                                        }
-                                        None => {
-                                            return Err(format!(
-                                                "ApplyMask references unknown node '{mask_node_id}'"
-                                            ))
-                                        }
-                                    }
+                                ViewDto::Binary { op, other_node_id } => {
+                                    // Binary operation: both inputs must be buffers
+                                    let current_buf = current_output.as_buffer()
+                                        .ok_or_else(|| format!("Binary op requires Buffer, got {:?}", current_output.domain()))?;
+                                    let other_output = node_outputs.get(other_node_id)
+                                        .ok_or_else(|| format!("Binary op references unknown node '{other_node_id}'"))?;
+                                    let other_buf = other_output.as_buffer()
+                                        .ok_or_else(|| format!("Binary op other operand must be Buffer, got {:?}", other_output.domain()))?;
+                                    let result = op.execute(current_buf, other_buf);
+                                    NodeOutput::from_buffer(result)
+                                }
+                                ViewDto::ApplyMask { mask_node_id, invert } => {
+                                    // Mask operation: buffer masked by another buffer
+                                    let current_buf = current_output.as_buffer()
+                                        .ok_or_else(|| format!("ApplyMask requires Buffer, got {:?}", current_output.domain()))?;
+                                    let mask_output = node_outputs.get(mask_node_id)
+                                        .ok_or_else(|| format!("ApplyMask references unknown node '{mask_node_id}'"))?;
+                                    let mask_buf = mask_output.as_buffer()
+                                        .ok_or_else(|| format!("ApplyMask mask must be Buffer, got {:?}", mask_output.domain()))?;
+                                    let result = apply_mask(current_buf, mask_buf, *invert);
+                                    NodeOutput::from_buffer(result)
                                 }
                                 _ => {
-                                    // Regular operation: use ViewExpr
-                                    let expr = ViewExpr::new_source(current_buffer);
-                                    expr.apply_op(view_dto).plan().execute()
+                                    // Regular buffer operation: use ViewExpr
+                                    let current_buf = current_output.as_buffer()
+                                        .ok_or_else(|| format!("{} requires Buffer input, got {:?}", view_dto.name(), current_output.domain()))?;
+                                    let expr = ViewExpr::new_source((**current_buf).clone());
+                                    let result = expr.apply_op(view_dto.clone()).plan().execute();
+                                    NodeOutput::from_buffer(result)
                                 }
                             };
                         }
 
-                        buffers.insert(node_id.clone(), current_buffer);
+                        node_outputs.insert(node_id.clone(), current_output);
                     }
                 }
 
-                // Encode each output
+                // Encode each output based on its domain and sink format
                 for (alias, spec) in &self.outputs {
-                    if let Some(buffer) = buffers.get(&spec.node) {
-                        // Create pipeline spec for encoding
-                        let encode_spec = PipelineSpec {
-                            source: SourceSpec {
-                                format: "blob".to_string(),
-                                dtype: None,
-                                width: None,
-                                height: None,
-                                fill_value: 255,
-                                background: 0,
-                                shape_pipeline: None,
-                            },
-                            shape_hints: None,
-                            ops: vec![],
-                            sink: spec.sink.clone(),
-                        };
-                        match crate::execute::encode_sink(buffer, &encode_spec) {
+                    if let Some(output) = node_outputs.get(&spec.node) {
+                        match encode_node_output(output, &spec.sink) {
                             Ok(encoded) => {
-                                results.get_mut(alias).unwrap().push(Some(encoded));
+                                let row_result = match encoded {
+                                    OutputValue::Binary(bytes) => RowResult::Binary(Some(bytes)),
+                                    OutputValue::Scalar(val) => RowResult::Scalar(Some(val)),
+                                    OutputValue::Vector(vals) => RowResult::Vector(Some((*vals).clone())),
+                                    OutputValue::Contours(contours) => RowResult::Contours(Some((*contours).clone())),
+                                };
+                                results.get_mut(alias).unwrap().push(row_result);
                             }
-                            Err(e) => return Err(format!("Encode error: {e}")),
+                            Err(e) => return Err(format!("Encode error for '{}': {}", alias, e)),
                         }
                     } else {
-                        results.get_mut(alias).unwrap().push(None);
+                        // No output for this node - push null based on expected type
+                        // Default to Binary null for now
+                        results.get_mut(alias).unwrap().push(RowResult::Binary(None));
                     }
                 }
             }
@@ -518,19 +886,181 @@ impl UnifiedGraph {
 
         // Build output based on single vs multi output
         if self.is_single_output() {
-            // Single output: return Binary column directly
-            let data = results.get("_output").unwrap().clone();
-            let output_ca =
-                BinaryChunked::from_iter_options(inputs[0].name().clone(), data.into_iter());
-            Ok(output_ca.into_series())
+            // Single output: determine type and return appropriate column
+            let data = results.get("_output").unwrap();
+            
+            // Check what type of results we have
+            if data.is_empty() {
+                let output_ca = BinaryChunked::from_iter_options(
+                    inputs[0].name().clone(),
+                    std::iter::empty::<Option<Vec<u8>>>(),
+                );
+                return Ok(output_ca.into_series());
+            }
+            
+            match &data[0] {
+                RowResult::Binary(_) => {
+                    let binary_data: Vec<Option<Vec<u8>>> = data.iter().map(|r| {
+                        match r {
+                            RowResult::Binary(b) => b.clone(),
+                            _ => None,
+                        }
+                    }).collect();
+                    let output_ca = BinaryChunked::from_iter_options(
+                        inputs[0].name().clone(),
+                        binary_data.into_iter(),
+                    );
+                    Ok(output_ca.into_series())
+                }
+                RowResult::Scalar(_) => {
+                    let scalar_data: Vec<Option<f64>> = data.iter().map(|r| {
+                        match r {
+                            RowResult::Scalar(s) => *s,
+                            _ => None,
+                        }
+                    }).collect();
+                    let output_ca = Float64Chunked::from_iter_options(
+                        inputs[0].name().clone(),
+                        scalar_data.into_iter(),
+                    );
+                    Ok(output_ca.into_series())
+                }
+                RowResult::Contours(_) => {
+                    // Build contour struct series
+                    let values: PolarsResult<Vec<AnyValue<'static>>> = data.iter().map(|r| {
+                        match r {
+                            RowResult::Contours(Some(contours)) => contours_to_polars_value(contours),
+                            _ => Ok(AnyValue::Null),
+                        }
+                    }).collect();
+                    let values = values?;
+                    
+                    // Infer dtype from first non-null value
+                    let dtype = values.iter()
+                        .find(|v| !matches!(v, AnyValue::Null))
+                        .map(|v| v.dtype())
+                        .unwrap_or(DataType::Null);
+                    
+                    let series = Series::from_any_values_and_dtype(
+                        inputs[0].name().clone(),
+                        &values,
+                        &dtype,
+                        true,
+                    )?;
+                    Ok(series)
+                }
+                RowResult::Vector(_) => {
+                    // Build list of f64 series
+                    let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                        inputs[0].name().clone(),
+                        data.len(),
+                        4,  // Initial capacity for each list
+                        DataType::Float64,
+                    );
+                    
+                    for r in data.iter() {
+                        match r {
+                            RowResult::Vector(Some(vals)) => {
+                                builder.append_slice(vals);
+                            }
+                            _ => {
+                                builder.append_null();
+                            }
+                        }
+                    }
+                    
+                    Ok(builder.finish().into_series())
+                }
+            }
         } else {
-            // Multi output: return Struct column
+            // Multi output: return Struct column with appropriate field types
             let mut fields: Vec<Series> = Vec::with_capacity(output_aliases.len());
+            
             for alias in &output_aliases {
-                let data = results.get(*alias).unwrap().clone();
-                let ca =
-                    BinaryChunked::from_iter_options(PlSmallStr::from_str(alias), data.into_iter());
-                fields.push(ca.into_series());
+                let data = results.get(*alias).unwrap();
+                
+                if data.is_empty() {
+                    let ca = BinaryChunked::from_iter_options(
+                        PlSmallStr::from_str(alias),
+                        std::iter::empty::<Option<Vec<u8>>>(),
+                    );
+                    fields.push(ca.into_series());
+                    continue;
+                }
+                
+                // Determine type from first element
+                let field_series = match &data[0] {
+                    RowResult::Binary(_) => {
+                        let binary_data: Vec<Option<Vec<u8>>> = data.iter().map(|r| {
+                            match r {
+                                RowResult::Binary(b) => b.clone(),
+                                _ => None,
+                            }
+                        }).collect();
+                        let ca = BinaryChunked::from_iter_options(
+                            PlSmallStr::from_str(alias),
+                            binary_data.into_iter(),
+                        );
+                        ca.into_series()
+                    }
+                    RowResult::Scalar(_) => {
+                        let scalar_data: Vec<Option<f64>> = data.iter().map(|r| {
+                            match r {
+                                RowResult::Scalar(s) => *s,
+                                _ => None,
+                            }
+                        }).collect();
+                        let ca = Float64Chunked::from_iter_options(
+                            PlSmallStr::from_str(alias),
+                            scalar_data.into_iter(),
+                        );
+                        ca.into_series()
+                    }
+                    RowResult::Contours(_) => {
+                        let values: PolarsResult<Vec<AnyValue<'static>>> = data.iter().map(|r| {
+                            match r {
+                                RowResult::Contours(Some(contours)) => contours_to_polars_value(contours),
+                                _ => Ok(AnyValue::Null),
+                            }
+                        }).collect();
+                        let values = values?;
+                        
+                        let dtype = values.iter()
+                            .find(|v| !matches!(v, AnyValue::Null))
+                            .map(|v| v.dtype())
+                            .unwrap_or(DataType::Null);
+                        
+                        Series::from_any_values_and_dtype(
+                            PlSmallStr::from_str(alias),
+                            &values,
+                            &dtype,
+                            true,
+                        )?
+                    }
+                    RowResult::Vector(_) => {
+                        let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                            PlSmallStr::from_str(alias),
+                            data.len(),
+                            4,  // Initial capacity for each list
+                            DataType::Float64,
+                        );
+                        
+                        for r in data.iter() {
+                            match r {
+                                RowResult::Vector(Some(vals)) => {
+                                    builder.append_slice(vals);
+                                }
+                                _ => {
+                                    builder.append_null();
+                                }
+                            }
+                        }
+                        
+                        builder.finish().into_series()
+                    }
+                };
+                
+                fields.push(field_series);
             }
 
             let output_name = inputs[0].name().clone();

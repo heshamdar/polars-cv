@@ -26,7 +26,7 @@ from polars_vision import Pipeline
 from polars_vision.geometry.schemas import contour_from_points
 
 if TYPE_CHECKING:
-    from _pytest.fixtures import FixtureRequest
+    pass
 
 
 def create_synthetic_image_blob(

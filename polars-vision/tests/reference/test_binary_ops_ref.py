@@ -471,7 +471,8 @@ class TestBinaryOpsPolarsVision:
 
         # Where denominator is non-zero: compute scaled ratio
         expected[nonzero_mask] = np.clip(
-            (img1[nonzero_mask].astype(np.uint32) * 255) // img2[nonzero_mask].astype(np.uint32),
+            (img1[nonzero_mask].astype(np.uint32) * 255)
+            // img2[nonzero_mask].astype(np.uint32),
             0,
             255,
         ).astype(np.uint8)
