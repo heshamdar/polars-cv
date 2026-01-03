@@ -187,6 +187,7 @@ impl PipelineSpec {
     /// Check if the pipeline uses any operations that are known to have restrictions.
     ///
     /// Returns Ok(()) if the pipeline is valid, or an error describing the issue.
+    #[allow(dead_code)]
     pub fn validate(&self) -> PolarsResult<()> {
         // Validate contour source parameters
         if self.source.format == "contour" {

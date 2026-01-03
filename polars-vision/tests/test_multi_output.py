@@ -1,316 +1,280 @@
 """
-Tests for multi-output pipeline support.
+Tests for multi-output pipeline support using LazyPipelineExpr composition.
 
 This module tests the alias functionality and multi-output sink mode
-for both Pipeline (eager) and LazyPipelineExpr (lazy) modes.
+using the LazyPipelineExpr composition pattern with .pipe() and .alias().
 """
 
 from __future__ import annotations
 
+import io
 from typing import TYPE_CHECKING
 
+import numpy as np
 import polars as pl
 import pytest
+from PIL import Image
 
-from polars_vision import Pipeline
-from polars_vision.lazy import LazyPipelineExpr
+from polars_vision import Pipeline, numpy_from_bytes
 
 if TYPE_CHECKING:
     pass
 
 
-class TestPipelineAlias:
-    """Tests for Pipeline.alias() method."""
-
-    def test_alias_basic(self) -> None:
-        """Test basic alias creation."""
-        pipe = Pipeline().source("image_bytes").alias("original")
-
-        assert "original" in pipe.get_aliases()
-        assert pipe.get_aliases()["original"] == -1  # After source, before ops
-
-    def test_alias_after_operation(self) -> None:
-        """Test alias after an operation."""
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .resize(height=100, width=200)
-            .alias("resized")
-        )
-
-        aliases = pipe.get_aliases()
-        assert "resized" in aliases
-        assert aliases["resized"] == 0  # After first operation (index 0)
-
-    def test_multiple_aliases(self) -> None:
-        """Test multiple aliases in one pipeline."""
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .alias("original")
-            .resize(height=100, width=200)
-            .alias("resized")
-            .grayscale()
-            .alias("gray")
-        )
-
-        aliases = pipe.get_aliases()
-        assert len(aliases) == 3
-        assert "original" in aliases
-        assert "resized" in aliases
-        assert "gray" in aliases
-        # Check ordering
-        assert aliases["original"] < aliases["resized"] < aliases["gray"]
-
-    def test_alias_duplicate_raises(self) -> None:
-        """Test that duplicate alias names raise an error."""
-        pipe = Pipeline().source("image_bytes").alias("test")
-
-        with pytest.raises(ValueError, match="already defined"):
-            pipe.resize(height=100, width=200).alias("test")
-
-    def test_alias_preserved_through_clone(self) -> None:
-        """Test that aliases are preserved when cloning pipeline."""
-        pipe1 = Pipeline().source("image_bytes").alias("original")
-        pipe2 = pipe1.resize(height=100, width=200)
-
-        assert "original" in pipe1.get_aliases()
-        assert "original" in pipe2.get_aliases()
+@pytest.fixture
+def test_image_bytes() -> bytes:
+    """Create a test image as bytes."""
+    img = Image.new("RGB", (100, 100), (128, 64, 192))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
-class TestPipelineMultiSink:
-    """Tests for Pipeline.sink() with multi-output dict."""
-
-    def test_single_sink_backward_compatible(self) -> None:
-        """Test that single format string still works."""
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-
-        assert not pipe.is_multi_output()
-        assert pipe._sink is not None
-
-    def test_multi_sink_with_aliases(self) -> None:
-        """Test multi-output sink with aliased pipeline."""
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .alias("original")
-            .resize(height=100, width=200)
-            .alias("resized")
-        )
-
-        pipe_with_sink = pipe.sink({"original": "png", "resized": "numpy"})
-
-        assert pipe_with_sink.is_multi_output()
-        multi_sink = pipe_with_sink.get_multi_sink()
-        assert multi_sink is not None
-        assert "original" in multi_sink.outputs
-        assert "resized" in multi_sink.outputs
-
-    def test_multi_sink_undefined_alias_raises(self) -> None:
-        """Test that undefined alias in sink raises error."""
-        pipe = Pipeline().source("image_bytes").alias("defined")
-
-        with pytest.raises(ValueError, match="not found"):
-            pipe.sink({"undefined": "numpy"})
-
-    def test_multi_sink_validates_formats(self) -> None:
-        """Test that invalid formats are rejected."""
-        pipe = Pipeline().source("image_bytes").alias("test")
-
-        with pytest.raises(ValueError, match="Invalid format"):
-            pipe.sink({"test": "invalid_format"})
+@pytest.fixture
+def test_df(test_image_bytes: bytes) -> pl.DataFrame:
+    """Create a test DataFrame with image bytes."""
+    return pl.DataFrame({"image": [test_image_bytes]})
 
 
 class TestLazyPipelineExprAlias:
     """Tests for LazyPipelineExpr.alias() method."""
 
-    def test_alias_creates_named_node(self) -> None:
-        """Test that alias creates a named node."""
-        pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
-        expr = LazyPipelineExpr(
-            column=pl.col("image"),
-            pipeline=pipe,
-        ).alias("processed")
+    def test_alias_basic(self, test_df: pl.DataFrame) -> None:
+        """Test basic alias creation on LazyPipelineExpr."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
+        ).alias("resized")
 
-        assert expr.alias_name == "processed"
+        assert base.alias_name == "resized"
 
-    def test_alias_preserves_node_id(self) -> None:
-        """Test that alias preserves the node ID."""
-        pipe = Pipeline().source("image_bytes")
-        expr1 = LazyPipelineExpr(column=pl.col("image"), pipeline=pipe)
-        expr2 = expr1.alias("named")
+    def test_alias_chained_with_pipe(self, test_df: pl.DataFrame) -> None:
+        """Test alias with .pipe() chaining."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
+        ).alias("resized")
 
-        assert expr1.node_id == expr2.node_id
-        assert expr2.alias_name == "named"
+        gray = base.pipe(Pipeline().grayscale()).alias("gray")
 
-    def test_repr_includes_alias(self) -> None:
-        """Test that repr includes alias information."""
-        pipe = Pipeline().source("image_bytes")
-        expr = LazyPipelineExpr(column=pl.col("image"), pipeline=pipe).alias("test")
+        assert base.alias_name == "resized"
+        assert gray.alias_name == "gray"
 
-        repr_str = repr(expr)
-        assert "alias='test'" in repr_str
+    def test_multiple_aliases_in_chain(self, test_df: pl.DataFrame) -> None:
+        """Test multiple aliases in a chain using .pipe()."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes")
+        ).alias("original")
+
+        resized = base.pipe(Pipeline().resize(height=50, width=50)).alias("resized")
+        gray = resized.pipe(Pipeline().grayscale()).alias("gray")
+
+        assert base.alias_name == "original"
+        assert resized.alias_name == "resized"
+        assert gray.alias_name == "gray"
 
 
-class TestPipelineGraphMultiOutput:
-    """Tests for PipelineGraph with multi-output mode."""
+class TestMultiOutputSink:
+    """Tests for multi-output sink with aliases."""
 
-    def test_graph_tracks_aliases(self) -> None:
-        """Test that graph correctly tracks node aliases."""
-        from polars_vision._graph import PipelineGraph
-
-        pipe = Pipeline().source("image_bytes")
-        graph = PipelineGraph()
-
-        graph.add_node(
-            node_id="node1",
-            pipeline=pipe,
-            column=pl.col("image"),
-            alias="original",
+    def test_single_sink_backward_compatible(self, test_df: pl.DataFrame) -> None:
+        """Test that single format string still works."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
         )
 
-        assert "original" in graph._alias_to_node
-        assert graph._alias_to_node["original"] == "node1"
+        result = test_df.with_columns(output=base.sink("numpy"))
+        assert result["output"].dtype == pl.Binary
 
-    def test_graph_set_multi_output(self) -> None:
-        """Test setting multiple outputs on graph."""
-        from polars_vision._graph import PipelineGraph
+    def test_multi_sink_with_aliases(self, test_df: pl.DataFrame) -> None:
+        """Test multi-output sink with aliased expressions."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
+        ).alias("resized")
 
-        pipe = Pipeline().source("image_bytes")
-        graph = PipelineGraph()
+        gray = base.pipe(Pipeline().grayscale()).alias("gray")
 
-        graph.add_node("node1", pipe, pl.col("image"), alias="img1")
-        graph.add_node("node2", pipe, pl.col("image"), alias="img2")
+        result = gray.sink({"resized": "numpy", "gray": "numpy"})
+        df_result = test_df.with_columns(output=result)
 
-        graph.set_multi_output({"img1": "numpy", "img2": "png"})
+        assert df_result["output"].dtype == pl.Struct
+        fields = df_result["output"].struct.fields
+        assert "resized" in fields
+        assert "gray" in fields
 
-        assert graph.is_multi_output()
-        assert "img1" in graph._multi_output.outputs
-        assert "img2" in graph._multi_output.outputs
-
-    def test_graph_multi_output_undefined_alias_raises(self) -> None:
-        """Test that undefined alias raises error."""
-        from polars_vision._graph import PipelineGraph
-
-        pipe = Pipeline().source("image_bytes")
-        graph = PipelineGraph()
-        graph.add_node("node1", pipe, pl.col("image"), alias="defined")
+    def test_multi_sink_undefined_alias_raises(self) -> None:
+        """Test that undefined alias in sink raises error."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes")
+        ).alias("defined")
 
         with pytest.raises(ValueError, match="not found"):
-            graph.set_multi_output({"undefined": "numpy"})
+            base.sink({"undefined": "numpy"})
 
-    def test_graph_topological_order_multi_output(self) -> None:
-        """Test topological order includes all output nodes."""
-        from polars_vision._graph import PipelineGraph
+    def test_multi_sink_three_outputs(self, test_df: pl.DataFrame) -> None:
+        """Test multi-output with three aliases."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
+        ).alias("resized")
 
-        pipe = Pipeline().source("image_bytes")
-        graph = PipelineGraph()
+        gray = base.pipe(Pipeline().grayscale()).alias("gray")
+        thresh = gray.pipe(Pipeline().threshold(128)).alias("thresh")
 
-        graph.add_node("a", pipe, pl.col("image"), alias="out_a")
-        graph.add_node("b", pipe, pl.col("image"), upstream=["a"], alias="out_b")
-        graph.add_node("c", pipe, pl.col("image"), upstream=["b"])
+        result = thresh.sink({
+            "resized": "numpy",
+            "gray": "numpy",
+            "thresh": "numpy",
+        })
+        df_result = test_df.with_columns(output=result)
 
-        graph.set_multi_output({"out_a": "numpy", "out_b": "png"})
+        fields = df_result["output"].struct.fields
+        assert len(fields) == 3
+        assert "resized" in fields
+        assert "gray" in fields
+        assert "thresh" in fields
 
-        order = graph.topological_order()
-        assert "a" in order
-        assert "b" in order
-        # c is not reachable from outputs so may not be included
+        # Verify shapes
+        resized = numpy_from_bytes(df_result["output"].struct.field("resized")[0])
+        gray_arr = numpy_from_bytes(df_result["output"].struct.field("gray")[0])
+        thresh_arr = numpy_from_bytes(df_result["output"].struct.field("thresh")[0])
 
-    def test_graph_get_output_nodes(self) -> None:
-        """Test getting output node IDs."""
-        from polars_vision._graph import PipelineGraph
-
-        pipe = Pipeline().source("image_bytes")
-        graph = PipelineGraph()
-
-        graph.add_node("node1", pipe, pl.col("image"), alias="out1")
-        graph.add_node("node2", pipe, pl.col("image"), alias="out2")
-
-        graph.set_multi_output({"out1": "numpy", "out2": "png"})
-
-        output_nodes = graph.get_output_nodes()
-        assert "node1" in output_nodes
-        assert "node2" in output_nodes
+        assert resized.shape == (50, 50, 3)
+        assert gray_arr.shape == (50, 50, 1)
+        assert thresh_arr.shape == (50, 50, 1)
 
 
-class TestMultiSinkSerialization:
-    """Tests for multi-output serialization."""
+class TestMultiOutputFormats:
+    """Tests for different output formats in multi-output mode."""
 
-    def test_pipeline_to_json_single_sink(self) -> None:
-        """Test JSON serialization with single sink."""
-        import json
+    def test_mixed_formats(self, test_df: pl.DataFrame) -> None:
+        """Test that different formats can be mixed in multi-output."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
+        ).alias("numpy_out")
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        json_str = pipe._to_json()
-        data = json.loads(json_str)
+        gray = base.pipe(Pipeline().grayscale()).alias("png_out")
 
-        assert "sink" in data
-        assert "multi_sink" not in data
+        result = gray.sink({
+            "numpy_out": "numpy",
+            "png_out": "png",
+        })
+        df_result = test_df.with_columns(output=result)
 
-    def test_pipeline_to_json_multi_sink(self) -> None:
-        """Test JSON serialization with multi-sink."""
-        import json
+        fields = df_result["output"].struct.fields
+        assert "numpy_out" in fields
+        assert "png_out" in fields
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .alias("original")
-            .resize(height=100, width=200)
-            .alias("resized")
+        # PNG should be a valid PNG image
+        png_bytes = df_result["output"].struct.field("png_out")[0]
+        assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+class TestBranchingPipelines:
+    """Tests for branching pipelines using .pipe() and merge_pipe()."""
+
+    def test_branch_from_base(self, test_df: pl.DataFrame) -> None:
+        """Test branching from a base expression."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
+        ).alias("base")
+
+        # Two branches from base
+        gray = base.pipe(Pipeline().grayscale()).alias("gray")
+        blur = base.pipe(Pipeline().blur(3)).alias("blur")
+
+        # Merge branches
+        merged = gray.merge_pipe(blur)
+
+        result = merged.sink({
+            "base": "numpy",
+            "gray": "numpy",
+            "blur": "numpy",
+        })
+        df_result = test_df.with_columns(output=result)
+
+        fields = df_result["output"].struct.fields
+        assert "base" in fields
+        assert "gray" in fields
+        assert "blur" in fields
+
+    def test_diamond_pattern(self, test_df: pl.DataFrame) -> None:
+        """Test diamond pattern: base -> (branch1, branch2) -> merged."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
+        ).alias("base")
+
+        gray = base.pipe(Pipeline().grayscale()).alias("gray")
+        blur = base.pipe(Pipeline().blur(3)).alias("blur")
+
+        # Both branches merge
+        merged = gray.merge_pipe(blur)
+
+        result = merged.sink({
+            "base": "numpy",
+            "gray": "numpy",
+            "blur": "numpy",
+        })
+        df_result = test_df.with_columns(output=result)
+
+        base_arr = numpy_from_bytes(df_result["output"].struct.field("base")[0])
+        gray_arr = numpy_from_bytes(df_result["output"].struct.field("gray")[0])
+        blur_arr = numpy_from_bytes(df_result["output"].struct.field("blur")[0])
+
+        assert base_arr.shape == (50, 50, 3)
+        assert gray_arr.shape == (50, 50, 1)
+        assert blur_arr.shape == (50, 50, 3)
+
+
+class TestPipeMethod:
+    """Tests specifically for the .pipe() method."""
+
+    def test_pipe_without_source_continues(self, test_df: pl.DataFrame) -> None:
+        """Test that .pipe() without source continues from upstream."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
         )
-        pipe = pipe.sink({"original": "png", "resized": "numpy"})
 
-        json_str = pipe._to_json()
-        data = json.loads(json_str)
+        # No source = continuation
+        gray = base.pipe(Pipeline().grayscale())
 
-        assert "multi_sink" in data
-        assert "sink" not in data
-        assert "aliases" in data
+        result = test_df.with_columns(output=gray.sink("numpy"))
+        arr = numpy_from_bytes(result["output"][0])
 
-    def test_graph_to_json_single_output(self) -> None:
-        """Test graph JSON serialization with single output.
+        # Should be grayscale (1 channel)
+        assert arr.shape == (50, 50, 1)
 
-        The unified format always uses "outputs" dict, with "_output"
-        as the key for single-output graphs.
-        """
-        import json
+    def test_pipe_with_source_creates_new_root(self, test_df: pl.DataFrame) -> None:
+        """Test that .pipe() with source creates a new root."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=50, width=50)
+        )
 
-        from polars_vision._graph import PipelineGraph
+        # With source = new root (ignores base's operations)
+        new_root = base.pipe(
+            Pipeline().source("image_bytes").grayscale()
+        )
 
-        pipe = Pipeline().source("image_bytes")
-        graph = PipelineGraph()
-        graph.add_node("node1", pipe, pl.col("image"))
-        graph.set_output("node1", "numpy")
+        result = test_df.with_columns(output=new_root.sink("numpy"))
+        arr = numpy_from_bytes(result["output"][0])
 
-        json_str = graph._to_json()
-        data = json.loads(json_str)
+        # Should be grayscale of original (100x100), not resized
+        assert arr.shape == (100, 100, 1)
 
-        # Unified format uses "outputs" for both single and multi-output
-        assert "outputs" in data
-        assert "_output" in data["outputs"]
-        assert data["outputs"]["_output"]["node"] == "node1"
+    def test_pipe_chains_multiple_operations(self, test_df: pl.DataFrame) -> None:
+        """Test chaining multiple .pipe() calls."""
+        base = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes")
+        )
 
-    def test_graph_to_json_multi_output(self) -> None:
-        """Test graph JSON serialization with multi-output.
+        # Chain multiple operations
+        result_expr = (
+            base
+            .pipe(Pipeline().resize(height=50, width=50))
+            .pipe(Pipeline().grayscale())
+            .pipe(Pipeline().threshold(128))
+        )
 
-        Multi-output graphs have named outputs in the "outputs" dict.
-        """
-        import json
+        result = test_df.with_columns(output=result_expr.sink("numpy"))
+        arr = numpy_from_bytes(result["output"][0])
 
-        from polars_vision._graph import PipelineGraph
-
-        pipe = Pipeline().source("image_bytes")
-        graph = PipelineGraph()
-        graph.add_node("node1", pipe, pl.col("image"), alias="out1")
-        graph.add_node("node2", pipe, pl.col("image"), alias="out2")
-        graph.set_multi_output({"out1": "numpy", "out2": "png"})
-
-        json_str = graph._to_json()
-        data = json.loads(json_str)
-
-        assert "outputs" in data
-        assert "out1" in data["outputs"]
-        assert "out2" in data["outputs"]
-        assert data["outputs"]["out1"]["node"] == "node1"
-        assert data["outputs"]["out2"]["node"] == "node2"
+        assert arr.shape == (50, 50, 1)
+        # Threshold should produce binary values
+        assert np.all((arr == 0) | (arr == 255))

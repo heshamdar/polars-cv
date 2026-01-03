@@ -207,30 +207,33 @@ class TestUnifiedGraphMultiOutput:
     """Test multi-output pipelines through the unified graph path."""
 
     def test_multi_output_basic(self, synthetic_image_df: pl.DataFrame) -> None:
-        """Test multi-output pipeline returns Struct column."""
-        pipe = (
-            Pipeline()
-            .source("blob")
-            .alias("original")
-            .resize(height=32, width=32)
-            .alias("small")
-        ).sink({"original": "numpy", "small": "numpy"})
+        """Test multi-output pipeline returns Struct column using LazyPipelineExpr."""
+        # Use LazyPipelineExpr composition pattern
+        original = pl.col("images").cv.pipe(
+            Pipeline().source("blob")
+        ).alias("original")
+
+        small = original.pipe(
+            Pipeline().resize(height=32, width=32)
+        ).alias("small")
 
         result = synthetic_image_df.with_columns(
-            outputs=pl.col("images").cv.pipeline(pipe)
+            outputs=small.sink({"original": "numpy", "small": "numpy"})
         )
 
         assert "outputs" in result.columns
         assert result["outputs"].dtype == pl.Struct
 
     def test_multi_output_fields(self, synthetic_image_df: pl.DataFrame) -> None:
-        """Test multi-output has correct field names."""
-        pipe = (
-            Pipeline().source("blob").alias("raw").transpose([2, 0, 1]).alias("chw")
-        ).sink({"raw": "numpy", "chw": "numpy"})
+        """Test multi-output has correct field names using LazyPipelineExpr."""
+        raw = pl.col("images").cv.pipe(
+            Pipeline().source("blob")
+        ).alias("raw")
+
+        chw = raw.pipe(Pipeline().transpose([2, 0, 1])).alias("chw")
 
         result = synthetic_image_df.with_columns(
-            outputs=pl.col("images").cv.pipeline(pipe)
+            outputs=chw.sink({"raw": "numpy", "chw": "numpy"})
         )
 
         output_schema = result["outputs"].dtype

@@ -3,6 +3,9 @@
 //! This module handles the execution of vision pipelines on Polars Series,
 //! including parameter resolution and view-buffer integration.
 
+// Some functions are currently unused (graph.rs handles execution) but kept for potential future use
+#![allow(dead_code)]
+
 use polars::prelude::*;
 use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};

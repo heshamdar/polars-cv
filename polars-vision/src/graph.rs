@@ -39,7 +39,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Contour};
-use view_buffer::ops::{Domain, NodeOutput};
+use view_buffer::ops::NodeOutput;
 use view_buffer::{BinaryOp, GeometryOp, Op, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::execute::{
@@ -241,7 +241,7 @@ fn execute_geometry_op(
                 .ok_or_else(|| "Flip requires Contour input".to_string())?;
             let flipped: Vec<Contour> = contours
                 .iter()
-                .map(|c| view_buffer::geometry::transforms::flip(c))
+                .map(view_buffer::geometry::transforms::flip)
                 .collect();
             Ok(NodeOutput::from_contours(flipped))
         }
@@ -261,7 +261,7 @@ fn execute_geometry_op(
                 .ok_or_else(|| "ConvexHull requires Contour input".to_string())?;
             let hulls: Vec<Contour> = contours
                 .iter()
-                .map(|c| view_buffer::geometry::transforms::convex_hull(c))
+                .map(view_buffer::geometry::transforms::convex_hull)
                 .collect();
             Ok(NodeOutput::from_contours(hulls))
         }
@@ -360,24 +360,21 @@ fn encode_node_output(
         // Type mismatches
         (NodeOutput::Contours(_), "numpy" | "png" | "jpeg") => {
             Err(format!(
-                "Cannot encode Contours as {}. Use 'native' or add .rasterize() first.",
-                format
+                "Cannot encode Contours as {format}. Use 'native' or add .rasterize() first."
             ))
         }
         (NodeOutput::Scalar(_), "numpy" | "png" | "jpeg") => {
             Err(format!(
-                "Cannot encode Scalar as {}. Use 'native' format.",
-                format
+                "Cannot encode Scalar as {format}. Use 'native' format."
             ))
         }
         (NodeOutput::Vector(_), "numpy" | "png" | "jpeg") => {
             Err(format!(
-                "Cannot encode Vector as {}. Use 'native' format.",
-                format
+                "Cannot encode Vector as {format}. Use 'native' format."
             ))
         }
         
-        _ => Err(format!("Unsupported sink format: {}", format))
+        _ => Err(format!("Unsupported sink format: {format}"))
     }
 }
 
@@ -791,18 +788,41 @@ impl UnifiedGraph {
                         };
 
                         // Execute operations with typed dispatch
+                        // OPTIMIZATION: Batch consecutive buffer ops into a single ViewExpr
+                        // to allow view-buffer's optimizer to fuse operations.
                         let mut current_output = input;
 
+                        // Helper: flush pending buffer ops
+                        fn flush_buffer_ops(
+                            output: NodeOutput,
+                            pending_ops: &mut Vec<ViewDto>,
+                        ) -> Result<NodeOutput, String> {
+                            if pending_ops.is_empty() {
+                                return Ok(output);
+                            }
+                            let buf = output.as_buffer()
+                                .ok_or_else(|| format!("Expected Buffer for pending ops, got {:?}", output.domain()))?;
+                            let mut expr = ViewExpr::new_source((**buf).clone());
+                            for op in pending_ops.drain(..) {
+                                expr = expr.apply_op(op);
+                            }
+                            let result = expr.plan().execute();
+                            Ok(NodeOutput::from_buffer(result))
+                        }
+
+                        let mut pending_buffer_ops: Vec<ViewDto> = Vec::new();
+
                         for view_dto in view_dtos {
-                            current_output = match &view_dto {
+                            match &view_dto {
                                 ViewDto::Geometry(geo_op) => {
+                                    // Flush pending buffer ops first
+                                    current_output = flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                     // Use typed geometry execution
-                                    match execute_geometry_op(current_output, geo_op) {
-                                        Ok(out) => out,
-                                        Err(e) => return Err(e),
-                                    }
+                                    current_output = execute_geometry_op(current_output, geo_op)?;
                                 }
                                 ViewDto::Binary { op, other_node_id } => {
+                                    // Flush pending buffer ops first
+                                    current_output = flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                     // Binary operation: both inputs must be buffers
                                     let current_buf = current_output.as_buffer()
                                         .ok_or_else(|| format!("Binary op requires Buffer, got {:?}", current_output.domain()))?;
@@ -811,9 +831,11 @@ impl UnifiedGraph {
                                     let other_buf = other_output.as_buffer()
                                         .ok_or_else(|| format!("Binary op other operand must be Buffer, got {:?}", other_output.domain()))?;
                                     let result = op.execute(current_buf, other_buf);
-                                    NodeOutput::from_buffer(result)
+                                    current_output = NodeOutput::from_buffer(result);
                                 }
                                 ViewDto::ApplyMask { mask_node_id, invert } => {
+                                    // Flush pending buffer ops first
+                                    current_output = flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                     // Mask operation: buffer masked by another buffer
                                     let current_buf = current_output.as_buffer()
                                         .ok_or_else(|| format!("ApplyMask requires Buffer, got {:?}", current_output.domain()))?;
@@ -822,18 +844,17 @@ impl UnifiedGraph {
                                     let mask_buf = mask_output.as_buffer()
                                         .ok_or_else(|| format!("ApplyMask mask must be Buffer, got {:?}", mask_output.domain()))?;
                                     let result = apply_mask(current_buf, mask_buf, *invert);
-                                    NodeOutput::from_buffer(result)
+                                    current_output = NodeOutput::from_buffer(result);
                                 }
                                 _ => {
-                                    // Regular buffer operation: use ViewExpr
-                                    let current_buf = current_output.as_buffer()
-                                        .ok_or_else(|| format!("{} requires Buffer input, got {:?}", view_dto.name(), current_output.domain()))?;
-                                    let expr = ViewExpr::new_source((**current_buf).clone());
-                                    let result = expr.apply_op(view_dto.clone()).plan().execute();
-                                    NodeOutput::from_buffer(result)
+                                    // Regular buffer operation: accumulate for batching
+                                    pending_buffer_ops.push(view_dto.clone());
                                 }
-                            };
+                            }
                         }
+
+                        // Flush any remaining pending ops
+                        current_output = flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
 
                         node_outputs.insert(node_id.clone(), current_output);
                     }
@@ -852,7 +873,7 @@ impl UnifiedGraph {
                                 };
                                 results.get_mut(alias).unwrap().push(row_result);
                             }
-                            Err(e) => return Err(format!("Encode error for '{}': {}", alias, e)),
+                            Err(e) => return Err(format!("Encode error for '{alias}': {e}")),
                         }
                     } else {
                         // No output for this node - push null based on expected type
