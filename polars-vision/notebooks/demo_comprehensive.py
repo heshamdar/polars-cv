@@ -21,9 +21,13 @@
 #
 # polars-vision enables:
 # - **Lazy, zero-copy image processing** on DataFrame columns
-# - **Composable pipelines** that fuse multiple operations into single plugin calls
+# - **Composable pipelines** with automatic fused execution via DAG-based graphs
+# - **Multi-domain operations** - seamlessly move between images, masks, contours, and scalars
+# - **Multi-source & multi-output** - read from multiple columns, output multiple named results
+# - **Named nodes with aliases** - define reusable pipeline checkpoints
+# - **Common Subexpression Elimination (CSE)** - automatic optimization of shared operations
 # - **Dynamic parameters** using Polars expressions for per-row customization
-# - **Geometry operations** for contours, points, and bounding boxes
+# - **Binary operations** between pipelines (add, subtract, multiply, blend, mask)
 # - **Seamless ML integration** with NumPy, PyTorch, and other frameworks
 #
 # The plugin leverages **view-buffer**, a Rust crate providing stride-aware tensor operations with automatic kernel fusion.
@@ -38,11 +42,14 @@
 # 4. [Dynamic Parameters with Expressions](#4-dynamic-parameters-with-expressions)
 # 5. [Geometry Operations](#5-geometry-operations)
 # 6. [Lazy Pipeline Composition](#6-lazy-pipeline-composition)
-# 7. [Multi-Output Pipelines](#7-multi-output-pipelines)
-# 8. [ML Workflow: IoU Calculation](#8-ml-workflow-iou-calculation)
-# 9. [Lazy Scalability Demo](#9-lazy-scalability-demo)
-# 10. [PyTorch Integration](#10-pytorch-integration)
-# 11. [Conclusion](#11-conclusion)
+# 7. [Binary Operations & Mask Application](#7-binary-operations--mask-application)
+# 8. [Multi-Source Pipelines](#8-multi-source-pipelines)
+# 9. [Multi-Output with Named Nodes](#9-multi-output-with-named-nodes)
+# 10. [Reusable & Composable Pipeline Patterns](#10-reusable--composable-pipeline-patterns)
+# 11. [Domain Transitions: Images ↔ Contours ↔ Scalars](#11-domain-transitions-images--contours--scalars)
+# 12. [ML Workflow: Segmentation Pipeline](#12-ml-workflow-segmentation-pipeline)
+# 13. [PyTorch Integration](#13-pytorch-integration)
+# 14. [Conclusion](#14-conclusion)
 
 # %% [markdown]
 # ## 1. Setup & Imports
@@ -61,21 +68,19 @@ if os.environ.get("MPLBACKEND") is None and not hasattr(os, "_called_from_jupyte
 
 # Core imports
 import io
-import tempfile
-from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 from PIL import Image
-import matplotlib.pyplot as plt
 
 # polars-vision imports
 from polars_vision import (
-    Pipeline,
+    BBOX_SCHEMA,
     CONTOUR_SCHEMA,
     POINT_SCHEMA,
-    BBOX_SCHEMA,
+    Pipeline,
     numpy_from_bytes,
 )
 from polars_vision.geometry.schemas import contour_from_points
@@ -183,6 +188,24 @@ def create_test_image(
         gaussian = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
         img = (gaussian * 255).astype(np.uint8)
         img = np.stack([img, img, img], axis=-1)  # Grayscale as RGB
+    elif pattern == "segmentation":
+        # Multi-region segmentation mask style
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        # Region 1: circle
+        y, x = np.ogrid[:height, :width]
+        cx1, cy1 = width // 4, height // 3
+        r1 = np.sqrt((x - cx1) ** 2 + (y - cy1) ** 2)
+        img[r1 < 40] = [200, 50, 50]  # Red
+        # Region 2: ellipse
+        cx2, cy2 = 3 * width // 4, height // 2
+        ellipse = ((x - cx2) / 50) ** 2 + ((y - cy2) / 30) ** 2
+        img[ellipse < 1] = [50, 200, 50]  # Green
+        # Region 3: rectangle
+        img[height // 2 : height // 2 + 60, width // 3 : width // 3 + 80] = [
+            50,
+            50,
+            200,
+        ]
     else:
         # Random noise
         rng = np.random.default_rng(42)
@@ -201,6 +224,7 @@ test_images = {
     "checkerboard": create_test_image(256, 256, "checkerboard"),
     "circles": create_test_image(256, 256, "circles"),
     "heatmap": create_test_image(256, 256, "heatmap"),
+    "segmentation": create_test_image(256, 256, "segmentation"),
     "noise": create_test_image(256, 256, "noise"),
 }
 
@@ -210,9 +234,9 @@ display_images(
         test_images["gradient"],
         test_images["checkerboard"],
         test_images["circles"],
-        test_images["heatmap"],
+        test_images["segmentation"],
     ],
-    ["Gradient", "Checkerboard", "Circles", "Heatmap"],
+    ["Gradient", "Checkerboard", "Circles", "Segmentation"],
 )
 print(f"Created {len(test_images)} test images")
 
@@ -221,9 +245,9 @@ print(f"Created {len(test_images)} test images")
 #
 # polars-vision uses a fluent **Pipeline** API to define image processing operations. A complete pipeline has three parts:
 #
-# 1. **Source**: How to interpret input data (`image_bytes`, `blob`, `raw`, `file_path`)
+# 1. **Source**: How to interpret input data (`image_bytes`, `blob`, `raw`, `file_path`, `contour`)
 # 2. **Operations**: The transformations to apply (resize, grayscale, normalize, etc.)
-# 3. **Sink**: The output format (`numpy`, `torch`, `png`, `jpeg`, `blob`)
+# 3. **Sink**: The output format (`numpy`, `torch`, `png`, `jpeg`, `blob`, `native`)
 #
 # ### 2.1 Your First Pipeline
 
@@ -608,8 +632,6 @@ print(contour_df)
 
 # %%
 # Compute geometric measures using the .contour namespace
-# Note: centroid() and bounding_box() are defined in the Python API but not yet
-# implemented in the Rust backend. We compute area, perimeter, and winding for now.
 measures_df = contour_df.with_columns(
     area=pl.col("contour").contour.area(),
     perimeter=pl.col("contour").contour.perimeter(),
@@ -639,12 +661,20 @@ contour_raster_result = contour_df.with_columns(
 )
 print(contour_raster_result.select("name", "mask"))
 
-# Verify the mask shape
-from polars_vision import numpy_from_bytes  # noqa: E402
+# Verify the mask shape and visualize
+masks = []
+for i in range(len(contour_raster_result)):
+    mask_bytes = contour_raster_result["mask"][i]
+    mask_arr = numpy_from_bytes(mask_bytes)
+    masks.append(mask_arr.squeeze())
 
-mask_bytes = contour_raster_result["mask"][0]
-mask_arr = numpy_from_bytes(mask_bytes)
-print(f"✅ Rasterized mask shape: {mask_arr.shape}, dtype: {mask_arr.dtype}")
+print(f"✅ Rasterized mask shape: {masks[0].shape}, dtype: {masks[0].dtype}")
+
+display_arrays(
+    masks,
+    [f"{name} mask" for name in contour_raster_result["name"].to_list()],
+    cmap="gray",
+)
 
 # %% [markdown]
 # ## 6. Lazy Pipeline Composition
@@ -652,173 +682,608 @@ print(f"✅ Rasterized mask shape: {mask_arr.shape}, dtype: {mask_arr.dtype}")
 # polars-vision supports **lazy pipeline composition** using `LazyPipelineExpr`. This enables:
 #
 # 1. **Fused execution**: Multiple pipelines combined into a single plugin call
-# 2. **Binary operations**: Add, subtract, multiply, divide arrays
-# 3. **Mask application**: Apply masks from contours or other images
+# 2. **Named checkpoints**: Mark intermediate points with `.alias()`
+# 3. **Pipeline chaining**: Use `.pipe()` to chain operations
+# 4. **Binary operations**: Add, subtract, multiply, divide, blend arrays
+# 5. **Mask application**: Apply masks from contours or other images
 #
 # ### Two Modes:
-# - **Eager mode**: `pl.col("x").cv.pipeline(pipe)` - Returns `pl.Expr` directly (requires sink)
-# - **Lazy mode**: `pl.col("x").cv.pipe(pipe)` - Returns `LazyPipelineExpr` for composition
+# - **Eager mode**: `pl.col("x").cv.pipeline(pipe)` - Returns `pl.Expr` directly (requires sink in pipeline)
+# - **Lazy mode**: `pl.col("x").cv.pipe(pipe)` - Returns `LazyPipelineExpr` for composition (sink at the end)
 
 # %%
 # Lazy mode example - compose pipelines before execution
 
-# Define pipelines WITHOUT sinks (lazy mode)
+# Define pipelines WITHOUT sinks (for lazy composition)
 img_pipe = Pipeline().source("image_bytes").resize(height=200, width=200)
 
 # Create lazy expressions using .cv.pipe()
 img_expr = pl.col("image").cv.pipe(img_pipe)  # Returns LazyPipelineExpr
 
 print(f"img_expr type: {type(img_expr)}")
+print(f"img_expr: {img_expr}")
 print()
 print("These are NOT Polars expressions yet - they need .sink() to materialize!")
 
 # %%
-# Compose operations and finalize with .sink()
+# Execute the lazy pipeline with .sink()
 
-# Define pipeline for image processing
-img_pipe = Pipeline().source("image_bytes").resize(height=200, width=200)
+# Create test data
+compose_df = pl.DataFrame({"image": [test_images["circles"]]})
 
-# Create lazy expressions using .cv.pipe()
-img_expr = pl.col("image").cv.pipe(img_pipe)
+# Method 1: Simple lazy composition
+result = compose_df.with_columns(
+    resized=pl.col("image").cv.pipe(img_pipe).sink("png"),
+)
 
-# Create test data with image
-compose_df = pl.DataFrame(
+display_images([result["resized"][0]], ["Resized via Lazy Composition (200x200)"])
+
+# %% [markdown]
+# ### 6.1 Pipeline Chaining with `.pipe()`
+#
+# The `.pipe()` method allows chaining additional operations onto an existing `LazyPipelineExpr`.
+# When the chained pipeline has **no source**, it continues from the upstream node's output.
+
+# %%
+# Define base processing and chain additional operations
+base_pipe = Pipeline().source("image_bytes").resize(height=128, width=128)
+gray_ops = Pipeline().grayscale()  # No source - will continue from upstream
+thresh_ops = Pipeline().threshold(128)  # No source - chains further
+
+# Chain operations using .pipe()
+base = pl.col("image").cv.pipe(base_pipe)
+gray = base.pipe(gray_ops)  # Continues from 'base'
+thresh = gray.pipe(thresh_ops)  # Continues from 'gray'
+
+print("Chained LazyPipelineExpr:")
+print(f"  base: {base}")
+print(f"  gray: {gray}")
+print(f"  thresh: {thresh}")
+
+# Execute the final result
+result = compose_df.with_columns(binary=thresh.sink("png"))
+display_images([result["binary"][0]], ["Chained: resize → grayscale → threshold"])
+
+# %% [markdown]
+# ## 7. Binary Operations & Mask Application
+#
+# polars-vision supports element-wise binary operations between two `LazyPipelineExpr` instances.
+# These operations use **type-based semantics**:
+#
+# | Operation | u8/u16 Behavior | f32/f64 Behavior |
+# |-----------|-----------------|------------------|
+# | `add` | Saturating (clamps to 255) | Standard |
+# | `subtract` | Saturating (clamps to 0) | Standard |
+# | `multiply` | Saturating | Standard |
+# | `blend` | Normalized: (a/255)*(b/255)*255 | Standard |
+# | `divide` | Integer division | Standard |
+# | `ratio` | Scaled: (a/b)*255 | Standard |
+
+# %%
+# Binary operations work between two pipelines with the same output shape
+# We'll process the same image with different operations to demonstrate
+
+df_binary = pl.DataFrame(
     {
         "image": [test_images["circles"]],
     }
 )
 
-# Execute the composed pipeline - demonstrate lazy composition
-# For image-only operations (contour rasterization not yet implemented)
-result = compose_df.with_columns(
-    resized=pl.col("image").cv.pipe(img_pipe).sink("png"),
+# Define two pipelines that process the same image differently
+# Both output 128x128 RGB images
+pipe_original = Pipeline().source("image_bytes").resize(height=128, width=128)
+pipe_blurred = (
+    Pipeline().source("image_bytes").resize(height=128, width=128).blur(sigma=5.0)
 )
 
-display_images(
-    [result["resized"][0]],
-    ["Resized Image (200x200)"],
-)
+# Create lazy expressions from the same source
+img_original = pl.col("image").cv.pipe(pipe_original)
+img_blurred = pl.col("image").cv.pipe(pipe_blurred)
 
-print("\nLazy composition API:")
-print("""
-img_pipe = Pipeline().source("image_bytes").resize(height=200, width=200)
+# Binary operations (demonstrating with same-shape outputs)
+add_result = img_original.add(img_blurred).sink("png")
+subtract_result = img_original.subtract(img_blurred).sink("png")
+blend_result = img_original.blend(img_blurred).sink("png")
 
-img_expr = pl.col("image").cv.pipe(img_pipe)
-
-# For demonstration with image operations:
-result = df.with_columns(resized=img_expr.sink("png"))
-
-# Note: Mask composition with source("contour") is planned but not yet implemented.
-""")
-
-# %% [markdown]
-# ## 7. Multi-Output Pipelines
-#
-# polars-vision supports **multi-output pipelines** using aliases. This allows you to:
-#
-# 1. Mark intermediate points in a pipeline with `.alias(name)`
-# 2. Return multiple outputs as a Struct column with `.sink({alias: format, ...})`
-#
-# This is more efficient than running separate pipelines because:
-# - Shared subexpressions are computed once
-# - Single plugin call for all outputs
-
-# %%
-# Multi-output pipeline with aliases - defining checkpoints
-
-# Demonstrate the alias API for defining named checkpoints
-demo_pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .alias("original")  # Checkpoint: decoded image
-    .resize(height=128, width=128)
-    .alias("resized")  # Checkpoint: after resize
-    .grayscale()
-    .alias("gray")  # Checkpoint: after grayscale
-    .threshold(128)
-    .alias("binary")  # Checkpoint: final binary
-)
-
-print("Pipeline with aliases:")
-print(f"Aliases defined: {demo_pipe.get_aliases()}")
-
-# %%
-# Multi-output pipeline: return multiple intermediate results from one execution
-# NOTE: Multi-output pipeline execution is not yet fully implemented in the Rust backend.
-# The API is shown below for reference.
-
-df = pl.DataFrame({"image": [test_images["circles"]]})
-
-print("Multi-output API (planned):")
-multi_pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .alias("original")
-    .resize(height=128, width=128)
-    .alias("resized")
-    .grayscale()
-    .alias("gray")
-).sink({"original": "png", "resized": "png", "gray": "png"})
-
-result = df.with_columns(outputs=pl.col("image").cv.pipeline(multi_pipe))
-print("✅ Multi-output result:")
-print(result)
-print("Schema:", result.schema)
-print("\nExtract individual outputs with: pl.col('outputs').struct.field('original')")
-
-# Demonstrate extracting individual fields
-extracted = result.select(
-    pl.col("outputs").struct.field("original").alias("original_png"),
-    pl.col("outputs").struct.field("resized").alias("resized_png"),
-    pl.col("outputs").struct.field("gray").alias("gray_png"),
-)
-print("\nExtracted fields:")
-print(extracted)
-
-# Alternative: demonstrate individual pipelines for comparison
-original_pipe = Pipeline().source("image_bytes").sink("png")
-resized_pipe = (
-    Pipeline().source("image_bytes").resize(height=128, width=128).sink("png")
-)
-gray_pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .resize(height=128, width=128)
-    .grayscale()
-    .sink("png")
-)
-binary_pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .resize(height=128, width=128)
-    .grayscale()
-    .threshold(128)
-    .sink("png")
-)
-
-result = df.with_columns(
-    original=pl.col("image").cv.pipeline(original_pipe),
-    resized=pl.col("image").cv.pipeline(resized_pipe),
-    gray=pl.col("image").cv.pipeline(gray_pipe),
-    binary=pl.col("image").cv.pipeline(binary_pipe),
+result = df_binary.with_columns(
+    original=img_original.sink("png"),
+    blurred=img_blurred.sink("png"),
+    added=add_result,
+    subtracted=subtract_result,
+    blended=blend_result,
 )
 
 row = result.row(0, named=True)
 display_images(
-    [row["original"], row["resized"], row["gray"], row["binary"]],
-    ["Original (decoded)", "Resized (128x128)", "Grayscale", "Binary (thresh=128)"],
+    [row["original"], row["blurred"]],
+    ["Original", "Blurred (σ=5)"],
+)
+display_images(
+    [row["added"], row["subtracted"], row["blended"]],
+    ["Add (saturating)", "Subtract (edge detect)", "Blend (normalized)"],
 )
 
 # %% [markdown]
-# ## 8. ML Workflow: IoU Calculation
+# ### 7.1 Mask Application
 #
-# Now let's build a complete **ML-style workflow** that demonstrates:
+# The `apply_mask()` method applies a binary mask to an image. Where the mask is zero,
+# the output is zero; where the mask is non-zero, the original values are preserved.
+
+# %%
+# Create a circular mask using a contour
+circle_contour = contour_from_points(
+    [
+        (64 + 50 * np.cos(a), 64 + 50 * np.sin(a))
+        for a in np.linspace(0, 2 * np.pi, 32, endpoint=False)
+    ]
+)
+
+df_mask = pl.DataFrame(
+    {
+        "image": [test_images["gradient"]],
+        "mask_contour": [circle_contour],
+    }
+).cast({"mask_contour": CONTOUR_SCHEMA})
+
+# Image pipeline
+img_pipe = Pipeline().source("image_bytes").resize(height=128, width=128)
+img = pl.col("image").cv.pipe(img_pipe)
+
+# Contour source with explicit dimensions (rasterizes to mask)
+mask_pipe = Pipeline().source("contour", width=128, height=128)
+mask = pl.col("mask_contour").cv.pipe(mask_pipe)
+
+# Apply mask to image
+masked_result = img.apply_mask(mask).sink("png")
+
+result = df_mask.with_columns(masked=masked_result)
+
+row = result.row(0, named=True)
+display_images(
+    [row["image"], row["masked"]],
+    ["Original", "Masked with Circular Contour"],
+)
+
+# %% [markdown]
+# ### 7.2 Shape Inference for Contour Sources
 #
-# 1. Generating fake heatmap predictions (simulating model output)
-# 2. Processing ground truth contour annotations
-# 3. Rasterizing both to masks
-# 4. Computing **IoU** (Intersection over Union) and **Dice** coefficients
-# 5. Visualizing predictions vs ground truth
+# When working with composed pipelines, you can use `shape=` to infer contour rasterization
+# dimensions from another `LazyPipelineExpr`. This ensures the mask matches the image size.
+
+# %%
+# Shape inference example - mask dimensions match image automatically
+df_shape = pl.DataFrame(
+    {
+        "image": [test_images["circles"]],
+        "contour": [
+            contour_from_points([(30, 30), (30, 90), (90, 90), (90, 30)])
+        ],  # Square
+    }
+).cast({"contour": CONTOUR_SCHEMA})
+
+# Define image pipeline with specific dimensions
+img_pipe = Pipeline().source("image_bytes").resize(height=100, width=150)  # Non-square!
+img = pl.col("image").cv.pipe(img_pipe)
+
+# Contour source with shape= to infer dimensions from image
+mask_pipe = Pipeline().source("contour", shape=img)  # Auto-infers 150x100
+mask = pl.col("contour").cv.pipe(mask_pipe)
+
+# Apply mask
+result = df_shape.with_columns(
+    masked=img.apply_mask(mask).sink("png"),
+)
+
+print("Shape inference: contour mask auto-matched to 150x100 image")
+display_images([result["masked"][0]], ["Masked with Auto-Sized Contour"])
+
+# %% [markdown]
+# ### 7.3 Convenience: `apply_contour_mask()`
+#
+# For the common case of applying a contour as a mask, use the convenience method
+# `apply_contour_mask()` which auto-infers dimensions from the image.
+
+# %%
+# apply_contour_mask() convenience method
+result = df_shape.with_columns(
+    # This auto-infers dimensions from img's output shape
+    masked=img.apply_contour_mask(mask).sink("png"),
+)
+
+display_images([result["masked"][0]], ["apply_contour_mask() convenience"])
+
+# %% [markdown]
+# ## 8. Multi-Source Pipelines
+#
+# polars-vision supports **multi-source** pipelines where different branches read from
+# different DataFrame columns. This is essential for workflows like:
+# - Comparing two images
+# - Applying a separately-loaded mask
+# - Computing difference between prediction and ground truth
+
+# %%
+# Multi-source example: combine data from two different columns
+# This demonstrates how to read from different DataFrame columns in one pipeline
+
+df_multi = pl.DataFrame(
+    {
+        "base_image": [test_images["gradient"]],
+        "overlay_image": [
+            test_images["gradient"]
+        ],  # Use same source for compatible shapes
+    }
+)
+
+# Two separate pipelines reading from different columns
+# Note: Both must produce same-shape outputs for binary operations
+base_pipe = Pipeline().source("image_bytes").resize(height=128, width=128)
+overlay_pipe = Pipeline().source("image_bytes").resize(height=128, width=128).flip_h()
+
+# Create lazy expressions from different columns
+base = pl.col("base_image").cv.pipe(base_pipe)
+overlay = pl.col("overlay_image").cv.pipe(overlay_pipe)
+
+# Blend them together - multi-source composition!
+result = df_multi.with_columns(
+    base_out=base.sink("png"),
+    overlay_out=overlay.sink("png"),
+    blended=base.blend(overlay).sink("png"),
+)
+
+row = result.row(0, named=True)
+display_images(
+    [row["base_out"], row["overlay_out"], row["blended"]],
+    ["Base (gradient)", "Overlay (flipped)", "Blended"],
+)
+
+# %% [markdown]
+# ## 9. Multi-Output with Named Nodes
+#
+# polars-vision supports **multi-output pipelines** using `.alias()` and dict-based `.sink()`.
+# This allows you to:
+#
+# 1. Mark intermediate points with `.alias(name)` - creates a named checkpoint
+# 2. Return multiple outputs as a Struct column with `.sink({alias: format, ...})`
+# 3. Use `.merge_pipe()` to combine branching pipelines for multi-output
+#
+# ### Benefits:
+# - Shared operations are computed once (not duplicated)
+# - Single plugin call for all outputs
+# - Automatic CSE optimization
+
+# %%
+# Multi-output pipeline with aliases
+df_multi_out = pl.DataFrame({"image": [test_images["circles"]]})
+
+# Build a branching pipeline with named checkpoints
+base = (
+    pl.col("image")
+    .cv.pipe(Pipeline().source("image_bytes").resize(height=128, width=128))
+    .alias("resized")  # Checkpoint 1
+)
+
+# Branch 1: grayscale
+gray = base.pipe(Pipeline().grayscale()).alias("gray")  # Checkpoint 2
+
+# Branch 2: threshold (from grayscale)
+thresh = gray.pipe(Pipeline().threshold(128)).alias("thresh")  # Checkpoint 3
+
+# Branch 3: blur (from grayscale)
+blur = gray.pipe(Pipeline().blur(sigma=3.0)).alias("blur")  # Checkpoint 4
+
+# Merge branches and sink multiple outputs
+merged = thresh.merge_pipe(blur)  # Combine branches for multi-output
+
+# Sink with dict: returns Struct column with named Binary fields
+result = df_multi_out.with_columns(
+    outputs=merged.sink(
+        {
+            "resized": "png",
+            "gray": "png",
+            "thresh": "png",
+            "blur": "png",
+        }
+    )
+)
+
+print("Multi-output result schema:", result.schema)
+print()
+print("Outputs column contains a Struct with named fields:")
+print(result["outputs"].dtype)
+
+# %%
+# Extract individual outputs from the Struct column
+extracted = result.select(
+    pl.col("outputs").struct.field("resized").alias("resized_png"),
+    pl.col("outputs").struct.field("gray").alias("gray_png"),
+    pl.col("outputs").struct.field("thresh").alias("thresh_png"),
+    pl.col("outputs").struct.field("blur").alias("blur_png"),
+)
+
+# Display all outputs
+display_images(
+    [
+        extracted["resized_png"][0],
+        extracted["gray_png"][0],
+        extracted["thresh_png"][0],
+        extracted["blur_png"][0],
+    ],
+    ["Resized", "Grayscale", "Threshold", "Blur"],
+)
+
+print("✅ All 4 outputs computed from a single fused pipeline execution!")
+
+# %% [markdown]
+# ### 9.1 Common Subexpression Elimination (CSE)
+#
+# When multiple branches share common operations, polars-vision automatically detects
+# and extracts shared prefixes. This optimization is transparent - you don't need to
+# change your code!
+#
+# **Example:**
+# ```
+# Before CSE:
+#   gray_pipe: source → resize → grayscale
+#   mask_pipe: source → resize → grayscale → threshold → extract
+#
+# After CSE:
+#   _shared:   source → resize → grayscale  (computed once)
+#   gray_pipe: (empty) ← upstream: _shared
+#   mask_pipe: threshold → extract ← upstream: _shared
+# ```
+
+# %%
+# CSE example: two branches with shared prefix
+print("CSE Optimization Example:")
+print()
+print(
+    "When we define two pipelines that both start with resize→grayscale,"
+    " CSE automatically shares that prefix."
+)
+print()
+
+# Both branches share: resize → grayscale
+base = pl.col("image").cv.pipe(
+    Pipeline().source("image_bytes").resize(height=100, width=100)
+)
+gray = base.pipe(Pipeline().grayscale()).alias("gray")
+
+# Branch 1: blur
+branch1 = gray.pipe(Pipeline().blur(2.0)).alias("blurred")
+
+# Branch 2: threshold
+branch2 = gray.pipe(Pipeline().threshold(128)).alias("thresholded")
+
+# Merge and execute - CSE will share the gray computation
+merged = branch1.merge_pipe(branch2)
+result = df_multi_out.with_columns(
+    outputs=merged.sink({"gray": "png", "blurred": "png", "thresholded": "png"})
+)
+
+extracted = result.select(
+    pl.col("outputs").struct.field("gray").alias("gray"),
+    pl.col("outputs").struct.field("blurred").alias("blurred"),
+    pl.col("outputs").struct.field("thresholded").alias("thresholded"),
+)
+
+display_images(
+    [extracted["gray"][0], extracted["blurred"][0], extracted["thresholded"][0]],
+    ["Gray (shared)", "Branch 1: Blur", "Branch 2: Threshold"],
+)
+
+print("✅ Grayscale computed once and shared between both branches!")
+
+# %% [markdown]
+# ## 10. Reusable & Composable Pipeline Patterns
+#
+# The lazy composition system enables powerful **reusable pipeline patterns**:
+#
+# 1. **Define once, use many times** - Create pipeline fragments as variables
+# 2. **Parameterized pipelines** - Functions that return configured pipelines
+# 3. **Pipeline factories** - Create pipelines based on configuration
+
+# %%
+# Pattern 1: Reusable pipeline fragments
+preprocessing_ops = Pipeline().resize(height=128, width=128).flip_h()
+augmentation_ops = Pipeline().blur(sigma=1.5)
+normalization_ops = Pipeline().grayscale().normalize(method="minmax")
+
+
+# Pattern 2: Parameterized pipeline factory
+def create_resize_pipeline(size: int) -> Pipeline:
+    """Create a resize pipeline with specified size."""
+    return Pipeline().source("image_bytes").resize(height=size, width=size)
+
+
+def create_augmentation_chain(flip: bool = True, blur_sigma: float = 0.0) -> Pipeline:
+    """Create an augmentation pipeline with configurable options."""
+    ops = Pipeline()
+    if flip:
+        ops = ops.flip_h()
+    if blur_sigma > 0:
+        ops = ops.blur(sigma=blur_sigma)
+    return ops
+
+
+# Use the factories
+df_reuse = pl.DataFrame({"image": [test_images["gradient"]]})
+
+# Compose reusable fragments
+base = pl.col("image").cv.pipe(create_resize_pipeline(100))
+augmented = base.pipe(create_augmentation_chain(flip=True, blur_sigma=2.0))
+final = augmented.pipe(normalization_ops)
+
+result = df_reuse.with_columns(processed=final.sink("numpy"))
+
+arr = numpy_from_bytes(result["processed"][0])
+print(f"Final output shape: {arr.shape}, dtype: {arr.dtype}")
+print(f"Value range: [{arr.min():.3f}, {arr.max():.3f}]")
+
+display_arrays([arr.squeeze()], ["Reusable Pipeline Composition"])
+
+# %%
+# Pattern 3: Configuration-driven pipeline creation
+
+
+def build_ml_pipeline(config: dict[str, Any]) -> Pipeline:
+    """Build an ML preprocessing pipeline from configuration."""
+    pipe = Pipeline().source("image_bytes")
+
+    # Resize if specified
+    if "target_size" in config:
+        size = config["target_size"]
+        pipe = pipe.resize(height=size, width=size)
+
+    # Apply augmentations
+    if config.get("flip_horizontal", False):
+        pipe = pipe.flip_h()
+    if config.get("flip_vertical", False):
+        pipe = pipe.flip_v()
+
+    # Color/normalize
+    if config.get("grayscale", False):
+        pipe = pipe.grayscale()
+    if config.get("normalize", False):
+        pipe = pipe.normalize(method=config.get("normalize_method", "minmax"))
+
+    return pipe
+
+
+# Example configurations
+train_config = {
+    "target_size": 224,
+    "flip_horizontal": True,
+    "normalize": True,
+    "normalize_method": "minmax",
+}
+
+inference_config = {
+    "target_size": 224,
+    "grayscale": True,
+    "normalize": True,
+}
+
+# Build pipelines from config
+train_pipe = build_ml_pipeline(train_config)
+inference_pipe = build_ml_pipeline(inference_config)
+
+print("Train pipeline:", train_pipe)
+print("Inference pipeline:", inference_pipe)
+
+# Apply both - note: normalized output is float32, use 'numpy' sink
+# PNG requires U8 dtype, so we use numpy for float data
+result = df_reuse.with_columns(
+    train=pl.col("image").cv.pipe(train_pipe).sink("numpy"),
+    inference=pl.col("image").cv.pipe(inference_pipe).sink("numpy"),
+)
+
+train_output = numpy_from_bytes(result["train"][0])
+inference_output = numpy_from_bytes(result["inference"][0])
+
+print(f"\nTrain output shape: {train_output.shape}, dtype: {train_output.dtype}")
+print(
+    f"Inference output shape: {inference_output.shape}, dtype: {inference_output.dtype}"
+)
+
+# Display both as arrays since they're float32
+display_arrays(
+    [train_output[:, :, 0], inference_output.squeeze()],  # Take first channel for train
+    ["Train Preprocessing (channel 0)", "Inference Preprocessing"],
+)
+
+# %% [markdown]
+# ## 11. Domain Transitions: Images ↔ Contours ↔ Scalars
+#
+# polars-vision supports **multi-domain pipelines** with seamless transitions:
+#
+# | Domain | Description | Example Operations |
+# |--------|-------------|-------------------|
+# | **buffer** | Image/array data | resize, grayscale, threshold, blur |
+# | **contour** | Polygon geometry | area, perimeter, translate, scale |
+# | **scalar** | Single number | (output of area, perimeter, etc.) |
+# | **vector** | Multiple numbers | (output of centroid, bbox, etc.) |
+#
+# ### Domain Transitions:
+# - `buffer → contour`: `extract_contours()` - Extract polygons from binary mask
+# - `contour → buffer`: `rasterize()` or `source("contour")` - Draw polygon to mask
+# - `contour → scalar`: `area()`, `perimeter()` - Compute measurements
+# - `contour → vector`: `centroid()`, `bounding_box()` - Return coordinates
+
+# %%
+# Complete domain transition example: Image → Contour → Scalar
+
+# Create a binary mask image
+binary_pipe = (
+    Pipeline()
+    .source("image_bytes")
+    .grayscale()
+    .threshold(128)  # Creates binary mask
+    .sink("png")
+)
+
+# Apply to segmentation test image
+df_domain = pl.DataFrame({"image": [test_images["segmentation"]]})
+result = df_domain.with_columns(binary=pl.col("image").cv.pipeline(binary_pipe))
+
+display_images(
+    [test_images["segmentation"], result["binary"][0]],
+    ["Original Segmentation", "Binary Threshold"],
+)
+
+# %%
+# Extract contours and compute properties using the .contour namespace
+# (This uses the DataFrame-level contour operations)
+
+# First, create contours directly and compute their properties
+shapes = [
+    (
+        "circle",
+        contour_from_points(
+            [
+                (100 + 40 * np.cos(a), 85 + 40 * np.sin(a))
+                for a in np.linspace(0, 2 * np.pi, 32, endpoint=False)
+            ]
+        ),
+    ),
+    ("rectangle", contour_from_points([(85, 100), (85, 160), (165, 160), (165, 100)])),
+    ("triangle", contour_from_points([(200, 80), (160, 140), (240, 140)])),
+]
+
+df_shapes = pl.DataFrame(
+    {"name": [s[0] for s in shapes], "contour": [s[1] for s in shapes]}
+).cast({"contour": CONTOUR_SCHEMA})
+
+# Compute geometric properties
+result_props = df_shapes.with_columns(
+    area=pl.col("contour").contour.area(),
+    perimeter=pl.col("contour").contour.perimeter(),
+    is_convex=pl.col("contour").contour.is_convex(),
+)
+
+print("Shape Properties (contour → scalar domain):")
+print(result_props)
+
+# %%
+# Rasterize contours back to masks (contour → buffer)
+raster_pipe = Pipeline().source("contour", width=200, height=200).sink("numpy")
+
+df_raster = df_shapes.with_columns(mask=pl.col("contour").cv.pipeline(raster_pipe))
+
+masks = [numpy_from_bytes(df_raster["mask"][i]).squeeze() for i in range(3)]
+display_arrays(
+    masks, [f"{name} mask" for name in df_raster["name"].to_list()], cmap="gray"
+)
+
+# %% [markdown]
+# ## 12. ML Workflow: Segmentation Pipeline
+#
+# Let's build a complete **ML-style segmentation workflow** that demonstrates:
+#
+# 1. Processing input images through a preprocessing pipeline
+# 2. Generating fake predictions (simulating model output)
+# 3. Processing ground truth contour annotations
+# 4. Computing **IoU** and **Dice** metrics
+# 5. Visualizing predictions vs ground truth with overlays
 
 # %%
 # Generate synthetic ML data
@@ -860,10 +1325,12 @@ for i in range(n_samples):
     gt_cx, gt_cy = 100 + np.random.randint(-20, 20), 100 + np.random.randint(-20, 20)
     gt_radius = 40 + np.random.randint(-10, 10)
 
-    # Prediction center (with some error)
-    pred_cx = gt_cx + np.random.randint(-15, 15)
-    pred_cy = gt_cy + np.random.randint(-15, 15)
-    pred_sigma = gt_radius * 0.6  # Spread of heatmap
+    # Prediction center (with some error - small offset to ensure overlap)
+    pred_cx = gt_cx + np.random.randint(-8, 8)
+    pred_cy = gt_cy + np.random.randint(-8, 8)
+    # Sigma chosen so thresholded area roughly matches GT radius
+    # For threshold at 128 (50% of 255), radius ≈ 1.18 * sigma
+    pred_sigma = gt_radius / 1.18  # Spread to match GT area
 
     data["prediction"].append(create_heatmap_prediction(pred_cx, pred_cy, pred_sigma))
     data["ground_truth"].append(create_ground_truth_contour(gt_cx, gt_cy, gt_radius))
@@ -873,27 +1340,21 @@ print(f"ML DataFrame schema: {ml_df.schema}")
 print(ml_df.head())
 
 # %%
-# Process predictions and ground truth
+# Process predictions and ground truth using multi-source lazy composition
 
-# Prediction pipeline: threshold heatmap to binary mask
-pred_pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .threshold(128)  # Threshold at 50% intensity
-    .sink("png")
-)
+# Prediction pipeline: grayscale then threshold to binary mask
+# Note: grayscale() is needed before threshold() to ensure correct processing
+pred_pipe = Pipeline().source("image_bytes").grayscale().threshold(128)
+pred_expr = pl.col("prediction").cv.pipe(pred_pipe)
 
 # Ground truth pipeline: rasterize contours to masks
-gt_pipe = (
-    Pipeline()
-    .source("contour", width=200, height=200, fill_value=255, background=0)
-    .sink("png")
-)
+gt_pipe = Pipeline().source("contour", width=200, height=200)
+gt_expr = pl.col("ground_truth").cv.pipe(gt_pipe)
 
-# Process both predictions and ground truth with polars-vision
+# Process both and get outputs
 processed = ml_df.with_columns(
-    pred_mask=pl.col("prediction").cv.pipeline(pred_pipe),
-    gt_mask=pl.col("ground_truth").cv.pipeline(gt_pipe),
+    pred_mask=pred_expr.sink("png"),
+    gt_mask=gt_expr.sink("png"),
 )
 
 # Visualize first sample
@@ -905,53 +1366,24 @@ display_images(
 )
 
 # %%
-# Calculate IoU and Dice using contour operations
-# We need to extract contours from the prediction masks first
+# Compute IoU using the .contour.iou() method
+# We can also compute pixel-based metrics
 
-# Extract contours from prediction masks
-extract_pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .extract_contours(mode="external", method="simple")
-    .sink("blob")
-)
-
-# Process predictions to get contours for IoU calculation
-# For now, we can also directly compute IoU between contours if we have them
-# Using the ground_truth contours directly with .contour.iou()
-
-# Extract predicted contours (simplified approach: use first extracted contour)
-processed_with_pred_contours = processed.with_columns(
-    pred_contour=pl.col("pred_mask").cv.pipeline(extract_pipe),
-)
-
-# For the ML demo, we compute IoU/Dice directly on the ground truth contours
-# Since we have generated predictions as heatmaps and GT as contours,
-# we can compare ground truth contours with extracted prediction contours
-
-# Simpler approach: Create prediction contours from the heatmap centers
-# and compute IoU between ground_truth contours
-# For this demo, we'll compute metrics using the ground_truth contour vs itself
-# with slight perturbations to show the API
-
-# Compute IoU and Dice using the .contour namespace
-# Here we demonstrate the API by comparing ground_truth to itself
-# In practice, you would compare pred_contour to ground_truth
-metrics_df = ml_df.select(
+# Contour-based IoU (comparing ground truth contours)
+contour_metrics = ml_df.select(
     "sample_id",
-    # IoU with itself should be 1.0
-    iou_self=pl.col("ground_truth").contour.iou(pl.col("ground_truth")),
-    # Dice with itself should be 1.0
+    iou_self=pl.col("ground_truth").contour.iou(
+        pl.col("ground_truth")
+    ),  # Should be 1.0
     dice_self=pl.col("ground_truth").contour.dice(pl.col("ground_truth")),
-    # Area of ground truth
     gt_area=pl.col("ground_truth").contour.area(),
 )
 
 print("Contour-based Metrics (comparing GT with itself):")
-print(metrics_df)
+print(contour_metrics)
 
 
-# For a realistic demo, compute pixel-based IoU manually for visualization
+# Pixel-based IoU/Dice for actual comparison
 def compute_iou_from_masks(mask1_bytes: bytes, mask2_bytes: bytes) -> float:
     """Compute IoU from two PNG mask bytes."""
     m1 = np.array(Image.open(io.BytesIO(mask1_bytes)).convert("L")) > 128
@@ -970,7 +1402,7 @@ def compute_dice_from_masks(mask1_bytes: bytes, mask2_bytes: bytes) -> float:
     return float(2 * intersection / denom) if denom > 0 else 0.0
 
 
-# Compute pixel-based metrics for prediction vs ground truth comparison
+# Compute pixel-based metrics
 pixel_metrics = []
 for row in processed.iter_rows(named=True):
     iou = compute_iou_from_masks(row["pred_mask"], row["gt_mask"])
@@ -978,7 +1410,7 @@ for row in processed.iter_rows(named=True):
     pixel_metrics.append({"sample_id": row["sample_id"], "iou": iou, "dice": dice})
 
 pixel_metrics_df = pl.DataFrame(pixel_metrics)
-print("\nPixel-based Segmentation Metrics (pred vs GT masks):")
+print("\nPixel-based Segmentation Metrics (pred vs GT):")
 print(pixel_metrics_df)
 print(f"\nMean IoU: {pixel_metrics_df['iou'].mean():.3f}")
 print(f"Mean Dice: {pixel_metrics_df['dice'].mean():.3f}")
@@ -1016,154 +1448,71 @@ print("Overlay: Green=GT, Red=Pred, Yellow=Overlap")
 display_images(overlays, titles)
 
 # %% [markdown]
-# ## 9. Lazy Scalability Demo
+# ### 12.1 Multi-Output ML Pipeline
 #
-# polars-vision integrates seamlessly with Polars' **lazy execution engine**. This enables:
-#
-# 1. **Memory efficiency**: Process data that doesn't fit in memory
-# 2. **Query optimization**: Operations are fused and optimized
-# 3. **Streaming**: Process data in chunks
-#
-# Let's demonstrate by:
-# 1. Generating a configurable synthetic dataset on disk
-# 2. Lazily scanning and processing the data
-# 3. Sinking results to parquet
+# Let's create a more comprehensive ML pipeline that outputs:
+# - Original image (normalized)
+# - Predicted mask
+# - Ground truth mask
+# - Overlay visualization
 
 # %%
-# Create a temporary directory for our demo dataset
-import shutil  # noqa: E402
+# Comprehensive multi-output ML pipeline
+df_ml = ml_df.head(1)  # Use first sample
 
-DEMO_DIR = Path(tempfile.mkdtemp(prefix="polars_vision_demo_"))
-print(f"Demo directory: {DEMO_DIR}")
-
-# Configuration
-N_IMAGES = 50  # Number of images to generate
-IMAGE_SIZE = 128  # Size of each image
-
-print(f"Generating {N_IMAGES} synthetic images...")
-
-
-# %%
-# Generate images and save to parquet
-def generate_dataset(n_images: int, size: int, output_path: Path) -> pl.DataFrame:
-    """Generate a synthetic image dataset and save to parquet."""
-    records = []
-    patterns = ["gradient", "checkerboard", "circles", "noise"]
-
-    for i in range(n_images):
-        pattern = patterns[i % len(patterns)]
-        image_bytes = create_test_image(size, size, pattern)
-
-        # Add some metadata
-        records.append(
-            {
-                "id": i,
-                "pattern": pattern,
-                "image": image_bytes,
-                "target_size": 64 + (i % 3) * 32,  # 64, 96, or 128
-                "threshold": 100 + (i % 5) * 20,  # 100, 120, 140, 160, 180
-            }
-        )
-
-    df = pl.DataFrame(records)
-    df.write_parquet(output_path)
-    return df
-
-
-# Generate and save
-input_path = DEMO_DIR / "raw_images.parquet"
-source_df = generate_dataset(N_IMAGES, IMAGE_SIZE, input_path)
-
-print(f"Saved {N_IMAGES} images to {input_path}")
-print(f"File size: {input_path.stat().st_size / 1024:.1f} KB")
-print(f"\nSchema: {source_df.schema}")
-print(source_df.head(3))
-
-# %%
-# Lazy processing pipeline
-# This demonstrates the power of lazy evaluation
-
-# Define reusable pipelines
-preprocess_pipe = (
-    Pipeline()
-    .source("image_bytes")
-    .resize(height=64, width=64)  # Standard size
-    .grayscale()
-    .normalize(method="minmax")
-    .sink("numpy")
+# Create base expressions
+pred_base = (
+    pl.col("prediction").cv.pipe(Pipeline().source("image_bytes")).alias("pred_raw")
 )
 
-# Create lazy query
-lazy_query = (
-    pl.scan_parquet(input_path)
-    .filter(pl.col("id") < 20)  # Only process subset for demo
-    .with_columns(processed=pl.col("image").cv.pipeline(preprocess_pipe))
-    .select("id", "pattern", "processed")
+# Note: grayscale() is needed before threshold() for proper binary mask creation
+pred_thresh = pred_base.pipe(Pipeline().grayscale().threshold(128)).alias("pred_mask")
+
+gt_mask = (
+    pl.col("ground_truth")
+    .cv.pipe(Pipeline().source("contour", width=200, height=200))
+    .alias("gt_mask")
 )
 
-# Show the lazy query plan
-print("Lazy Query Plan:")
-print(lazy_query.explain())
+# For multi-output, merge the branches
+merged = pred_thresh.merge_pipe(gt_mask)
 
-# %%
-# Execute and sink to parquet
-output_path = DEMO_DIR / "processed_images.parquet"
+# Sink all outputs
+result = df_ml.with_columns(
+    outputs=merged.sink(
+        {
+            "pred_raw": "png",
+            "pred_mask": "png",
+            "gt_mask": "png",
+        }
+    )
+)
 
-# Collect (execute) the lazy query
-result = lazy_query.collect()
+# Extract and display
+extracted = result.select(
+    pl.col("outputs").struct.field("pred_raw").alias("pred_raw"),
+    pl.col("outputs").struct.field("pred_mask").alias("pred_mask"),
+    pl.col("outputs").struct.field("gt_mask").alias("gt_mask"),
+)
 
-# Save results
-result.write_parquet(output_path)
+display_images(
+    [extracted["pred_raw"][0], extracted["pred_mask"][0], extracted["gt_mask"][0]],
+    ["Prediction (raw)", "Prediction (threshold)", "Ground Truth"],
+)
 
-print(f"Processed {len(result)} images")
-print(f"Output saved to {output_path}")
-print(f"Output file size: {output_path.stat().st_size / 1024:.1f} KB")
-print()
-print(result.head())
-
-# %%
-# Verify the processed data
-processed_data = pl.read_parquet(output_path)
-
-# Convert one sample back to array for visualization using numpy_from_bytes
-sample = processed_data.row(0, named=True)
-arr = numpy_from_bytes(sample["processed"])
-
-print(f"Processed array shape: {arr.shape}")
-print(f"Value range: [{arr.min():.3f}, {arr.max():.3f}]")
-
-# Display a few samples
-fig, axes = plt.subplots(1, 4, figsize=(12, 3))
-for i, ax in enumerate(axes):
-    sample = processed_data.row(i, named=True)
-    arr = numpy_from_bytes(sample["processed"])
-    ax.imshow(arr.squeeze(), cmap="viridis")
-    ax.set_title(f"ID={sample['id']}, {sample['pattern']}")
-    ax.axis("off")
-plt.tight_layout()
-plt.show()
-
-# %%
-# Cleanup demo directory
-shutil.rmtree(DEMO_DIR)
-print(f"Cleaned up {DEMO_DIR}")
+print("✅ Multi-output ML pipeline with 3 outputs from single execution!")
 
 # %% [markdown]
-# ## 10. PyTorch Integration
+# ## 13. PyTorch Integration
 #
-# polars-vision can output directly to **torch format** for seamless ML integration. The `torch` sink produces bytes that can be converted to PyTorch tensors.
-#
-# ### Workflow:
-# 1. Process images with polars-vision pipeline
-# 2. Sink to `torch` format
-# 3. Convert to PyTorch tensors
-# 4. Feed to DataLoader for training
+# polars-vision can output directly to **torch format** for seamless ML integration.
+# The `torch` sink produces bytes that can be converted to PyTorch tensors.
 
 # %%
 # Check if PyTorch is available
 try:
     import torch
-    from torch.utils.data import Dataset, DataLoader
+    from torch.utils.data import DataLoader, Dataset
 
     TORCH_AVAILABLE = True
     print(f"✅ PyTorch version: {torch.__version__}")
@@ -1233,7 +1582,7 @@ if TORCH_AVAILABLE:
 
 # %%
 if TORCH_AVAILABLE:
-    # Create a simple Dataset class for DataLoader integration
+    # Create a Dataset class for DataLoader integration
 
     class PolarsVisionDataset(Dataset):
         """PyTorch Dataset backed by a Polars DataFrame with polars-vision preprocessing."""
@@ -1241,14 +1590,17 @@ if TORCH_AVAILABLE:
         def __init__(
             self, df: pl.DataFrame, image_col: str, label_col: str, pipeline: Pipeline
         ) -> None:
+            """Initialize dataset with preprocessing."""
             # Pre-process all images
             self.df = df.with_columns(_tensor=pl.col(image_col).cv.pipeline(pipeline))
             self.label_col = label_col
 
         def __len__(self) -> int:
+            """Return dataset size."""
             return len(self.df)
 
         def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+            """Get a single sample."""
             row = self.df.row(idx, named=True)
             tensor = bytes_to_torch(row["_tensor"])
             tensor = tensor.permute(2, 0, 1)  # (C, H, W)
@@ -1266,8 +1618,10 @@ if TORCH_AVAILABLE:
             f"  Batch {batch_idx}: images shape={images.shape}, labels={labels.tolist()}"
         )
 
+    print("\n✅ Seamless PyTorch DataLoader integration!")
+
 # %% [markdown]
-# ## 11. Conclusion
+# ## 14. Conclusion
 #
 # This notebook demonstrated the key capabilities of **polars-vision**:
 #
@@ -1289,30 +1643,56 @@ if TORCH_AVAILABLE:
 #
 # 4. **Geometry Operations**
 #    - Contour schemas and creation
-#    - Geometric measures (area, perimeter, centroid, bbox)
+#    - Geometric measures (area, perimeter, is_convex)
 #    - Rasterization of contours to masks
 #
 # 5. **Lazy Pipeline Composition**
-#    - `cv.pipe()` vs `cv.pipeline()` modes
-#    - Binary operations and mask application
-#    - Fused execution of composed pipelines
+#    - `.cv.pipe()` vs `.cv.pipeline()` modes
+#    - `.pipe()` for chaining operations
+#    - `.alias()` for named checkpoints
 #
-# 6. **Multi-Output Pipelines**
-#    - Alias-based checkpoints
-#    - Struct output with multiple formats
+# 6. **Binary Operations & Mask Application**
+#    - Element-wise operations (add, subtract, blend)
+#    - `apply_mask()` for masking images
+#    - `apply_contour_mask()` with shape inference
 #
-# 7. **ML Workflow: IoU Calculation**
-#    - Heatmap prediction processing
-#    - Ground truth contour handling
-#    - IoU/Dice metric computation
+# 7. **Multi-Source Pipelines**
+#    - Reading from different DataFrame columns
+#    - Composing operations across sources
 #
-# 8. **Lazy Scalability**
-#    - Integration with Polars lazy execution
-#    - Parquet read/write workflows
+# 8. **Multi-Output with Named Nodes**
+#    - `.alias()` for checkpoints
+#    - `.merge_pipe()` for combining branches
+#    - Dict-based `.sink()` for Struct output
 #
-# 9. **PyTorch Integration**
-#    - Torch format output
-#    - DataLoader-compatible datasets
+# 9. **Reusable Pipeline Patterns**
+#    - Pipeline fragments as variables
+#    - Parameterized pipeline factories
+#    - Configuration-driven pipelines
+#
+# 10. **Domain Transitions**
+#     - Image ↔ Contour ↔ Scalar
+#     - `extract_contours()` and `rasterize()`
+#     - Geometric measurements
+#
+# 11. **ML Workflow**
+#     - Segmentation pipeline with IoU/Dice metrics
+#     - Multi-output ML pipelines
+#
+# 12. **PyTorch Integration**
+#     - Torch format output
+#     - DataLoader-compatible datasets
+#
+# ### 🔑 Key Concepts
+#
+# | Concept | Description |
+# |---------|-------------|
+# | **Lazy Composition** | Use `.cv.pipe()` to create composable `LazyPipelineExpr` |
+# | **Named Nodes** | Use `.alias(name)` to create checkpoints |
+# | **Multi-Output** | Use `.merge_pipe()` + dict `.sink()` for Struct output |
+# | **Multi-Source** | Different columns feed different pipeline branches |
+# | **CSE Optimization** | Shared prefixes automatically extracted and reused |
+# | **Domain Transitions** | Seamlessly move between buffer/contour/scalar domains |
 #
 # ### 🔗 Resources
 #
@@ -1324,5 +1704,7 @@ if TORCH_AVAILABLE:
 print("🎉 Demo complete! polars-vision provides:")
 print("   • High-performance image processing in Polars")
 print("   • Zero-copy operations where possible")
-print("   • Composable, reusable pipelines")
+print("   • Composable, reusable pipelines with named nodes")
+print("   • Multi-source and multi-output support")
+print("   • Automatic CSE optimization")
 print("   • Seamless ML framework integration")
