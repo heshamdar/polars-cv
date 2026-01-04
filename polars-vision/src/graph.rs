@@ -292,6 +292,88 @@ fn execute_geometry_op(
     }
 }
 
+/// Build a nested Array AnyValue from flat data and shape.
+///
+/// For shape [2, 3], builds Array[Array[f64, 3], 2] structure.
+fn build_nested_array_value(data: &[f64], shape: &[usize]) -> PolarsResult<AnyValue<'static>> {
+    if shape.is_empty() {
+        // Scalar case
+        return Ok(if data.is_empty() {
+            AnyValue::Null
+        } else {
+            AnyValue::Float64(data[0])
+        });
+    }
+    
+    if shape.len() == 1 {
+        // Base case: 1D array -> List of Float64
+        let width = shape[0];
+        if data.len() != width {
+            return Err(polars_err!(ComputeError: "Data length {} doesn't match shape {:?}", data.len(), shape));
+        }
+        
+        // Create a Float64 array
+        let values: Vec<AnyValue<'static>> = data.iter().map(|&v| AnyValue::Float64(v)).collect();
+        let inner_dtype = DataType::Float64;
+        let series = Series::from_any_values_and_dtype(
+            PlSmallStr::EMPTY,
+            &values,
+            &inner_dtype,
+            true,
+        )?;
+        return Ok(AnyValue::Array(series, width));
+    }
+    
+    // Multi-dimensional: recursively build nested arrays
+    let outer_dim = shape[0];
+    let inner_shape = &shape[1..];
+    let inner_size: usize = inner_shape.iter().product();
+    
+    if data.len() != outer_dim * inner_size {
+        return Err(polars_err!(ComputeError: "Data length {} doesn't match shape {:?}", data.len(), shape));
+    }
+    
+    // Build each inner array
+    let mut inner_values: Vec<AnyValue<'static>> = Vec::with_capacity(outer_dim);
+    for i in 0..outer_dim {
+        let start = i * inner_size;
+        let end = start + inner_size;
+        let inner_data = &data[start..end];
+        let inner_val = build_nested_array_value(inner_data, inner_shape)?;
+        inner_values.push(inner_val);
+    }
+    
+    // Build inner dtype
+    let mut inner_dtype = DataType::Float64;
+    for &dim in inner_shape.iter().rev() {
+        inner_dtype = DataType::Array(Box::new(inner_dtype), dim);
+    }
+    
+    let series = Series::from_any_values_and_dtype(
+        PlSmallStr::EMPTY,
+        &inner_values,
+        &inner_dtype,
+        true,
+    )?;
+    Ok(AnyValue::Array(series, outer_dim))
+}
+
+/// Extract buffer data as Vec<f64> with type dispatch.
+fn extract_buffer_as_f64(buf: &view_buffer::ViewBuffer) -> Vec<f64> {
+    match buf.dtype() {
+        view_buffer::DType::U8 => buf.as_slice::<u8>().iter().map(|&v| v as f64).collect(),
+        view_buffer::DType::I8 => buf.as_slice::<i8>().iter().map(|&v| v as f64).collect(),
+        view_buffer::DType::U16 => buf.as_slice::<u16>().iter().map(|&v| v as f64).collect(),
+        view_buffer::DType::I16 => buf.as_slice::<i16>().iter().map(|&v| v as f64).collect(),
+        view_buffer::DType::U32 => buf.as_slice::<u32>().iter().map(|&v| v as f64).collect(),
+        view_buffer::DType::I32 => buf.as_slice::<i32>().iter().map(|&v| v as f64).collect(),
+        view_buffer::DType::U64 => buf.as_slice::<u64>().iter().map(|&v| v as f64).collect(),
+        view_buffer::DType::I64 => buf.as_slice::<i64>().iter().map(|&v| v as f64).collect(),
+        view_buffer::DType::F32 => buf.as_slice::<f32>().iter().map(|&v| v as f64).collect(),
+        view_buffer::DType::F64 => buf.as_slice::<f64>().to_vec(),
+    }
+}
+
 /// Encode a NodeOutput to bytes based on sink format.
 ///
 /// Dispatches to the appropriate encoding based on the output domain.
@@ -341,26 +423,43 @@ fn encode_node_output(
                 .map(OutputValue::Binary)
                 .map_err(|e| format!("Encode error: {e}"))
         }
-        (NodeOutput::Buffer(buf), "array" | "list") => {
+        (NodeOutput::Buffer(buf), "list") => {
             // Convert buffer to nested list structure for proper Polars List type
             let contig = buf.to_contiguous();
             let shape = contig.shape().to_vec();
             
             // Extract data as f64 (type dispatch)
-            let data: Vec<f64> = match contig.dtype() {
-                view_buffer::DType::U8 => contig.as_slice::<u8>().iter().map(|&v| v as f64).collect(),
-                view_buffer::DType::I8 => contig.as_slice::<i8>().iter().map(|&v| v as f64).collect(),
-                view_buffer::DType::U16 => contig.as_slice::<u16>().iter().map(|&v| v as f64).collect(),
-                view_buffer::DType::I16 => contig.as_slice::<i16>().iter().map(|&v| v as f64).collect(),
-                view_buffer::DType::U32 => contig.as_slice::<u32>().iter().map(|&v| v as f64).collect(),
-                view_buffer::DType::I32 => contig.as_slice::<i32>().iter().map(|&v| v as f64).collect(),
-                view_buffer::DType::U64 => contig.as_slice::<u64>().iter().map(|&v| v as f64).collect(),
-                view_buffer::DType::I64 => contig.as_slice::<i64>().iter().map(|&v| v as f64).collect(),
-                view_buffer::DType::F32 => contig.as_slice::<f32>().iter().map(|&v| v as f64).collect(),
-                view_buffer::DType::F64 => contig.as_slice::<f64>().to_vec(),
-            };
+            let data: Vec<f64> = extract_buffer_as_f64(&contig);
             
             Ok(OutputValue::NestedList { data, shape })
+        }
+        (NodeOutput::Buffer(buf), "array") => {
+            // Convert buffer to fixed-size array for proper Polars Array type
+            let contig = buf.to_contiguous();
+            let buffer_shape = contig.shape().to_vec();
+            
+            // Use provided shape from sink spec, or infer from buffer
+            let shape = if let Some(ref spec_shape) = sink.shape {
+                // Require exact shape match to avoid dimension confusion
+                // e.g., [2, 2, 1] vs [2, 2] have same elements but different structure
+                // Users should use squeeze()/expand_dims() to adjust dimensions first
+                if spec_shape != &buffer_shape {
+                    return Err(format!(
+                        "Array sink shape {spec_shape:?} does not match buffer shape {buffer_shape:?}. \
+                         Use squeeze() or expand_dims() to adjust dimensions, \
+                         or omit shape to infer from buffer."
+                    ));
+                }
+                spec_shape.clone()
+            } else {
+                // Infer shape from buffer
+                buffer_shape
+            };
+            
+            // Extract data as f64 (type dispatch)
+            let data: Vec<f64> = extract_buffer_as_f64(&contig);
+            
+            Ok(OutputValue::FixedArray { data, shape })
         }
         
         // Native format dispatches based on domain
@@ -410,11 +509,18 @@ enum OutputValue {
     Contours(Arc<Vec<Contour>>),
     Scalar(f64),
     Vector(Arc<Vec<f64>>),
-    /// Nested list representation for "list" sink - shape info preserved for building nested structure.
+    /// Nested list representation for "list" sink - variable length.
     NestedList {
         /// Flattened data as f64.
         data: Vec<f64>,
         /// Original shape of the buffer.
+        shape: Vec<usize>,
+    },
+    /// Fixed-size array representation for "array" sink - requires known shape.
+    FixedArray {
+        /// Flattened data as f64.
+        data: Vec<f64>,
+        /// Fixed shape (validated against buffer).
         shape: Vec<usize>,
     },
 }
@@ -652,8 +758,10 @@ impl UnifiedGraph {
             Scalar(Option<f64>),
             Vector(Option<Vec<f64>>),
             Contours(Option<Vec<Contour>>),
-            /// Nested list for list/array sinks.
+            /// Nested list for "list" sink (variable length).
             NestedList(Option<(Vec<f64>, Vec<usize>)>),
+            /// Fixed-size array for "array" sink (fixed shape).
+            FixedArray(Option<(Vec<f64>, Vec<usize>)>),
         }
         
         let mut results: HashMap<String, Vec<RowResult>> = HashMap::new();
@@ -922,6 +1030,7 @@ impl UnifiedGraph {
                                     OutputValue::Vector(vals) => RowResult::Vector(Some((*vals).clone())),
                                     OutputValue::Contours(contours) => RowResult::Contours(Some((*contours).clone())),
                                     OutputValue::NestedList { data, shape } => RowResult::NestedList(Some((data, shape))),
+                                    OutputValue::FixedArray { data, shape } => RowResult::FixedArray(Some((data, shape))),
                                 };
                                 results.get_mut(alias).unwrap().push(row_result);
                             }
@@ -1068,6 +1177,54 @@ impl UnifiedGraph {
                     
                     Ok(builder.finish().into_series())
                 }
+                RowResult::FixedArray(_) => {
+                    // Build fixed-size array using Polars Array type
+                    // Get the shape from the first non-null element
+                    let first_shape = data.iter().find_map(|r| {
+                        match r {
+                            RowResult::FixedArray(Some((_, shape))) => Some(shape.clone()),
+                            _ => None,
+                        }
+                    });
+                    
+                    let shape = match first_shape {
+                        Some(s) => s,
+                        None => {
+                            // All nulls - create empty array column
+                            let empty_ca = Float64Chunked::from_iter_options(
+                                inputs[0].name().clone(),
+                                std::iter::empty::<Option<f64>>(),
+                            );
+                            return Ok(empty_ca.into_series());
+                        }
+                    };
+                    
+                    // Build the nested Array type from shape
+                    // e.g., shape [H, W, C] -> Array[H, Array[W, Array[C, Float64]]]
+                    let mut dtype = DataType::Float64;
+                    for &dim in shape.iter().rev() {
+                        dtype = DataType::Array(Box::new(dtype), dim);
+                    }
+                    
+                    // Build AnyValue arrays for each row
+                    let values: PolarsResult<Vec<AnyValue<'static>>> = data.iter().map(|r| {
+                        match r {
+                            RowResult::FixedArray(Some((vals, row_shape))) => {
+                                build_nested_array_value(vals, row_shape)
+                            }
+                            _ => Ok(AnyValue::Null),
+                        }
+                    }).collect();
+                    let values = values?;
+                    
+                    let series = Series::from_any_values_and_dtype(
+                        inputs[0].name().clone(),
+                        &values,
+                        &dtype,
+                        true,
+                    )?;
+                    Ok(series)
+                }
             }
         } else {
             // Multi output: return Struct column with appropriate field types
@@ -1177,6 +1334,50 @@ impl UnifiedGraph {
                         }
                         
                         builder.finish().into_series()
+                    }
+                    RowResult::FixedArray(_) => {
+                        // Build fixed-size array using Polars Array type
+                        let first_shape = data.iter().find_map(|r| {
+                            match r {
+                                RowResult::FixedArray(Some((_, shape))) => Some(shape.clone()),
+                                _ => None,
+                            }
+                        });
+                        
+                        match first_shape {
+                            None => {
+                                // All nulls - create empty array column
+                                Float64Chunked::from_iter_options(
+                                    PlSmallStr::from_str(alias),
+                                    std::iter::empty::<Option<f64>>(),
+                                ).into_series()
+                            }
+                            Some(shape) => {
+                                // Build the nested Array type from shape
+                                let mut dtype = DataType::Float64;
+                                for &dim in shape.iter().rev() {
+                                    dtype = DataType::Array(Box::new(dtype), dim);
+                                }
+                                
+                                // Build AnyValue arrays for each row
+                                let values: PolarsResult<Vec<AnyValue<'static>>> = data.iter().map(|r| {
+                                    match r {
+                                        RowResult::FixedArray(Some((vals, row_shape))) => {
+                                            build_nested_array_value(vals, row_shape)
+                                        }
+                                        _ => Ok(AnyValue::Null),
+                                    }
+                                }).collect();
+                                let values = values?;
+                                
+                                Series::from_any_values_and_dtype(
+                                    PlSmallStr::from_str(alias),
+                                    &values,
+                                    &dtype,
+                                    true,
+                                )?
+                            }
+                        }
                     }
                 };
                 
