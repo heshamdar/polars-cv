@@ -341,6 +341,25 @@ fn encode_node_output(
                 .map(OutputValue::Binary)
                 .map_err(|e| format!("Encode error: {e}"))
         }
+        (NodeOutput::Buffer(buf), "array" | "list") => {
+            let pipeline = PipelineSpec {
+                source: SourceSpec {
+                    format: "blob".to_string(),
+                    dtype: None,
+                    width: None,
+                    height: None,
+                    fill_value: 255,
+                    background: 0,
+                    shape_pipeline: None,
+                },
+                shape_hints: None,
+                ops: vec![],
+                sink: sink.clone(),
+            };
+            crate::execute::encode_sink(buf, &pipeline)
+                .map(OutputValue::Binary)
+                .map_err(|e| format!("Encode error: {e}"))
+        }
         
         // Native format dispatches based on domain
         (NodeOutput::Buffer(_), "native") => {
@@ -354,6 +373,10 @@ fn encode_node_output(
             Ok(OutputValue::Scalar(*val))
         }
         (NodeOutput::Vector(vals), "native") => {
+            Ok(OutputValue::Vector(vals.clone()))
+        }
+        // List format for vector outputs
+        (NodeOutput::Vector(vals), "list") => {
             Ok(OutputValue::Vector(vals.clone()))
         }
         

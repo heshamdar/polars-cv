@@ -397,3 +397,28 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 pub fn apply_image(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
     panic!("Image operations require the 'image_interop' feature");
 }
+
+// ============================================================
+// Perceptual Hash Operations
+// ============================================================
+
+#[cfg(feature = "perceptual_hash")]
+use crate::ops::phash::PerceptualHashOp;
+
+/// Applies a perceptual hash operation to a buffer.
+///
+/// Perceptual hashing requires the buffer to be in image format.
+/// The output is a 1D u8 buffer containing the hash bytes.
+#[cfg(feature = "perceptual_hash")]
+pub fn apply_perceptual_hash(buf: ViewBuffer, op: PerceptualHashOp) -> ViewBuffer {
+    // Convert to U8 if needed (perceptual hash expects image format)
+    let work_buf = convert_to_u8_for_image(buf);
+
+    // Execute the perceptual hash operation
+    op.execute(&work_buf)
+}
+
+#[cfg(not(feature = "perceptual_hash"))]
+pub fn apply_perceptual_hash(_buf: ViewBuffer, _op: crate::ops::phash::PerceptualHashOp) -> ViewBuffer {
+    panic!("Perceptual hash operations require the 'perceptual_hash' feature");
+}

@@ -454,11 +454,11 @@ pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult
             // VIEW protocol
             Ok(buffer.to_blob())
         }
-        "png" => ImageAdapter::encode(buffer, image::ImageOutputFormat::Png)
+        "png" => ImageAdapter::encode(buffer, image::ImageFormat::Png)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode PNG: {:?}", e)),
         "jpeg" => {
             let quality = pipeline.sink.quality;
-            ImageAdapter::encode(buffer, image::ImageOutputFormat::Jpeg(quality))
+            ImageAdapter::encode_jpeg(buffer, quality)
                 .map_err(|e| polars_err!(ComputeError: "Failed to encode JPEG: {:?}", e))
         }
         "array" | "list" => {
@@ -642,6 +642,38 @@ pub fn resolve_op(
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Blur { sigma },
             }))
+        }
+
+        // Perceptual hash operation
+        "perceptual_hash" => {
+            use view_buffer::ops::phash::{HashAlgorithm, PerceptualHashOp};
+
+            let algorithm = op_spec
+                .params
+                .get("algorithm")
+                .and_then(|p| match p {
+                    ParamValue::Literal { value } => value.as_str(),
+                    _ => None,
+                })
+                .unwrap_or("perceptual");
+
+            let hash_algorithm = match algorithm {
+                "average" => HashAlgorithm::Average,
+                "difference" => HashAlgorithm::Difference,
+                "perceptual" => HashAlgorithm::Perceptual,
+                "blockhash" => HashAlgorithm::Blockhash,
+                _ => HashAlgorithm::Perceptual,
+            };
+
+            let hash_size = op_spec
+                .params
+                .get("hash_size")
+                .map(|p| p.resolve_usize(row_idx, expr_columns).unwrap_or(64) as u32)
+                .unwrap_or(64);
+
+            Ok(ViewDto::PerceptualHash(
+                PerceptualHashOp::new(hash_algorithm).with_hash_size(hash_size),
+            ))
         }
 
         // Geometry operations

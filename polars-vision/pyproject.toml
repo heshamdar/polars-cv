@@ -20,7 +20,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "numpy>=1.20", "opencv-python>=4.8", "scipy>=1.10"]
+dev = ["pytest>=7.0", "numpy>=1.20", "opencv-python>=4.8", "scipy>=1.10", "imagehash>=4.3", "pillow>=10.0"]
 bench = [
     "opencv-python>=4.8",
     "pillow>=10.0",

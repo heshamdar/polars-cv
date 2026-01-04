@@ -8,6 +8,7 @@
 //! - Binary operations (operations between two arrays)
 //! - Reduction operations (statistical aggregations)
 //! - Histogram operations (binning and quantization)
+//! - Perceptual hash operations (image fingerprinting)
 //! - I/O operations (sources and sinks)
 //!
 //! # Typed Pipeline Nodes
@@ -32,6 +33,7 @@ pub mod dto;
 pub mod histogram;
 pub mod image;
 pub mod io;
+pub mod phash;
 pub mod reduction;
 pub mod scalar;
 pub mod traits;
@@ -45,6 +47,7 @@ pub use dto::ViewDto;
 pub use histogram::{HistogramOp, HistogramOutput};
 pub use image::{FilterType, ImageOp, ImageOpKind};
 pub use io::{PlaceholderMeta, SinkFormat, SourceFormat};
+pub use phash::{HashAlgorithm, PerceptualHashOp};
 pub use reduction::ReductionOp;
 pub use scalar::{FusedKernel, ScalarOp};
 pub use traits::{DomainOp, MemoryEffect, Op};

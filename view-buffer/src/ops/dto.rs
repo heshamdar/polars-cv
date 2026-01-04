@@ -5,6 +5,7 @@ use crate::geometry::ops::GeometryOp;
 use crate::ops::binary::BinaryOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::image::ImageOp;
+use crate::ops::phash::PerceptualHashOp;
 use crate::ops::traits::Op;
 use crate::ops::view::ViewOp;
 use crate::ops::Domain;
@@ -18,6 +19,8 @@ pub enum ViewDto {
     Compute(ComputeOp),
     Image(ImageOp),
     Geometry(GeometryOp),
+    /// Perceptual hash operation - computes image fingerprint.
+    PerceptualHash(PerceptualHashOp),
     /// Binary operation between two buffers.
     /// The second buffer is referenced by node ID (for graph execution).
     Binary {
@@ -41,8 +44,11 @@ impl ViewDto {
     /// for this operation to be valid.
     pub fn input_domain(&self) -> Domain {
         match self {
-            // View/Compute/Image operations work on buffers
-            ViewDto::View(_) | ViewDto::Compute(_) | ViewDto::Image(_) => Domain::Buffer,
+            // View/Compute/Image/PerceptualHash operations work on buffers
+            ViewDto::View(_)
+            | ViewDto::Compute(_)
+            | ViewDto::Image(_)
+            | ViewDto::PerceptualHash(_) => Domain::Buffer,
             // Geometry operations have their own domain logic
             ViewDto::Geometry(op) => op.input_domain(),
             // Binary operations work on buffers
@@ -59,6 +65,8 @@ impl ViewDto {
         match self {
             // View/Compute/Image operations produce buffers
             ViewDto::View(_) | ViewDto::Compute(_) | ViewDto::Image(_) => Domain::Buffer,
+            // PerceptualHash produces a buffer (1D u8 array of hash bytes)
+            ViewDto::PerceptualHash(_) => Domain::Buffer,
             // Geometry operations have their own domain logic
             ViewDto::Geometry(op) => op.output_domain(),
             // Binary operations produce buffers
@@ -75,6 +83,7 @@ impl ViewDto {
             ViewDto::Compute(op) => op.name(),
             ViewDto::Image(op) => op.name(),
             ViewDto::Geometry(op) => op.name(),
+            ViewDto::PerceptualHash(op) => op.name(),
             ViewDto::Binary { op, .. } => op.name(),
             ViewDto::ApplyMask { .. } => "ApplyMask",
             ViewDto::Materialize => "Materialize",

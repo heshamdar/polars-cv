@@ -9,6 +9,7 @@ use crate::ops::cost::{OpCost, OpCostReport};
 use crate::ops::io::{PlaceholderMeta, SinkFormat, SourceFormat};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::MemoryEffect;
+use crate::ops::phash::PerceptualHashOp;
 use crate::ops::{
     ComputeOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op, ViewDto, ViewOp,
 };
@@ -36,6 +37,9 @@ pub enum ExprNode {
 
     /// Image processing operation.
     Image(ImageOp, Arc<ViewExpr>),
+
+    /// Perceptual hash operation.
+    PerceptualHash(PerceptualHashOp, Arc<ViewExpr>),
 
     /// Terminal sink specifying output format.
     Sink {
@@ -132,6 +136,7 @@ impl ViewExpr {
                 ImageOpKind::Blur { sigma } => self.blur(sigma),
                 ImageOpKind::Grayscale => self.grayscale(),
             },
+            ViewDto::PerceptualHash(op) => self.perceptual_hash(op),
             ViewDto::Materialize => {
                 // Explicit materialization handled by Planner
                 self.clone()
@@ -459,6 +464,22 @@ impl ViewExpr {
         })
     }
 
+    /// Compute a perceptual hash of the image.
+    ///
+    /// Returns a 1D u8 buffer containing the hash bytes.
+    /// For a 64-bit hash (default), the shape is [8].
+    pub fn perceptual_hash(self: &Arc<Self>, op: PerceptualHashOp) -> Arc<Self> {
+        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_strides = self.calc_strides(&op, &new_shape);
+
+        Arc::new(Self {
+            node: ExprNode::PerceptualHash(op, self.clone()),
+            shape: new_shape,
+            strides: new_strides,
+            dtype: DType::U8,
+        })
+    }
+
     // --- Optimization ---
 
     pub fn optimize(self: &Arc<Self>) -> Arc<Self> {
@@ -472,6 +493,9 @@ impl ViewExpr {
                 ExprNode::Compute(op.clone(), opt_children)
             }
             ExprNode::Image(op, child) => ExprNode::Image(op.clone(), child.optimize()),
+            ExprNode::PerceptualHash(op, child) => {
+                ExprNode::PerceptualHash(op.clone(), child.optimize())
+            }
             ExprNode::Sink { format, input } => ExprNode::Sink {
                 format: format.clone(),
                 input: input.optimize(),
@@ -608,6 +632,10 @@ impl ViewExpr {
                 info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 info.push_str(&child.explain_impl(depth + 1));
             }
+            ExprNode::PerceptualHash(op, child) => {
+                info.push_str(&format!("{indent}  Op: {op:?}\n"));
+                info.push_str(&child.explain_impl(depth + 1));
+            }
             ExprNode::Sink { format, input } => {
                 info.push_str(&format!("{indent}  Format: {format:?}\n"));
                 info.push_str(&input.explain_impl(depth + 1));
@@ -624,6 +652,7 @@ impl ViewExpr {
             ExprNode::View(_, _) => "View",
             ExprNode::Compute(_, _) => "Compute",
             ExprNode::Image(_, _) => "Image",
+            ExprNode::PerceptualHash(_, _) => "PerceptualHash",
             ExprNode::Sink { .. } => "Sink",
         }
     }
@@ -703,6 +732,7 @@ impl ViewExpr {
                 .map(|c| c.get_source_dtype())
                 .unwrap_or(DType::U8),
             ExprNode::Image(_, child) => child.get_source_dtype(),
+            ExprNode::PerceptualHash(_, child) => child.get_source_dtype(),
             ExprNode::Sink { input, .. } => input.get_source_dtype(),
         }
     }
@@ -770,6 +800,18 @@ impl ViewExpr {
                         input_dtype,
                     ));
                 }
+                dtype_flow.push(output_dtype);
+            }
+            ExprNode::PerceptualHash(op, child) => {
+                child.collect_costs(ops, dtype_flow);
+                let input_dtype = child.dtype;
+                let output_dtype = op.infer_dtype(&[input_dtype]);
+                ops.push(OpCostReport::with_dtype_change(
+                    op.name(),
+                    op.intrinsic_cost(),
+                    input_dtype,
+                    output_dtype,
+                ));
                 dtype_flow.push(output_dtype);
             }
             ExprNode::Sink { format, input } => {
@@ -905,6 +947,23 @@ impl ViewExpr {
                 }
 
                 plan.steps.push(PlanStep::Image(op.clone()));
+                plan
+            }
+            ExprNode::PerceptualHash(op, child) => {
+                let mut plan = child.build_plan();
+
+                // Perceptual hash requires contiguous data
+                match op.memory_effect() {
+                    MemoryEffect::RequiresContiguous => {
+                        if plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous() {
+                            plan.steps.push(PlanStep::MaterializeContiguous);
+                        }
+                    }
+                    MemoryEffect::StridePreserving => {}
+                    MemoryEffect::View => unreachable!(),
+                }
+
+                plan.steps.push(PlanStep::PerceptualHash(op.clone()));
                 plan
             }
             ExprNode::Sink { input, .. } => {

@@ -131,14 +131,29 @@ impl ImageAdapter {
     }
 
     /// Encodes a ViewBuffer into bytes (PNG/JPEG/etc).
+    ///
+    /// Note: For JPEG quality control, use `encode_jpeg` instead.
     pub fn encode(
         buffer: &ViewBuffer,
-        format: image::ImageOutputFormat,
+        format: image::ImageFormat,
     ) -> Result<Vec<u8>, image::ImageError> {
         let dynamic_image = Self::to_dynamic_image(buffer)?;
         let mut bytes: Vec<u8> = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut bytes);
         dynamic_image.write_to(&mut cursor, format)?;
+        Ok(bytes)
+    }
+
+    /// Encodes a ViewBuffer as JPEG with specified quality (1-100).
+    pub fn encode_jpeg(buffer: &ViewBuffer, quality: u8) -> Result<Vec<u8>, image::ImageError> {
+        use image::codecs::jpeg::JpegEncoder;
+
+        let dynamic_image = Self::to_dynamic_image(buffer)?;
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut bytes);
+
+        let encoder = JpegEncoder::new_with_quality(&mut cursor, quality);
+        dynamic_image.write_with_encoder(encoder)?;
         Ok(bytes)
     }
 
@@ -148,8 +163,11 @@ impl ImageAdapter {
         dynamic_image.save(path)
     }
 
-    /// Helper to convert ViewBuffer -> DynamicImage
-    fn to_dynamic_image(buffer: &ViewBuffer) -> Result<DynamicImage, image::ImageError> {
+    /// Convert ViewBuffer -> DynamicImage.
+    ///
+    /// This is useful for interoperating with the image crate's APIs.
+    /// The buffer must have U8 dtype and be in [H, W, 3] (RGB) or [H, W] / [H, W, 1] (Luma) format.
+    pub fn to_dynamic_image(buffer: &ViewBuffer) -> Result<DynamicImage, image::ImageError> {
         // 1. Validation
         if buffer.dtype() != DType::U8 {
             return Err(image::ImageError::Parameter(
@@ -223,7 +241,19 @@ mod tests {
         let data: Vec<u8> = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0];
         let tb = ViewBuffer::from_vec(data).reshape(vec![2, 2, 3]);
 
-        let encoded = ImageAdapter::encode(&tb, image::ImageOutputFormat::Png).unwrap();
+        let encoded = ImageAdapter::encode(&tb, image::ImageFormat::Png).unwrap();
+        assert!(!encoded.is_empty());
+
+        let decoded = ImageAdapter::decode(&encoded).unwrap();
+        assert_eq!(decoded.shape(), &[2, 2, 3]);
+    }
+
+    #[test]
+    fn test_jpeg_roundtrip() {
+        let data: Vec<u8> = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0];
+        let tb = ViewBuffer::from_vec(data).reshape(vec![2, 2, 3]);
+
+        let encoded = ImageAdapter::encode_jpeg(&tb, 85).unwrap();
         assert!(!encoded.is_empty());
 
         let decoded = ImageAdapter::decode(&encoded).unwrap();

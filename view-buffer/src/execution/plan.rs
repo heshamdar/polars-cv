@@ -1,7 +1,8 @@
 //! Execution plan types.
 
 use crate::core::buffer::ViewBuffer;
-use crate::execution::runner::{apply_compute, apply_image, apply_view};
+use crate::execution::runner::{apply_compute, apply_image, apply_perceptual_hash, apply_view};
+use crate::ops::phash::PerceptualHashOp;
 use crate::ops::{ComputeOp, ImageOp, ViewOp};
 
 /// A step in the execution plan.
@@ -10,6 +11,7 @@ pub enum PlanStep {
     View(ViewOp),
     Compute(ComputeOp),
     Image(ImageOp),
+    PerceptualHash(PerceptualHashOp),
     MaterializeContiguous,
 }
 
@@ -35,6 +37,9 @@ impl ExecutionPlan {
                 }
                 PlanStep::Image(op) => {
                     current_buffer = apply_image(current_buffer, op);
+                }
+                PlanStep::PerceptualHash(op) => {
+                    current_buffer = apply_perceptual_hash(current_buffer, op);
                 }
                 PlanStep::MaterializeContiguous => {
                     current_buffer = current_buffer.to_contiguous();
