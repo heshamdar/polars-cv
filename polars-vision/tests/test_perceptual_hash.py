@@ -33,7 +33,9 @@ def create_test_image(width: int, height: int, color: tuple[int, int, int]) -> b
     return buffer.getvalue()
 
 
-def create_gradient_image(width: int, height: int, direction: str = "horizontal") -> bytes:
+def create_gradient_image(
+    width: int, height: int, direction: str = "horizontal"
+) -> bytes:
     """
     Create a test image with a gradient.
 
@@ -159,7 +161,9 @@ class TestPerceptualHashPipeline:
         hash2 = result["hash"][1]
 
         # Hashes should be different due to structural difference
-        assert hash1 != hash2, "Structurally different images should produce different hashes"
+        assert hash1 != hash2, (
+            "Structurally different images should produce different hashes"
+        )
 
     def test_hash_with_preprocessing(self) -> None:
         """Test perceptual hash after preprocessing operations."""
@@ -191,10 +195,7 @@ class TestPerceptualHashPipeline:
 
         # Use 256-bit hash (32 bytes)
         pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .perceptual_hash(hash_size=256)
-            .sink("list")
+            Pipeline().source("image_bytes").perceptual_hash(hash_size=256).sink("list")
         )
 
         result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
@@ -300,7 +301,7 @@ class TestHashSimilarity:
         """Test that hashes are similar after format conversion (PNG -> JPEG)."""
         # Create original PNG
         img = Image.new("RGB", (128, 128), (100, 150, 200))
-        
+
         # Add some structure so the hash has something to work with
         pixels = img.load()
         for y in range(64):
@@ -358,5 +359,6 @@ class TestHashAlgorithmComparison:
 
         # At least some algorithms should produce different hashes
         unique_hashes = set(tuple(h) for h in hashes.values())
-        assert len(unique_hashes) >= 2, "Different algorithms should produce different hashes"
-
+        assert len(unique_hashes) >= 2, (
+            "Different algorithms should produce different hashes"
+        )

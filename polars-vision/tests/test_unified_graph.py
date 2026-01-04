@@ -209,13 +209,9 @@ class TestUnifiedGraphMultiOutput:
     def test_multi_output_basic(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test multi-output pipeline returns Struct column using LazyPipelineExpr."""
         # Use LazyPipelineExpr composition pattern
-        original = pl.col("images").cv.pipe(
-            Pipeline().source("blob")
-        ).alias("original")
+        original = pl.col("images").cv.pipe(Pipeline().source("blob")).alias("original")
 
-        small = original.pipe(
-            Pipeline().resize(height=32, width=32)
-        ).alias("small")
+        small = original.pipe(Pipeline().resize(height=32, width=32)).alias("small")
 
         result = synthetic_image_df.with_columns(
             outputs=small.sink({"original": "numpy", "small": "numpy"})
@@ -226,9 +222,7 @@ class TestUnifiedGraphMultiOutput:
 
     def test_multi_output_fields(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test multi-output has correct field names using LazyPipelineExpr."""
-        raw = pl.col("images").cv.pipe(
-            Pipeline().source("blob")
-        ).alias("raw")
+        raw = pl.col("images").cv.pipe(Pipeline().source("blob")).alias("raw")
 
         chw = raw.pipe(Pipeline().transpose([2, 0, 1])).alias("chw")
 

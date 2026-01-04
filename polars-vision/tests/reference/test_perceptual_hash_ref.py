@@ -88,9 +88,7 @@ def jpeg_bytes_to_pil(data: bytes) -> "PILImage.Image":
 class TestPerceptualHashReference:
     """Establish expected behavior for perceptual hashing using imagehash library."""
 
-    def test_phash_same_image_distance_zero(
-        self, sample_rgb_image: np.ndarray
-    ) -> None:
+    def test_phash_same_image_distance_zero(self, sample_rgb_image: np.ndarray) -> None:
         """Same image should have zero Hamming distance."""
         import imagehash
 
@@ -135,9 +133,9 @@ class TestPerceptualHashReference:
 
         distance = hash_original - hash_recompressed
         # pHash should handle JPEG artifacts well
-        assert (
-            distance <= 5
-        ), f"pHash should handle JPEG compression, got distance {distance}"
+        assert distance <= 5, (
+            f"pHash should handle JPEG compression, got distance {distance}"
+        )
 
     def test_phash_different_images_high_distance(self) -> None:
         """Different images should have high Hamming distance."""
@@ -157,7 +155,9 @@ class TestPerceptualHashReference:
 
         distance = hash1 - hash2
         # Different images should have high distance (max 64 for 64-bit hash)
-        assert distance >= 20, f"Different images should have high distance, got {distance}"
+        assert distance >= 20, (
+            f"Different images should have high distance, got {distance}"
+        )
 
     def test_ahash_basic(self, sample_rgb_image: np.ndarray) -> None:
         """Test that aHash produces consistent results."""
@@ -196,9 +196,13 @@ class TestPerceptualHashReference:
         # imagehash stores as bool array, we need to pack into bytes
         hex_str = str(hash_result)
         # 64 bits = 16 hex characters
-        assert len(hex_str) == 16, f"Expected 16 hex chars for 64-bit hash, got {len(hex_str)}"
+        assert len(hex_str) == 16, (
+            f"Expected 16 hex chars for 64-bit hash, got {len(hex_str)}"
+        )
 
-    def test_hash_size_128_produces_16_bytes(self, sample_rgb_image: np.ndarray) -> None:
+    def test_hash_size_128_produces_16_bytes(
+        self, sample_rgb_image: np.ndarray
+    ) -> None:
         """128-bit hash should produce 16-byte output."""
         import imagehash
 
@@ -208,7 +212,6 @@ class TestPerceptualHashReference:
         # For 128-bit output we need hash_size that produces 128 bits
         # phash output is hash_size^2 bits when using highfreq_factor=4
         # Actually imagehash phash outputs hash_size^2 bits
-        hash_result = imagehash.phash(pil_img, hash_size=8)  # 64 bits
 
         # For larger hash, use hash_size=16 which gives 16*16=256 bits
         hash_large = imagehash.phash(pil_img, hash_size=16)
@@ -239,9 +242,9 @@ class TestPerceptualHashReference:
 
         # aHash should be faster (no DCT computation)
         # We allow some tolerance since timing can vary
-        assert (
-            ahash_time <= phash_time * 1.5
-        ), f"aHash ({ahash_time:.3f}s) should be faster than pHash ({phash_time:.3f}s)"
+        assert ahash_time <= phash_time * 1.5, (
+            f"aHash ({ahash_time:.3f}s) should be faster than pHash ({phash_time:.3f}s)"
+        )
 
     def test_blockhash_crop_resistance(self, gradient_image: np.ndarray) -> None:
         """Blockhash should be somewhat robust to small crops."""
@@ -265,7 +268,9 @@ class TestPerceptualHashReference:
 
         distance = bhash_original - bhash_cropped
         # With crop + resize, pHash should still have reasonable similarity
-        assert distance <= 15, f"Hash should handle small crops, got distance {distance}"
+        assert distance <= 15, (
+            f"Hash should handle small crops, got distance {distance}"
+        )
 
     def test_hash_to_hex_string(self, sample_rgb_image: np.ndarray) -> None:
         """Hash should be convertible to hex string."""
@@ -276,9 +281,9 @@ class TestPerceptualHashReference:
 
         hex_str = str(hash_result)
         # Should be a valid hex string
-        assert all(
-            c in "0123456789abcdef" for c in hex_str.lower()
-        ), f"Hash should be hex string, got: {hex_str}"
+        assert all(c in "0123456789abcdef" for c in hex_str.lower()), (
+            f"Hash should be hex string, got: {hex_str}"
+        )
 
     def test_hash_from_hex_string(self, sample_rgb_image: np.ndarray) -> None:
         """Hash should be reconstructible from hex string."""
@@ -309,15 +314,14 @@ class TestPerceptualHashReference:
         # Verify we can unpack back
         unpacked = np.unpackbits(packed)
         np.testing.assert_array_equal(
-            unpacked, hash_array.astype(np.uint8), "Should roundtrip through byte packing"
+            unpacked,
+            hash_array.astype(np.uint8),
+            "Should roundtrip through byte packing",
         )
 
-    def test_grayscale_vs_rgb_hash_similar(
-        self, sample_rgb_image: np.ndarray
-    ) -> None:
+    def test_grayscale_vs_rgb_hash_similar(self, sample_rgb_image: np.ndarray) -> None:
         """Hash of grayscale conversion should be similar to RGB hash."""
         import imagehash
-        from PIL import Image
 
         pil_rgb = numpy_to_pil(sample_rgb_image)
         pil_gray = pil_rgb.convert("L")
@@ -328,9 +332,9 @@ class TestPerceptualHashReference:
 
         distance = hash_rgb - hash_gray
         # Since pHash converts to grayscale internally, these should be identical or very close
-        assert (
-            distance <= 2
-        ), f"RGB and grayscale hash should be similar, got distance {distance}"
+        assert distance <= 2, (
+            f"RGB and grayscale hash should be similar, got distance {distance}"
+        )
 
     def test_algorithm_comparison(self, gradient_image: np.ndarray) -> None:
         """Compare all four hash algorithms on the same image."""
@@ -405,4 +409,3 @@ class TestPerceptualHashReference:
         assert hash_result is not None
         # Should complete in reasonable time (< 1 second for 2K image)
         assert elapsed < 1.0, f"Large image hash took too long: {elapsed:.2f}s"
-

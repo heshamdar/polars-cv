@@ -41,17 +41,21 @@ class TestLazyPipelineExprAlias:
 
     def test_alias_basic(self, test_df: pl.DataFrame) -> None:
         """Test basic alias creation on LazyPipelineExpr."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").resize(height=50, width=50)
-        ).alias("resized")
+        base = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes").resize(height=50, width=50))
+            .alias("resized")
+        )
 
         assert base.alias_name == "resized"
 
     def test_alias_chained_with_pipe(self, test_df: pl.DataFrame) -> None:
         """Test alias with .pipe() chaining."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").resize(height=50, width=50)
-        ).alias("resized")
+        base = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes").resize(height=50, width=50))
+            .alias("resized")
+        )
 
         gray = base.pipe(Pipeline().grayscale()).alias("gray")
 
@@ -60,9 +64,9 @@ class TestLazyPipelineExprAlias:
 
     def test_multiple_aliases_in_chain(self, test_df: pl.DataFrame) -> None:
         """Test multiple aliases in a chain using .pipe()."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes")
-        ).alias("original")
+        base = (
+            pl.col("image").cv.pipe(Pipeline().source("image_bytes")).alias("original")
+        )
 
         resized = base.pipe(Pipeline().resize(height=50, width=50)).alias("resized")
         gray = resized.pipe(Pipeline().grayscale()).alias("gray")
@@ -86,9 +90,11 @@ class TestMultiOutputSink:
 
     def test_multi_sink_with_aliases(self, test_df: pl.DataFrame) -> None:
         """Test multi-output sink with aliased expressions."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").resize(height=50, width=50)
-        ).alias("resized")
+        base = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes").resize(height=50, width=50))
+            .alias("resized")
+        )
 
         gray = base.pipe(Pipeline().grayscale()).alias("gray")
 
@@ -102,27 +108,31 @@ class TestMultiOutputSink:
 
     def test_multi_sink_undefined_alias_raises(self) -> None:
         """Test that undefined alias in sink raises error."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes")
-        ).alias("defined")
+        base = (
+            pl.col("image").cv.pipe(Pipeline().source("image_bytes")).alias("defined")
+        )
 
         with pytest.raises(ValueError, match="not found"):
             base.sink({"undefined": "numpy"})
 
     def test_multi_sink_three_outputs(self, test_df: pl.DataFrame) -> None:
         """Test multi-output with three aliases."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").resize(height=50, width=50)
-        ).alias("resized")
+        base = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes").resize(height=50, width=50))
+            .alias("resized")
+        )
 
         gray = base.pipe(Pipeline().grayscale()).alias("gray")
         thresh = gray.pipe(Pipeline().threshold(128)).alias("thresh")
 
-        result = thresh.sink({
-            "resized": "numpy",
-            "gray": "numpy",
-            "thresh": "numpy",
-        })
+        result = thresh.sink(
+            {
+                "resized": "numpy",
+                "gray": "numpy",
+                "thresh": "numpy",
+            }
+        )
         df_result = test_df.with_columns(output=result)
 
         fields = df_result["output"].struct.fields
@@ -146,16 +156,20 @@ class TestMultiOutputFormats:
 
     def test_mixed_formats(self, test_df: pl.DataFrame) -> None:
         """Test that different formats can be mixed in multi-output."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").resize(height=50, width=50)
-        ).alias("numpy_out")
+        base = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes").resize(height=50, width=50))
+            .alias("numpy_out")
+        )
 
         gray = base.pipe(Pipeline().grayscale()).alias("png_out")
 
-        result = gray.sink({
-            "numpy_out": "numpy",
-            "png_out": "png",
-        })
+        result = gray.sink(
+            {
+                "numpy_out": "numpy",
+                "png_out": "png",
+            }
+        )
         df_result = test_df.with_columns(output=result)
 
         fields = df_result["output"].struct.fields
@@ -172,9 +186,11 @@ class TestBranchingPipelines:
 
     def test_branch_from_base(self, test_df: pl.DataFrame) -> None:
         """Test branching from a base expression."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").resize(height=50, width=50)
-        ).alias("base")
+        base = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes").resize(height=50, width=50))
+            .alias("base")
+        )
 
         # Two branches from base
         gray = base.pipe(Pipeline().grayscale()).alias("gray")
@@ -183,11 +199,13 @@ class TestBranchingPipelines:
         # Merge branches
         merged = gray.merge_pipe(blur)
 
-        result = merged.sink({
-            "base": "numpy",
-            "gray": "numpy",
-            "blur": "numpy",
-        })
+        result = merged.sink(
+            {
+                "base": "numpy",
+                "gray": "numpy",
+                "blur": "numpy",
+            }
+        )
         df_result = test_df.with_columns(output=result)
 
         fields = df_result["output"].struct.fields
@@ -197,9 +215,11 @@ class TestBranchingPipelines:
 
     def test_diamond_pattern(self, test_df: pl.DataFrame) -> None:
         """Test diamond pattern: base -> (branch1, branch2) -> merged."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").resize(height=50, width=50)
-        ).alias("base")
+        base = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes").resize(height=50, width=50))
+            .alias("base")
+        )
 
         gray = base.pipe(Pipeline().grayscale()).alias("gray")
         blur = base.pipe(Pipeline().blur(3)).alias("blur")
@@ -207,11 +227,13 @@ class TestBranchingPipelines:
         # Both branches merge
         merged = gray.merge_pipe(blur)
 
-        result = merged.sink({
-            "base": "numpy",
-            "gray": "numpy",
-            "blur": "numpy",
-        })
+        result = merged.sink(
+            {
+                "base": "numpy",
+                "gray": "numpy",
+                "blur": "numpy",
+            }
+        )
         df_result = test_df.with_columns(output=result)
 
         base_arr = numpy_from_bytes(df_result["output"].struct.field("base")[0])
@@ -248,9 +270,7 @@ class TestPipeMethod:
         )
 
         # With source = new root (ignores base's operations)
-        new_root = base.pipe(
-            Pipeline().source("image_bytes").grayscale()
-        )
+        new_root = base.pipe(Pipeline().source("image_bytes").grayscale())
 
         result = test_df.with_columns(output=new_root.sink("numpy"))
         arr = numpy_from_bytes(result["output"][0])
@@ -260,14 +280,11 @@ class TestPipeMethod:
 
     def test_pipe_chains_multiple_operations(self, test_df: pl.DataFrame) -> None:
         """Test chaining multiple .pipe() calls."""
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes")
-        )
+        base = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
 
         # Chain multiple operations
         result_expr = (
-            base
-            .pipe(Pipeline().resize(height=50, width=50))
+            base.pipe(Pipeline().resize(height=50, width=50))
             .pipe(Pipeline().grayscale())
             .pipe(Pipeline().threshold(128))
         )
