@@ -47,6 +47,73 @@ use crate::execute::{
 };
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
 
+// ============================================================
+// Static Type Inference Helpers
+// ============================================================
+
+/// Convert a dtype string to Polars DataType.
+///
+/// This is used for static type inference at planning time.
+/// Note: Requires dtype-i8/dtype-u8/dtype-i16/dtype-u16 features in polars.
+pub fn dtype_str_to_polars(dtype: &str) -> DataType {
+    match dtype {
+        "u8" => DataType::UInt8,
+        "i8" => DataType::Int8,
+        "u16" => DataType::UInt16,
+        "i16" => DataType::Int16,
+        "u32" => DataType::UInt32,
+        "i32" => DataType::Int32,
+        "u64" => DataType::UInt64,
+        "i64" => DataType::Int64,
+        "f32" => DataType::Float32,
+        "f64" => DataType::Float64,
+        _ => DataType::Float64, // Default fallback
+    }
+}
+
+/// Get the Polars DataType for a given output specification.
+///
+/// Returns the appropriate dtype based on domain, sink format, and expected dtype.
+pub fn dtype_for_output(spec: &OutputSpec) -> DataType {
+    let format = spec.sink.format.as_str();
+    let domain = spec.expected_domain.as_str();
+    
+    match (domain, format) {
+        // Buffer domain
+        ("buffer", "numpy" | "torch" | "png" | "jpeg" | "blob") => DataType::Binary,
+        ("buffer", "list") => DataType::List(Box::new(dtype_str_to_polars(&spec.expected_dtype))),
+        ("buffer", "array") => {
+            // For array, we need shape info - for now return List
+            // The actual array dtype is built at execution time with shape
+            DataType::List(Box::new(dtype_str_to_polars(&spec.expected_dtype)))
+        }
+        
+        // Scalar domain
+        ("scalar", "native") => DataType::Float64,
+        
+        // Vector domain (perceptual hash, centroid, bbox)
+        ("vector", "native" | "list") => {
+            DataType::List(Box::new(dtype_str_to_polars(&spec.expected_dtype)))
+        }
+        
+        // Contour domain
+        ("contour", "native") => {
+            // Return contour struct schema
+            let point_dtype = DataType::Struct(vec![
+                Field::new("x".into(), DataType::Float64),
+                Field::new("y".into(), DataType::Float64),
+            ]);
+            DataType::Struct(vec![
+                Field::new("exterior".into(), DataType::List(Box::new(point_dtype.clone()))),
+                Field::new("interiors".into(), DataType::Null),
+            ])
+        }
+        
+        // Fallback
+        _ => DataType::Binary,
+    }
+}
+
 /// Apply a mask to a buffer.
 ///
 /// The mask should be a single-channel buffer where:
@@ -295,6 +362,7 @@ fn execute_geometry_op(
 /// Build a nested Array AnyValue from flat data and shape.
 ///
 /// For shape [2, 3], builds Array[Array[f64, 3], 2] structure.
+#[allow(dead_code)]
 fn build_nested_array_value(data: &[f64], shape: &[usize]) -> PolarsResult<AnyValue<'static>> {
     if shape.is_empty() {
         // Scalar case
@@ -359,6 +427,7 @@ fn build_nested_array_value(data: &[f64], shape: &[usize]) -> PolarsResult<AnyVa
 }
 
 /// Extract buffer data as Vec<f64> with type dispatch.
+#[allow(dead_code)]
 fn extract_buffer_as_f64(buf: &view_buffer::ViewBuffer) -> Vec<f64> {
     match buf.dtype() {
         view_buffer::DType::U8 => buf.as_slice::<u8>().iter().map(|&v| v as f64).collect(),
@@ -371,6 +440,384 @@ fn extract_buffer_as_f64(buf: &view_buffer::ViewBuffer) -> Vec<f64> {
         view_buffer::DType::I64 => buf.as_slice::<i64>().iter().map(|&v| v as f64).collect(),
         view_buffer::DType::F32 => buf.as_slice::<f32>().iter().map(|&v| v as f64).collect(),
         view_buffer::DType::F64 => buf.as_slice::<f64>().to_vec(),
+    }
+}
+
+// ============================================================
+// Dtype-Preserving List/Array Builders
+// ============================================================
+
+/// Helper type for list row data: (TypedBufferData, shape)
+type TypedListRow = Option<(TypedBufferData, Vec<usize>)>;
+
+/// Build a typed list series from row results, preserving the original buffer dtype.
+///
+/// This creates a List column with the correct inner dtype (UInt8, Float32, etc.)
+/// instead of always using Float64.
+fn build_typed_list_series_from_rows(
+    name: PlSmallStr,
+    rows: &[TypedListRow],
+) -> PolarsResult<Series> {
+    // Get dtype from first non-null element
+    let first_typed = rows.iter().find_map(|r| r.as_ref().map(|(d, _)| d));
+    
+    let Some(first) = first_typed else {
+        // All nulls - return list column of nulls with UInt8 inner (reasonable default)
+        let mut builder = ListPrimitiveChunkedBuilder::<UInt8Type>::new(
+            name,
+            rows.len(),
+            0,
+            DataType::UInt8,
+        );
+        for _ in 0..rows.len() {
+            builder.append_null();
+        }
+        return Ok(builder.finish().into_series());
+    };
+    
+    // Match on dtype and build with appropriate builder type
+    match first {
+        TypedBufferData::U8(_) => build_typed_list_u8(name, rows),
+        TypedBufferData::I8(_) => build_typed_list_i8(name, rows),
+        TypedBufferData::U16(_) => build_typed_list_u16(name, rows),
+        TypedBufferData::I16(_) => build_typed_list_i16(name, rows),
+        TypedBufferData::U32(_) => build_typed_list_u32(name, rows),
+        TypedBufferData::I32(_) => build_typed_list_i32(name, rows),
+        TypedBufferData::U64(_) => build_typed_list_u64(name, rows),
+        TypedBufferData::I64(_) => build_typed_list_i64(name, rows),
+        TypedBufferData::F32(_) => build_typed_list_f32(name, rows),
+        TypedBufferData::F64(_) => build_typed_list_f64(name, rows),
+    }
+}
+
+// Macro to generate typed list builders
+macro_rules! impl_typed_list_builder {
+    ($name:ident, $polars_type:ty, $extract:expr) => {
+        fn $name(name: PlSmallStr, rows: &[TypedListRow]) -> PolarsResult<Series> {
+            let mut builder = ListPrimitiveChunkedBuilder::<$polars_type>::new(
+                name,
+                rows.len(),
+                64,
+                <$polars_type>::get_dtype(),
+            );
+            
+            for row in rows.iter() {
+                if let Some((typed_data, _shape)) = row {
+                    let vals = $extract(typed_data);
+                    builder.append_slice(&vals);
+                } else {
+                    builder.append_null();
+                }
+            }
+            
+            Ok(builder.finish().into_series())
+        }
+    };
+}
+
+fn extract_as_u8(data: &TypedBufferData) -> Vec<u8> {
+    match data {
+        TypedBufferData::U8(v) => v.clone(),
+        TypedBufferData::I8(v) => v.iter().map(|&x| x as u8).collect(),
+        TypedBufferData::U16(v) => v.iter().map(|&x| x as u8).collect(),
+        TypedBufferData::I16(v) => v.iter().map(|&x| x as u8).collect(),
+        TypedBufferData::U32(v) => v.iter().map(|&x| x as u8).collect(),
+        TypedBufferData::I32(v) => v.iter().map(|&x| x as u8).collect(),
+        TypedBufferData::U64(v) => v.iter().map(|&x| x as u8).collect(),
+        TypedBufferData::I64(v) => v.iter().map(|&x| x as u8).collect(),
+        TypedBufferData::F32(v) => v.iter().map(|&x| x as u8).collect(),
+        TypedBufferData::F64(v) => v.iter().map(|&x| x as u8).collect(),
+    }
+}
+
+fn extract_as_i8(data: &TypedBufferData) -> Vec<i8> {
+    match data {
+        TypedBufferData::U8(v) => v.iter().map(|&x| x as i8).collect(),
+        TypedBufferData::I8(v) => v.clone(),
+        TypedBufferData::U16(v) => v.iter().map(|&x| x as i8).collect(),
+        TypedBufferData::I16(v) => v.iter().map(|&x| x as i8).collect(),
+        TypedBufferData::U32(v) => v.iter().map(|&x| x as i8).collect(),
+        TypedBufferData::I32(v) => v.iter().map(|&x| x as i8).collect(),
+        TypedBufferData::U64(v) => v.iter().map(|&x| x as i8).collect(),
+        TypedBufferData::I64(v) => v.iter().map(|&x| x as i8).collect(),
+        TypedBufferData::F32(v) => v.iter().map(|&x| x as i8).collect(),
+        TypedBufferData::F64(v) => v.iter().map(|&x| x as i8).collect(),
+    }
+}
+
+fn extract_as_u16(data: &TypedBufferData) -> Vec<u16> {
+    match data {
+        TypedBufferData::U8(v) => v.iter().map(|&x| x as u16).collect(),
+        TypedBufferData::I8(v) => v.iter().map(|&x| x as u16).collect(),
+        TypedBufferData::U16(v) => v.clone(),
+        TypedBufferData::I16(v) => v.iter().map(|&x| x as u16).collect(),
+        TypedBufferData::U32(v) => v.iter().map(|&x| x as u16).collect(),
+        TypedBufferData::I32(v) => v.iter().map(|&x| x as u16).collect(),
+        TypedBufferData::U64(v) => v.iter().map(|&x| x as u16).collect(),
+        TypedBufferData::I64(v) => v.iter().map(|&x| x as u16).collect(),
+        TypedBufferData::F32(v) => v.iter().map(|&x| x as u16).collect(),
+        TypedBufferData::F64(v) => v.iter().map(|&x| x as u16).collect(),
+    }
+}
+
+fn extract_as_i16(data: &TypedBufferData) -> Vec<i16> {
+    match data {
+        TypedBufferData::U8(v) => v.iter().map(|&x| x as i16).collect(),
+        TypedBufferData::I8(v) => v.iter().map(|&x| x as i16).collect(),
+        TypedBufferData::U16(v) => v.iter().map(|&x| x as i16).collect(),
+        TypedBufferData::I16(v) => v.clone(),
+        TypedBufferData::U32(v) => v.iter().map(|&x| x as i16).collect(),
+        TypedBufferData::I32(v) => v.iter().map(|&x| x as i16).collect(),
+        TypedBufferData::U64(v) => v.iter().map(|&x| x as i16).collect(),
+        TypedBufferData::I64(v) => v.iter().map(|&x| x as i16).collect(),
+        TypedBufferData::F32(v) => v.iter().map(|&x| x as i16).collect(),
+        TypedBufferData::F64(v) => v.iter().map(|&x| x as i16).collect(),
+    }
+}
+
+fn extract_as_u32(data: &TypedBufferData) -> Vec<u32> {
+    match data {
+        TypedBufferData::U8(v) => v.iter().map(|&x| x as u32).collect(),
+        TypedBufferData::I8(v) => v.iter().map(|&x| x as u32).collect(),
+        TypedBufferData::U16(v) => v.iter().map(|&x| x as u32).collect(),
+        TypedBufferData::I16(v) => v.iter().map(|&x| x as u32).collect(),
+        TypedBufferData::U32(v) => v.clone(),
+        TypedBufferData::I32(v) => v.iter().map(|&x| x as u32).collect(),
+        TypedBufferData::U64(v) => v.iter().map(|&x| x as u32).collect(),
+        TypedBufferData::I64(v) => v.iter().map(|&x| x as u32).collect(),
+        TypedBufferData::F32(v) => v.iter().map(|&x| x as u32).collect(),
+        TypedBufferData::F64(v) => v.iter().map(|&x| x as u32).collect(),
+    }
+}
+
+fn extract_as_i32(data: &TypedBufferData) -> Vec<i32> {
+    match data {
+        TypedBufferData::U8(v) => v.iter().map(|&x| x as i32).collect(),
+        TypedBufferData::I8(v) => v.iter().map(|&x| x as i32).collect(),
+        TypedBufferData::U16(v) => v.iter().map(|&x| x as i32).collect(),
+        TypedBufferData::I16(v) => v.iter().map(|&x| x as i32).collect(),
+        TypedBufferData::U32(v) => v.iter().map(|&x| x as i32).collect(),
+        TypedBufferData::I32(v) => v.clone(),
+        TypedBufferData::U64(v) => v.iter().map(|&x| x as i32).collect(),
+        TypedBufferData::I64(v) => v.iter().map(|&x| x as i32).collect(),
+        TypedBufferData::F32(v) => v.iter().map(|&x| x as i32).collect(),
+        TypedBufferData::F64(v) => v.iter().map(|&x| x as i32).collect(),
+    }
+}
+
+fn extract_as_u64(data: &TypedBufferData) -> Vec<u64> {
+    match data {
+        TypedBufferData::U8(v) => v.iter().map(|&x| x as u64).collect(),
+        TypedBufferData::I8(v) => v.iter().map(|&x| x as u64).collect(),
+        TypedBufferData::U16(v) => v.iter().map(|&x| x as u64).collect(),
+        TypedBufferData::I16(v) => v.iter().map(|&x| x as u64).collect(),
+        TypedBufferData::U32(v) => v.iter().map(|&x| x as u64).collect(),
+        TypedBufferData::I32(v) => v.iter().map(|&x| x as u64).collect(),
+        TypedBufferData::U64(v) => v.clone(),
+        TypedBufferData::I64(v) => v.iter().map(|&x| x as u64).collect(),
+        TypedBufferData::F32(v) => v.iter().map(|&x| x as u64).collect(),
+        TypedBufferData::F64(v) => v.iter().map(|&x| x as u64).collect(),
+    }
+}
+
+fn extract_as_i64(data: &TypedBufferData) -> Vec<i64> {
+    match data {
+        TypedBufferData::U8(v) => v.iter().map(|&x| x as i64).collect(),
+        TypedBufferData::I8(v) => v.iter().map(|&x| x as i64).collect(),
+        TypedBufferData::U16(v) => v.iter().map(|&x| x as i64).collect(),
+        TypedBufferData::I16(v) => v.iter().map(|&x| x as i64).collect(),
+        TypedBufferData::U32(v) => v.iter().map(|&x| x as i64).collect(),
+        TypedBufferData::I32(v) => v.iter().map(|&x| x as i64).collect(),
+        TypedBufferData::U64(v) => v.iter().map(|&x| x as i64).collect(),
+        TypedBufferData::I64(v) => v.clone(),
+        TypedBufferData::F32(v) => v.iter().map(|&x| x as i64).collect(),
+        TypedBufferData::F64(v) => v.iter().map(|&x| x as i64).collect(),
+    }
+}
+
+fn extract_as_f32(data: &TypedBufferData) -> Vec<f32> {
+    match data {
+        TypedBufferData::U8(v) => v.iter().map(|&x| x as f32).collect(),
+        TypedBufferData::I8(v) => v.iter().map(|&x| x as f32).collect(),
+        TypedBufferData::U16(v) => v.iter().map(|&x| x as f32).collect(),
+        TypedBufferData::I16(v) => v.iter().map(|&x| x as f32).collect(),
+        TypedBufferData::U32(v) => v.iter().map(|&x| x as f32).collect(),
+        TypedBufferData::I32(v) => v.iter().map(|&x| x as f32).collect(),
+        TypedBufferData::U64(v) => v.iter().map(|&x| x as f32).collect(),
+        TypedBufferData::I64(v) => v.iter().map(|&x| x as f32).collect(),
+        TypedBufferData::F32(v) => v.clone(),
+        TypedBufferData::F64(v) => v.iter().map(|&x| x as f32).collect(),
+    }
+}
+
+fn extract_as_f64(data: &TypedBufferData) -> Vec<f64> {
+    match data {
+        TypedBufferData::U8(v) => v.iter().map(|&x| x as f64).collect(),
+        TypedBufferData::I8(v) => v.iter().map(|&x| x as f64).collect(),
+        TypedBufferData::U16(v) => v.iter().map(|&x| x as f64).collect(),
+        TypedBufferData::I16(v) => v.iter().map(|&x| x as f64).collect(),
+        TypedBufferData::U32(v) => v.iter().map(|&x| x as f64).collect(),
+        TypedBufferData::I32(v) => v.iter().map(|&x| x as f64).collect(),
+        TypedBufferData::U64(v) => v.iter().map(|&x| x as f64).collect(),
+        TypedBufferData::I64(v) => v.iter().map(|&x| x as f64).collect(),
+        TypedBufferData::F32(v) => v.iter().map(|&x| x as f64).collect(),
+        TypedBufferData::F64(v) => v.clone(),
+    }
+}
+
+fn build_typed_list_u8(name: PlSmallStr, rows: &[TypedListRow]) -> PolarsResult<Series> {
+    // Build UInt8 list using the proper builder
+    // Requires dtype-u8 feature in polars
+    let mut builder = ListPrimitiveChunkedBuilder::<UInt8Type>::new(
+        name,
+        rows.len(),
+        64,
+        DataType::UInt8,
+    );
+    
+    for row in rows.iter() {
+        if let Some((typed_data, _shape)) = row {
+            let vals = extract_as_u8(typed_data);
+            builder.append_slice(&vals);
+        } else {
+            builder.append_null();
+        }
+    }
+    
+    Ok(builder.finish().into_series())
+}
+impl_typed_list_builder!(build_typed_list_i8, Int8Type, extract_as_i8);
+impl_typed_list_builder!(build_typed_list_u16, UInt16Type, extract_as_u16);
+impl_typed_list_builder!(build_typed_list_i16, Int16Type, extract_as_i16);
+impl_typed_list_builder!(build_typed_list_u32, UInt32Type, extract_as_u32);
+impl_typed_list_builder!(build_typed_list_i32, Int32Type, extract_as_i32);
+impl_typed_list_builder!(build_typed_list_u64, UInt64Type, extract_as_u64);
+impl_typed_list_builder!(build_typed_list_i64, Int64Type, extract_as_i64);
+impl_typed_list_builder!(build_typed_list_f32, Float32Type, extract_as_f32);
+impl_typed_list_builder!(build_typed_list_f64, Float64Type, extract_as_f64);
+
+/// Build a typed fixed-size array series from row results.
+fn build_typed_array_series_from_rows(
+    name: PlSmallStr,
+    rows: &[TypedListRow],
+) -> PolarsResult<Series> {
+    // Get shape and dtype from first non-null element
+    let first_result = rows.iter().find_map(|r| r.as_ref());
+    
+    let Some((first_data, first_shape)) = first_result else {
+        // All nulls - return list column of nulls with UInt8 inner (reasonable default)
+        let mut builder = ListPrimitiveChunkedBuilder::<UInt8Type>::new(
+            name,
+            rows.len(),
+            0,
+            DataType::UInt8,
+        );
+        for _ in 0..rows.len() {
+            builder.append_null();
+        }
+        return Ok(builder.finish().into_series());
+    };
+    
+    let shape = first_shape.clone();
+    let inner_dtype = first_data.polars_dtype();
+    
+    // Build the nested Array type from shape
+    let mut dtype = inner_dtype.clone();
+    for &dim in shape.iter().rev() {
+        dtype = DataType::Array(Box::new(dtype), dim);
+    }
+    
+    // Build AnyValue arrays for each row
+    let values: PolarsResult<Vec<AnyValue<'static>>> = rows.iter().map(|r| {
+        if let Some((typed_data, row_shape)) = r {
+            build_typed_nested_array_value(typed_data, row_shape)
+        } else {
+            Ok(AnyValue::Null)
+        }
+    }).collect();
+    let values = values?;
+    
+    Series::from_any_values_and_dtype(name, &values, &dtype, true)
+}
+
+/// Build a nested Array AnyValue from typed data and shape.
+fn build_typed_nested_array_value(data: &TypedBufferData, shape: &[usize]) -> PolarsResult<AnyValue<'static>> {
+    if shape.is_empty() {
+        return Ok(AnyValue::Null);
+    }
+    
+    if shape.len() == 1 {
+        // Base case: 1D array
+        let width = shape[0];
+        let inner_dtype = data.polars_dtype();
+        
+        let values: Vec<AnyValue<'static>> = match data {
+            TypedBufferData::U8(vals) => vals.iter().map(|&v| AnyValue::UInt8(v)).collect(),
+            TypedBufferData::I8(vals) => vals.iter().map(|&v| AnyValue::Int8(v)).collect(),
+            TypedBufferData::U16(vals) => vals.iter().map(|&v| AnyValue::UInt16(v)).collect(),
+            TypedBufferData::I16(vals) => vals.iter().map(|&v| AnyValue::Int16(v)).collect(),
+            TypedBufferData::U32(vals) => vals.iter().map(|&v| AnyValue::UInt32(v)).collect(),
+            TypedBufferData::I32(vals) => vals.iter().map(|&v| AnyValue::Int32(v)).collect(),
+            TypedBufferData::U64(vals) => vals.iter().map(|&v| AnyValue::UInt64(v)).collect(),
+            TypedBufferData::I64(vals) => vals.iter().map(|&v| AnyValue::Int64(v)).collect(),
+            TypedBufferData::F32(vals) => vals.iter().map(|&v| AnyValue::Float32(v)).collect(),
+            TypedBufferData::F64(vals) => vals.iter().map(|&v| AnyValue::Float64(v)).collect(),
+        };
+        
+        let series = Series::from_any_values_and_dtype(
+            PlSmallStr::EMPTY,
+            &values,
+            &inner_dtype,
+            true,
+        )?;
+        return Ok(AnyValue::Array(series, width));
+    }
+    
+    // Multi-dimensional: recursively build nested arrays
+    let outer_dim = shape[0];
+    let inner_shape = &shape[1..];
+    let inner_size: usize = inner_shape.iter().product();
+    
+    // Slice the data for each inner dimension
+    let mut inner_values: Vec<AnyValue<'static>> = Vec::with_capacity(outer_dim);
+    for i in 0..outer_dim {
+        let start = i * inner_size;
+        let end = start + inner_size;
+        
+        let inner_data = slice_typed_data(data, start, end);
+        let inner_val = build_typed_nested_array_value(&inner_data, inner_shape)?;
+        inner_values.push(inner_val);
+    }
+    
+    // Build inner dtype
+    let base_dtype = data.polars_dtype();
+    let mut inner_dtype = base_dtype;
+    for &dim in inner_shape.iter().rev() {
+        inner_dtype = DataType::Array(Box::new(inner_dtype), dim);
+    }
+    
+    let series = Series::from_any_values_and_dtype(
+        PlSmallStr::EMPTY,
+        &inner_values,
+        &inner_dtype,
+        true,
+    )?;
+    Ok(AnyValue::Array(series, outer_dim))
+}
+
+/// Slice typed buffer data by index range.
+fn slice_typed_data(data: &TypedBufferData, start: usize, end: usize) -> TypedBufferData {
+    match data {
+        TypedBufferData::U8(vals) => TypedBufferData::U8(vals[start..end].to_vec()),
+        TypedBufferData::I8(vals) => TypedBufferData::I8(vals[start..end].to_vec()),
+        TypedBufferData::U16(vals) => TypedBufferData::U16(vals[start..end].to_vec()),
+        TypedBufferData::I16(vals) => TypedBufferData::I16(vals[start..end].to_vec()),
+        TypedBufferData::U32(vals) => TypedBufferData::U32(vals[start..end].to_vec()),
+        TypedBufferData::I32(vals) => TypedBufferData::I32(vals[start..end].to_vec()),
+        TypedBufferData::U64(vals) => TypedBufferData::U64(vals[start..end].to_vec()),
+        TypedBufferData::I64(vals) => TypedBufferData::I64(vals[start..end].to_vec()),
+        TypedBufferData::F32(vals) => TypedBufferData::F32(vals[start..end].to_vec()),
+        TypedBufferData::F64(vals) => TypedBufferData::F64(vals[start..end].to_vec()),
     }
 }
 
@@ -424,25 +871,23 @@ fn encode_node_output(
                 .map_err(|e| format!("Encode error: {e}"))
         }
         (NodeOutput::Buffer(buf), "list") => {
-            // Convert buffer to nested list structure for proper Polars List type
+            // Convert buffer to typed list structure preserving buffer dtype
             let contig = buf.to_contiguous();
             let shape = contig.shape().to_vec();
             
-            // Extract data as f64 (type dispatch)
-            let data: Vec<f64> = extract_buffer_as_f64(&contig);
+            // Extract data with original dtype preserved
+            let data = TypedBufferData::from_buffer(&contig);
             
-            Ok(OutputValue::NestedList { data, shape })
+            Ok(OutputValue::TypedList { data, shape })
         }
         (NodeOutput::Buffer(buf), "array") => {
-            // Convert buffer to fixed-size array for proper Polars Array type
+            // Convert buffer to typed fixed-size array preserving buffer dtype
             let contig = buf.to_contiguous();
             let buffer_shape = contig.shape().to_vec();
             
             // Use provided shape from sink spec, or infer from buffer
             let shape = if let Some(ref spec_shape) = sink.shape {
                 // Require exact shape match to avoid dimension confusion
-                // e.g., [2, 2, 1] vs [2, 2] have same elements but different structure
-                // Users should use squeeze()/expand_dims() to adjust dimensions first
                 if spec_shape != &buffer_shape {
                     return Err(format!(
                         "Array sink shape {spec_shape:?} does not match buffer shape {buffer_shape:?}. \
@@ -456,10 +901,10 @@ fn encode_node_output(
                 buffer_shape
             };
             
-            // Extract data as f64 (type dispatch)
-            let data: Vec<f64> = extract_buffer_as_f64(&contig);
+            // Extract data with original dtype preserved
+            let data = TypedBufferData::from_buffer(&contig);
             
-            Ok(OutputValue::FixedArray { data, shape })
+            Ok(OutputValue::TypedArray { data, shape })
         }
         
         // Native format dispatches based on domain
@@ -502,24 +947,74 @@ fn encode_node_output(
     }
 }
 
+/// Typed buffer data for dtype-preserving list/array outputs.
+#[derive(Debug, Clone)]
+enum TypedBufferData {
+    U8(Vec<u8>),
+    I8(Vec<i8>),
+    U16(Vec<u16>),
+    I16(Vec<i16>),
+    U32(Vec<u32>),
+    I32(Vec<i32>),
+    U64(Vec<u64>),
+    I64(Vec<i64>),
+    F32(Vec<f32>),
+    F64(Vec<f64>),
+}
+
+impl TypedBufferData {
+    /// Extract typed data from a ViewBuffer, preserving its dtype.
+    fn from_buffer(buf: &ViewBuffer) -> Self {
+        let contig = buf.to_contiguous();
+        match contig.dtype() {
+            view_buffer::DType::U8 => TypedBufferData::U8(contig.as_slice::<u8>().to_vec()),
+            view_buffer::DType::I8 => TypedBufferData::I8(contig.as_slice::<i8>().to_vec()),
+            view_buffer::DType::U16 => TypedBufferData::U16(contig.as_slice::<u16>().to_vec()),
+            view_buffer::DType::I16 => TypedBufferData::I16(contig.as_slice::<i16>().to_vec()),
+            view_buffer::DType::U32 => TypedBufferData::U32(contig.as_slice::<u32>().to_vec()),
+            view_buffer::DType::I32 => TypedBufferData::I32(contig.as_slice::<i32>().to_vec()),
+            view_buffer::DType::U64 => TypedBufferData::U64(contig.as_slice::<u64>().to_vec()),
+            view_buffer::DType::I64 => TypedBufferData::I64(contig.as_slice::<i64>().to_vec()),
+            view_buffer::DType::F32 => TypedBufferData::F32(contig.as_slice::<f32>().to_vec()),
+            view_buffer::DType::F64 => TypedBufferData::F64(contig.as_slice::<f64>().to_vec()),
+        }
+    }
+    
+    /// Get the Polars DataType for this typed data.
+    fn polars_dtype(&self) -> DataType {
+        match self {
+            TypedBufferData::U8(_) => DataType::UInt8,
+            TypedBufferData::I8(_) => DataType::Int8,
+            TypedBufferData::U16(_) => DataType::UInt16,
+            TypedBufferData::I16(_) => DataType::Int16,
+            TypedBufferData::U32(_) => DataType::UInt32,
+            TypedBufferData::I32(_) => DataType::Int32,
+            TypedBufferData::U64(_) => DataType::UInt64,
+            TypedBufferData::I64(_) => DataType::Int64,
+            TypedBufferData::F32(_) => DataType::Float32,
+            TypedBufferData::F64(_) => DataType::Float64,
+        }
+    }
+}
+
 /// Output value from encoding - can be binary, contour struct, scalar, or array.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum OutputValue {
     Binary(Vec<u8>),
     Contours(Arc<Vec<Contour>>),
     Scalar(f64),
     Vector(Arc<Vec<f64>>),
-    /// Nested list representation for "list" sink - variable length.
-    NestedList {
-        /// Flattened data as f64.
-        data: Vec<f64>,
+    /// Typed list representation for "list" sink - preserves buffer dtype.
+    TypedList {
+        /// Typed data preserving original buffer dtype.
+        data: TypedBufferData,
         /// Original shape of the buffer.
         shape: Vec<usize>,
     },
-    /// Fixed-size array representation for "array" sink - requires known shape.
-    FixedArray {
-        /// Flattened data as f64.
-        data: Vec<f64>,
+    /// Typed fixed-size array representation for "array" sink.
+    TypedArray {
+        /// Typed data preserving original buffer dtype.
+        data: TypedBufferData,
         /// Fixed shape (validated against buffer).
         shape: Vec<usize>,
     },
@@ -597,6 +1092,20 @@ pub struct OutputSpec {
     pub node: String,
     /// Sink specification.
     pub sink: SinkSpec,
+    /// Expected output domain for validation and type inference.
+    #[serde(default = "default_domain")]
+    pub expected_domain: String,
+    /// Expected output dtype for list/array sinks.
+    #[serde(default = "default_dtype")]
+    pub expected_dtype: String,
+}
+
+fn default_domain() -> String {
+    "buffer".to_string()
+}
+
+fn default_dtype() -> String {
+    "u8".to_string()
 }
 
 /// Unified pipeline graph specification.
@@ -758,10 +1267,10 @@ impl UnifiedGraph {
             Scalar(Option<f64>),
             Vector(Option<Vec<f64>>),
             Contours(Option<Vec<Contour>>),
-            /// Nested list for "list" sink (variable length).
-            NestedList(Option<(Vec<f64>, Vec<usize>)>),
-            /// Fixed-size array for "array" sink (fixed shape).
-            FixedArray(Option<(Vec<f64>, Vec<usize>)>),
+            /// Typed list for "list" sink (variable length, preserves dtype).
+            TypedList(Option<(TypedBufferData, Vec<usize>)>),
+            /// Typed fixed-size array for "array" sink (fixed shape, preserves dtype).
+            TypedArray(Option<(TypedBufferData, Vec<usize>)>),
         }
         
         let mut results: HashMap<String, Vec<RowResult>> = HashMap::new();
@@ -1029,8 +1538,8 @@ impl UnifiedGraph {
                                     OutputValue::Scalar(val) => RowResult::Scalar(Some(val)),
                                     OutputValue::Vector(vals) => RowResult::Vector(Some((*vals).clone())),
                                     OutputValue::Contours(contours) => RowResult::Contours(Some((*contours).clone())),
-                                    OutputValue::NestedList { data, shape } => RowResult::NestedList(Some((data, shape))),
-                                    OutputValue::FixedArray { data, shape } => RowResult::FixedArray(Some((data, shape))),
+                                    OutputValue::TypedList { data, shape } => RowResult::TypedList(Some((data, shape))),
+                                    OutputValue::TypedArray { data, shape } => RowResult::TypedArray(Some((data, shape))),
                                 };
                                 results.get_mut(alias).unwrap().push(row_result);
                             }
@@ -1153,77 +1662,29 @@ impl UnifiedGraph {
                     
                     Ok(builder.finish().into_series())
                 }
-                RowResult::NestedList(_) => {
-                    // Build nested list structure based on shape
-                    // For now, flatten to a single list per row (simple case)
-                    // TODO: Full nested list support for multidimensional arrays
-                    let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
-                        inputs[0].name().clone(),
-                        data.len(),
-                        64,  // Initial capacity for each list
-                        DataType::Float64,
-                    );
-                    
-                    for r in data.iter() {
+                RowResult::TypedList(_) => {
+                    // Build typed list series preserving buffer dtype
+                    let rows: Vec<TypedListRow> = data.iter().map(|r| {
                         match r {
-                            RowResult::NestedList(Some((vals, _shape))) => {
-                                builder.append_slice(vals);
+                            RowResult::TypedList(Some((typed_data, shape))) => {
+                                Some((typed_data.clone(), shape.clone()))
                             }
-                            _ => {
-                                builder.append_null();
-                            }
-                        }
-                    }
-                    
-                    Ok(builder.finish().into_series())
-                }
-                RowResult::FixedArray(_) => {
-                    // Build fixed-size array using Polars Array type
-                    // Get the shape from the first non-null element
-                    let first_shape = data.iter().find_map(|r| {
-                        match r {
-                            RowResult::FixedArray(Some((_, shape))) => Some(shape.clone()),
                             _ => None,
                         }
-                    });
-                    
-                    let shape = match first_shape {
-                        Some(s) => s,
-                        None => {
-                            // All nulls - create empty array column
-                            let empty_ca = Float64Chunked::from_iter_options(
-                                inputs[0].name().clone(),
-                                std::iter::empty::<Option<f64>>(),
-                            );
-                            return Ok(empty_ca.into_series());
-                        }
-                    };
-                    
-                    // Build the nested Array type from shape
-                    // e.g., shape [H, W, C] -> Array[H, Array[W, Array[C, Float64]]]
-                    let mut dtype = DataType::Float64;
-                    for &dim in shape.iter().rev() {
-                        dtype = DataType::Array(Box::new(dtype), dim);
-                    }
-                    
-                    // Build AnyValue arrays for each row
-                    let values: PolarsResult<Vec<AnyValue<'static>>> = data.iter().map(|r| {
+                    }).collect();
+                    build_typed_list_series_from_rows(inputs[0].name().clone(), &rows)
+                }
+                RowResult::TypedArray(_) => {
+                    // Build typed fixed-size array series preserving buffer dtype
+                    let rows: Vec<TypedListRow> = data.iter().map(|r| {
                         match r {
-                            RowResult::FixedArray(Some((vals, row_shape))) => {
-                                build_nested_array_value(vals, row_shape)
+                            RowResult::TypedArray(Some((typed_data, shape))) => {
+                                Some((typed_data.clone(), shape.clone()))
                             }
-                            _ => Ok(AnyValue::Null),
+                            _ => None,
                         }
                     }).collect();
-                    let values = values?;
-                    
-                    let series = Series::from_any_values_and_dtype(
-                        inputs[0].name().clone(),
-                        &values,
-                        &dtype,
-                        true,
-                    )?;
-                    Ok(series)
+                    build_typed_array_series_from_rows(inputs[0].name().clone(), &rows)
                 }
             }
         } else {
@@ -1312,72 +1773,29 @@ impl UnifiedGraph {
                         
                         builder.finish().into_series()
                     }
-                    RowResult::NestedList(_) => {
-                        // Build nested list structure based on shape
-                        // For now, flatten to a single list per row
-                        let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
-                            PlSmallStr::from_str(alias),
-                            data.len(),
-                            64,
-                            DataType::Float64,
-                        );
-                        
-                        for r in data.iter() {
+                    RowResult::TypedList(_) => {
+                        // Build typed list series preserving buffer dtype
+                        let rows: Vec<TypedListRow> = data.iter().map(|r| {
                             match r {
-                                RowResult::NestedList(Some((vals, _shape))) => {
-                                    builder.append_slice(vals);
+                                RowResult::TypedList(Some((typed_data, shape))) => {
+                                    Some((typed_data.clone(), shape.clone()))
                                 }
-                                _ => {
-                                    builder.append_null();
-                                }
-                            }
-                        }
-                        
-                        builder.finish().into_series()
-                    }
-                    RowResult::FixedArray(_) => {
-                        // Build fixed-size array using Polars Array type
-                        let first_shape = data.iter().find_map(|r| {
-                            match r {
-                                RowResult::FixedArray(Some((_, shape))) => Some(shape.clone()),
                                 _ => None,
                             }
-                        });
-                        
-                        match first_shape {
-                            None => {
-                                // All nulls - create empty array column
-                                Float64Chunked::from_iter_options(
-                                    PlSmallStr::from_str(alias),
-                                    std::iter::empty::<Option<f64>>(),
-                                ).into_series()
-                            }
-                            Some(shape) => {
-                                // Build the nested Array type from shape
-                                let mut dtype = DataType::Float64;
-                                for &dim in shape.iter().rev() {
-                                    dtype = DataType::Array(Box::new(dtype), dim);
+                        }).collect();
+                        build_typed_list_series_from_rows(PlSmallStr::from_str(alias), &rows)?
+                    }
+                    RowResult::TypedArray(_) => {
+                        // Build typed fixed-size array series preserving buffer dtype
+                        let rows: Vec<TypedListRow> = data.iter().map(|r| {
+                            match r {
+                                RowResult::TypedArray(Some((typed_data, shape))) => {
+                                    Some((typed_data.clone(), shape.clone()))
                                 }
-                                
-                                // Build AnyValue arrays for each row
-                                let values: PolarsResult<Vec<AnyValue<'static>>> = data.iter().map(|r| {
-                                    match r {
-                                        RowResult::FixedArray(Some((vals, row_shape))) => {
-                                            build_nested_array_value(vals, row_shape)
-                                        }
-                                        _ => Ok(AnyValue::Null),
-                                    }
-                                }).collect();
-                                let values = values?;
-                                
-                                Series::from_any_values_and_dtype(
-                                    PlSmallStr::from_str(alias),
-                                    &values,
-                                    &dtype,
-                                    true,
-                                )?
+                                _ => None,
                             }
-                        }
+                        }).collect();
+                        build_typed_array_series_from_rows(PlSmallStr::from_str(alias), &rows)?
                     }
                 };
                 

@@ -53,12 +53,27 @@ pub enum ReductionOp {
         /// Axis along which to find the minimum.
         axis: usize,
     },
+    /// Population count - count the number of set bits in the buffer.
+    ///
+    /// This is a global reduction that counts all set bits across the entire buffer.
+    /// Useful for:
+    /// - Computing Hamming distance between hashes (XOR then popcount)
+    /// - Counting pixels in binary masks
+    /// - Sparse array analysis
+    ///
+    /// For integer types, counts actual bits. For float types, casts to i64 first.
+    PopCount,
 }
 
 impl ReductionOp {
     /// Execute the reduction on a buffer.
     pub fn execute(&self, buffer: &ViewBuffer) -> ViewBuffer {
         let contig = buffer.to_contiguous();
+
+        // PopCount has special handling for each type
+        if matches!(self, ReductionOp::PopCount) {
+            return self.execute_popcount(&contig);
+        }
 
         match buffer.dtype() {
             DType::U8 => self.execute_typed::<u8>(&contig),
@@ -72,6 +87,65 @@ impl ReductionOp {
             DType::F32 => self.execute_typed::<f32>(&contig),
             DType::F64 => self.execute_typed::<f64>(&contig),
         }
+    }
+
+    /// Execute popcount reduction - count all set bits in the buffer.
+    fn execute_popcount(&self, buffer: &ViewBuffer) -> ViewBuffer {
+        let count: u64 = match buffer.dtype() {
+            DType::U8 => buffer
+                .as_slice::<u8>()
+                .iter()
+                .map(|x| x.count_ones() as u64)
+                .sum(),
+            DType::I8 => buffer
+                .as_slice::<i8>()
+                .iter()
+                .map(|x| (*x as u8).count_ones() as u64)
+                .sum(),
+            DType::U16 => buffer
+                .as_slice::<u16>()
+                .iter()
+                .map(|x| x.count_ones() as u64)
+                .sum(),
+            DType::I16 => buffer
+                .as_slice::<i16>()
+                .iter()
+                .map(|x| (*x as u16).count_ones() as u64)
+                .sum(),
+            DType::U32 => buffer
+                .as_slice::<u32>()
+                .iter()
+                .map(|x| x.count_ones() as u64)
+                .sum(),
+            DType::I32 => buffer
+                .as_slice::<i32>()
+                .iter()
+                .map(|x| (*x as u32).count_ones() as u64)
+                .sum(),
+            DType::U64 => buffer
+                .as_slice::<u64>()
+                .iter()
+                .map(|x| x.count_ones() as u64)
+                .sum(),
+            DType::I64 => buffer
+                .as_slice::<i64>()
+                .iter()
+                .map(|x| (*x as u64).count_ones() as u64)
+                .sum(),
+            // For floats, cast to i64 and count bits
+            DType::F32 => buffer
+                .as_slice::<f32>()
+                .iter()
+                .map(|x| (*x as i64 as u64).count_ones() as u64)
+                .sum(),
+            DType::F64 => buffer
+                .as_slice::<f64>()
+                .iter()
+                .map(|x| (*x as i64 as u64).count_ones() as u64)
+                .sum(),
+        };
+
+        ViewBuffer::from_scalar(count as f64)
     }
 
     fn execute_typed<T>(&self, buffer: &ViewBuffer) -> ViewBuffer
@@ -197,6 +271,8 @@ impl ReductionOp {
             }
             ReductionOp::ArgMax { axis } => self.reduce_axis_argmax::<T>(buffer, *axis, true),
             ReductionOp::ArgMin { axis } => self.reduce_axis_argmax::<T>(buffer, *axis, false),
+            // PopCount is handled specially in execute() before calling execute_typed()
+            ReductionOp::PopCount => unreachable!("PopCount is handled in execute()"),
         }
     }
 
@@ -342,6 +418,7 @@ impl Op for ReductionOp {
             ReductionOp::Sum { .. } => "Sum",
             ReductionOp::ArgMax { .. } => "ArgMax",
             ReductionOp::ArgMin { .. } => "ArgMin",
+            ReductionOp::PopCount => "PopCount",
         }
     }
 
@@ -355,6 +432,8 @@ impl Op for ReductionOp {
             | ReductionOp::Std { axis, .. }
             | ReductionOp::Sum { axis } => *axis,
             ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => Some(*axis),
+            // PopCount is always a global reduction
+            ReductionOp::PopCount => None,
         };
 
         match axis {
@@ -378,6 +457,8 @@ impl Op for ReductionOp {
             ReductionOp::Sum { axis: None } => DType::F64,
             ReductionOp::Sum { axis: Some(_) } => DType::F64,
             ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => DType::I64,
+            // PopCount returns the count as f64
+            ReductionOp::PopCount => DType::F64,
             _ => inputs[0],
         }
     }
@@ -410,6 +491,8 @@ impl Op for ReductionOp {
             | ReductionOp::Std { axis, .. }
             | ReductionOp::Sum { axis } => *axis,
             ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => Some(*axis),
+            // PopCount is always a global reduction (no axis)
+            ReductionOp::PopCount => None,
         };
 
         if let Some(ax) = axis {
@@ -434,9 +517,10 @@ impl Op for ReductionOp {
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self {
-            ReductionOp::Mean { .. } | ReductionOp::Std { .. } | ReductionOp::Sum { .. } => {
-                OutputDTypeRule::ForceF64
-            }
+            ReductionOp::Mean { .. }
+            | ReductionOp::Std { .. }
+            | ReductionOp::Sum { .. }
+            | ReductionOp::PopCount => OutputDTypeRule::ForceF64,
             ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => OutputDTypeRule::ForceI64,
             _ => OutputDTypeRule::PreserveInput,
         }
@@ -485,5 +569,40 @@ mod tests {
         let op = ReductionOp::Mean { axis: None };
         let result = op.execute(&buffer);
         assert!((result.as_slice::<f64>()[0] - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_popcount_u8() {
+        // 0xFF = 8 bits, 0x00 = 0 bits, 0x0F = 4 bits, 0xAA = 4 bits (10101010)
+        let data = vec![0xFFu8, 0x00, 0x0F, 0xAA];
+        let buffer = ViewBuffer::from_vec_with_shape(data, vec![4]);
+        let op = ReductionOp::PopCount;
+        let result = op.execute(&buffer);
+        // 8 + 0 + 4 + 4 = 16 bits
+        assert!((result.as_slice::<f64>()[0] - 16.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_popcount_for_hamming_distance() {
+        // Simulate XOR of two hashes and count bits
+        // hash1 = [0xFF, 0x00] (11111111 00000000)
+        // hash2 = [0x0F, 0x0F] (00001111 00001111)
+        // XOR   = [0xF0, 0x0F] (11110000 00001111)
+        // popcount = 4 + 4 = 8 bits different
+        let xor_result = vec![0xF0u8, 0x0F];
+        let buffer = ViewBuffer::from_vec_with_shape(xor_result, vec![2]);
+        let op = ReductionOp::PopCount;
+        let result = op.execute(&buffer);
+        assert!((result.as_slice::<f64>()[0] - 8.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_popcount_identical_hashes() {
+        // XOR of identical hashes = all zeros = 0 bits
+        let xor_result = vec![0x00u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let buffer = ViewBuffer::from_vec_with_shape(xor_result, vec![8]);
+        let op = ReductionOp::PopCount;
+        let result = op.execute(&buffer);
+        assert!((result.as_slice::<f64>()[0] - 0.0).abs() < 1e-10);
     }
 }

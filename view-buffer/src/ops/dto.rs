@@ -85,7 +85,8 @@ impl ViewDto {
                     | ReductionOp::Mean { axis: None }
                     | ReductionOp::Max { axis: None }
                     | ReductionOp::Min { axis: None }
-                    | ReductionOp::Std { axis: None, .. } => Domain::Scalar,
+                    | ReductionOp::Std { axis: None, .. }
+                    | ReductionOp::PopCount => Domain::Scalar,
                     _ => Domain::Buffer, // Axis reductions produce buffers
                 }
             }

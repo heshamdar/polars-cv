@@ -115,9 +115,9 @@ class TestListSink:
             values=pl.col("mask").cv.pipe(pipe).sink("list")
         )
 
-        # The result should be a List type, not Binary
-        assert result["values"].dtype == pl.List(pl.Float64), (
-            f"Expected List[Float64], got {result['values'].dtype}"
+        # The result should be a List type with UInt8 inner (grayscale outputs U8)
+        assert result["values"].dtype == pl.List(pl.UInt8), (
+            f"Expected List[UInt8], got {result['values'].dtype}"
         )
 
         # The list should contain the pixel values
@@ -211,8 +211,8 @@ class TestArraySink:
             values=pl.col("mask").cv.pipeline(pipe)
         )
 
-        # Check the dtype is correctly nested
-        expected_dtype = pl.Array(pl.Array(pl.Array(pl.Float64, 1), 4), 4)
+        # Check the dtype is correctly nested (grayscale outputs U8)
+        expected_dtype = pl.Array(pl.Array(pl.Array(pl.UInt8, 1), 4), 4)
         assert result["values"].dtype == expected_dtype, (
             f"Expected {expected_dtype}, got {result['values'].dtype}"
         )

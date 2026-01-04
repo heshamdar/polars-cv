@@ -911,6 +911,11 @@ pub fn resolve_op(
             // Global reduction: axis = None means reduce entire array to scalar
             Ok(ViewDto::Reduction(ReductionOp::Sum { axis: None }))
         }
+        "reduce_popcount" => {
+            use view_buffer::ops::ReductionOp;
+            // Count set bits across entire buffer (for Hamming distance)
+            Ok(ViewDto::Reduction(ReductionOp::PopCount))
+        }
 
         // Mask operation
         "apply_mask" => {

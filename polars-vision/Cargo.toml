@@ -20,7 +20,16 @@ view-buffer = { path = "../view-buffer", default-features = false, features = [
 ] }
 
 # Polars plugin essentials - use pyo3 0.23 which is compatible with pyo3-polars 0.20
-polars = { version = "0.46", default-features = false, features = ["dtype-array", "dtype-struct"] }
+# Note: dtype-i8/dtype-u8/dtype-i16/dtype-u16 required for Int8/UInt8/Int16/UInt16 Series
+# See: https://github.com/pola-rs/polars/issues/24171
+polars = { version = "0.46", default-features = false, features = [
+    "dtype-array",
+    "dtype-struct",
+    "dtype-i8",
+    "dtype-u8",
+    "dtype-i16",
+    "dtype-u16",
+] }
 polars-arrow = { version = "0.46" }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 pyo3-polars = { version = "0.20", features = ["derive"] }

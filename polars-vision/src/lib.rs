@@ -164,14 +164,10 @@ pub struct GraphKwargs {
     pub expr_column_names: Vec<String>,
 }
 
-/// Unified pipeline graph execution for single output.
+/// Shared implementation for graph execution.
 ///
-/// This function handles single-output graph execution using the unified
-/// graph format. It always returns a Binary column.
-///
-/// Use this when you know the graph has only one output ("_output" key).
-#[polars_expr(output_type=Binary)]
-fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
+/// This is the core logic used by both vb_graph and vb_graph_multi.
+fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series> {
     // Parse the unified graph specification
     let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
 
@@ -190,65 +186,76 @@ fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
         })
         .collect();
 
-    // Execute the graph - should return Binary for single output
+    // Execute the graph
     graph.execute(inputs, &expr_columns)
 }
 
-/// Compute the output dtype for multi-output unified graph.
+/// Unified pipeline graph execution for single output.
+///
+/// This function handles single-output graph execution using the unified
+/// graph format. Returns appropriately typed column based on domain/dtype.
+///
+/// Use this when you know the graph has only one output ("_output" key).
+#[polars_expr(output_type_func_with_kwargs=unified_output_dtype)]
+fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
+    execute_graph(inputs, &kwargs)
+}
+
+/// Compute the output dtype for unified graph (single or multi-output).
 ///
 /// This function receives kwargs and parses the graph JSON to determine
-/// the exact output Struct type with named Binary fields.
-fn unified_multi_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsResult<Field> {
+/// the exact output type based on domain and dtype information:
+/// - Single output: Returns appropriate typed column (Binary, Float64, List, etc.)
+/// - Multi-output: Returns Struct with appropriately typed fields
+fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsResult<Field> {
     let name = if !input_fields.is_empty() {
         input_fields[0].name().clone()
     } else {
         PlSmallStr::from_static("output")
     };
 
-    // Parse the graph JSON to extract output field names
+    // Parse the graph JSON to extract output specifications
     let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
 
-    // Get sorted output names to ensure deterministic field order
-    let mut output_names: Vec<&String> = graph.outputs.keys().collect();
-    output_names.sort();
+    if graph.is_single_output() {
+        // Single output mode - return typed field based on domain/sink/dtype
+        let spec = graph.outputs.get("_output")
+            .ok_or_else(|| polars_err!(ComputeError: "Single output graph missing _output key"))?;
+        let dtype = crate::graph::dtype_for_output(spec);
+        Ok(Field::new(name, dtype))
+    } else {
+        // Multi-output mode - build Struct with typed fields
+        let mut output_names: Vec<&String> = graph.outputs.keys().collect();
+        output_names.sort();
 
-    // Build struct fields - each output is a Binary field
-    let fields: Vec<Field> = output_names
-        .into_iter()
-        .map(|name| Field::new(PlSmallStr::from(name.as_str()), DataType::Binary))
-        .collect();
+        let fields: Vec<Field> = output_names
+            .into_iter()
+            .map(|alias| {
+                let spec = graph.outputs.get(alias).unwrap();
+                let dtype = crate::graph::dtype_for_output(spec);
+                Field::new(PlSmallStr::from(alias.as_str()), dtype)
+            })
+            .collect();
 
-    Ok(Field::new(name, DataType::Struct(fields)))
+        Ok(Field::new(name, DataType::Struct(fields)))
+    }
+}
+
+/// Legacy function for backwards compatibility.
+fn unified_multi_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsResult<Field> {
+    unified_output_dtype(input_fields, kwargs)
 }
 
 /// Unified pipeline graph execution for multiple outputs.
 ///
 /// This function handles multi-output graph execution using the unified
-/// graph format. It returns a Struct column with named Binary fields.
+/// graph format. It returns a Struct column with appropriately typed fields.
 ///
-/// Use this when the graph has multiple outputs.
+/// Note: Uses the same underlying implementation as vb_graph.
+/// Both single and multi-output are handled by the unified execution path.
 #[polars_expr(output_type_func_with_kwargs=unified_multi_output_dtype)]
 fn vb_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
-    // Parse the unified graph specification
-    let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
-
-    // Count the number of root node column bindings to determine where expression columns start
-    let num_source_columns = graph.column_bindings.len().max(1);
-
-    // Build expression columns map from inputs after the source columns
-    let expr_columns: std::collections::HashMap<String, &Series> = kwargs
-        .expr_column_names
-        .iter()
-        .enumerate()
-        .filter_map(|(i, name)| {
-            inputs
-                .get(num_source_columns + i)
-                .map(|s| (name.clone(), s))
-        })
-        .collect();
-
-    // Execute the graph - should return Struct for multi-output
-    graph.execute(inputs, &expr_columns)
+    execute_graph(inputs, &kwargs)
 }
 
 // ============================================================================
