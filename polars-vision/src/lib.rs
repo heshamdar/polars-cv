@@ -166,7 +166,7 @@ pub struct GraphKwargs {
 
 /// Shared implementation for graph execution.
 ///
-/// This is the core logic used by both vb_graph and vb_graph_multi.
+/// Handles both single-output and multi-output graphs uniformly.
 fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series> {
     // Parse the unified graph specification
     let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
@@ -239,23 +239,6 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
 
         Ok(Field::new(name, DataType::Struct(fields)))
     }
-}
-
-/// Legacy function for backwards compatibility.
-fn unified_multi_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsResult<Field> {
-    unified_output_dtype(input_fields, kwargs)
-}
-
-/// Unified pipeline graph execution for multiple outputs.
-///
-/// This function handles multi-output graph execution using the unified
-/// graph format. It returns a Struct column with appropriately typed fields.
-///
-/// Note: Uses the same underlying implementation as vb_graph.
-/// Both single and multi-output are handled by the unified execution path.
-#[polars_expr(output_type_func_with_kwargs=unified_multi_output_dtype)]
-fn vb_graph_multi(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
-    execute_graph(inputs, &kwargs)
 }
 
 // ============================================================================

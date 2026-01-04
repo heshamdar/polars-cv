@@ -2,8 +2,8 @@
 Comprehensive tests for the unified graph execution path.
 
 These tests verify that all pipeline functionality works through
-the unified graph path (vb_graph / vb_graph_multi) without falling
-back to legacy paths.
+the unified graph path (vb_graph) which handles both single and
+multi-output pipelines.
 
 All tests in this file use the graph path exclusively and cover:
 - Single output pipelines

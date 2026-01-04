@@ -48,6 +48,30 @@ use crate::execute::{
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
 
 // ============================================================
+// Result Types
+// ============================================================
+
+/// Result type for individual row execution.
+///
+/// Each variant holds the typed data for a single row output.
+/// The Option allows null handling - None represents null input or error.
+#[derive(Clone)]
+enum RowResult {
+    /// Binary data (images, numpy arrays, etc.)
+    Binary(Option<Vec<u8>>),
+    /// Scalar value (reduce operations)
+    Scalar(Option<f64>),
+    /// Vector of f64 values
+    Vector(Option<Vec<f64>>),
+    /// Contour geometry data
+    Contours(Option<Vec<Contour>>),
+    /// Typed list for "list" sink (variable length, preserves dtype).
+    TypedList(Option<(TypedBufferData, Vec<usize>)>),
+    /// Typed fixed-size array for "array" sink (fixed shape, preserves dtype).
+    TypedArray(Option<(TypedBufferData, Vec<usize>)>),
+}
+
+// ============================================================
 // Static Type Inference Helpers
 // ============================================================
 
@@ -111,6 +135,177 @@ pub fn dtype_for_output(spec: &OutputSpec) -> DataType {
         
         // Fallback
         _ => DataType::Binary,
+    }
+}
+
+/// Create a null RowResult with the correct type based on OutputSpec.
+///
+/// This ensures that null values are pushed with the appropriate type variant,
+/// allowing the series builder to use static type information.
+fn null_row_result_for_spec(spec: &OutputSpec) -> RowResult {
+    let format = spec.sink.format.as_str();
+    let domain = spec.expected_domain.as_str();
+
+    match (domain, format) {
+        // Binary formats
+        ("buffer", "numpy" | "torch" | "png" | "jpeg" | "blob") | (_, "binary") => {
+            RowResult::Binary(None)
+        }
+        // List format with buffer domain - use typed list
+        ("buffer", "list") | ("vector", "native" | "list") => {
+            RowResult::TypedList(None)
+        }
+        // Array format with buffer domain
+        ("buffer", "array") => {
+            RowResult::TypedArray(None)
+        }
+        // Scalar domain
+        ("scalar", "native") => {
+            RowResult::Scalar(None)
+        }
+        // Contour domain
+        ("contour", "native") => {
+            RowResult::Contours(None)
+        }
+        // Fallback
+        _ => RowResult::Binary(None),
+    }
+}
+
+/// Build a series from row results using the OutputSpec to determine the type.
+///
+/// This function uses static type information from the OutputSpec rather than
+/// inspecting the first row's data. This allows proper handling of null values
+/// while preserving the expected output type.
+fn build_series_from_spec(
+    name: PlSmallStr,
+    spec: &OutputSpec,
+    data: &[RowResult],
+) -> PolarsResult<Series> {
+    let format = spec.sink.format.as_str();
+    let domain = spec.expected_domain.as_str();
+    let dtype = &spec.expected_dtype;
+
+    match (domain, format) {
+        // Binary formats: numpy, torch, png, jpeg, blob
+        ("buffer", "numpy" | "torch" | "png" | "jpeg" | "blob") | (_, "binary") => {
+            let binary_data: Vec<Option<Vec<u8>>> = data.iter().map(|r| {
+                match r {
+                    RowResult::Binary(b) => b.clone(),
+                    _ => None,
+                }
+            }).collect();
+            let output_ca = BinaryChunked::from_iter_options(name, binary_data.into_iter());
+            Ok(output_ca.into_series())
+        }
+
+        // List format with buffer domain - use typed list builder
+        ("buffer", "list") => {
+            let rows: Vec<TypedListRow> = data.iter().map(|r| {
+                match r {
+                    RowResult::TypedList(Some((typed_data, shape))) => {
+                        Some((typed_data.clone(), shape.clone()))
+                    }
+                    _ => None,
+                }
+            }).collect();
+            build_typed_list_series_from_rows_with_dtype(name, &rows, dtype)
+        }
+
+        // Array format with buffer domain - use typed array builder
+        ("buffer", "array") => {
+            let rows: Vec<TypedListRow> = data.iter().map(|r| {
+                match r {
+                    RowResult::TypedArray(Some((typed_data, shape))) => {
+                        Some((typed_data.clone(), shape.clone()))
+                    }
+                    _ => None,
+                }
+            }).collect();
+            build_typed_array_series_from_rows_with_dtype(name, &rows, dtype, &spec.sink.shape)
+        }
+
+        // Scalar domain with native format
+        ("scalar", "native") => {
+            let scalar_data: Vec<Option<f64>> = data.iter().map(|r| {
+                match r {
+                    RowResult::Scalar(s) => *s,
+                    _ => None,
+                }
+            }).collect();
+            let output_ca = Float64Chunked::from_iter_options(name, scalar_data.into_iter());
+            Ok(output_ca.into_series())
+        }
+
+        // Vector domain (perceptual hash, centroid, bbox) - typed list
+        ("vector", "native" | "list") => {
+            // Vectors are stored as TypedList in RowResult
+            let rows: Vec<TypedListRow> = data.iter().map(|r| {
+                match r {
+                    RowResult::TypedList(Some((typed_data, shape))) => {
+                        Some((typed_data.clone(), shape.clone()))
+                    }
+                    RowResult::Vector(Some(vals)) => {
+                        // Convert Vec<f64> to TypedBufferData
+                        Some((TypedBufferData::F64(vals.clone()), vec![vals.len()]))
+                    }
+                    _ => None,
+                }
+            }).collect();
+            build_typed_list_series_from_rows_with_dtype(name, &rows, dtype)
+        }
+
+        // Vector domain with array sink (fixed-size output like perceptual hash)
+        ("vector", "array") => {
+            let rows: Vec<TypedListRow> = data.iter().map(|r| {
+                match r {
+                    RowResult::TypedList(Some((typed_data, shape))) |
+                    RowResult::TypedArray(Some((typed_data, shape))) => {
+                        Some((typed_data.clone(), shape.clone()))
+                    }
+                    RowResult::Vector(Some(vals)) => {
+                        Some((TypedBufferData::F64(vals.clone()), vec![vals.len()]))
+                    }
+                    _ => None,
+                }
+            }).collect();
+            build_typed_array_series_from_rows_with_dtype(name, &rows, dtype, &spec.sink.shape)
+        }
+
+        // Contour domain with native format
+        ("contour", "native") => {
+            let values: PolarsResult<Vec<AnyValue<'static>>> = data.iter().map(|r| {
+                match r {
+                    RowResult::Contours(Some(contours)) => contours_to_polars_value(contours),
+                    _ => Ok(AnyValue::Null),
+                }
+            }).collect();
+            let values = values?;
+
+            // Use statically known dtype for contours
+            let point_dtype = DataType::Struct(vec![
+                Field::new("x".into(), DataType::Float64),
+                Field::new("y".into(), DataType::Float64),
+            ]);
+            let contour_dtype = DataType::Struct(vec![
+                Field::new("exterior".into(), DataType::List(Box::new(point_dtype.clone()))),
+                Field::new("interiors".into(), DataType::Null),
+            ]);
+
+            Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
+        }
+
+        // Fallback to binary
+        _ => {
+            let binary_data: Vec<Option<Vec<u8>>> = data.iter().map(|r| {
+                match r {
+                    RowResult::Binary(b) => b.clone(),
+                    _ => None,
+                }
+            }).collect();
+            let output_ca = BinaryChunked::from_iter_options(name, binary_data.into_iter());
+            Ok(output_ca.into_series())
+        }
     }
 }
 
@@ -450,46 +645,6 @@ fn extract_buffer_as_f64(buf: &view_buffer::ViewBuffer) -> Vec<f64> {
 /// Helper type for list row data: (TypedBufferData, shape)
 type TypedListRow = Option<(TypedBufferData, Vec<usize>)>;
 
-/// Build a typed list series from row results, preserving the original buffer dtype.
-///
-/// This creates a List column with the correct inner dtype (UInt8, Float32, etc.)
-/// instead of always using Float64.
-fn build_typed_list_series_from_rows(
-    name: PlSmallStr,
-    rows: &[TypedListRow],
-) -> PolarsResult<Series> {
-    // Get dtype from first non-null element
-    let first_typed = rows.iter().find_map(|r| r.as_ref().map(|(d, _)| d));
-    
-    let Some(first) = first_typed else {
-        // All nulls - return list column of nulls with UInt8 inner (reasonable default)
-        let mut builder = ListPrimitiveChunkedBuilder::<UInt8Type>::new(
-            name,
-            rows.len(),
-            0,
-            DataType::UInt8,
-        );
-        for _ in 0..rows.len() {
-            builder.append_null();
-        }
-        return Ok(builder.finish().into_series());
-    };
-    
-    // Match on dtype and build with appropriate builder type
-    match first {
-        TypedBufferData::U8(_) => build_typed_list_u8(name, rows),
-        TypedBufferData::I8(_) => build_typed_list_i8(name, rows),
-        TypedBufferData::U16(_) => build_typed_list_u16(name, rows),
-        TypedBufferData::I16(_) => build_typed_list_i16(name, rows),
-        TypedBufferData::U32(_) => build_typed_list_u32(name, rows),
-        TypedBufferData::I32(_) => build_typed_list_i32(name, rows),
-        TypedBufferData::U64(_) => build_typed_list_u64(name, rows),
-        TypedBufferData::I64(_) => build_typed_list_i64(name, rows),
-        TypedBufferData::F32(_) => build_typed_list_f32(name, rows),
-        TypedBufferData::F64(_) => build_typed_list_f64(name, rows),
-    }
-}
-
 // Macro to generate typed list builders
 macro_rules! impl_typed_list_builder {
     ($name:ident, $polars_type:ty, $extract:expr) => {
@@ -696,37 +851,60 @@ impl_typed_list_builder!(build_typed_list_i64, Int64Type, extract_as_i64);
 impl_typed_list_builder!(build_typed_list_f32, Float32Type, extract_as_f32);
 impl_typed_list_builder!(build_typed_list_f64, Float64Type, extract_as_f64);
 
-/// Build a typed fixed-size array series from row results.
-fn build_typed_array_series_from_rows(
+/// Build a typed list series using a statically known dtype.
+///
+/// Unlike `build_typed_list_series_from_rows` which infers dtype from data,
+/// this function uses the provided dtype string, allowing proper handling
+/// of all-null data while preserving the expected output type.
+fn build_typed_list_series_from_rows_with_dtype(
     name: PlSmallStr,
     rows: &[TypedListRow],
+    dtype_str: &str,
 ) -> PolarsResult<Series> {
-    // Get shape and dtype from first non-null element
-    let first_result = rows.iter().find_map(|r| r.as_ref());
-    
-    let Some((first_data, first_shape)) = first_result else {
-        // All nulls - return list column of nulls with UInt8 inner (reasonable default)
-        let mut builder = ListPrimitiveChunkedBuilder::<UInt8Type>::new(
-            name,
-            rows.len(),
-            0,
-            DataType::UInt8,
-        );
-        for _ in 0..rows.len() {
-            builder.append_null();
-        }
-        return Ok(builder.finish().into_series());
+    // Use static dtype to determine builder type
+    match dtype_str {
+        "u8" => build_typed_list_u8(name, rows),
+        "i8" => build_typed_list_i8(name, rows),
+        "u16" => build_typed_list_u16(name, rows),
+        "i16" => build_typed_list_i16(name, rows),
+        "u32" => build_typed_list_u32(name, rows),
+        "i32" => build_typed_list_i32(name, rows),
+        "u64" => build_typed_list_u64(name, rows),
+        "i64" => build_typed_list_i64(name, rows),
+        "f32" => build_typed_list_f32(name, rows),
+        "f64" => build_typed_list_f64(name, rows),
+        _ => build_typed_list_u8(name, rows), // Default fallback
+    }
+}
+
+/// Build a typed fixed-size array series using a statically known dtype.
+///
+/// Unlike `build_typed_array_series_from_rows` which infers dtype from data,
+/// this function uses the provided dtype string and shape, allowing proper
+/// handling of all-null data while preserving the expected output type.
+fn build_typed_array_series_from_rows_with_dtype(
+    name: PlSmallStr,
+    rows: &[TypedListRow],
+    dtype_str: &str,
+    sink_shape: &Option<Vec<usize>>,
+) -> PolarsResult<Series> {
+    // Get shape from sink spec or infer from first non-null row
+    let shape = sink_shape.clone().or_else(|| {
+        rows.iter().find_map(|r| r.as_ref().map(|(_, s)| s.clone()))
+    });
+
+    let Some(shape) = shape else {
+        // No shape available - fall back to list
+        return build_typed_list_series_from_rows_with_dtype(name, rows, dtype_str);
     };
-    
-    let shape = first_shape.clone();
-    let inner_dtype = first_data.polars_dtype();
-    
+
     // Build the nested Array type from shape
+    let inner_dtype = dtype_str_to_polars(dtype_str);
     let mut dtype = inner_dtype.clone();
     for &dim in shape.iter().rev() {
         dtype = DataType::Array(Box::new(dtype), dim);
     }
-    
+
     // Build AnyValue arrays for each row
     let values: PolarsResult<Vec<AnyValue<'static>>> = rows.iter().map(|r| {
         if let Some((typed_data, row_shape)) = r {
@@ -736,7 +914,7 @@ fn build_typed_array_series_from_rows(
         }
     }).collect();
     let values = values?;
-    
+
     Series::from_any_values_and_dtype(name, &values, &dtype, true)
 }
 
@@ -1260,19 +1438,6 @@ impl UnifiedGraph {
             .collect();
 
         // Prepare result storage for typed outputs
-        // Each output can be Binary, Scalar, or Contour data
-        #[derive(Clone)]
-        enum RowResult {
-            Binary(Option<Vec<u8>>),
-            Scalar(Option<f64>),
-            Vector(Option<Vec<f64>>),
-            Contours(Option<Vec<Contour>>),
-            /// Typed list for "list" sink (variable length, preserves dtype).
-            TypedList(Option<(TypedBufferData, Vec<usize>)>),
-            /// Typed fixed-size array for "array" sink (fixed shape, preserves dtype).
-            TypedArray(Option<(TypedBufferData, Vec<usize>)>),
-        }
-        
         let mut results: HashMap<String, Vec<RowResult>> = HashMap::new();
         for alias in &output_aliases {
             results.insert((*alias).clone(), Vec::with_capacity(len));
@@ -1385,17 +1550,22 @@ impl UnifiedGraph {
                             }
                         } else {
                             // Binary source: decode from bytes
-                            let input_ca = match input_series.binary() {
-                                Ok(ca) => ca,
-                                Err(_) => {
-                                    return Err(format!(
-                                        "Expected Binary column for node '{node_id}'"
-                                    ))
-                                }
-                            };
+                            // Handle Null dtype (all nulls) gracefully
+                            if input_series.dtype() == &DataType::Null {
+                                None
+                            } else {
+                                let input_ca = match input_series.binary() {
+                                    Ok(ca) => ca,
+                                    Err(_) => {
+                                        return Err(format!(
+                                            "Expected Binary column for node '{node_id}', got {:?}",
+                                            input_series.dtype()
+                                        ))
+                                    }
+                                };
 
-                            match input_ca.get(row_idx) {
-                                Some(bytes) => {
+                                match input_ca.get(row_idx) {
+                                    Some(bytes) => {
                                     // Create temp spec for decoding
                                     let first_output = self.outputs.values().next().unwrap();
                                     let temp_spec = PipelineSpec {
@@ -1412,6 +1582,7 @@ impl UnifiedGraph {
                                     }
                                 }
                                 None => None,
+                            }
                             }
                         }
                     } else {
@@ -1546,9 +1717,9 @@ impl UnifiedGraph {
                             Err(e) => return Err(format!("Encode error for '{alias}': {e}")),
                         }
                     } else {
-                        // No output for this node - push null based on expected type
-                        // Default to Binary null for now
-                        results.get_mut(alias).unwrap().push(RowResult::Binary(None));
+                        // No output for this node - push null with correct type based on OutputSpec
+                        let null_result = null_row_result_for_spec(spec);
+                        results.get_mut(alias).unwrap().push(null_result);
                     }
                 }
             }
@@ -1577,227 +1748,26 @@ impl UnifiedGraph {
 
         // Build output based on single vs multi output
         if self.is_single_output() {
-            // Single output: determine type and return appropriate column
+            // Single output: use OutputSpec to determine type (not data inspection)
+            let spec = self.outputs.get("_output").unwrap();
             let data = results.get("_output").unwrap();
             
-            // Check what type of results we have
-            if data.is_empty() {
-                let output_ca = BinaryChunked::from_iter_options(
-                    inputs[0].name().clone(),
-                    std::iter::empty::<Option<Vec<u8>>>(),
-                );
-                return Ok(output_ca.into_series());
-            }
-            
-            match &data[0] {
-                RowResult::Binary(_) => {
-                    let binary_data: Vec<Option<Vec<u8>>> = data.iter().map(|r| {
-                        match r {
-                            RowResult::Binary(b) => b.clone(),
-                            _ => None,
-                        }
-                    }).collect();
-                    let output_ca = BinaryChunked::from_iter_options(
-                        inputs[0].name().clone(),
-                        binary_data.into_iter(),
-                    );
-                    Ok(output_ca.into_series())
-                }
-                RowResult::Scalar(_) => {
-                    let scalar_data: Vec<Option<f64>> = data.iter().map(|r| {
-                        match r {
-                            RowResult::Scalar(s) => *s,
-                            _ => None,
-                        }
-                    }).collect();
-                    let output_ca = Float64Chunked::from_iter_options(
-                        inputs[0].name().clone(),
-                        scalar_data.into_iter(),
-                    );
-                    Ok(output_ca.into_series())
-                }
-                RowResult::Contours(_) => {
-                    // Build contour struct series
-                    let values: PolarsResult<Vec<AnyValue<'static>>> = data.iter().map(|r| {
-                        match r {
-                            RowResult::Contours(Some(contours)) => contours_to_polars_value(contours),
-                            _ => Ok(AnyValue::Null),
-                        }
-                    }).collect();
-                    let values = values?;
-                    
-                    // Infer dtype from first non-null value
-                    let dtype = values.iter()
-                        .find(|v| !matches!(v, AnyValue::Null))
-                        .map(|v| v.dtype())
-                        .unwrap_or(DataType::Null);
-                    
-                    let series = Series::from_any_values_and_dtype(
-                        inputs[0].name().clone(),
-                        &values,
-                        &dtype,
-                        true,
-                    )?;
-                    Ok(series)
-                }
-                RowResult::Vector(_) => {
-                    // Build list of f64 series
-                    let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
-                        inputs[0].name().clone(),
-                        data.len(),
-                        4,  // Initial capacity for each list
-                        DataType::Float64,
-                    );
-                    
-                    for r in data.iter() {
-                        match r {
-                            RowResult::Vector(Some(vals)) => {
-                                builder.append_slice(vals);
-                            }
-                            _ => {
-                                builder.append_null();
-                            }
-                        }
-                    }
-                    
-                    Ok(builder.finish().into_series())
-                }
-                RowResult::TypedList(_) => {
-                    // Build typed list series preserving buffer dtype
-                    let rows: Vec<TypedListRow> = data.iter().map(|r| {
-                        match r {
-                            RowResult::TypedList(Some((typed_data, shape))) => {
-                                Some((typed_data.clone(), shape.clone()))
-                            }
-                            _ => None,
-                        }
-                    }).collect();
-                    build_typed_list_series_from_rows(inputs[0].name().clone(), &rows)
-                }
-                RowResult::TypedArray(_) => {
-                    // Build typed fixed-size array series preserving buffer dtype
-                    let rows: Vec<TypedListRow> = data.iter().map(|r| {
-                        match r {
-                            RowResult::TypedArray(Some((typed_data, shape))) => {
-                                Some((typed_data.clone(), shape.clone()))
-                            }
-                            _ => None,
-                        }
-                    }).collect();
-                    build_typed_array_series_from_rows(inputs[0].name().clone(), &rows)
-                }
-            }
+            // Use static type information from OutputSpec
+            build_series_from_spec(inputs[0].name().clone(), spec, data)
         } else {
             // Multi output: return Struct column with appropriate field types
+            // Use OutputSpec to determine type for each field (not data inspection)
             let mut fields: Vec<Series> = Vec::with_capacity(output_aliases.len());
             
             for alias in &output_aliases {
+                let spec = self.outputs.get(*alias).unwrap();
                 let data = results.get(*alias).unwrap();
                 
-                if data.is_empty() {
-                    let ca = BinaryChunked::from_iter_options(
-                        PlSmallStr::from_str(alias),
-                        std::iter::empty::<Option<Vec<u8>>>(),
-                    );
-                    fields.push(ca.into_series());
-                    continue;
-                }
-                
-                // Determine type from first element
-                let field_series = match &data[0] {
-                    RowResult::Binary(_) => {
-                        let binary_data: Vec<Option<Vec<u8>>> = data.iter().map(|r| {
-                            match r {
-                                RowResult::Binary(b) => b.clone(),
-                                _ => None,
-                            }
-                        }).collect();
-                        let ca = BinaryChunked::from_iter_options(
-                            PlSmallStr::from_str(alias),
-                            binary_data.into_iter(),
-                        );
-                        ca.into_series()
-                    }
-                    RowResult::Scalar(_) => {
-                        let scalar_data: Vec<Option<f64>> = data.iter().map(|r| {
-                            match r {
-                                RowResult::Scalar(s) => *s,
-                                _ => None,
-                            }
-                        }).collect();
-                        let ca = Float64Chunked::from_iter_options(
-                            PlSmallStr::from_str(alias),
-                            scalar_data.into_iter(),
-                        );
-                        ca.into_series()
-                    }
-                    RowResult::Contours(_) => {
-                        let values: PolarsResult<Vec<AnyValue<'static>>> = data.iter().map(|r| {
-                            match r {
-                                RowResult::Contours(Some(contours)) => contours_to_polars_value(contours),
-                                _ => Ok(AnyValue::Null),
-                            }
-                        }).collect();
-                        let values = values?;
-                        
-                        let dtype = values.iter()
-                            .find(|v| !matches!(v, AnyValue::Null))
-                            .map(|v| v.dtype())
-                            .unwrap_or(DataType::Null);
-                        
-                        Series::from_any_values_and_dtype(
-                            PlSmallStr::from_str(alias),
-                            &values,
-                            &dtype,
-                            true,
-                        )?
-                    }
-                    RowResult::Vector(_) => {
-                        let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
-                            PlSmallStr::from_str(alias),
-                            data.len(),
-                            4,  // Initial capacity for each list
-                            DataType::Float64,
-                        );
-                        
-                        for r in data.iter() {
-                            match r {
-                                RowResult::Vector(Some(vals)) => {
-                                    builder.append_slice(vals);
-                                }
-                                _ => {
-                                    builder.append_null();
-                                }
-                            }
-                        }
-                        
-                        builder.finish().into_series()
-                    }
-                    RowResult::TypedList(_) => {
-                        // Build typed list series preserving buffer dtype
-                        let rows: Vec<TypedListRow> = data.iter().map(|r| {
-                            match r {
-                                RowResult::TypedList(Some((typed_data, shape))) => {
-                                    Some((typed_data.clone(), shape.clone()))
-                                }
-                                _ => None,
-                            }
-                        }).collect();
-                        build_typed_list_series_from_rows(PlSmallStr::from_str(alias), &rows)?
-                    }
-                    RowResult::TypedArray(_) => {
-                        // Build typed fixed-size array series preserving buffer dtype
-                        let rows: Vec<TypedListRow> = data.iter().map(|r| {
-                            match r {
-                                RowResult::TypedArray(Some((typed_data, shape))) => {
-                                    Some((typed_data.clone(), shape.clone()))
-                                }
-                                _ => None,
-                            }
-                        }).collect();
-                        build_typed_array_series_from_rows(PlSmallStr::from_str(alias), &rows)?
-                    }
-                };
+                let field_series = build_series_from_spec(
+                    PlSmallStr::from_str(alias),
+                    spec,
+                    data,
+                )?;
                 
                 fields.push(field_series);
             }

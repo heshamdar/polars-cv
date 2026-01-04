@@ -225,12 +225,11 @@ class TestNullValueHandling:
     """
     Tests verifying that null values don't break type inference.
 
-    Note: Full null handling with static type preservation is a known
-    limitation. These tests are marked as expected failures until
-    that feature is implemented.
+    Types are determined at planning time from the OutputSpec, not by
+    inspecting runtime data. Even with all-null inputs, the output
+    column has the correct type (e.g., List[UInt8], Binary, etc.).
     """
 
-    @pytest.mark.xfail(reason="Null handling with static type preservation not yet implemented")
     def test_null_values_preserve_type_list(
         self, simple_image_bytes: bytes
     ) -> None:
@@ -252,10 +251,12 @@ class TestNullValueHandling:
         assert gray_col[0] is None or gray_col[0].is_empty()
         assert gray_col[1] is not None
 
-    @pytest.mark.xfail(reason="All-null handling requires special case implementation")
     def test_all_null_values_preserve_type(self) -> None:
         """
         All null values should still result in correctly typed column.
+
+        Even when input is entirely null (Polars Null dtype), the output
+        type is determined from the pipeline's OutputSpec at planning time.
         """
         df = pl.DataFrame({"image": [None, None]})
 
@@ -268,7 +269,6 @@ class TestNullValueHandling:
             f"Expected List[UInt8] with all nulls, got {gray_col.dtype}"
         )
 
-    @pytest.mark.xfail(reason="Null handling with static type preservation not yet implemented")
     def test_mixed_null_and_values_perceptual_hash(
         self, rgb_image_bytes: bytes
     ) -> None:
