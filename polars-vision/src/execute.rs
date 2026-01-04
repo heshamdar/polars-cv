@@ -883,6 +883,34 @@ pub fn resolve_op(
                 other_node_id,
             })
         }
+        "bitwise_and" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::BitwiseAnd,
+                other_node_id,
+            })
+        }
+        "bitwise_or" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::BitwiseOr,
+                other_node_id,
+            })
+        }
+        "bitwise_xor" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            Ok(ViewDto::Binary {
+                op: BinaryOp::BitwiseXor,
+                other_node_id,
+            })
+        }
+
+        // Reduction operations
+        "reduce_sum" => {
+            use view_buffer::ops::ReductionOp;
+            // Global reduction: axis = None means reduce entire array to scalar
+            Ok(ViewDto::Reduction(ReductionOp::Sum { axis: None }))
+        }
 
         // Mask operation
         "apply_mask" => {

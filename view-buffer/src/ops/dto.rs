@@ -6,6 +6,7 @@ use crate::ops::binary::BinaryOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::image::ImageOp;
 use crate::ops::phash::PerceptualHashOp;
+use crate::ops::reduction::ReductionOp;
 use crate::ops::traits::Op;
 use crate::ops::view::ViewOp;
 use crate::ops::Domain;
@@ -33,6 +34,8 @@ pub enum ViewDto {
         mask_node_id: String,
         invert: bool,
     },
+    /// Reduction operation (e.g., sum, mean, max) that reduces array to scalar or along axis.
+    Reduction(ReductionOp),
     // Helper for plugins to request materialization explicitly
     Materialize,
 }
@@ -53,6 +56,8 @@ impl ViewDto {
             ViewDto::Geometry(op) => op.input_domain(),
             // Binary operations work on buffers
             ViewDto::Binary { .. } | ViewDto::ApplyMask { .. } => Domain::Buffer,
+            // Reduction operations work on buffers
+            ViewDto::Reduction(_) => Domain::Buffer,
             // Materialize accepts any domain
             ViewDto::Materialize => Domain::Any,
         }
@@ -71,6 +76,19 @@ impl ViewDto {
             ViewDto::Geometry(op) => op.output_domain(),
             // Binary operations produce buffers
             ViewDto::Binary { .. } | ViewDto::ApplyMask { .. } => Domain::Buffer,
+            // Reduction operations: global reduction → Scalar, axis reduction → Buffer
+            ViewDto::Reduction(op) => {
+                // Global reductions (axis=None) produce a scalar
+                // Axis reductions produce a buffer with reduced shape
+                match op {
+                    ReductionOp::Sum { axis: None }
+                    | ReductionOp::Mean { axis: None }
+                    | ReductionOp::Max { axis: None }
+                    | ReductionOp::Min { axis: None }
+                    | ReductionOp::Std { axis: None, .. } => Domain::Scalar,
+                    _ => Domain::Buffer, // Axis reductions produce buffers
+                }
+            }
             // Materialize preserves domain
             ViewDto::Materialize => Domain::Any,
         }
@@ -86,6 +104,7 @@ impl ViewDto {
             ViewDto::PerceptualHash(op) => op.name(),
             ViewDto::Binary { op, .. } => op.name(),
             ViewDto::ApplyMask { .. } => "ApplyMask",
+            ViewDto::Reduction(op) => op.name(),
             ViewDto::Materialize => "Materialize",
         }
     }

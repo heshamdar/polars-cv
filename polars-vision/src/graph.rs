@@ -342,23 +342,25 @@ fn encode_node_output(
                 .map_err(|e| format!("Encode error: {e}"))
         }
         (NodeOutput::Buffer(buf), "array" | "list") => {
-            let pipeline = PipelineSpec {
-                source: SourceSpec {
-                    format: "blob".to_string(),
-                    dtype: None,
-                    width: None,
-                    height: None,
-                    fill_value: 255,
-                    background: 0,
-                    shape_pipeline: None,
-                },
-                shape_hints: None,
-                ops: vec![],
-                sink: sink.clone(),
+            // Convert buffer to nested list structure for proper Polars List type
+            let contig = buf.to_contiguous();
+            let shape = contig.shape().to_vec();
+            
+            // Extract data as f64 (type dispatch)
+            let data: Vec<f64> = match contig.dtype() {
+                view_buffer::DType::U8 => contig.as_slice::<u8>().iter().map(|&v| v as f64).collect(),
+                view_buffer::DType::I8 => contig.as_slice::<i8>().iter().map(|&v| v as f64).collect(),
+                view_buffer::DType::U16 => contig.as_slice::<u16>().iter().map(|&v| v as f64).collect(),
+                view_buffer::DType::I16 => contig.as_slice::<i16>().iter().map(|&v| v as f64).collect(),
+                view_buffer::DType::U32 => contig.as_slice::<u32>().iter().map(|&v| v as f64).collect(),
+                view_buffer::DType::I32 => contig.as_slice::<i32>().iter().map(|&v| v as f64).collect(),
+                view_buffer::DType::U64 => contig.as_slice::<u64>().iter().map(|&v| v as f64).collect(),
+                view_buffer::DType::I64 => contig.as_slice::<i64>().iter().map(|&v| v as f64).collect(),
+                view_buffer::DType::F32 => contig.as_slice::<f32>().iter().map(|&v| v as f64).collect(),
+                view_buffer::DType::F64 => contig.as_slice::<f64>().to_vec(),
             };
-            crate::execute::encode_sink(buf, &pipeline)
-                .map(OutputValue::Binary)
-                .map_err(|e| format!("Encode error: {e}"))
+            
+            Ok(OutputValue::NestedList { data, shape })
         }
         
         // Native format dispatches based on domain
@@ -401,13 +403,20 @@ fn encode_node_output(
     }
 }
 
-/// Output value from encoding - can be binary, contour struct, or scalar.
+/// Output value from encoding - can be binary, contour struct, scalar, or array.
 #[derive(Debug)]
 enum OutputValue {
     Binary(Vec<u8>),
     Contours(Arc<Vec<Contour>>),
     Scalar(f64),
     Vector(Arc<Vec<f64>>),
+    /// Nested list representation for "list" sink - shape info preserved for building nested structure.
+    NestedList {
+        /// Flattened data as f64.
+        data: Vec<f64>,
+        /// Original shape of the buffer.
+        shape: Vec<usize>,
+    },
 }
 
 /// Convert contours to Polars AnyValue representation.
@@ -643,6 +652,8 @@ impl UnifiedGraph {
             Scalar(Option<f64>),
             Vector(Option<Vec<f64>>),
             Contours(Option<Vec<Contour>>),
+            /// Nested list for list/array sinks.
+            NestedList(Option<(Vec<f64>, Vec<usize>)>),
         }
         
         let mut results: HashMap<String, Vec<RowResult>> = HashMap::new();
@@ -869,6 +880,23 @@ impl UnifiedGraph {
                                     let result = apply_mask(current_buf, mask_buf, *invert);
                                     current_output = NodeOutput::from_buffer(result);
                                 }
+                                ViewDto::Reduction(reduction_op) => {
+                                    // Flush pending buffer ops first
+                                    current_output = flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    // Reduction operation: buffer → scalar (for global) or buffer (for axis)
+                                    let current_buf = current_output.as_buffer()
+                                        .ok_or_else(|| format!("Reduction requires Buffer, got {:?}", current_output.domain()))?;
+                                    let result = reduction_op.execute(current_buf);
+                                    // Check if this is a global reduction (produces scalar)
+                                    if result.shape() == [1] {
+                                        // Global reduction: extract scalar value
+                                        let scalar_val = result.as_slice::<f64>()[0];
+                                        current_output = NodeOutput::Scalar(scalar_val);
+                                    } else {
+                                        // Axis reduction: still a buffer
+                                        current_output = NodeOutput::from_buffer(result);
+                                    }
+                                }
                                 _ => {
                                     // Regular buffer operation: accumulate for batching
                                     pending_buffer_ops.push(view_dto.clone());
@@ -893,6 +921,7 @@ impl UnifiedGraph {
                                     OutputValue::Scalar(val) => RowResult::Scalar(Some(val)),
                                     OutputValue::Vector(vals) => RowResult::Vector(Some((*vals).clone())),
                                     OutputValue::Contours(contours) => RowResult::Contours(Some((*contours).clone())),
+                                    OutputValue::NestedList { data, shape } => RowResult::NestedList(Some((data, shape))),
                                 };
                                 results.get_mut(alias).unwrap().push(row_result);
                             }
@@ -1015,6 +1044,30 @@ impl UnifiedGraph {
                     
                     Ok(builder.finish().into_series())
                 }
+                RowResult::NestedList(_) => {
+                    // Build nested list structure based on shape
+                    // For now, flatten to a single list per row (simple case)
+                    // TODO: Full nested list support for multidimensional arrays
+                    let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                        inputs[0].name().clone(),
+                        data.len(),
+                        64,  // Initial capacity for each list
+                        DataType::Float64,
+                    );
+                    
+                    for r in data.iter() {
+                        match r {
+                            RowResult::NestedList(Some((vals, _shape))) => {
+                                builder.append_slice(vals);
+                            }
+                            _ => {
+                                builder.append_null();
+                            }
+                        }
+                    }
+                    
+                    Ok(builder.finish().into_series())
+                }
             }
         } else {
             // Multi output: return Struct column with appropriate field types
@@ -1092,6 +1145,29 @@ impl UnifiedGraph {
                         for r in data.iter() {
                             match r {
                                 RowResult::Vector(Some(vals)) => {
+                                    builder.append_slice(vals);
+                                }
+                                _ => {
+                                    builder.append_null();
+                                }
+                            }
+                        }
+                        
+                        builder.finish().into_series()
+                    }
+                    RowResult::NestedList(_) => {
+                        // Build nested list structure based on shape
+                        // For now, flatten to a single list per row
+                        let mut builder = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                            PlSmallStr::from_str(alias),
+                            data.len(),
+                            64,
+                            DataType::Float64,
+                        );
+                        
+                        for r in data.iter() {
+                            match r {
+                                RowResult::NestedList(Some((vals, _shape))) => {
                                     builder.append_slice(vals);
                                 }
                                 _ => {

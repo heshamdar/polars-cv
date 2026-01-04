@@ -156,6 +156,15 @@ impl ViewExpr {
                      Use graph-level execution to resolve node references."
                 )
             }
+            ViewDto::Reduction(_) => {
+                // Reduction operations change domain from Buffer to Scalar
+                // They are handled by the graph executor to properly manage
+                // the domain transition
+                panic!(
+                    "Reduction operations cannot be applied via ViewExpr. \
+                     Use graph-level execution to handle domain transitions."
+                )
+            }
         }
     }
 

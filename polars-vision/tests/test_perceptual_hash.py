@@ -84,7 +84,10 @@ class TestPerceptualHashPipeline:
         hash_value = result["hash"][0]
         assert hash_value is not None
         assert len(hash_value) == 8  # 64-bit hash = 8 bytes
-        assert all(isinstance(b, int) for b in hash_value)
+        # List sink returns f64 values, which should be integer-like u8 values
+        assert all(isinstance(b, (int, float)) for b in hash_value)
+        # Verify values are valid byte range
+        assert all(0 <= int(b) <= 255 for b in hash_value)
 
     def test_all_hash_algorithms(self) -> None:
         """Test that all hash algorithms work."""
@@ -120,8 +123,9 @@ class TestPerceptualHashPipeline:
         pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
         result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
 
-        hash1 = result["hash"][0]
-        hash2 = result["hash"][1]
+        # List columns return Series when indexed, so convert to list
+        hash1 = result["hash"][0].to_list()
+        hash2 = result["hash"][1].to_list()
 
         assert hash1 == hash2, "Same image should produce same hash"
 
@@ -157,8 +161,9 @@ class TestPerceptualHashPipeline:
         pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
         result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
 
-        hash1 = result["hash"][0]
-        hash2 = result["hash"][1]
+        # List columns return Series when indexed, so convert to list
+        hash1 = result["hash"][0].to_list()
+        hash2 = result["hash"][1].to_list()
 
         # Hashes should be different due to structural difference
         assert hash1 != hash2, (
@@ -267,8 +272,8 @@ class TestHashSimilarity:
 
         distance = 0
         for b1, b2 in zip(hash1, hash2):
-            # Count differing bits
-            xor = b1 ^ b2
+            # Cast to int in case list sink returns f64 values
+            xor = int(b1) ^ int(b2)
             distance += bin(xor).count("1")
         return distance
 
@@ -289,8 +294,9 @@ class TestHashSimilarity:
         pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
         result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
 
-        hash1 = result["hash"][0]
-        hash2 = result["hash"][1]
+        # List columns return Series when indexed, so convert to list
+        hash1 = result["hash"][0].to_list()
+        hash2 = result["hash"][1].to_list()
 
         # Hashes should be similar (low Hamming distance)
         distance = self.hamming_distance(hash1, hash2)
@@ -321,8 +327,9 @@ class TestHashSimilarity:
         pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
         result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
 
-        hash1 = result["hash"][0]
-        hash2 = result["hash"][1]
+        # List columns return Series when indexed, so convert to list
+        hash1 = result["hash"][0].to_list()
+        hash2 = result["hash"][1].to_list()
 
         # High quality JPEG should produce nearly identical hash
         distance = self.hamming_distance(hash1, hash2)
