@@ -142,7 +142,7 @@ impl ViewExpr {
                 self.clone()
             }
             ViewDto::Geometry(_geom) => {
-                // Geometry operations are handled separately at the polars-vision level
+                // Geometry operations are handled separately at the polars-cv level
                 // They operate on contour data, not on ViewBuffers directly
                 // The plugin layer converts between contour representation and buffer
                 self.clone()

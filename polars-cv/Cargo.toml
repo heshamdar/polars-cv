@@ -1,0 +1,54 @@
+[package]
+name = "polars-cv"
+version = "0.1.0"
+edition = "2021"
+description = "A Polars plugin for vision/array operations powered by view-buffer"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "polars_cv"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Core library - use serde feature for pipeline serialization
+# NOTE: Do NOT enable "python" feature to avoid pyo3 version conflict
+view-buffer = { path = "../view-buffer", default-features = false, features = [
+    "arrow_interop",
+    "image_interop",
+    "perceptual_hash",
+    "serde",
+] }
+
+# Polars plugin essentials - use pyo3 0.23 which is compatible with pyo3-polars 0.20
+# Note: dtype-i8/dtype-u8/dtype-i16/dtype-u16 required for Int8/UInt8/Int16/UInt16 Series
+# See: https://github.com/pola-rs/polars/issues/24171
+polars = { version = "0.46", default-features = false, features = [
+    "dtype-array",
+    "dtype-struct",
+    "dtype-i8",
+    "dtype-u8",
+    "dtype-i16",
+    "dtype-u16",
+] }
+polars-arrow = { version = "0.46" }
+pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3-polars = { version = "0.20", features = ["derive"] }
+
+# Image encoding support
+image = "0.25"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "1.0"
+
+# Cloud storage support (S3, GCS, Azure)
+object_store = { version = "0.12", features = ["aws", "gcp", "azure"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+url = "2"
+
+[dev-dependencies]
+# For testing
+polars = { version = "0.46", features = ["dtype-array", "dtype-struct", "lazy"] }

@@ -9,7 +9,7 @@ repository = "https://github.com/heshamdar/view-buffer"
 keywords = ["tensor", "zero-copy", "arrow", "ndarray", "image"]
 categories = ["science", "data-structures", "computer-vision"]
 
-# Library only - Python bindings are provided by polars-vision
+# Library only - Python bindings are provided by polars-cv
 [lib]
 name = "view_buffer"
 crate-type = ["rlib"]

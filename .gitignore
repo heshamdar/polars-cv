@@ -28,9 +28,9 @@ examples/*.png
 # Python
 python/
 python/**
-polars-vision/python/
-polars-vision/python/**
-polars-vision/tests/__pycache__/
+polars-cv/python/
+polars-cv/python/**
+polars-cv/tests/__pycache__/
 **__pycache__**
 
 .DS_Store
@@ -38,5 +38,5 @@ polars-vision/tests/__pycache__/
 *-checkpoint.ipynb
 backup/**
 site/**
-polars-vision/site/**
-polars-vision/benchmark_data
+polars-cv/site/**
+polars-cv/benchmark_data

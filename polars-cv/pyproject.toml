@@ -1,0 +1,53 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "polars-cv"
+version = "0.1.0"
+description = "A Polars plugin for vision/array operations"
+authors = [{ name = "Hesham Dar", email = "heshamdar@gmail.com" }]
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.9"
+dependencies = ["polars>=1.0"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "numpy>=1.20", "opencv-python>=4.8", "scipy>=1.10", "imagehash>=4.3", "pillow>=10.0"]
+bench = [
+    "opencv-python>=4.8",
+    "pillow>=10.0",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "rich>=13.0",
+    "psutil>=5.9",
+    "numpy>=1.20",
+    "matplotlib>=3.9.4",
+    "jupyterlab",
+    "datasets>=2.0",  # HuggingFace datasets for ML comparison
+]
+docs = [
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.24",
+    "mkdocs-gen-files>=0.5",
+    "ruff"
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "polars_cv._lib"
+features = ["pyo3/extension-module"]
+
+[dependency-groups]
+dev = [
+    "jupytext>=1.18.1",
+]
+

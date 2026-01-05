@@ -2259,6 +2259,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "polars-cv"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "object_store",
+ "polars",
+ "polars-arrow",
+ "pyo3",
+ "pyo3-polars",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
+ "view-buffer",
+]
+
+[[package]]
 name = "polars-error"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2634,24 +2652,6 @@ dependencies = [
  "stacker",
  "sysinfo",
  "version_check",
-]
-
-[[package]]
-name = "polars-vision"
-version = "0.1.0"
-dependencies = [
- "image",
- "object_store",
- "polars",
- "polars-arrow",
- "pyo3",
- "pyo3-polars",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "url",
- "view-buffer",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 # Root Cargo.toml
 [workspace]
-members = ["view-buffer", "polars-vision"]
+members = ["view-buffer", "polars-cv"]
 resolver = "2"
 
 # Workspace-level profile settings
@@ -8,7 +8,7 @@ resolver = "2"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-# Use "unwind" to allow catch_unwind for graceful error handling in polars-vision plugin.
+# Use "unwind" to allow catch_unwind for graceful error handling in polars-cv plugin.
 # This is necessary because view-buffer uses panic!() for error conditions that need
 # to be caught and converted to Python exceptions instead of crashing.
 panic = "unwind"
