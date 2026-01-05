@@ -1,0 +1,10 @@
+{
+    "python.analysis.exclude": ["**/target/**"],
+    "files.watcherExclude": {
+      "**/target/**": true
+    },
+    "cursorpyright.analysis.exclude": [
+      "**/target/**"
+    ]
+  }
+  

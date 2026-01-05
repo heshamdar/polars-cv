@@ -22,3 +22,36 @@ target
 
 # Examples
 examples/*.png
+
+.cursor/
+
+# Python - ignore compiled artifacts but allow source files
+# Compiled extensions (ignore these anywhere)
+**/*.so
+**/*.pyd
+**/*.abi3.so
+**/*.cpython-*.so
+# Cache and compiled Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+# Virtual environments
+.venv/
+venv/
+env/
+# But DO track Python source files in polars-cv/python/
+!polars-cv/python/
+polars-cv/python/**/*.so
+polars-cv/python/**/*.pyd
+polars-cv/python/**/*.abi3.so
+polars-cv/python/**/*.cpython-*.so
+polars-cv/python/**/__pycache__/
+polars-cv/python/**/*.pyc
+
+.DS_Store
+
+*-checkpoint.ipynb
+backup/**
+site/**
+polars-cv/site/**
+polars-cv/benchmark_data

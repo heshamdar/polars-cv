@@ -1,59 +1,15 @@
-[package]
-name = "view-buffer"
-version = "0.3.0"
-edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
-description = "A zero-copy, stride-aware tensor orchestration framework for Rust."
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/heshamdar/view-buffer"
-keywords = ["tensor", "zero-copy", "arrow", "ndarray", "image"]
-categories = ["science", "data-structures", "computer-vision"]
+# Root Cargo.toml
+[workspace]
+members = ["view-buffer", "polars-cv"]
+resolver = "2"
 
-# NEW: Required for Maturin/Python to load the shared library
-[lib]
-name = "view_buffer"
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
-thiserror = "1.0"
-num-traits = "0.2"
-
-# Optional dependencies
-ndarray = { version = "0.15", optional = true }
-image = { version = "0.24", optional = true }
-arrow = { version = "53.0", features = ["ffi"], optional = true }
-
-# Python Bindings
-pyo3 = { version = "0.27.2", features = ["extension-module"], optional = true }
-
-# NEW: Serialization & Protocol dependencies (Phase 1)
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0", optional = true }
-bytemuck = { version = "1.14", features = ["derive"], optional = true }
-
-[dev-dependencies]
-anyhow = "1.0"
-ndarray = "0.15"
-image = "0.24"
-arrow = { version = "53.0", features = ["ffi"] }
-# Added for tests
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-[features]
-default = ["ndarray_interop", "image_interop", "arrow_interop"]
-
-ndarray_interop = ["dep:ndarray"]
-image_interop = ["dep:image"]
-arrow_interop = ["dep:arrow"]
-python = ["dep:pyo3"]
-
-# NEW: Serde support
-serde = ["dep:serde", "dep:serde_json", "dep:bytemuck"]
-
+# Workspace-level profile settings
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Use "unwind" to allow catch_unwind for graceful error handling in polars-cv plugin.
+# This is necessary because view-buffer uses panic!() for error conditions that need
+# to be caught and converted to Python exceptions instead of crashing.
+panic = "unwind"
 strip = true
