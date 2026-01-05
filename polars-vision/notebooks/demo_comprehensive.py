@@ -1533,6 +1533,20 @@ print("✅ Multi-output ML pipeline with 3 outputs from single execution!")
 #
 # polars-vision can output directly to **torch format** for seamless ML integration.
 # The `torch` sink produces bytes that can be converted to PyTorch tensors.
+#
+# ### Architecture Considerations
+#
+# **polars-vision** is optimized for **batch-columnar processing**:
+# - Processes entire columns/Series at once
+# - Leverages Rust parallelism and SIMD optimizations
+# - Best performance when processing many rows together
+#
+# **PyTorch DataLoader** is designed for **sample-wise processing**:
+# - Calls `__getitem__(idx)` for individual samples
+# - Batches samples *after* individual retrieval
+#
+# The recommended pattern is to **preprocess all images with polars-vision** in batch,
+# then use PyTorch transforms for per-sample augmentations.
 
 # %%
 # Check if PyTorch is available
@@ -1609,32 +1623,69 @@ if TORCH_AVAILABLE:
 # %%
 if TORCH_AVAILABLE:
     # Create a Dataset class for DataLoader integration
+    #
+    # KEY PATTERN: Batch preprocessing with polars-vision
+    # - All images are preprocessed in __init__ using Polars' batch processing
+    # - This leverages Polars' parallelism and SIMD optimizations
+    # - __getitem__ only retrieves already-processed data
+    # - Optional PyTorch transforms apply per-sample augmentations
 
-    class PolarsVisionDataset(Dataset):
-        """PyTorch Dataset backed by a Polars DataFrame with polars-vision preprocessing."""
+    class PreprocessedPolarsDataset(Dataset):
+        """
+        PyTorch Dataset with batch preprocessing.
+
+        polars-vision preprocesses ALL images in __init__ using batch processing.
+        The DataLoader then retrieves already-processed samples efficiently.
+        Per-sample augmentations are applied in __getitem__ via PyTorch transforms.
+
+        This pattern leverages each framework's strengths:
+        - Polars: Heavy batch preprocessing (resize, normalize, decode)
+        - PyTorch: Per-sample random augmentations (flips, rotations)
+        """
 
         def __init__(
-            self, df: pl.DataFrame, image_col: str, label_col: str, pipeline: Pipeline
+            self,
+            df: pl.DataFrame,
+            image_col: str,
+            label_col: str,
+            pipeline: Pipeline,
+            transform: "callable | None" = None,  # PyTorch augmentations
         ) -> None:
-            """Initialize dataset with preprocessing."""
-            # Pre-process all images
+            """
+            Initialize dataset with batch preprocessing.
+
+            Args:
+                df: Source DataFrame with image bytes
+                image_col: Column containing image bytes
+                label_col: Column containing labels
+                pipeline: polars-vision Pipeline for preprocessing
+                transform: Optional PyTorch transform for augmentation
+            """
+            # Batch preprocess ALL images with polars-vision
+            # This leverages Polars' parallel execution and SIMD optimizations
             self.df = df.with_columns(_tensor=pl.col(image_col).cv.pipeline(pipeline))
             self.label_col = label_col
+            self.transform = transform  # Per-sample augmentation (PyTorch)
 
         def __len__(self) -> int:
             """Return dataset size."""
             return len(self.df)
 
         def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-            """Get a single sample."""
+            """Get a single sample (already preprocessed by Polars)."""
             row = self.df.row(idx, named=True)
             tensor = bytes_to_torch(row["_tensor"])
             tensor = tensor.permute(2, 0, 1)  # (C, H, W)
+
+            # Apply PyTorch augmentations (varies per-epoch if random)
+            if self.transform:
+                tensor = self.transform(tensor)
+
             label = row[self.label_col]
             return tensor, label
 
     # Create dataset and dataloader
-    dataset = PolarsVisionDataset(batch_df, "image", "label", torch_pipe)
+    dataset = PreprocessedPolarsDataset(batch_df, "image", "label", torch_pipe)
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
     # Iterate through batches
@@ -1644,7 +1695,24 @@ if TORCH_AVAILABLE:
             f"  Batch {batch_idx}: images shape={images.shape}, labels={labels.tolist()}"
         )
 
-    print("\n✅ Seamless PyTorch DataLoader integration!")
+    print("\n✅ Batch preprocessing with polars-vision + PyTorch DataLoader!")
+
+# %% [markdown]
+# ### Augmentation: Division of Responsibilities
+#
+# For optimal results, divide preprocessing between Polars and PyTorch:
+#
+# **Use polars-vision for:**
+# - Heavy preprocessing (decode, resize, normalize)
+# - Operations that benefit from batch processing
+# - Deterministic operations (same every epoch)
+#
+# **Use PyTorch transforms for:**
+# - Random augmentations (flips, rotations, crops)
+# - Per-sample variations that should differ each epoch
+# - Operations that should vary during training
+#
+# This hybrid approach respects each framework's architecture.
 
 # %% [markdown]
 # ## 14. Perceptual Image Hashing
