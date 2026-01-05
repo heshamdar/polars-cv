@@ -47,7 +47,7 @@ jobs:
         working-directory: polars-cv
         run: uv venv .venv
 
-      - name: Activate virtual environment and install maturin
+      - name: Install maturin
         working-directory: polars-cv
         shell: bash
         run: |
@@ -58,7 +58,7 @@ jobs:
           fi
           uv pip install maturin
 
-      - name: Install package in development mode
+      - name: Build package with maturin
         working-directory: polars-cv
         shell: bash
         run: |
@@ -67,6 +67,7 @@ jobs:
           else
             source .venv/bin/activate
           fi
+          # Maturin should find python/ relative to pyproject.toml (we're in polars-cv/)
           maturin develop --release
 
       - name: Install test dependencies
@@ -94,6 +95,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    continue-on-error: false
     steps:
       - uses: actions/checkout@v4
 
@@ -108,10 +110,10 @@ jobs:
           workspaces: ". -> target"
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check || exit 1
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings || exit 1
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -139,18 +141,19 @@ jobs:
         shell: bash
         run: |
           source .venv/bin/activate
-          ruff check python tests benchmarks
+          ruff check python tests benchmarks || exit 1
 
       - name: Ruff format check
         working-directory: polars-cv
         shell: bash
         run: |
           source .venv/bin/activate
-          ruff format --check python tests benchmarks
+          ruff format --check python tests benchmarks || exit 1
 
   build:
     name: Build verification
     runs-on: ubuntu-latest
+    continue-on-error: false
     steps:
       - uses: actions/checkout@v4
 
@@ -163,7 +166,7 @@ jobs:
           workspaces: ". -> target"
 
       - name: Build workspace
-        run: cargo build --release
+        run: cargo build --release || exit 1
 
       - name: Run Rust tests
-        run: cargo test --release
+        run: cargo test --release || exit 1
