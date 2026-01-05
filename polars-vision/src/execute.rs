@@ -598,6 +598,23 @@ pub fn resolve_op(
             let method = match method_str.as_str() {
                 "minmax" => NormalizeMethod::MinMax,
                 "zscore" => NormalizeMethod::ZScore,
+                "preset" => {
+                    // Extract mean and std arrays from parameters
+                    let mean_param = get_param(&op_spec.params, "mean")?;
+                    let std_param = get_param(&op_spec.params, "std")?;
+
+                    // Parse mean array from ParamValue
+                    let mean = mean_param.as_f32_vec().ok_or_else(|| {
+                        polars_err!(ComputeError: "normalize preset requires 'mean' as array of floats")
+                    })?;
+
+                    // Parse std array from ParamValue
+                    let std = std_param.as_f32_vec().ok_or_else(|| {
+                        polars_err!(ComputeError: "normalize preset requires 'std' as array of floats")
+                    })?;
+
+                    NormalizeMethod::Preset { mean, std }
+                }
                 other => {
                     return Err(polars_err!(ComputeError: "Unknown normalize method: {}", other))
                 }

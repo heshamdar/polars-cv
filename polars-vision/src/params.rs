@@ -193,6 +193,19 @@ impl ParamValue {
             }
         }
     }
+
+    /// Get literal value as a Vec<f32> (for normalize preset mean/std).
+    pub fn as_f32_vec(&self) -> Option<Vec<f32>> {
+        match self {
+            ParamValue::Literal { value } => {
+                let arr = value.as_array()?;
+                arr.iter()
+                    .map(|v| v.as_f64().map(|f| f as f32))
+                    .collect::<Option<Vec<f32>>>()
+            }
+            ParamValue::Expr { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]

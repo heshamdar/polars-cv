@@ -301,3 +301,197 @@ def temporary_image_set(
         yield image_set
     finally:
         image_set.cleanup()
+
+
+@dataclass
+class ImageFolderDataset:
+    """
+    An ImageFolder-style dataset with Parquet metadata.
+
+    This structure is compatible with both HuggingFace datasets (ImageFolder)
+    and polars-vision (via the Parquet metadata file).
+
+    The metadata file is stored OUTSIDE the images directory to avoid
+    conflicts with HuggingFace's imagefolder loader.
+    """
+
+    root_dir: Path
+    images_dir: Path  # Subdirectory containing class folders (for HuggingFace)
+    metadata_path: Path  # Outside images_dir (for polars-vision)
+    class_names: list[str]
+    image_count: int
+    image_size: tuple[int, int]
+
+    def cleanup(self) -> None:
+        """Clean up the dataset directory."""
+        if self.root_dir.exists():
+            shutil.rmtree(self.root_dir)
+
+
+def generate_imagefolder_dataset(
+    output_dir: str | Path,
+    num_images: int = 1000,
+    num_classes: int = 10,
+    height: int = 224,
+    width: int = 224,
+    pattern: str = "mixed",
+    base_seed: int = 42,
+) -> ImageFolderDataset:
+    """
+    Generate an ImageFolder-style dataset with Parquet metadata.
+
+    Creates a directory structure compatible with both HuggingFace datasets
+    (imagefolder format) and polars-vision (via Parquet metadata).
+
+    Directory structure:
+        output_dir/
+        ├── images/           <- HuggingFace imagefolder reads from here
+        │   ├── class_0/
+        │   │   ├── image_000000.png
+        │   │   └── ...
+        │   └── class_1/
+        │       └── ...
+        └── metadata.parquet  <- polars-vision reads from here (outside images/)
+
+    The metadata.parquet is placed OUTSIDE the images/ directory to avoid
+    conflicts with HuggingFace's imagefolder loader which looks for metadata files.
+
+    Args:
+        output_dir: Root directory for the dataset.
+        num_images: Total number of images to generate.
+        num_classes: Number of classification categories.
+        height: Image height in pixels.
+        width: Image width in pixels.
+        pattern: Image pattern ("gradient", "noise", "checkerboard", "mixed").
+        base_seed: Random seed for reproducibility.
+
+    Returns:
+        ImageFolderDataset with paths to the generated data.
+
+    Example:
+        >>> dataset = generate_imagefolder_dataset("./synthetic_data", num_images=1000)
+        >>> print(dataset.images_dir)     # For HuggingFace imagefolder
+        >>> print(dataset.metadata_path)  # For polars-vision
+        >>> print(dataset.class_names)    # ['class_0', 'class_1', ...]
+    """
+    import polars as pl
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Create images subdirectory (HuggingFace reads from here)
+    images_path = output_path / "images"
+    images_path.mkdir(exist_ok=True)
+
+    # Generate class names
+    class_names = [f"class_{i}" for i in range(num_classes)]
+
+    # Create class directories inside images/
+    for class_name in class_names:
+        (images_path / class_name).mkdir(exist_ok=True)
+
+    # Generate images and track metadata
+    paths: list[str] = []
+    labels: list[int] = []
+    class_names_col: list[str] = []
+
+    patterns = (
+        ["gradient", "noise", "checkerboard"] if pattern == "mixed" else [pattern]
+    )
+    rng = np.random.default_rng(base_seed)
+
+    for i in range(num_images):
+        # Assign to a class (balanced distribution)
+        label = i % num_classes
+        class_name = class_names[label]
+
+        # Generate image with varied patterns
+        current_pattern = patterns[i % len(patterns)]
+        seed = base_seed + i if current_pattern == "noise" else None
+
+        # Add some per-image variation to make images distinguishable
+        if current_pattern == "gradient":
+            # Add rotation variation via different gradient directions
+            arr = generate_gradient_image(height, width, 3)
+            # Add small random noise to make each image unique
+            noise = rng.integers(-10, 10, size=arr.shape, dtype=np.int16)
+            arr = np.clip(arr.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        elif current_pattern == "noise":
+            arr = generate_noise_image(height, width, 3, seed)
+        else:
+            arr = generate_pattern_image(height, width, 3, current_pattern)
+            # Add variation
+            arr = np.roll(arr, shift=i % 32, axis=0)
+
+        # Save image inside images/ subdirectory
+        img_bytes = array_to_png_bytes(arr)
+        img_path = images_path / class_name / f"image_{i:06d}.png"
+        img_path.write_bytes(img_bytes)
+
+        # Track metadata (use absolute path for polars-vision compatibility)
+        paths.append(str(img_path.absolute()))
+        labels.append(label)
+        class_names_col.append(class_name)
+
+    # Create Parquet metadata file OUTSIDE images/ directory
+    metadata_df = pl.DataFrame({
+        "path": paths,
+        "label": labels,
+        "class_name": class_names_col,
+    })
+    metadata_path = output_path / "metadata.parquet"
+    metadata_df.write_parquet(metadata_path)
+
+    return ImageFolderDataset(
+        root_dir=output_path,
+        images_dir=images_path,
+        metadata_path=metadata_path,
+        class_names=class_names,
+        image_count=num_images,
+        image_size=(width, height),
+    )
+
+
+@contextmanager
+def temporary_imagefolder_dataset(
+    num_images: int = 1000,
+    num_classes: int = 10,
+    height: int = 224,
+    width: int = 224,
+    pattern: str = "mixed",
+    base_seed: int = 42,
+) -> Iterator[ImageFolderDataset]:
+    """
+    Context manager for creating a temporary ImageFolder dataset with cleanup.
+
+    Args:
+        num_images: Total number of images.
+        num_classes: Number of categories.
+        height: Image height.
+        width: Image width.
+        pattern: Image pattern.
+        base_seed: Random seed.
+
+    Yields:
+        ImageFolderDataset that will be cleaned up on exit.
+
+    Example:
+        >>> with temporary_imagefolder_dataset(num_images=100) as dataset:
+        ...     df = pl.read_parquet(dataset.metadata_path)
+        ...     # Use the dataset...
+        >>> # Directory is automatically cleaned up
+    """
+    temp_dir = Path(tempfile.mkdtemp(prefix="polars_vision_imagefolder_"))
+    dataset = generate_imagefolder_dataset(
+        output_dir=temp_dir,
+        num_images=num_images,
+        num_classes=num_classes,
+        height=height,
+        width=width,
+        pattern=pattern,
+        base_seed=base_seed,
+    )
+    try:
+        yield dataset
+    finally:
+        dataset.cleanup()

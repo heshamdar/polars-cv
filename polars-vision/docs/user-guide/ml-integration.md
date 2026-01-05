@@ -1,6 +1,38 @@
 # ML Integration
 
-polars-vision integrates with machine learning frameworks, but understanding the architectural differences between Polars and PyTorch is crucial for efficient pipelines.
+polars-vision integrates with machine learning frameworks for batch preprocessing,
+but it's important to understand when to use polars-vision versus traditional tools.
+
+## When to Use polars-vision
+
+polars-vision is designed for **batch-columnar preprocessing**, not per-sample augmentation.
+Choose the right tool for each part of your pipeline:
+
+| Use Case | polars-vision | torchvision |
+|----------|---------------|-------------|
+| **Batch inference** | ✅ Recommended | Works |
+| **ETL / feature extraction** | ✅ Recommended | Not designed for |
+| **Cloud data loading** | ✅ Recommended | Requires extra libs |
+| **Heavy preprocessing** (decode, resize, normalize) | ✅ Recommended | Works |
+| **Training with augmentation** | Preprocessing only | ✅ Recommended for augmentation |
+| **Random per-sample transforms** | ❌ Not supported | ✅ Recommended |
+
+**Key insight**: polars-vision excels at the *deterministic* parts of your pipeline
+(decoding, resizing, normalization), while PyTorch handles *random* augmentation
+(flips, rotations, color jitter). The recommended pattern is to use both together.
+
+### What polars-vision Does NOT Do
+
+polars-vision intentionally does not implement random augmentation:
+
+- ❌ Random horizontal/vertical flip
+- ❌ Random crop
+- ❌ Random rotation
+- ❌ Color jitter (brightness, contrast, saturation, hue)
+- ❌ Random affine transforms
+
+For these operations, use `torchvision.transforms` in your PyTorch Dataset's
+`__getitem__` method, as shown in the patterns below.
 
 ## Architecture: Polars vs PyTorch DataLoaders
 
@@ -19,6 +51,47 @@ polars-vision integrates with machine learning frameworks, but understanding the
 - Applies transforms per-sample
 
 These paradigms don't directly align, but several patterns enable effective interoperability.
+
+## ImageNet-Style Normalization
+
+For standard ImageNet preprocessing, use the preset normalization with built-in constants:
+
+```python
+from polars_vision import Pipeline, IMAGENET_MEAN, IMAGENET_STD
+
+# Standard ImageNet preprocessing pipeline
+pipe = (
+    Pipeline()
+    .source("image_bytes")
+    .resize(height=256, width=256)
+    .crop(top=16, left=16, height=224, width=224)  # Center crop
+    .scale(1 / 255.0)  # [0, 255] -> [0, 1] like ToTensor()
+    .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
+    .sink("torch")
+)
+
+# Or load from file paths
+file_pipe = (
+    Pipeline()
+    .source("file_path")  # Load from paths in DataFrame
+    .resize(height=256, width=256)
+    .crop(top=16, left=16, height=224, width=224)
+    .scale(1 / 255.0)
+    .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
+    .sink("torch")
+)
+
+# Apply to DataFrame with paths
+df = pl.read_parquet("metadata.parquet")  # columns: path, label
+result = df.with_columns(tensor=pl.col("path").cv.pipeline(file_pipe))
+```
+
+The preset normalization applies channel-wise normalization matching torchvision's
+`transforms.Normalize()`. The `scale(1/255.0)` step matches `ToTensor()`.
+
+**ImageNet Constants:**
+- `IMAGENET_MEAN = [0.485, 0.456, 0.406]` (RGB channels)
+- `IMAGENET_STD = [0.229, 0.224, 0.225]` (RGB channels)
 
 ## NumPy Integration
 
@@ -639,6 +712,30 @@ dataset = PreprocessedPolarsDataset(result, "_tensor_placeholder", "label", pipe
 4. **Memory Awareness**: Choose pattern based on dataset size vs. available RAM
 5. **Worker Safety**: Process before DataLoader when using `num_workers > 0`
 6. **Native Metrics**: Use `mask_iou()`, `mask_dice()` for segmentation eval
+
+## Benchmark: Batch Preprocessing Comparison
+
+To compare batch preprocessing performance between HuggingFace/torchvision and
+polars-vision for inference workloads, run the comparison benchmark:
+
+```bash
+cd polars-vision
+python -m benchmarks.inference_pipeline_comparison --num-images 1000 --batch-size 32
+```
+
+This benchmark:
+
+- Generates synthetic ImageFolder data with Parquet metadata
+- Compares **batch preprocessing time** (both upfront, fair comparison)
+- Measures DataLoader throughput and memory usage
+- Runs inference serving comparison with ResNet18
+- Verifies that both pipelines produce equivalent outputs
+
+**Note**: This benchmark focuses on deterministic preprocessing for inference.
+For training workloads, use the hybrid pattern shown above where polars-vision
+handles heavy preprocessing and PyTorch handles random augmentation.
+
+See `benchmarks/inference_pipeline_comparison.py` for the full implementation.
 
 ## Next Steps
 

@@ -57,7 +57,7 @@ pub fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
         ComputeOp::Scale(factor) => apply_scalar_op(&buf, |x: f32| x * factor),
         ComputeOp::Relu => apply_scalar_op(&buf, |x: f32| if x > 0.0 { x } else { 0.0 }),
         ComputeOp::Fused(ref kernel) => buf.apply_fused_kernel(kernel),
-        ComputeOp::Normalize(method) => apply_normalize(&buf, method),
+        ComputeOp::Normalize(ref method) => apply_normalize(&buf, method),
         ComputeOp::Clamp { min, max } => apply_scalar_op(&buf, move |x: f32| x.clamp(min, max)),
     }
 }
@@ -71,7 +71,7 @@ pub fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
 /// - **Constant array (min == max)**: Returns 0.0 for all elements (MinMax) or 0.0 (ZScore)
 /// - **NaN values**: Propagated according to IEEE 754 semantics
 /// - **Inf values**: Handled naturally by min/max/mean calculations
-fn apply_normalize(buf: &ViewBuffer, method: crate::ops::NormalizeMethod) -> ViewBuffer {
+fn apply_normalize(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> ViewBuffer {
     use crate::ops::NormalizeMethod;
 
     // Cast to f32 working dtype if needed (dtype promotion)
@@ -83,6 +83,7 @@ fn apply_normalize(buf: &ViewBuffer, method: crate::ops::NormalizeMethod) -> Vie
 
     let contig = work_buf.to_contiguous();
     let count = contig.layout.num_elements();
+    let shape = contig.shape();
     let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
 
     let new_data: Vec<f32> = match method {
@@ -109,6 +110,36 @@ fn apply_normalize(buf: &ViewBuffer, method: crate::ops::NormalizeMethod) -> Vie
             } else {
                 src.iter().map(|&x| (x - mean) / std).collect()
             }
+        }
+        NormalizeMethod::Preset { mean, std } => {
+            // Channel-wise normalization with preset values
+            // Assumes HWC layout where last dimension is channels
+            let channels = if shape.len() == 3 { shape[2] } else { 1 };
+
+            // Validate channel count matches mean/std length
+            assert_eq!(
+                mean.len(),
+                channels,
+                "Mean length {} must match channel count {}",
+                mean.len(),
+                channels
+            );
+            assert_eq!(
+                std.len(),
+                channels,
+                "Std length {} must match channel count {}",
+                std.len(),
+                channels
+            );
+
+            // Apply (x - mean[c]) / std[c] for each element
+            src.iter()
+                .enumerate()
+                .map(|(i, &x)| {
+                    let c = i % channels;
+                    (x - mean[c]) / std[c]
+                })
+                .collect()
         }
     };
 

@@ -2,6 +2,27 @@
 
 Comprehensive benchmarking suite for comparing polars-vision against other vision processing frameworks.
 
+## Benchmark Scope
+
+These benchmarks focus on **batch preprocessing for inference** and **ETL workloads**.
+polars-vision is designed for deterministic batch processing, not per-sample random
+augmentation used in training. For training workloads, polars-vision handles heavy
+preprocessing while PyTorch handles random augmentation.
+
+### What These Benchmarks Test
+
+- ✅ Batch image decoding and preprocessing
+- ✅ Single operations (resize, crop, normalize, etc.)
+- ✅ Multi-operation pipelines
+- ✅ End-to-end file-to-memory workflows
+- ✅ Inference serving throughput
+
+### What These Benchmarks Do NOT Test
+
+- ❌ Random augmentation (not supported by polars-vision)
+- ❌ Training data loading with per-epoch variation
+- ❌ GPU-based augmentation pipelines
+
 ## Frameworks Compared
 
 | Framework | Description |
@@ -242,28 +263,55 @@ PipelineBenchmarkConfig(
 )
 ```
 
+## Inference Pipeline Comparison
+
+Compare polars-vision against HuggingFace/torchvision for batch inference preprocessing:
+
+```bash
+# Run the inference comparison benchmark
+uv run python -m benchmarks.inference_pipeline_comparison --num-images 1000
+
+# With custom settings
+uv run python -m benchmarks.inference_pipeline_comparison \
+    --num-images 5000 \
+    --batch-size 64 \
+    --skip-serving  # Skip model inference portion
+```
+
+This benchmark:
+
+- Compares **batch preprocessing time** (both frameworks do upfront preprocessing)
+- Uses HuggingFace `.map(batched=True)` for fair comparison
+- Measures DataLoader throughput from preprocessed data
+- Optionally runs inference serving throughput comparison
+
+**Note**: This is a fair comparison because both pipelines preprocess all data upfront
+before measuring DataLoader/serving throughput. It does not compare training with
+random augmentation, which polars-vision intentionally does not support.
+
 ## Architecture
 
 ```
 benchmarks/
 ├── __init__.py
-├── conftest.py              # Pytest fixtures
-├── run_benchmarks.py        # CLI entry point
-├── frameworks/              # Framework adapters
-│   ├── base.py              # Abstract base class
+├── conftest.py                        # Pytest fixtures
+├── run_benchmarks.py                  # Main benchmark CLI
+├── inference_pipeline_comparison.py   # HuggingFace vs polars-vision
+├── frameworks/                        # Framework adapters
+│   ├── base.py                        # Abstract base class
 │   ├── polars_vision_adapter.py
 │   ├── opencv_adapter.py
 │   ├── pillow_adapter.py
 │   └── torchvision_adapter.py
-├── scenarios/               # Benchmark scenarios
-│   ├── single_ops.py        # Individual operations
-│   ├── pipelines.py         # Chained operations
-│   └── e2e_workflow.py      # File-to-memory workflows
+├── scenarios/                         # Benchmark scenarios
+│   ├── single_ops.py                  # Individual operations
+│   ├── pipelines.py                   # Chained operations
+│   └── e2e_workflow.py                # File-to-memory workflows
 └── utils/
-    ├── data_gen.py          # Test image generation
-    ├── memory.py            # Memory profiling
-    ├── results.py           # Results formatting
-    └── validation.py        # Output validation
+    ├── data_gen.py                    # Test image generation
+    ├── memory.py                      # Memory profiling
+    ├── results.py                     # Results formatting
+    └── validation.py                  # Output validation
 ```
 
 ## Tips

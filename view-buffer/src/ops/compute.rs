@@ -11,13 +11,29 @@ use crate::ops::validation::{is_2d_like, ValidationError};
 use serde::{Deserialize, Serialize};
 
 /// Method for normalizing data.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum NormalizeMethod {
     /// Scale to [0.0, 1.0] range using min/max.
     MinMax,
-    /// Standardize using (x - mean) / std.
+    /// Standardize using (x - mean) / std (computed per-image).
     ZScore,
+    /// Channel-wise normalization with preset mean/std values.
+    ///
+    /// Used for ImageNet-style normalization where mean and std are
+    /// precomputed across the entire dataset.
+    ///
+    /// For RGB images: `(pixel - mean[c]) / std[c]` for each channel c.
+    ///
+    /// Example ImageNet values:
+    /// - mean: [0.485, 0.456, 0.406]
+    /// - std: [0.229, 0.224, 0.225]
+    Preset {
+        /// Per-channel mean values (typically 3 for RGB).
+        mean: Vec<f32>,
+        /// Per-channel standard deviation values (typically 3 for RGB).
+        std: Vec<f32>,
+    },
 }
 
 /// Compute operations that process data element-wise or globally.
@@ -102,15 +118,39 @@ impl Op for ComputeOp {
         input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
         match self {
-            ComputeOp::Normalize(_) => {
-                // Only validate shape - dtype handling is automatic now
+            ComputeOp::Normalize(method) => {
                 let shape = input_shapes[0];
-                if !is_2d_like(shape) {
-                    return Err(ValidationError::ShapeRequirement {
-                        requirement: "2D (HW) or single-channel (HW1)",
-                        got: shape.to_vec(),
-                    });
+
+                // Validate shape requirements based on method
+                match method {
+                    NormalizeMethod::MinMax | NormalizeMethod::ZScore => {
+                        // Per-image normalization: only supports 2D-like shapes (HW or HW1)
+                        if !is_2d_like(shape) {
+                            return Err(ValidationError::ShapeRequirement {
+                                requirement: "2D (HW) or single-channel (HW1)",
+                                got: shape.to_vec(),
+                            });
+                        }
+                    }
+                    NormalizeMethod::Preset { mean, std } => {
+                        // Channel-wise normalization: requires HWC with matching channel count
+                        if shape.len() < 2 || shape.len() > 3 {
+                            return Err(ValidationError::ShapeRequirement {
+                                requirement: "2D (HW) or 3D (HWC)",
+                                got: shape.to_vec(),
+                            });
+                        }
+                        // Get number of channels (1 for HW, C for HWC)
+                        let channels = if shape.len() == 3 { shape[2] } else { 1 };
+                        if mean.len() != channels || std.len() != channels {
+                            return Err(ValidationError::ShapeRequirement {
+                                requirement: "mean/std length must match channel count",
+                                got: vec![mean.len(), std.len(), channels],
+                            });
+                        }
+                    }
                 }
+
                 // Validate that input dtype is accepted
                 if !self.accepted_input_dtypes().accepts(input_dtypes[0]) {
                     return Err(ValidationError::DTypeRequirement {

@@ -39,3 +39,4 @@ polars-vision/tests/__pycache__/
 backup/**
 site/**
 polars-vision/site/**
+polars-vision/benchmark_data
