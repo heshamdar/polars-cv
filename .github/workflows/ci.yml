@@ -43,12 +43,58 @@ jobs:
         with:
           version: "latest"
 
+      - name: Debug - Repository structure
+        shell: bash
+        run: |
+          echo "=== Repository root structure ==="
+          pwd
+          echo ""
+          echo "=== Top-level directories ==="
+          ls -la
+          echo ""
+          echo "=== Checking for polars-cv directory ==="
+          if [ -d "polars-cv" ]; then
+            echo "✓ polars-cv/ exists at repo root"
+            echo "Contents of polars-cv/:"
+            ls -la polars-cv/ | head -20
+            echo ""
+            echo "Checking for python/ in polars-cv/:"
+            if [ -d "polars-cv/python" ]; then
+              echo "✓ polars-cv/python/ exists"
+            else
+              echo "✗ polars-cv/python/ NOT FOUND"
+            fi
+          else
+            echo "✗ polars-cv/ NOT FOUND at repo root"
+            echo "This might be a single-package repo, checking for python/ at root:"
+            if [ -d "python" ]; then
+              echo "✓ python/ exists at repo root (single-package repo)"
+            else
+              echo "✗ python/ NOT FOUND at repo root either"
+            fi
+          fi
+
+      - name: Determine package directory
+        id: package_dir
+        shell: bash
+        run: |
+          if [ -d "polars-cv" ]; then
+            echo "dir=polars-cv" >> $GITHUB_OUTPUT
+            echo "Package directory: polars-cv (monorepo)"
+          elif [ -f "pyproject.toml" ] && [ -d "python" ]; then
+            echo "dir=." >> $GITHUB_OUTPUT
+            echo "Package directory: . (single-package repo)"
+          else
+            echo "Could not determine package directory structure"
+            exit 1
+          fi
+
       - name: Create virtual environment
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         run: uv venv .venv
 
       - name: Install maturin
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
@@ -59,7 +105,7 @@ jobs:
           uv pip install maturin
 
       - name: Debug - Check directory structure
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
           echo "=== Current working directory ==="
@@ -92,7 +138,7 @@ jobs:
           fi
 
       - name: Build package with maturin
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
@@ -121,7 +167,7 @@ jobs:
           }
 
       - name: Install test dependencies
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
@@ -132,7 +178,7 @@ jobs:
           uv pip install pytest polars numpy pillow opencv-python scipy imagehash
 
       - name: Run tests
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
@@ -175,26 +221,39 @@ jobs:
         with:
           version: "latest"
 
+      - name: Determine package directory
+        id: package_dir
+        shell: bash
+        run: |
+          if [ -d "polars-cv" ]; then
+            echo "dir=polars-cv" >> $GITHUB_OUTPUT
+          elif [ -f "pyproject.toml" ] && [ -d "python" ]; then
+            echo "dir=." >> $GITHUB_OUTPUT
+          else
+            echo "Could not determine package directory structure"
+            exit 1
+          fi
+
       - name: Create virtual environment
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         run: uv venv .venv
 
       - name: Install ruff
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
           source .venv/bin/activate
           uv pip install ruff
 
       - name: Ruff check
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
           source .venv/bin/activate
           ruff check python tests benchmarks || exit 1
 
       - name: Ruff format check
-        working-directory: polars-cv
+        working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
           source .venv/bin/activate
