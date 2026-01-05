@@ -141,6 +141,38 @@ result = batch_df.with_columns(
 
 ## Development
 
+### Testing Against Multiple Python Versions
+
+To test against multiple Python versions locally using `uv`:
+
+```bash
+# Use current Python environment (default - no arguments needed)
+python scripts/test_multiple_python.py
+
+# Test all supported Python versions (3.9, 3.10, 3.11, 3.12, 3.13)
+python scripts/test_multiple_python.py --all
+
+# Test only minimum and maximum versions (faster)
+python scripts/test_multiple_python.py --fast
+
+# Test specific versions
+python scripts/test_multiple_python.py --versions 3.9 3.13
+```
+
+**Prerequisites:**
+- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- For multi-version testing, install Python versions: `uv python install 3.9 3.10 3.11 3.12 3.13`
+
+The test script will:
+1. Use current environment if no versions specified (default behavior)
+2. For specified versions, create isolated environments using `uv run --python`
+3. Build the package (without cloud feature for speed)
+4. Install test dependencies
+5. Run the full test suite
+6. Report which versions passed/failed
+
+## Development
+
 ```bash
 # Run Python tests
 pytest tests/
