@@ -1610,9 +1610,11 @@ impl UnifiedGraph {
                                             {
                                                 match crate::cloud::read_file(path, None) {
                                                     Ok(b) => b,
-                                                    Err(e) => return Err(format!(
+                                                    Err(e) => {
+                                                        return Err(format!(
                                                         "Failed to read cloud file '{path}': {e}"
-                                                    )),
+                                                    ))
+                                                    }
                                                 }
                                             }
                                             #[cfg(not(feature = "cloud"))]
