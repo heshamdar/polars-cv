@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TypeAlias, Union
+from typing import Any, Union
+
+try:
+    from typing import TypeAlias
+except ImportError:
+    # Python < 3.10 compatibility
+    from typing_extensions import TypeAlias
 
 import polars as pl
 
