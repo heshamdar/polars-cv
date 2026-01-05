@@ -1548,6 +1548,48 @@ impl UnifiedGraph {
                                 }
                                 _ => None,
                             }
+                        } else if source_format == "file_path" {
+                            // File path source: read from local or cloud storage
+                            // Handle Null dtype (all nulls) gracefully
+                            if input_series.dtype() == &DataType::Null {
+                                None
+                            } else {
+                                let input_ca = match input_series.str() {
+                                    Ok(ca) => ca,
+                                    Err(_) => {
+                                        return Err(format!(
+                                            "Expected String column for file_path source '{node_id}', got {:?}",
+                                            input_series.dtype()
+                                        ))
+                                    }
+                                };
+
+                                match input_ca.get(row_idx) {
+                                    Some(path) => {
+                                        // Read the file using cloud module (handles local and cloud paths)
+                                        match crate::cloud::read_file(path, None) {
+                                            Ok(bytes) => {
+                                                // Decode as image_bytes (auto-detect format)
+                                                let first_output = self.outputs.values().next().unwrap();
+                                                let mut source_spec = node.source.clone();
+                                                source_spec.format = "image_bytes".to_string();
+                                                let temp_spec = PipelineSpec {
+                                                    source: source_spec,
+                                                    shape_hints: None,
+                                                    ops: vec![],
+                                                    sink: first_output.sink.clone(),
+                                                };
+                                                match decode_source(&bytes, &temp_spec) {
+                                                    Ok(buf) => Some(NodeOutput::from_buffer(buf)),
+                                                    Err(e) => return Err(format!("Decode error for file '{path}': {e}")),
+                                                }
+                                            }
+                                            Err(e) => return Err(format!("Failed to read file '{path}': {e}")),
+                                        }
+                                    }
+                                    None => None,
+                                }
+                            }
                         } else {
                             // Binary source: decode from bytes
                             // Handle Null dtype (all nulls) gracefully

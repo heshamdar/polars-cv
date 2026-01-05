@@ -3,6 +3,7 @@
 //! This crate provides expression functions for applying image and array
 //! processing pipelines to Polars DataFrame columns, powered by view-buffer.
 
+mod cloud;
 mod execute;
 mod graph;
 mod params;

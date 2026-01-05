@@ -44,6 +44,11 @@ serde_json = "1.0"
 # Error handling
 thiserror = "1.0"
 
+# Cloud storage support (S3, GCS, Azure)
+object_store = { version = "0.12", features = ["aws", "gcp", "azure"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+url = "2"
+
 [dev-dependencies]
 # For testing
 polars = { version = "0.46", features = ["dtype-array", "dtype-struct", "lazy"] }

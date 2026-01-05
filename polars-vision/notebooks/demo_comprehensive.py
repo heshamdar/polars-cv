@@ -28,9 +28,24 @@
 # - **Common Subexpression Elimination (CSE)** - automatic optimization of shared operations
 # - **Dynamic parameters** using Polars expressions for per-row customization
 # - **Binary operations** between pipelines (add, subtract, multiply, blend, mask)
+# - **Native metric functions** - `mask_iou()`, `mask_dice()`, `hamming_distance()`, `hash_similarity()`
 # - **Seamless ML integration** with NumPy, PyTorch, and other frameworks
 #
 # The plugin leverages **view-buffer**, a Rust crate providing stride-aware tensor operations with automatic kernel fusion.
+#
+# ---
+#
+# ## Key Concepts
+#
+# | Concept | Description |
+# |---------|-------------|
+# | **Pipeline** | Define source → operations → sink for image processing |
+# | **Lazy Composition** | Use `.cv.pipe()` to create composable `LazyPipelineExpr` |
+# | **Named Nodes** | Use `.alias(name)` to create checkpoints for multi-output |
+# | **Multi-Output** | Use `.merge_pipe()` + dict `.sink()` for Struct output |
+# | **CSE Optimization** | Shared prefixes automatically extracted and reused |
+# | **Domain Transitions** | Seamlessly move between buffer/contour/scalar domains |
+# | **Native Functions** | `mask_iou()`, `mask_dice()`, `hamming_distance()`, `hash_similarity()` |
 #
 # ---
 #
@@ -41,15 +56,16 @@
 # 3. [DType Promotion & Normalization](#3-dtype-promotion--normalization)
 # 4. [Dynamic Parameters with Expressions](#4-dynamic-parameters-with-expressions)
 # 5. [Geometry Operations](#5-geometry-operations)
-# 6. [Lazy Pipeline Composition](#6-lazy-pipeline-composition)
+# 6. [Composable Pipelines](#6-composable-pipelines-the-core-of-polars-vision) - *The core of polars-vision*
 # 7. [Binary Operations & Mask Application](#7-binary-operations--mask-application)
 # 8. [Multi-Source Pipelines](#8-multi-source-pipelines)
-# 9. [Multi-Output with Named Nodes](#9-multi-output-with-named-nodes)
-# 10. [Reusable & Composable Pipeline Patterns](#10-reusable--composable-pipeline-patterns)
+# 9. [Multi-Output with CSE Optimization](#9-multi-output-with-cse-optimization)
+# 10. [Reusable Pipeline Patterns](#10-reusable-pipeline-patterns)
 # 11. [Domain Transitions: Images ↔ Contours ↔ Scalars](#11-domain-transitions-images--contours--scalars)
 # 12. [ML Workflow: Segmentation Pipeline](#12-ml-workflow-segmentation-pipeline)
 # 13. [PyTorch Integration](#13-pytorch-integration)
-# 14. [Conclusion](#14-conclusion)
+# 14. [Perceptual Image Hashing](#14-perceptual-image-hashing)
+# 15. [Conclusion](#15-conclusion)
 
 # %% [markdown]
 # ## 1. Setup & Imports
@@ -79,8 +95,13 @@ from PIL import Image
 from polars_vision import (
     BBOX_SCHEMA,
     CONTOUR_SCHEMA,
+    HashAlgorithm,
     POINT_SCHEMA,
     Pipeline,
+    hamming_distance,
+    hash_similarity,
+    mask_dice,
+    mask_iou,
     numpy_from_bytes,
 )
 from polars_vision.geometry.schemas import contour_from_points
@@ -677,19 +698,26 @@ display_arrays(
 )
 
 # %% [markdown]
-# ## 6. Lazy Pipeline Composition
+# ## 6. Composable Pipelines (The Core of polars-vision)
 #
-# polars-vision supports **lazy pipeline composition** using `LazyPipelineExpr`. This enables:
+# This is the **most powerful feature** of polars-vision. Instead of applying pipelines one at a time,
+# you can compose them into a single DAG (Directed Acyclic Graph) that executes in one optimized pass.
 #
-# 1. **Fused execution**: Multiple pipelines combined into a single plugin call
-# 2. **Named checkpoints**: Mark intermediate points with `.alias()`
-# 3. **Pipeline chaining**: Use `.pipe()` to chain operations
-# 4. **Binary operations**: Add, subtract, multiply, divide, blend arrays
-# 5. **Mask application**: Apply masks from contours or other images
+# ### Why Composable Pipelines?
+#
+# 1. **Efficiency**: Multiple operations fused into a single Rust call
+# 2. **Reusability**: Define pipeline fragments once, reuse everywhere
+# 3. **Multi-output**: Extract multiple intermediate results from one execution
+# 4. **Automatic optimization**: CSE (Common Subexpression Elimination) shares common prefixes
 #
 # ### Two Modes:
-# - **Eager mode**: `pl.col("x").cv.pipeline(pipe)` - Returns `pl.Expr` directly (requires sink in pipeline)
-# - **Lazy mode**: `pl.col("x").cv.pipe(pipe)` - Returns `LazyPipelineExpr` for composition (sink at the end)
+#
+# | Mode | Syntax | Returns | Use Case |
+# |------|--------|---------|----------|
+# | **Eager** | `pl.col("x").cv.pipeline(pipe)` | `pl.Expr` | Simple, single-output pipelines |
+# | **Lazy** | `pl.col("x").cv.pipe(pipe)` | `LazyPipelineExpr` | Composition, multi-output |
+#
+# The key insight: **Use `.cv.pipe()` for composition, call `.sink()` at the end to materialize.**
 
 # %%
 # Lazy mode example - compose pipelines before execution
@@ -937,19 +965,22 @@ display_images(
 )
 
 # %% [markdown]
-# ## 9. Multi-Output with Named Nodes
+# ## 9. Multi-Output with CSE Optimization
 #
 # polars-vision supports **multi-output pipelines** using `.alias()` and dict-based `.sink()`.
-# This allows you to:
+# Combined with automatic **Common Subexpression Elimination (CSE)**, this enables highly
+# efficient pipelines where shared operations are computed only once.
 #
+# ### The Pattern:
 # 1. Mark intermediate points with `.alias(name)` - creates a named checkpoint
-# 2. Return multiple outputs as a Struct column with `.sink({alias: format, ...})`
-# 3. Use `.merge_pipe()` to combine branching pipelines for multi-output
+# 2. Branch from checkpoints using `.pipe()` for different outputs
+# 3. Merge branches with `.merge_pipe()` to include all in the graph
+# 4. Sink multiple outputs with `.sink({alias: format, ...})`
 #
 # ### Benefits:
-# - Shared operations are computed once (not duplicated)
-# - Single plugin call for all outputs
-# - Automatic CSE optimization
+# - **Shared operations computed once** - CSE automatically extracts common prefixes
+# - **Single plugin call** - entire graph executes in one optimized pass
+# - **Struct output** - all results returned in a single column
 
 # %%
 # Multi-output pipeline with aliases
@@ -1074,13 +1105,17 @@ display_images(
 print("✅ Grayscale computed once and shared between both branches!")
 
 # %% [markdown]
-# ## 10. Reusable & Composable Pipeline Patterns
+# ## 10. Reusable Pipeline Patterns
 #
-# The lazy composition system enables powerful **reusable pipeline patterns**:
+# The composition system enables powerful **software engineering patterns** for pipelines:
 #
-# 1. **Define once, use many times** - Create pipeline fragments as variables
-# 2. **Parameterized pipelines** - Functions that return configured pipelines
-# 3. **Pipeline factories** - Create pipelines based on configuration
+# | Pattern | Description |
+# |---------|-------------|
+# | **Fragments** | Define operation groups as variables, chain with `.pipe()` |
+# | **Factories** | Functions that return configured pipelines |
+# | **Config-driven** | Build pipelines from dictionaries/configs |
+#
+# These patterns make pipelines testable, maintainable, and reusable across projects.
 
 # %%
 # Pattern 1: Reusable pipeline fragments
@@ -1282,8 +1317,11 @@ display_arrays(
 # 1. Processing input images through a preprocessing pipeline
 # 2. Generating fake predictions (simulating model output)
 # 3. Processing ground truth contour annotations
-# 4. Computing **IoU** and **Dice** metrics
+# 4. Computing **IoU** and **Dice** metrics using native `mask_iou()` and `mask_dice()`
 # 5. Visualizing predictions vs ground truth with overlays
+#
+# **Key advantage**: The native `mask_iou()` and `mask_dice()` functions compute metrics
+# directly on `LazyPipelineExpr` objects - no Python loops required!
 
 # %%
 # Generate synthetic ML data
@@ -1366,15 +1404,13 @@ display_images(
 )
 
 # %%
-# Compute IoU using the .contour.iou() method
-# We can also compute pixel-based metrics
+# Compute IoU and Dice using polars-vision native functions
+# This avoids Python loops and is much more efficient for large datasets!
 
-# Contour-based IoU (comparing ground truth contours)
+# Contour-based IoU (comparing ground truth contours with themselves - should be 1.0)
 contour_metrics = ml_df.select(
     "sample_id",
-    iou_self=pl.col("ground_truth").contour.iou(
-        pl.col("ground_truth")
-    ),  # Should be 1.0
+    iou_self=pl.col("ground_truth").contour.iou(pl.col("ground_truth")),
     dice_self=pl.col("ground_truth").contour.dice(pl.col("ground_truth")),
     gt_area=pl.col("ground_truth").contour.area(),
 )
@@ -1382,35 +1418,23 @@ contour_metrics = ml_df.select(
 print("Contour-based Metrics (comparing GT with itself):")
 print(contour_metrics)
 
+# Pixel-based IoU/Dice using native mask_iou() and mask_dice() functions
+# These operate directly on LazyPipelineExpr - no Python loops needed!
+pred_pipe_metrics = Pipeline().source("image_bytes").grayscale().threshold(128)
+gt_pipe_metrics = Pipeline().source("contour", width=200, height=200)
 
-# Pixel-based IoU/Dice for actual comparison
-def compute_iou_from_masks(mask1_bytes: bytes, mask2_bytes: bytes) -> float:
-    """Compute IoU from two PNG mask bytes."""
-    m1 = np.array(Image.open(io.BytesIO(mask1_bytes)).convert("L")) > 128
-    m2 = np.array(Image.open(io.BytesIO(mask2_bytes)).convert("L")) > 128
-    intersection = np.sum(m1 & m2)
-    union = np.sum(m1 | m2)
-    return float(intersection / union) if union > 0 else 0.0
+# Create lazy pipeline expressions
+pred_expr = pl.col("prediction").cv.pipe(pred_pipe_metrics)
+gt_expr = pl.col("ground_truth").cv.pipe(gt_pipe_metrics)
 
+# Compute metrics using native functions in a single optimized pass
+pixel_metrics_df = ml_df.select(
+    "sample_id",
+    iou=mask_iou(pred_expr, gt_expr),
+    dice=mask_dice(pred_expr, gt_expr),
+)
 
-def compute_dice_from_masks(mask1_bytes: bytes, mask2_bytes: bytes) -> float:
-    """Compute Dice coefficient from two PNG mask bytes."""
-    m1 = np.array(Image.open(io.BytesIO(mask1_bytes)).convert("L")) > 128
-    m2 = np.array(Image.open(io.BytesIO(mask2_bytes)).convert("L")) > 128
-    intersection = np.sum(m1 & m2)
-    denom = np.sum(m1) + np.sum(m2)
-    return float(2 * intersection / denom) if denom > 0 else 0.0
-
-
-# Compute pixel-based metrics
-pixel_metrics = []
-for row in processed.iter_rows(named=True):
-    iou = compute_iou_from_masks(row["pred_mask"], row["gt_mask"])
-    dice = compute_dice_from_masks(row["pred_mask"], row["gt_mask"])
-    pixel_metrics.append({"sample_id": row["sample_id"], "iou": iou, "dice": dice})
-
-pixel_metrics_df = pl.DataFrame(pixel_metrics)
-print("\nPixel-based Segmentation Metrics (pred vs GT):")
+print("\nPixel-based Segmentation Metrics (pred vs GT) using native functions:")
 print(pixel_metrics_df)
 print(f"\nMean IoU: {pixel_metrics_df['iou'].mean():.3f}")
 print(f"Mean Dice: {pixel_metrics_df['dice'].mean():.3f}")
@@ -1439,10 +1463,12 @@ def create_overlay(pred_bytes: bytes, gt_bytes: bytes) -> np.ndarray:
 # Create overlays for first 3 samples
 overlays = []
 titles = []
+# Get IoU values from our metrics DataFrame
+iou_values = pixel_metrics_df["iou"].to_list()
 for i, row in enumerate(processed.head(3).iter_rows(named=True)):
     overlay = create_overlay(row["pred_mask"], row["gt_mask"])
     overlays.append(overlay)
-    titles.append(f"Sample {i} (IoU={pixel_metrics[i]['iou']:.2f})")
+    titles.append(f"Sample {i} (IoU={iou_values[i]:.2f})")
 
 print("Overlay: Green=GT, Red=Pred, Yellow=Overlap")
 display_images(overlays, titles)
@@ -1621,78 +1647,529 @@ if TORCH_AVAILABLE:
     print("\n✅ Seamless PyTorch DataLoader integration!")
 
 # %% [markdown]
-# ## 14. Conclusion
+# ## 14. Perceptual Image Hashing
+#
+# polars-vision provides **perceptual image hashing** for finding similar images.
+# Unlike cryptographic hashes (MD5, SHA), perceptual hashes produce similar
+# fingerprints for visually similar images, even after transformations.
+#
+# ### Key Features:
+# - **Robust to small changes**: Resize, blur, format conversion produce similar hashes
+# - **Distinguishes different images**: Structurally different images have different hashes
+# - **Multiple algorithms**: Average, Difference, Perceptual (DCT), and Blockhash
+# - **Native comparison**: `hamming_distance()` and `hash_similarity()` functions
+#
+# ### Use Cases:
+# - **Duplicate detection**: Find near-duplicate images in large datasets
+# - **Image similarity search**: Find visually similar images
+# - **Content deduplication**: Identify copies with minor edits
+#
+# **Key advantage**: The native `hamming_distance()` and `hash_similarity()` functions
+# work on entire DataFrames without Python loops - essential for large-scale deduplication.
+
+# %%
+# polars-vision provides native functions for hash comparison
+# These functions work directly on LazyPipelineExpr objects for efficient batch processing:
+# - hamming_distance(hash1, hash2) -> Polars expression returning distance
+# - hash_similarity(hash1, hash2) -> Polars expression returning similarity %
+#
+# These are designed for efficient batch operations on DataFrames, not individual
+# hash comparisons. We'll demonstrate both approaches in this section.
+
+print("✅ Native hash comparison functions available:")
+print("   • hamming_distance(hash1, hash2) - returns Polars expression")
+print("   • hash_similarity(hash1, hash2) - returns Polars expression")
+
+# %% [markdown]
+# ### 14.1 Basic Perceptual Hash Usage
+#
+# Let's compute perceptual hashes for our test images and compare them.
+
+# %%
+# Create a perceptual hash pipeline
+phash_pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
+
+# Compute hashes for test images
+hash_df = pl.DataFrame(
+    {
+        "name": ["gradient", "checkerboard", "circles", "noise"],
+        "image": [
+            test_images["gradient"],
+            test_images["checkerboard"],
+            test_images["circles"],
+            test_images["noise"],
+        ],
+    }
+)
+
+hash_result = hash_df.with_columns(hash=pl.col("image").cv.pipeline(phash_pipe))
+
+print("Perceptual hashes for test images:")
+for row in hash_result.iter_rows(named=True):
+    hash_hex = "".join(f"{b:02x}" for b in row["hash"])
+    print(f"  {row['name']:12s}: {hash_hex}")
+
+# %%
+# Compare hashes between all pairs using native hash_similarity() function
+# This uses a cross-join approach for efficient batch computation
+
+# Create cross-join for pairwise comparison
+left_hash = hash_df.select(
+    pl.col("name").alias("name_a"), pl.col("image").alias("image_a")
+)
+right_hash = hash_df.select(
+    pl.col("name").alias("name_b"), pl.col("image").alias("image_b")
+)
+cross_hash = left_hash.join(right_hash, how="cross")
+
+# Define hash pipelines for both columns
+pipe_a = Pipeline().source("image_bytes").perceptual_hash()
+pipe_b = Pipeline().source("image_bytes").perceptual_hash()
+
+# Compute similarity using native function
+similarity_matrix = cross_hash.with_columns(
+    similarity=hash_similarity(
+        pl.col("image_a").cv.pipe(pipe_a),
+        pl.col("image_b").cv.pipe(pipe_b),
+        hash_bits=64,
+    )
+).select("name_a", "name_b", "similarity")
+
+# Display as a pivot table
+print("\nHash similarity matrix (%) using native hash_similarity():")
+pivot = similarity_matrix.pivot(on="name_b", index="name_a", values="similarity")
+print(pivot)
+
+# %% [markdown]
+# ### 14.2 Robustness to Small Processing Changes
+#
+# Perceptual hashes are designed to be **robust to common image transformations**:
+# - Resizing (downscale/upscale)
+# - Blur/smoothing
+# - Format conversion (PNG → JPEG)
+# - Minor color adjustments
+#
+# Let's demonstrate this robustness.
+
+# %%
+# Create variations of the same image
+original_img = test_images["circles"]
+
+# Apply various transformations using polars-vision pipelines
+# 1. Resize to smaller then back to original size (lossy operation)
+resize_pipe = (
+    Pipeline()
+    .source("image_bytes")
+    .resize(height=64, width=64)  # Downscale
+    .resize(height=256, width=256)  # Upscale back
+    .sink("png")
+)
+
+# 2. Blur the image
+blur_pipe = Pipeline().source("image_bytes").blur(sigma=2.0).sink("png")
+
+# 3. Convert to JPEG with compression (lossy)
+jpeg_pipe = Pipeline().source("image_bytes").sink("jpeg")
+
+# Apply transformations
+transform_df = pl.DataFrame({"image": [original_img]})
+transformed = transform_df.with_columns(
+    resized=pl.col("image").cv.pipeline(resize_pipe),
+    blurred=pl.col("image").cv.pipeline(blur_pipe),
+    jpeg=pl.col("image").cv.pipeline(jpeg_pipe),
+)
+
+# Now compute perceptual hashes for all versions
+variants_df = pl.DataFrame(
+    {
+        "variant": ["original", "resized", "blurred", "jpeg"],
+        "image": [
+            original_img,
+            transformed["resized"][0],
+            transformed["blurred"][0],
+            transformed["jpeg"][0],
+        ],
+    }
+)
+
+variants_hashed = variants_df.with_columns(hash=pl.col("image").cv.pipeline(phash_pipe))
+
+# Display images side by side
+display_images(
+    [variants_hashed["image"][i] for i in range(4)],
+    variants_hashed["variant"].to_list(),
+)
+
+# %%
+# Compare all variants to the original using native functions
+# We'll compare each variant against the original image
+
+# Create a DataFrame with original paired against each variant
+original_bytes = variants_hashed.filter(pl.col("variant") == "original")["image"][0]
+
+variants_comparison = variants_hashed.with_columns(
+    pl.lit(original_bytes).alias("original_image")
+)
+
+# Define pipelines
+orig_pipe = Pipeline().source("image_bytes").perceptual_hash()
+var_pipe = Pipeline().source("image_bytes").perceptual_hash()
+
+# Compute similarity and distance using native functions
+variants_with_metrics = variants_comparison.with_columns(
+    similarity=hash_similarity(
+        pl.col("original_image").cv.pipe(orig_pipe),
+        pl.col("image").cv.pipe(var_pipe),
+        hash_bits=64,
+    ),
+    distance=hamming_distance(
+        pl.col("original_image").cv.pipe(orig_pipe),
+        pl.col("image").cv.pipe(var_pipe),
+    ),
+)
+
+print("Similarity of transformed images to original:")
+print("-" * 50)
+for row in variants_with_metrics.iter_rows(named=True):
+    sim = row["similarity"]
+    dist = int(row["distance"])
+    hash_hex = "".join(f"{b:02x}" for b in row["hash"])
+    status = "✅" if sim >= 90 else ("⚠️" if sim >= 75 else "❌")
+    print(f"{status} {row['variant']:12s}: {sim:5.1f}% similar (distance: {dist} bits)")
+    print(f"   Hash: {hash_hex}")
+
+print()
+print("✅ Small transformations produce similar hashes (high similarity)")
+print("   This demonstrates robustness to resize, blur, and JPEG compression!")
+
+# %% [markdown]
+# ### 14.3 Different Images Produce Different Hashes
+#
+# While perceptual hashes are robust to small changes, they **correctly distinguish**
+# structurally different images.
+
+
+# %%
+# Create some structurally very different images
+def create_pattern_image(pattern: str, size: int = 256) -> bytes:
+    """Create images with different patterns for comparison."""
+    img = np.zeros((size, size, 3), dtype=np.uint8)
+
+    if pattern == "solid_red":
+        img[:, :] = [255, 0, 0]
+    elif pattern == "solid_blue":
+        img[:, :] = [0, 0, 255]
+    elif pattern == "horizontal_stripes":
+        for i in range(0, size, 32):
+            img[i : i + 16, :] = [255, 255, 255]
+    elif pattern == "vertical_stripes":
+        for i in range(0, size, 32):
+            img[:, i : i + 16] = [255, 255, 255]
+    elif pattern == "diagonal":
+        for i in range(size):
+            for j in range(size):
+                if (i + j) % 32 < 16:
+                    img[i, j] = [255, 255, 255]
+
+    pil_img = Image.fromarray(img)
+    buffer = io.BytesIO()
+    pil_img.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+# Create different pattern images
+different_images = {
+    "circles": test_images["circles"],
+    "checkerboard": test_images["checkerboard"],
+    "solid_red": create_pattern_image("solid_red"),
+    "solid_blue": create_pattern_image("solid_blue"),
+    "h_stripes": create_pattern_image("horizontal_stripes"),
+    "v_stripes": create_pattern_image("vertical_stripes"),
+}
+
+# Display them
+display_images(
+    list(different_images.values())[:4],
+    list(different_images.keys())[:4],
+)
+
+# %%
+# Compute hashes and compare using native functions
+diff_df = pl.DataFrame(
+    {
+        "name": list(different_images.keys()),
+        "image": list(different_images.values()),
+    }
+)
+
+diff_hashed = diff_df.with_columns(hash=pl.col("image").cv.pipeline(phash_pipe))
+
+# Compare circles (our reference) with all other images using native functions
+reference_name = "circles"
+reference_bytes = diff_hashed.filter(pl.col("name") == reference_name)["image"][0]
+
+# Add reference image for comparison
+diff_comparison = diff_hashed.filter(pl.col("name") != reference_name).with_columns(
+    pl.lit(reference_bytes).alias("reference_image")
+)
+
+# Compute metrics using native functions
+ref_pipe = Pipeline().source("image_bytes").perceptual_hash()
+img_pipe = Pipeline().source("image_bytes").perceptual_hash()
+
+diff_with_metrics = diff_comparison.with_columns(
+    similarity=hash_similarity(
+        pl.col("reference_image").cv.pipe(ref_pipe),
+        pl.col("image").cv.pipe(img_pipe),
+        hash_bits=64,
+    ),
+    distance=hamming_distance(
+        pl.col("reference_image").cv.pipe(ref_pipe),
+        pl.col("image").cv.pipe(img_pipe),
+    ),
+)
+
+print(f"Comparing '{reference_name}' with other images:")
+print("-" * 55)
+for row in diff_with_metrics.iter_rows(named=True):
+    sim = row["similarity"]
+    dist = int(row["distance"])
+    # Different images should have low similarity
+    status = "✅" if sim < 75 else "⚠️"
+    print(f"{status} {row['name']:12s}: {sim:5.1f}% similar (distance: {dist} bits)")
+
+print()
+print("✅ Different images correctly produce different hashes (low similarity)")
+print("   This shows the hash distinguishes structurally different content!")
+
+# %% [markdown]
+# ### 14.4 Hash Algorithm Comparison
+#
+# polars-vision supports multiple perceptual hash algorithms. Each has different
+# characteristics:
+#
+# | Algorithm | Speed | Robustness | Best For |
+# |-----------|-------|------------|----------|
+# | **Average** | Fastest | Lower | Quick approximate matching |
+# | **Difference** | Fast | Medium | General purpose |
+# | **Perceptual** | Medium | High | Most use cases (default) |
+# | **Blockhash** | Medium | High | Crop-resistant matching |
+
+# %%
+# Compare different hash algorithms on the same image transformation
+test_image = test_images["circles"]
+
+# Create a transformed version (resize)
+resized_test = pl.DataFrame({"image": [test_image]}).with_columns(
+    resized=pl.col("image").cv.pipeline(resize_pipe)
+)["resized"][0]
+
+algorithms = [
+    HashAlgorithm.AVERAGE,
+    HashAlgorithm.DIFFERENCE,
+    HashAlgorithm.PERCEPTUAL,
+    HashAlgorithm.BLOCKHASH,
+]
+
+print("Algorithm comparison: Original vs Resized image")
+print("-" * 60)
+
+for algo in algorithms:
+    # Create hash pipelines for this algorithm
+    orig_algo_pipe = Pipeline().source("image_bytes").perceptual_hash(algorithm=algo)
+    resized_algo_pipe = Pipeline().source("image_bytes").perceptual_hash(algorithm=algo)
+
+    # Compare original vs resized using native functions
+    algo_df = pl.DataFrame(
+        {"original": [test_image], "resized": [resized_test]}
+    ).with_columns(
+        similarity=hash_similarity(
+            pl.col("original").cv.pipe(orig_algo_pipe),
+            pl.col("resized").cv.pipe(resized_algo_pipe),
+            hash_bits=64,
+        ),
+        distance=hamming_distance(
+            pl.col("original").cv.pipe(orig_algo_pipe),
+            pl.col("resized").cv.pipe(resized_algo_pipe),
+        ),
+    )
+
+    sim = algo_df["similarity"][0]
+    dist = int(algo_df["distance"][0])
+
+    status = "✅" if sim >= 85 else ("⚠️" if sim >= 70 else "❌")
+    print(f"{status} {algo.value:12s}: {sim:5.1f}% similar (distance: {dist} bits)")
+
+# %% [markdown]
+# ### 14.5 Practical Use Case: Finding Duplicates in a Dataset
+#
+# Here's how you might use perceptual hashing to find near-duplicate images
+# in a dataset.
+
+
+# %%
+# Simulate a dataset with some duplicates (slightly modified versions)
+def add_noise(img_bytes: bytes, intensity: float = 0.05) -> bytes:
+    """Add slight random noise to an image."""
+    img = np.array(Image.open(io.BytesIO(img_bytes)))
+    rng = np.random.default_rng(42)
+    noise = (rng.random(img.shape) * intensity * 255).astype(np.int16)
+    noisy = np.clip(img.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+    pil_img = Image.fromarray(noisy)
+    buffer = io.BytesIO()
+    pil_img.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+# Create a "dataset" with some near-duplicates
+dataset_images = [
+    ("image_001", test_images["gradient"]),
+    ("image_002", test_images["circles"]),
+    ("image_003", add_noise(test_images["gradient"], 0.02)),  # Near-dup of 001
+    ("image_004", test_images["checkerboard"]),
+    ("image_005", test_images["circles"]),  # Exact dup of 002
+    ("image_006", add_noise(test_images["circles"], 0.03)),  # Near-dup of 002
+]
+
+dataset_df = pl.DataFrame(
+    {
+        "id": [img[0] for img in dataset_images],
+        "image": [img[1] for img in dataset_images],
+    }
+)
+
+# Find potential duplicates using native functions (no Python loops!)
+# This is the scalable approach for large datasets
+SIMILARITY_THRESHOLD = 85.0
+
+# Create cross-join for pairwise comparison
+dup_left = dataset_df.select(
+    pl.col("id").alias("id_a"), pl.col("image").alias("image_a")
+)
+dup_right = dataset_df.select(
+    pl.col("id").alias("id_b"), pl.col("image").alias("image_b")
+)
+dup_cross = dup_left.join(dup_right, how="cross")
+
+# Filter to only compare where id_a < id_b (avoid duplicates and self-comparison)
+dup_cross = dup_cross.filter(pl.col("id_a") < pl.col("id_b"))
+
+# Define hash pipelines
+dup_pipe_a = Pipeline().source("image_bytes").perceptual_hash()
+dup_pipe_b = Pipeline().source("image_bytes").perceptual_hash()
+
+# Compute similarity using native function
+dup_result = dup_cross.with_columns(
+    similarity=hash_similarity(
+        pl.col("image_a").cv.pipe(dup_pipe_a),
+        pl.col("image_b").cv.pipe(dup_pipe_b),
+        hash_bits=64,
+    )
+)
+
+# Find duplicates above threshold
+duplicates = dup_result.filter(pl.col("similarity") >= SIMILARITY_THRESHOLD).sort(
+    "similarity", descending=True
+)
+
+print("Finding potential duplicates (similarity > 85%):")
+print("-" * 55)
+for row in duplicates.iter_rows(named=True):
+    print(f"  {row['id_a']} ↔ {row['id_b']}: {row['similarity']:.1f}% similar")
+
+if len(duplicates) == 0:
+    print("  No duplicates found above threshold")
+
+print()
+print(f"✅ Found {len(duplicates)} potential duplicate pairs")
+print("   This technique scales well to large datasets - no Python loops required!")
+
+# %% [markdown]
+# ### 14.6 Native Hash Comparison Functions
+#
+# For efficient batch processing, polars-vision provides **native functions**
+# that work directly with pipeline expressions:
+#
+# - `hamming_distance(hash1, hash2)` - Returns Polars expression with bit distance
+# - `hash_similarity(hash1, hash2)` - Returns Polars expression with similarity %
+#
+# These are much faster for large datasets as they leverage the full pipeline
+# optimization and avoid Python loops.
+
+# %%
+# Demonstrate native hash comparison on a cross-join of images
+# This efficiently compares ALL pairs in a single optimized operation
+
+# Create cross-join for pairwise comparison
+left = dataset_df.select(
+    pl.col("id").alias("id_a"), pl.col("image").alias("image_a")
+)
+right = dataset_df.select(
+    pl.col("id").alias("id_b"), pl.col("image").alias("image_b")
+)
+cross = left.join(right, how="cross")
+
+# Filter to only compare where id_a < id_b (avoid duplicates and self-comparison)
+cross = cross.filter(pl.col("id_a") < pl.col("id_b"))
+
+# Define hash pipelines for both columns
+hash_pipe_a = Pipeline().source("image_bytes").perceptual_hash()
+hash_pipe_b = Pipeline().source("image_bytes").perceptual_hash()
+
+# Create lazy pipeline expressions
+hash_a = pl.col("image_a").cv.pipe(hash_pipe_a)
+hash_b = pl.col("image_b").cv.pipe(hash_pipe_b)
+
+# Use native hash comparison functions - fully optimized!
+result = cross.with_columns(
+    distance=hamming_distance(hash_a, hash_b),
+    similarity=hash_similarity(hash_a, hash_b, hash_bits=64),
+)
+
+print("Pairwise comparison using native hamming_distance() and hash_similarity():")
+print("-" * 65)
+similar_pairs = result.filter(pl.col("similarity") >= SIMILARITY_THRESHOLD).sort(
+    "similarity", descending=True
+)
+for row in similar_pairs.iter_rows(named=True):
+    print(
+        f"  {row['id_a']} ↔ {row['id_b']}: "
+        f"{row['similarity']:.1f}% similar (distance: {int(row['distance'])} bits)"
+    )
+
+print()
+print(f"✅ Native function found {len(similar_pairs)} similar pairs")
+print("   This approach is highly scalable - no Python loops required!")
+
+# %% [markdown]
+# ## 15. Conclusion
 #
 # This notebook demonstrated the key capabilities of **polars-vision**:
 #
 # ### ✅ What We Covered
 #
-# 1. **Basic Pipeline Operations**
-#    - Source/sink architecture with multiple format support
-#    - Resize, grayscale, threshold, blur, crop, flip operations
-#    - Chained pipelines with single-pass execution
+# | Section | Highlights |
+# |---------|------------|
+# | **Basic Pipelines** | Source/sink architecture, image operations, chained processing |
+# | **DType Promotion** | Automatic type conversion, normalization methods |
+# | **Dynamic Parameters** | Per-row customization using Polars expressions |
+# | **Geometry** | Contour schemas, geometric measures, rasterization |
+# | **Composable Pipelines** | `.cv.pipe()`, `.pipe()` chaining, fused execution |
+# | **Binary Operations** | add, subtract, blend, mask application |
+# | **Multi-Source** | Different columns feeding different branches |
+# | **Multi-Output + CSE** | `.alias()`, `.merge_pipe()`, automatic optimization |
+# | **Reusable Patterns** | Fragments, factories, config-driven pipelines |
+# | **Domain Transitions** | Image ↔ Contour ↔ Scalar conversions |
+# | **ML Workflow** | `mask_iou()`, `mask_dice()` for segmentation metrics |
+# | **PyTorch** | Direct tensor output, DataLoader integration |
+# | **Perceptual Hashing** | `hamming_distance()`, `hash_similarity()` for duplicate detection |
 #
-# 2. **DType Promotion & Normalization**
-#    - Automatic type promotion (u8 → f32)
-#    - MinMax and ZScore normalization
-#    - Scale and clamp operations
+# ### 🔑 Key Takeaways
 #
-# 3. **Dynamic Parameters**
-#    - Using Polars expressions for per-row parameters
-#    - Dynamic resize, crop, and threshold based on metadata
-#
-# 4. **Geometry Operations**
-#    - Contour schemas and creation
-#    - Geometric measures (area, perimeter, is_convex)
-#    - Rasterization of contours to masks
-#
-# 5. **Lazy Pipeline Composition**
-#    - `.cv.pipe()` vs `.cv.pipeline()` modes
-#    - `.pipe()` for chaining operations
-#    - `.alias()` for named checkpoints
-#
-# 6. **Binary Operations & Mask Application**
-#    - Element-wise operations (add, subtract, blend)
-#    - `apply_mask()` for masking images
-#    - `apply_contour_mask()` with shape inference
-#
-# 7. **Multi-Source Pipelines**
-#    - Reading from different DataFrame columns
-#    - Composing operations across sources
-#
-# 8. **Multi-Output with Named Nodes**
-#    - `.alias()` for checkpoints
-#    - `.merge_pipe()` for combining branches
-#    - Dict-based `.sink()` for Struct output
-#
-# 9. **Reusable Pipeline Patterns**
-#    - Pipeline fragments as variables
-#    - Parameterized pipeline factories
-#    - Configuration-driven pipelines
-#
-# 10. **Domain Transitions**
-#     - Image ↔ Contour ↔ Scalar
-#     - `extract_contours()` and `rasterize()`
-#     - Geometric measurements
-#
-# 11. **ML Workflow**
-#     - Segmentation pipeline with IoU/Dice metrics
-#     - Multi-output ML pipelines
-#
-# 12. **PyTorch Integration**
-#     - Torch format output
-#     - DataLoader-compatible datasets
-#
-# ### 🔑 Key Concepts
-#
-# | Concept | Description |
-# |---------|-------------|
-# | **Lazy Composition** | Use `.cv.pipe()` to create composable `LazyPipelineExpr` |
-# | **Named Nodes** | Use `.alias(name)` to create checkpoints |
-# | **Multi-Output** | Use `.merge_pipe()` + dict `.sink()` for Struct output |
-# | **Multi-Source** | Different columns feed different pipeline branches |
-# | **CSE Optimization** | Shared prefixes automatically extracted and reused |
-# | **Domain Transitions** | Seamlessly move between buffer/contour/scalar domains |
+# 1. **Use `.cv.pipe()` for composition** - enables multi-output and CSE optimization
+# 2. **Native functions avoid Python loops** - `mask_iou()`, `mask_dice()`, `hamming_distance()`, `hash_similarity()`
+# 3. **CSE is automatic** - shared prefixes are computed once, no manual optimization needed
+# 4. **Multi-domain is seamless** - images, contours, and scalars in one pipeline
 #
 # ### 🔗 Resources
 #
@@ -1707,4 +2184,5 @@ print("   • Zero-copy operations where possible")
 print("   • Composable, reusable pipelines with named nodes")
 print("   • Multi-source and multi-output support")
 print("   • Automatic CSE optimization")
+print("   • Perceptual image hashing for similarity detection")
 print("   • Seamless ML framework integration")

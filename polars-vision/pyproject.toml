@@ -32,6 +32,11 @@ bench = [
     "matplotlib>=3.9.4",
     "jupyterlab",
 ]
+docs = [
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.24",
+    "mkdocs-gen-files>=0.5",
+]
 
 [tool.maturin]
 python-source = "python"
