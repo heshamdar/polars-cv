@@ -159,10 +159,10 @@ jobs:
           echo "=== Maturin version ==="
           maturin --version || echo "Failed to get maturin version"
           echo ""
-          echo "=== Running maturin develop ==="
-          # Try with explicit manifest path first
-          maturin develop --release --manifest-path Cargo.toml --verbose || {
-            echo "Failed with --manifest-path, trying without..."
+          echo "=== Running maturin develop (without cloud feature for speed) ==="
+          # Build without cloud feature to speed up CI
+          maturin develop --release --no-default-features --features pyo3/extension-module,pyo3/abi3-py39 --verbose || {
+            echo "Failed with --no-default-features, trying with defaults..."
             maturin develop --release --verbose
           }
 

@@ -1598,32 +1598,54 @@ impl UnifiedGraph {
 
                                 match input_ca.get(row_idx) {
                                     Some(path) => {
-                                        // Read the file using cloud module (handles local and cloud paths)
-                                        match crate::cloud::read_file(path, None) {
-                                            Ok(bytes) => {
-                                                // Decode as image_bytes (auto-detect format)
-                                                let first_output =
-                                                    self.outputs.values().next().unwrap();
-                                                let mut source_spec = node.source.clone();
-                                                source_spec.format = "image_bytes".to_string();
-                                                let temp_spec = PipelineSpec {
-                                                    source: source_spec,
-                                                    shape_hints: None,
-                                                    ops: vec![],
-                                                    sink: first_output.sink.clone(),
-                                                };
-                                                match decode_source(&bytes, &temp_spec) {
-                                                    Ok(buf) => Some(NodeOutput::from_buffer(buf)),
-                                                    Err(e) => {
-                                                        return Err(format!(
-                                                            "Decode error for file '{path}': {e}"
-                                                        ))
-                                                    }
+                                        // Read the file (local or cloud)
+                                        let bytes = if path.starts_with("s3://")
+                                            || path.starts_with("gs://")
+                                            || path.starts_with("az://")
+                                            || path.starts_with("abfs://")
+                                            || path.starts_with("abfss://")
+                                        {
+                                            // Cloud storage path
+                                            #[cfg(feature = "cloud")]
+                                            {
+                                                match crate::cloud::read_file(path, None) {
+                                                    Ok(b) => b,
+                                                    Err(e) => return Err(format!(
+                                                        "Failed to read cloud file '{path}': {e}"
+                                                    )),
                                                 }
                                             }
+                                            #[cfg(not(feature = "cloud"))]
+                                            {
+                                                return Err(format!(
+                                                    "Cloud storage support is not enabled. \
+                                                    Install with 'cloud' feature: \
+                                                    pip install polars-cv[cloud] or \
+                                                    cargo build --features cloud"
+                                                ));
+                                            }
+                                        } else {
+                                            // Local file path
+                                            std::fs::read(path).map_err(|e| {
+                                                format!("Failed to read local file '{path}': {e}")
+                                            })?
+                                        };
+
+                                        // Decode as image_bytes (auto-detect format)
+                                        let first_output = self.outputs.values().next().unwrap();
+                                        let mut source_spec = node.source.clone();
+                                        source_spec.format = "image_bytes".to_string();
+                                        let temp_spec = PipelineSpec {
+                                            source: source_spec,
+                                            shape_hints: None,
+                                            ops: vec![],
+                                            sink: first_output.sink.clone(),
+                                        };
+                                        match decode_source(&bytes, &temp_spec) {
+                                            Ok(buf) => Some(NodeOutput::from_buffer(buf)),
                                             Err(e) => {
                                                 return Err(format!(
-                                                    "Failed to read file '{path}': {e}"
+                                                    "Decode error for file '{path}': {e}"
                                                 ))
                                             }
                                         }
