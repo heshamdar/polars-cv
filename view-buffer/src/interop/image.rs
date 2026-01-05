@@ -85,14 +85,14 @@ where
 /// Trait for converting ViewBuffer to image view.
 pub trait AsImageView {
     /// Attempts to create a zero-copy image view.
-    fn as_image_view<P>(&self) -> Result<ImageView<P>, BufferError>
+    fn as_image_view<P>(&self) -> Result<ImageView<'_, P>, BufferError>
     where
         P: Pixel,
         P::Subpixel: ViewType + 'static;
 }
 
 impl AsImageView for ViewBuffer {
-    fn as_image_view<P>(&self) -> Result<ImageView<P>, BufferError>
+    fn as_image_view<P>(&self) -> Result<ImageView<'_, P>, BufferError>
     where
         P: Pixel,
         P::Subpixel: ViewType + 'static,

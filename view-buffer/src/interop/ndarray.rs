@@ -67,11 +67,11 @@ impl<'a, T: ViewType> ExternalView<'a> for NdArrayViewAdapter<T> {
 /// Trait for converting ViewBuffer to ndarray view.
 pub trait AsNdarray {
     /// Attempts to create a zero-copy ndarray view.
-    fn as_array_view<T: ViewType>(&self) -> Result<ArrayViewD<T>, BufferError>;
+    fn as_array_view<T: ViewType>(&self) -> Result<ArrayViewD<'_, T>, BufferError>;
 }
 
 impl AsNdarray for ViewBuffer {
-    fn as_array_view<T: ViewType>(&self) -> Result<ArrayViewD<T>, BufferError> {
+    fn as_array_view<T: ViewType>(&self) -> Result<ArrayViewD<'_, T>, BufferError> {
         // Delegate to the Adapter, ensuring consistent behavior
         NdArrayViewAdapter::try_view(self)
     }

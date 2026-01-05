@@ -279,7 +279,7 @@ impl ViewBuffer {
     pub fn is_aligned(&self, alignment: usize) -> bool {
         debug_assert!(alignment.is_power_of_two(), "Alignment must be power of 2");
         let ptr = self.data.as_ptr();
-        (ptr as usize) % alignment == 0
+        (ptr as usize).is_multiple_of(alignment)
     }
 
     /// Returns true if the buffer is aligned for SIMD operations (64-byte alignment).
@@ -328,7 +328,7 @@ impl ViewBuffer {
         // Safety Recommendation 1: Alignment Check
         // We use debug_assert to catch this in testing/debug builds.
         debug_assert!(
-            (ptr as usize) % std::mem::align_of::<T>() == 0,
+            (ptr as usize).is_multiple_of(std::mem::align_of::<T>()),
             "ViewBuffer pointer is not aligned for type {}; address={:p}, align={}",
             std::any::type_name::<T>(),
             ptr,
