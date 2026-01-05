@@ -11,13 +11,93 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  test:
+    name: Test on ${{ matrix.os }} with Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        # With abi3-py39, one wheel works for all Python 3.9+ versions
+        # Test on minimum (3.9) and latest (3.13) to verify compatibility
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.9", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Create virtual environment
+        working-directory: polars-cv
+        run: uv venv .venv
+
+      - name: Activate virtual environment and install maturin
+        working-directory: polars-cv
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            source .venv/Scripts/activate
+          else
+            source .venv/bin/activate
+          fi
+          uv pip install maturin
+
+      - name: Install package in development mode
+        working-directory: polars-cv
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            source .venv/Scripts/activate
+          else
+            source .venv/bin/activate
+          fi
+          maturin develop --release
+
+      - name: Install test dependencies
+        working-directory: polars-cv
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            source .venv/Scripts/activate
+          else
+            source .venv/bin/activate
+          fi
+          uv pip install pytest polars numpy pillow opencv-python scipy imagehash
+
+      - name: Run tests
+        working-directory: polars-cv
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            source .venv/Scripts/activate
+          else
+            source .venv/bin/activate
+          fi
+          pytest tests/ -x -v --tb=short
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -33,60 +113,40 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Set up Python
+      - name: Install Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Create virtual environment
+        working-directory: polars-cv
+        run: uv venv .venv
 
       - name: Install ruff
-        run: pip install ruff
+        working-directory: polars-cv
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          uv pip install ruff
 
       - name: Ruff check
-        run: ruff check polars-cv/python polars-cv/tests polars-cv/benchmarks
+        working-directory: polars-cv
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          ruff check python tests benchmarks
 
       - name: Ruff format check
-        run: ruff format --check polars-cv/python polars-cv/tests polars-cv/benchmarks
-
-  test:
-    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: true
-      matrix:
-        # With abi3-py39, one wheel works for all Python 3.9+ versions
-        # Test on minimum (3.9) and latest (3.12) to verify compatibility
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.9", "3.13"]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-
-      - name: Install maturin
-        run: pip install maturin
-
-      - name: Build and install polars-cv
         working-directory: polars-cv
+        shell: bash
         run: |
-          pip install -e ".[dev]"
-          maturin develop --release
-
-      - name: Run tests (fail-fast)
-        working-directory: polars-cv
-        run: pytest tests/ -x -v --tb=short
+          source .venv/bin/activate
+          ruff format --check python tests benchmarks
 
   build:
     name: Build verification
@@ -94,7 +154,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
@@ -107,4 +167,3 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test --release
-
