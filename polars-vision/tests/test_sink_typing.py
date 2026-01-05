@@ -21,7 +21,7 @@ import polars as pl
 import pytest
 from PIL import Image
 
-from polars_vision import HashAlgorithm, Pipeline, numpy_from_bytes
+from polars_vision import Pipeline, numpy_from_bytes
 
 if TYPE_CHECKING:
     pass

@@ -6,6 +6,7 @@ build-backend = "maturin"
 name = "polars-vision"
 version = "0.1.0"
 description = "A Polars plugin for vision/array operations"
+authors = [{ name = "Hesham Dar", email = "heshamdar@gmail.com" }]
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
 requires-python = ">=3.9"
@@ -37,6 +38,7 @@ docs = [
     "mkdocs-material>=9.0",
     "mkdocstrings[python]>=0.24",
     "mkdocs-gen-files>=0.5",
+    "ruff"
 ]
 
 [tool.maturin]

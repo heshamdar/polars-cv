@@ -369,10 +369,12 @@ def generate_imagefolder_dataset(
         ImageFolderDataset with paths to the generated data.
 
     Example:
+        ```python
         >>> dataset = generate_imagefolder_dataset("./synthetic_data", num_images=1000)
         >>> print(dataset.images_dir)     # For HuggingFace imagefolder
         >>> print(dataset.metadata_path)  # For polars-vision
         >>> print(dataset.class_names)    # ['class_0', 'class_1', ...]
+        ```
     """
     import polars as pl
 
@@ -476,10 +478,12 @@ def temporary_imagefolder_dataset(
         ImageFolderDataset that will be cleaned up on exit.
 
     Example:
+        ```python
         >>> with temporary_imagefolder_dataset(num_images=100) as dataset:
         ...     df = pl.read_parquet(dataset.metadata_path)
         ...     # Use the dataset...
         >>> # Directory is automatically cleaned up
+        ```
     """
     temp_dir = Path(tempfile.mkdtemp(prefix="polars_vision_imagefolder_"))
     dataset = generate_imagefolder_dataset(

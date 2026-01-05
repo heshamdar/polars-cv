@@ -345,10 +345,10 @@ for epoch in range(num_epochs):
 
 **When to use:** When augmentations that Polars handles (blur, flip, resize) should vary per-epoch.
 
-### Pattern 3: IterableDataset with Streaming
+### Pattern 3: IterableDataset with Streaming Batches
 
 For very large datasets that don't fit in memory, use `IterableDataset` with
-Polars streaming execution:
+Polars streaming engine and batch collection for true lazy iteration:
 
 ```python
 from torch.utils.data import IterableDataset, DataLoader
@@ -359,14 +359,13 @@ import torch
 
 class StreamingPolarsDataset(IterableDataset):
     """
-    IterableDataset that processes data using Polars streaming engine.
+    IterableDataset that processes data using Polars streaming engine with batch collection.
     
-    Data is processed in chunks by Polars' streaming engine, reducing
-    peak memory usage for very large datasets.
+    Data is processed and yielded in batches as they're produced, enabling true
+    lazy iteration without materializing the entire result in memory.
     
-    Note: Streaming processes the full query, but in chunks. The entire
-    result is still materialized before yielding - this is for memory
-    efficiency during processing, not true lazy iteration.
+    This uses `collect_batches(engine="streaming")` to process chunks incrementally,
+    yielding samples as batches are ready rather than waiting for the full result.
     """
     
     def __init__(
@@ -376,31 +375,35 @@ class StreamingPolarsDataset(IterableDataset):
         label_col: str,
         pipeline: Pipeline,
         transform: callable | None = None,
+        chunk_size: int = 1000,
     ) -> None:
         self.lazy_df = lazy_df
         self.image_col = image_col
         self.label_col = label_col
         self.pipeline = pipeline
         self.transform = transform
+        self.chunk_size = chunk_size
     
     def __iter__(self):
-        # Process with streaming engine (processes in chunks internally)
-        df = (
+        # Build the processing query
+        query = (
             self.lazy_df
             .with_columns(
                 _tensor=pl.col(self.image_col).cv.pipeline(self.pipeline)
             )
-            .collect(engine="streaming")
         )
         
-        for row in df.iter_rows(named=True):
-            arr = numpy_from_bytes(row["_tensor"])
-            tensor = torch.from_numpy(arr.copy()).permute(2, 0, 1)
-            
-            if self.transform:
-                tensor = self.transform(tensor)
-            
-            yield tensor, row[self.label_col]
+        # Process in batches using streaming engine
+        # This yields batches as they're processed, not after full materialization
+        for batch_df in query.collect_batches(engine="streaming", chunk_size=self.chunk_size):
+            for row in batch_df.iter_rows(named=True):
+                arr = numpy_from_bytes(row["_tensor"])
+                tensor = torch.from_numpy(arr.copy()).permute(2, 0, 1)
+                
+                if self.transform:
+                    tensor = self.transform(tensor)
+                
+                yield tensor, row[self.label_col]
 
 
 # Usage
@@ -415,7 +418,11 @@ pipe = (
 # Create lazy DataFrame
 lazy_df = pl.scan_parquet("s3://bucket/images.parquet")
 
-dataset = StreamingPolarsDataset(lazy_df, "image", "label", pipe)
+# Note: Shuffling with IterableDataset is limited. For per-epoch shuffling,
+# consider using Pattern 1 if your dataset fits in memory, or implement
+# custom shuffling logic at the LazyFrame level before processing.
+
+dataset = StreamingPolarsDataset(lazy_df, "image", "label", pipe, chunk_size=1000)
 dataloader = DataLoader(dataset, batch_size=32)
 
 for images, labels in dataloader:
@@ -423,125 +430,42 @@ for images, labels in dataloader:
     pass
 ```
 
-**Important notes on streaming:**
+**Important notes on streaming batches:**
 
-- `collect(engine="streaming")` processes data in chunks internally
-- This reduces peak memory during *processing*, not during iteration
-- The full result is still materialized before the iterator yields
-- For true out-of-core processing, use chunked reading (Pattern 4)
+- `collect_batches(engine="streaming")` processes and yields data in chunks incrementally
+- Each batch is materialized only when needed, enabling true out-of-core processing
+- Peak memory usage is limited to the chunk size, not the full dataset
+- Works seamlessly with cloud data sources (S3, GCS, Azure)
+- Adjust `chunk_size` based on available memory and processing speed trade-offs
+- **Note**: `collect_batches()` is marked as unstable in Polars, but it's the correct
+  method for true lazy iteration. The API may change in future Polars versions.
 
 **Pros:**
 
-- Lower peak memory during processing
-- Works with cloud data sources
+- True lazy iteration - batches materialize only when needed
+- Lower peak memory during processing (limited to chunk size)
+- Works with cloud data sources (S3, GCS, Azure)
+- No manual cache management needed
 
 **Cons:**
 
 - Cannot use `num_workers > 0` with IterableDataset reliably
-- Shuffling must be handled separately
-- Data still materializes before iteration
+- Shuffling must be handled separately (e.g., add random column to LazyFrame)
+- Requires LazyFrame (not regular DataFrame)
 
-**When to use:** Cloud data sources, memory-constrained processing.
-
-### Pattern 4: Chunked Processing (Large Datasets)
-
-For datasets too large to fit in memory, process in chunks:
-
-```python
-class ChunkedPolarsDataset(Dataset):
-    """
-    Dataset that processes data in chunks on-demand.
-    
-    Only keeps one chunk of preprocessed data in memory at a time.
-    Chunks are processed when first accessed and cached.
-    """
-    
-    def __init__(
-        self,
-        df: pl.DataFrame,
-        image_col: str,
-        label_col: str,
-        pipeline: Pipeline,
-        chunk_size: int = 1000,
-        transform: callable | None = None,
-    ) -> None:
-        self.df = df
-        self.image_col = image_col
-        self.label_col = label_col
-        self.pipeline = pipeline
-        self.chunk_size = chunk_size
-        self.transform = transform
-        self._chunk_cache = {}  # chunk_idx -> processed_df
-        self._max_cached_chunks = 3
-    
-    def _get_chunk(self, chunk_idx: int) -> pl.DataFrame:
-        """Get or compute a chunk."""
-        if chunk_idx not in self._chunk_cache:
-            # Evict oldest chunks if cache is full
-            while len(self._chunk_cache) >= self._max_cached_chunks:
-                oldest = min(self._chunk_cache.keys())
-                del self._chunk_cache[oldest]
-            
-            # Process this chunk
-            start = chunk_idx * self.chunk_size
-            end = min(start + self.chunk_size, len(self.df))
-            chunk_df = self.df.slice(start, end - start)
-            
-            processed = chunk_df.with_columns(
-                _tensor=pl.col(self.image_col).cv.pipeline(self.pipeline)
-            )
-            self._chunk_cache[chunk_idx] = processed
-        
-        return self._chunk_cache[chunk_idx]
-    
-    def __len__(self) -> int:
-        return len(self.df)
-    
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-        chunk_idx = idx // self.chunk_size
-        local_idx = idx % self.chunk_size
-        
-        chunk = self._get_chunk(chunk_idx)
-        row = chunk.row(local_idx, named=True)
-        
-        arr = numpy_from_bytes(row["_tensor"])
-        tensor = torch.from_numpy(arr.copy()).permute(2, 0, 1)
-        
-        if self.transform:
-            tensor = self.transform(tensor)
-        
-        return tensor, row[self.label_col]
-
-
-# Usage
-pipe = Pipeline().source("image_bytes").resize(224, 224).normalize().sink("torch")
-
-dataset = ChunkedPolarsDataset(df, "image", "label", pipe, chunk_size=1000)
-dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
-```
-
-**Pros:**
-
-- Works with datasets larger than memory
-- Still leverages batch processing within chunks
-- Compatible with shuffling and workers
-
-**Cons:**
-
-- Cache management overhead
-- Shuffling may cause cache thrashing
-- Less efficient than full batch processing
-
-**When to use:** Datasets too large to preprocess entirely.
+**When to use:** Very large datasets, cloud data sources, memory-constrained processing.
 
 ## Pattern Comparison
 
-| Pattern | Memory | Per-Epoch Augment | Workers | Best For |
-|---------|--------|-------------------|---------|----------|
-| **Pre-Epoch Batch** | High | PyTorch only | ✅ | Most training |
-| **Per-Epoch Lazy** | High | Polars + PyTorch | ✅ | Varying augmentation |
-| **Streaming** | Medium | PyTorch only | ❌ | Cloud data |
-| **Chunked** | Low | PyTorch only | ⚠️ | Large datasets |
+| Pattern | Memory | Per-Epoch Augment | Workers | Shuffling | Best For |
+|---------|--------|-------------------|---------|-----------|----------|
+| **Pre-Epoch Batch** | High | PyTorch only | ✅ | ✅ | Most training (dataset fits in memory) |
+| **Per-Epoch Lazy** | High | Polars + PyTorch | ✅ | ✅ | Varying Polars preprocessing per-epoch |
+| **Streaming Batches** | Low | PyTorch only | ❌ | ⚠️ | Very large datasets, cloud sources |
+
+**Memory**: High = full dataset in memory, Low = chunked/streaming  
+**Workers**: ✅ = supports `num_workers > 0`, ❌ = IterableDataset limitation  
+**Shuffling**: ✅ = native support, ⚠️ = must handle at LazyFrame level
 
 ## Multi-Worker Considerations
 
