@@ -784,7 +784,7 @@ impl ViewBuffer {
 
         // Handle remainder elements
         let remainder_start = chunks * CHUNK_SIZE;
-            for i in 0..remainder {
+        for i in 0..remainder {
             let mut acc = src[remainder_start + i];
             for op in &kernel.ops {
                 match op {

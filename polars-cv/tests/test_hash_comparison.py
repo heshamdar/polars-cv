@@ -15,9 +15,7 @@ from PIL import Image
 from polars_cv import Pipeline, hamming_distance, hash_similarity
 
 
-def create_test_image(
-    width: int, height: int, color: tuple[int, int, int]
-) -> bytes:
+def create_test_image(width: int, height: int, color: tuple[int, int, int]) -> bytes:
     """
     Create a test image with a solid color.
 
@@ -194,7 +192,9 @@ class TestHammingDistance:
         result = df.with_columns(distance=hamming_distance(hash1, hash2))
 
         # Structurally different images should have positive distance
-        assert result["distance"][0] > 0, f"Expected positive distance, got {result['distance'][0]}"
+        assert result["distance"][0] > 0, (
+            f"Expected positive distance, got {result['distance'][0]}"
+        )
 
     def test_similar_images_small_distance(self) -> None:
         """Test that similar images (resized) have small Hamming distance."""
@@ -258,7 +258,9 @@ class TestHammingDistance:
 
         # Distance should be positive for different images
         # Note: Maximum is 64 for 64-bit hash, but exact value depends on the algorithm
-        assert result["distance"][0] > 0, f"Expected positive distance, got {result['distance'][0]}"
+        assert result["distance"][0] > 0, (
+            f"Expected positive distance, got {result['distance'][0]}"
+        )
 
 
 class TestHashSimilarity:
@@ -441,15 +443,17 @@ class TestIntegrationWithPerceptualHash:
         buffer_checker = BytesIO()
         img_checker.save(buffer_checker, format="PNG")
 
-        df = pl.DataFrame({
-            "name": ["original", "resized", "different"],
-            "image": [
-                original,
-                resized_buffer.getvalue(),
-                buffer_checker.getvalue(),
-            ],
-            "reference": [original] * 3,
-        })
+        df = pl.DataFrame(
+            {
+                "name": ["original", "resized", "different"],
+                "image": [
+                    original,
+                    resized_buffer.getvalue(),
+                    buffer_checker.getvalue(),
+                ],
+                "reference": [original] * 3,
+            }
+        )
 
         hash_pipe = Pipeline().source("image_bytes").perceptual_hash()
         img_hash = pl.col("image").cv.pipe(hash_pipe)
@@ -466,4 +470,3 @@ class TestIntegrationWithPerceptualHash:
         # All similarities should be valid percentages
         for sim in result["similarity"]:
             assert 0 <= sim <= 100
-

@@ -76,9 +76,7 @@ class TestDtypePreservationListSink:
     not the original source.
     """
 
-    def test_perceptual_hash_list_returns_uint8(
-        self, rgb_image_bytes: bytes
-    ) -> None:
+    def test_perceptual_hash_list_returns_uint8(self, rgb_image_bytes: bytes) -> None:
         """
         Perceptual hash outputs U8 bytes, list sink should return List[UInt8].
 
@@ -174,12 +172,7 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .resize(height=16, width=16)
-            .sink("list")
-        )
+        pipe = Pipeline().source("image_bytes").resize(height=16, width=16).sink("list")
         result = df.with_columns(resized=pl.col("image").cv.pipeline(pipe))
 
         resized_col = result["resized"]
@@ -193,19 +186,14 @@ class TestDtypePreservationArraySink:
     Tests verifying that array sink preserves the buffer's actual dtype.
     """
 
-    def test_perceptual_hash_array_returns_uint8(
-        self, rgb_image_bytes: bytes
-    ) -> None:
+    def test_perceptual_hash_array_returns_uint8(self, rgb_image_bytes: bytes) -> None:
         """
         Perceptual hash with array sink should return Array[UInt8, 8].
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
         pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .perceptual_hash()
-            .sink("array", shape=[8])
+            Pipeline().source("image_bytes").perceptual_hash().sink("array", shape=[8])
         )
         result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
 
@@ -230,9 +218,7 @@ class TestNullValueHandling:
     column has the correct type (e.g., List[UInt8], Binary, etc.).
     """
 
-    def test_null_values_preserve_type_list(
-        self, simple_image_bytes: bytes
-    ) -> None:
+    def test_null_values_preserve_type_list(self, simple_image_bytes: bytes) -> None:
         """
         Null values in input should still result in correctly typed list column.
         """
@@ -296,9 +282,7 @@ class TestNativeSinkTypes:
     Tests verifying native sink returns correct Polars types based on domain.
     """
 
-    def test_reduce_sum_native_returns_float64(
-        self, simple_image_bytes: bytes
-    ) -> None:
+    def test_reduce_sum_native_returns_float64(self, simple_image_bytes: bytes) -> None:
         """
         Scalar reduction with native sink should return Float64.
 
@@ -433,9 +417,11 @@ class TestUnifiedGraphEntry:
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
         # Build multi-output pipeline
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").grayscale()
-        ).alias("gray")
+        base = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes").grayscale())
+            .alias("gray")
+        )
 
         thresh = base.pipe(Pipeline().threshold(128)).alias("thresh")
 
@@ -464,9 +450,11 @@ class TestUnifiedGraphEntry:
         df = pl.DataFrame({"image": [binary_mask_image_bytes]})
 
         # Build pipeline with buffer and scalar outputs
-        base = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").grayscale().threshold(128)
-        ).alias("mask")
+        base = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes").grayscale().threshold(128))
+            .alias("mask")
+        )
 
         pixel_sum = base.pipe(Pipeline().reduce_sum()).alias("sum")
 
@@ -499,9 +487,7 @@ class TestOperationChainDtype:
     Tests verifying that dtype flows correctly through operation chains.
     """
 
-    def test_grayscale_then_normalize_is_float32(
-        self, rgb_image_bytes: bytes
-    ) -> None:
+    def test_grayscale_then_normalize_is_float32(self, rgb_image_bytes: bytes) -> None:
         """
         grayscale (U8) -> normalize (F32) -> list should be List[Float32].
         """
@@ -521,9 +507,7 @@ class TestOperationChainDtype:
             f"Expected List[Float32], got {output_col.dtype}"
         )
 
-    def test_grayscale_then_threshold_is_uint8(
-        self, simple_image_bytes: bytes
-    ) -> None:
+    def test_grayscale_then_threshold_is_uint8(self, simple_image_bytes: bytes) -> None:
         """
         grayscale (U8) -> threshold (U8) -> list should be List[UInt8].
 
@@ -545,9 +529,7 @@ class TestOperationChainDtype:
             f"Expected List[UInt8], got {output_col.dtype}"
         )
 
-    def test_resize_then_perceptual_hash_is_uint8(
-        self, rgb_image_bytes: bytes
-    ) -> None:
+    def test_resize_then_perceptual_hash_is_uint8(self, rgb_image_bytes: bytes) -> None:
         """
         resize (U8) -> perceptual_hash (U8) -> list should be List[UInt8].
         """
@@ -566,4 +548,3 @@ class TestOperationChainDtype:
         assert output_col.dtype == pl.List(pl.UInt8), (
             f"Expected List[UInt8], got {output_col.dtype}"
         )
-

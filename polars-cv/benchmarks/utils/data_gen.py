@@ -436,11 +436,13 @@ def generate_imagefolder_dataset(
         class_names_col.append(class_name)
 
     # Create Parquet metadata file OUTSIDE images/ directory
-    metadata_df = pl.DataFrame({
-        "path": paths,
-        "label": labels,
-        "class_name": class_names_col,
-    })
+    metadata_df = pl.DataFrame(
+        {
+            "path": paths,
+            "label": labels,
+            "class_name": class_names_col,
+        }
+    )
     metadata_path = output_path / "metadata.parquet"
     metadata_df.write_parquet(metadata_path)
 

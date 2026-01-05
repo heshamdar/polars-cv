@@ -31,7 +31,7 @@ polars = { version = "0.46", default-features = false, features = [
     "dtype-u16",
 ] }
 polars-arrow = { version = "0.46" }
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
 pyo3-polars = { version = "0.20", features = ["derive"] }
 
 # Image encoding support

@@ -268,7 +268,7 @@ class TestBinaryOpsReference:
 
 
 @plugin_required
-class TestBinaryOpsPolarsVision:
+class TestBinaryOpsPolarsCV:
     """
     Tests that compare polars-cv binary operations against NumPy reference.
 

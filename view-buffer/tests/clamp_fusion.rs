@@ -194,4 +194,3 @@ fn test_add_clamp_fused() {
     assert!((result_slice[1] - 1.0).abs() < 1e-6);
     assert!((result_slice[2] - 1.0).abs() < 1e-6);
 }
-

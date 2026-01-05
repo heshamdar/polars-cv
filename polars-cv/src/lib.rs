@@ -220,7 +220,9 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
 
     if graph.is_single_output() {
         // Single output mode - return typed field based on domain/sink/dtype
-        let spec = graph.outputs.get("_output")
+        let spec = graph
+            .outputs
+            .get("_output")
             .ok_or_else(|| polars_err!(ComputeError: "Single output graph missing _output key"))?;
         let dtype = crate::graph::dtype_for_output(spec);
         Ok(Field::new(name, dtype))

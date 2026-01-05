@@ -43,7 +43,6 @@ pub enum HashAlgorithm {
     Blockhash,
 }
 
-
 /// Perceptual hashing operation.
 ///
 /// Computes a fixed-length perceptual hash of an image that can be used
@@ -219,9 +218,7 @@ impl Op for PerceptualHashOp {
         if shape.len() < 2 || shape.len() > 3 {
             return Err(ValidationError::InvalidParameter {
                 param: "input_shape".to_string(),
-                reason: format!(
-                    "Expected 2D or 3D image shape [H, W] or [H, W, C], got {shape:?}"
-                ),
+                reason: format!("Expected 2D or 3D image shape [H, W] or [H, W, C], got {shape:?}"),
             });
         }
 
@@ -367,7 +364,10 @@ mod tests {
         let bytes2 = hash2.as_slice::<u8>();
 
         // At least some bytes should differ
-        assert_ne!(bytes1, bytes2, "Different images should produce different hashes");
+        assert_ne!(
+            bytes1, bytes2,
+            "Different images should produce different hashes"
+        );
     }
 
     #[test]
@@ -393,4 +393,3 @@ mod tests {
         assert_eq!(shape_large, vec![32]); // 256 bits = 32 bytes
     }
 }
-

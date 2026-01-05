@@ -471,12 +471,14 @@ pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult
 
             if buffer.layout_facts().is_contiguous() {
                 // Already contiguous - avoid copy
-                let data_slice = unsafe { std::slice::from_raw_parts(buffer.as_ptr::<u8>(), data_len) };
+                let data_slice =
+                    unsafe { std::slice::from_raw_parts(buffer.as_ptr::<u8>(), data_len) };
                 Ok(data_slice.to_vec())
             } else {
                 // Need to materialize to contiguous layout
                 let contig = buffer.to_contiguous();
-                let data_slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+                let data_slice =
+                    unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
                 Ok(data_slice.to_vec())
             }
         }

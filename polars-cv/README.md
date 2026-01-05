@@ -152,6 +152,80 @@ maturin develop
 maturin build --release
 ```
 
+## CI/CD and Publishing
+
+This project uses GitHub Actions for continuous integration and publishing to PyPI.
+
+### Workflows
+
+- **CI** (`ci.yml`): Runs on push/PR to main
+  - Linting (ruff, cargo clippy, cargo fmt)
+  - Tests across Python 3.9-3.12 on Linux, macOS, Windows
+  - Build verification
+
+- **Publish** (`publish.yml`): Runs on release creation
+  - Builds wheels for all platforms (Linux, macOS universal2, Windows)
+  - Publishes to TestPyPI first for validation
+  - Publishes to PyPI after TestPyPI succeeds
+
+### Required GitHub Secrets
+
+To enable publishing, configure these secrets in your GitHub repository settings
+(Settings → Secrets and variables → Actions → New repository secret):
+
+| Secret | Description | Source |
+|--------|-------------|--------|
+| (none required) | Uses trusted publishing with OIDC | Configure on PyPI |
+
+### PyPI Trusted Publisher Setup
+
+This project uses [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/) with OIDC,
+which is more secure than API tokens. To set it up:
+
+1. **PyPI** (https://pypi.org):
+   - Go to your account → Publishing → Add a new pending publisher
+   - Owner: `<your-github-username>`
+   - Repository name: `polars_plugin_dev`
+   - Workflow name: `publish.yml`
+   - Environment name: `pypi`
+
+2. **TestPyPI** (https://test.pypi.org):
+   - Same steps as above
+   - Environment name: `testpypi`
+
+### GitHub Environments
+
+Create two environments in your repository (Settings → Environments):
+
+1. **testpypi** - For TestPyPI publishing
+2. **pypi** - For production PyPI publishing (consider adding required reviewers)
+
+### Release Process
+
+1. Update version in both `Cargo.toml` and `pyproject.toml`
+2. Commit and push to main
+3. Create a GitHub release with a version tag (e.g., `v0.1.0`)
+4. GitHub Actions automatically:
+   - Builds wheels for all platforms
+   - Publishes to TestPyPI
+   - Tests installation from TestPyPI
+   - Publishes to PyPI
+
+### Manual Publishing (Alternative)
+
+If you prefer using API tokens instead of trusted publishing:
+
+```bash
+# Build wheels
+maturin build --release
+
+# Publish to TestPyPI
+maturin publish --repository testpypi
+
+# Publish to PyPI
+maturin publish
+```
+
 ## License
 
 MIT OR Apache-2.0

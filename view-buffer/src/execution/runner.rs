@@ -450,6 +450,9 @@ pub fn apply_perceptual_hash(buf: ViewBuffer, op: PerceptualHashOp) -> ViewBuffe
 }
 
 #[cfg(not(feature = "perceptual_hash"))]
-pub fn apply_perceptual_hash(_buf: ViewBuffer, _op: crate::ops::phash::PerceptualHashOp) -> ViewBuffer {
+pub fn apply_perceptual_hash(
+    _buf: ViewBuffer,
+    _op: crate::ops::phash::PerceptualHashOp,
+) -> ViewBuffer {
     panic!("Perceptual hash operations require the 'perceptual_hash' feature");
 }

@@ -44,7 +44,8 @@ docs = [
 [tool.maturin]
 python-source = "python"
 module-name = "polars_cv._lib"
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "pyo3/abi3-py39"]
+# Note: manylinux compatibility and universal2 are handled by CI workflow (publish.yml)
 
 [dependency-groups]
 dev = [

@@ -155,7 +155,7 @@ def run_e2e_workflow_standard(
 
 
 def run_e2e_workflow_polars(
-    adapter: Any,  # PolarsVisionAdapter
+    adapter: Any,  # PolarsCVAdapter
     workflow: E2EWorkflowConfig,
     file_paths: list[Path],
     warmup_iterations: int = 3,

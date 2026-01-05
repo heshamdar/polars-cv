@@ -11,9 +11,9 @@ from .base import BaseFrameworkAdapter, BenchmarkResult, OperationParams, Operat
 from .opencv_adapter import OpenCVAdapter
 from .pillow_adapter import PillowAdapter
 from .polars_cv_adapter import (
-    PolarsVisionAdapter,
-    PolarsVisionEagerAdapter,
-    PolarsVisionStreamingAdapter,
+    PolarsCVAdapter,
+    PolarsCVEagerAdapter,
+    PolarsCVStreamingAdapter,
 )
 from .torchvision_adapter import (
     TorchvisionAdapter,
@@ -29,9 +29,9 @@ __all__ = [
     "OperationParams",
     "OperationType",
     "PillowAdapter",
-    "PolarsVisionAdapter",
-    "PolarsVisionEagerAdapter",
-    "PolarsVisionStreamingAdapter",
+    "PolarsCVAdapter",
+    "PolarsCVEagerAdapter",
+    "PolarsCVStreamingAdapter",
     "TorchvisionAdapter",
     "TorchvisionCPUAdapter",
     "TorchvisionCUDAAdapter",
@@ -55,8 +55,8 @@ def get_adapter(name: str) -> BaseFrameworkAdapter:
     adapters: dict[str, type[BaseFrameworkAdapter]] = {
         "opencv": OpenCVAdapter,
         "pillow": PillowAdapter,
-        "polars-cv-eager": PolarsVisionEagerAdapter,
-        "polars-cv-streaming": PolarsVisionStreamingAdapter,
+        "polars-cv-eager": PolarsCVEagerAdapter,
+        "polars-cv-streaming": PolarsCVStreamingAdapter,
         "torchvision-cpu": TorchvisionCPUAdapter,
         "torchvision-mps": TorchvisionMPSAdapter,
         "torchvision-cuda": TorchvisionCUDAAdapter,
@@ -78,8 +78,8 @@ def get_available_adapters() -> list[BaseFrameworkAdapter]:
         List of adapters that are available (dependencies installed).
     """
     all_adapters = [
-        PolarsVisionEagerAdapter(),
-        PolarsVisionStreamingAdapter(),
+        PolarsCVEagerAdapter(),
+        PolarsCVStreamingAdapter(),
         OpenCVAdapter(),
         PillowAdapter(),
         TorchvisionCPUAdapter(),

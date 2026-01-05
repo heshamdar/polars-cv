@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 
-class PolarsVisionAdapter(BaseFrameworkAdapter):
+class PolarsCVAdapter(BaseFrameworkAdapter):
     """
     Adapter for polars-cv image processing.
 
@@ -634,7 +634,7 @@ class PolarsVisionAdapter(BaseFrameworkAdapter):
         return self.apply_operations_blob(decoded_images, operations)
 
 
-class PolarsVisionEagerAdapter(PolarsVisionAdapter):
+class PolarsCVEagerAdapter(PolarsCVAdapter):
     """polars-cv adapter with eager execution."""
 
     def __init__(self) -> None:
@@ -642,7 +642,7 @@ class PolarsVisionEagerAdapter(PolarsVisionAdapter):
         super().__init__(streaming=False)
 
 
-class PolarsVisionStreamingAdapter(PolarsVisionAdapter):
+class PolarsCVStreamingAdapter(PolarsCVAdapter):
     """polars-cv adapter with streaming execution."""
 
     def __init__(self) -> None:

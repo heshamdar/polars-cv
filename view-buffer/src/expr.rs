@@ -7,9 +7,9 @@ use crate::execution::{ExecutionPlan, PlanStep};
 use crate::ops::affine::AffineParams;
 use crate::ops::cost::{OpCost, OpCostReport};
 use crate::ops::io::{PlaceholderMeta, SinkFormat, SourceFormat};
+use crate::ops::phash::PerceptualHashOp;
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::MemoryEffect;
-use crate::ops::phash::PerceptualHashOp;
 use crate::ops::{
     ComputeOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op, ViewDto, ViewOp,
 };

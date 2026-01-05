@@ -60,9 +60,7 @@ class TestReduceSum:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_sum()
-        result = df.select(
-            total=pl.col("mask").cv.pipe(pipe).sink("native")
-        )
+        result = df.select(total=pl.col("mask").cv.pipe(pipe).sink("native"))
 
         # 4 corners * 255 = 1020
         total = result.row(0)[0]
@@ -76,9 +74,7 @@ class TestReduceSum:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_sum()
-        result = df.select(
-            total=pl.col("mask").cv.pipe(pipe).sink("native")
-        )
+        result = df.select(total=pl.col("mask").cv.pipe(pipe).sink("native"))
 
         total = result.row(0)[0]
         assert total == 0.0, f"Expected 0.0, got {total}"
@@ -91,9 +87,7 @@ class TestReduceSum:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_sum()
-        result = df.select(
-            total=pl.col("mask").cv.pipe(pipe).sink("native")
-        )
+        result = df.select(total=pl.col("mask").cv.pipe(pipe).sink("native"))
 
         # 100 pixels * 255 = 25500
         total = result.row(0)[0]
@@ -111,9 +105,7 @@ class TestListSink:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.select(
-            values=pl.col("mask").cv.pipe(pipe).sink("list")
-        )
+        result = df.select(values=pl.col("mask").cv.pipe(pipe).sink("list"))
 
         # The result should be a List type with UInt8 inner (grayscale outputs U8)
         assert result["values"].dtype == pl.List(pl.UInt8), (
@@ -135,9 +127,7 @@ class TestListSink:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         pipe = Pipeline().source("image_bytes").grayscale()
-        result = df.select(
-            values=pl.col("mask").cv.pipe(pipe).sink("list")
-        )
+        result = df.select(values=pl.col("mask").cv.pipe(pipe).sink("list"))
 
         values = result.row(0)[0]
         # Values should match the original mask (flattened)
@@ -156,10 +146,10 @@ class TestArraySink:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         # Grayscale produces shape [2, 2, 1] (H, W, C)
-        pipe = Pipeline().source("image_bytes").grayscale().sink("array", shape=[2, 2, 1])
-        result = df.select(
-            values=pl.col("mask").cv.pipeline(pipe)
+        pipe = (
+            Pipeline().source("image_bytes").grayscale().sink("array", shape=[2, 2, 1])
         )
+        result = df.select(values=pl.col("mask").cv.pipeline(pipe))
 
         # The result should be an Array type with nested structure
         assert str(result["values"].dtype).startswith("Array"), (
@@ -197,19 +187,21 @@ class TestArraySink:
 
     def test_array_sink_values_structure(self) -> None:
         """Test that array sink preserves nested structure."""
-        mask = [[100, 200, 150, 175],
-                [50, 100, 75, 125],
-                [25, 50, 37, 62],
-                [10, 20, 15, 25]]
+        mask = [
+            [100, 200, 150, 175],
+            [50, 100, 75, 125],
+            [25, 50, 37, 62],
+            [10, 20, 15, 25],
+        ]
         mask_bytes = create_mask_bytes(mask)
 
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         # Shape [4, 4, 1] for 4x4 grayscale image
-        pipe = Pipeline().source("image_bytes").grayscale().sink("array", shape=[4, 4, 1])
-        result = df.select(
-            values=pl.col("mask").cv.pipeline(pipe)
+        pipe = (
+            Pipeline().source("image_bytes").grayscale().sink("array", shape=[4, 4, 1])
         )
+        result = df.select(values=pl.col("mask").cv.pipeline(pipe))
 
         # Check the dtype is correctly nested (grayscale outputs U8)
         expected_dtype = pl.Array(pl.Array(pl.Array(pl.UInt8, 1), 4), 4)
@@ -234,10 +226,12 @@ class TestBitwiseOperations:
         mask1_bytes = create_mask_bytes(mask1)
         mask2_bytes = create_mask_bytes(mask2)
 
-        df = pl.DataFrame({
-            "mask1": [mask1_bytes],
-            "mask2": [mask2_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "mask1": [mask1_bytes],
+                "mask2": [mask2_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         m1 = pl.col("mask1").cv.pipe(pipe)
@@ -245,7 +239,9 @@ class TestBitwiseOperations:
 
         # Use reduce_sum to verify the intersection
         result = df.select(
-            intersection_sum=m1.bitwise_and(m2).pipe(Pipeline().reduce_sum()).sink("native")
+            intersection_sum=m1.bitwise_and(m2)
+            .pipe(Pipeline().reduce_sum())
+            .sink("native")
         )
 
         # The intersection should have non-zero values only in top-left quarter
@@ -265,10 +261,12 @@ class TestBitwiseOperations:
         mask1_bytes = create_mask_bytes(mask1)
         mask2_bytes = create_mask_bytes(mask2)
 
-        df = pl.DataFrame({
-            "mask1": [mask1_bytes],
-            "mask2": [mask2_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "mask1": [mask1_bytes],
+                "mask2": [mask2_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         m1 = pl.col("mask1").cv.pipe(pipe)
@@ -295,10 +293,12 @@ class TestBitwiseOperations:
         mask1_bytes = create_mask_bytes(mask1)
         mask2_bytes = create_mask_bytes(mask2)
 
-        df = pl.DataFrame({
-            "mask1": [mask1_bytes],
-            "mask2": [mask2_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "mask1": [mask1_bytes],
+                "mask2": [mask2_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         m1 = pl.col("mask1").cv.pipe(pipe)
@@ -324,18 +324,18 @@ class TestMaskIoU:
         mask = [[255] * 10 for _ in range(10)]
         mask_bytes = create_mask_bytes(mask)
 
-        df = pl.DataFrame({
-            "pred": [mask_bytes],
-            "target": [mask_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "pred": [mask_bytes],
+                "target": [mask_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         pred = pl.col("pred").cv.pipe(pipe).alias("pred")
         target = pl.col("target").cv.pipe(pipe).alias("target")
 
-        result = df.select(
-            iou=mask_iou(pred, target)
-        )
+        result = df.select(iou=mask_iou(pred, target))
 
         iou_value = result.row(0)[0]
         assert abs(iou_value - 1.0) < 0.001, f"Expected IoU ~1.0, got {iou_value}"
@@ -349,18 +349,18 @@ class TestMaskIoU:
         mask1_bytes = create_mask_bytes(mask1)
         mask2_bytes = create_mask_bytes(mask2)
 
-        df = pl.DataFrame({
-            "pred": [mask1_bytes],
-            "target": [mask2_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "pred": [mask1_bytes],
+                "target": [mask2_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         pred = pl.col("pred").cv.pipe(pipe).alias("pred")
         target = pl.col("target").cv.pipe(pipe).alias("target")
 
-        result = df.select(
-            iou=mask_iou(pred, target)
-        )
+        result = df.select(iou=mask_iou(pred, target))
 
         iou_value = result.row(0)[0]
         assert iou_value < 0.001, f"Expected IoU ~0, got {iou_value}"
@@ -379,22 +379,24 @@ class TestMaskIoU:
         mask1_bytes = create_mask_bytes(mask1)
         mask2_bytes = create_mask_bytes(mask2)
 
-        df = pl.DataFrame({
-            "pred": [mask1_bytes],
-            "target": [mask2_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "pred": [mask1_bytes],
+                "target": [mask2_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         pred = pl.col("pred").cv.pipe(pipe).alias("pred")
         target = pl.col("target").cv.pipe(pipe).alias("target")
 
-        result = df.select(
-            iou=mask_iou(pred, target)
-        )
+        result = df.select(iou=mask_iou(pred, target))
 
         iou_value = result.row(0)[0]
         expected = 25 / 75
-        assert abs(iou_value - expected) < 0.01, f"Expected IoU ~{expected:.3f}, got {iou_value:.3f}"
+        assert abs(iou_value - expected) < 0.01, (
+            f"Expected IoU ~{expected:.3f}, got {iou_value:.3f}"
+        )
 
 
 class TestMaskDice:
@@ -406,18 +408,18 @@ class TestMaskDice:
         mask = [[255] * 10 for _ in range(10)]
         mask_bytes = create_mask_bytes(mask)
 
-        df = pl.DataFrame({
-            "pred": [mask_bytes],
-            "target": [mask_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "pred": [mask_bytes],
+                "target": [mask_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         pred = pl.col("pred").cv.pipe(pipe).alias("pred")
         target = pl.col("target").cv.pipe(pipe).alias("target")
 
-        result = df.select(
-            dice=mask_dice(pred, target)
-        )
+        result = df.select(dice=mask_dice(pred, target))
 
         dice_value = result.row(0)[0]
         assert abs(dice_value - 1.0) < 0.001, f"Expected Dice ~1.0, got {dice_value}"
@@ -431,18 +433,18 @@ class TestMaskDice:
         mask1_bytes = create_mask_bytes(mask1)
         mask2_bytes = create_mask_bytes(mask2)
 
-        df = pl.DataFrame({
-            "pred": [mask1_bytes],
-            "target": [mask2_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "pred": [mask1_bytes],
+                "target": [mask2_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         pred = pl.col("pred").cv.pipe(pipe).alias("pred")
         target = pl.col("target").cv.pipe(pipe).alias("target")
 
-        result = df.select(
-            dice=mask_dice(pred, target)
-        )
+        result = df.select(dice=mask_dice(pred, target))
 
         dice_value = result.row(0)[0]
         assert dice_value < 0.001, f"Expected Dice ~0, got {dice_value}"
@@ -461,22 +463,24 @@ class TestMaskDice:
         mask1_bytes = create_mask_bytes(mask1)
         mask2_bytes = create_mask_bytes(mask2)
 
-        df = pl.DataFrame({
-            "pred": [mask1_bytes],
-            "target": [mask2_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "pred": [mask1_bytes],
+                "target": [mask2_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         pred = pl.col("pred").cv.pipe(pipe).alias("pred")
         target = pl.col("target").cv.pipe(pipe).alias("target")
 
-        result = df.select(
-            dice=mask_dice(pred, target)
-        )
+        result = df.select(dice=mask_dice(pred, target))
 
         dice_value = result.row(0)[0]
         expected = 2 * 25 / 100
-        assert abs(dice_value - expected) < 0.01, f"Expected Dice ~{expected:.3f}, got {dice_value:.3f}"
+        assert abs(dice_value - expected) < 0.01, (
+            f"Expected Dice ~{expected:.3f}, got {dice_value:.3f}"
+        )
 
 
 class TestMaskMetricsBatch:
@@ -494,38 +498,42 @@ class TestMaskMetricsBatch:
         right_mask = [[0] * 5 + [255] * 5 for _ in range(10)]
         top_mask = [[255] * 10 for _ in range(5)] + [[0] * 10 for _ in range(5)]
 
-        df = pl.DataFrame({
-            "pred": [
-                create_mask_bytes(full_mask),
-                create_mask_bytes(left_mask),
-                create_mask_bytes(left_mask),
-            ],
-            "target": [
-                create_mask_bytes(full_mask),
-                create_mask_bytes(right_mask),
-                create_mask_bytes(top_mask),
-            ],
-        })
+        df = pl.DataFrame(
+            {
+                "pred": [
+                    create_mask_bytes(full_mask),
+                    create_mask_bytes(left_mask),
+                    create_mask_bytes(left_mask),
+                ],
+                "target": [
+                    create_mask_bytes(full_mask),
+                    create_mask_bytes(right_mask),
+                    create_mask_bytes(top_mask),
+                ],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         pred = pl.col("pred").cv.pipe(pipe).alias("pred")
         target = pl.col("target").cv.pipe(pipe).alias("target")
 
-        result = df.select(
-            iou=mask_iou(pred, target)
-        )
+        result = df.select(iou=mask_iou(pred, target))
 
         iou_values = result["iou"].to_list()
-        
+
         # Row 1: Perfect overlap
-        assert abs(iou_values[0] - 1.0) < 0.01, f"Row 1: Expected IoU ~1.0, got {iou_values[0]}"
-        
+        assert abs(iou_values[0] - 1.0) < 0.01, (
+            f"Row 1: Expected IoU ~1.0, got {iou_values[0]}"
+        )
+
         # Row 2: No overlap
         assert iou_values[1] < 0.01, f"Row 2: Expected IoU ~0, got {iou_values[1]}"
-        
+
         # Row 3: Partial overlap (25/75 = 0.333)
         expected = 25 / 75
-        assert abs(iou_values[2] - expected) < 0.02, f"Row 3: Expected IoU ~{expected:.3f}, got {iou_values[2]}"
+        assert abs(iou_values[2] - expected) < 0.02, (
+            f"Row 3: Expected IoU ~{expected:.3f}, got {iou_values[2]}"
+        )
 
 
 class TestIoUDiceRelationship:
@@ -540,22 +548,20 @@ class TestIoUDiceRelationship:
         mask1_bytes = create_mask_bytes(mask1)
         mask2_bytes = create_mask_bytes(mask2)
 
-        df = pl.DataFrame({
-            "pred": [mask1_bytes],
-            "target": [mask2_bytes],
-        })
+        df = pl.DataFrame(
+            {
+                "pred": [mask1_bytes],
+                "target": [mask2_bytes],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").grayscale()
         pred = pl.col("pred").cv.pipe(pipe).alias("pred")
         target = pl.col("target").cv.pipe(pipe).alias("target")
 
         # Compute both metrics
-        result_iou = df.select(
-            iou=mask_iou(pred, target)
-        )
-        result_dice = df.select(
-            dice=mask_dice(pred, target)
-        )
+        result_iou = df.select(iou=mask_iou(pred, target))
+        result_dice = df.select(dice=mask_dice(pred, target))
 
         iou_value = result_iou.row(0)[0]
         dice_value = result_dice.row(0)[0]
@@ -566,4 +572,3 @@ class TestIoUDiceRelationship:
             f"Dice should equal 2*IoU/(1+IoU). "
             f"Got Dice={dice_value:.4f}, expected {expected_dice:.4f} from IoU={iou_value:.4f}"
         )
-
