@@ -58,6 +58,39 @@ jobs:
           fi
           uv pip install maturin
 
+      - name: Debug - Check directory structure
+        working-directory: polars-cv
+        shell: bash
+        run: |
+          echo "=== Current working directory ==="
+          pwd
+          echo ""
+          echo "=== Directory contents ==="
+          ls -la
+          echo ""
+          echo "=== Python directory check ==="
+          if [ -d "python" ]; then
+            echo "✓ python/ directory exists"
+            ls -la python/ | head -10
+          else
+            echo "✗ python/ directory NOT FOUND"
+          fi
+          echo ""
+          echo "=== pyproject.toml check ==="
+          if [ -f "pyproject.toml" ]; then
+            echo "✓ pyproject.toml exists"
+            grep -A 3 "\[tool.maturin\]" pyproject.toml || echo "No [tool.maturin] section found"
+          else
+            echo "✗ pyproject.toml NOT FOUND"
+          fi
+          echo ""
+          echo "=== Cargo.toml check ==="
+          if [ -f "Cargo.toml" ]; then
+            echo "✓ Cargo.toml exists"
+          else
+            echo "✗ Cargo.toml NOT FOUND"
+          fi
+
       - name: Build package with maturin
         working-directory: polars-cv
         shell: bash
@@ -67,8 +100,25 @@ jobs:
           else
             source .venv/bin/activate
           fi
-          # Maturin should find python/ relative to pyproject.toml (we're in polars-cv/)
-          maturin develop --release
+          echo "=== Building with maturin ==="
+          echo "Working directory before cd: $(pwd)"
+          # Explicitly ensure we're in the polars-cv directory
+          cd "$(pwd)"
+          echo "Working directory after cd: $(pwd)"
+          echo "Python directory exists: $([ -d python ] && echo 'YES' || echo 'NO')"
+          echo "Python directory absolute path: $(realpath python 2>/dev/null || echo 'NOT FOUND')"
+          echo "pyproject.toml exists: $([ -f pyproject.toml ] && echo 'YES' || echo 'NO')"
+          echo "Cargo.toml exists: $([ -f Cargo.toml ] && echo 'YES' || echo 'NO')"
+          echo ""
+          echo "=== Maturin version ==="
+          maturin --version || echo "Failed to get maturin version"
+          echo ""
+          echo "=== Running maturin develop ==="
+          # Try with explicit manifest path first
+          maturin develop --release --manifest-path Cargo.toml --verbose || {
+            echo "Failed with --manifest-path, trying without..."
+            maturin develop --release --verbose
+          }
 
       - name: Install test dependencies
         working-directory: polars-cv
