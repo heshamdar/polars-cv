@@ -8,7 +8,7 @@ pub enum ScalarOp {
     Add(f32),
     Mul(f32),
     Relu,
-    // We can add Clamp, Sigmoid, etc. later
+    Clamp(f32, f32),
 }
 
 impl ScalarOp {
@@ -18,6 +18,7 @@ impl ScalarOp {
             ScalarOp::Add(v) => format!("Add({v:.2})"),
             ScalarOp::Mul(v) => format!("Mul({v:.2})"),
             ScalarOp::Relu => "Relu".to_string(),
+            ScalarOp::Clamp(min, max) => format!("Clamp({min:.2}, {max:.2})"),
         }
     }
 
@@ -27,6 +28,7 @@ impl ScalarOp {
             ScalarOp::Add(_) => "Add",
             ScalarOp::Mul(_) => "Mul",
             ScalarOp::Relu => "Relu",
+            ScalarOp::Clamp(_, _) => "Clamp",
         }
     }
 }

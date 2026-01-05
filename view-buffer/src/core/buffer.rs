@@ -770,6 +770,11 @@ impl ViewBuffer {
                             *v = v.max(0.0);
                         }
                     }
+                    ScalarOp::Clamp(min, max) => {
+                        for v in &mut acc {
+                            *v = v.clamp(*min, *max);
+                        }
+                    }
                 }
             }
 
@@ -779,13 +784,14 @@ impl ViewBuffer {
 
         // Handle remainder elements
         let remainder_start = chunks * CHUNK_SIZE;
-        for i in 0..remainder {
+            for i in 0..remainder {
             let mut acc = src[remainder_start + i];
             for op in &kernel.ops {
                 match op {
                     ScalarOp::Add(c) => acc += c,
                     ScalarOp::Mul(c) => acc *= c,
                     ScalarOp::Relu => acc = acc.max(0.0),
+                    ScalarOp::Clamp(min, max) => acc = acc.clamp(*min, *max),
                 }
             }
             output.push(acc);
@@ -838,6 +844,7 @@ impl ViewBuffer {
                         ScalarOp::Add(c) => acc += c,
                         ScalarOp::Mul(c) => acc *= c,
                         ScalarOp::Relu => acc = acc.max(0.0),
+                        ScalarOp::Clamp(min, max) => acc = acc.clamp(*min, *max),
                     }
                 }
 
