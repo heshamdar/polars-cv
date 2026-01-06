@@ -1,9 +1,9 @@
 site_name: polars-cv
 site_description: High-performance vision/array processing for Polars DataFrames
-site_url: https://github.com/your-org/polars-cv
+site_url: https://github.com/heshamdar/polars-cv
 
-repo_name: your-org/polars-cv
-repo_url: https://github.com/your-org/polars-cv
+repo_name: heshamdar/polars-cv
+repo_url: https://github.com/heshamdar/polars-cv
 edit_uri: ""
 
 theme:

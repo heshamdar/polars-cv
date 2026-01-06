@@ -95,8 +95,8 @@ from PIL import Image
 from polars_cv import (
     BBOX_SCHEMA,
     CONTOUR_SCHEMA,
-    HashAlgorithm,
     POINT_SCHEMA,
+    HashAlgorithm,
     Pipeline,
     hamming_distance,
     hash_similarity,
@@ -2169,12 +2169,8 @@ print("   This technique scales well to large datasets - no Python loops require
 # This efficiently compares ALL pairs in a single optimized operation
 
 # Create cross-join for pairwise comparison
-left = dataset_df.select(
-    pl.col("id").alias("id_a"), pl.col("image").alias("image_a")
-)
-right = dataset_df.select(
-    pl.col("id").alias("id_b"), pl.col("image").alias("image_b")
-)
+left = dataset_df.select(pl.col("id").alias("id_a"), pl.col("image").alias("image_a"))
+right = dataset_df.select(pl.col("id").alias("id_b"), pl.col("image").alias("image_b"))
 cross = left.join(right, how="cross")
 
 # Filter to only compare where id_a < id_b (avoid duplicates and self-comparison)
@@ -2241,7 +2237,7 @@ print("   This approach is highly scalable - no Python loops required!")
 #
 # ### 🔗 Resources
 #
-# - **Repository**: [polars-cv](https://github.com/your-org/polars-cv)
+# - **Repository**: [polars-cv](https://github.com/heshamdar/polars-cv)
 # - **view-buffer**: The underlying Rust tensor orchestration library
 # - **Polars Documentation**: [pola.rs](https://pola.rs)
 

@@ -248,9 +248,8 @@ def benchmark_polars_cv_pipeline(
         BenchmarkResult with timing information.
     """
     import torch
-    from torch.utils.data import DataLoader, Dataset
-
     from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_bytes
+    from torch.utils.data import DataLoader, Dataset
 
     mode = "streaming" if use_streaming else "eager"
     log(f"Setting up polars-cv pipeline (mode={mode})...")
@@ -259,7 +258,7 @@ def benchmark_polars_cv_pipeline(
     preprocess_pipe = (
         Pipeline()
         .source("file_path")  # Load from paths in DataFrame
-        .resize(height=256, width=256)
+        .resize(height=256, width=256, filter="bilinear")
         .crop(top=16, left=16, height=224, width=224)  # Center crop
         .scale(1 / 255.0)  # [0, 255] -> [0, 1]
         .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
@@ -390,9 +389,8 @@ def verify_output_equivalence(
     """
     import torch
     from datasets import load_dataset
-    from torchvision import transforms
-
     from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_bytes
+    from torchvision import transforms
 
     log("Verifying output equivalence between pipelines...")
     log("  Note: Minor differences expected due to resize interpolation algorithms")
@@ -411,7 +409,7 @@ def verify_output_equivalence(
     pv_pipe = (
         Pipeline()
         .source("file_path")
-        .resize(height=256, width=256)
+        .resize(height=256, width=256, filter="bilinear")
         .crop(top=16, left=16, height=224, width=224)
         .scale(1 / 255.0)
         .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
@@ -488,11 +486,10 @@ def run_inference_serving(
     """
     import torch
     from datasets import load_dataset
+    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_bytes
     from torch.utils.data import DataLoader, Dataset
     from torchvision import transforms
     from torchvision.models import resnet18
-
-    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_bytes
 
     log_step(f"INFERENCE SERVING COMPARISON ({num_epochs} passes)")
 
@@ -583,7 +580,7 @@ def run_inference_serving(
     pv_pipe = (
         Pipeline()
         .source("file_path")
-        .resize(height=256, width=256)
+        .resize(height=256, width=256, filter="bilinear")
         .crop(top=16, left=16, height=224, width=224)
         .scale(1 / 255.0)
         .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)

@@ -23,7 +23,7 @@ If you want to build from source (e.g., for development):
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/polars-cv.git
+git clone https://github.com/heshamdar/polars-cv.git
 cd polars-cv
 
 # Install with uv (recommended)
