@@ -319,7 +319,7 @@ def run_benchmarks(args: argparse.Namespace) -> int:
 
         validator = OutputValidator(
             tolerance=args.tolerance,
-            reference_framework="opencv",
+            reference_framework="pillow",
         )
 
         # Generate test image
