@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
-
 from polars_cv.geometry import CONTOUR_SCHEMA, POINT_SCHEMA
 
 if TYPE_CHECKING:
@@ -350,7 +349,7 @@ class TestContourScale:
         # Original: 100x100 square, centroid at (50, 50)
         # After 0.5 scale: points should be halfway between centroid and original
         result = square_df.with_columns(
-            scaled=pl.col("contour").contour.scale(sx=0.5, sy=0.5)
+            scaled=pl.col("contour").contour.scale(sx=0.5, sy=0.5, origin="centroid")
         )
         scaled = result["scaled"][0]
         exterior = scaled["exterior"]
@@ -368,13 +367,26 @@ class TestContourScale:
     def test_scale_one_is_identity(self, square_df: pl.DataFrame) -> None:
         """Scaling by (1, 1) should not change points."""
         result = square_df.with_columns(
-            scaled=pl.col("contour").contour.scale(sx=1.0, sy=1.0)
+            scaled=pl.col("contour").contour.scale(sx=1.0, sy=1.0, origin="centroid")
         )
         scaled = result["scaled"][0]
         exterior = scaled["exterior"]
 
         assert exterior[0]["x"] == pytest.approx(0.0)
         assert exterior[0]["y"] == pytest.approx(0.0)
+
+    def test_origin_scaling(self, square_df: pl.DataFrame) -> None:
+        """Scaling with different origins should change the points."""
+        result = square_df.with_columns(
+            scaled=pl.col("contour").contour.scale(sx=0.1, sy=0.1, origin="origin")
+        )
+        scaled = result["scaled"][0]
+        exterior = scaled["exterior"]
+        print(result)
+        assert exterior[0]["x"] == pytest.approx(0)
+        assert exterior[0]["y"] == pytest.approx(0)
+        assert exterior[1]["x"] == pytest.approx(10)
+        assert exterior[1]["y"] == pytest.approx(0)
 
 
 @plugin_required

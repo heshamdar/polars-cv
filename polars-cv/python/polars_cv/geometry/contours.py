@@ -288,7 +288,7 @@ class ContourNamespace:
         sx: float | pl.Expr,
         sy: float | pl.Expr,
         *,
-        origin: Literal["centroid", "bbox_center", "origin"] = "centroid",
+        origin: Literal["centroid", "bbox_center", "origin"] = "origin",
     ) -> pl.Expr:
         """
         Scale contour relative to specified origin.

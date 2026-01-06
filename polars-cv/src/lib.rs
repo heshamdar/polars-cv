@@ -285,6 +285,9 @@ pub struct ContourKwargs {
     /// Y coordinate for point tests.
     #[serde(default)]
     pub y: Option<f64>,
+    /// Origin for scale operations: "origin", "centroid", or "bbox_center".
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 /// Helper function to parse a contour from a Polars Struct value.
@@ -664,6 +667,15 @@ fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Serie
     let sx = kwargs.sx.unwrap_or(1.0);
     let sy = kwargs.sy.unwrap_or(1.0);
 
+    // Parse origin parameter
+    let scale_origin = match kwargs.origin.as_deref() {
+        Some("origin") => view_buffer::geometry::ops::ScaleOrigin::Origin,
+        Some("bbox_center") => view_buffer::geometry::ops::ScaleOrigin::BBoxCenter,
+        Some("centroid") | None => view_buffer::geometry::ops::ScaleOrigin::Centroid,
+        _ => view_buffer::geometry::ops::ScaleOrigin::Centroid, // Default fallback
+    };
+
+
     let series = &inputs[0];
     let len = series.len();
     let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
@@ -678,7 +690,7 @@ fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Serie
                 &contour,
                 sx,
                 sy,
-                view_buffer::geometry::ops::ScaleOrigin::Centroid,
+                scale_origin,
             );
             results.push(Some(scaled));
         }
