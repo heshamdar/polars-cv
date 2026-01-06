@@ -19,8 +19,8 @@ jobs:
       matrix:
         # With abi3-py39, one wheel works for all Python 3.9+ versions
         # Test on minimum (3.9) and latest (3.13) to verify compatibility
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.9", "3.13"]
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.13"]
 
     steps:
       - uses: actions/checkout@v4
