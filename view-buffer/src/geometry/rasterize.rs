@@ -58,11 +58,12 @@ fn scanline_fill(polygon: &[Point], width: usize, height: usize, data: &mut [u8]
         max_y = max_y.max(p.y);
     }
 
-    let start_y = (min_y.floor() as i32).max(0) as usize;
+    // Clamp y coordinates to valid range [0, height)
+    let start_y = (min_y.floor() as i32).max(0).min((height - 1) as i32) as usize;
     let end_y = ((max_y.ceil() as i32) + 1).min(height as i32) as usize;
 
     // For each scanline
-    for y in start_y..end_y {
+    for y in start_y..end_y.min(height) {
         let scan_y = y as f64 + 0.5; // Sample at pixel center
 
         // Find all intersection points with edges
@@ -91,11 +92,16 @@ fn scanline_fill(polygon: &[Point], width: usize, height: usize, data: &mut [u8]
                 break;
             }
 
-            let x_start = (intersections[i].ceil() as i32).max(0) as usize;
-            let x_end = (intersections[i + 1].floor() as i32 + 1).min(width as i32) as usize;
+            // Clamp x coordinates to valid range [0, width)
+            let x_start = (intersections[i].ceil() as i32).max(0).min((width - 1) as i32) as usize;
+            let x_end = ((intersections[i + 1].floor() as i32) + 1).min(width as i32) as usize;
 
-            for x in x_start..x_end {
-                data[y * width + x] = value;
+            // Ensure we don't exceed bounds
+            for x in x_start..x_end.min(width) {
+                let idx = y * width + x;
+                if idx < data.len() {
+                    data[idx] = value;
+                }
             }
         }
     }
