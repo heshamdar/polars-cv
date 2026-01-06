@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: polars-cv-builder:latest
+    volumes:
+      # Mount the project directory for development
+      - .:/workspace
+      # Cache Rust dependencies
+      - cargo-cache:/usr/local/cargo/registry
+      - cargo-git-cache:/usr/local/cargo/git
+    working_dir: /workspace
+    environment:
+      - CARGO_TERM_COLOR=always
+      - RUST_BACKTRACE=1
+    # Override command to keep container running for interactive use
+    command: tail -f /dev/null
+
+volumes:
+  cargo-cache:
+  cargo-git-cache:
+  cargo-target:
+
