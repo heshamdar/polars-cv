@@ -90,8 +90,22 @@ result = df.with_columns(resized=pl.col("image").cv.pipeline(pipe))
 | `jpeg` | JPEG bytes | Web, compressed |
 | `numpy` | NumPy-compatible bytes | ML frameworks |
 | `torch` | PyTorch-compatible bytes | Deep learning |
-| `list` | Polars List column | Analysis in Polars |
-| `array` | Polars Array column | Fixed-shape data |
+| `list` | Polars nested List | Analysis in Polars |
+| `array` | Polars fixed-size Array | Fixed-shape data |
+
+## Round-Trip Processing
+
+Data output to `list` can be later processed using `list` source:
+
+```python
+# Step 1: Convert image to Polars List
+pipe1 = Pipeline().source("image_bytes").sink("list")
+df2 = df.with_columns(pixels=pl.col("image").cv.pipeline(pipe1))
+
+# Step 2: Process the list data later
+pipe2 = Pipeline().source("list", dtype="u8").grayscale().sink("numpy")
+result = df2.with_columns(gray=pl.col("pixels").cv.pipeline(pipe2))
+```
 
 ## Reading from Files
 

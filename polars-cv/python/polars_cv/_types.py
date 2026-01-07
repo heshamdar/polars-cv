@@ -33,6 +33,8 @@ class SourceFormat(str, Enum):
     RAW = "raw"  # Raw bytes (requires dtype and shape)
     FILE_PATH = "file_path"  # Read from file path string
     CONTOUR = "contour"  # Contour struct data
+    LIST = "list"  # Polars nested List column (requires dtype)
+    ARRAY = "array"  # Polars fixed-size Array column (requires dtype)
 
 
 class SinkFormat(str, Enum):
