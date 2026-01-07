@@ -20,7 +20,6 @@ import numpy as np
 import polars as pl
 import pytest
 from PIL import Image
-
 from polars_cv import Pipeline, numpy_from_bytes
 
 if TYPE_CHECKING:
@@ -68,21 +67,32 @@ def binary_mask_image_bytes() -> bytes:
 # ============================================================
 
 
+def get_innermost_dtype(dtype: pl.DataType) -> pl.DataType:
+    """Extract the innermost dtype from a nested List/Array type."""
+    current = dtype
+    while hasattr(current, "inner") and current.inner is not None:
+        current = current.inner
+    return current
+
+
 class TestDtypePreservationListSink:
     """
     Tests verifying that list sink preserves the buffer's actual dtype.
 
     The buffer dtype is determined by the FINAL operation in the pipeline,
     not the original source.
+
+    Note: List sink now preserves shape as nested lists. For a 3D buffer
+    [H, W, C], the result is List[List[List[inner_dtype]]]. These tests
+    verify that the innermost dtype is correctly preserved.
     """
 
     def test_perceptual_hash_list_returns_uint8(self, rgb_image_bytes: bytes) -> None:
         """
         Perceptual hash outputs U8 bytes, list sink should return List[UInt8].
 
-        The perceptual hash operation produces a fixed-size U8 buffer (shape [8]
-        for 64-bit hash). When sunk as list, this should remain UInt8, not
-        be converted to Float64.
+        The perceptual hash operation produces a 1D U8 buffer (shape [8]
+        for 64-bit hash). When sunk as list, this should be a flat List[UInt8].
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
@@ -91,9 +101,10 @@ class TestDtypePreservationListSink:
 
         # Check the inner dtype of the list column
         hash_col = result["hash"]
-        assert hash_col.dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8] for perceptual hash, got {hash_col.dtype}"
-        )
+        # Perceptual hash is 1D, so it should be a flat List[UInt8]
+        assert hash_col.dtype == pl.List(
+            pl.UInt8
+        ), f"Expected List[UInt8] for perceptual hash, got {hash_col.dtype}"
 
         # Verify the values are in valid U8 range (0-255)
         hash_values = hash_col[0].to_list()
@@ -102,9 +113,10 @@ class TestDtypePreservationListSink:
 
     def test_grayscale_list_returns_uint8(self, rgb_image_bytes: bytes) -> None:
         """
-        Grayscale outputs U8, list sink should return List[UInt8].
+        Grayscale outputs U8, list sink should preserve UInt8 as innermost type.
 
         The grayscale operation has Fixed(U8) output dtype rule.
+        Shape is [H, W, 1], so result is List[List[List[UInt8]]].
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
@@ -112,15 +124,22 @@ class TestDtypePreservationListSink:
         result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
 
         gray_col = result["gray"]
-        assert gray_col.dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8] for grayscale, got {gray_col.dtype}"
-        )
+        # Grayscale produces 3D shape [H, W, 1] -> nested lists
+        expected_dtype = pl.List(pl.List(pl.List(pl.UInt8)))
+        assert (
+            gray_col.dtype == expected_dtype
+        ), f"Expected List[List[List[UInt8]]] for grayscale, got {gray_col.dtype}"
+        # Also verify innermost dtype is UInt8
+        assert (
+            get_innermost_dtype(gray_col.dtype) == pl.UInt8
+        ), "Innermost dtype should be UInt8"
 
     def test_normalize_list_returns_float32(self, simple_image_bytes: bytes) -> None:
         """
-        Normalize outputs F32 by default, list sink should return List[Float32].
+        Normalize outputs F32 by default, list sink should preserve Float32 as innermost type.
 
         The normalize operation has Configurable(F32) output dtype rule.
+        Shape is [H, W, C], so result is nested lists with Float32 innermost.
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
@@ -128,13 +147,14 @@ class TestDtypePreservationListSink:
         result = df.with_columns(normalized=pl.col("image").cv.pipeline(pipe))
 
         norm_col = result["normalized"]
-        assert norm_col.dtype == pl.List(pl.Float32), (
-            f"Expected List[Float32] for normalize, got {norm_col.dtype}"
-        )
+        # Normalize produces 3D shape -> nested lists with Float32
+        assert (
+            get_innermost_dtype(norm_col.dtype) == pl.Float32
+        ), f"Expected innermost Float32 for normalize, got {get_innermost_dtype(norm_col.dtype)}"
 
     def test_scale_list_returns_float32(self, simple_image_bytes: bytes) -> None:
         """
-        Scale operation promotes to float, list sink should return List[Float32].
+        Scale operation promotes to float, list sink should preserve Float32 as innermost type.
 
         The scale operation has PromoteToFloat output dtype rule.
         """
@@ -144,13 +164,13 @@ class TestDtypePreservationListSink:
         result = df.with_columns(scaled=pl.col("image").cv.pipeline(pipe))
 
         scaled_col = result["scaled"]
-        assert scaled_col.dtype == pl.List(pl.Float32), (
-            f"Expected List[Float32] for scale, got {scaled_col.dtype}"
-        )
+        assert (
+            get_innermost_dtype(scaled_col.dtype) == pl.Float32
+        ), f"Expected innermost Float32 for scale, got {get_innermost_dtype(scaled_col.dtype)}"
 
     def test_threshold_list_returns_uint8(self, simple_image_bytes: bytes) -> None:
         """
-        Threshold outputs U8, list sink should return List[UInt8].
+        Threshold outputs U8, list sink should preserve UInt8 as innermost type.
 
         The threshold operation has Fixed(U8) output dtype rule.
         """
@@ -160,13 +180,13 @@ class TestDtypePreservationListSink:
         result = df.with_columns(thresh=pl.col("image").cv.pipeline(pipe))
 
         thresh_col = result["thresh"]
-        assert thresh_col.dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8] for threshold, got {thresh_col.dtype}"
-        )
+        assert (
+            get_innermost_dtype(thresh_col.dtype) == pl.UInt8
+        ), f"Expected innermost UInt8 for threshold, got {get_innermost_dtype(thresh_col.dtype)}"
 
     def test_resize_list_returns_uint8(self, rgb_image_bytes: bytes) -> None:
         """
-        Resize outputs U8, list sink should return List[UInt8].
+        Resize outputs U8, list sink should preserve UInt8 as innermost type.
 
         The resize operation has Fixed(U8) output dtype rule.
         """
@@ -176,9 +196,9 @@ class TestDtypePreservationListSink:
         result = df.with_columns(resized=pl.col("image").cv.pipeline(pipe))
 
         resized_col = result["resized"]
-        assert resized_col.dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8] for resize, got {resized_col.dtype}"
-        )
+        assert (
+            get_innermost_dtype(resized_col.dtype) == pl.UInt8
+        ), f"Expected innermost UInt8 for resize, got {get_innermost_dtype(resized_col.dtype)}"
 
 
 class TestDtypePreservationArraySink:
@@ -199,9 +219,9 @@ class TestDtypePreservationArraySink:
 
         hash_col = result["hash"]
         # Array type should be Array[UInt8, 8]
-        assert hash_col.dtype == pl.Array(pl.UInt8, 8), (
-            f"Expected Array[UInt8, 8] for perceptual hash, got {hash_col.dtype}"
-        )
+        assert hash_col.dtype == pl.Array(
+            pl.UInt8, 8
+        ), f"Expected Array[UInt8, 8] for perceptual hash, got {hash_col.dtype}"
 
 
 # ============================================================
@@ -215,12 +235,14 @@ class TestNullValueHandling:
 
     Types are determined at planning time from the OutputSpec, not by
     inspecting runtime data. Even with all-null inputs, the output
-    column has the correct type (e.g., List[UInt8], Binary, etc.).
+    column has the correct type with proper nesting.
     """
 
     def test_null_values_preserve_type_list(self, simple_image_bytes: bytes) -> None:
         """
         Null values in input should still result in correctly typed list column.
+
+        With shape preservation, grayscale produces [H, W, 1] -> nested lists.
         """
         df = pl.DataFrame({"image": [None, simple_image_bytes]})
 
@@ -228,13 +250,13 @@ class TestNullValueHandling:
         result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
 
         gray_col = result["gray"]
-        # Type should be List[UInt8] even with null first row
-        assert gray_col.dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8] with null first row, got {gray_col.dtype}"
-        )
+        # Type should have UInt8 as innermost type even with null first row
+        assert (
+            get_innermost_dtype(gray_col.dtype) == pl.UInt8
+        ), f"Expected innermost UInt8 with null first row, got {get_innermost_dtype(gray_col.dtype)}"
 
         # First row should be null, second should have values
-        assert gray_col[0] is None or gray_col[0].is_empty()
+        assert gray_col[0] is None
         assert gray_col[1] is not None
 
     def test_all_null_values_preserve_type(self) -> None:
@@ -250,16 +272,18 @@ class TestNullValueHandling:
         result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
 
         gray_col = result["gray"]
-        # Type should be List[UInt8] even with all nulls
-        assert gray_col.dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8] with all nulls, got {gray_col.dtype}"
-        )
+        # Type should have UInt8 as innermost type even with all nulls
+        assert (
+            get_innermost_dtype(gray_col.dtype) == pl.UInt8
+        ), f"Expected innermost UInt8 with all nulls, got {get_innermost_dtype(gray_col.dtype)}"
 
     def test_mixed_null_and_values_perceptual_hash(
         self, rgb_image_bytes: bytes
     ) -> None:
         """
         Mixed null and valid values should preserve UInt8 type for hash.
+
+        Perceptual hash is 1D, so it remains a flat List[UInt8].
         """
         df = pl.DataFrame({"image": [None, rgb_image_bytes, None, rgb_image_bytes]})
 
@@ -267,9 +291,10 @@ class TestNullValueHandling:
         result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
 
         hash_col = result["hash"]
-        assert hash_col.dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8] with mixed nulls, got {hash_col.dtype}"
-        )
+        # Perceptual hash is 1D -> flat list
+        assert hash_col.dtype == pl.List(
+            pl.UInt8
+        ), f"Expected List[UInt8] with mixed nulls, got {hash_col.dtype}"
 
 
 # ============================================================
@@ -295,9 +320,9 @@ class TestNativeSinkTypes:
         result = df.with_columns(pixel_sum=pl.col("image").cv.pipeline(pipe))
 
         sum_col = result["pixel_sum"]
-        assert sum_col.dtype == pl.Float64, (
-            f"Expected Float64 for reduce_sum native, got {sum_col.dtype}"
-        )
+        assert (
+            sum_col.dtype == pl.Float64
+        ), f"Expected Float64 for reduce_sum native, got {sum_col.dtype}"
 
         # Value should be positive (sum of grayscale pixels)
         assert sum_col[0] > 0
@@ -325,9 +350,9 @@ class TestNativeSinkTypes:
 
         contour_col = result["contour"]
         # Should be a Struct type
-        assert contour_col.dtype.base_type() == pl.Struct, (
-            f"Expected Struct for extract_contours native, got {contour_col.dtype}"
-        )
+        assert (
+            contour_col.dtype.base_type() == pl.Struct
+        ), f"Expected Struct for extract_contours native, got {contour_col.dtype}"
 
     def test_buffer_domain_native_errors(self, simple_image_bytes: bytes) -> None:
         """
@@ -370,9 +395,9 @@ class TestUnifiedGraphEntry:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_col = result["output"]
-        assert output_col.dtype == pl.Binary, (
-            f"Expected Binary for numpy sink, got {output_col.dtype}"
-        )
+        assert (
+            output_col.dtype == pl.Binary
+        ), f"Expected Binary for numpy sink, got {output_col.dtype}"
 
         # Verify we can decode the output
         arr = numpy_from_bytes(output_col[0])
@@ -406,9 +431,9 @@ class TestUnifiedGraphEntry:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_col = result["output"]
-        assert output_col.dtype == pl.Float64, (
-            f"Expected Float64 for scalar native, got {output_col.dtype}"
-        )
+        assert (
+            output_col.dtype == pl.Float64
+        ), f"Expected Float64 for scalar native, got {output_col.dtype}"
 
     def test_multi_output_returns_struct(self, simple_image_bytes: bytes) -> None:
         """
@@ -430,9 +455,9 @@ class TestUnifiedGraphEntry:
         )
 
         outputs_col = result["outputs"]
-        assert outputs_col.dtype.base_type() == pl.Struct, (
-            f"Expected Struct for multi-output, got {outputs_col.dtype}"
-        )
+        assert (
+            outputs_col.dtype.base_type() == pl.Struct
+        ), f"Expected Struct for multi-output, got {outputs_col.dtype}"
 
         # Each field should be Binary
         gray_field = outputs_col.struct.field("gray")
@@ -469,12 +494,12 @@ class TestUnifiedGraphEntry:
         mask_field = outputs_col.struct.field("mask")
         sum_field = outputs_col.struct.field("sum")
 
-        assert mask_field.dtype == pl.Binary, (
-            f"Expected Binary for mask, got {mask_field.dtype}"
-        )
-        assert sum_field.dtype == pl.Float64, (
-            f"Expected Float64 for sum, got {sum_field.dtype}"
-        )
+        assert (
+            mask_field.dtype == pl.Binary
+        ), f"Expected Binary for mask, got {mask_field.dtype}"
+        assert (
+            sum_field.dtype == pl.Float64
+        ), f"Expected Float64 for sum, got {sum_field.dtype}"
 
 
 # ============================================================
@@ -485,11 +510,16 @@ class TestUnifiedGraphEntry:
 class TestOperationChainDtype:
     """
     Tests verifying that dtype flows correctly through operation chains.
+
+    With shape-preserving nested lists, the innermost dtype should
+    match the final operation's output dtype.
     """
 
     def test_grayscale_then_normalize_is_float32(self, rgb_image_bytes: bytes) -> None:
         """
-        grayscale (U8) -> normalize (F32) -> list should be List[Float32].
+        grayscale (U8) -> normalize (F32) -> list should have innermost Float32.
+
+        Shape is [H, W, 1], so result is nested lists with Float32 innermost.
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
@@ -503,13 +533,13 @@ class TestOperationChainDtype:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_col = result["output"]
-        assert output_col.dtype == pl.List(pl.Float32), (
-            f"Expected List[Float32], got {output_col.dtype}"
-        )
+        assert (
+            get_innermost_dtype(output_col.dtype) == pl.Float32
+        ), f"Expected innermost Float32, got {get_innermost_dtype(output_col.dtype)}"
 
     def test_grayscale_then_threshold_is_uint8(self, simple_image_bytes: bytes) -> None:
         """
-        grayscale (U8) -> threshold (U8) -> list should be List[UInt8].
+        grayscale (U8) -> threshold (U8) -> list should have innermost UInt8.
 
         Threshold with Fixed(U8) output rule should produce U8 output.
         """
@@ -525,13 +555,15 @@ class TestOperationChainDtype:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_col = result["output"]
-        assert output_col.dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8], got {output_col.dtype}"
-        )
+        assert (
+            get_innermost_dtype(output_col.dtype) == pl.UInt8
+        ), f"Expected innermost UInt8, got {get_innermost_dtype(output_col.dtype)}"
 
     def test_resize_then_perceptual_hash_is_uint8(self, rgb_image_bytes: bytes) -> None:
         """
         resize (U8) -> perceptual_hash (U8) -> list should be List[UInt8].
+
+        Perceptual hash is 1D, so it should be a flat list.
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
@@ -545,6 +577,154 @@ class TestOperationChainDtype:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_col = result["output"]
-        assert output_col.dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8], got {output_col.dtype}"
-        )
+        # Perceptual hash is 1D -> flat list
+        assert output_col.dtype == pl.List(
+            pl.UInt8
+        ), f"Expected List[UInt8], got {output_col.dtype}"
+
+
+# ============================================================
+# Test Class: Nested List Shape Preservation
+# ============================================================
+
+
+class TestNestedListShape:
+    """
+    Tests verifying that list sink preserves nested structure based on buffer shape.
+
+    When a buffer has shape [H, W, C], the list sink should create
+    nested lists that match this structure, not flatten everything.
+    Note: After source(), images are always [H, W, 3] (RGB).
+    After grayscale(), images are [H, W, 1].
+    """
+
+    def test_grayscale_list_preserves_3d_shape(self, simple_image_bytes: bytes) -> None:
+        """
+        Grayscale image (32x32x1) should return nested List[List[List[UInt8]]].
+
+        After grayscale(), the shape is [32, 32, 1]. The list sink should
+        create a nested structure: List[List[List[UInt8]]] where:
+        - Outer list has 32 elements (height)
+        - Middle list has 32 elements (width)
+        - Inner list has 1 element (grayscale channel)
+        """
+        df = pl.DataFrame({"image": [simple_image_bytes]})
+
+        pipe = Pipeline().source("image_bytes").grayscale().sink("list")
+        result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
+
+        gray_col = result["gray"]
+
+        # Should be triple-nested list: List[List[List[UInt8]]]
+        # Shape [32, 32, 1] -> 3 levels of nesting
+        expected_dtype = pl.List(pl.List(pl.List(pl.UInt8)))
+        assert (
+            gray_col.dtype == expected_dtype
+        ), f"Expected List[List[List[UInt8]]] for grayscale (shape [32,32,1]), got {gray_col.dtype}"
+
+        # Verify the nested structure by converting to Python list
+        nested_list = gray_col[0].to_list()
+        assert nested_list is not None, "First row should not be null"
+
+        # Should have 32 rows (height)
+        assert (
+            len(nested_list) == 32
+        ), f"Expected 32 rows (height), got {len(nested_list)}"
+
+        # Each row should be a list with 32 elements (width)
+        for row in nested_list:
+            assert isinstance(row, list), "Each row should be a list"
+            assert (
+                len(row) == 32
+            ), f"Expected 32 elements per row (width), got {len(row)}"
+            # Each pixel should be a list with 1 element (grayscale channel)
+            for pixel in row:
+                assert isinstance(pixel, list), "Each pixel should be a list"
+                assert (
+                    len(pixel) == 1
+                ), f"Expected 1 channel for grayscale, got {len(pixel)}"
+                assert (
+                    isinstance(pixel[0], int) and 0 <= pixel[0] <= 255
+                ), "Channel value should be UInt8"
+
+    def test_rgb_list_preserves_3d_shape(self, rgb_image_bytes: bytes) -> None:
+        """
+        RGB image (32x32x3) should return nested List[List[List[UInt8]]].
+
+        A 32x32x3 RGB image has shape [32, 32, 3]. The list sink should
+        create a nested structure: List[List[List[UInt8]]] where:
+        - Outer list has 32 elements (height)
+        - Middle list has 32 elements (width)
+        - Inner list has 3 elements (channels)
+        """
+        df = pl.DataFrame({"image": [rgb_image_bytes]})
+
+        pipe = Pipeline().source("image_bytes").sink("list")
+        result = df.with_columns(rgb=pl.col("image").cv.pipeline(pipe))
+
+        rgb_col = result["rgb"]
+
+        # Should be triple-nested list: List[List[List[UInt8]]]
+        expected_dtype = pl.List(pl.List(pl.List(pl.UInt8)))
+        assert (
+            rgb_col.dtype == expected_dtype
+        ), f"Expected List[List[List[UInt8]]] for 3D RGB, got {rgb_col.dtype}"
+
+        # Verify the nested structure by converting to Python list
+        nested_list = rgb_col[0].to_list()
+        assert nested_list is not None, "First row should not be null"
+
+        # Should have 32 rows (height)
+        assert (
+            len(nested_list) == 32
+        ), f"Expected 32 rows (height), got {len(nested_list)}"
+
+        # Each row should have 32 columns (width)
+        for row in nested_list:
+            assert isinstance(row, list), "Each row should be a list"
+            assert len(row) == 32, f"Expected 32 columns (width), got {len(row)}"
+
+            # Each pixel should be a list with 3 channels
+            for pixel in row:
+                assert isinstance(pixel, list), "Each pixel should be a list"
+                assert len(pixel) == 3, f"Expected 3 channels, got {len(pixel)}"
+                # All values should be UInt8 (0-255)
+                assert all(
+                    isinstance(v, int) and 0 <= v <= 255 for v in pixel
+                ), "All channel values should be UInt8"
+
+    def test_resize_list_preserves_shape(self, rgb_image_bytes: bytes) -> None:
+        """
+        Resized image should preserve the new shape in nested list structure.
+
+        Resizing to 16x16 maintains RGB format, so shape is [16, 16, 3].
+        This should create List[List[List[UInt8]]] with 16x16x3 structure.
+        """
+        df = pl.DataFrame({"image": [rgb_image_bytes]})
+
+        pipe = Pipeline().source("image_bytes").resize(height=16, width=16).sink("list")
+        result = df.with_columns(resized=pl.col("image").cv.pipeline(pipe))
+
+        resized_col = result["resized"]
+
+        # Resize on RGB image maintains shape [16, 16, 3]
+        # So should be List[List[List[UInt8]]]
+        expected_dtype = pl.List(pl.List(pl.List(pl.UInt8)))
+        assert (
+            resized_col.dtype == expected_dtype
+        ), f"Expected List[List[List[UInt8]]] for resized image (shape [16,16,3]), got {resized_col.dtype}"
+
+        # Verify the nested structure matches resize dimensions
+        nested_list = resized_col[0].to_list()
+        assert nested_list is not None, "First row should not be null"
+        assert (
+            len(nested_list) == 16
+        ), f"Expected 16 rows (height), got {len(nested_list)}"
+
+        for row in nested_list:
+            assert isinstance(row, list), "Each row should be a list"
+            assert len(row) == 16, f"Expected 16 columns (width), got {len(row)}"
+            # Each pixel should have 3 channels
+            for pixel in row:
+                assert isinstance(pixel, list), "Each pixel should be a list"
+                assert len(pixel) == 3, f"Expected 3 channels, got {len(pixel)}"
