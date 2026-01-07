@@ -94,11 +94,23 @@ class TestReduceSum:
         assert total == 25500.0, f"Expected 25500.0, got {total}"
 
 
+def get_innermost_dtype(dtype: pl.DataType) -> pl.DataType:
+    """Extract the innermost dtype from a nested List/Array type."""
+    current = dtype
+    while hasattr(current, "inner") and current.inner is not None:
+        current = current.inner
+    return current
+
+
 class TestListSink:
-    """Test that list sink returns proper Polars List types."""
+    """Test that list sink returns proper Polars List types.
+
+    Note: List sink now preserves shape as nested lists. A 2x2x1 grayscale
+    image produces List[List[List[UInt8]]] to preserve the [H, W, C] shape.
+    """
 
     def test_list_sink_returns_polars_list(self) -> None:
-        """Test that list sink returns a Polars List, not Binary."""
+        """Test that list sink returns a Polars nested List preserving shape."""
         mask = [[255, 0], [0, 255]]
         mask_bytes = create_mask_bytes(mask)
 
@@ -107,19 +119,24 @@ class TestListSink:
         pipe = Pipeline().source("image_bytes").grayscale()
         result = df.select(values=pl.col("mask").cv.pipe(pipe).sink("list"))
 
-        # The result should be a List type with UInt8 inner (grayscale outputs U8)
-        assert result["values"].dtype == pl.List(pl.UInt8), (
-            f"Expected List[UInt8], got {result['values'].dtype}"
+        # Grayscale produces shape [2, 2, 1] -> nested List[List[List[UInt8]]]
+        expected_dtype = pl.List(pl.List(pl.List(pl.UInt8)))
+        assert result["values"].dtype == expected_dtype, (
+            f"Expected {expected_dtype}, got {result['values'].dtype}"
         )
 
-        # The list should contain the pixel values
-        values = result.row(0)[0]
+        # The innermost type should be UInt8
+        assert get_innermost_dtype(result["values"].dtype) == pl.UInt8
+
+        # The list should have nested structure matching [2, 2, 1]
+        values = result["values"][0].to_list()
         assert isinstance(values, list), f"Expected list, got {type(values)}"
-        # 2x2 grayscale image = 4 values
-        assert len(values) == 4, f"Expected 4 values, got {len(values)}"
+        assert len(values) == 2, f"Expected 2 rows (height), got {len(values)}"
+        assert len(values[0]) == 2, f"Expected 2 cols (width), got {len(values[0])}"
+        assert len(values[0][0]) == 1, f"Expected 1 channel, got {len(values[0][0])}"
 
     def test_list_sink_values_correct(self) -> None:
-        """Test that list sink returns correct values."""
+        """Test that list sink returns correct values preserving shape."""
         # 2x2 image with known values
         mask = [[100, 200], [50, 150]]
         mask_bytes = create_mask_bytes(mask)
@@ -129,9 +146,10 @@ class TestListSink:
         pipe = Pipeline().source("image_bytes").grayscale()
         result = df.select(values=pl.col("mask").cv.pipe(pipe).sink("list"))
 
-        values = result.row(0)[0]
-        # Values should match the original mask (flattened)
-        expected = [100.0, 200.0, 50.0, 150.0]
+        values = result["values"][0].to_list()
+        # Values should match the original mask with shape [2, 2, 1]
+        # Each pixel is wrapped in a list due to the channel dimension
+        expected = [[[100], [200]], [[50], [150]]]
         assert values == expected, f"Expected {expected}, got {values}"
 
 

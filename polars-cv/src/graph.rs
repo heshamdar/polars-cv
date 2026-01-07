@@ -885,12 +885,29 @@ impl_typed_list_builder!(build_typed_list_f64, Float64Type, extract_as_f64);
 /// Unlike `build_typed_list_series_from_rows` which infers dtype from data,
 /// this function uses the provided dtype string, allowing proper handling
 /// of all-null data while preserving the expected output type.
+///
+/// If shapes indicate multi-dimensional data (shape.len() > 1), builds nested
+/// List structures to preserve the shape information.
 fn build_typed_list_series_from_rows_with_dtype(
     name: PlSmallStr,
     rows: &[TypedListRow],
     dtype_str: &str,
 ) -> PolarsResult<Series> {
-    // Use static dtype to determine builder type
+    // Check if we have shape information indicating nested structure
+    // Find the first non-null row's shape to determine the structure
+    let shape = rows.iter().find_map(|r| r.as_ref().map(|(_, s)| s.clone()));
+    
+    if let Some(shape) = shape {
+        // If shape has more than 1 dimension (after batch dimension),
+        // build nested lists to preserve the structure
+        // For shape [H, W] or [H, W, C], we want nested lists
+        // Dimension 0 is the batch/row dimension, so we nest dimensions 1..N
+        if shape.len() > 1 {
+            return build_typed_nested_list_series_from_rows_with_dtype(name, rows, dtype_str, &shape);
+        }
+    }
+    
+    // For 1D or no shape info, use flat list builders
     match dtype_str {
         "u8" => build_typed_list_u8(name, rows),
         "i8" => build_typed_list_i8(name, rows),
@@ -904,6 +921,113 @@ fn build_typed_list_series_from_rows_with_dtype(
         "f64" => build_typed_list_f64(name, rows),
         _ => build_typed_list_u8(name, rows), // Default fallback
     }
+}
+
+/// Build a nested List series preserving multi-dimensional shape.
+///
+/// This function creates nested List types (List[List[...]]) that match
+/// the buffer's shape dimensions, preserving the structure of multi-dimensional data.
+fn build_typed_nested_list_series_from_rows_with_dtype(
+    name: PlSmallStr,
+    rows: &[TypedListRow],
+    dtype_str: &str,
+    shape: &[usize],
+) -> PolarsResult<Series> {
+    // Build the nested List type from shape
+    // The full shape needs to be wrapped into nested Lists
+    // For shape [H, W], we want List(List(primitive))
+    // For shape [H, W, C], we want List(List(List(primitive)))
+    let inner_dtype = dtype_str_to_polars(dtype_str);
+    let mut dtype = inner_dtype.clone();
+    // Build nested List types for ALL dimensions (in reverse order)
+    for _dim in shape.iter().rev() {
+        dtype = DataType::List(Box::new(dtype));
+    }
+
+    // Build AnyValue lists for each row
+    let values: PolarsResult<Vec<AnyValue<'static>>> = rows
+        .iter()
+        .map(|r| {
+            if let Some((typed_data, row_shape)) = r {
+                build_typed_nested_list_value(typed_data, row_shape)
+            } else {
+                Ok(AnyValue::Null)
+            }
+        })
+        .collect();
+    let values = values?;
+
+    Series::from_any_values_and_dtype(name, &values, &dtype, true)
+}
+
+/// Build a nested List AnyValue from typed data and shape.
+///
+/// Recursively builds nested List structures matching the shape dimensions.
+/// Similar to `build_typed_nested_array_value` but creates variable-length
+/// List types instead of fixed-size Array types.
+fn build_typed_nested_list_value(
+    data: &TypedBufferData,
+    shape: &[usize],
+) -> PolarsResult<AnyValue<'static>> {
+    if shape.is_empty() {
+        return Ok(AnyValue::Null);
+    }
+
+    if shape.len() == 1 {
+        // Base case: 1D list - create a list of primitive values
+        let inner_dtype = data.polars_dtype();
+
+        let values: Vec<AnyValue<'static>> = match data {
+            TypedBufferData::U8(vals) => vals.iter().map(|&v| AnyValue::UInt8(v)).collect(),
+            TypedBufferData::I8(vals) => vals.iter().map(|&v| AnyValue::Int8(v)).collect(),
+            TypedBufferData::U16(vals) => vals.iter().map(|&v| AnyValue::UInt16(v)).collect(),
+            TypedBufferData::I16(vals) => vals.iter().map(|&v| AnyValue::Int16(v)).collect(),
+            TypedBufferData::U32(vals) => vals.iter().map(|&v| AnyValue::UInt32(v)).collect(),
+            TypedBufferData::I32(vals) => vals.iter().map(|&v| AnyValue::Int32(v)).collect(),
+            TypedBufferData::U64(vals) => vals.iter().map(|&v| AnyValue::UInt64(v)).collect(),
+            TypedBufferData::I64(vals) => vals.iter().map(|&v| AnyValue::Int64(v)).collect(),
+            TypedBufferData::F32(vals) => vals.iter().map(|&v| AnyValue::Float32(v)).collect(),
+            TypedBufferData::F64(vals) => vals.iter().map(|&v| AnyValue::Float64(v)).collect(),
+        };
+
+        // Create a Series of primitive values - the Series itself represents the list contents
+        let series =
+            Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &values, &inner_dtype, true)?;
+        // Wrap in AnyValue::List - the Series contains the list elements
+        return Ok(AnyValue::List(series));
+    }
+
+    // Multi-dimensional: recursively build nested lists
+    let outer_dim = shape[0];
+    let inner_shape = &shape[1..];
+    let inner_size: usize = inner_shape.iter().product();
+
+    // Slice the data for each inner dimension
+    let mut inner_values: Vec<AnyValue<'static>> = Vec::with_capacity(outer_dim);
+    for i in 0..outer_dim {
+        let start = i * inner_size;
+        let end = start + inner_size;
+
+        let inner_data = slice_typed_data(data, start, end);
+        let inner_val = build_typed_nested_list_value(&inner_data, inner_shape)?;
+        inner_values.push(inner_val);
+    }
+
+    // Build the dtype for the inner values (what's inside each AnyValue::List)
+    // The inner_values are AnyValue::List elements, each containing a Series
+    // The dtype should match what those List values contain
+    let base_dtype = data.polars_dtype();
+    let mut inner_dtype = base_dtype;
+    // Build nested List types for inner_shape dimensions
+    for _dim in inner_shape.iter().rev() {
+        inner_dtype = DataType::List(Box::new(inner_dtype));
+    }
+
+    // Create Series from the inner AnyValue::List values
+    // The dtype here is the type of each element in inner_values (i.e., List types)
+    let series =
+        Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &inner_values, &inner_dtype, true)?;
+    Ok(AnyValue::List(series))
 }
 
 /// Build a typed fixed-size array series using a statically known dtype.
