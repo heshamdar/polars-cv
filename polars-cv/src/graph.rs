@@ -48,6 +48,192 @@ use crate::execute::{
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
 
 // ============================================================
+// List/Array Source Decoding
+// ============================================================
+
+/// Decode a Polars List or Array value at a specific row into a ViewBuffer.
+///
+/// Recursively traverses nested List/Array types to extract:
+/// 1. Shape from the nesting structure
+/// 2. Flat data from the innermost primitive type
+fn decode_list_or_array_source(
+    series: &Series,
+    row_idx: usize,
+    dtype_str: &str,
+) -> Result<Option<ViewBuffer>, String> {
+    // Parse the target dtype
+    let dtype = match dtype_str {
+        "u8" => view_buffer::DType::U8,
+        "i8" => view_buffer::DType::I8,
+        "u16" => view_buffer::DType::U16,
+        "i16" => view_buffer::DType::I16,
+        "u32" => view_buffer::DType::U32,
+        "i32" => view_buffer::DType::I32,
+        "u64" => view_buffer::DType::U64,
+        "i64" => view_buffer::DType::I64,
+        "f32" => view_buffer::DType::F32,
+        "f64" => view_buffer::DType::F64,
+        other => return Err(format!("Unknown dtype: {other}")),
+    };
+
+    // Get the element at this row
+    let element_series = match series.dtype() {
+        DataType::List(_) => {
+            let list_ca = series
+                .list()
+                .map_err(|e| format!("List access error: {e}"))?;
+            list_ca.get_as_series(row_idx)
+        }
+        DataType::Array(_, _) => {
+            let arr_ca = series
+                .array()
+                .map_err(|e| format!("Array access error: {e}"))?;
+            arr_ca.get_as_series(row_idx)
+        }
+        other => {
+            return Err(format!("Expected List or Array column, got {other:?}"));
+        }
+    };
+
+    let element = match element_series {
+        Some(s) => s,
+        None => return Ok(None), // Null value
+    };
+
+    // Recursively extract shape and flatten data
+    let (shape, flat_series) = flatten_nested_series(&element)?;
+
+    if flat_series.is_empty() {
+        return Ok(None);
+    }
+
+    // Convert flat series to bytes
+    let bytes = series_to_bytes(&flat_series, &dtype)?;
+
+    Ok(Some(ViewBuffer::from_raw_bytes(bytes, shape, dtype)))
+}
+
+/// Recursively flatten a nested Series and extract shape.
+///
+/// For a nested list like [[1,2,3], [4,5,6], [7,8,9]]:
+/// - First level: 3 lists -> shape starts with [3]
+/// - Check first element's length: 3 -> shape = [3, 3]
+/// - Final flat primitives: [1,2,3,4,5,6,7,8,9]
+///
+/// Assumes all inner lists have the same length (rectangular array).
+fn flatten_nested_series(series: &Series) -> Result<(Vec<usize>, Series), String> {
+    // First pass: determine full shape by traversing first elements
+    let shape = infer_nested_shape(series)?;
+
+    // Second pass: flatten to 1D by repeatedly exploding
+    let mut current = series.clone();
+    while matches!(current.dtype(), DataType::List(_) | DataType::Array(_, _)) {
+        current = current
+            .explode()
+            .map_err(|e| format!("Explode error: {e}"))?;
+    }
+
+    Ok((shape, current))
+}
+
+/// Infer shape by traversing first elements at each nesting level.
+///
+/// For List(List(List(Int64))) with 2x2x3 data:
+/// 1. Series has 2 elements (outer rows) -> shape = [2]
+/// 2. First element has 2 sub-lists (columns) -> shape = [2, 2]  
+/// 3. First sub-list has 3 primitives (channels) -> shape = [2, 2, 3]
+fn infer_nested_shape(series: &Series) -> Result<Vec<usize>, String> {
+    let mut shape = Vec::new();
+    let mut current = series.clone();
+
+    loop {
+        match current.dtype() {
+            DataType::List(_) => {
+                let list_ca = current.list().map_err(|e| format!("List error: {e}"))?;
+                let len = list_ca.len();
+                shape.push(len);
+
+                // Get first element to continue traversing
+                if len > 0 {
+                    if let Some(first) = list_ca.get_as_series(0) {
+                        current = first;
+                    } else {
+                        break; // Null first element
+                    }
+                } else {
+                    break; // Empty list
+                }
+            }
+            DataType::Array(_, _width) => {
+                let len = current.len();
+                shape.push(len);
+
+                // Get first element
+                let arr_ca = current.array().map_err(|e| format!("Array error: {e}"))?;
+                if len > 0 {
+                    if let Some(first) = arr_ca.get_as_series(0) {
+                        current = first;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            _ => {
+                // Reached primitive type
+                // Always push the length as the final dimension
+                // (this captures the innermost list/array element count)
+                shape.push(current.len());
+                break;
+            }
+        }
+    }
+
+    Ok(shape)
+}
+
+/// Convert a flat primitive Series to raw bytes.
+fn series_to_bytes(series: &Series, target_dtype: &view_buffer::DType) -> Result<Vec<u8>, String> {
+    macro_rules! convert_series {
+        ($series:expr, $method:ident, $rust_type:ty) => {{
+            let ca = $series.$method().map_err(|e| format!("Cast error: {e}"))?;
+            let values: Vec<$rust_type> = ca.into_no_null_iter().collect();
+            let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+            Ok(bytes)
+        }};
+    }
+
+    // First cast to the target dtype if needed
+    let casted = match target_dtype {
+        view_buffer::DType::U8 => series.cast(&DataType::UInt8),
+        view_buffer::DType::I8 => series.cast(&DataType::Int8),
+        view_buffer::DType::U16 => series.cast(&DataType::UInt16),
+        view_buffer::DType::I16 => series.cast(&DataType::Int16),
+        view_buffer::DType::U32 => series.cast(&DataType::UInt32),
+        view_buffer::DType::I32 => series.cast(&DataType::Int32),
+        view_buffer::DType::U64 => series.cast(&DataType::UInt64),
+        view_buffer::DType::I64 => series.cast(&DataType::Int64),
+        view_buffer::DType::F32 => series.cast(&DataType::Float32),
+        view_buffer::DType::F64 => series.cast(&DataType::Float64),
+    }
+    .map_err(|e| format!("Cast to {target_dtype:?} failed: {e}"))?;
+
+    match target_dtype {
+        view_buffer::DType::U8 => convert_series!(casted, u8, u8),
+        view_buffer::DType::I8 => convert_series!(casted, i8, i8),
+        view_buffer::DType::U16 => convert_series!(casted, u16, u16),
+        view_buffer::DType::I16 => convert_series!(casted, i16, i16),
+        view_buffer::DType::U32 => convert_series!(casted, u32, u32),
+        view_buffer::DType::I32 => convert_series!(casted, i32, i32),
+        view_buffer::DType::U64 => convert_series!(casted, u64, u64),
+        view_buffer::DType::I64 => convert_series!(casted, i64, i64),
+        view_buffer::DType::F32 => convert_series!(casted, f32, f32),
+        view_buffer::DType::F64 => convert_series!(casted, f64, f64),
+    }
+}
+
+// ============================================================
 // Result Types
 // ============================================================
 
@@ -893,22 +1079,35 @@ fn build_typed_list_series_from_rows_with_dtype(
     rows: &[TypedListRow],
     dtype_str: &str,
 ) -> PolarsResult<Series> {
+    // Find the first non-null row to get shape and actual dtype
+    let first_row = rows.iter().find_map(|r| r.as_ref());
+
+    // Prefer the actual runtime dtype from the data over the planned dtype
+    // This handles cases like "raw" source where dtype is only known at runtime
+    let actual_dtype_str = first_row
+        .map(|(data, _)| data.dtype_str())
+        .unwrap_or(dtype_str);
+
     // Check if we have shape information indicating nested structure
-    // Find the first non-null row's shape to determine the structure
-    let shape = rows.iter().find_map(|r| r.as_ref().map(|(_, s)| s.clone()));
-    
+    let shape = first_row.map(|(_, s)| s.clone());
+
     if let Some(shape) = shape {
         // If shape has more than 1 dimension (after batch dimension),
         // build nested lists to preserve the structure
         // For shape [H, W] or [H, W, C], we want nested lists
         // Dimension 0 is the batch/row dimension, so we nest dimensions 1..N
         if shape.len() > 1 {
-            return build_typed_nested_list_series_from_rows_with_dtype(name, rows, dtype_str, &shape);
+            return build_typed_nested_list_series_from_rows_with_dtype(
+                name,
+                rows,
+                actual_dtype_str,
+                &shape,
+            );
         }
     }
-    
+
     // For 1D or no shape info, use flat list builders
-    match dtype_str {
+    match actual_dtype_str {
         "u8" => build_typed_list_u8(name, rows),
         "i8" => build_typed_list_i8(name, rows),
         "u16" => build_typed_list_u16(name, rows),
@@ -1319,6 +1518,22 @@ impl TypedBufferData {
             TypedBufferData::I64(_) => DataType::Int64,
             TypedBufferData::F32(_) => DataType::Float32,
             TypedBufferData::F64(_) => DataType::Float64,
+        }
+    }
+
+    /// Get the dtype string for this typed data.
+    fn dtype_str(&self) -> &'static str {
+        match self {
+            TypedBufferData::U8(_) => "u8",
+            TypedBufferData::I8(_) => "i8",
+            TypedBufferData::U16(_) => "u16",
+            TypedBufferData::I16(_) => "i16",
+            TypedBufferData::U32(_) => "u32",
+            TypedBufferData::I32(_) => "i32",
+            TypedBufferData::U64(_) => "u64",
+            TypedBufferData::I64(_) => "i64",
+            TypedBufferData::F32(_) => "f32",
+            TypedBufferData::F64(_) => "f64",
         }
     }
 }
@@ -1777,6 +1992,25 @@ impl UnifiedGraph {
                                         }
                                     }
                                     None => None,
+                                }
+                            }
+                        } else if node.source.format == "list" || node.source.format == "array" {
+                            // List/Array source: decode from nested Polars List or Array
+                            if input_series.dtype() == &DataType::Null {
+                                None
+                            } else {
+                                let dtype_str = node.source.dtype.as_ref().ok_or_else(|| {
+                                    format!(
+                                        "dtype is required for '{}' source format",
+                                        node.source.format
+                                    )
+                                })?;
+
+                                match decode_list_or_array_source(input_series, row_idx, dtype_str)
+                                {
+                                    Ok(Some(buf)) => Some(NodeOutput::from_buffer(buf)),
+                                    Ok(None) => None,
+                                    Err(e) => return Err(format!("List/Array decode error: {e}")),
                                 }
                             }
                         } else {

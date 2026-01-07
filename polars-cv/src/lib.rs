@@ -675,7 +675,6 @@ fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Serie
         _ => view_buffer::geometry::ops::ScaleOrigin::Centroid, // Default fallback
     };
 
-
     let series = &inputs[0];
     let len = series.len();
     let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
@@ -686,12 +685,7 @@ fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Serie
             results.push(None);
         } else {
             let contour = parse_contour(&value)?;
-            let scaled = transforms::scale(
-                &contour,
-                sx,
-                sy,
-                scale_origin,
-            );
+            let scaled = transforms::scale(&contour, sx, sy, scale_origin);
             results.push(Some(scaled));
         }
     }

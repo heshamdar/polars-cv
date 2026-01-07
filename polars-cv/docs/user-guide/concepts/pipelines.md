@@ -38,6 +38,8 @@ pipe = (
 | `file_path` | String | Local or cloud file path |
 | `blob` | Binary | VIEW protocol binary |
 | `raw` | Binary | Raw bytes (requires dtype) |
+| `list` | List | Polars nested List (requires dtype) |
+| `array` | Array | Polars fixed-size Array (requires dtype) |
 | `contour` | Struct | Contour geometry to rasterize |
 
 ### Example: File Path Source
@@ -54,6 +56,31 @@ df = pl.DataFrame({
     ]
 })
 result = df.with_columns(tensor=pl.col("path").cv.pipeline(pipe))
+```
+
+### Example: List/Array Source
+
+The `list` and `array` source formats allow you to process data stored as Polars nested Lists or fixed-size Arrays. This enables round-trip processing where you first sink to `list`, then later process with `list` source:
+
+```python
+from polars_cv import Pipeline
+
+# Step 1: Convert image to nested list
+pipe1 = Pipeline().source("image_bytes").sink("list")
+df = pl.DataFrame({"image": [png_bytes]})
+df_with_list = df.with_columns(pixels=pl.col("image").cv.pipeline(pipe1))
+# pixels column is now List[List[List[UInt8]]] for RGB images
+
+# Step 2: Process list data with list source
+pipe2 = Pipeline().source("list", dtype="u8").grayscale().sink("list")
+result = df_with_list.with_columns(gray=pl.col("pixels").cv.pipeline(pipe2))
+# gray column is List[List[List[UInt8]]] with single channel
+
+# Direct list input (e.g., from external sources)
+pixels = [[[255, 0, 0], [0, 255, 0]], [[0, 0, 255], [255, 255, 0]]]  # 2x2 RGB
+df = pl.DataFrame({"pixels": [pixels]})
+pipe = Pipeline().source("list", dtype="u8").resize(height=64, width=64).sink("numpy")
+result = df.with_columns(tensor=pl.col("pixels").cv.pipeline(pipe))
 ```
 
 ### Example: Contour Source

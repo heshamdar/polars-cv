@@ -20,7 +20,7 @@ from typing import List, Optional, Tuple
 
 # Python versions to test against
 DEFAULT_VERSIONS = [
-    "3.9",   # Minimum supported version
+    "3.9",  # Minimum supported version
     "3.10",
     "3.11",
     "3.12",
@@ -50,13 +50,13 @@ def _test_python_version(version: str, project_root: Path) -> Tuple[bool, str, s
     Returns:
         (success: bool, output: str, actual_version: str)
     """
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"Testing with Python {version}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     # Check if this is the current Python version (no version specified)
     current_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-    use_current_env = (version == current_version)
+    use_current_env = version == current_version
 
     if use_current_env:
         # Use current environment directly
@@ -115,7 +115,9 @@ def _test_python_version(version: str, project_root: Path) -> Tuple[bool, str, s
             "-c",
             "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
         ]
-        exit_code, version_stdout, version_stderr = run_command(version_cmd, cwd=project_root)
+        exit_code, version_stdout, version_stderr = run_command(
+            version_cmd, cwd=project_root
+        )
         if exit_code != 0:
             error_msg = f"Python {version} not available. Install with: uv python install {version}"
             print(f"❌ {error_msg}")
@@ -232,7 +234,9 @@ def main():
     else:
         # No arguments passed - use current Python environment
         current_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-        print(f"No versions specified, using current Python environment: {current_version}")
+        print(
+            f"No versions specified, using current Python environment: {current_version}"
+        )
         versions_to_test = [current_version]
 
     # Filter out skipped versions
@@ -262,9 +266,9 @@ def main():
             break
 
     # Print summary
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("TEST SUMMARY")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     passed = sum(1 for success, _, _ in results.values() if success)
     failed = len(results) - passed

@@ -11,8 +11,8 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
-
 from polars_cv._types import (
+    OPERATION_OUTPUT_DTYPE,
     CloudOptions,
     DType,
     FilterType,
@@ -20,7 +20,6 @@ from polars_cv._types import (
     HashAlgorithm,
     IntOrExpr,
     NormalizeMethod,
-    OPERATION_OUTPUT_DTYPE,
     OpSpec,
     OutputDType,
     ParamValue,
@@ -280,8 +279,11 @@ class Pipeline:
                 msg = f"Invalid dtype '{dtype}'. Valid: {valid}"
                 raise ValueError(msg) from e
 
-        if fmt == SourceFormat.RAW and dtype_enum is None:
-            msg = "dtype is required for 'raw' source format"
+        if (
+            fmt in (SourceFormat.RAW, SourceFormat.LIST, SourceFormat.ARRAY)
+            and dtype_enum is None
+        ):
+            msg = f"dtype is required for '{fmt.value}' source format"
             raise ValueError(msg)
 
         # Handle contour source format
