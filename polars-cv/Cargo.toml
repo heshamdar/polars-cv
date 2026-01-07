@@ -14,6 +14,7 @@ crate-type = ["cdylib"]
 # NOTE: Do NOT enable "python" feature to avoid pyo3 version conflict
 view-buffer = { path = "../view-buffer", default-features = false, features = [
     "arrow_interop",
+    "polars_interop",
     "image_interop",
     "perceptual_hash",
     "serde",

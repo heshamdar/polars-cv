@@ -354,6 +354,10 @@ class SourceSpec:
     )
     # Cloud options for file_path sources
     cloud_options: CloudOptions | None = None
+    # Contiguity requirement for list/array sources
+    # When True, requires data to be contiguous for zero-copy; errors on jagged data
+    # When False (default), allows jagged data with copy-based flattening
+    require_contiguous: bool = False
 
     def __eq__(self, other: object) -> bool:
         """Compare two SourceSpecs for equality."""
@@ -367,6 +371,7 @@ class SourceSpec:
             and self.fill_value == other.fill_value
             and self.background == other.background
             and self.shape_pipeline == other.shape_pipeline
+            and self.require_contiguous == other.require_contiguous
         )
 
     def __hash__(self) -> int:
@@ -380,6 +385,7 @@ class SourceSpec:
                 self.fill_value,
                 self.background,
                 str(self.shape_pipeline) if self.shape_pipeline else None,
+                self.require_contiguous,
             )
         )
 
@@ -398,6 +404,9 @@ class SourceSpec:
             result["background"] = self.background
             if self.shape_pipeline is not None:
                 result["shape_pipeline"] = self.shape_pipeline
+        # Include require_contiguous for list/array sources
+        if self.format in (SourceFormat.LIST, SourceFormat.ARRAY):
+            result["require_contiguous"] = self.require_contiguous
         return result
 
 

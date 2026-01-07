@@ -48,34 +48,495 @@ use crate::execute::{
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
 
 // ============================================================
+// Null Handling Utilities
+// ============================================================
+
+/// Compute valid (non-null) row indices for a series.
+///
+/// Uses the validity bitmap for efficient null checking.
+/// Returns a vector of indices where the value is not null.
+///
+/// This is useful for batch processing optimization where you want to
+/// skip null rows entirely rather than checking per-row.
+#[allow(dead_code)]
+fn compute_valid_indices(series: &Series) -> Vec<usize> {
+    let null_mask = series.is_null();
+    (0..series.len())
+        .filter(|&i| !null_mask.get(i).unwrap_or(true))
+        .collect()
+}
+
+/// Compute null mask as a boolean vector.
+///
+/// `true` at index i means the value at i is null.
+#[allow(dead_code)]
+fn compute_null_mask(series: &Series) -> Vec<bool> {
+    let null_mask = series.is_null();
+    (0..series.len())
+        .map(|i| null_mask.get(i).unwrap_or(true))
+        .collect()
+}
+
+/// Count non-null values in a series.
+#[allow(dead_code)]
+fn count_non_null(series: &Series) -> usize {
+    series.len() - series.null_count()
+}
+
+/// Check if a specific row is null in a series.
+///
+/// This is a convenience wrapper that handles the ChunkedArray result.
+fn is_row_null(series: &Series, row_idx: usize) -> bool {
+    series.is_null().get(row_idx).unwrap_or(true)
+}
+
+// ============================================================
+// Zero-Copy Binary Source Helpers
+// ============================================================
+
+/// Extract binary data from a BinaryChunked at a specific row.
+///
+/// Returns the data as a polars-arrow buffer (involves copy for BinaryViewArray).
+///
+/// Note: Polars uses BinaryViewArray internally which has a different memory layout
+/// than the traditional offset-based BinaryArray. For true zero-copy, we would need
+/// to handle the view-based representation. Currently, we copy the data to a buffer
+/// for simplicity and compatibility.
+///
+/// # Arguments
+/// * `binary_ca` - The binary chunked array.
+/// * `row_idx` - The row index to extract.
+///
+/// # Returns
+/// `Some((buffer, offset, len))` if the row is valid and not null.
+/// `None` if the row is null.
+fn get_binary_row_buffer(
+    binary_ca: &BinaryChunked,
+    row_idx: usize,
+) -> Option<(polars_arrow::buffer::Buffer<u8>, usize, usize)> {
+    // Check for null using the helper
+    if is_row_null(&binary_ca.clone().into_series(), row_idx) {
+        return None;
+    }
+
+    // Get the bytes for this row (this may involve a copy for BinaryViewArray)
+    let bytes = binary_ca.get(row_idx)?;
+    let len = bytes.len();
+
+    // Create a buffer from the bytes
+    let buffer = polars_arrow::buffer::Buffer::from(bytes.to_vec());
+
+    // Offset is 0 since we copied just this row's data
+    Some((buffer, 0, len))
+}
+
+/// Decode a binary source (blob or raw) with zero-copy when possible.
+///
+/// For blob format: parses the VIEW protocol header, creates ViewBuffer pointing to data.
+/// For raw format: creates ViewBuffer directly from the buffer reference.
+///
+/// # Arguments
+/// * `buffer` - The polars-arrow buffer containing the data.
+/// * `offset` - Byte offset into the buffer.
+/// * `len` - Length of the data in bytes.
+/// * `source_format` - "blob" or "raw".
+/// * `dtype_str` - Required for "raw", ignored for "blob" (embedded in header).
+fn decode_binary_zero_copy(
+    buffer: polars_arrow::buffer::Buffer<u8>,
+    offset: usize,
+    len: usize,
+    source_format: &str,
+    dtype_str: Option<&str>,
+) -> Result<ViewBuffer, String> {
+    match source_format {
+        "blob" => {
+            // Parse VIEW protocol header from the slice
+            // Clone buffer for slice access since we'll move it into decode_blob_zero_copy
+            let slice_data: Vec<u8> = buffer.as_slice()[offset..offset + len].to_vec();
+            decode_blob_zero_copy(buffer, offset, len, &slice_data)
+        }
+        "raw" => {
+            // Raw bytes - need dtype from source spec
+            let dtype_s = dtype_str.ok_or("Raw source format requires dtype")?;
+            let dtype = parse_dtype_str(dtype_s)?;
+
+            // For raw format, shape is 1D array
+            let element_size = dtype.size_of();
+            let num_elements = len / element_size;
+
+            Ok(ViewBuffer::from_polars_buffer(
+                buffer,
+                offset,
+                vec![num_elements],
+                dtype,
+            ))
+        }
+        other => Err(format!("Unsupported binary source format: {other}")),
+    }
+}
+
+/// Decode a blob (VIEW protocol) with zero-copy.
+///
+/// Parses the header from the slice, then creates a ViewBuffer pointing
+/// directly into the data portion of the original buffer.
+fn decode_blob_zero_copy(
+    buffer: polars_arrow::buffer::Buffer<u8>,
+    base_offset: usize,
+    total_len: usize,
+    slice: &[u8],
+) -> Result<ViewBuffer, String> {
+    use view_buffer::protocol::{u8_to_dtype, HEADER_SIZE, MAGIC_BYTES, VERSION};
+
+    if total_len < HEADER_SIZE {
+        return Err("Blob data too short for header".into());
+    }
+
+    // Parse header
+    let magic = &slice[0..4];
+    if magic != MAGIC_BYTES {
+        return Err("Invalid blob magic bytes".into());
+    }
+
+    let version = u16::from_le_bytes([slice[4], slice[5]]);
+    if version != VERSION {
+        return Err(format!("Unsupported blob version: {version}"));
+    }
+
+    let dtype_code = slice[6];
+    let rank = slice[7] as usize;
+    let data_offset = u64::from_le_bytes(slice[8..16].try_into().unwrap()) as usize;
+
+    let dtype = u8_to_dtype(dtype_code)
+        .ok_or_else(|| format!("Unknown dtype code: {dtype_code}"))?;
+
+    // Read shape
+    let shape_start = HEADER_SIZE;
+    let mut shape = Vec::with_capacity(rank);
+    for i in 0..rank {
+        let pos = shape_start + i * 8;
+        if pos + 8 > total_len {
+            return Err("Blob truncated reading shape".into());
+        }
+        let dim = u64::from_le_bytes(slice[pos..pos + 8].try_into().unwrap()) as usize;
+        shape.push(dim);
+    }
+
+    // Validate data portion
+    let num_elements: usize = shape.iter().product();
+    let expected_data_len = num_elements * dtype.size_of();
+    if data_offset + expected_data_len > total_len {
+        return Err(format!(
+            "Blob data truncated: offset={data_offset}, expected={expected_data_len}, total={total_len}"
+        ));
+    }
+
+    // Create ViewBuffer pointing to data portion (zero-copy)
+    Ok(ViewBuffer::from_polars_buffer_slice(
+        buffer,
+        base_offset + data_offset,
+        expected_data_len,
+        shape,
+        dtype,
+    ))
+}
+
+// ============================================================
+// Type Inference Helpers
+// ============================================================
+
+/// Infer view-buffer DType from Polars DataType.
+///
+/// Recursively traverses nested List/Array types to find the innermost
+/// primitive type.
+fn dtype_from_polars_datatype(dt: &DataType) -> Option<view_buffer::DType> {
+    match dt {
+        DataType::UInt8 => Some(view_buffer::DType::U8),
+        DataType::Int8 => Some(view_buffer::DType::I8),
+        DataType::UInt16 => Some(view_buffer::DType::U16),
+        DataType::Int16 => Some(view_buffer::DType::I16),
+        DataType::UInt32 => Some(view_buffer::DType::U32),
+        DataType::Int32 => Some(view_buffer::DType::I32),
+        DataType::UInt64 => Some(view_buffer::DType::U64),
+        DataType::Int64 => Some(view_buffer::DType::I64),
+        DataType::Float32 => Some(view_buffer::DType::F32),
+        DataType::Float64 => Some(view_buffer::DType::F64),
+        // Binary is treated as u8
+        DataType::Binary => Some(view_buffer::DType::U8),
+        // Nested types: recurse to find inner primitive
+        DataType::List(inner) => dtype_from_polars_datatype(inner.as_ref()),
+        DataType::Array(inner, _) => dtype_from_polars_datatype(inner.as_ref()),
+        _ => None,
+    }
+}
+
+/// Parse dtype string to view-buffer DType.
+fn parse_dtype_str(dtype_str: &str) -> Result<view_buffer::DType, String> {
+    match dtype_str {
+        "u8" => Ok(view_buffer::DType::U8),
+        "i8" => Ok(view_buffer::DType::I8),
+        "u16" => Ok(view_buffer::DType::U16),
+        "i16" => Ok(view_buffer::DType::I16),
+        "u32" => Ok(view_buffer::DType::U32),
+        "i32" => Ok(view_buffer::DType::I32),
+        "u64" => Ok(view_buffer::DType::U64),
+        "i64" => Ok(view_buffer::DType::I64),
+        "f32" => Ok(view_buffer::DType::F32),
+        "f64" => Ok(view_buffer::DType::F64),
+        other => Err(format!("Unknown dtype: {other}")),
+    }
+}
+
+// ============================================================
 // List/Array Source Decoding
 // ============================================================
 
 /// Decode a Polars List or Array value at a specific row into a ViewBuffer.
 ///
-/// Recursively traverses nested List/Array types to extract:
-/// 1. Shape from the nesting structure
-/// 2. Flat data from the innermost primitive type
+/// Uses zero-copy when the data is contiguous (FixedSizeList/Array types),
+/// falling back to copy-based flattening for jagged List types.
+///
+/// If `dtype_str` is provided, it will be used. Otherwise, the dtype will be
+/// inferred from the Polars column type.
+///
+/// If `require_contiguous` is true and zero-copy is not possible, an error is returned.
 fn decode_list_or_array_source(
     series: &Series,
     row_idx: usize,
-    dtype_str: &str,
+    dtype_str: Option<&str>,
+    require_contiguous: bool,
 ) -> Result<Option<ViewBuffer>, String> {
-    // Parse the target dtype
-    let dtype = match dtype_str {
-        "u8" => view_buffer::DType::U8,
-        "i8" => view_buffer::DType::I8,
-        "u16" => view_buffer::DType::U16,
-        "i16" => view_buffer::DType::I16,
-        "u32" => view_buffer::DType::U32,
-        "i32" => view_buffer::DType::I32,
-        "u64" => view_buffer::DType::U64,
-        "i64" => view_buffer::DType::I64,
-        "f32" => view_buffer::DType::F32,
-        "f64" => view_buffer::DType::F64,
-        other => return Err(format!("Unknown dtype: {other}")),
+    // Parse or infer the target dtype
+    let dtype = if let Some(dtype_s) = dtype_str {
+        parse_dtype_str(dtype_s)?
+    } else {
+        // Auto-infer from Polars type
+        dtype_from_polars_datatype(series.dtype()).ok_or_else(|| {
+            format!(
+                "Cannot infer dtype from Polars type {:?}. Please specify dtype explicitly.",
+                series.dtype()
+            )
+        })?
     };
 
+    // Try zero-copy path for fixed-size nested arrays first
+    if let Some(result) = try_decode_array_zero_copy(series, row_idx, dtype)? {
+        return Ok(Some(result));
+    }
+
+    // If require_contiguous is set and we didn't get zero-copy, error out
+    if require_contiguous {
+        return Err(format!(
+            "Source 'require_contiguous=true' requires rectangular data with zero-copy access, \
+            but row {} has data that cannot be zero-copied (possibly jagged nested lists or \
+            variable-size List type). Use require_contiguous=false to allow copy-based flattening, \
+            or use Polars Array type (fixed-size) instead of List.",
+            row_idx
+        ));
+    }
+
+    // Fall back to copy-based path for variable-size lists
+    decode_list_with_copy(series, row_idx, dtype)
+}
+
+/// Try zero-copy decoding for fixed-size Array types.
+///
+/// Returns `Ok(Some(buffer))` if zero-copy succeeded, `Ok(None)` if not applicable.
+fn try_decode_array_zero_copy(
+    series: &Series,
+    row_idx: usize,
+    dtype: view_buffer::DType,
+) -> Result<Option<ViewBuffer>, String> {
+    // Only attempt zero-copy for Array types (FixedSizeList in Arrow)
+    // List types have variable sizes and may be jagged
+    match series.dtype() {
+        DataType::Array(inner_dtype, _width) => {
+            // Extract shape from the type definition
+            let shape = extract_fixed_shape_from_dtype(series.dtype());
+            if shape.is_empty() {
+                return Ok(None); // Not a fixed-size nested type
+            }
+
+            // Check if innermost type is a primitive (not nested)
+            if !is_primitive_dtype(get_innermost_dtype(inner_dtype)) {
+                return Ok(None);
+            }
+
+            // Get the ArrayChunked
+            let arr_ca = series
+                .array()
+                .map_err(|e| format!("Array access error: {e}"))?;
+
+            // Check for null using the helper
+            if is_row_null(&arr_ca.clone().into_series(), row_idx) {
+                return Ok(None);
+            }
+
+            // Try to get zero-copy buffer access
+            if let Some((buffer, offset, len)) = get_array_row_buffer(&arr_ca, row_idx, dtype) {
+                let vb = ViewBuffer::from_polars_buffer_slice(buffer, offset, len, shape, dtype);
+                return Ok(Some(vb));
+            }
+        }
+        _ => {}
+    }
+
+    Ok(None)
+}
+
+/// Extract shape from a nested Array type definition.
+///
+/// For `Array[Array[UInt8, 3], 4]`, returns `[4, 3]`.
+fn extract_fixed_shape_from_dtype(dt: &DataType) -> Vec<usize> {
+    let mut shape = Vec::new();
+    let mut current = dt;
+
+    loop {
+        match current {
+            DataType::Array(inner, width) => {
+                shape.push(*width);
+                current = inner.as_ref();
+            }
+            _ => break,
+        }
+    }
+
+    shape
+}
+
+/// Get the innermost dtype from nested types.
+fn get_innermost_dtype(dt: &DataType) -> &DataType {
+    match dt {
+        DataType::List(inner) | DataType::Array(inner, _) => get_innermost_dtype(inner),
+        _ => dt,
+    }
+}
+
+/// Check if a dtype is a primitive type.
+fn is_primitive_dtype(dt: &DataType) -> bool {
+    matches!(
+        dt,
+        DataType::UInt8
+            | DataType::Int8
+            | DataType::UInt16
+            | DataType::Int16
+            | DataType::UInt32
+            | DataType::Int32
+            | DataType::UInt64
+            | DataType::Int64
+            | DataType::Float32
+            | DataType::Float64
+    )
+}
+
+/// Get zero-copy buffer access for an Array row.
+///
+/// Returns `(buffer, offset, len)` if zero-copy is possible.
+fn get_array_row_buffer(
+    arr_ca: &ArrayChunked,
+    row_idx: usize,
+    dtype: view_buffer::DType,
+) -> Option<(polars_arrow::buffer::Buffer<u8>, usize, usize)> {
+    // Find which chunk contains this row
+    let mut cumulative_len = 0;
+    for chunk in arr_ca.downcast_iter() {
+        let chunk_len = chunk.len();
+        if row_idx < cumulative_len + chunk_len {
+            let local_idx = row_idx - cumulative_len;
+
+            // For FixedSizeList, the values are stored contiguously
+            // We need to navigate to the innermost values
+            return get_fixed_size_list_buffer(chunk, local_idx, dtype);
+        }
+        cumulative_len += chunk_len;
+    }
+
+    None
+}
+
+/// Get buffer from a FixedSizeListArray chunk.
+fn get_fixed_size_list_buffer(
+    chunk: &polars_arrow::array::FixedSizeListArray,
+    local_idx: usize,
+    dtype: view_buffer::DType,
+) -> Option<(polars_arrow::buffer::Buffer<u8>, usize, usize)> {
+    let size = chunk.size();
+    let values = chunk.values();
+
+    // Recursively navigate to primitive values if nested
+    let (primitive_values, elements_per_row) = get_primitive_values(values.as_ref(), size)?;
+
+    // Calculate offset and length for this row
+    let element_size = dtype.size_of();
+    let offset = local_idx * elements_per_row * element_size;
+    let len = elements_per_row * element_size;
+
+    // Get the underlying buffer
+    let buffer = get_primitive_buffer(primitive_values, dtype)?;
+
+    Some((buffer, offset, len))
+}
+
+/// Recursively get primitive values array from nested FixedSizeList.
+fn get_primitive_values(
+    array: &dyn polars_arrow::array::Array,
+    accumulated_size: usize,
+) -> Option<(&dyn polars_arrow::array::Array, usize)> {
+    use polars_arrow::array::FixedSizeListArray;
+
+    if let Some(fsl) = array.as_any().downcast_ref::<FixedSizeListArray>() {
+        let size = fsl.size();
+        get_primitive_values(fsl.values().as_ref(), accumulated_size * size)
+    } else {
+        // Reached primitive array
+        Some((array, accumulated_size))
+    }
+}
+
+/// Get the underlying buffer from a primitive array.
+fn get_primitive_buffer(
+    array: &dyn polars_arrow::array::Array,
+    dtype: view_buffer::DType,
+) -> Option<polars_arrow::buffer::Buffer<u8>> {
+    use polars_arrow::array::PrimitiveArray;
+
+    macro_rules! try_get_buffer {
+        ($array:expr, $type:ty) => {
+            if let Some(arr) = $array.as_any().downcast_ref::<PrimitiveArray<$type>>() {
+                // Get the values buffer and convert to u8 buffer
+                let values = arr.values();
+                // PrimitiveArray values is a Buffer<T>, we need to reinterpret as Buffer<u8>
+                // This is safe because we're just changing the view, not the data
+                let bytes = values.as_slice();
+                let u8_slice =
+                    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, bytes.len() * std::mem::size_of::<$type>()) };
+                return Some(polars_arrow::buffer::Buffer::from(u8_slice.to_vec()));
+            }
+        };
+    }
+
+    // Try each primitive type
+    match dtype {
+        view_buffer::DType::U8 => try_get_buffer!(array, u8),
+        view_buffer::DType::I8 => try_get_buffer!(array, i8),
+        view_buffer::DType::U16 => try_get_buffer!(array, u16),
+        view_buffer::DType::I16 => try_get_buffer!(array, i16),
+        view_buffer::DType::U32 => try_get_buffer!(array, u32),
+        view_buffer::DType::I32 => try_get_buffer!(array, i32),
+        view_buffer::DType::U64 => try_get_buffer!(array, u64),
+        view_buffer::DType::I64 => try_get_buffer!(array, i64),
+        view_buffer::DType::F32 => try_get_buffer!(array, f32),
+        view_buffer::DType::F64 => try_get_buffer!(array, f64),
+    }
+
+    None
+}
+
+/// Decode list with copy (fallback path).
+fn decode_list_with_copy(
+    series: &Series,
+    row_idx: usize,
+    dtype: view_buffer::DType,
+) -> Result<Option<ViewBuffer>, String> {
     // Get the element at this row
     let element_series = match series.dtype() {
         DataType::List(_) => {
@@ -1367,6 +1828,7 @@ fn encode_node_output(output: &NodeOutput, sink: &SinkSpec) -> Result<OutputValu
                     fill_value: 255,
                     background: 0,
                     shape_pipeline: None,
+                    require_contiguous: false,
                 },
                 shape_hints: None,
                 ops: vec![],
@@ -1386,6 +1848,7 @@ fn encode_node_output(output: &NodeOutput, sink: &SinkSpec) -> Result<OutputValu
                     fill_value: 255,
                     background: 0,
                     shape_pipeline: None,
+                    require_contiguous: false,
                 },
                 shape_hints: None,
                 ops: vec![],
@@ -1999,15 +2462,16 @@ impl UnifiedGraph {
                             if input_series.dtype() == &DataType::Null {
                                 None
                             } else {
-                                let dtype_str = node.source.dtype.as_ref().ok_or_else(|| {
-                                    format!(
-                                        "dtype is required for '{}' source format",
-                                        node.source.format
-                                    )
-                                })?;
+                                // dtype is now optional - will be inferred from Polars type if not provided
+                                let dtype_opt = node.source.dtype.as_deref();
+                                let require_contiguous = node.source.require_contiguous;
 
-                                match decode_list_or_array_source(input_series, row_idx, dtype_str)
-                                {
+                                match decode_list_or_array_source(
+                                    input_series,
+                                    row_idx,
+                                    dtype_opt,
+                                    require_contiguous,
+                                ) {
                                     Ok(Some(buf)) => Some(NodeOutput::from_buffer(buf)),
                                     Ok(None) => None,
                                     Err(e) => return Err(format!("List/Array decode error: {e}")),
@@ -2029,24 +2493,46 @@ impl UnifiedGraph {
                                     }
                                 };
 
-                                match input_ca.get(row_idx) {
-                                    Some(bytes) => {
-                                        // Create temp spec for decoding
-                                        let first_output = self.outputs.values().next().unwrap();
-                                        let temp_spec = PipelineSpec {
-                                            source: node.source.clone(),
-                                            shape_hints: None,
-                                            ops: vec![],
-                                            sink: first_output.sink.clone(),
-                                        };
-                                        // Copy the bytes to avoid any lifetime issues
-                                        let bytes_owned = bytes.to_vec();
-                                        match decode_source(&bytes_owned, &temp_spec) {
+                                // Try zero-copy path for blob and raw formats
+                                let source_format = node.source.format.as_str();
+                                if source_format == "blob" || source_format == "raw" {
+                                    // Zero-copy path
+                                    if let Some((buffer, offset, len)) =
+                                        get_binary_row_buffer(input_ca, row_idx)
+                                    {
+                                        match decode_binary_zero_copy(
+                                            buffer,
+                                            offset,
+                                            len,
+                                            source_format,
+                                            node.source.dtype.as_deref(),
+                                        ) {
                                             Ok(buf) => Some(NodeOutput::from_buffer(buf)),
-                                            Err(e) => return Err(format!("Decode error: {e}")),
+                                            Err(e) => return Err(format!("Zero-copy decode error: {e}")),
                                         }
+                                    } else {
+                                        None // Null row
                                     }
-                                    None => None,
+                                } else {
+                                    // Other binary formats (image_bytes, etc.) - use existing path
+                                    match input_ca.get(row_idx) {
+                                        Some(bytes) => {
+                                            // Create temp spec for decoding
+                                            let first_output = self.outputs.values().next().unwrap();
+                                            let temp_spec = PipelineSpec {
+                                                source: node.source.clone(),
+                                                shape_hints: None,
+                                                ops: vec![],
+                                                sink: first_output.sink.clone(),
+                                            };
+                                            // Image formats require decoding, can't be zero-copy
+                                            match decode_source(bytes, &temp_spec) {
+                                                Ok(buf) => Some(NodeOutput::from_buffer(buf)),
+                                                Err(e) => return Err(format!("Decode error: {e}")),
+                                            }
+                                        }
+                                        None => None,
+                                    }
                                 }
                             }
                         }
