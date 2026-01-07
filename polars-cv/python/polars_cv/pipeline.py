@@ -210,6 +210,8 @@ class Pipeline:
         background: int = 0,
         # Cloud storage options for file_path sources
         cloud_options: "CloudOptions | dict[str, Any] | None" = None,
+        # Contiguity option for list/array sources
+        require_contiguous: bool = False,
     ) -> "Pipeline":
         """
         Define the input source format.
@@ -217,11 +219,16 @@ class Pipeline:
         Args:
             format: How to interpret input data.
                 - "image_bytes": Decode PNG/JPEG (auto-detect)
-                - "blob": VIEW protocol binary
-                - "raw": Raw bytes (requires dtype and shape via assert_shape)
+                - "blob": VIEW protocol binary (self-describing, includes dtype/shape)
+                - "raw": Raw bytes (requires dtype; shape via assert_shape or reshape)
+                - "list": Polars nested List column (dtype auto-inferred or explicit)
+                - "array": Polars fixed-size Array column (dtype auto-inferred or explicit)
                 - "file_path": Read from file path string (local or cloud: s3://, gs://, az://)
                 - "contour": Rasterize contour struct to binary mask
-            dtype: Data type for "raw" format (e.g., "u8", "f32").
+            dtype: Data type for "raw" format (required), or optional override for
+                "list"/"array" formats. Examples: "u8", "f32", "i32".
+                For list/array, dtype is auto-inferred from the Polars column type
+                if not specified.
             width: Output mask width for "contour" format (required if 'shape' not specified).
             height: Output mask height for "contour" format (required if 'shape' not specified).
             shape: LazyPipelineExpr to infer dimensions from for "contour" format
@@ -232,6 +239,9 @@ class Pipeline:
                 Can be a CloudOptions object with credential fields, a dict with keys
                 like 'aws_region', 'aws_access_key_id', etc., or None (default) to use
                 default credential chain.
+            require_contiguous: For "list"/"array" formats, whether to require contiguous
+                (rectangular) data for zero-copy. If True and data is jagged, an error
+                is raised. If False (default), jagged data is flattened with a copy.
 
         Returns:
             Self for chaining.
@@ -279,11 +289,10 @@ class Pipeline:
                 msg = f"Invalid dtype '{dtype}'. Valid: {valid}"
                 raise ValueError(msg) from e
 
-        if (
-            fmt in (SourceFormat.RAW, SourceFormat.LIST, SourceFormat.ARRAY)
-            and dtype_enum is None
-        ):
-            msg = f"dtype is required for '{fmt.value}' source format"
+        # RAW format always requires dtype (no type metadata in raw bytes)
+        # LIST and ARRAY can auto-infer dtype from Polars column type
+        if fmt == SourceFormat.RAW and dtype_enum is None:
+            msg = "dtype is required for 'raw' source format (raw bytes have no type metadata)"
             raise ValueError(msg)
 
         # Handle contour source format
@@ -361,7 +370,10 @@ class Pipeline:
                     raise TypeError(msg)
 
             new._source = SourceSpec(
-                format=fmt, dtype=dtype_enum, cloud_options=cloud_opts
+                format=fmt,
+                dtype=dtype_enum,
+                cloud_options=cloud_opts,
+                require_contiguous=require_contiguous,
             )
 
         return new

@@ -36,24 +36,47 @@ pub enum BufferStorage {
     /// Arrow buffer for zero-copy interop.
     #[cfg(feature = "arrow_interop")]
     Arrow(arrow::buffer::Buffer),
+    /// Polars-arrow buffer for zero-copy Polars integration.
+    /// The offset field allows referencing a slice within the buffer.
+    #[cfg(feature = "polars_interop")]
+    PolarsArrow {
+        /// The underlying polars-arrow buffer (Arc-backed, cheap to clone).
+        buffer: polars_arrow::buffer::Buffer<u8>,
+        /// Byte offset into the buffer where this view starts.
+        offset: usize,
+        /// Length of this view in bytes.
+        len: usize,
+    },
 }
 
 impl BufferStorage {
     /// Returns a raw pointer to the start of the buffer.
+    ///
+    /// For PolarsArrow storage, this returns a pointer to the start of the view
+    /// (i.e., buffer start + offset).
     pub fn as_ptr(&self) -> *const u8 {
         match self {
             BufferStorage::Rust(v) => v.as_ptr(),
             #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(b) => b.as_ptr(),
+            #[cfg(feature = "polars_interop")]
+            BufferStorage::PolarsArrow { buffer, offset, .. } => {
+                // Safety: offset is validated at construction time to be within bounds
+                unsafe { buffer.as_ptr().add(*offset) }
+            }
         }
     }
 
     /// Returns the length of the underlying byte buffer.
+    ///
+    /// For PolarsArrow storage, this returns the length of the view, not the entire buffer.
     pub fn len(&self) -> usize {
         match self {
             BufferStorage::Rust(v) => v.len(),
             #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(b) => b.len(),
+            #[cfg(feature = "polars_interop")]
+            BufferStorage::PolarsArrow { len, .. } => *len,
         }
     }
 
@@ -301,6 +324,99 @@ impl ViewBuffer {
         }
     }
 
+    /// Creates a ViewBuffer from a Polars-arrow buffer (zero-copy).
+    ///
+    /// This enables zero-copy data ingestion from Polars columns.
+    ///
+    /// # Arguments
+    /// * `buffer` - The polars-arrow buffer containing the data.
+    /// * `offset` - Byte offset into the buffer where this view starts.
+    /// * `shape` - Shape of the resulting tensor.
+    /// * `dtype` - Data type of the elements.
+    ///
+    /// # Panics
+    /// Panics if `offset + required_bytes > buffer.len()`.
+    #[cfg(feature = "polars_interop")]
+    pub fn from_polars_buffer(
+        buffer: polars_arrow::buffer::Buffer<u8>,
+        offset: usize,
+        shape: Vec<usize>,
+        dtype: DType,
+    ) -> Self {
+        let num_elements: usize = shape.iter().product();
+        let required_bytes = num_elements * dtype.size_of();
+
+        assert!(
+            offset + required_bytes <= buffer.len(),
+            "Polars buffer too small: offset={}, required={}, buffer_len={}",
+            offset,
+            required_bytes,
+            buffer.len()
+        );
+
+        let layout = Layout::new_contiguous(shape, dtype);
+        Self {
+            data: BufferStorage::PolarsArrow {
+                buffer,
+                offset,
+                len: required_bytes,
+            },
+            layout,
+        }
+    }
+
+    /// Creates a ViewBuffer from a Polars-arrow buffer slice (zero-copy).
+    ///
+    /// This is a convenience method when you already know the exact byte length.
+    ///
+    /// # Arguments
+    /// * `buffer` - The polars-arrow buffer containing the data.
+    /// * `offset` - Byte offset into the buffer where this view starts.
+    /// * `len` - Length of this view in bytes.
+    /// * `shape` - Shape of the resulting tensor.
+    /// * `dtype` - Data type of the elements.
+    ///
+    /// # Panics
+    /// Panics if `offset + len > buffer.len()` or if `len` doesn't match
+    /// `shape.product() * dtype.size_of()`.
+    #[cfg(feature = "polars_interop")]
+    pub fn from_polars_buffer_slice(
+        buffer: polars_arrow::buffer::Buffer<u8>,
+        offset: usize,
+        len: usize,
+        shape: Vec<usize>,
+        dtype: DType,
+    ) -> Self {
+        let num_elements: usize = shape.iter().product();
+        let expected_bytes = num_elements * dtype.size_of();
+
+        assert!(
+            offset + len <= buffer.len(),
+            "Polars buffer slice out of bounds: offset={}, len={}, buffer_len={}",
+            offset,
+            len,
+            buffer.len()
+        );
+        assert!(
+            len == expected_bytes,
+            "Byte length mismatch: provided={}, expected={} (shape={:?}, dtype={:?})",
+            len,
+            expected_bytes,
+            shape,
+            dtype
+        );
+
+        let layout = Layout::new_contiguous(shape, dtype);
+        Self {
+            data: BufferStorage::PolarsArrow {
+                buffer,
+                offset,
+                len,
+            },
+            layout,
+        }
+    }
+
     /// Returns the data type of the buffer elements.
     pub fn dtype(&self) -> DType {
         self.layout.dtype
@@ -375,6 +491,11 @@ impl ViewBuffer {
             BufferStorage::Rust(arc) => Arc::as_ptr(arc) as usize,
             #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(buf) => buf.as_ptr() as usize,
+            #[cfg(feature = "polars_interop")]
+            BufferStorage::PolarsArrow { buffer, offset, .. } => {
+                // Include offset in the ID to distinguish different views into the same buffer
+                buffer.as_ptr() as usize + offset
+            }
         }
     }
 

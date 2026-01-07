@@ -3969,6 +3969,7 @@ dependencies = [
  "image_hasher",
  "ndarray",
  "num-traits",
+ "polars-arrow",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

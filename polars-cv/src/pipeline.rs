@@ -32,6 +32,10 @@ pub struct SourceSpec {
     /// Serialized shape pipeline for dimension inference.
     #[serde(default)]
     pub shape_pipeline: Option<serde_json::Value>,
+    /// Whether to require contiguous data for list/array sources.
+    /// If true and data is jagged, an error is raised.
+    #[serde(default)]
+    pub require_contiguous: bool,
 }
 
 fn default_fill_value() -> u8 {
