@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -321,7 +321,7 @@ class TestBinaryOpsPolarsCV:
 
         # This will FAIL until add is implemented in execute.rs
         result = df.select(output=expr1.add(expr2).sink("numpy"))
-        actual = numpy_from_bytes(result.row(0)[0])
+        actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
@@ -354,7 +354,7 @@ class TestBinaryOpsPolarsCV:
 
         # This will FAIL until subtract is implemented in execute.rs
         result = df.select(output=expr1.subtract(expr2).sink("numpy"))
-        actual = numpy_from_bytes(result.row(0)[0])
+        actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
@@ -386,7 +386,7 @@ class TestBinaryOpsPolarsCV:
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
         result = df.select(output=expr1.multiply(expr2).sink("numpy"))
-        actual = numpy_from_bytes(result.row(0)[0])
+        actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
@@ -419,7 +419,7 @@ class TestBinaryOpsPolarsCV:
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
         result = df.select(output=expr1.blend(expr2).sink("numpy"))
-        actual = numpy_from_bytes(result.row(0)[0])
+        actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
@@ -451,7 +451,7 @@ class TestBinaryOpsPolarsCV:
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
         result = df.select(output=expr1.divide(expr2).sink("numpy"))
-        actual = numpy_from_bytes(result.row(0)[0])
+        actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
@@ -496,7 +496,7 @@ class TestBinaryOpsPolarsCV:
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
         result = df.select(output=expr1.ratio(expr2).sink("numpy"))
-        actual = numpy_from_bytes(result.row(0)[0])
+        actual = numpy_from_struct(result.row(0)[0])
 
         np.testing.assert_allclose(actual, expected, atol=1)
 
@@ -529,7 +529,7 @@ class TestBinaryOpsPolarsCV:
 
         # This will FAIL until apply_mask is implemented in execute.rs
         result = df.select(output=img_expr.apply_mask(mask_expr).sink("numpy"))
-        actual = numpy_from_bytes(result.row(0)[0])
+        actual = numpy_from_struct(result.row(0)[0])
 
         # Scale expected to match normalized mask behavior (0/1 -> 0/255)
         expected_scaled = (img.astype(np.float32) * (binary_mask[:, :, None])).astype(

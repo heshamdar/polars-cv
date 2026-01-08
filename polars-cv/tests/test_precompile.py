@@ -20,7 +20,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from polars_cv import Pipeline, numpy_from_bytes, numpy_shape
+from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -52,6 +52,26 @@ def create_test_png(
         return b""
 
 
+def get_shape(struct_val: dict) -> tuple[int, ...]:
+    """
+    Extract shape from numpy output struct.
+
+    Args:
+        struct_val: The struct value from a numpy sink output.
+
+    Returns:
+        Shape as a tuple of integers.
+    """
+    if struct_val is None:
+        return ()
+    shape_list = struct_val.get("shape")
+    if shape_list is None:
+        return ()
+    if isinstance(shape_list, pl.Series):
+        return tuple(int(x) for x in shape_list.to_list())
+    return tuple(int(x) for x in shape_list)
+
+
 def _plugin_available() -> bool:
     """Check if the compiled plugin is available."""
     from pathlib import Path
@@ -81,10 +101,10 @@ class TestLiteralPipelineCorrectness:
         df = pl.DataFrame({"images": [png_bytes]})
 
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
-        output_bytes = result["processed"][0]
+        output_struct = result["processed"][0]
 
-        # Verify dimensions using numpy_shape
-        shape = numpy_shape(output_bytes)
+        # Verify dimensions using struct shape field
+        shape = get_shape(output_struct)
         assert shape[0] == 50, f"Expected height 50, got {shape[0]}"
         assert shape[1] == 50, f"Expected width 50, got {shape[1]}"
 
@@ -101,9 +121,9 @@ class TestLiteralPipelineCorrectness:
         df = pl.DataFrame({"images": [png_bytes]})
 
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
-        output_bytes = result["processed"][0]
+        output_struct = result["processed"][0]
 
-        shape = numpy_shape(output_bytes)
+        shape = get_shape(output_struct)
         assert shape[0] == 30, f"Expected height 30, got {shape[0]}"
         assert shape[1] == 40, f"Expected width 40, got {shape[1]}"
 
@@ -124,9 +144,9 @@ class TestLiteralPipelineCorrectness:
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
         # All rows should produce identical output (same input, same literal pipeline)
-        arr0 = numpy_from_bytes(result["processed"][0])
-        arr1 = numpy_from_bytes(result["processed"][1])
-        arr2 = numpy_from_bytes(result["processed"][2])
+        arr0 = numpy_from_struct(result["processed"][0])
+        arr1 = numpy_from_struct(result["processed"][1])
+        arr2 = numpy_from_struct(result["processed"][2])
 
         np.testing.assert_array_equal(arr0, arr1)
         np.testing.assert_array_equal(arr1, arr2)
@@ -144,9 +164,9 @@ class TestLiteralPipelineCorrectness:
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
         # All outputs should have same shape
-        first_shape = numpy_shape(result["processed"][0])
+        first_shape = get_shape(result["processed"][0])
         for i in range(100):
-            shape = numpy_shape(result["processed"][i])
+            shape = get_shape(result["processed"][i])
             assert shape == first_shape, f"Row {i} has different shape: {shape}"
 
 
@@ -175,9 +195,9 @@ class TestExpressionPipelineCorrectness:
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
         # Each row should have different dimensions based on h/w columns
-        shape0 = numpy_shape(result["processed"][0])
-        shape1 = numpy_shape(result["processed"][1])
-        shape2 = numpy_shape(result["processed"][2])
+        shape0 = get_shape(result["processed"][0])
+        shape1 = get_shape(result["processed"][1])
+        shape2 = get_shape(result["processed"][2])
 
         assert shape0[0] == 10 and shape0[1] == 15, (
             f"Row 0: expected (10,15), got {shape0[:2]}"
@@ -210,8 +230,8 @@ class TestExpressionPipelineCorrectness:
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
         # Both should produce 20x20 crops, but from different positions
-        shape0 = numpy_shape(result["processed"][0])
-        shape1 = numpy_shape(result["processed"][1])
+        shape0 = get_shape(result["processed"][0])
+        shape1 = get_shape(result["processed"][1])
 
         assert shape0[0] == 20 and shape0[1] == 20
         assert shape1[0] == 20 and shape1[1] == 20
@@ -242,7 +262,7 @@ class TestExpressionPipelineCorrectness:
 
         # Verify each row has the correct size - NOT all using first row's value
         for i, expected_size in enumerate([10, 20, 30, 40]):
-            shape = numpy_shape(result["processed"][i])
+            shape = get_shape(result["processed"][i])
             assert shape[0] == expected_size, (
                 f"Row {i}: expected size {expected_size}, got {shape[0]}. "
                 "Expression values may be cached incorrectly!"
@@ -277,9 +297,9 @@ class TestMixedLiteralExpressionPipeline:
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
         # Height should be 50 for all, width should vary
-        shape0 = numpy_shape(result["processed"][0])
-        shape1 = numpy_shape(result["processed"][1])
-        shape2 = numpy_shape(result["processed"][2])
+        shape0 = get_shape(result["processed"][0])
+        shape1 = get_shape(result["processed"][1])
+        shape2 = get_shape(result["processed"][2])
 
         # All heights should be 50 (literal)
         assert shape0[0] == 50
@@ -318,8 +338,8 @@ class TestMixedLiteralExpressionPipeline:
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
         # Both should produce 32x32 output (literal crop dimensions)
-        shape0 = numpy_shape(result["processed"][0])
-        shape1 = numpy_shape(result["processed"][1])
+        shape0 = get_shape(result["processed"][0])
+        shape1 = get_shape(result["processed"][1])
 
         assert shape0[0] == 32 and shape0[1] == 32
         assert shape1[0] == 32 and shape1[1] == 32
@@ -347,7 +367,7 @@ class TestStreamingVsEagerPrecompile:
 
         # All should have same shape
         for i in range(10):
-            shape = numpy_shape(result["processed"][i])
+            shape = get_shape(result["processed"][i])
             assert shape[0] == 32 and shape[1] == 32
 
     def test_expression_pipeline_streaming(self) -> None:
@@ -375,8 +395,8 @@ class TestStreamingVsEagerPrecompile:
             .collect(engine="streaming")
         )
 
-        shape0 = numpy_shape(result["processed"][0])
-        shape1 = numpy_shape(result["processed"][1])
+        shape0 = get_shape(result["processed"][0])
+        shape1 = get_shape(result["processed"][1])
 
         assert shape0[0] == 25 and shape0[1] == 25
         assert shape1[0] == 50 and shape1[1] == 50

@@ -248,7 +248,7 @@ def benchmark_polars_cv_pipeline(
         BenchmarkResult with timing information.
     """
     import torch
-    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_bytes
+    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_struct
     from torch.utils.data import DataLoader, Dataset
 
     mode = "streaming" if use_streaming else "eager"
@@ -304,7 +304,7 @@ def benchmark_polars_cv_pipeline(
 
         def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
             row = self.df.row(idx, named=True)
-            arr = numpy_from_bytes(row["tensor"])
+            arr = numpy_from_struct(row["tensor"])
             tensor = torch.from_numpy(arr.copy()).permute(2, 0, 1)  # HWC -> CHW
             label = row["label"]
             return tensor, label
@@ -389,7 +389,7 @@ def verify_output_equivalence(
     """
     import torch
     from datasets import load_dataset
-    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_bytes
+    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_struct
     from torchvision import transforms
 
     log("Verifying output equivalence between pipelines...")
@@ -433,7 +433,7 @@ def verify_output_equivalence(
         # polars-cv output
         sample_df = pv_df.slice(i, 1)
         processed = sample_df.with_columns(tensor=pl.col("path").cv.pipeline(pv_pipe))
-        pv_arr = numpy_from_bytes(processed["tensor"][0])
+        pv_arr = numpy_from_struct(processed["tensor"][0])
         pv_tensor = torch.from_numpy(pv_arr.copy()).permute(2, 0, 1)
 
         # Compare
@@ -486,7 +486,7 @@ def run_inference_serving(
     """
     import torch
     from datasets import load_dataset
-    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_bytes
+    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_struct
     from torch.utils.data import DataLoader, Dataset
     from torchvision import transforms
     from torchvision.models import resnet18
@@ -604,7 +604,7 @@ def run_inference_serving(
 
         def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
             row = self.df.row(idx, named=True)
-            arr = numpy_from_bytes(row["tensor"])
+            arr = numpy_from_struct(row["tensor"])
             tensor = torch.from_numpy(arr.copy()).permute(2, 0, 1)
             return tensor, row["label"]
 

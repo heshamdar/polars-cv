@@ -7,6 +7,7 @@
 mod cloud;
 mod execute;
 mod graph;
+mod output;
 mod params;
 mod pipeline;
 

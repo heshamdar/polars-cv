@@ -18,7 +18,7 @@ import polars as pl
 import pytest
 from PIL import Image
 
-from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_bytes
+from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -73,7 +73,7 @@ class TestMultiPhaseWorkaround:
 
         result = sample_df.with_columns(thresholded=pl.col("image").cv.pipeline(pipe))
 
-        arr = numpy_from_bytes(result["thresholded"][0])
+        arr = numpy_from_struct(result["thresholded"][0])
         assert arr.shape == (50, 50, 1)
         assert np.any(arr == 255)  # Has white pixels
         assert np.any(arr == 0)  # Has black pixels
@@ -149,9 +149,9 @@ class TestMultiPhaseWorkaround:
         result = df.with_columns(outputs=result_expr)
 
         # Verify all outputs present
-        resized = numpy_from_bytes(result["outputs"].struct.field("resized")[0])
-        mask_arr = numpy_from_bytes(result["outputs"].struct.field("mask")[0])
-        masked_arr = numpy_from_bytes(result["outputs"].struct.field("masked")[0])
+        resized = numpy_from_struct(result["outputs"].struct.field("resized")[0])
+        mask_arr = numpy_from_struct(result["outputs"].struct.field("mask")[0])
+        masked_arr = numpy_from_struct(result["outputs"].struct.field("masked")[0])
 
         assert resized.shape == (50, 50, 1)
         assert mask_arr.shape == (50, 50, 1)
@@ -234,9 +234,9 @@ class TestSeamlessPipeline:
         result = sample_df.with_columns(outputs=result_expr)
 
         # Verify outputs
-        resized = numpy_from_bytes(result["outputs"].struct.field("resized")[0])
-        mask_arr = numpy_from_bytes(result["outputs"].struct.field("mask")[0])
-        masked_arr = numpy_from_bytes(result["outputs"].struct.field("masked")[0])
+        resized = numpy_from_struct(result["outputs"].struct.field("resized")[0])
+        mask_arr = numpy_from_struct(result["outputs"].struct.field("mask")[0])
+        masked_arr = numpy_from_struct(result["outputs"].struct.field("masked")[0])
 
         assert resized.shape == (50, 50, 1)
         assert mask_arr.shape == (50, 50, 1)
@@ -284,8 +284,8 @@ class TestSeamlessPipeline:
         result = sample_df.with_columns(outputs=result_expr)
 
         # Verify outputs have same dimensions
-        resized = numpy_from_bytes(result["outputs"].struct.field("resized")[0])
-        mask_arr = numpy_from_bytes(result["outputs"].struct.field("mask")[0])
+        resized = numpy_from_struct(result["outputs"].struct.field("resized")[0])
+        mask_arr = numpy_from_struct(result["outputs"].struct.field("mask")[0])
 
         assert resized.shape == (50, 50, 1)
         assert mask_arr.shape == (50, 50, 1)
@@ -338,7 +338,7 @@ class TestSeamlessPipeline:
         result = sample_df.with_columns(outputs=result_expr)
 
         # Verify mixed-type outputs
-        resized = numpy_from_bytes(result["outputs"].struct.field("resized")[0])
+        resized = numpy_from_struct(result["outputs"].struct.field("resized")[0])
         assert resized.shape == (50, 50, 1)
 
         # The contours output should have an exterior field
@@ -402,9 +402,9 @@ class TestSeamlessPipeline:
 
         result = sample_df.with_columns(mask=pl.col("image").cv.pipeline(pipe))
 
-        # Should be Binary (serialized numpy array)
-        assert result["mask"].dtype == pl.Binary
-        arr = numpy_from_bytes(result["mask"][0])
+        # Should be Struct (numpy output with data, dtype, shape fields)
+        assert isinstance(result["mask"].dtype, pl.Struct)
+        arr = numpy_from_struct(result["mask"][0])
         assert arr.shape == (50, 50, 1)
 
     def test_contour_transforms_preserve_domain(self, sample_df: pl.DataFrame) -> None:
@@ -469,9 +469,9 @@ class TestMergePipeBranches:
         assert "threshold" in df["outputs"].struct.fields
 
         # Each output should have valid data
-        gray_arr = numpy_from_bytes(df["outputs"].struct.field("gray")[0])
-        blurred_arr = numpy_from_bytes(df["outputs"].struct.field("blurred")[0])
-        threshold_arr = numpy_from_bytes(df["outputs"].struct.field("threshold")[0])
+        gray_arr = numpy_from_struct(df["outputs"].struct.field("gray")[0])
+        blurred_arr = numpy_from_struct(df["outputs"].struct.field("blurred")[0])
+        threshold_arr = numpy_from_struct(df["outputs"].struct.field("threshold")[0])
 
         assert gray_arr is not None
         assert blurred_arr is not None
@@ -537,8 +537,8 @@ class TestMergePipeBranches:
 
         df = sample_df.with_columns(outputs=expr)
 
-        small_arr = numpy_from_bytes(df["outputs"].struct.field("small")[0])
-        large_arr = numpy_from_bytes(df["outputs"].struct.field("large")[0])
+        small_arr = numpy_from_struct(df["outputs"].struct.field("small")[0])
+        large_arr = numpy_from_struct(df["outputs"].struct.field("large")[0])
 
         # Verify dimensions match expectations
         assert small_arr.shape[0] == 50  # height

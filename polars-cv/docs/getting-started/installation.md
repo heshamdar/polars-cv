@@ -82,12 +82,12 @@ PyTorch is not a required dependency, but polars-cv integrates seamlessly with i
 
 ```python
 import torch
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 
 # Pipeline with torch-compatible output
 pipe = Pipeline().source("image_bytes").normalize().sink("torch")
 
-# Convert to PyTorch tensor
-tensor = torch.from_numpy(numpy_from_bytes(result))
+# Convert to PyTorch tensor (result is a struct with data, dtype, shape fields)
+tensor = torch.from_numpy(numpy_from_struct(result))
 ```
 

@@ -97,10 +97,10 @@ The preset normalization applies channel-wise normalization matching torchvision
 
 ### Converting Output to NumPy
 
-Use `numpy_from_bytes()` to convert pipeline output:
+Use `numpy_from_struct()` to convert pipeline output:
 
 ```python
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 import numpy as np
 
 # Pipeline with numpy sink
@@ -108,8 +108,8 @@ pipe = Pipeline().source("image_bytes").resize(224, 224).normalize().sink("numpy
 
 result = df.with_columns(tensor=pl.col("image").cv.pipeline(pipe))
 
-# Convert to NumPy array
-arr = numpy_from_bytes(result["tensor"][0])
+# Convert to NumPy array (each row is a struct with data, dtype, shape)
+arr = numpy_from_struct(result["tensor"][0])
 print(f"Shape: {arr.shape}, dtype: {arr.dtype}")
 # Shape: (224, 224, 3), dtype: float32
 ```
@@ -118,7 +118,7 @@ print(f"Shape: {arr.shape}, dtype: {arr.dtype}")
 
 ```python
 # Process all images in one pass
-arrays = [numpy_from_bytes(b) for b in result["tensor"]]
+arrays = [numpy_from_struct(s) for s in result["tensor"]]
 batch = np.stack(arrays)
 print(f"Batch shape: {batch.shape}")
 # Batch shape: (N, 224, 224, 3)
@@ -130,7 +130,7 @@ print(f"Batch shape: {batch.shape}")
 
 ```python
 import torch
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 
 # Pipeline with torch-compatible output
 pipe = (
@@ -144,12 +144,12 @@ pipe = (
 result = df.with_columns(tensor=pl.col("image").cv.pipeline(pipe))
 
 # Convert to PyTorch tensor
-def bytes_to_tensor(data: bytes) -> torch.Tensor:
-    arr = numpy_from_bytes(data)
+def struct_to_tensor(data: dict) -> torch.Tensor:
+    arr = numpy_from_struct(data)
     tensor = torch.from_numpy(arr.copy())
     return tensor.permute(2, 0, 1)  # HWC → CHW
 
-tensors = [bytes_to_tensor(b) for b in result["tensor"]]
+tensors = [struct_to_tensor(s) for s in result["tensor"]]
 batch = torch.stack(tensors)
 print(f"Batch shape: {batch.shape}")
 # Batch shape: torch.Size([N, 3, 224, 224])
@@ -165,7 +165,7 @@ It's the most efficient approach when you can fit preprocessed data in memory.
 ```python
 from torch.utils.data import Dataset, DataLoader
 import polars as pl
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 import torch
 
 
@@ -199,7 +199,7 @@ class PreprocessedPolarsDataset(Dataset):
     
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         row = self.df.row(idx, named=True)
-        arr = numpy_from_bytes(row["_tensor"])
+        arr = numpy_from_struct(row["_tensor"])
         tensor = torch.from_numpy(arr.copy()).permute(2, 0, 1)
         
         # Apply PyTorch augmentations (varies per-epoch if random)
@@ -295,7 +295,7 @@ class EpochProcessedDataset(Dataset):
     
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         row = self.processed_df.row(idx, named=True)
-        arr = numpy_from_bytes(row["_tensor"])
+        arr = numpy_from_struct(row["_tensor"])
         tensor = torch.from_numpy(arr.copy()).permute(2, 0, 1)
         
         if self.transform:
@@ -353,7 +353,7 @@ Polars streaming engine and batch collection for true lazy iteration:
 ```python
 from torch.utils.data import IterableDataset, DataLoader
 import polars as pl
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 import torch
 
 
@@ -397,7 +397,7 @@ class StreamingPolarsDataset(IterableDataset):
         # This yields batches as they're processed, not after full materialization
         for batch_df in query.collect_batches(engine="streaming", chunk_size=self.chunk_size):
             for row in batch_df.iter_rows(named=True):
-                arr = numpy_from_bytes(row["_tensor"])
+                arr = numpy_from_struct(row["_tensor"])
                 tensor = torch.from_numpy(arr.copy()).permute(2, 0, 1)
                 
                 if self.transform:

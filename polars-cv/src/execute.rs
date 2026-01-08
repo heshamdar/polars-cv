@@ -438,17 +438,16 @@ pub fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<View
 }
 
 /// Encode the result buffer to the sink format.
+///
+/// Note: numpy/torch sinks are now handled by the output module for zero-copy support.
+/// This function handles png, jpeg, blob, and raw binary formats.
 pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult<Vec<u8>> {
     match pipeline.sink_format() {
-        "numpy" => {
-            // Export as NumPy-compatible format
-            // Format: dtype_code (1 byte) + ndim (1 byte) + shape (ndim * 8 bytes) + data
-            encode_sink_numpy_style(buffer)
-        }
-        "torch" => {
-            // Similar to numpy but with torch conventions
-            // For now, use same format
-            encode_sink_numpy_style(buffer)
+        "numpy" | "torch" => {
+            // numpy/torch now use struct-based output via crate::output module
+            // This path should not be reached in normal operation
+            Err(polars_err!(ComputeError: 
+                "numpy/torch sinks should use output module for zero-copy struct encoding"))
         }
         "blob" => {
             // VIEW protocol
@@ -484,35 +483,6 @@ pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult
         }
         other => Err(polars_err!(ComputeError: "Unknown sink format: {}", other)),
     }
-}
-
-/// Encode buffer in numpy-style format.
-fn encode_sink_numpy_style(buffer: &ViewBuffer) -> PolarsResult<Vec<u8>> {
-    let shape = buffer.shape();
-    let dtype = buffer.dtype();
-
-    let num_elements: usize = shape.iter().product();
-    let data_len = num_elements * dtype.size_of();
-
-    let mut output = Vec::with_capacity(1 + 1 + shape.len() * 8 + data_len);
-    output.push(dtype_to_numpy_code(dtype));
-    output.push(shape.len() as u8);
-
-    for &dim in shape {
-        output.extend_from_slice(&(dim as u64).to_le_bytes());
-    }
-
-    // Optimization: Check if already contiguous to avoid unnecessary copy
-    if buffer.layout_facts().is_contiguous() {
-        let data_slice = unsafe { std::slice::from_raw_parts(buffer.as_ptr::<u8>(), data_len) };
-        output.extend_from_slice(data_slice);
-    } else {
-        let contig = buffer.to_contiguous();
-        let data_slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-        output.extend_from_slice(data_slice);
-    }
-
-    Ok(output)
 }
 
 /// Resolve an operation specification to a ViewDto.
@@ -1000,18 +970,3 @@ fn parse_filter(s: &str) -> PolarsResult<FilterType> {
     }
 }
 
-/// Convert DType to numpy dtype code.
-fn dtype_to_numpy_code(dtype: DType) -> u8 {
-    match dtype {
-        DType::U8 => 0,
-        DType::I8 => 1,
-        DType::U16 => 2,
-        DType::I16 => 3,
-        DType::U32 => 4,
-        DType::I32 => 5,
-        DType::U64 => 6,
-        DType::I64 => 7,
-        DType::F32 => 8,
-        DType::F64 => 9,
-    }
-}

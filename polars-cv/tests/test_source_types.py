@@ -17,7 +17,7 @@ import polars as pl
 import pytest
 from PIL import Image
 
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -187,7 +187,7 @@ class TestListSource:
         result = df2.with_columns(gray=pl.col("pixels").cv.pipeline(pipe2))
 
         # Verify grayscale output
-        gray_arr = numpy_from_bytes(result["gray"][0])
+        gray_arr = numpy_from_struct(result["gray"][0])
         assert gray_arr.shape == (4, 4, 1)
 
 
@@ -251,7 +251,7 @@ class TestSourceFormatValidation:
         pipe = Pipeline().source("image_bytes").sink("numpy")
         result = df.with_columns(out=pl.col("image").cv.pipeline(pipe))
 
-        arr = numpy_from_bytes(result["out"][0])
+        arr = numpy_from_struct(result["out"][0])
         assert arr.shape == (4, 4, 3)  # Decoded to RGB
 
     def test_blob_source(self, simple_image_bytes: bytes) -> None:
@@ -266,5 +266,5 @@ class TestSourceFormatValidation:
         pipe2 = Pipeline().source("blob").sink("numpy")
         result = df2.with_columns(out=pl.col("blob").cv.pipeline(pipe2))
 
-        arr = numpy_from_bytes(result["out"][0])
+        arr = numpy_from_struct(result["out"][0])
         assert arr.shape == (4, 4, 3)
