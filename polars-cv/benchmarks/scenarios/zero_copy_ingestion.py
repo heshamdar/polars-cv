@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 from PIL import Image
-
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:
@@ -45,7 +44,9 @@ class BenchmarkResult:
     throughput_rows_per_sec: float
 
 
-def create_test_images(n_images: int, size: tuple[int, int] = (256, 256)) -> list[bytes]:
+def create_test_images(
+    n_images: int, size: tuple[int, int] = (256, 256)
+) -> list[bytes]:
     """Create n test images as PNG bytes."""
     images = []
     for i in range(n_images):
@@ -65,7 +66,7 @@ def create_blob_data(n_rows: int, shape: tuple[int, int] = (256, 256)) -> list[b
     df = pl.DataFrame({"img": images})
 
     pipeline = Pipeline().source("image_bytes").sink("blob")
-    result = df.select(pl.col("img").cv.pipe(pipeline))
+    result = df.select(pl.col("img").cv.pipeline(pipeline))
 
     return result["img"].to_list()
 
@@ -82,7 +83,9 @@ def create_list_data(n_rows: int, shape: tuple[int, int] = (64, 64)) -> pl.DataF
     return df.cast({"arr": pl.List(pl.List(pl.UInt8))})
 
 
-def benchmark_image_bytes_source(n_rows: int = 100, size: tuple[int, int] = (256, 256)) -> BenchmarkResult:
+def benchmark_image_bytes_source(
+    n_rows: int = 100, size: tuple[int, int] = (256, 256)
+) -> BenchmarkResult:
     """Benchmark image_bytes source (requires PNG decoding)."""
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
@@ -90,11 +93,11 @@ def benchmark_image_bytes_source(n_rows: int = 100, size: tuple[int, int] = (256
     pipeline = Pipeline().source("image_bytes").sink("numpy")
 
     # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline))
+    _ = df.head(5).select(pl.col("img").cv.pipeline(pipeline))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("img").cv.pipe(pipeline))
+    result = df.select(pl.col("img").cv.pipeline(pipeline))
     _ = result["img"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -111,7 +114,9 @@ def benchmark_image_bytes_source(n_rows: int = 100, size: tuple[int, int] = (256
     )
 
 
-def benchmark_blob_source(n_rows: int = 100, size: tuple[int, int] = (256, 256)) -> BenchmarkResult:
+def benchmark_blob_source(
+    n_rows: int = 100, size: tuple[int, int] = (256, 256)
+) -> BenchmarkResult:
     """Benchmark blob source (zero-copy path)."""
     blobs = create_blob_data(n_rows, size)
     df = pl.DataFrame({"blob": blobs})
@@ -119,11 +124,11 @@ def benchmark_blob_source(n_rows: int = 100, size: tuple[int, int] = (256, 256))
     pipeline = Pipeline().source("blob").sink("numpy")
 
     # Warmup
-    _ = df.head(5).select(pl.col("blob").cv.pipe(pipeline))
+    _ = df.head(5).select(pl.col("blob").cv.pipeline(pipeline))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("blob").cv.pipe(pipeline))
+    result = df.select(pl.col("blob").cv.pipeline(pipeline))
     _ = result["blob"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -140,18 +145,20 @@ def benchmark_blob_source(n_rows: int = 100, size: tuple[int, int] = (256, 256))
     )
 
 
-def benchmark_list_source_explicit_dtype(n_rows: int = 100, size: tuple[int, int] = (64, 64)) -> BenchmarkResult:
+def benchmark_list_source_explicit_dtype(
+    n_rows: int = 100, size: tuple[int, int] = (64, 64)
+) -> BenchmarkResult:
     """Benchmark list source with explicit dtype."""
     df = create_list_data(n_rows, size)
 
     pipeline = Pipeline().source("list", dtype="u8").sink("numpy")
 
     # Warmup
-    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline))
+    _ = df.head(5).select(pl.col("arr").cv.pipeline(pipeline))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("arr").cv.pipe(pipeline))
+    result = df.select(pl.col("arr").cv.pipeline(pipeline))
     _ = result["arr"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -168,7 +175,9 @@ def benchmark_list_source_explicit_dtype(n_rows: int = 100, size: tuple[int, int
     )
 
 
-def benchmark_list_source_auto_dtype(n_rows: int = 100, size: tuple[int, int] = (64, 64)) -> BenchmarkResult:
+def benchmark_list_source_auto_dtype(
+    n_rows: int = 100, size: tuple[int, int] = (64, 64)
+) -> BenchmarkResult:
     """Benchmark list source with auto dtype inference."""
     df = create_list_data(n_rows, size)
 
@@ -176,11 +185,11 @@ def benchmark_list_source_auto_dtype(n_rows: int = 100, size: tuple[int, int] = 
     pipeline = Pipeline().source("list").sink("numpy")
 
     # Warmup
-    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline))
+    _ = df.head(5).select(pl.col("arr").cv.pipeline(pipeline))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("arr").cv.pipe(pipeline))
+    result = df.select(pl.col("arr").cv.pipeline(pipeline))
     _ = result["arr"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -197,7 +206,9 @@ def benchmark_list_source_auto_dtype(n_rows: int = 100, size: tuple[int, int] = 
     )
 
 
-def benchmark_numpy_output(n_rows: int = 100, size: tuple[int, int] = (256, 256)) -> BenchmarkResult:
+def benchmark_numpy_output(
+    n_rows: int = 100, size: tuple[int, int] = (256, 256)
+) -> BenchmarkResult:
     """Benchmark numpy sink output (zero-copy struct format)."""
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
@@ -227,7 +238,9 @@ def benchmark_numpy_output(n_rows: int = 100, size: tuple[int, int] = (256, 256)
     )
 
 
-def benchmark_png_output(n_rows: int = 100, size: tuple[int, int] = (256, 256)) -> BenchmarkResult:
+def benchmark_png_output(
+    n_rows: int = 100, size: tuple[int, int] = (256, 256)
+) -> BenchmarkResult:
     """Benchmark PNG sink output (requires encoding/compression)."""
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
@@ -256,7 +269,9 @@ def benchmark_png_output(n_rows: int = 100, size: tuple[int, int] = (256, 256)) 
     )
 
 
-def benchmark_blob_output(n_rows: int = 100, size: tuple[int, int] = (256, 256)) -> BenchmarkResult:
+def benchmark_blob_output(
+    n_rows: int = 100, size: tuple[int, int] = (256, 256)
+) -> BenchmarkResult:
     """Benchmark blob sink output (VIEW protocol)."""
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
@@ -343,7 +358,9 @@ def print_results(results: list[BenchmarkResult]) -> None:
     print("=" * 60)
 
     # Header
-    print(f"{'Benchmark':<25} {'Rows':<8} {'Total (ms)':<12} {'Per Row (µs)':<15} {'Throughput':<15}")
+    print(
+        f"{'Benchmark':<25} {'Rows':<8} {'Total (ms)':<12} {'Per Row (µs)':<15} {'Throughput':<15}"
+    )
     print("-" * 75)
 
     for r in results:
@@ -355,7 +372,11 @@ def print_results(results: list[BenchmarkResult]) -> None:
     print("-" * 75)
 
     # Ingestion comparison
-    ingestion_results = [r for r in results if r.name in ["image_bytes", "blob", "list_explicit_dtype", "list_auto_dtype"]]
+    ingestion_results = [
+        r
+        for r in results
+        if r.name in ["image_bytes", "blob", "list_explicit_dtype", "list_auto_dtype"]
+    ]
     if len(ingestion_results) >= 2:
         baseline = ingestion_results[0]
         print("\nIngestion speedup vs image_bytes baseline:")
@@ -365,10 +386,14 @@ def print_results(results: list[BenchmarkResult]) -> None:
                 print(f"  {r.name}: {speedup:.2f}x")
 
     # Output comparison
-    output_results = [r for r in results if r.name in ["numpy_output", "png_output", "blob_output"]]
+    output_results = [
+        r for r in results if r.name in ["numpy_output", "png_output", "blob_output"]
+    ]
     if len(output_results) >= 2:
         # numpy_output is the zero-copy baseline for output
-        baseline = next((r for r in output_results if r.name == "numpy_output"), output_results[0])
+        baseline = next(
+            (r for r in output_results if r.name == "numpy_output"), output_results[0]
+        )
         print("\nOutput comparison (numpy_output as baseline):")
         for r in output_results:
             if r.total_time_ms > 0:
@@ -379,4 +404,3 @@ def print_results(results: list[BenchmarkResult]) -> None:
 if __name__ == "__main__":
     results = run_benchmarks()
     print_results(results)
-
