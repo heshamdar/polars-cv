@@ -173,7 +173,7 @@ class TestUnifiedGraphSingleOutput:
         )
 
         assert "processed" in result.columns
-        assert result["processed"].dtype == pl.Binary
+        assert isinstance(result["processed"].dtype, pl.Struct)
 
     def test_resize_pipeline(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test resize operation through the graph path."""
@@ -247,7 +247,7 @@ class TestContourSourceGraph:
         result = contour_df.with_columns(rasterized=pl.col("contour").cv.pipeline(pipe))
 
         assert "rasterized" in result.columns
-        assert result["rasterized"].dtype == pl.Binary
+        assert isinstance(result["rasterized"].dtype, pl.Struct)
 
     def test_contour_with_operations(self, contour_df: pl.DataFrame) -> None:
         """Test contour source with additional operations."""
@@ -339,8 +339,10 @@ class TestGraphEdgeCases:
 
         result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
 
-        assert result["processed"].null_count() == 1
-        assert result["processed"][1] is None
+        # With struct output, null rows have null 'data' field
+        data_nulls = result["processed"].struct.field("data").null_count()
+        assert data_nulls == 1
+        assert result["processed"][1].get("data") is None
 
     def test_identity_pipeline(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test pipeline with no operations (identity)."""

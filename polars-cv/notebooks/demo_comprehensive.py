@@ -102,7 +102,7 @@ from polars_cv import (
     hash_similarity,
     mask_dice,
     mask_iou,
-    numpy_from_bytes,
+    numpy_from_struct,
 )
 from polars_cv.geometry.schemas import contour_from_points
 
@@ -122,8 +122,8 @@ def bytes_to_image(data: bytes) -> Image.Image:
     return Image.open(io.BytesIO(data))
 
 
-# Note: numpy_from_bytes is imported from polars_cv
-# It automatically parses the header with dtype and shape info from numpy sink output
+# Note: numpy_from_struct is imported from polars_cv
+# It parses the struct output (data, dtype, shape) from numpy/torch sink to numpy array
 
 
 def display_images(
@@ -461,10 +461,10 @@ result = pl.DataFrame({"img": [test_images["gradient"]]}).with_columns(
     zscore=pl.col("img").cv.pipeline(zscore_pipe),
 )
 
-# Convert back to arrays for visualization using numpy_from_bytes
+# Convert back to arrays for visualization using numpy_from_struct
 # It automatically parses the header with shape/dtype info
-minmax_arr = numpy_from_bytes(result["minmax"][0])
-zscore_arr = numpy_from_bytes(result["zscore"][0])
+minmax_arr = numpy_from_struct(result["minmax"][0])
+zscore_arr = numpy_from_struct(result["zscore"][0])
 
 print(f"MinMax range: [{minmax_arr.min():.3f}, {minmax_arr.max():.3f}]")
 print(f"ZScore mean: {zscore_arr.mean():.3f}, std: {zscore_arr.std():.3f}")
@@ -503,8 +503,8 @@ result = pl.DataFrame({"img": [test_images["gradient"]]}).with_columns(
 )
 
 # scale output is f32 (promoted from u8), clamp is also f32
-scaled_arr = numpy_from_bytes(result["scaled"][0])
-clamped_arr = numpy_from_bytes(result["clamped"][0])
+scaled_arr = numpy_from_struct(result["scaled"][0])
+clamped_arr = numpy_from_struct(result["clamped"][0])
 
 print(f"Scaled range: [{scaled_arr.min():.1f}, {scaled_arr.max():.1f}]")
 print(f"Clamped range: [{clamped_arr.min():.2f}, {clamped_arr.max():.2f}]")
@@ -686,7 +686,7 @@ print(contour_raster_result.select("name", "mask"))
 masks = []
 for i in range(len(contour_raster_result)):
     mask_bytes = contour_raster_result["mask"][i]
-    mask_arr = numpy_from_bytes(mask_bytes)
+    mask_arr = numpy_from_struct(mask_bytes)
     masks.append(mask_arr.squeeze())
 
 print(f"✅ Rasterized mask shape: {masks[0].shape}, dtype: {masks[0].dtype}")
@@ -1150,7 +1150,7 @@ final = augmented.pipe(normalization_ops)
 
 result = df_reuse.with_columns(processed=final.sink("numpy"))
 
-arr = numpy_from_bytes(result["processed"][0])
+arr = numpy_from_struct(result["processed"][0])
 print(f"Final output shape: {arr.shape}, dtype: {arr.dtype}")
 print(f"Value range: [{arr.min():.3f}, {arr.max():.3f}]")
 
@@ -1212,8 +1212,8 @@ result = df_reuse.with_columns(
     inference=pl.col("image").cv.pipe(inference_pipe).sink("numpy"),
 )
 
-train_output = numpy_from_bytes(result["train"][0])
-inference_output = numpy_from_bytes(result["inference"][0])
+train_output = numpy_from_struct(result["train"][0])
+inference_output = numpy_from_struct(result["inference"][0])
 
 print(f"\nTrain output shape: {train_output.shape}, dtype: {train_output.dtype}")
 print(
@@ -1304,7 +1304,7 @@ raster_pipe = Pipeline().source("contour", width=200, height=200).sink("numpy")
 
 df_raster = df_shapes.with_columns(mask=pl.col("contour").cv.pipeline(raster_pipe))
 
-masks = [numpy_from_bytes(df_raster["mask"][i]).squeeze() for i in range(3)]
+masks = [numpy_from_struct(df_raster["mask"][i]).squeeze() for i in range(3)]
 display_arrays(
     masks, [f"{name} mask" for name in df_raster["name"].to_list()], cmap="gray"
 )
@@ -1593,10 +1593,10 @@ if TORCH_AVAILABLE:
 
 # %%
 if TORCH_AVAILABLE:
-    # Convert bytes to PyTorch tensors using numpy_from_bytes
+    # Convert bytes to PyTorch tensors using numpy_from_struct
     def bytes_to_torch(data: bytes) -> torch.Tensor:
-        """Convert torch-format bytes to PyTorch tensor using numpy_from_bytes."""
-        arr = numpy_from_bytes(data)
+        """Convert torch-format bytes to PyTorch tensor using numpy_from_struct."""
+        arr = numpy_from_struct(data)
         return torch.from_numpy(arr.copy())
 
     # Create tensor batch

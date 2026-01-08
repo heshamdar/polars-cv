@@ -1,8 +1,8 @@
 """
 Tests for numpy helper functions.
 
-Tests the numpy_from_bytes, numpy_shape, numpy_dtype, and numpy_header_size
-functions that parse the polars-cv numpy sink output format.
+Tests the numpy_from_struct function that converts polars-cv
+numpy sink output structs to numpy arrays.
 """
 
 from __future__ import annotations
@@ -10,202 +10,222 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+import polars as pl
 import pytest
 
-from polars_cv import numpy_dtype, numpy_from_bytes, numpy_header_size, numpy_shape
+from polars_cv import NUMPY_OUTPUT_SCHEMA, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
 
 
-def create_test_bytes(dtype_code: int, shape: list[int], data: bytes) -> bytes:
+def create_test_struct(
+    data: bytes,
+    dtype: str,
+    shape: list[int],
+) -> dict[str, object]:
     """
-    Create test bytes in the polars-cv numpy format.
+    Create a test struct matching the numpy output format.
 
     Args:
-        dtype_code: The dtype code (0-9).
-        shape: The shape as a list of dimensions.
-        data: The raw array data.
+        data: The raw array bytes.
+        dtype: The numpy dtype string (e.g., "uint8", "float32").
+        shape: The array shape as a list of dimensions.
 
     Returns:
-        The encoded bytes.
+        A dict with data, dtype, shape fields.
     """
-    result = bytearray()
-    result.append(dtype_code)
-    result.append(len(shape))
-
-    for dim in shape:
-        result.extend(dim.to_bytes(8, "little"))
-
-    result.extend(data)
-    return bytes(result)
+    return {
+        "data": data,
+        "dtype": dtype,
+        "shape": shape,
+    }
 
 
-class TestNumpyFromBytes:
-    """Test numpy_from_bytes function."""
+class TestNumpyFromStruct:
+    """Test numpy_from_struct function."""
 
     def test_simple_uint8_array(self) -> None:
         """Test parsing a simple uint8 array."""
-        data = bytes([1, 2, 3, 4, 5, 6])
-        encoded = create_test_bytes(0, [2, 3], data)
+        arr = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8)
+        struct = create_test_struct(arr.tobytes(), "uint8", [2, 3])
 
-        result = numpy_from_bytes(encoded)
+        result = numpy_from_struct(struct)
 
         assert result.dtype == np.uint8
         assert result.shape == (2, 3)
-        np.testing.assert_array_equal(result.flatten(), [1, 2, 3, 4, 5, 6])
+        np.testing.assert_array_equal(result, arr)
 
     def test_float32_array(self) -> None:
         """Test parsing a float32 array."""
-        arr = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
-        encoded = create_test_bytes(8, [2, 2], arr.tobytes())
+        arr = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+        struct = create_test_struct(arr.tobytes(), "float32", [2, 2])
 
-        result = numpy_from_bytes(encoded)
+        result = numpy_from_struct(struct)
 
         assert result.dtype == np.float32
         assert result.shape == (2, 2)
-        np.testing.assert_array_almost_equal(result.flatten(), [1.0, 2.0, 3.0, 4.0])
+        np.testing.assert_array_almost_equal(result, arr)
 
     def test_float64_array(self) -> None:
         """Test parsing a float64 array."""
         arr = np.array([1.5, 2.5], dtype=np.float64)
-        encoded = create_test_bytes(9, [2], arr.tobytes())
+        struct = create_test_struct(arr.tobytes(), "float64", [2])
 
-        result = numpy_from_bytes(encoded)
+        result = numpy_from_struct(struct)
 
         assert result.dtype == np.float64
         assert result.shape == (2,)
-        np.testing.assert_array_almost_equal(result, [1.5, 2.5])
+        np.testing.assert_array_almost_equal(result, arr)
 
     def test_3d_array(self) -> None:
         """Test parsing a 3D array (e.g., image)."""
-        # 2x3x4 uint8 array
-        data = bytes(range(24))
-        encoded = create_test_bytes(0, [2, 3, 4], data)
+        arr = np.arange(24, dtype=np.uint8).reshape(2, 3, 4)
+        struct = create_test_struct(arr.tobytes(), "uint8", [2, 3, 4])
 
-        result = numpy_from_bytes(encoded)
+        result = numpy_from_struct(struct)
 
         assert result.dtype == np.uint8
         assert result.shape == (2, 3, 4)
+        np.testing.assert_array_equal(result, arr)
 
     def test_all_dtypes(self) -> None:
         """Test all supported dtypes."""
         dtype_map = {
-            0: np.uint8,
-            1: np.int8,
-            2: np.uint16,
-            3: np.int16,
-            4: np.uint32,
-            5: np.int32,
-            6: np.uint64,
-            7: np.int64,
-            8: np.float32,
-            9: np.float64,
+            "uint8": np.uint8,
+            "int8": np.int8,
+            "uint16": np.uint16,
+            "int16": np.int16,
+            "uint32": np.uint32,
+            "int32": np.int32,
+            "uint64": np.uint64,
+            "int64": np.int64,
+            "float32": np.float32,
+            "float64": np.float64,
         }
 
-        for code, dtype in dtype_map.items():
+        for dtype_str, dtype in dtype_map.items():
             arr = np.array([1, 2], dtype=dtype)
-            encoded = create_test_bytes(code, [2], arr.tobytes())
-            result = numpy_from_bytes(encoded)
-            assert result.dtype == dtype, f"Failed for dtype code {code}"
+            struct = create_test_struct(arr.tobytes(), dtype_str, [2])
+            result = numpy_from_struct(struct)
+            assert result.dtype == dtype, f"Failed for dtype {dtype_str}"
 
-    def test_empty_data_error(self) -> None:
-        """Test that empty data raises an error."""
-        with pytest.raises(ValueError, match="too short"):
-            numpy_from_bytes(b"")
+    def test_null_data_error(self) -> None:
+        """Test that null data raises an error."""
+        struct = {"data": None, "dtype": "uint8", "shape": [2]}
+        with pytest.raises(ValueError, match="null"):
+            numpy_from_struct(struct)
 
-    def test_short_data_error(self) -> None:
-        """Test that short data raises an error."""
-        with pytest.raises(ValueError, match="too short"):
-            numpy_from_bytes(b"\x00")
+    def test_null_dtype_error(self) -> None:
+        """Test that null dtype raises an error."""
+        struct = {"data": b"\x00\x00", "dtype": None, "shape": [2]}
+        with pytest.raises(ValueError, match="null"):
+            numpy_from_struct(struct)
 
-    def test_invalid_dtype_code(self) -> None:
-        """Test that invalid dtype code raises an error."""
-        # dtype code 99 is invalid
-        encoded = create_test_bytes(99, [2], b"\x00\x00")
-        with pytest.raises(ValueError, match="Unknown dtype code"):
-            numpy_from_bytes(encoded)
+    def test_null_shape_error(self) -> None:
+        """Test that null shape raises an error."""
+        struct = {"data": b"\x00\x00", "dtype": "uint8", "shape": None}
+        with pytest.raises(ValueError, match="null"):
+            numpy_from_struct(struct)
 
-    def test_size_mismatch_error(self) -> None:
-        """Test that size mismatch raises an error."""
-        # Shape says 4 elements but only 2 bytes of data
-        encoded = create_test_bytes(0, [4], b"\x00\x00")
-        with pytest.raises(ValueError, match="size mismatch"):
-            numpy_from_bytes(encoded)
+    def test_copy_true_creates_independent_copy(self) -> None:
+        """Test that copy=True creates an independent array."""
+        arr = np.array([1, 2, 3, 4], dtype=np.uint8)
+        data = arr.tobytes()
+        struct = create_test_struct(data, "uint8", [4])
 
+        result = numpy_from_struct(struct, copy=True)
 
-class TestNumpyShape:
-    """Test numpy_shape function."""
+        # Modifying result should not affect original
+        result[0] = 99
+        assert result[0] == 99
 
-    def test_1d_shape(self) -> None:
-        """Test extracting 1D shape."""
-        encoded = create_test_bytes(0, [10], b"\x00" * 10)
-        assert numpy_shape(encoded) == (10,)
+    def test_copy_false_works(self) -> None:
+        """Test that copy=False works (may or may not share memory)."""
+        arr = np.array([1, 2, 3, 4], dtype=np.uint8)
+        struct = create_test_struct(arr.tobytes(), "uint8", [4])
 
-    def test_2d_shape(self) -> None:
-        """Test extracting 2D shape."""
-        encoded = create_test_bytes(0, [5, 3], b"\x00" * 15)
-        assert numpy_shape(encoded) == (5, 3)
+        result = numpy_from_struct(struct, copy=False)
 
-    def test_3d_shape(self) -> None:
-        """Test extracting 3D shape."""
-        encoded = create_test_bytes(0, [224, 224, 3], b"\x00" * (224 * 224 * 3))
-        assert numpy_shape(encoded) == (224, 224, 3)
-
-    def test_empty_data(self) -> None:
-        """Test with empty data."""
-        assert numpy_shape(b"") == ()
+        assert result.dtype == np.uint8
+        assert result.shape == (4,)
+        np.testing.assert_array_equal(result, arr)
 
 
-class TestNumpyDtype:
-    """Test numpy_dtype function."""
+class TestNumpyFromStructPolars:
+    """Test numpy_from_struct with Polars Series and struct values."""
 
-    def test_all_dtypes(self) -> None:
-        """Test extracting all dtype codes."""
-        dtype_names = {
-            0: "uint8",
-            1: "int8",
-            2: "uint16",
-            3: "int16",
-            4: "uint32",
-            5: "int32",
-            6: "uint64",
-            7: "int64",
-            8: "float32",
-            9: "float64",
+    def test_from_polars_series_struct(self) -> None:
+        """Test conversion from a Polars struct Series."""
+        arr = np.array([1, 2, 3, 4, 5, 6], dtype=np.uint8)
+
+        # Create a DataFrame with struct column
+        df = pl.DataFrame({
+            "output": [
+                {
+                    "data": arr.tobytes(),
+                    "dtype": "uint8",
+                    "shape": [2, 3],
+                }
+            ]
+        }).cast({"output": NUMPY_OUTPUT_SCHEMA})
+
+        # Get the struct value
+        struct_val = df["output"][0]
+
+        result = numpy_from_struct(struct_val)
+
+        assert result.dtype == np.uint8
+        assert result.shape == (2, 3)
+        np.testing.assert_array_equal(result.flatten(), arr)
+
+    def test_from_dict_representation(self) -> None:
+        """Test conversion from dict extracted from struct."""
+        arr = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+
+        # Create dict matching struct fields
+        row_dict = {
+            "data": arr.tobytes(),
+            "dtype": "float32",
+            "shape": [2, 2],
         }
 
-        for code, name in dtype_names.items():
-            encoded = create_test_bytes(code, [1], b"\x00" * 8)
-            assert numpy_dtype(encoded) == name
+        result = numpy_from_struct(row_dict)
 
-    def test_empty_data_error(self) -> None:
-        """Test with empty data."""
-        with pytest.raises(ValueError, match="too short"):
-            numpy_dtype(b"")
+        assert result.dtype == np.float32
+        assert result.shape == (2, 2)
+        np.testing.assert_array_almost_equal(result, arr)
 
 
-class TestNumpyHeaderSize:
-    """Test numpy_header_size function."""
+class TestNumpyOutputSchema:
+    """Test NUMPY_OUTPUT_SCHEMA constant."""
 
-    def test_1d_header(self) -> None:
-        """Test header size for 1D array."""
-        encoded = create_test_bytes(0, [10], b"\x00" * 10)
-        assert numpy_header_size(encoded) == 2 + 1 * 8  # 10 bytes
+    def test_schema_structure(self) -> None:
+        """Test that schema has correct structure."""
+        assert NUMPY_OUTPUT_SCHEMA == pl.Struct({
+            "data": pl.Binary,
+            "dtype": pl.String,
+            "shape": pl.List(pl.UInt64),
+        })
 
-    def test_2d_header(self) -> None:
-        """Test header size for 2D array."""
-        encoded = create_test_bytes(0, [5, 3], b"\x00" * 15)
-        assert numpy_header_size(encoded) == 2 + 2 * 8  # 18 bytes
+    def test_schema_can_be_used_for_casting(self) -> None:
+        """Test that schema can be used for column casting."""
+        arr = np.array([1, 2, 3], dtype=np.uint8)
 
-    def test_3d_header(self) -> None:
-        """Test header size for 3D array."""
-        encoded = create_test_bytes(0, [2, 3, 4], b"\x00" * 24)
-        assert numpy_header_size(encoded) == 2 + 3 * 8  # 26 bytes
+        df = pl.DataFrame({
+            "output": [
+                {
+                    "data": arr.tobytes(),
+                    "dtype": "uint8",
+                    "shape": [3],
+                }
+            ]
+        })
 
-    def test_empty_data(self) -> None:
-        """Test with empty data."""
-        assert numpy_header_size(b"") == 0
+        # Should be able to cast to the schema
+        casted = df.cast({"output": NUMPY_OUTPUT_SCHEMA})
+
+        assert casted["output"].dtype == NUMPY_OUTPUT_SCHEMA
 
 
 class TestRoundTrip:
@@ -214,17 +234,35 @@ class TestRoundTrip:
     def test_image_like_array(self) -> None:
         """Test with an image-like array (H, W, C)."""
         arr = np.random.randint(0, 256, (100, 100, 3), dtype=np.uint8)
-        encoded = create_test_bytes(0, list(arr.shape), arr.tobytes())
+        struct = create_test_struct(arr.tobytes(), "uint8", list(arr.shape))
 
-        result = numpy_from_bytes(encoded)
+        result = numpy_from_struct(struct)
 
         np.testing.assert_array_equal(result, arr)
 
     def test_grayscale_image(self) -> None:
         """Test with a grayscale image (H, W)."""
         arr = np.random.randint(0, 256, (50, 50), dtype=np.uint8)
-        encoded = create_test_bytes(0, list(arr.shape), arr.tobytes())
+        struct = create_test_struct(arr.tobytes(), "uint8", list(arr.shape))
 
-        result = numpy_from_bytes(encoded)
+        result = numpy_from_struct(struct)
+
+        np.testing.assert_array_equal(result, arr)
+
+    def test_large_float_array(self) -> None:
+        """Test with a large float32 array."""
+        arr = np.random.randn(100, 100, 3).astype(np.float32)
+        struct = create_test_struct(arr.tobytes(), "float32", list(arr.shape))
+
+        result = numpy_from_struct(struct)
+
+        np.testing.assert_array_almost_equal(result, arr)
+
+    def test_1d_vector(self) -> None:
+        """Test with a 1D vector."""
+        arr = np.arange(100, dtype=np.float64)
+        struct = create_test_struct(arr.tobytes(), "float64", list(arr.shape))
+
+        result = numpy_from_struct(struct)
 
         np.testing.assert_array_equal(result, arr)

@@ -1,10 +1,17 @@
 """
-Benchmark comparing zero-copy vs copy-based data ingestion.
+Benchmark comparing zero-copy vs copy-based data handling.
 
 This benchmark measures the performance difference between:
+
+Ingestion benchmarks:
 1. Zero-copy blob source (direct buffer reference)
 2. Copy-based image_bytes source (requires decoding)
 3. List/Array source with dtype auto-inference vs explicit dtype
+
+Output benchmarks:
+1. Numpy struct output (zero-copy ownership transfer)
+2. PNG/JPEG encoding (requires copy + compression)
+3. Blob output (VIEW protocol serialization)
 
 Run with:
     uv run python -m benchmarks.scenarios.zero_copy_ingestion
@@ -190,7 +197,95 @@ def benchmark_list_source_auto_dtype(n_rows: int = 100, size: tuple[int, int] = 
     )
 
 
-def run_benchmarks() -> list[BenchmarkResult]:
+def benchmark_numpy_output(n_rows: int = 100, size: tuple[int, int] = (256, 256)) -> BenchmarkResult:
+    """Benchmark numpy sink output (zero-copy struct format)."""
+    images = create_test_images(n_rows, size)
+    df = pl.DataFrame({"img": images})
+
+    pipeline = Pipeline().source("image_bytes").sink("numpy")
+
+    # Warmup
+    _ = df.head(5).select(pl.col("img").cv.pipeline(pipeline))
+
+    # Benchmark
+    start = time.perf_counter()
+    result = df.select(output=pl.col("img").cv.pipeline(pipeline))
+    # Access all struct values to force evaluation
+    _ = result["output"].to_list()
+    elapsed = time.perf_counter() - start
+
+    elapsed_ms = elapsed * 1000
+    per_row_us = (elapsed * 1_000_000) / n_rows
+    throughput = n_rows / elapsed
+
+    return BenchmarkResult(
+        name="numpy_output",
+        rows=n_rows,
+        total_time_ms=elapsed_ms,
+        per_row_us=per_row_us,
+        throughput_rows_per_sec=throughput,
+    )
+
+
+def benchmark_png_output(n_rows: int = 100, size: tuple[int, int] = (256, 256)) -> BenchmarkResult:
+    """Benchmark PNG sink output (requires encoding/compression)."""
+    images = create_test_images(n_rows, size)
+    df = pl.DataFrame({"img": images})
+
+    pipeline = Pipeline().source("image_bytes").sink("png")
+
+    # Warmup
+    _ = df.head(5).select(pl.col("img").cv.pipeline(pipeline))
+
+    # Benchmark
+    start = time.perf_counter()
+    result = df.select(output=pl.col("img").cv.pipeline(pipeline))
+    _ = result["output"].to_list()  # Force evaluation
+    elapsed = time.perf_counter() - start
+
+    elapsed_ms = elapsed * 1000
+    per_row_us = (elapsed * 1_000_000) / n_rows
+    throughput = n_rows / elapsed
+
+    return BenchmarkResult(
+        name="png_output",
+        rows=n_rows,
+        total_time_ms=elapsed_ms,
+        per_row_us=per_row_us,
+        throughput_rows_per_sec=throughput,
+    )
+
+
+def benchmark_blob_output(n_rows: int = 100, size: tuple[int, int] = (256, 256)) -> BenchmarkResult:
+    """Benchmark blob sink output (VIEW protocol)."""
+    images = create_test_images(n_rows, size)
+    df = pl.DataFrame({"img": images})
+
+    pipeline = Pipeline().source("image_bytes").sink("blob")
+
+    # Warmup
+    _ = df.head(5).select(pl.col("img").cv.pipeline(pipeline))
+
+    # Benchmark
+    start = time.perf_counter()
+    result = df.select(output=pl.col("img").cv.pipeline(pipeline))
+    _ = result["output"].to_list()  # Force evaluation
+    elapsed = time.perf_counter() - start
+
+    elapsed_ms = elapsed * 1000
+    per_row_us = (elapsed * 1_000_000) / n_rows
+    throughput = n_rows / elapsed
+
+    return BenchmarkResult(
+        name="blob_output",
+        rows=n_rows,
+        total_time_ms=elapsed_ms,
+        per_row_us=per_row_us,
+        throughput_rows_per_sec=throughput,
+    )
+
+
+def run_ingestion_benchmarks() -> list[BenchmarkResult]:
     """Run all ingestion benchmarks."""
     print("=" * 60)
     print("Zero-Copy Ingestion Benchmarks")
@@ -214,14 +309,41 @@ def run_benchmarks() -> list[BenchmarkResult]:
     return results
 
 
+def run_output_benchmarks() -> list[BenchmarkResult]:
+    """Run all output benchmarks."""
+    print("\n" + "=" * 60)
+    print("Zero-Copy Output Benchmarks")
+    print("=" * 60)
+
+    results = []
+
+    print("\nRunning numpy output benchmark (zero-copy struct)...")
+    results.append(benchmark_numpy_output(n_rows=100, size=(256, 256)))
+
+    print("Running blob output benchmark (VIEW protocol)...")
+    results.append(benchmark_blob_output(n_rows=100, size=(256, 256)))
+
+    print("Running PNG output benchmark (encoding required)...")
+    results.append(benchmark_png_output(n_rows=100, size=(256, 256)))
+
+    return results
+
+
+def run_benchmarks() -> list[BenchmarkResult]:
+    """Run all benchmarks."""
+    ingestion_results = run_ingestion_benchmarks()
+    output_results = run_output_benchmarks()
+    return ingestion_results + output_results
+
+
 def print_results(results: list[BenchmarkResult]) -> None:
     """Print benchmark results in a formatted table."""
     print("\n" + "=" * 60)
-    print("Results")
+    print("Results Summary")
     print("=" * 60)
 
     # Header
-    print(f"{'Source':<25} {'Rows':<8} {'Total (ms)':<12} {'Per Row (µs)':<15} {'Throughput':<15}")
+    print(f"{'Benchmark':<25} {'Rows':<8} {'Total (ms)':<12} {'Per Row (µs)':<15} {'Throughput':<15}")
     print("-" * 75)
 
     for r in results:
@@ -232,14 +354,26 @@ def print_results(results: list[BenchmarkResult]) -> None:
 
     print("-" * 75)
 
-    # Comparison
-    if len(results) >= 2:
-        baseline = results[0]
-        print("\nSpeedup vs image_bytes baseline:")
-        for r in results[1:]:
+    # Ingestion comparison
+    ingestion_results = [r for r in results if r.name in ["image_bytes", "blob", "list_explicit_dtype", "list_auto_dtype"]]
+    if len(ingestion_results) >= 2:
+        baseline = ingestion_results[0]
+        print("\nIngestion speedup vs image_bytes baseline:")
+        for r in ingestion_results[1:]:
             if r.total_time_ms > 0:
                 speedup = baseline.total_time_ms / r.total_time_ms
                 print(f"  {r.name}: {speedup:.2f}x")
+
+    # Output comparison
+    output_results = [r for r in results if r.name in ["numpy_output", "png_output", "blob_output"]]
+    if len(output_results) >= 2:
+        # numpy_output is the zero-copy baseline for output
+        baseline = next((r for r in output_results if r.name == "numpy_output"), output_results[0])
+        print("\nOutput comparison (numpy_output as baseline):")
+        for r in output_results:
+            if r.total_time_ms > 0:
+                ratio = r.total_time_ms / baseline.total_time_ms
+                print(f"  {r.name}: {ratio:.2f}x (relative time)")
 
 
 if __name__ == "__main__":

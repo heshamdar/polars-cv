@@ -15,7 +15,7 @@ import polars as pl
 import pytest
 from PIL import Image
 
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -179,8 +179,8 @@ class TestCSEBasic:
         result = sample_df.with_columns(outputs=result_expr)
 
         # Both outputs should be present and valid
-        gray_arr = numpy_from_bytes(result["outputs"].struct.field("gray")[0])
-        thresh_arr = numpy_from_bytes(result["outputs"].struct.field("thresh")[0])
+        gray_arr = numpy_from_struct(result["outputs"].struct.field("gray")[0])
+        thresh_arr = numpy_from_struct(result["outputs"].struct.field("thresh")[0])
 
         assert gray_arr.shape == (50, 50, 1)
         assert thresh_arr.shape == (50, 50, 1)
@@ -205,8 +205,8 @@ class TestCSEBasic:
 
         result = sample_df.with_columns(outputs=result_expr)
 
-        small = numpy_from_bytes(result["outputs"].struct.field("small")[0])
-        large = numpy_from_bytes(result["outputs"].struct.field("large")[0])
+        small = numpy_from_struct(result["outputs"].struct.field("small")[0])
+        large = numpy_from_struct(result["outputs"].struct.field("large")[0])
 
         # Both should work, just with different sizes
         assert small.shape == (50, 50, 1)
@@ -244,8 +244,8 @@ class TestCSEBasic:
 
         result = sample_df.with_columns(outputs=result_expr)
 
-        thresh_arr = numpy_from_bytes(result["outputs"].struct.field("thresh")[0])
-        blur_arr = numpy_from_bytes(result["outputs"].struct.field("blur")[0])
+        thresh_arr = numpy_from_struct(result["outputs"].struct.field("thresh")[0])
+        blur_arr = numpy_from_struct(result["outputs"].struct.field("blur")[0])
 
         assert thresh_arr.shape == (50, 50, 1)
         assert blur_arr.shape == (50, 50, 1)
@@ -297,9 +297,9 @@ class TestCSEMultiplePipelines:
 
         result = sample_df.with_columns(outputs=result_expr)
 
-        low = numpy_from_bytes(result["outputs"].struct.field("low")[0])
-        mid = numpy_from_bytes(result["outputs"].struct.field("mid")[0])
-        high = numpy_from_bytes(result["outputs"].struct.field("high")[0])
+        low = numpy_from_struct(result["outputs"].struct.field("low")[0])
+        mid = numpy_from_struct(result["outputs"].struct.field("mid")[0])
+        high = numpy_from_struct(result["outputs"].struct.field("high")[0])
 
         # All should be valid 50x50 grayscale images
         assert low.shape == (50, 50, 1)
@@ -321,7 +321,7 @@ class TestCSEEdgeCases:
             output=pl.col("image").cv.pipeline(pipe.sink("numpy"))
         )
 
-        arr = numpy_from_bytes(result["output"][0])
+        arr = numpy_from_struct(result["output"][0])
         assert arr.shape == (50, 50, 1)
 
     def test_identical_pipelines_fully_shared(self, sample_df: pl.DataFrame) -> None:
@@ -341,8 +341,8 @@ class TestCSEEdgeCases:
 
         result = sample_df.with_columns(outputs=result_expr)
 
-        a = numpy_from_bytes(result["outputs"].struct.field("a")[0])
-        b = numpy_from_bytes(result["outputs"].struct.field("b")[0])
+        a = numpy_from_struct(result["outputs"].struct.field("a")[0])
+        b = numpy_from_struct(result["outputs"].struct.field("b")[0])
 
         # Both should be identical
         assert np.array_equal(a, b)
@@ -364,8 +364,8 @@ class TestCSEEdgeCases:
 
         result = sample_df.with_columns(outputs=result_expr)
 
-        gray = numpy_from_bytes(result["outputs"].struct.field("gray")[0])
-        resized = numpy_from_bytes(result["outputs"].struct.field("resized")[0])
+        gray = numpy_from_struct(result["outputs"].struct.field("gray")[0])
+        resized = numpy_from_struct(result["outputs"].struct.field("resized")[0])
 
         # Gray should preserve original dimensions (100x100)
         assert gray.shape == (100, 100, 1)

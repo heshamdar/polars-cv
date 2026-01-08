@@ -499,6 +499,105 @@ impl ViewBuffer {
         }
     }
 
+    // --- Zero-Copy Ownership Transfer ---
+
+    /// Try to extract the underlying Vec without copying.
+    ///
+    /// This consumes the ViewBuffer and attempts to extract the owned data.
+    /// Returns `Some(Vec<u8>)` if:
+    /// - Storage is `Rust(Arc<Vec<u8>>)` with a single owner (refcount == 1)
+    /// - Buffer is contiguous (no strided views)
+    /// - Layout offset is 0 (full buffer, not a slice)
+    ///
+    /// Returns `None` if zero-copy extraction is not possible, in which case
+    /// the caller should use `to_contiguous()` and copy the data.
+    ///
+    /// # Example
+    /// ```
+    /// use view_buffer::ViewBuffer;
+    ///
+    /// let buf = ViewBuffer::from_vec(vec![1u8, 2, 3, 4]);
+    /// if let Some(owned) = buf.try_into_owned_bytes() {
+    ///     // Zero-copy: we now own the Vec
+    ///     assert_eq!(owned, vec![1, 2, 3, 4]);
+    /// }
+    /// ```
+    pub fn try_into_owned_bytes(self) -> Option<Vec<u8>> {
+        // Must be contiguous with no offset (check before moving data)
+        if !self.layout.is_contiguous() || self.layout.offset != 0 {
+            return None;
+        }
+
+        // Only Rust storage can be unwrapped
+        let BufferStorage::Rust(arc) = self.data else {
+            return None;
+        };
+
+        // Try to unwrap the Arc - only succeeds if refcount == 1
+        Arc::try_unwrap(arc).ok()
+    }
+
+    /// Convert to a polars-arrow Buffer, zero-copy when possible.
+    ///
+    /// This consumes the ViewBuffer and returns a polars Buffer suitable
+    /// for constructing Polars Series/ChunkedArrays.
+    ///
+    /// Zero-copy occurs when:
+    /// - Storage is `Rust(Arc<Vec<u8>>)` with a single owner
+    /// - Buffer is contiguous with no offset
+    ///
+    /// Falls back to copying the data otherwise.
+    ///
+    /// # Returns
+    /// A tuple of `(Buffer<u8>, shape, dtype)` for use in output encoding.
+    #[cfg(feature = "polars_interop")]
+    pub fn into_polars_buffer(self) -> (polars_arrow::buffer::Buffer<u8>, Vec<usize>, DType) {
+        let shape = self.layout.shape.clone();
+        let dtype = self.layout.dtype;
+
+        // Check if zero-copy is possible before consuming self
+        let can_zero_copy = self.can_zero_copy_transfer();
+
+        if can_zero_copy {
+            // Safe to try zero-copy - we know it will succeed
+            if let Some(owned_vec) = self.try_into_owned_bytes() {
+                let buffer = polars_arrow::buffer::Buffer::from(owned_vec);
+                return (buffer, shape, dtype);
+            }
+            // Shouldn't reach here if can_zero_copy_transfer is correct
+            unreachable!("can_zero_copy_transfer returned true but try_into_owned_bytes failed");
+        }
+
+        // Fallback: ensure contiguous and copy
+        let contig = self.to_contiguous();
+        let num_elements: usize = contig.layout.shape.iter().product();
+        let data_len = num_elements * contig.layout.dtype.size_of();
+
+        let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+        let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+
+        (buffer, shape, dtype)
+    }
+
+    /// Check if this buffer can be zero-copy transferred.
+    ///
+    /// Returns `true` if `try_into_owned_bytes()` would succeed.
+    /// Useful for testing and debugging zero-copy behavior.
+    pub fn can_zero_copy_transfer(&self) -> bool {
+        match &self.data {
+            BufferStorage::Rust(arc) => {
+                // Check if we're the sole owner and layout allows extraction
+                Arc::strong_count(arc) == 1
+                    && self.layout.is_contiguous()
+                    && self.layout.offset == 0
+            }
+            #[cfg(feature = "arrow_interop")]
+            BufferStorage::Arrow(_) => false,
+            #[cfg(feature = "polars_interop")]
+            BufferStorage::PolarsArrow { .. } => false,
+        }
+    }
+
     /// Returns layout facts for this buffer.
     pub fn layout_facts(&self) -> LayoutFacts {
         LayoutFacts::from(&self.layout)

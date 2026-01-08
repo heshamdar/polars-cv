@@ -13,7 +13,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 from polars_cv.geometry import CONTOUR_SCHEMA
 
 if TYPE_CHECKING:
@@ -63,12 +63,12 @@ class TestContourSourceExplicitDims:
         pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
-        assert result["mask"].dtype == pl.Binary
+        assert isinstance(result["mask"].dtype, pl.Struct)
         assert result["mask"].len() == 1
 
         # Parse the numpy output
         mask_bytes = result["mask"][0]
-        arr = numpy_from_bytes(mask_bytes)
+        arr = numpy_from_struct(mask_bytes)
         assert arr.shape == (100, 100, 1)
         assert arr.dtype == np.uint8
 
@@ -87,7 +87,7 @@ class TestContourSourceExplicitDims:
         )
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
-        arr = numpy_from_bytes(result["mask"][0])
+        arr = numpy_from_struct(result["mask"][0])
 
         # Check that we have the expected fill values
         # Inside contour should be 128, outside should be 64
@@ -111,8 +111,8 @@ class TestContourSourceExplicitDims:
         assert result["mask"].len() == 2
 
         # Both should produce valid arrays
-        arr1 = numpy_from_bytes(result["mask"][0])
-        arr2 = numpy_from_bytes(result["mask"][1])
+        arr1 = numpy_from_struct(result["mask"][0])
+        arr2 = numpy_from_struct(result["mask"][1])
 
         assert arr1.shape == (100, 100, 1)
         assert arr2.shape == (100, 100, 1)
@@ -131,7 +131,7 @@ class TestContourSourceExplicitDims:
         )
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
-        arr = numpy_from_bytes(result["mask"][0])
+        arr = numpy_from_struct(result["mask"][0])
         assert arr.shape == (100, 100, 1)
 
         # Blurred mask should have gradual transitions (not just 0 and 255)
@@ -154,7 +154,7 @@ class TestContourSourceExplicitDims:
         )
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
-        arr = numpy_from_bytes(result["mask"][0])
+        arr = numpy_from_struct(result["mask"][0])
         assert arr.shape == (50, 50, 1)
 
 
@@ -182,11 +182,11 @@ class TestContourSourceDynamicDims:
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
         # First row: 50x50
-        arr1 = numpy_from_bytes(result["mask"][0])
+        arr1 = numpy_from_struct(result["mask"][0])
         assert arr1.shape == (50, 50, 1)
 
         # Second row: 100x100
-        arr2 = numpy_from_bytes(result["mask"][1])
+        arr2 = numpy_from_struct(result["mask"][1])
         assert arr2.shape == (100, 100, 1)
 
 
@@ -232,9 +232,12 @@ class TestContourSourceNullHandling:
         pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
-        assert result["mask"][0] is not None
-        assert result["mask"][1] is None
-        assert result["mask"][2] is not None
+        # First and third rows should have data
+        assert result["mask"][0].get("data") is not None
+        # Second row should have null fields
+        assert result["mask"][1].get("data") is None
+        # Third row should have data
+        assert result["mask"][2].get("data") is not None
 
 
 class TestContourSourceIntegration:
@@ -256,7 +259,7 @@ class TestContourSourceIntegration:
         )
         result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
 
-        arr = numpy_from_bytes(result["mask"][0])
+        arr = numpy_from_struct(result["mask"][0])
 
         # Threshold should produce binary output
         unique_values = set(np.unique(arr))

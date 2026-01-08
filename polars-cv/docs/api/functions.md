@@ -4,37 +4,24 @@ Utility functions for working with polars-cv outputs.
 
 ## NumPy Conversion
 
-### numpy_from_bytes
+### numpy_from_struct
 
-Convert pipeline output bytes to NumPy array.
+Convert numpy/torch sink output (struct) to NumPy array.
+
+The numpy and torch sinks return a Polars Struct with three fields:
+- `data`: Binary - raw bytes of the array
+- `dtype`: String - NumPy dtype code (e.g., "f4" for float32)
+- `shape`: List[UInt64] - shape of the array
 
 ```python
-from polars_cv import numpy_from_bytes
+from polars_cv import numpy_from_struct
 
-arr = numpy_from_bytes(result["tensor"][0])
+# From a Series element (dict)
+arr = numpy_from_struct(result["tensor"][0])
 print(f"Shape: {arr.shape}, dtype: {arr.dtype}")
-```
 
-### numpy_shape
-
-Get shape from numpy sink bytes without full conversion.
-
-```python
-from polars_cv import numpy_shape
-
-shape = numpy_shape(bytes_data)
-print(f"Shape: {shape}")
-```
-
-### numpy_dtype
-
-Get dtype from numpy sink bytes.
-
-```python
-from polars_cv import numpy_dtype
-
-dtype = numpy_dtype(bytes_data)
-print(f"Dtype: {dtype}")
+# Or pass a Series directly (takes first element)
+arr = numpy_from_struct(result["tensor"])
 ```
 
 ## Mask Metrics

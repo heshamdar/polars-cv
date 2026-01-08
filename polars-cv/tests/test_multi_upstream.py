@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -151,7 +151,7 @@ class TestMultiUpstreamWorkflows:
         expr2 = pl.col("img2").cv.pipe(pipe2)
 
         result = df.select(output=expr1.add(expr2).sink("numpy"))
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (50, 50, 3)
         # 100 + 50 = 150, 50 + 100 = 150, 25 + 75 = 100
@@ -180,7 +180,7 @@ class TestMultiUpstreamWorkflows:
         expr2 = pl.col("solid").cv.pipe(pipe2)
 
         result = df.select(output=expr1.subtract(expr2).sink("numpy"))
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (50, 50, 3)
         # The leftmost column of gradient is 0, so 0 - 50 wraps (or saturates depending on impl)
@@ -214,7 +214,7 @@ class TestMultiUpstreamWorkflows:
         # (a + b) - c: the exact result depends on arithmetic semantics
         # The key test is that chaining works without error
         result = df.select(output=a.add(b).subtract(c).sink("numpy"))
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (40, 40, 3)
         assert output.dtype == np.uint8
@@ -250,7 +250,7 @@ class TestMultiUpstreamWorkflows:
             sum_output=a.add(b).sink("numpy"),
         )
 
-        sum_out = numpy_from_bytes(result.row(0)[0])
+        sum_out = numpy_from_struct(result.row(0)[0])
         assert sum_out.shape == (30, 30, 3)
         # 100 + 50 = 150
         np.testing.assert_array_equal(sum_out[0, 0], [150, 150, 150])
@@ -281,7 +281,7 @@ class TestMultiUpstreamWorkflows:
         # (a * b) + c: the exact result depends on arithmetic semantics
         # The key test is that chaining multiply->add works without error
         result = df.select(output=a.multiply(b).add(c).sink("numpy"))
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (30, 30, 3)
         assert output.dtype == np.uint8
@@ -320,7 +320,7 @@ class TestMultiUpstreamWorkflows:
         mask = pl.col("mask").cv.pipe(mask_pipe)
 
         result = df.select(output=img.apply_mask(mask).sink("numpy"))
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (50, 50, 3)
         # Left half should have values (mask is white)
@@ -370,7 +370,7 @@ class TestMultiUpstreamWorkflows:
         ]
 
         for i, expected in enumerate(expected_colors):
-            output = numpy_from_bytes(result.row(i)[0])
+            output = numpy_from_struct(result.row(i)[0])
             assert output.shape == (20, 20, 3)
             np.testing.assert_array_equal(output[0, 0], expected)
 
@@ -395,7 +395,7 @@ class TestRelu:
         pipe = Pipeline().source("image_bytes").relu()
 
         result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (20, 20, 3)
         # For uint8, relu should be a no-op (all values >= 0)

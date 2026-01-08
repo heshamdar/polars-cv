@@ -36,14 +36,17 @@ Two patterns are supported:
     >>> result = img.apply_contour_mask(mask).sink("numpy")  # Now a pl.Expr
     >>> df.with_columns(masked=result)
     ```
-3. **NumPy Conversion**: Use `numpy_from_bytes()` to convert pipeline output to arrays.
+3. **NumPy Conversion**: Use `numpy_from_struct()` to convert pipeline output to arrays.
+
+    The numpy/torch sink returns a Struct with `data`, `dtype`, and `shape` fields,
+    enabling zero-copy data transfer from Rust.
 
     ```python
-    >>> from polars_cv import Pipeline, numpy_from_bytes
+    >>> from polars_cv import Pipeline, numpy_from_struct
     >>>
-    >>> # Get the first row's output and convert to numpy
-    >>> output_bytes = df.select("processed").row(0)[0]
-    >>> array = numpy_from_bytes(output_bytes)
+    >>> # Get the first row's output struct and convert to numpy
+    >>> output_struct = df.select("processed")["processed"][0]
+    >>> array = numpy_from_struct(output_struct)
     ```
 """
 
@@ -76,185 +79,116 @@ from polars_cv.geometry.points import PointNamespace
 from polars_cv.lazy import LazyPipelineExpr
 from polars_cv.pipeline import Pipeline
 
-# Dtype code to numpy dtype mapping (matches Rust dtype_to_numpy_code)
-_DTYPE_MAP = {
-    0: "uint8",  # U8
-    1: "int8",  # I8
-    2: "uint16",  # U16
-    3: "int16",  # I16
-    4: "uint32",  # U32
-    5: "int32",  # I32
-    6: "uint64",  # U64
-    7: "int64",  # I64
-    8: "float32",  # F32
-    9: "float64",  # F64
-}
+# Schema for numpy/torch sink output struct
+# Matches the Rust output module schema
+NUMPY_OUTPUT_SCHEMA = pl.Struct({
+    "data": pl.Binary,
+    "dtype": pl.String,
+    "shape": pl.List(pl.UInt64),
+})
 
 
-def numpy_from_bytes(data: bytes) -> "np.ndarray":
+def numpy_from_struct(
+    row: dict[str, object] | pl.Series,
+    *,
+    copy: bool = True,
+) -> "np.ndarray":
     """
-    Convert polars-cv numpy/torch sink output to a numpy array.
+    Convert polars-cv numpy/torch sink output struct to a numpy array.
 
-    This function parses the header (dtype, ndim, shape) from the serialized
-    bytes and returns a properly shaped numpy array.
+    The numpy/torch sink format is a Struct with three fields:
+    - data: Binary (raw array bytes)
+    - dtype: String (numpy dtype name like "uint8", "float32")
+    - shape: List[UInt64] (array dimensions)
 
-    The format is:
-    - 1 byte: dtype code (0=u8, 1=i8, 2=u16, 3=i16, 4=u32, 5=i32, 6=u64, 7=i64, 8=f32, 9=f64)
-    - 1 byte: number of dimensions
-    - 8 bytes per dimension: shape (uint64 little-endian)
-    - Remaining bytes: array data
+    This format enables zero-copy data transfer from Rust to Python.
 
     Args:
-        data: The bytes output from a pipeline with "numpy" or "torch" sink.
+        row: A struct value from the output column. Can be:
+            - A dict with 'data', 'dtype', 'shape' keys (from df["col"][0])
+            - A Series representing a single struct row
+        copy: Whether to copy the data (default True). If False, the returned
+            array may share memory with the underlying buffer, which can be
+            more efficient but requires care with lifetime management.
 
     Returns:
         A numpy array with the correct dtype and shape.
 
     Raises:
         ImportError: If numpy is not installed.
-        ValueError: If the data cannot be parsed.
+        ValueError: If the input is not a valid numpy output struct.
+        KeyError: If required fields are missing.
 
     Example:
         ```python
-        >>> from polars_cv import Pipeline, numpy_from_bytes
+        >>> from polars_cv import Pipeline, numpy_from_struct
         >>>
         >>> pipe = Pipeline().source("image_bytes").resize(height=100, width=100).sink("numpy")
         >>> result = df.select(processed=pl.col("images").cv.pipeline(pipe))
         >>>
         >>> # Convert first row to numpy array
-        >>> array = numpy_from_bytes(result.row(0)[0])
+        >>> row = result["processed"][0]
+        >>> array = numpy_from_struct(row)
         >>> print(array.shape)  # (100, 100, 3)
+        >>>
+        >>> # Or access as dict
+        >>> row_dict = result["processed"].struct.unnest().row(0, named=True)
+        >>> array = numpy_from_struct(row_dict)
         ```
     """
     import numpy as np
 
-    if len(data) < 2:
-        msg = f"Data too short: expected at least 2 bytes for header, got {len(data)}"
+    # Extract fields from struct
+    if isinstance(row, dict):
+        data = row.get("data")
+        dtype_str = row.get("dtype")
+        shape_list = row.get("shape")
+    elif isinstance(row, pl.Series):
+        # Single-row Series from struct indexing
+        if row.dtype == pl.Struct:
+            struct_data = row.struct.unnest()
+            data = struct_data["data"][0]
+            dtype_str = struct_data["dtype"][0]
+            shape_list = struct_data["shape"][0]
+        else:
+            msg = f"Expected Struct Series, got {row.dtype}"
+            raise ValueError(msg)
+    else:
+        # Assume it's a struct value that can be accessed like a dict
+        try:
+            data = row["data"]
+            dtype_str = row["dtype"]
+            shape_list = row["shape"]
+        except (TypeError, KeyError) as e:
+            msg = f"Cannot extract struct fields from {type(row)}: {e}"
+            raise ValueError(msg) from e
+
+    # Validate fields
+    if data is None:
+        msg = "Struct field 'data' is null"
+        raise ValueError(msg)
+    if dtype_str is None:
+        msg = "Struct field 'dtype' is null"
+        raise ValueError(msg)
+    if shape_list is None:
+        msg = "Struct field 'shape' is null"
         raise ValueError(msg)
 
-    # Parse header
-    dtype_code = data[0]
-    ndim = data[1]
+    # Convert shape to tuple
+    if isinstance(shape_list, pl.Series):
+        shape = tuple(int(x) for x in shape_list.to_list())
+    else:
+        shape = tuple(int(x) for x in shape_list)
 
-    if dtype_code not in _DTYPE_MAP:
-        msg = f"Unknown dtype code: {dtype_code}. Valid codes: 0-9"
-        raise ValueError(msg)
+    # Create array
+    dtype = np.dtype(dtype_str)
 
-    dtype = np.dtype(_DTYPE_MAP[dtype_code])
-    header_size = 2 + ndim * 8
+    if copy:
+        arr = np.frombuffer(bytes(data), dtype=dtype).copy()
+    else:
+        arr = np.frombuffer(bytes(data), dtype=dtype)
 
-    if len(data) < header_size:
-        msg = (
-            f"Data too short: expected {header_size} bytes for header, got {len(data)}"
-        )
-        raise ValueError(msg)
-
-    # Parse shape
-    shape = []
-    offset = 2
-    for _ in range(ndim):
-        dim = int.from_bytes(data[offset : offset + 8], "little")
-        shape.append(dim)
-        offset += 8
-
-    # Create array from data
-    array_data = data[offset:]
-    expected_size = int(np.prod(shape)) * dtype.itemsize
-
-    if len(array_data) != expected_size:
-        msg = (
-            f"Data size mismatch: expected {expected_size} bytes, got {len(array_data)}"
-        )
-        raise ValueError(msg)
-
-    return np.frombuffer(array_data, dtype=dtype).reshape(shape)
-
-
-def numpy_header_size(data: bytes) -> int:
-    """
-    Get the header size for numpy sink output.
-
-    This is useful for determining where the actual array data starts.
-
-    Args:
-        data: The bytes output from a pipeline with "numpy" or "torch" sink.
-
-    Returns:
-        The number of bytes in the header (2 + ndim * 8).
-
-    Example:
-        ```python
-        >>> header_len = numpy_header_size(output_bytes)
-        >>> raw_data = output_bytes[header_len:]
-        ```
-    """
-    if len(data) < 2:
-        return 0
-    ndim = data[1]
-    return 2 + ndim * 8
-
-
-def numpy_shape(data: bytes) -> tuple[int, ...]:
-    """
-    Extract the shape from numpy sink output without loading the array.
-
-    This is useful for inspecting the shape without allocating the full array.
-
-    Args:
-        data: The bytes output from a pipeline with "numpy" or "torch" sink.
-
-    Returns:
-        A tuple of dimensions.
-
-    Example:
-        ```python
-        >>> shape = numpy_shape(output_bytes)
-        >>> print(shape)  # (224, 224, 3)
-        ```
-    """
-    if len(data) < 2:
-        return ()
-
-    ndim = data[1]
-    shape = []
-    offset = 2
-
-    for _ in range(ndim):
-        if offset + 8 > len(data):
-            break
-        dim = int.from_bytes(data[offset : offset + 8], "little")
-        shape.append(dim)
-        offset += 8
-
-    return tuple(shape)
-
-
-def numpy_dtype(data: bytes) -> str:
-    """
-    Extract the dtype from numpy sink output without loading the array.
-
-    Args:
-        data: The bytes output from a pipeline with "numpy" or "torch" sink.
-
-    Returns:
-        The numpy dtype string (e.g., "float32", "uint8").
-
-    Example:
-        ```python
-        >>> dtype = numpy_dtype(output_bytes)
-        >>> print(dtype)  # "uint8"
-        ```
-    """
-    if len(data) < 1:
-        msg = "Data too short to contain dtype"
-        raise ValueError(msg)
-
-    dtype_code = data[0]
-    if dtype_code not in _DTYPE_MAP:
-        msg = f"Unknown dtype code: {dtype_code}"
-        raise ValueError(msg)
-
-    return _DTYPE_MAP[dtype_code]
+    return arr.reshape(shape)
 
 
 def mask_iou(
@@ -493,10 +427,8 @@ __all__ = [
     "IMAGENET_MEAN",
     "IMAGENET_STD",
     # NumPy conversion utilities
-    "numpy_from_bytes",
-    "numpy_header_size",
-    "numpy_shape",
-    "numpy_dtype",
+    "numpy_from_struct",
+    "NUMPY_OUTPUT_SCHEMA",
     # Mask comparison functions
     "mask_iou",
     "mask_dice",

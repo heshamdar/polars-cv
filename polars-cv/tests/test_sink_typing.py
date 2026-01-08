@@ -20,7 +20,7 @@ import numpy as np
 import polars as pl
 import pytest
 from PIL import Image
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import NUMPY_OUTPUT_SCHEMA, Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -395,12 +395,12 @@ class TestUnifiedGraphEntry:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_col = result["output"]
-        assert output_col.dtype == pl.Binary, (
-            f"Expected Binary for numpy sink, got {output_col.dtype}"
+        assert isinstance(output_col.dtype, pl.Struct), (
+            f"Expected Struct for numpy sink, got {output_col.dtype}"
         )
 
         # Verify we can decode the output
-        arr = numpy_from_bytes(output_col[0])
+        arr = numpy_from_struct(output_col[0])
         assert arr.shape[0] == 32  # Height matches input
         assert arr.shape[1] == 32  # Width matches input
 
@@ -463,8 +463,12 @@ class TestUnifiedGraphEntry:
         gray_field = outputs_col.struct.field("gray")
         thresh_field = outputs_col.struct.field("thresh")
 
-        assert gray_field.dtype == pl.Binary
-        assert thresh_field.dtype == pl.Binary
+        assert isinstance(gray_field.dtype, pl.Struct), (
+            f"Expected Struct for gray numpy sink, got {gray_field.dtype}"
+        )
+        assert isinstance(thresh_field.dtype, pl.Struct), (
+            f"Expected Struct for thresh numpy sink, got {thresh_field.dtype}"
+        )
 
     def test_mixed_domain_multi_output(self, binary_mask_image_bytes: bytes) -> None:
         """
@@ -494,8 +498,8 @@ class TestUnifiedGraphEntry:
         mask_field = outputs_col.struct.field("mask")
         sum_field = outputs_col.struct.field("sum")
 
-        assert mask_field.dtype == pl.Binary, (
-            f"Expected Binary for mask, got {mask_field.dtype}"
+        assert isinstance(mask_field.dtype, pl.Struct), (
+            f"Expected Struct for mask numpy sink, got {mask_field.dtype}"
         )
         assert sum_field.dtype == pl.Float64, (
             f"Expected Float64 for sum, got {sum_field.dtype}"

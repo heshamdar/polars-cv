@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 import polars as pl
 
-from polars_cv import LazyPipelineExpr, Pipeline, numpy_from_bytes
+from polars_cv import LazyPipelineExpr, Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -368,7 +368,7 @@ class TestLazyCompositionExecution:
 
         # This will FAIL until apply_mask is implemented in execute.rs
         result = df.select(output=result_expr)
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (100, 100, 3)
         assert output.dtype == np.uint8
@@ -398,7 +398,7 @@ class TestLazyCompositionExecution:
 
         # This will FAIL until add is implemented in execute.rs
         result = df.select(output=result_expr)
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (100, 100, 3)
         assert output.dtype == np.uint8
@@ -430,7 +430,7 @@ class TestLazyCompositionExecution:
 
         # This will FAIL until subtract is implemented in execute.rs
         result = df.select(output=result_expr)
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (100, 100, 3)
         assert output.dtype == np.uint8
@@ -462,7 +462,7 @@ class TestLazyCompositionExecution:
 
         # This will FAIL until multiply is implemented in execute.rs
         result = df.select(output=result_expr)
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (100, 100, 3)
         assert output.dtype == np.uint8
@@ -492,7 +492,7 @@ class TestLazyCompositionExecution:
 
         # This will FAIL until divide is implemented in execute.rs
         result = df.select(output=result_expr)
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (100, 100, 3)
         assert output.dtype == np.uint8
@@ -527,7 +527,7 @@ class TestLazyCompositionExecution:
 
         # This will FAIL until both add and multiply are implemented
         result = df.select(output=result_expr)
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (100, 100, 3)
         assert output.dtype == np.uint8
@@ -570,7 +570,7 @@ class TestLazyCompositionExecution:
         result_expr = img.apply_mask(mask).sink("numpy")
 
         result = df.select(output=result_expr)
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (100, 100, 3)
         # Pixels outside contour should be zeroed
@@ -616,7 +616,7 @@ class TestLazyCompositionExecution:
         result_expr = img.apply_mask(mask).sink("numpy")
 
         result = df.select(output=result_expr)
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         # Image is 120x80 (WxH), so output should be (80, 120, 3) in HWC
         assert output.shape == (80, 120, 3)
@@ -662,7 +662,7 @@ class TestLazyCompositionExecution:
         result_expr = img.apply_contour_mask(contour).sink("numpy")
 
         result = df.select(output=result_expr)
-        output = numpy_from_bytes(result.row(0)[0])
+        output = numpy_from_struct(result.row(0)[0])
 
         assert output.shape == (100, 100, 3)
         # Pixels outside contour should be zeroed

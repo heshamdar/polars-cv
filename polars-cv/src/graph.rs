@@ -704,7 +704,7 @@ fn series_to_bytes(series: &Series, target_dtype: &view_buffer::DType) -> Result
 /// The Option allows null handling - None represents null input or error.
 #[derive(Clone)]
 enum RowResult {
-    /// Binary data (images, numpy arrays, etc.)
+    /// Binary data (images, blobs, etc.)
     Binary(Option<Vec<u8>>),
     /// Scalar value (reduce operations)
     Scalar(Option<f64>),
@@ -716,6 +716,8 @@ enum RowResult {
     TypedList(Option<(TypedBufferData, Vec<usize>)>),
     /// Typed fixed-size array for "array" sink (fixed shape, preserves dtype).
     TypedArray(Option<(TypedBufferData, Vec<usize>)>),
+    /// Numpy/Torch struct output (zero-copy ViewBuffer ownership transfer).
+    NumpyStruct(Option<ViewBuffer>),
 }
 
 // ============================================================
@@ -750,8 +752,10 @@ pub fn dtype_for_output(spec: &OutputSpec) -> DataType {
     let domain = spec.expected_domain.as_str();
 
     match (domain, format) {
-        // Buffer domain
-        ("buffer", "numpy" | "torch" | "png" | "jpeg" | "blob") => DataType::Binary,
+        // Buffer domain - numpy/torch use struct format for zero-copy
+        ("buffer", "numpy" | "torch") => crate::output::numpy_output_dtype(),
+        // Other buffer formats remain binary
+        ("buffer", "png" | "jpeg" | "blob") => DataType::Binary,
         ("buffer", "list") => DataType::List(Box::new(dtype_str_to_polars(&spec.expected_dtype))),
         ("buffer", "array") => {
             // For array, we need shape info - for now return List
@@ -797,10 +801,10 @@ fn null_row_result_for_spec(spec: &OutputSpec) -> RowResult {
     let domain = spec.expected_domain.as_str();
 
     match (domain, format) {
-        // Binary formats
-        ("buffer", "numpy" | "torch" | "png" | "jpeg" | "blob") | (_, "binary") => {
-            RowResult::Binary(None)
-        }
+        // Numpy/Torch use struct format
+        ("buffer", "numpy" | "torch") => RowResult::NumpyStruct(None),
+        // Other binary formats
+        ("buffer", "png" | "jpeg" | "blob") | (_, "binary") => RowResult::Binary(None),
         // List format with buffer domain - use typed list
         ("buffer", "list") | ("vector", "native" | "list") => RowResult::TypedList(None),
         // Array format with buffer domain
@@ -829,8 +833,21 @@ fn build_series_from_spec(
     let dtype = &spec.expected_dtype;
 
     match (domain, format) {
-        // Binary formats: numpy, torch, png, jpeg, blob
-        ("buffer", "numpy" | "torch" | "png" | "jpeg" | "blob") | (_, "binary") => {
+        // Numpy/Torch formats use struct with zero-copy data
+        ("buffer", "numpy" | "torch") => {
+            // Extract ViewBuffers from NumpyStruct results
+            let buffers: Vec<Option<ViewBuffer>> = data
+                .iter()
+                .map(|r| match r {
+                    RowResult::NumpyStruct(opt) => opt.clone(),
+                    _ => None,
+                })
+                .collect();
+            crate::output::build_numpy_series(name, buffers)
+        }
+
+        // Other binary formats: png, jpeg, blob
+        ("buffer", "png" | "jpeg" | "blob") | (_, "binary") => {
             let binary_data: Vec<Option<Vec<u8>>> = data
                 .iter()
                 .map(|r| match r {
@@ -1817,26 +1834,12 @@ fn encode_node_output(output: &NodeOutput, sink: &SinkSpec) -> Result<OutputValu
     let format = sink.format.as_str();
 
     match (output, format) {
-        // Buffer outputs
+        // Buffer outputs - numpy/torch use zero-copy struct format
         (NodeOutput::Buffer(buf), "numpy" | "torch") => {
-            let pipeline = PipelineSpec {
-                source: SourceSpec {
-                    format: "blob".to_string(),
-                    dtype: None,
-                    width: None,
-                    height: None,
-                    fill_value: 255,
-                    background: 0,
-                    shape_pipeline: None,
-                    require_contiguous: false,
-                },
-                shape_hints: None,
-                ops: vec![],
-                sink: sink.clone(),
-            };
-            crate::execute::encode_sink(buf, &pipeline)
-                .map(OutputValue::Binary)
-                .map_err(|e| format!("Encode error: {e}"))
+            // Clone the ViewBuffer from the Arc for ownership transfer
+            // ViewBuffer clone is cheap (Arc clone of internal storage)
+            // The actual zero-copy happens during series building via into_polars_buffer()
+            Ok(OutputValue::NumpyStruct((**buf).clone()))
         }
         (NodeOutput::Buffer(buf), "png" | "jpeg" | "blob") => {
             let pipeline = PipelineSpec {
@@ -2022,6 +2025,8 @@ enum OutputValue {
         /// Fixed shape (validated against buffer).
         shape: Vec<usize>,
     },
+    /// Numpy/Torch struct output (zero-copy ViewBuffer for struct encoding).
+    NumpyStruct(ViewBuffer),
 }
 
 /// Convert contours to Polars AnyValue representation.
@@ -2703,6 +2708,9 @@ impl UnifiedGraph {
                                     }
                                     OutputValue::TypedArray { data, shape } => {
                                         RowResult::TypedArray(Some((data, shape)))
+                                    }
+                                    OutputValue::NumpyStruct(buf) => {
+                                        RowResult::NumpyStruct(Some(buf))
                                     }
                                 };
                                 results.get_mut(alias).unwrap().push(row_result);

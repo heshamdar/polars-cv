@@ -15,7 +15,7 @@ import polars as pl
 import pytest
 from PIL import Image
 
-from polars_cv import Pipeline, numpy_from_bytes
+from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -86,7 +86,10 @@ class TestMultiOutputSink:
         )
 
         result = test_df.with_columns(output=base.sink("numpy"))
-        assert result["output"].dtype == pl.Binary
+        # Numpy sink now returns struct with data, dtype, shape fields
+        assert isinstance(result["output"].dtype, pl.Struct), (
+            f"Expected Struct for numpy sink, got {result['output'].dtype}"
+        )
 
     def test_multi_sink_with_aliases(self, test_df: pl.DataFrame) -> None:
         """Test multi-output sink with aliased expressions."""
@@ -142,9 +145,9 @@ class TestMultiOutputSink:
         assert "thresh" in fields
 
         # Verify shapes
-        resized = numpy_from_bytes(df_result["output"].struct.field("resized")[0])
-        gray_arr = numpy_from_bytes(df_result["output"].struct.field("gray")[0])
-        thresh_arr = numpy_from_bytes(df_result["output"].struct.field("thresh")[0])
+        resized = numpy_from_struct(df_result["output"].struct.field("resized")[0])
+        gray_arr = numpy_from_struct(df_result["output"].struct.field("gray")[0])
+        thresh_arr = numpy_from_struct(df_result["output"].struct.field("thresh")[0])
 
         assert resized.shape == (50, 50, 3)
         assert gray_arr.shape == (50, 50, 1)
@@ -236,9 +239,9 @@ class TestBranchingPipelines:
         )
         df_result = test_df.with_columns(output=result)
 
-        base_arr = numpy_from_bytes(df_result["output"].struct.field("base")[0])
-        gray_arr = numpy_from_bytes(df_result["output"].struct.field("gray")[0])
-        blur_arr = numpy_from_bytes(df_result["output"].struct.field("blur")[0])
+        base_arr = numpy_from_struct(df_result["output"].struct.field("base")[0])
+        gray_arr = numpy_from_struct(df_result["output"].struct.field("gray")[0])
+        blur_arr = numpy_from_struct(df_result["output"].struct.field("blur")[0])
 
         assert base_arr.shape == (50, 50, 3)
         assert gray_arr.shape == (50, 50, 1)
@@ -258,7 +261,7 @@ class TestPipeMethod:
         gray = base.pipe(Pipeline().grayscale())
 
         result = test_df.with_columns(output=gray.sink("numpy"))
-        arr = numpy_from_bytes(result["output"][0])
+        arr = numpy_from_struct(result["output"][0])
 
         # Should be grayscale (1 channel)
         assert arr.shape == (50, 50, 1)
@@ -273,7 +276,7 @@ class TestPipeMethod:
         new_root = base.pipe(Pipeline().source("image_bytes").grayscale())
 
         result = test_df.with_columns(output=new_root.sink("numpy"))
-        arr = numpy_from_bytes(result["output"][0])
+        arr = numpy_from_struct(result["output"][0])
 
         # Should be grayscale of original (100x100), not resized
         assert arr.shape == (100, 100, 1)
@@ -290,7 +293,7 @@ class TestPipeMethod:
         )
 
         result = test_df.with_columns(output=result_expr.sink("numpy"))
-        arr = numpy_from_bytes(result["output"][0])
+        arr = numpy_from_struct(result["output"][0])
 
         assert arr.shape == (50, 50, 1)
         # Threshold should produce binary values
