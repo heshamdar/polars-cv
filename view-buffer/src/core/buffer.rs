@@ -800,7 +800,13 @@ impl ViewBuffer {
     #[cfg(feature = "polars_interop")]
     pub fn into_polars_buffer_strided(
         self,
-    ) -> (polars_arrow::buffer::Buffer<u8>, Vec<usize>, Vec<isize>, usize, DType) {
+    ) -> (
+        polars_arrow::buffer::Buffer<u8>,
+        Vec<usize>,
+        Vec<isize>,
+        usize,
+        DType,
+    ) {
         self.into_polars_buffer_strided_with_policy(SlicePolicy::default())
     }
 
@@ -815,7 +821,13 @@ impl ViewBuffer {
     pub fn into_polars_buffer_strided_with_policy(
         self,
         policy: SlicePolicy,
-    ) -> (polars_arrow::buffer::Buffer<u8>, Vec<usize>, Vec<isize>, usize, DType) {
+    ) -> (
+        polars_arrow::buffer::Buffer<u8>,
+        Vec<usize>,
+        Vec<isize>,
+        usize,
+        DType,
+    ) {
         let shape = self.layout.shape.clone();
         let strides = self.layout.strides.clone();
         let dtype = self.layout.dtype;
