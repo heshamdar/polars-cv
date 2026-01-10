@@ -471,18 +471,12 @@ impl ViewBuffer {
 
         assert!(
             offset + len <= buffer.len(),
-            "Polars buffer slice out of bounds: offset={}, len={}, buffer_len={}",
-            offset,
-            len,
+            "Polars buffer slice out of bounds: offset={offset}, len={len}, buffer_len={}",
             buffer.len()
         );
         assert!(
             len == expected_bytes,
-            "Byte length mismatch: provided={}, expected={} (shape={:?}, dtype={:?})",
-            len,
-            expected_bytes,
-            shape,
-            dtype
+            "Byte length mismatch: provided={len}, expected={expected_bytes} (shape={shape:?}, dtype={dtype:?})"
         );
 
         let layout = Layout::new_contiguous(shape, dtype);
@@ -622,7 +616,9 @@ impl ViewBuffer {
             #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(_) => unreachable!("try_into_owned_bytes called on Arrow buffer"),
             #[cfg(feature = "polars_interop")]
-            BufferStorage::PolarsArrow { .. } => unreachable!("try_into_owned_bytes called on PolarsArrow buffer"),
+            BufferStorage::PolarsArrow { .. } => {
+                unreachable!("try_into_owned_bytes called on PolarsArrow buffer")
+            }
         }
     }
 

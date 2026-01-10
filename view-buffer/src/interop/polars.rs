@@ -278,12 +278,10 @@ pub fn fixed_shape_from_type(dt: &polars_arrow::datatypes::ArrowDataType) -> Vec
     let mut shape = Vec::new();
     let mut current = dt;
 
-
     while let ArrowDataType::FixedSizeList(field, size) = current {
         shape.push(*size);
         current = field.dtype();
     }
-
 
     shape
 }
