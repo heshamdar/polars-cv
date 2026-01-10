@@ -17,6 +17,7 @@ view-buffer = { path = "../view-buffer", default-features = false, features = [
     "polars_interop",
     "image_interop",
     "perceptual_hash",
+    "ndarray_interop",
     "serde",
 ] }
 

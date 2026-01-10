@@ -774,6 +774,221 @@ impl ViewBuffer {
         }
     }
 
+    /// Convert to polars buffer with strided layout preservation.
+    ///
+    /// Unlike [`into_polars_buffer`], this method supports non-contiguous strided buffers
+    /// by returning the FULL underlying buffer along with strides and offset. This enables
+    /// zero-copy strided views in Python/NumPy.
+    ///
+    /// # Returns
+    /// A tuple of `(buffer, shape, strides, offset, dtype)` where:
+    /// - `buffer`: The full underlying buffer (may be larger than the view)
+    /// - `shape`: Array dimensions
+    /// - `strides`: Byte strides per dimension (can be non-contiguous)
+    /// - `offset`: Byte offset into buffer where the view starts
+    /// - `dtype`: Data type
+    ///
+    /// # Zero-Copy Conditions
+    ///
+    /// Zero-copy occurs when:
+    /// - For `PolarsArrow` storage: always (returns original buffer)
+    /// - For `Rust` storage: sole owner (Arc refcount == 1)
+    /// - For non-contiguous buffers: if policy allows keeping full buffer
+    ///
+    /// When zero-copy is not possible, the data is materialized to a contiguous buffer
+    /// with standard strides.
+    #[cfg(feature = "polars_interop")]
+    pub fn into_polars_buffer_strided(
+        self,
+    ) -> (polars_arrow::buffer::Buffer<u8>, Vec<usize>, Vec<isize>, usize, DType) {
+        self.into_polars_buffer_strided_with_policy(SlicePolicy::default())
+    }
+
+    /// Convert to polars buffer with strided layout preservation and configurable policy.
+    ///
+    /// # Arguments
+    /// * `policy` - Controls whether to keep full buffer or copy for small views
+    ///
+    /// # Returns
+    /// A tuple of `(buffer, shape, strides, offset, dtype)`.
+    #[cfg(feature = "polars_interop")]
+    pub fn into_polars_buffer_strided_with_policy(
+        self,
+        policy: SlicePolicy,
+    ) -> (polars_arrow::buffer::Buffer<u8>, Vec<usize>, Vec<isize>, usize, DType) {
+        let shape = self.layout.shape.clone();
+        let strides = self.layout.strides.clone();
+        let dtype = self.layout.dtype;
+        let offset = self.layout.offset;
+        let required_bytes = self.layout.num_elements() * dtype.size_of();
+
+        match self.data {
+            // Handle PolarsArrow storage - always zero-copy, preserve strides
+            BufferStorage::PolarsArrow {
+                buffer: polars_buf,
+                offset: buf_offset,
+                len: buf_len,
+            } => {
+                // Determine if we should keep full buffer based on policy
+                let combined_offset = buf_offset + offset;
+                let should_zero_copy = match policy {
+                    SlicePolicy::AlwaysZeroCopy => true,
+                    SlicePolicy::AlwaysCopy => false,
+                    SlicePolicy::Heuristic { threshold } => {
+                        let ratio = required_bytes as f64 / buf_len as f64;
+                        ratio >= threshold
+                    }
+                };
+
+                if should_zero_copy {
+                    // Return the original buffer with stride info
+                    (polars_buf, shape, strides, combined_offset, dtype)
+                } else {
+                    // Materialize to contiguous
+                    let contig = ViewBuffer {
+                        data: BufferStorage::PolarsArrow {
+                            buffer: polars_buf,
+                            offset: buf_offset,
+                            len: buf_len,
+                        },
+                        layout: self.layout,
+                    }
+                    .to_contiguous();
+                    let contig_shape = contig.layout.shape.clone();
+                    let contig_strides = contig.layout.strides.clone();
+                    let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
+                    let slice =
+                        unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+                    let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                    (buffer, contig_shape, contig_strides, 0, dtype)
+                }
+            }
+
+            // Handle Rust storage
+            BufferStorage::Rust(arc) => {
+                let full_len = arc.len();
+                let is_sole_owner = Arc::strong_count(&arc) == 1;
+
+                // Determine if we should keep full buffer based on policy
+                let should_zero_copy = is_sole_owner
+                    && match policy {
+                        SlicePolicy::AlwaysZeroCopy => true,
+                        SlicePolicy::AlwaysCopy => false,
+                        SlicePolicy::Heuristic { threshold } => {
+                            let ratio = required_bytes as f64 / full_len as f64;
+                            ratio >= threshold
+                        }
+                    };
+
+                if should_zero_copy {
+                    // Try to unwrap the Arc and return full buffer with stride info
+                    match Arc::try_unwrap(arc) {
+                        Ok(full_vec) => {
+                            let full_buffer = polars_arrow::buffer::Buffer::from(full_vec);
+                            (full_buffer, shape, strides, offset, dtype)
+                        }
+                        Err(arc) => {
+                            // Arc unwrap failed - copy to contiguous
+                            let contig = ViewBuffer {
+                                data: BufferStorage::Rust(arc),
+                                layout: self.layout,
+                            }
+                            .to_contiguous();
+                            let contig_shape = contig.layout.shape.clone();
+                            let contig_strides = contig.layout.strides.clone();
+                            let data_len =
+                                contig.layout.num_elements() * contig.layout.dtype.size_of();
+                            let slice = unsafe {
+                                std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len)
+                            };
+                            let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                            (buffer, contig_shape, contig_strides, 0, dtype)
+                        }
+                    }
+                } else {
+                    // Policy says copy - materialize to contiguous
+                    let contig = ViewBuffer {
+                        data: BufferStorage::Rust(arc),
+                        layout: self.layout,
+                    }
+                    .to_contiguous();
+                    let contig_shape = contig.layout.shape.clone();
+                    let contig_strides = contig.layout.strides.clone();
+                    let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
+                    let slice =
+                        unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+                    let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                    (buffer, contig_shape, contig_strides, 0, dtype)
+                }
+            }
+
+            // Arrow storage - not supported for zero-copy, materialize to contiguous
+            #[cfg(feature = "arrow_interop")]
+            BufferStorage::Arrow(_) => {
+                let contig = ViewBuffer {
+                    data: self.data,
+                    layout: self.layout,
+                }
+                .to_contiguous();
+                let contig_shape = contig.layout.shape.clone();
+                let contig_strides = contig.layout.strides.clone();
+                let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
+                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+                let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                (buffer, contig_shape, contig_strides, 0, dtype)
+            }
+        }
+    }
+
+    /// Check if this buffer can be zero-copy transferred with strided output.
+    ///
+    /// Unlike [`can_zero_copy_transfer`], this also returns true for non-contiguous
+    /// buffers that can preserve their strides for zero-copy strided output.
+    ///
+    /// Uses the default [`SlicePolicy`] (Heuristic with 50% threshold).
+    #[cfg(feature = "polars_interop")]
+    pub fn can_zero_copy_strided(&self) -> bool {
+        self.can_zero_copy_strided_with_policy(SlicePolicy::default())
+    }
+
+    /// Check if this buffer can be zero-copy transferred with strided output and policy.
+    #[cfg(feature = "polars_interop")]
+    pub fn can_zero_copy_strided_with_policy(&self, policy: SlicePolicy) -> bool {
+        let required_bytes = self.layout.num_elements() * self.layout.dtype.size_of();
+
+        match &self.data {
+            BufferStorage::Rust(arc) => {
+                let is_sole_owner = Arc::strong_count(arc) == 1;
+                if !is_sole_owner {
+                    return false;
+                }
+
+                let full_len = arc.len();
+                match policy {
+                    SlicePolicy::AlwaysZeroCopy => true,
+                    SlicePolicy::AlwaysCopy => false,
+                    SlicePolicy::Heuristic { threshold } => {
+                        let ratio = required_bytes as f64 / full_len as f64;
+                        ratio >= threshold
+                    }
+                }
+            }
+
+            #[cfg(feature = "polars_interop")]
+            BufferStorage::PolarsArrow { len, .. } => match policy {
+                SlicePolicy::AlwaysZeroCopy => true,
+                SlicePolicy::AlwaysCopy => false,
+                SlicePolicy::Heuristic { threshold } => {
+                    let ratio = required_bytes as f64 / *len as f64;
+                    ratio >= threshold
+                }
+            },
+
+            #[cfg(feature = "arrow_interop")]
+            BufferStorage::Arrow(_) => false,
+        }
+    }
+
     /// Check if this buffer can be zero-copy transferred.
     ///
     /// Uses the default [`SlicePolicy`] (Heuristic with 50% threshold).

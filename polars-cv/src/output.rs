@@ -2,16 +2,18 @@
 //!
 //! This module provides zero-copy output encoding for numpy and torch sink formats.
 //! Instead of prepending a header to binary data (which requires copying), we return
-//! a Struct with separate `data`, `dtype`, and `shape` fields.
+//! a Struct with separate fields that enable strided numpy array creation.
 //!
 //! # Schema
 //!
 //! The output schema is:
 //! ```text
 //! Struct {
-//!     data: Binary,      // Raw array bytes (zero-copy when possible)
-//!     dtype: String,     // Data type name (e.g., "uint8", "float32")
+//!     data: Binary,       // Raw array bytes (may be larger for strided views)
+//!     dtype: String,      // Data type name (e.g., "uint8", "float32")
 //!     shape: List[UInt64] // Array dimensions
+//!     strides: List[Int64] // Byte strides per dimension (enables strided views)
+//!     offset: UInt64      // Byte offset into data buffer
 //! }
 //! ```
 //!
@@ -22,7 +24,7 @@
 //!
 //! let buffers: Vec<Option<ViewBuffer>> = process_rows(...);
 //! let series = build_numpy_series("output".into(), buffers)?;
-//! // series has dtype Struct { data: Binary, dtype: String, shape: List[UInt64] }
+//! // series has dtype Struct { data, dtype, shape, strides, offset }
 //! ```
 
 use polars::prelude::*;
@@ -33,9 +35,11 @@ use view_buffer::{DType as VbDType, ViewBuffer};
 /// Get the Polars DataType for numpy/torch sink output.
 ///
 /// Returns a Struct schema with:
-/// - `data`: Binary (raw array bytes)
+/// - `data`: Binary (raw array bytes, may be larger than needed for strided views)
 /// - `dtype`: String (dtype name like "uint8", "float32")
 /// - `shape`: List[UInt64] (array dimensions)
+/// - `strides`: List[Int64] (byte strides per dimension, enables strided views)
+/// - `offset`: UInt64 (byte offset into data buffer)
 pub fn numpy_output_dtype() -> DataType {
     DataType::Struct(vec![
         Field::new(PlSmallStr::from_static("data"), DataType::Binary),
@@ -44,6 +48,11 @@ pub fn numpy_output_dtype() -> DataType {
             PlSmallStr::from_static("shape"),
             DataType::List(Box::new(DataType::UInt64)),
         ),
+        Field::new(
+            PlSmallStr::from_static("strides"),
+            DataType::List(Box::new(DataType::Int64)),
+        ),
+        Field::new(PlSmallStr::from_static("offset"), DataType::UInt64),
     ])
 }
 
@@ -68,14 +77,19 @@ pub fn dtype_to_string(dtype: VbDType) -> &'static str {
 /// Encoded numpy output for a single row.
 ///
 /// This struct holds the components that will become the Struct column fields.
+/// Supports strided views for zero-copy output of non-contiguous buffers.
 #[derive(Debug, Clone)]
 pub struct NumpyRowOutput {
-    /// Raw array data as bytes.
+    /// Raw array data as bytes (may be larger than needed for strided views).
     pub data: polars_arrow::buffer::Buffer<u8>,
     /// Data type name (e.g., "uint8", "float32").
     pub dtype: &'static str,
     /// Array shape dimensions.
     pub shape: Vec<u64>,
+    /// Byte strides per dimension (enables strided numpy views).
+    pub strides: Vec<i64>,
+    /// Byte offset into data buffer.
+    pub offset: u64,
     /// Whether this was zero-copy (for testing/debugging).
     #[allow(dead_code)]
     pub was_zero_copy: bool,
@@ -84,15 +98,18 @@ pub struct NumpyRowOutput {
 impl NumpyRowOutput {
     /// Create a NumpyRowOutput from a ViewBuffer.
     ///
-    /// Uses zero-copy ownership transfer when possible.
+    /// Uses zero-copy ownership transfer when possible, including for
+    /// non-contiguous strided buffers by preserving stride information.
     pub fn from_buffer(buffer: ViewBuffer) -> Self {
-        let was_zero_copy = buffer.can_zero_copy_transfer();
-        let (data, shape, dtype) = buffer.into_polars_buffer();
+        let was_zero_copy = buffer.can_zero_copy_strided();
+        let (data, shape, strides, offset, dtype) = buffer.into_polars_buffer_strided();
 
         Self {
             data,
             dtype: dtype_to_string(dtype),
             shape: shape.into_iter().map(|d| d as u64).collect(),
+            strides: strides.into_iter().map(|s| s as i64).collect(),
+            offset: offset as u64,
             was_zero_copy,
         }
     }
@@ -108,7 +125,7 @@ impl NumpyRowOutput {
 /// * `rows` - Vector of optional ViewBuffers, one per row (None for null rows)
 ///
 /// # Returns
-/// A Series with dtype Struct{data: Binary, dtype: String, shape: List[UInt64]}
+/// A Series with dtype Struct{data: Binary, dtype: String, shape: List[UInt64], strides: List[Int64], offset: UInt64}
 pub fn build_numpy_series(name: PlSmallStr, rows: Vec<Option<ViewBuffer>>) -> PolarsResult<Series> {
     let len = rows.len();
 
@@ -118,14 +135,20 @@ pub fn build_numpy_series(name: PlSmallStr, rows: Vec<Option<ViewBuffer>>) -> Po
         .map(|opt| opt.map(NumpyRowOutput::from_buffer))
         .collect();
 
-    // Build the three columns
+    // Build all five columns
     let data_col = build_data_column(&encoded)?;
     let dtype_col = build_dtype_column(&encoded);
     let shape_col = build_shape_column(&encoded)?;
+    let strides_col = build_strides_column(&encoded)?;
+    let offset_col = build_offset_column(&encoded);
 
     // Combine into struct
-    StructChunked::from_series(name, len, [data_col, dtype_col, shape_col].iter())
-        .map(|ca| ca.into_series())
+    StructChunked::from_series(
+        name,
+        len,
+        [data_col, dtype_col, shape_col, strides_col, offset_col].iter(),
+    )
+    .map(|ca| ca.into_series())
 }
 
 /// Build the 'data' column (Binary) from encoded rows using zero-copy buffer registration.
@@ -254,6 +277,52 @@ fn build_shape_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
     }
 
     Ok(builder.finish().into_series())
+}
+
+/// Build the 'strides' column (List[Int64]) from encoded rows.
+fn build_strides_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
+    let values: Vec<Option<Series>> = rows
+        .iter()
+        .map(|opt| {
+            opt.as_ref().map(|r| {
+                let strides: Vec<i64> = r.strides.clone();
+                Series::new(PlSmallStr::from_static(""), strides)
+            })
+        })
+        .collect();
+
+    // Build list column from the series values
+    let mut builder = ListPrimitiveChunkedBuilder::<Int64Type>::new(
+        PlSmallStr::from_static("strides"),
+        rows.len(),
+        8, // Initial capacity per list
+        DataType::Int64,
+    );
+
+    for opt_series in values {
+        match opt_series {
+            Some(s) => {
+                let ca = s.i64()?;
+                builder.append_slice(ca.cont_slice().unwrap_or(&[]));
+            }
+            None => {
+                builder.append_null();
+            }
+        }
+    }
+
+    Ok(builder.finish().into_series())
+}
+
+/// Build the 'offset' column (UInt64) from encoded rows.
+fn build_offset_column(rows: &[Option<NumpyRowOutput>]) -> Series {
+    let values: Vec<Option<u64>> = rows
+        .iter()
+        .map(|opt| opt.as_ref().map(|r| r.offset))
+        .collect();
+
+    UInt64Chunked::from_iter_options(PlSmallStr::from_static("offset"), values.into_iter())
+        .into_series()
 }
 
 /// Check if any rows used zero-copy transfer.

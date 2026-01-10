@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 import pytest
-
 from polars_cv import NUMPY_OUTPUT_SCHEMA, numpy_from_struct
 
 if TYPE_CHECKING:
@@ -160,15 +159,17 @@ class TestNumpyFromStructPolars:
         arr = np.array([1, 2, 3, 4, 5, 6], dtype=np.uint8)
 
         # Create a DataFrame with struct column
-        df = pl.DataFrame({
-            "output": [
-                {
-                    "data": arr.tobytes(),
-                    "dtype": "uint8",
-                    "shape": [2, 3],
-                }
-            ]
-        }).cast({"output": NUMPY_OUTPUT_SCHEMA})
+        df = pl.DataFrame(
+            {
+                "output": [
+                    {
+                        "data": arr.tobytes(),
+                        "dtype": "uint8",
+                        "shape": [2, 3],
+                    }
+                ]
+            }
+        ).cast({"output": NUMPY_OUTPUT_SCHEMA})
 
         # Get the struct value
         struct_val = df["output"][0]
@@ -202,25 +203,33 @@ class TestNumpyOutputSchema:
 
     def test_schema_structure(self) -> None:
         """Test that schema has correct structure."""
-        assert NUMPY_OUTPUT_SCHEMA == pl.Struct({
-            "data": pl.Binary,
-            "dtype": pl.String,
-            "shape": pl.List(pl.UInt64),
-        })
+        assert NUMPY_OUTPUT_SCHEMA == pl.Struct(
+            {
+                "data": pl.Binary,
+                "dtype": pl.String,
+                "shape": pl.List(pl.UInt64),
+                "strides": pl.List(pl.Int64),
+                "offset": pl.UInt64,
+            }
+        )
 
     def test_schema_can_be_used_for_casting(self) -> None:
         """Test that schema can be used for column casting."""
         arr = np.array([1, 2, 3], dtype=np.uint8)
 
-        df = pl.DataFrame({
-            "output": [
-                {
-                    "data": arr.tobytes(),
-                    "dtype": "uint8",
-                    "shape": [3],
-                }
-            ]
-        })
+        df = pl.DataFrame(
+            {
+                "output": [
+                    {
+                        "data": arr.tobytes(),
+                        "dtype": "uint8",
+                        "shape": [3],
+                        "strides": [1],
+                        "offset": 0,
+                    }
+                ]
+            }
+        )
 
         # Should be able to cast to the schema
         casted = df.cast({"output": NUMPY_OUTPUT_SCHEMA})

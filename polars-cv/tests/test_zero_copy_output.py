@@ -70,6 +70,8 @@ class TestNumpyOutputSchema:
             "data": pl.Binary,
             "dtype": pl.String,
             "shape": pl.List(pl.UInt64),
+            "strides": pl.List(pl.Int64),
+            "offset": pl.UInt64,
         })
 
     def test_numpy_sink_returns_struct(self, simple_rgb_bytes: bytes) -> None:
@@ -677,3 +679,137 @@ class TestStridedPipeline:
 
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape == (40, 40, 1)
+
+
+# ============================================================
+# Strided Zero-Copy Output Tests
+# ============================================================
+
+
+class TestStridedZeroCopyOutput:
+    """Tests for strided zero-copy output verification."""
+
+    def test_output_schema_has_strides_and_offset(self) -> None:
+        """Test that the output schema includes strides and offset fields."""
+        from polars_cv import NUMPY_OUTPUT_SCHEMA
+
+        # Check schema has all expected fields
+        schema_fields = {f.name for f in NUMPY_OUTPUT_SCHEMA.fields}
+        assert "data" in schema_fields
+        assert "dtype" in schema_fields
+        assert "shape" in schema_fields
+        assert "strides" in schema_fields
+        assert "offset" in schema_fields
+
+    def test_contiguous_output_has_contiguous_strides(self) -> None:
+        """Test that contiguous output has standard contiguous strides."""
+        img = np.full((32, 32, 3), 128, dtype=np.uint8)
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        # Simple resize produces contiguous output
+        pipe = Pipeline().source("image_bytes").resize(height=16, width=16).sink("numpy")
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        # Access raw struct fields
+        struct_data = result["output"].struct.unnest()
+        shape = struct_data["shape"][0].to_list()
+        strides = struct_data["strides"][0].to_list()
+        offset = struct_data["offset"][0]
+
+        # Shape should be [16, 16, 3]
+        assert shape == [16, 16, 3]
+        # Contiguous strides for HWC: [W*C, C, 1] = [48, 3, 1]
+        assert strides == [48, 3, 1]
+        assert offset == 0
+
+    def test_grayscale_output_has_correct_strides(self) -> None:
+        """Test that grayscale output has correct shape and strides."""
+        img = np.full((20, 20, 3), 100, dtype=np.uint8)
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = Pipeline().source("image_bytes").grayscale().sink("numpy")
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        struct_data = result["output"].struct.unnest()
+        shape = struct_data["shape"][0].to_list()
+        strides = struct_data["strides"][0].to_list()
+
+        # Grayscale output shape: [H, W, 1]
+        assert shape == [20, 20, 1]
+        # Contiguous strides: [W*1, 1, 1] = [20, 1, 1]
+        assert strides == [20, 1, 1]
+
+    def test_numpy_from_struct_zero_copy_mode(self) -> None:
+        """Test numpy_from_struct with copy=False uses strided view."""
+        img = np.full((16, 16, 3), 200, dtype=np.uint8)
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = Pipeline().source("image_bytes").sink("numpy")
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        # Get array with copy=False
+        arr = numpy_from_struct(result["output"][0], copy=False)
+
+        assert arr.shape == (16, 16, 3)
+        assert arr.dtype == np.uint8
+        # All values should be 200
+        assert np.all(arr == 200)
+
+    def test_numpy_from_struct_copy_produces_contiguous(self) -> None:
+        """Test numpy_from_struct with copy=True produces contiguous array."""
+        img = np.full((16, 16, 3), 150, dtype=np.uint8)
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = Pipeline().source("image_bytes").sink("numpy")
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        # Get array with copy=True (default)
+        arr = numpy_from_struct(result["output"][0], copy=True)
+
+        assert arr.shape == (16, 16, 3)
+        assert arr.flags["C_CONTIGUOUS"]
+        assert np.all(arr == 150)
+
+    def test_data_integrity_with_strided_output(self) -> None:
+        """Test that strided output maintains data integrity."""
+        # Create distinct gradient image
+        img = np.zeros((32, 32, 3), dtype=np.uint8)
+        for i in range(32):
+            img[i, :, 0] = i * 8  # Red gradient
+            img[:, i, 1] = i * 8  # Green gradient
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = Pipeline().source("image_bytes").sink("numpy")
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        # Test both copy modes produce same result
+        arr_copy = numpy_from_struct(result["output"][0], copy=True)
+        arr_view = numpy_from_struct(result["output"][0], copy=False)
+
+        np.testing.assert_array_equal(arr_copy, arr_view)
+        np.testing.assert_array_equal(arr_copy, img)
