@@ -460,7 +460,8 @@ fn test_zero_copy_transfer_with_offset_always_zero_copy_policy() {
     assert!(sliced.can_zero_copy_transfer_with_policy(SlicePolicy::AlwaysZeroCopy));
 
     // Transfer with AlwaysZeroCopy policy
-    let (polars_buf, shape, dtype) = sliced.into_polars_buffer_with_policy(SlicePolicy::AlwaysZeroCopy);
+    let (polars_buf, shape, dtype) =
+        sliced.into_polars_buffer_with_policy(SlicePolicy::AlwaysZeroCopy);
     assert_eq!(polars_buf.len(), 60);
     assert_eq!(shape, vec![60]);
     assert_eq!(dtype, DType::U8);
@@ -502,11 +503,12 @@ fn test_zero_copy_transfer_heuristic_policy() {
         let buffer = ViewBuffer::from_vec(data);
         let large_slice = buffer.slice(&[20], &[80]);
         assert_eq!(large_slice.shape(), &[60]);
-        
+
         // Drop original to get sole ownership of Arc
         drop(buffer);
-        
-        assert!(large_slice.can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.5 }));
+
+        assert!(large_slice
+            .can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.5 }));
     }
 
     // Test 2: Small slice (30% of buffer) - should NOT be zero-copy with 50% threshold
@@ -515,15 +517,17 @@ fn test_zero_copy_transfer_heuristic_policy() {
         let buffer = ViewBuffer::from_vec(data);
         let small_slice = buffer.slice(&[10], &[40]);
         assert_eq!(small_slice.shape(), &[30]);
-        
+
         // Drop original to get sole ownership of Arc
         drop(buffer);
-        
+
         // 30% < 50% threshold, so should NOT be zero-copy
-        assert!(!small_slice.can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.5 }));
-        
+        assert!(!small_slice
+            .can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.5 }));
+
         // But should be zero-copy with 25% threshold (30% >= 25%)
-        assert!(small_slice.can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.25 }));
+        assert!(small_slice
+            .can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.25 }));
     }
 }
 
@@ -540,7 +544,8 @@ fn test_into_polars_buffer_preserves_data_with_offset() {
     assert_eq!(sliced.shape(), &[25]);
 
     // Transfer with AlwaysZeroCopy - should work because 1D slice is contiguous
-    let (polars_buf, shape, _dtype) = sliced.into_polars_buffer_with_policy(SlicePolicy::AlwaysZeroCopy);
+    let (polars_buf, shape, _dtype) =
+        sliced.into_polars_buffer_with_policy(SlicePolicy::AlwaysZeroCopy);
 
     assert_eq!(shape, vec![25]);
     assert_eq!(polars_buf.len(), 25);
