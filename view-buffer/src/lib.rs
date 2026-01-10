@@ -22,7 +22,7 @@ pub mod ops;
 pub mod protocol;
 
 // Re-exports - Core types
-pub use core::buffer::ViewBuffer;
+pub use core::buffer::{SlicePolicy, ViewBuffer};
 pub use core::dtype::DType;
 pub use core::layout::{ExternalLayout, LayoutFacts, LayoutReport};
 

@@ -1,4 +1,34 @@
 //! Buffer storage and view types.
+//!
+//! This module provides the core [`ViewBuffer`] type for zero-copy tensor operations
+//! and efficient interoperability with Polars.
+//!
+//! # Zero-Copy Transfer
+//!
+//! When transferring data back to Polars, the library supports zero-copy transfer
+//! via [`ViewBuffer::into_polars_buffer`] and [`ViewBuffer::into_polars_buffer_with_policy`].
+//!
+//! ## Slice Policy
+//!
+//! When a buffer has a non-zero offset (e.g., from a slice or crop operation),
+//! the [`SlicePolicy`] controls whether to:
+//!
+//! - **Zero-copy slice**: Use `Buffer::sliced()` to create a view (keeps full buffer alive)
+//! - **Copy**: Copy just the slice (releases unused memory)
+//!
+//! This is a memory vs. performance trade-off:
+//!
+//! | Policy | Behavior | Memory | Performance |
+//! |--------|----------|--------|-------------|
+//! | `AlwaysZeroCopy` | Always use `Buffer::sliced()` | May waste memory | Fast |
+//! | `AlwaysCopy` | Always copy sliced data | Efficient | Slower |
+//! | `Heuristic(0.5)` | Zero-copy if slice >= 50% of buffer | Balanced | Balanced |
+//!
+//! ## Storage Types
+//!
+//! - **Rust storage** (`Arc<Vec<u8>>`): Zero-copy requires sole ownership (refcount == 1)
+//! - **PolarsArrow storage**: Always zero-copy via `Buffer::sliced()`
+//! - **Arrow storage**: Not currently supported for zero-copy transfer
 
 use std::sync::Arc;
 
@@ -26,6 +56,55 @@ pub enum BufferError {
     IncompatibleLayout { target: ExternalLayout },
     #[error("Invalid binary protocol: {0}")]
     InvalidProtocol(String),
+}
+
+/// Policy for handling sliced buffers during zero-copy transfer.
+///
+/// When a `ViewBuffer` has a non-zero offset (e.g., from a slice or crop operation),
+/// this policy determines whether to:
+/// - Use zero-copy slicing (keeps the entire underlying buffer alive)
+/// - Copy just the slice (releases unused memory)
+///
+/// # Memory Trade-offs
+///
+/// - **AlwaysZeroCopy**: Maximum performance, but may keep large buffers alive
+///   even when only a small slice is needed.
+/// - **AlwaysCopy**: Predictable memory usage, always releases unused portions,
+///   but incurs copy overhead.
+/// - **Heuristic**: Balanced approach - uses zero-copy for slices that are a
+///   significant portion of the buffer, copies smaller slices.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SlicePolicy {
+    /// Always use zero-copy, even for small slices.
+    ///
+    /// This maximizes performance but may waste memory if a small slice
+    /// keeps a large underlying buffer alive.
+    AlwaysZeroCopy,
+
+    /// Always copy sliced data to release unused memory.
+    ///
+    /// This ensures predictable memory usage but incurs copy overhead
+    /// for all sliced buffers.
+    AlwaysCopy,
+
+    /// Use heuristic: zero-copy if slice >= threshold of total buffer.
+    ///
+    /// The threshold is a ratio (0.0 to 1.0). For example, with threshold 0.5:
+    /// - A 60% slice uses zero-copy (60% >= 50%)
+    /// - A 30% slice is copied (30% < 50%)
+    Heuristic {
+        /// Minimum ratio of slice size to buffer size for zero-copy.
+        /// Value should be between 0.0 and 1.0.
+        threshold: f64,
+    },
+}
+
+impl Default for SlicePolicy {
+    fn default() -> Self {
+        // Default to heuristic with 50% threshold - balanced approach
+        SlicePolicy::Heuristic { threshold: 0.5 }
+        // SlicePolicy::AlwaysZeroCopy
+    }
 }
 
 /// Storage backend for ViewBuffer data.
@@ -512,6 +591,12 @@ impl ViewBuffer {
     /// Returns `None` if zero-copy extraction is not possible, in which case
     /// the caller should use `to_contiguous()` and copy the data.
     ///
+    /// # Note
+    ///
+    /// This method has strict requirements (offset == 0). For more flexible
+    /// zero-copy transfer to Polars that supports sliced buffers, use
+    /// [`into_polars_buffer_with_policy`] with an appropriate [`SlicePolicy`].
+    ///
     /// # Example
     /// ```
     /// use view_buffer::ViewBuffer;
@@ -546,59 +631,226 @@ impl ViewBuffer {
     /// This consumes the ViewBuffer and returns a polars Buffer suitable
     /// for constructing Polars Series/ChunkedArrays.
     ///
-    /// Zero-copy occurs when:
-    /// - Storage is `Rust(Arc<Vec<u8>>)` with a single owner
-    /// - Buffer is contiguous with no offset
-    ///
-    /// Falls back to copying the data otherwise.
+    /// Uses the default [`SlicePolicy`] (Heuristic with 50% threshold).
+    /// For custom control over zero-copy behavior, use [`into_polars_buffer_with_policy`].
     ///
     /// # Returns
     /// A tuple of `(Buffer<u8>, shape, dtype)` for use in output encoding.
     #[cfg(feature = "polars_interop")]
     pub fn into_polars_buffer(self) -> (polars_arrow::buffer::Buffer<u8>, Vec<usize>, DType) {
+        self.into_polars_buffer_with_policy(SlicePolicy::default())
+    }
+
+    /// Convert to a polars-arrow Buffer with configurable slice policy.
+    ///
+    /// This consumes the ViewBuffer and returns a polars Buffer suitable
+    /// for constructing Polars Series/ChunkedArrays.
+    ///
+    /// # Zero-Copy Conditions
+    ///
+    /// Zero-copy transfer occurs when:
+    /// - Buffer is contiguous (strides match C-order layout)
+    /// - For `Rust` storage: sole owner (Arc refcount == 1) and policy allows it
+    /// - For `PolarsArrow` storage: always zero-copy via buffer slicing
+    ///
+    /// # Slice Handling
+    ///
+    /// When a buffer has a non-zero offset (from slice/crop operations):
+    /// - **AlwaysZeroCopy**: Uses `Buffer::sliced()` to create a view (keeps full buffer alive)
+    /// - **AlwaysCopy**: Copies just the slice (releases unused memory)
+    /// - **Heuristic**: Zero-copy if slice >= threshold of buffer, else copy
+    ///
+    /// # Arguments
+    /// * `policy` - Controls how sliced buffers are handled
+    ///
+    /// # Returns
+    /// A tuple of `(Buffer<u8>, shape, dtype)` for use in output encoding.
+    #[cfg(feature = "polars_interop")]
+    pub fn into_polars_buffer_with_policy(
+        self,
+        policy: SlicePolicy,
+    ) -> (polars_arrow::buffer::Buffer<u8>, Vec<usize>, DType) {
         let shape = self.layout.shape.clone();
         let dtype = self.layout.dtype;
+        let offset = self.layout.offset;
+        let required_bytes: usize = shape.iter().product::<usize>() * dtype.size_of();
+        let is_contiguous = self.layout.is_contiguous();
 
-        // Check if zero-copy is possible before consuming self
-        let can_zero_copy = self.can_zero_copy_transfer();
-
-        if can_zero_copy {
-            // Safe to try zero-copy - we know it will succeed
-            if let Some(owned_vec) = self.try_into_owned_bytes() {
-                let buffer = polars_arrow::buffer::Buffer::from(owned_vec);
-                return (buffer, shape, dtype);
+        match self.data {
+            // Handle PolarsArrow storage - always zero-copy via slicing
+            BufferStorage::PolarsArrow {
+                buffer: polars_buf,
+                offset: buf_offset,
+                ..
+            } if is_contiguous => {
+                // True zero-copy: return the original buffer with adjusted slice
+                let combined_offset = buf_offset + offset;
+                let sliced = polars_buf.sliced(combined_offset, required_bytes);
+                (sliced, shape, dtype)
             }
-            // Shouldn't reach here if can_zero_copy_transfer is correct
-            unreachable!("can_zero_copy_transfer returned true but try_into_owned_bytes failed");
+
+            // Handle Rust storage with policy-based zero-copy
+            BufferStorage::Rust(arc) if is_contiguous => {
+                let full_len = arc.len();
+                let is_sole_owner = Arc::strong_count(&arc) == 1;
+
+                // Determine if we should use zero-copy based on policy
+                let should_zero_copy = is_sole_owner
+                    && match policy {
+                        SlicePolicy::AlwaysZeroCopy => true,
+                        SlicePolicy::AlwaysCopy => offset == 0 && required_bytes == full_len,
+                        SlicePolicy::Heuristic { threshold } => {
+                            if offset == 0 && required_bytes == full_len {
+                                true
+                            } else {
+                                let ratio = required_bytes as f64 / full_len as f64;
+                                ratio >= threshold
+                            }
+                        }
+                    };
+
+                if should_zero_copy {
+                    // Try to unwrap the Arc - should succeed since we checked refcount
+                    match Arc::try_unwrap(arc) {
+                        Ok(full_vec) => {
+                            let full_buffer = polars_arrow::buffer::Buffer::from(full_vec);
+                            if offset == 0 && required_bytes == full_buffer.len() {
+                                (full_buffer, shape, dtype)
+                            } else {
+                                // Zero-copy slice using Buffer::sliced()
+                                (full_buffer.sliced(offset, required_bytes), shape, dtype)
+                            }
+                        }
+                        Err(arc) => {
+                            // Arc unwrap failed (shouldn't happen) - copy the slice
+                            let slice = &arc[offset..offset + required_bytes];
+                            let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                            (buffer, shape, dtype)
+                        }
+                    }
+                } else {
+                    // Policy says copy - extract just the slice
+                    let slice = &arc[offset..offset + required_bytes];
+                    let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                    (buffer, shape, dtype)
+                }
+            }
+
+            // Non-contiguous Rust storage - needs materialization
+            BufferStorage::Rust(_) => {
+                let contig = ViewBuffer {
+                    data: self.data,
+                    layout: self.layout,
+                }
+                .to_contiguous();
+                let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
+                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+                let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                (buffer, shape, dtype)
+            }
+
+            // Non-contiguous PolarsArrow storage - needs materialization
+            BufferStorage::PolarsArrow { .. } => {
+                let contig = ViewBuffer {
+                    data: self.data,
+                    layout: self.layout,
+                }
+                .to_contiguous();
+                let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
+                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+                let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                (buffer, shape, dtype)
+            }
+
+            // Arrow storage - not supported for zero-copy, copy the data
+            #[cfg(feature = "arrow_interop")]
+            BufferStorage::Arrow(_) => {
+                let contig = ViewBuffer {
+                    data: self.data,
+                    layout: self.layout,
+                }
+                .to_contiguous();
+                let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
+                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
+                let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                (buffer, shape, dtype)
+            }
         }
-
-        // Fallback: ensure contiguous and copy
-        let contig = self.to_contiguous();
-        let num_elements: usize = contig.layout.shape.iter().product();
-        let data_len = num_elements * contig.layout.dtype.size_of();
-
-        let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-        let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
-
-        (buffer, shape, dtype)
     }
 
     /// Check if this buffer can be zero-copy transferred.
     ///
-    /// Returns `true` if `try_into_owned_bytes()` would succeed.
+    /// Uses the default [`SlicePolicy`] (Heuristic with 50% threshold).
+    /// For custom policy, use [`can_zero_copy_transfer_with_policy`].
+    ///
     /// Useful for testing and debugging zero-copy behavior.
+    #[cfg(feature = "polars_interop")]
+    pub fn can_zero_copy_transfer(&self) -> bool {
+        self.can_zero_copy_transfer_with_policy(SlicePolicy::default())
+    }
+
+    /// Check if this buffer can be zero-copy transferred with a specific policy.
+    ///
+    /// Returns `true` if `into_polars_buffer_with_policy()` would achieve zero-copy.
+    ///
+    /// # Zero-Copy Conditions
+    ///
+    /// - For `Rust` storage: sole owner, contiguous, and policy allows the slice ratio
+    /// - For `PolarsArrow` storage: contiguous (always zero-copy via slicing)
+    /// - For `Arrow` storage: always false (not supported)
+    ///
+    /// # Arguments
+    /// * `policy` - The slice policy to evaluate against
+    #[cfg(feature = "polars_interop")]
+    pub fn can_zero_copy_transfer_with_policy(&self, policy: SlicePolicy) -> bool {
+        match &self.data {
+            BufferStorage::Rust(arc) => {
+                // Check basic requirements: sole owner and contiguous
+                let is_valid = Arc::strong_count(arc) == 1 && self.layout.is_contiguous();
+                if !is_valid {
+                    return false;
+                }
+
+                let offset = self.layout.offset;
+                let required_bytes = self.layout.num_elements() * self.layout.dtype.size_of();
+                let full_len = arc.len();
+
+                match policy {
+                    SlicePolicy::AlwaysZeroCopy => true,
+                    SlicePolicy::AlwaysCopy => offset == 0 && required_bytes == full_len,
+                    SlicePolicy::Heuristic { threshold } => {
+                        if offset == 0 && required_bytes == full_len {
+                            true
+                        } else {
+                            let ratio = required_bytes as f64 / full_len as f64;
+                            ratio >= threshold
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "arrow_interop")]
+            BufferStorage::Arrow(_) => false,
+            BufferStorage::PolarsArrow { .. } => {
+                // PolarsArrow is always zero-copy if contiguous (via Buffer::sliced)
+                self.layout.is_contiguous()
+            }
+        }
+    }
+
+    /// Check if this buffer can be zero-copy transferred (non-polars version).
+    ///
+    /// Returns `true` if `try_into_owned_bytes()` would succeed.
+    /// This is the legacy check that requires offset == 0.
+    #[cfg(not(feature = "polars_interop"))]
     pub fn can_zero_copy_transfer(&self) -> bool {
         match &self.data {
             BufferStorage::Rust(arc) => {
-                // Check if we're the sole owner and layout allows extraction
                 Arc::strong_count(arc) == 1
                     && self.layout.is_contiguous()
                     && self.layout.offset == 0
             }
             #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(_) => false,
-            #[cfg(feature = "polars_interop")]
-            BufferStorage::PolarsArrow { .. } => false,
         }
     }
 
