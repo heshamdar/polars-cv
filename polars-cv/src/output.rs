@@ -127,15 +127,21 @@ pub fn build_numpy_series(name: PlSmallStr, rows: Vec<Option<ViewBuffer>>) -> Po
 }
 
 /// Build the 'data' column (Binary) from encoded rows.
+///
+/// Uses the buffer's slice directly to avoid unnecessary copying where possible.
+/// The polars_arrow::Buffer is Arc-backed, so slicing is cheap.
+///
+/// Note: The actual zero-copy behavior depends on polars-arrow's internal
+/// implementation of BinaryViewArray. For values > 12 bytes, the view may
+/// reference external buffer storage.
 fn build_data_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
-    // We need to build a BinaryChunked from the polars_arrow::Buffer<u8> values
-    // The Buffer is Arc-backed so cloning is cheap
-    let values: Vec<Option<Vec<u8>>> = rows
+    // Build iterator that yields Option<&[u8]> - no intermediate Vec allocation
+    // The buffer's as_slice() returns a reference to the Arc-backed memory
+    let values = rows
         .iter()
-        .map(|opt| opt.as_ref().map(|r| r.data.to_vec()))
-        .collect();
+        .map(|opt| opt.as_ref().map(|r| r.data.as_slice()));
 
-    let ca = BinaryChunked::from_iter_options(PlSmallStr::from_static("data"), values.into_iter());
+    let ca = BinaryChunked::from_iter_options(PlSmallStr::from_static("data"), values);
     Ok(ca.into_series())
 }
 

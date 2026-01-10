@@ -408,3 +408,244 @@ fn test_view_buffer_storage_id_consistency() {
     // Same offset should give same storage ID (for zero-copy verification)
     assert_eq!(view1.storage_id(), view3.storage_id());
 }
+
+// ============================================================
+// SlicePolicy and Zero-Copy Transfer Tests
+// ============================================================
+
+#[test]
+fn test_slice_policy_default() {
+    use view_buffer::SlicePolicy;
+
+    let policy = SlicePolicy::default();
+    assert_eq!(policy, SlicePolicy::Heuristic { threshold: 0.5 });
+}
+
+#[test]
+fn test_zero_copy_transfer_full_buffer() {
+    use view_buffer::ViewBuffer;
+
+    // Full buffer with offset 0 should always zero-copy
+    let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    let buffer = ViewBuffer::from_vec(data);
+
+    // Should be eligible for zero-copy
+    assert!(buffer.can_zero_copy_transfer());
+
+    // Transfer and verify
+    let (polars_buf, shape, dtype) = buffer.into_polars_buffer();
+    assert_eq!(polars_buf.len(), 8);
+    assert_eq!(shape, vec![8]);
+    assert_eq!(dtype, DType::U8);
+}
+
+#[test]
+fn test_zero_copy_transfer_with_offset_always_zero_copy_policy() {
+    use view_buffer::{SlicePolicy, ViewBuffer};
+
+    // Create a 1D buffer and slice it (introduces offset but stays contiguous)
+    // 1D slices remain contiguous because there's no row stride to worry about
+    let data: Vec<u8> = (0..100).collect();
+    let buffer = ViewBuffer::from_vec(data);
+
+    // Slice to get offset > 0 - 1D slice stays contiguous
+    let sliced = buffer.slice(&[20], &[80]);
+    assert_eq!(sliced.shape(), &[60]);
+
+    // Note: slice() clones the Arc, so there are now 2 references.
+    // We need to drop the original to get sole ownership.
+    drop(buffer);
+
+    // With AlwaysZeroCopy policy, contiguous buffer with offset should be zero-copy eligible
+    assert!(sliced.can_zero_copy_transfer_with_policy(SlicePolicy::AlwaysZeroCopy));
+
+    // Transfer with AlwaysZeroCopy policy
+    let (polars_buf, shape, dtype) = sliced.into_polars_buffer_with_policy(SlicePolicy::AlwaysZeroCopy);
+    assert_eq!(polars_buf.len(), 60);
+    assert_eq!(shape, vec![60]);
+    assert_eq!(dtype, DType::U8);
+
+    // Verify the data starts at the right offset
+    assert_eq!(polars_buf.as_slice()[0], 20);
+    assert_eq!(polars_buf.as_slice()[59], 79);
+}
+
+#[test]
+fn test_zero_copy_transfer_with_offset_always_copy_policy() {
+    use view_buffer::{SlicePolicy, ViewBuffer};
+
+    // Create a 1D buffer and slice it (1D slices stay contiguous)
+    let data: Vec<u8> = (0..100).collect();
+    let buffer = ViewBuffer::from_vec(data);
+
+    // Slice to get offset > 0
+    let sliced = buffer.slice(&[20], &[80]);
+    assert_eq!(sliced.shape(), &[60]);
+
+    // With AlwaysCopy policy, offset > 0 means NOT zero-copy eligible
+    // (even though the buffer is contiguous)
+    assert!(!sliced.can_zero_copy_transfer_with_policy(SlicePolicy::AlwaysCopy));
+
+    // But full buffer should still be zero-copy with AlwaysCopy
+    let full_data: Vec<u8> = (0..100).collect();
+    let full_buffer = ViewBuffer::from_vec(full_data);
+    assert!(full_buffer.can_zero_copy_transfer_with_policy(SlicePolicy::AlwaysCopy));
+}
+
+#[test]
+fn test_zero_copy_transfer_heuristic_policy() {
+    use view_buffer::{SlicePolicy, ViewBuffer};
+
+    // Test 1: Large slice (60% of buffer) - should be zero-copy with 50% threshold
+    {
+        let data: Vec<u8> = (0..100).collect();
+        let buffer = ViewBuffer::from_vec(data);
+        let large_slice = buffer.slice(&[20], &[80]);
+        assert_eq!(large_slice.shape(), &[60]);
+        
+        // Drop original to get sole ownership of Arc
+        drop(buffer);
+        
+        assert!(large_slice.can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.5 }));
+    }
+
+    // Test 2: Small slice (30% of buffer) - should NOT be zero-copy with 50% threshold
+    {
+        let data: Vec<u8> = (0..100).collect();
+        let buffer = ViewBuffer::from_vec(data);
+        let small_slice = buffer.slice(&[10], &[40]);
+        assert_eq!(small_slice.shape(), &[30]);
+        
+        // Drop original to get sole ownership of Arc
+        drop(buffer);
+        
+        // 30% < 50% threshold, so should NOT be zero-copy
+        assert!(!small_slice.can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.5 }));
+        
+        // But should be zero-copy with 25% threshold (30% >= 25%)
+        assert!(small_slice.can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.25 }));
+    }
+}
+
+#[test]
+fn test_into_polars_buffer_preserves_data_with_offset() {
+    use view_buffer::{SlicePolicy, ViewBuffer};
+
+    // Create a 1D buffer with known data - 1D slices remain contiguous
+    let data: Vec<u8> = (0..100).collect();
+    let buffer = ViewBuffer::from_vec(data);
+
+    // Slice from [25] to [50] - a contiguous 25-element region
+    let sliced = buffer.slice(&[25], &[50]);
+    assert_eq!(sliced.shape(), &[25]);
+
+    // Transfer with AlwaysZeroCopy - should work because 1D slice is contiguous
+    let (polars_buf, shape, _dtype) = sliced.into_polars_buffer_with_policy(SlicePolicy::AlwaysZeroCopy);
+
+    assert_eq!(shape, vec![25]);
+    assert_eq!(polars_buf.len(), 25);
+
+    // Verify data integrity - should start at 25 and go to 49
+    assert_eq!(polars_buf.as_slice()[0], 25);
+    assert_eq!(polars_buf.as_slice()[24], 49);
+}
+
+#[test]
+fn test_into_polars_buffer_with_non_contiguous_slice() {
+    use view_buffer::ViewBuffer;
+
+    // Create a 2D buffer and slice it - 2D slice is NOT contiguous
+    let data: Vec<u8> = (0..100).collect();
+    let buffer = ViewBuffer::from_vec(data).reshape(vec![10, 10]);
+
+    // Slice from [2,2] to [5,5] - a 3x3 region (NOT contiguous due to row strides)
+    let sliced = buffer.slice(&[2, 2], &[5, 5]);
+    assert_eq!(sliced.shape(), &[3, 3]);
+
+    // This should NOT be zero-copy eligible because it's not contiguous
+    assert!(!sliced.can_zero_copy_transfer());
+
+    // But into_polars_buffer should still work (via copy/materialization)
+    let (polars_buf, shape, _dtype) = sliced.into_polars_buffer();
+
+    assert_eq!(shape, vec![3, 3]);
+    assert_eq!(polars_buf.len(), 9);
+}
+
+#[test]
+fn test_polars_arrow_storage_zero_copy() {
+    use view_buffer::ViewBuffer;
+
+    // Create a ViewBuffer from a polars buffer
+    let data: Vec<u8> = (0..100).collect();
+    let polars_buffer = Buffer::from(data);
+
+    let view = ViewBuffer::from_polars_buffer(polars_buffer, 10, vec![20], DType::U8);
+
+    // PolarsArrow storage should always be zero-copy eligible (when contiguous)
+    assert!(view.can_zero_copy_transfer());
+
+    // Transfer back to polars buffer
+    let (result_buf, shape, dtype) = view.into_polars_buffer();
+    assert_eq!(result_buf.len(), 20);
+    assert_eq!(shape, vec![20]);
+    assert_eq!(dtype, DType::U8);
+
+    // Verify the data is correct (starts at offset 10)
+    assert_eq!(result_buf.as_slice()[0], 10);
+    assert_eq!(result_buf.as_slice()[19], 29);
+}
+
+#[test]
+fn test_zero_copy_with_reshape() {
+    use view_buffer::ViewBuffer;
+
+    // Reshape doesn't change offset, should still be zero-copy
+    let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+    let buffer = ViewBuffer::from_vec(data).reshape(vec![2, 3]);
+
+    assert!(buffer.can_zero_copy_transfer());
+
+    let (polars_buf, shape, dtype) = buffer.into_polars_buffer();
+    assert_eq!(polars_buf.len(), 6);
+    assert_eq!(shape, vec![2, 3]);
+    assert_eq!(dtype, DType::U8);
+}
+
+#[test]
+fn test_non_contiguous_buffer_copies() {
+    use view_buffer::ViewBuffer;
+
+    // Create a buffer and permute it to make it non-contiguous
+    let data: Vec<u8> = (0..12).collect();
+    let buffer = ViewBuffer::from_vec(data).reshape(vec![3, 4]);
+
+    // Permute dimensions - makes it non-contiguous
+    let permuted = buffer.permute(&[1, 0]);
+    assert_eq!(permuted.shape(), &[4, 3]);
+
+    // Non-contiguous should NOT be zero-copy eligible
+    assert!(!permuted.can_zero_copy_transfer());
+
+    // But into_polars_buffer should still work (via copy)
+    let (polars_buf, shape, dtype) = permuted.into_polars_buffer();
+    assert_eq!(polars_buf.len(), 12);
+    assert_eq!(shape, vec![4, 3]);
+    assert_eq!(dtype, DType::U8);
+}
+
+#[test]
+fn test_slice_policy_with_polars_arrow_storage() {
+    use view_buffer::{SlicePolicy, ViewBuffer};
+
+    // PolarsArrow storage should always use zero-copy regardless of policy
+    let data: Vec<u8> = (0..100).collect();
+    let polars_buffer = Buffer::from(data);
+
+    let view = ViewBuffer::from_polars_buffer(polars_buffer, 10, vec![20], DType::U8);
+
+    // All policies should report zero-copy for PolarsArrow storage
+    assert!(view.can_zero_copy_transfer_with_policy(SlicePolicy::AlwaysZeroCopy));
+    assert!(view.can_zero_copy_transfer_with_policy(SlicePolicy::AlwaysCopy));
+    assert!(view.can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.99 }));
+}
