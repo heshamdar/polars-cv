@@ -365,6 +365,9 @@ fn resize_strided(buf: ViewBuffer, target_width: u32, target_height: u32, filter
 ///
 /// Uses BT.601 coefficients: Y = 0.299*R + 0.587*G + 0.114*B
 /// Implemented with fixed-point math: Y = (77*R + 150*G + 29*B + 128) >> 8
+///
+/// This implementation uses direct pointer arithmetic which is faster than
+/// ndarray per-pixel indexing due to avoiding bounds checks.
 #[cfg(feature = "image_interop")]
 fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     let shape = buf.shape();
@@ -376,27 +379,31 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
         return buf;
     }
 
-    // Use ndarray for strided access (handles negative strides via invert_axis in 0.17+)
-    #[cfg(feature = "ndarray_interop")]
-    {
-        if let Ok(view) = buf.as_array_view::<u8>() {
-            let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
-            for y in 0..h {
-                for x in 0..w {
-                    let r = view[[y, x, 0]] as u32;
-                    let g = view[[y, x, 1]] as u32;
-                    let b = view[[y, x, 2]] as u32;
-                    // BT.601 fixed-point
-                    let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
-                    gray_data.push(gray);
-                }
-            }
-            return ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1]);
+    let strides = buf.strides_bytes();
+
+    // Fast path: contiguous RGB buffer with standard layout
+    // Strides should be [w*3, 3, 1] for contiguous HWC layout
+    if buf.layout.is_contiguous() && channels == 3 {
+        let data = unsafe {
+            std::slice::from_raw_parts(buf.as_ptr::<u8>(), h * w * 3)
+        };
+        let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
+
+        // Process 1 pixel at a time with direct slice access (no bounds check per channel)
+        for pixel in data.chunks_exact(3) {
+            let r = pixel[0] as u32;
+            let g = pixel[1] as u32;
+            let b = pixel[2] as u32;
+            // BT.601 fixed-point
+            let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
+            gray_data.push(gray);
         }
+
+        return ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1]);
     }
 
-    // Fallback: manual strided iteration (for when ndarray is not available)
-    let strides = buf.strides_bytes();
+    // Strided path: handles non-contiguous buffers (crop, flip, etc.)
+    // Uses pointer arithmetic which handles both positive and negative strides
     let (stride_h, stride_w, stride_c) = (
         strides[0],
         strides[1],

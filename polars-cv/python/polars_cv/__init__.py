@@ -85,6 +85,8 @@ NUMPY_OUTPUT_SCHEMA = pl.Struct({
     "data": pl.Binary,
     "dtype": pl.String,
     "shape": pl.List(pl.UInt64),
+    "strides": pl.List(pl.Int64),
+    "offset": pl.UInt64,
 })
 
 
@@ -96,20 +98,24 @@ def numpy_from_struct(
     """
     Convert polars-cv numpy/torch sink output struct to a numpy array.
 
-    The numpy/torch sink format is a Struct with three fields:
-    - data: Binary (raw array bytes)
+    The numpy/torch sink format is a Struct with five fields:
+    - data: Binary (raw array bytes, may be larger for strided views)
     - dtype: String (numpy dtype name like "uint8", "float32")
     - shape: List[UInt64] (array dimensions)
+    - strides: List[Int64] (byte strides per dimension)
+    - offset: UInt64 (byte offset into data buffer)
 
-    This format enables zero-copy data transfer from Rust to Python.
+    This format enables zero-copy data transfer from Rust to Python,
+    including for non-contiguous strided buffers (e.g., after crop/flip).
 
     Args:
         row: A struct value from the output column. Can be:
-            - A dict with 'data', 'dtype', 'shape' keys (from df["col"][0])
+            - A dict with 'data', 'dtype', 'shape', 'strides', 'offset' keys
             - A Series representing a single struct row
         copy: Whether to copy the data (default True). If False, the returned
             array may share memory with the underlying buffer, which can be
             more efficient but requires care with lifetime management.
+            When False with strided data, creates a strided numpy view.
 
     Returns:
         A numpy array with the correct dtype and shape.
@@ -131,9 +137,8 @@ def numpy_from_struct(
         >>> array = numpy_from_struct(row)
         >>> print(array.shape)  # (100, 100, 3)
         >>>
-        >>> # Or access as dict
-        >>> row_dict = result["processed"].struct.unnest().row(0, named=True)
-        >>> array = numpy_from_struct(row_dict)
+        >>> # Zero-copy strided view (for crop/flip pipelines)
+        >>> array_view = numpy_from_struct(row, copy=False)
         ```
     """
     import numpy as np
@@ -143,6 +148,8 @@ def numpy_from_struct(
         data = row.get("data")
         dtype_str = row.get("dtype")
         shape_list = row.get("shape")
+        strides_list = row.get("strides")
+        offset = row.get("offset", 0)
     elif isinstance(row, pl.Series):
         # Single-row Series from struct indexing
         if row.dtype == pl.Struct:
@@ -150,6 +157,8 @@ def numpy_from_struct(
             data = struct_data["data"][0]
             dtype_str = struct_data["dtype"][0]
             shape_list = struct_data["shape"][0]
+            strides_list = struct_data["strides"][0] if "strides" in struct_data.columns else None
+            offset = struct_data["offset"][0] if "offset" in struct_data.columns else 0
         else:
             msg = f"Expected Struct Series, got {row.dtype}"
             raise ValueError(msg)
@@ -159,11 +168,13 @@ def numpy_from_struct(
             data = row["data"]
             dtype_str = row["dtype"]
             shape_list = row["shape"]
+            strides_list = row.get("strides") if hasattr(row, "get") else None
+            offset = row.get("offset", 0) if hasattr(row, "get") else 0
         except (TypeError, KeyError) as e:
             msg = f"Cannot extract struct fields from {type(row)}: {e}"
             raise ValueError(msg) from e
 
-    # Validate fields
+    # Validate required fields
     if data is None:
         msg = "Struct field 'data' is null"
         raise ValueError(msg)
@@ -180,15 +191,44 @@ def numpy_from_struct(
     else:
         shape = tuple(int(x) for x in shape_list)
 
-    # Create array
+    # Convert strides to tuple (if present)
+    strides: tuple[int, ...] | None = None
+    if strides_list is not None:
+        if isinstance(strides_list, pl.Series):
+            strides = tuple(int(x) for x in strides_list.to_list())
+        else:
+            strides = tuple(int(x) for x in strides_list)
+
+    # Convert offset
+    if offset is None:
+        offset = 0
+    else:
+        offset = int(offset)
+
+    # Create numpy dtype
     dtype = np.dtype(dtype_str)
 
     if copy:
-        arr = np.frombuffer(bytes(data), dtype=dtype).copy()
+        # Always copy: use frombuffer then reshape
+        arr = np.frombuffer(bytes(data), dtype=dtype, offset=offset).copy()
+        return arr.reshape(shape)
     else:
-        arr = np.frombuffer(bytes(data), dtype=dtype)
-
-    return arr.reshape(shape)
+        # Zero-copy path: create strided view if strides are available
+        if strides is not None:
+            # Create strided numpy array view directly
+            # This is the true zero-copy path for non-contiguous data
+            arr = np.ndarray(
+                shape=shape,
+                dtype=dtype,
+                buffer=bytes(data),
+                offset=offset,
+                strides=strides,
+            )
+            return arr
+        else:
+            # Legacy path: no strides, assume contiguous
+            arr = np.frombuffer(bytes(data), dtype=dtype, offset=offset)
+            return arr.reshape(shape)
 
 
 def mask_iou(
