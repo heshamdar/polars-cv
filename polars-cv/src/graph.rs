@@ -206,8 +206,8 @@ fn decode_blob_zero_copy(
     let rank = slice[7] as usize;
     let data_offset = u64::from_le_bytes(slice[8..16].try_into().unwrap()) as usize;
 
-    let dtype = u8_to_dtype(dtype_code)
-        .ok_or_else(|| format!("Unknown dtype code: {dtype_code}"))?;
+    let dtype =
+        u8_to_dtype(dtype_code).ok_or_else(|| format!("Unknown dtype code: {dtype_code}"))?;
 
     // Read shape
     let shape_start = HEADER_SIZE;
@@ -327,10 +327,9 @@ fn decode_list_or_array_source(
     if require_contiguous {
         return Err(format!(
             "Source 'require_contiguous=true' requires rectangular data with zero-copy access, \
-            but row {} has data that cannot be zero-copied (possibly jagged nested lists or \
+            but row {row_idx} has data that cannot be zero-copied (possibly jagged nested lists or \
             variable-size List type). Use require_contiguous=false to allow copy-based flattening, \
-            or use Polars Array type (fixed-size) instead of List.",
-            row_idx
+            or use Polars Array type (fixed-size) instead of List."
         ));
     }
 
@@ -348,36 +347,33 @@ fn try_decode_array_zero_copy(
 ) -> Result<Option<ViewBuffer>, String> {
     // Only attempt zero-copy for Array types (FixedSizeList in Arrow)
     // List types have variable sizes and may be jagged
-    match series.dtype() {
-        DataType::Array(inner_dtype, _width) => {
-            // Extract shape from the type definition
-            let shape = extract_fixed_shape_from_dtype(series.dtype());
-            if shape.is_empty() {
-                return Ok(None); // Not a fixed-size nested type
-            }
-
-            // Check if innermost type is a primitive (not nested)
-            if !is_primitive_dtype(get_innermost_dtype(inner_dtype)) {
-                return Ok(None);
-            }
-
-            // Get the ArrayChunked
-            let arr_ca = series
-                .array()
-                .map_err(|e| format!("Array access error: {e}"))?;
-
-            // Check for null using the helper
-            if is_row_null(&arr_ca.clone().into_series(), row_idx) {
-                return Ok(None);
-            }
-
-            // Try to get zero-copy buffer access
-            if let Some((buffer, offset, len)) = get_array_row_buffer(&arr_ca, row_idx, dtype) {
-                let vb = ViewBuffer::from_polars_buffer_slice(buffer, offset, len, shape, dtype);
-                return Ok(Some(vb));
-            }
+    if let DataType::Array(inner_dtype, _width) = series.dtype() {
+        // Extract shape from the type definition
+        let shape = extract_fixed_shape_from_dtype(series.dtype());
+        if shape.is_empty() {
+            return Ok(None); // Not a fixed-size nested type
         }
-        _ => {}
+
+        // Check if innermost type is a primitive (not nested)
+        if !is_primitive_dtype(get_innermost_dtype(inner_dtype)) {
+            return Ok(None);
+        }
+
+        // Get the ArrayChunked
+        let arr_ca = series
+            .array()
+            .map_err(|e| format!("Array access error: {e}"))?;
+
+        // Check for null using the helper
+        if is_row_null(&arr_ca.clone().into_series(), row_idx) {
+            return Ok(None);
+        }
+
+        // Try to get zero-copy buffer access
+        if let Some((buffer, offset, len)) = get_array_row_buffer(arr_ca, row_idx, dtype) {
+            let vb = ViewBuffer::from_polars_buffer_slice(buffer, offset, len, shape, dtype);
+            return Ok(Some(vb));
+        }
     }
 
     Ok(None)
@@ -390,14 +386,9 @@ fn extract_fixed_shape_from_dtype(dt: &DataType) -> Vec<usize> {
     let mut shape = Vec::new();
     let mut current = dt;
 
-    loop {
-        match current {
-            DataType::Array(inner, width) => {
-                shape.push(*width);
-                current = inner.as_ref();
-            }
-            _ => break,
-        }
+    while let DataType::Array(inner, width) = current {
+        shape.push(*width);
+        current = inner.as_ref();
     }
 
     shape
@@ -507,8 +498,12 @@ fn get_primitive_buffer(
                 // PrimitiveArray values is a Buffer<T>, we need to reinterpret as Buffer<u8>
                 // This is safe because we're just changing the view, not the data
                 let bytes = values.as_slice();
-                let u8_slice =
-                    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, bytes.len() * std::mem::size_of::<$type>()) };
+                let u8_slice = unsafe {
+                    std::slice::from_raw_parts(
+                        bytes.as_ptr() as *const u8,
+                        bytes.len() * std::mem::size_of::<$type>(),
+                    )
+                };
                 return Some(polars_arrow::buffer::Buffer::from(u8_slice.to_vec()));
             }
         };
@@ -990,7 +985,7 @@ fn build_series_from_spec(
 ///
 /// If `invert` is true, the behavior is reversed:
 /// - 0 values keep the original pixel
-
+///
 /// Pad a buffer with the specified amounts and mode.
 ///
 /// Supports constant, edge, reflect, and symmetric padding modes.
@@ -1116,13 +1111,7 @@ fn pad_constant(
 ///
 /// COST: Full data copy - O(H*W*C) - allocates new buffer.
 /// Uses row-wise memcpy for the interior content and optimized edge replication.
-fn pad_edge(
-    buffer: &ViewBuffer,
-    top: u32,
-    bottom: u32,
-    left: u32,
-    right: u32,
-) -> ViewBuffer {
+fn pad_edge(buffer: &ViewBuffer, top: u32, bottom: u32, left: u32, right: u32) -> ViewBuffer {
     use view_buffer::DType;
 
     let shape = buffer.shape();
@@ -1147,12 +1136,13 @@ fn pad_edge(
             let input = buffer.as_slice::<u8>();
 
             // Helper to replicate a single pixel across a range
-            let replicate_pixel = |output: &mut [u8], dst_start: usize, count: usize, src_pixel: &[u8]| {
-                for i in 0..count {
-                    let dst_idx = dst_start + i * channels;
-                    output[dst_idx..dst_idx + channels].copy_from_slice(src_pixel);
-                }
-            };
+            let replicate_pixel =
+                |output: &mut [u8], dst_start: usize, count: usize, src_pixel: &[u8]| {
+                    for i in 0..count {
+                        let dst_idx = dst_start + i * channels;
+                        output[dst_idx..dst_idx + channels].copy_from_slice(src_pixel);
+                    }
+                };
 
             // Process each output row
             for dst_y in 0..output_h {
@@ -1179,7 +1169,8 @@ fn pad_edge(
                 let src_end = src_row_start + input_row_stride;
                 let dst_interior_start = dst_row_start + left_usize * channels;
                 let dst_interior_end = dst_interior_start + input_row_stride;
-                output[dst_interior_start..dst_interior_end].copy_from_slice(&input[src_row_start..src_end]);
+                output[dst_interior_start..dst_interior_end]
+                    .copy_from_slice(&input[src_row_start..src_end]);
 
                 // 3. Right padding: replicate last pixel of source row
                 let right_count = output_w - left_usize - input_w;
@@ -2724,7 +2715,9 @@ impl UnifiedGraph {
                                             node.source.dtype.as_deref(),
                                         ) {
                                             Ok(buf) => Some(NodeOutput::from_buffer(buf)),
-                                            Err(e) => return Err(format!("Zero-copy decode error: {e}")),
+                                            Err(e) => {
+                                                return Err(format!("Zero-copy decode error: {e}"))
+                                            }
                                         }
                                     } else {
                                         None // Null row
@@ -2734,7 +2727,8 @@ impl UnifiedGraph {
                                     match input_ca.get(row_idx) {
                                         Some(bytes) => {
                                             // Create temp spec for decoding
-                                            let first_output = self.outputs.values().next().unwrap();
+                                            let first_output =
+                                                self.outputs.values().next().unwrap();
                                             let temp_spec = PipelineSpec {
                                                 source: node.source.clone(),
                                                 shape_hints: None,
@@ -3083,7 +3077,13 @@ impl UnifiedGraph {
                                     // COST: Full data copy - O(H*W*C) - pad_buffer allocates new buffer
                                     // TODO: Add ImageOpKind::Pad to view-buffer for batching support
                                     let result = pad_buffer(
-                                        current_buf, *top, *bottom, *left, *right, *value, *mode,
+                                        current_buf,
+                                        *top,
+                                        *bottom,
+                                        *left,
+                                        *right,
+                                        *value,
+                                        *mode,
                                     );
                                     current_output = NodeOutput::from_buffer(result);
                                 }
@@ -3127,7 +3127,13 @@ impl UnifiedGraph {
 
                                     // COST: Full data copy - O(H*W*C) - pad_buffer allocates new buffer
                                     let result = pad_buffer(
-                                        current_buf, top, bottom, left, right, *value, PadMode::Constant,
+                                        current_buf,
+                                        top,
+                                        bottom,
+                                        left,
+                                        right,
+                                        *value,
+                                        PadMode::Constant,
                                     );
                                     current_output = NodeOutput::from_buffer(result);
                                 }
@@ -3188,7 +3194,13 @@ impl UnifiedGraph {
 
                                     // COST: Full data copy - O(H*W*C) - pad_buffer allocates new buffer
                                     let result = pad_buffer(
-                                        resized, top, bottom, left, right, *value, PadMode::Constant,
+                                        resized,
+                                        top,
+                                        bottom,
+                                        left,
+                                        right,
+                                        *value,
+                                        PadMode::Constant,
                                     );
                                     current_output = NodeOutput::from_buffer(result);
                                 }

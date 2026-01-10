@@ -187,9 +187,7 @@ impl ViewExpr {
                      Use graph-level execution to compute dimensions."
                 )
             }
-            ViewDto::Pad { .. }
-            | ViewDto::PadToSize { .. }
-            | ViewDto::Letterbox { .. } => {
+            ViewDto::Pad { .. } | ViewDto::PadToSize { .. } | ViewDto::Letterbox { .. } => {
                 // Padding operations are handled by the graph executor
                 // to support constant padding and dimension computation
                 panic!(

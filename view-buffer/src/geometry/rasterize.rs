@@ -93,7 +93,9 @@ fn scanline_fill(polygon: &[Point], width: usize, height: usize, data: &mut [u8]
             }
 
             // Clamp x coordinates to valid range [0, width)
-            let x_start = (intersections[i].ceil() as i32).max(0).min((width - 1) as i32) as usize;
+            let x_start = (intersections[i].ceil() as i32)
+                .max(0)
+                .min((width - 1) as i32) as usize;
             let x_end = ((intersections[i + 1].floor() as i32) + 1).min(width as i32) as usize;
 
             // Ensure we don't exceed bounds

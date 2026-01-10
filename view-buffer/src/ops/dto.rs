@@ -144,9 +144,9 @@ impl ViewDto {
             | ViewDto::ResizeMax { .. }
             | ViewDto::ResizeMin { .. } => Domain::Buffer,
             // Padding operations work on buffers
-            ViewDto::Pad { .. }
-            | ViewDto::PadToSize { .. }
-            | ViewDto::Letterbox { .. } => Domain::Buffer,
+            ViewDto::Pad { .. } | ViewDto::PadToSize { .. } | ViewDto::Letterbox { .. } => {
+                Domain::Buffer
+            }
             // Materialize accepts any domain
             ViewDto::Materialize => Domain::Any,
         }
@@ -193,9 +193,9 @@ impl ViewDto {
             | ViewDto::ResizeMax { .. }
             | ViewDto::ResizeMin { .. } => Domain::Buffer,
             // Padding operations produce buffers
-            ViewDto::Pad { .. }
-            | ViewDto::PadToSize { .. }
-            | ViewDto::Letterbox { .. } => Domain::Buffer,
+            ViewDto::Pad { .. } | ViewDto::PadToSize { .. } | ViewDto::Letterbox { .. } => {
+                Domain::Buffer
+            }
             // Materialize preserves domain
             ViewDto::Materialize => Domain::Any,
         }

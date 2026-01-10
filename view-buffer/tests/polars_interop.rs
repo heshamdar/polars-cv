@@ -134,11 +134,8 @@ fn test_dtype_from_polars_nested_list() {
         ArrowDataType::Float32,
         false,
     )));
-    let list_list_f32 = ArrowDataType::List(Box::new(Field::new(
-        "item".into(),
-        list_f32.clone(),
-        false,
-    )));
+    let list_list_f32 =
+        ArrowDataType::List(Box::new(Field::new("item".into(), list_f32.clone(), false)));
     assert_eq!(dtype_from_polars(&list_list_f32), Some(DType::F32));
 }
 
@@ -181,11 +178,8 @@ fn test_nesting_depth_lists() {
     assert_eq!(nesting_depth(&list_u8), 1);
 
     // List[List[UInt8]] -> depth 2
-    let list_list_u8 = ArrowDataType::List(Box::new(Field::new(
-        "item".into(),
-        list_u8.clone(),
-        false,
-    )));
+    let list_list_u8 =
+        ArrowDataType::List(Box::new(Field::new("item".into(), list_u8.clone(), false)));
     assert_eq!(nesting_depth(&list_list_u8), 2);
 
     // List[List[List[UInt8]]] -> depth 3
@@ -414,4 +408,3 @@ fn test_view_buffer_storage_id_consistency() {
     // Same offset should give same storage ID (for zero-copy verification)
     assert_eq!(view1.storage_id(), view3.storage_id());
 }
-
