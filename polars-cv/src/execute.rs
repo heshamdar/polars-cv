@@ -616,6 +616,114 @@ pub fn resolve_op(
                 },
             }))
         }
+        "resize_scale" => {
+            let scale_x =
+                get_param(&op_spec.params, "scale_x")?.resolve_f32(row_idx, expr_columns)?;
+            let scale_y =
+                get_param(&op_spec.params, "scale_y")?.resolve_f32(row_idx, expr_columns)?;
+            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
+            let filter = parse_filter(&filter_str)?;
+
+            Ok(ViewDto::ResizeScale {
+                scale_x,
+                scale_y,
+                filter,
+            })
+        }
+        "resize_to_height" => {
+            let height =
+                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, expr_columns)?;
+            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
+            let filter = parse_filter(&filter_str)?;
+
+            Ok(ViewDto::ResizeToHeight { height, filter })
+        }
+        "resize_to_width" => {
+            let width =
+                get_param(&op_spec.params, "width")?.resolve_u32(row_idx, expr_columns)?;
+            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
+            let filter = parse_filter(&filter_str)?;
+
+            Ok(ViewDto::ResizeToWidth { width, filter })
+        }
+        "resize_max" => {
+            let max_size =
+                get_param(&op_spec.params, "max_size")?.resolve_u32(row_idx, expr_columns)?;
+            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
+            let filter = parse_filter(&filter_str)?;
+
+            Ok(ViewDto::ResizeMax { max_size, filter })
+        }
+        "resize_min" => {
+            let min_size =
+                get_param(&op_spec.params, "min_size")?.resolve_u32(row_idx, expr_columns)?;
+            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
+            let filter = parse_filter(&filter_str)?;
+
+            Ok(ViewDto::ResizeMin { min_size, filter })
+        }
+
+        // Padding operations
+        "pad" => {
+            use view_buffer::ops::dto::PadMode;
+
+            let top = get_param(&op_spec.params, "top")?.resolve_u32(row_idx, expr_columns)?;
+            let bottom = get_param(&op_spec.params, "bottom")?.resolve_u32(row_idx, expr_columns)?;
+            let left = get_param(&op_spec.params, "left")?.resolve_u32(row_idx, expr_columns)?;
+            let right = get_param(&op_spec.params, "right")?.resolve_u32(row_idx, expr_columns)?;
+            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, expr_columns)?;
+            let mode_str = get_param(&op_spec.params, "mode")?.resolve_string()?;
+            let mode = match mode_str.as_str() {
+                "constant" => PadMode::Constant,
+                "edge" => PadMode::Edge,
+                "reflect" => PadMode::Reflect,
+                "symmetric" => PadMode::Symmetric,
+                other => return Err(polars_err!(ComputeError: "Unknown pad mode: {}", other)),
+            };
+
+            Ok(ViewDto::Pad {
+                top,
+                bottom,
+                left,
+                right,
+                value,
+                mode,
+            })
+        }
+        "pad_to_size" => {
+            use view_buffer::ops::dto::PadPosition;
+
+            let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, expr_columns)?;
+            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, expr_columns)?;
+            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, expr_columns)?;
+            let position_str = get_param(&op_spec.params, "position")?.resolve_string()?;
+            let position = match position_str.as_str() {
+                "center" => PadPosition::Center,
+                "top-left" => PadPosition::TopLeft,
+                "bottom-right" => PadPosition::BottomRight,
+                other => {
+                    return Err(polars_err!(ComputeError: "Unknown pad position: {}", other))
+                }
+            };
+
+            Ok(ViewDto::PadToSize {
+                height,
+                width,
+                position,
+                value,
+            })
+        }
+        "letterbox" => {
+            let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, expr_columns)?;
+            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, expr_columns)?;
+            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, expr_columns)?;
+
+            Ok(ViewDto::Letterbox {
+                height,
+                width,
+                value,
+            })
+        }
         "grayscale" => Ok(ViewDto::Image(ImageOp {
             kind: ImageOpKind::Grayscale,
         })),
@@ -904,6 +1012,45 @@ pub fn resolve_op(
             use view_buffer::ops::ReductionOp;
             // Count set bits across entire buffer (for Hamming distance)
             Ok(ViewDto::Reduction(ReductionOp::PopCount))
+        }
+
+        // Histogram operation
+        "histogram" => {
+            use view_buffer::ops::histogram::{HistogramOp, HistogramOutput};
+
+            let bins =
+                get_param(&op_spec.params, "bins")?.resolve_usize(row_idx, expr_columns)?;
+
+            // Parse output mode
+            let output_str =
+                get_param(&op_spec.params, "output")?.resolve_string()?;
+            let output = match output_str.as_str() {
+                "counts" => HistogramOutput::Counts,
+                "normalized" => HistogramOutput::Normalized,
+                "quantized" => HistogramOutput::Quantized,
+                "edges" => HistogramOutput::Edges,
+                other => {
+                    return Err(polars_err!(ComputeError: "Unknown histogram output mode: {}", other))
+                }
+            };
+
+            // Parse optional range
+            let range = if op_spec.params.contains_key("range_min") {
+                let range_min =
+                    get_param(&op_spec.params, "range_min")?.resolve_f64(row_idx, expr_columns)?;
+                let range_max =
+                    get_param(&op_spec.params, "range_max")?.resolve_f64(row_idx, expr_columns)?;
+                Some((range_min, range_max))
+            } else {
+                None
+            };
+
+            let mut op = HistogramOp::new(bins).with_output(output);
+            if let Some((min, max)) = range {
+                op = op.with_range(min, max);
+            }
+
+            Ok(ViewDto::Histogram(op))
         }
 
         // Mask operation

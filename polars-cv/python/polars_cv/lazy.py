@@ -517,6 +517,52 @@ class LazyPipelineExpr:
         """
         return self._binary_op("bitwise_xor", other)
 
+    def maximum(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
+        """
+        Element-wise maximum of two arrays.
+
+        Returns the maximum value at each position between this and another array.
+        Useful for operations like image compositing, clamping, and non-linear
+        image processing.
+
+        Args:
+            other: LazyPipelineExpr to compare with.
+
+        Returns:
+            New LazyPipelineExpr with the maximum operation composed.
+
+        Example:
+            Compute element-wise maximum of two images:
+
+            >>> img1 = pl.col("image1").cv.pipe(pipe1)
+            >>> img2 = pl.col("image2").cv.pipe(pipe2)
+            >>> result = img1.maximum(img2).sink("numpy")
+        """
+        return self._binary_op("maximum", other)
+
+    def minimum(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
+        """
+        Element-wise minimum of two arrays.
+
+        Returns the minimum value at each position between this and another array.
+        Useful for operations like image compositing, clamping, and non-linear
+        image processing.
+
+        Args:
+            other: LazyPipelineExpr to compare with.
+
+        Returns:
+            New LazyPipelineExpr with the minimum operation composed.
+
+        Example:
+            Compute element-wise minimum of two images:
+
+            >>> img1 = pl.col("image1").cv.pipe(pipe1)
+            >>> img2 = pl.col("image2").cv.pipe(pipe2)
+            >>> result = img1.minimum(img2).sink("numpy")
+        """
+        return self._binary_op("minimum", other)
+
     def apply_contour_mask(
         self,
         contour: "LazyPipelineExpr",

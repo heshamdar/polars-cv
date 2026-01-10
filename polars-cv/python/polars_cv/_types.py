@@ -126,6 +126,55 @@ class HashAlgorithm(str, Enum):
     BLOCKHASH = "blockhash"
 
 
+class HistogramOutput(str, Enum):
+    """
+    Histogram output mode selection.
+
+    Controls what the histogram operation returns:
+    - COUNTS: Bin counts as a 1D array (default)
+    - NORMALIZED: Histogram normalized to sum to 1.0
+    - QUANTIZED: Input array with pixels replaced by bin indices
+    - EDGES: Bin edge values
+    """
+
+    COUNTS = "counts"
+    NORMALIZED = "normalized"
+    QUANTIZED = "quantized"
+    EDGES = "edges"
+
+
+class PadMode(str, Enum):
+    """
+    Padding mode selection.
+
+    Controls how padding values are determined:
+    - CONSTANT: Fill with a constant value (default)
+    - EDGE: Replicate edge values
+    - REFLECT: Reflect values at edge (not including edge)
+    - SYMMETRIC: Reflect values at edge (including edge)
+    """
+
+    CONSTANT = "constant"
+    EDGE = "edge"
+    REFLECT = "reflect"
+    SYMMETRIC = "symmetric"
+
+
+class PadPosition(str, Enum):
+    """
+    Position for pad_to_size.
+
+    Controls where the original content is placed:
+    - CENTER: Center content in padded area (default)
+    - TOP_LEFT: Place content at top-left corner
+    - BOTTOM_RIGHT: Place content at bottom-right corner
+    """
+
+    CENTER = "center"
+    TOP_LEFT = "top-left"
+    BOTTOM_RIGHT = "bottom-right"
+
+
 class Domain(str, Enum):
     """
     Data domain for typed pipeline nodes.
@@ -185,6 +234,9 @@ OPERATION_OUTPUT_DTYPE: dict[str, str] = {
     "contour_perimeter": "f64",
     "contour_centroid": "f64",
     "contour_bounding_box": "f64",
+    # Histogram - output dtype depends on mode
+    # counts -> u64, normalized -> f64, quantized -> u32, edges -> f64
+    "histogram": "u64",  # Default for counts mode
 }
 
 

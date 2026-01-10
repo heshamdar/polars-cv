@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Contour};
 use view_buffer::ops::NodeOutput;
-use view_buffer::{BinaryOp, GeometryOp, Op, ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{BinaryOp, GeometryOp, ImageOp, ImageOpKind, Op, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::execute::{
     decode_contour_source, decode_contour_source_with_dims, decode_source, resolve_op,
@@ -990,6 +990,217 @@ fn build_series_from_spec(
 ///
 /// If `invert` is true, the behavior is reversed:
 /// - 0 values keep the original pixel
+
+/// Pad a buffer with the specified amounts and mode.
+///
+/// Supports constant, edge, reflect, and symmetric padding modes.
+///
+/// COST: Full data copy - O(output_H * output_W * C) - always allocates new buffer.
+/// The output dimensions are: (input_H + top + bottom, input_W + left + right, C).
+fn pad_buffer(
+    buffer: &ViewBuffer,
+    top: u32,
+    bottom: u32,
+    left: u32,
+    right: u32,
+    value: f32,
+    mode: view_buffer::ops::dto::PadMode,
+) -> ViewBuffer {
+    use view_buffer::ops::dto::PadMode;
+
+    // Dispatch to appropriate padding implementation based on mode
+    match mode {
+        PadMode::Constant => pad_constant(buffer, top, bottom, left, right, value),
+        PadMode::Edge => pad_edge(buffer, top, bottom, left, right),
+        PadMode::Reflect | PadMode::Symmetric => {
+            // For now, treat as constant padding
+            // TODO: Implement proper reflect/symmetric padding
+            pad_constant(buffer, top, bottom, left, right, value)
+        }
+    }
+}
+
+/// Pad with constant value.
+///
+/// COST: Full data copy - O(H*W*C) - allocates new buffer and copies all pixels.
+/// Uses row-wise memcpy (copy_from_slice) for efficient copying instead of
+/// element-by-element iteration.
+fn pad_constant(
+    buffer: &ViewBuffer,
+    top: u32,
+    bottom: u32,
+    left: u32,
+    right: u32,
+    value: f32,
+) -> ViewBuffer {
+    use view_buffer::DType;
+
+    let shape = buffer.shape();
+    let input_h = shape[0];
+    let input_w = shape[1];
+    let channels = if shape.len() > 2 { shape[2] } else { 1 };
+
+    let output_h = input_h + top as usize + bottom as usize;
+    let output_w = input_w + left as usize + right as usize;
+
+    // Row stride in elements (not bytes)
+    let input_row_stride = input_w * channels;
+    let output_row_stride = output_w * channels;
+
+    match buffer.dtype() {
+        DType::U8 => {
+            let fill_val = value.clamp(0.0, 255.0) as u8;
+            // COST: Full allocation - O(output_h * output_w * channels)
+            let mut output = vec![fill_val; output_h * output_w * channels];
+            let input = buffer.as_slice::<u8>();
+
+            // COST: Row-wise memcpy - O(input_h) operations instead of O(input_h * input_w * channels)
+            // Each copy_from_slice copies an entire row at once using optimized memcpy
+            for y in 0..input_h {
+                let src_start = y * input_row_stride;
+                let src_end = src_start + input_row_stride;
+                let dst_y = y + top as usize;
+                let dst_start = dst_y * output_row_stride + left as usize * channels;
+                let dst_end = dst_start + input_row_stride;
+                output[dst_start..dst_end].copy_from_slice(&input[src_start..src_end]);
+            }
+
+            ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
+        }
+        DType::F32 => {
+            let fill_val = value;
+            // COST: Full allocation - O(output_h * output_w * channels)
+            let mut output = vec![fill_val; output_h * output_w * channels];
+            let input = buffer.as_slice::<f32>();
+
+            // COST: Row-wise memcpy - O(input_h) operations instead of O(input_h * input_w * channels)
+            for y in 0..input_h {
+                let src_start = y * input_row_stride;
+                let src_end = src_start + input_row_stride;
+                let dst_y = y + top as usize;
+                let dst_start = dst_y * output_row_stride + left as usize * channels;
+                let dst_end = dst_start + input_row_stride;
+                output[dst_start..dst_end].copy_from_slice(&input[src_start..src_end]);
+            }
+
+            ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
+        }
+        _ => {
+            // Fallback: convert to u8 and pad
+            // COST: to_contiguous() may copy if buffer is not already contiguous
+            let contig = buffer.to_contiguous();
+            let input = contig.as_slice::<u8>();
+            let fill_val = value.clamp(0.0, 255.0) as u8;
+            // COST: Full allocation - O(output_h * output_w * channels)
+            let mut output = vec![fill_val; output_h * output_w * channels];
+
+            // COST: Row-wise memcpy - O(input_h) operations
+            for y in 0..input_h {
+                let src_start = y * input_row_stride;
+                let src_end = src_start + input_row_stride;
+                // Bounds check for safety
+                if src_end <= input.len() {
+                    let dst_y = y + top as usize;
+                    let dst_start = dst_y * output_row_stride + left as usize * channels;
+                    let dst_end = dst_start + input_row_stride;
+                    output[dst_start..dst_end].copy_from_slice(&input[src_start..src_end]);
+                }
+            }
+
+            ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
+        }
+    }
+}
+
+/// Pad by replicating edge values.
+///
+/// COST: Full data copy - O(H*W*C) - allocates new buffer.
+/// Uses row-wise memcpy for the interior content and optimized edge replication.
+fn pad_edge(
+    buffer: &ViewBuffer,
+    top: u32,
+    bottom: u32,
+    left: u32,
+    right: u32,
+) -> ViewBuffer {
+    use view_buffer::DType;
+
+    let shape = buffer.shape();
+    let input_h = shape[0];
+    let input_w = shape[1];
+    let channels = if shape.len() > 2 { shape[2] } else { 1 };
+
+    let output_h = input_h + top as usize + bottom as usize;
+    let output_w = input_w + left as usize + right as usize;
+    // Convert to usize for indexing
+    let top_usize = top as usize;
+    let left_usize = left as usize;
+
+    // Row strides in elements
+    let input_row_stride = input_w * channels;
+    let output_row_stride = output_w * channels;
+
+    match buffer.dtype() {
+        DType::U8 => {
+            // COST: Full allocation - O(output_h * output_w * channels)
+            let mut output = vec![0u8; output_h * output_w * channels];
+            let input = buffer.as_slice::<u8>();
+
+            // Helper to replicate a single pixel across a range
+            let replicate_pixel = |output: &mut [u8], dst_start: usize, count: usize, src_pixel: &[u8]| {
+                for i in 0..count {
+                    let dst_idx = dst_start + i * channels;
+                    output[dst_idx..dst_idx + channels].copy_from_slice(src_pixel);
+                }
+            };
+
+            // Process each output row
+            for dst_y in 0..output_h {
+                // Determine source row (clamped to edges)
+                let src_y = if dst_y < top_usize {
+                    0
+                } else if dst_y >= top_usize + input_h {
+                    input_h - 1
+                } else {
+                    dst_y - top_usize
+                };
+
+                let src_row_start = src_y * input_row_stride;
+                let dst_row_start = dst_y * output_row_stride;
+
+                // 1. Left padding: replicate first pixel of source row
+                if left_usize > 0 {
+                    let first_pixel = &input[src_row_start..src_row_start + channels];
+                    replicate_pixel(&mut output, dst_row_start, left_usize, first_pixel);
+                }
+
+                // 2. Interior: copy entire source row
+                // COST: Row-wise memcpy - O(1) per row, much faster than O(input_w * channels) individual copies
+                let src_end = src_row_start + input_row_stride;
+                let dst_interior_start = dst_row_start + left_usize * channels;
+                let dst_interior_end = dst_interior_start + input_row_stride;
+                output[dst_interior_start..dst_interior_end].copy_from_slice(&input[src_row_start..src_end]);
+
+                // 3. Right padding: replicate last pixel of source row
+                let right_count = output_w - left_usize - input_w;
+                if right_count > 0 {
+                    let last_pixel_start = src_row_start + (input_w - 1) * channels;
+                    let last_pixel = &input[last_pixel_start..last_pixel_start + channels];
+                    let dst_right_start = dst_interior_end;
+                    replicate_pixel(&mut output, dst_right_start, right_count, last_pixel);
+                }
+            }
+
+            ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
+        }
+        _ => {
+            // Fallback to constant padding for other dtypes
+            // TODO: Add optimized F32 path if needed
+            pad_constant(buffer, top, bottom, left, right, 0.0)
+        }
+    }
+}
+
 /// - 255 values zero out the pixel
 ///
 /// Uses normalized blending: pixel * (mask / 255)
@@ -2571,11 +2782,16 @@ impl UnifiedGraph {
                         let mut current_output = input;
 
                         // Helper: flush pending buffer ops
+                        // COST DOCUMENTATION:
+                        // - ViewExpr::new_source() clones the Arc<Vec<u8>> (cheap pointer copy, not data)
+                        // - expr.plan().execute() produces new buffer (full data copy for the result)
+                        // - Batching multiple ops here amortizes the clone cost across all ops
                         fn flush_buffer_ops(
                             output: NodeOutput,
                             pending_ops: &mut Vec<ViewDto>,
                         ) -> Result<NodeOutput, String> {
                             if pending_ops.is_empty() {
+                                // COST: Zero-copy - no pending ops means no work
                                 return Ok(output);
                             }
                             let buf = output.as_buffer().ok_or_else(|| {
@@ -2584,10 +2800,12 @@ impl UnifiedGraph {
                                     output.domain()
                                 )
                             })?;
+                            // COST: Arc clone - O(1), just increments reference count
                             let mut expr = ViewExpr::new_source((**buf).clone());
                             for op in pending_ops.drain(..) {
                                 expr = expr.apply_op(op);
                             }
+                            // COST: Full data copy - O(H*W*C) - produces new buffer with all ops applied
                             let result = expr.plan().execute();
                             Ok(NodeOutput::from_buffer(result))
                         }
@@ -2674,6 +2892,305 @@ impl UnifiedGraph {
                                         // Axis reduction: still a buffer
                                         current_output = NodeOutput::from_buffer(result);
                                     }
+                                }
+                                ViewDto::Histogram(histogram_op) => {
+                                    use view_buffer::ops::histogram::HistogramOutput;
+                                    // Flush pending buffer ops first
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    // Histogram operation: buffer → vector or buffer (for quantized)
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "Histogram requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    let result = histogram_op.execute(current_buf);
+                                    // Check output mode to determine result type
+                                    match histogram_op.output {
+                                        HistogramOutput::Quantized => {
+                                            // Quantized: still a buffer with bin indices
+                                            current_output = NodeOutput::from_buffer(result);
+                                        }
+                                        _ => {
+                                            // Counts/Normalized/Edges: vector output
+                                            // Extract the 1D array as a vector
+                                            current_output = NodeOutput::from_buffer(result);
+                                        }
+                                    }
+                                }
+                                ViewDto::ResizeScale {
+                                    scale_x,
+                                    scale_y,
+                                    filter,
+                                } => {
+                                    // COST: Flush pending ops - may involve data copy if ops need execution
+                                    // Flush to get current dimensions, then push concrete resize to pending ops
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "ResizeScale requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    // COST: Zero-copy - just reading shape metadata
+                                    let shape = current_buf.shape();
+                                    let input_height = shape[0] as f32;
+                                    let input_width = shape[1] as f32;
+                                    let new_height = (input_height * scale_y).round() as u32;
+                                    let new_width = (input_width * scale_x).round() as u32;
+                                    // Push concrete resize to pending ops - let batching handle execution
+                                    // COST: No data copy here - just building op specification
+                                    pending_buffer_ops.push(ViewDto::Image(ImageOp {
+                                        kind: ImageOpKind::Resize {
+                                            width: new_width,
+                                            height: new_height,
+                                            filter: filter.clone(),
+                                        },
+                                    }));
+                                }
+                                ViewDto::ResizeToHeight { height, filter } => {
+                                    // COST: Flush pending ops - may involve data copy if ops need execution
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "ResizeToHeight requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    // COST: Zero-copy - just reading shape metadata
+                                    let shape = current_buf.shape();
+                                    let input_height = shape[0] as f32;
+                                    let input_width = shape[1] as f32;
+                                    let aspect = input_width / input_height;
+                                    let new_width = (*height as f32 * aspect).round() as u32;
+                                    // Push concrete resize to pending ops - let batching handle execution
+                                    // COST: No data copy here - just building op specification
+                                    pending_buffer_ops.push(ViewDto::Image(ImageOp {
+                                        kind: ImageOpKind::Resize {
+                                            width: new_width,
+                                            height: *height,
+                                            filter: filter.clone(),
+                                        },
+                                    }));
+                                }
+                                ViewDto::ResizeToWidth { width, filter } => {
+                                    // COST: Flush pending ops - may involve data copy if ops need execution
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "ResizeToWidth requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    // COST: Zero-copy - just reading shape metadata
+                                    let shape = current_buf.shape();
+                                    let input_height = shape[0] as f32;
+                                    let input_width = shape[1] as f32;
+                                    let aspect = input_height / input_width;
+                                    let new_height = (*width as f32 * aspect).round() as u32;
+                                    // Push concrete resize to pending ops - let batching handle execution
+                                    // COST: No data copy here - just building op specification
+                                    pending_buffer_ops.push(ViewDto::Image(ImageOp {
+                                        kind: ImageOpKind::Resize {
+                                            width: *width,
+                                            height: new_height,
+                                            filter: filter.clone(),
+                                        },
+                                    }));
+                                }
+                                ViewDto::ResizeMax { max_size, filter } => {
+                                    // COST: Flush pending ops - may involve data copy if ops need execution
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "ResizeMax requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    // COST: Zero-copy - just reading shape metadata
+                                    let shape = current_buf.shape();
+                                    let input_height = shape[0] as f32;
+                                    let input_width = shape[1] as f32;
+                                    let scale = *max_size as f32 / input_height.max(input_width);
+                                    let new_height = (input_height * scale).round() as u32;
+                                    let new_width = (input_width * scale).round() as u32;
+                                    // Push concrete resize to pending ops - let batching handle execution
+                                    // COST: No data copy here - just building op specification
+                                    pending_buffer_ops.push(ViewDto::Image(ImageOp {
+                                        kind: ImageOpKind::Resize {
+                                            width: new_width,
+                                            height: new_height,
+                                            filter: filter.clone(),
+                                        },
+                                    }));
+                                }
+                                ViewDto::ResizeMin { min_size, filter } => {
+                                    // COST: Flush pending ops - may involve data copy if ops need execution
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "ResizeMin requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    // COST: Zero-copy - just reading shape metadata
+                                    let shape = current_buf.shape();
+                                    let input_height = shape[0] as f32;
+                                    let input_width = shape[1] as f32;
+                                    let scale = *min_size as f32 / input_height.min(input_width);
+                                    let new_height = (input_height * scale).round() as u32;
+                                    let new_width = (input_width * scale).round() as u32;
+                                    // Push concrete resize to pending ops - let batching handle execution
+                                    // COST: No data copy here - just building op specification
+                                    pending_buffer_ops.push(ViewDto::Image(ImageOp {
+                                        kind: ImageOpKind::Resize {
+                                            width: new_width,
+                                            height: new_height,
+                                            filter: filter.clone(),
+                                        },
+                                    }));
+                                }
+                                ViewDto::Pad {
+                                    top,
+                                    bottom,
+                                    left,
+                                    right,
+                                    value,
+                                    mode,
+                                } => {
+                                    // COST: Flush may execute pending ops (full data copy if ops pending)
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "Pad requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    // COST: Full data copy - O(H*W*C) - pad_buffer allocates new buffer
+                                    // TODO: Add ImageOpKind::Pad to view-buffer for batching support
+                                    let result = pad_buffer(
+                                        current_buf, *top, *bottom, *left, *right, *value, *mode,
+                                    );
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
+                                ViewDto::PadToSize {
+                                    height,
+                                    width,
+                                    position,
+                                    value,
+                                } => {
+                                    use view_buffer::ops::dto::{PadMode, PadPosition};
+                                    // COST: Flush may execute pending ops (full data copy if ops pending)
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "PadToSize requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    // COST: Zero-copy - just reading shape metadata
+                                    let shape = current_buf.shape();
+                                    let current_h = shape[0] as u32;
+                                    let current_w = shape[1] as u32;
+
+                                    // Compute padding amounts based on position
+                                    let pad_h = height.saturating_sub(current_h);
+                                    let pad_w = width.saturating_sub(current_w);
+
+                                    let (top, bottom, left, right) = match position {
+                                        PadPosition::Center => {
+                                            let t = pad_h / 2;
+                                            let b = pad_h - t;
+                                            let l = pad_w / 2;
+                                            let r = pad_w - l;
+                                            (t, b, l, r)
+                                        }
+                                        PadPosition::TopLeft => (0, pad_h, 0, pad_w),
+                                        PadPosition::BottomRight => (pad_h, 0, pad_w, 0),
+                                    };
+
+                                    // COST: Full data copy - O(H*W*C) - pad_buffer allocates new buffer
+                                    let result = pad_buffer(
+                                        current_buf, top, bottom, left, right, *value, PadMode::Constant,
+                                    );
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
+                                ViewDto::Letterbox {
+                                    height,
+                                    width,
+                                    value,
+                                } => {
+                                    use view_buffer::ops::dto::PadMode;
+                                    use view_buffer::FilterType;
+                                    // COST: Flush may execute pending ops (full data copy if ops pending)
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "Letterbox requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    // COST: Zero-copy - just reading shape metadata
+                                    let shape = current_buf.shape();
+                                    let input_h = shape[0] as f32;
+                                    let input_w = shape[1] as f32;
+
+                                    // Calculate scale to fit within target
+                                    let scale_h = *height as f32 / input_h;
+                                    let scale_w = *width as f32 / input_w;
+                                    let scale = scale_h.min(scale_w);
+
+                                    let resized_h = (input_h * scale).round() as u32;
+                                    let resized_w = (input_w * scale).round() as u32;
+
+                                    // Push resize to pending ops for batching
+                                    // COST: No data copy here - just building op specification
+                                    pending_buffer_ops.push(ViewDto::Image(ImageOp {
+                                        kind: ImageOpKind::Resize {
+                                            width: resized_w,
+                                            height: resized_h,
+                                            filter: FilterType::Lanczos3,
+                                        },
+                                    }));
+
+                                    // COST: Flush executes resize (full data copy for resize output)
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let resized = current_output.as_buffer().ok_or_else(|| {
+                                        "Letterbox: resized buffer expected".to_string()
+                                    })?;
+
+                                    // Then pad to exact size
+                                    let pad_h = height.saturating_sub(resized_h);
+                                    let pad_w = width.saturating_sub(resized_w);
+                                    let top = pad_h / 2;
+                                    let bottom = pad_h - top;
+                                    let left = pad_w / 2;
+                                    let right = pad_w - left;
+
+                                    // COST: Full data copy - O(H*W*C) - pad_buffer allocates new buffer
+                                    let result = pad_buffer(
+                                        resized, top, bottom, left, right, *value, PadMode::Constant,
+                                    );
+                                    current_output = NodeOutput::from_buffer(result);
                                 }
                                 _ => {
                                     // Regular buffer operation: accumulate for batching

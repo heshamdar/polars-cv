@@ -18,10 +18,13 @@ from polars_cv._types import (
     FilterType,
     FloatOrExpr,
     HashAlgorithm,
+    HistogramOutput,
     IntOrExpr,
     NormalizeMethod,
     OpSpec,
     OutputDType,
+    PadMode,
+    PadPosition,
     ParamValue,
     ShapeHints,
     SinkFormat,
@@ -812,6 +815,448 @@ class Pipeline:
         new._update_output_dtype("resize")
         return new
 
+    def resize_scale(
+        self,
+        *,
+        scale: FloatOrExpr | None = None,
+        scale_x: FloatOrExpr | None = None,
+        scale_y: FloatOrExpr | None = None,
+        filter: str = "lanczos3",
+    ) -> "Pipeline":
+        """
+        Resize image by scale factor.
+
+        Target dimensions are computed at runtime as:
+        - new_width = input_width * scale_x
+        - new_height = input_height * scale_y
+
+        Domain: buffer → buffer
+
+        Args:
+            scale: Uniform scale factor (applies to both x and y).
+            scale_x: X (width) scale factor. If None, uses scale.
+            scale_y: Y (height) scale factor. If None, uses scale.
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If neither scale nor scale_x/scale_y specified.
+            ValueError: If filter is invalid or current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Uniform 50% downscale
+            >>> pipe = Pipeline().source("image_bytes").resize_scale(scale=0.5)
+            >>>
+            >>> # Non-uniform: half width, double height
+            >>> pipe = Pipeline().source("image_bytes").resize_scale(scale_x=0.5, scale_y=2.0)
+            >>>
+            >>> # Dynamic scale from column
+            >>> pipe = Pipeline().source("image_bytes").resize_scale(scale=pl.col("zoom"))
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "resize_scale")
+
+        # Resolve scale factors
+        if scale is None and scale_x is None and scale_y is None:
+            msg = "Must specify 'scale' or 'scale_x'/'scale_y'"
+            raise ValueError(msg)
+
+        actual_scale_x = scale_x if scale_x is not None else scale
+        actual_scale_y = scale_y if scale_y is not None else scale
+
+        if actual_scale_x is None or actual_scale_y is None:
+            msg = "Must specify both scale factors or use 'scale' for uniform scaling"
+            raise ValueError(msg)
+
+        new = self._clone()
+        try:
+            filter_enum = FilterType(filter)
+        except ValueError as e:
+            valid = [f.value for f in FilterType]
+            msg = f"Invalid filter '{filter}'. Valid: {valid}"
+            raise ValueError(msg) from e
+
+        new._ops.append(
+            OpSpec(
+                op="resize_scale",
+                params={
+                    "scale_x": new._track_expr(actual_scale_x),
+                    "scale_y": new._track_expr(actual_scale_y),
+                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                },
+            )
+        )
+        new._update_output_dtype("resize")
+        return new
+
+    def resize_to_height(
+        self,
+        height: IntOrExpr,
+        *,
+        filter: str = "lanczos3",
+    ) -> "Pipeline":
+        """
+        Resize image to target height, preserving aspect ratio.
+
+        Width is computed at runtime as: new_width = height * (input_width / input_height)
+
+        Domain: buffer → buffer
+
+        Args:
+            height: Target height (literal or expression).
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If filter is invalid or current domain is not buffer.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").resize_to_height(224)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "resize_to_height")
+        new = self._clone()
+        try:
+            filter_enum = FilterType(filter)
+        except ValueError as e:
+            valid = [f.value for f in FilterType]
+            msg = f"Invalid filter '{filter}'. Valid: {valid}"
+            raise ValueError(msg) from e
+
+        new._ops.append(
+            OpSpec(
+                op="resize_to_height",
+                params={
+                    "height": new._track_expr(height),
+                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                },
+            )
+        )
+        new._update_output_dtype("resize")
+        return new
+
+    def resize_to_width(
+        self,
+        width: IntOrExpr,
+        *,
+        filter: str = "lanczos3",
+    ) -> "Pipeline":
+        """
+        Resize image to target width, preserving aspect ratio.
+
+        Height is computed at runtime as: new_height = width * (input_height / input_width)
+
+        Domain: buffer → buffer
+
+        Args:
+            width: Target width (literal or expression).
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If filter is invalid or current domain is not buffer.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").resize_to_width(224)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "resize_to_width")
+        new = self._clone()
+        try:
+            filter_enum = FilterType(filter)
+        except ValueError as e:
+            valid = [f.value for f in FilterType]
+            msg = f"Invalid filter '{filter}'. Valid: {valid}"
+            raise ValueError(msg) from e
+
+        new._ops.append(
+            OpSpec(
+                op="resize_to_width",
+                params={
+                    "width": new._track_expr(width),
+                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                },
+            )
+        )
+        new._update_output_dtype("resize")
+        return new
+
+    def resize_max(
+        self,
+        max_size: IntOrExpr,
+        *,
+        filter: str = "lanczos3",
+    ) -> "Pipeline":
+        """
+        Resize image so the maximum dimension equals target, preserving aspect ratio.
+
+        If input is 200x100 and max_size=50, output is 50x25 (width was max, now 50).
+
+        Domain: buffer → buffer
+
+        Args:
+            max_size: Target for the maximum dimension (literal or expression).
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If filter is invalid or current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Ensure no dimension exceeds 224
+            >>> pipe = Pipeline().source("image_bytes").resize_max(224)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "resize_max")
+        new = self._clone()
+        try:
+            filter_enum = FilterType(filter)
+        except ValueError as e:
+            valid = [f.value for f in FilterType]
+            msg = f"Invalid filter '{filter}'. Valid: {valid}"
+            raise ValueError(msg) from e
+
+        new._ops.append(
+            OpSpec(
+                op="resize_max",
+                params={
+                    "max_size": new._track_expr(max_size),
+                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                },
+            )
+        )
+        new._update_output_dtype("resize")
+        return new
+
+    def resize_min(
+        self,
+        min_size: IntOrExpr,
+        *,
+        filter: str = "lanczos3",
+    ) -> "Pipeline":
+        """
+        Resize image so the minimum dimension equals target, preserving aspect ratio.
+
+        If input is 200x100 and min_size=50, output is 100x50 (height was min, now 50).
+
+        Domain: buffer → buffer
+
+        Args:
+            min_size: Target for the minimum dimension (literal or expression).
+            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If filter is invalid or current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Ensure min dimension is at least 224
+            >>> pipe = Pipeline().source("image_bytes").resize_min(224)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "resize_min")
+        new = self._clone()
+        try:
+            filter_enum = FilterType(filter)
+        except ValueError as e:
+            valid = [f.value for f in FilterType]
+            msg = f"Invalid filter '{filter}'. Valid: {valid}"
+            raise ValueError(msg) from e
+
+        new._ops.append(
+            OpSpec(
+                op="resize_min",
+                params={
+                    "min_size": new._track_expr(min_size),
+                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                },
+            )
+        )
+        new._update_output_dtype("resize")
+        return new
+
+    # --- Padding Operations ---
+
+    def pad(
+        self,
+        *,
+        top: IntOrExpr = 0,
+        bottom: IntOrExpr = 0,
+        left: IntOrExpr = 0,
+        right: IntOrExpr = 0,
+        value: float = 0.0,
+        mode: str = "constant",
+    ) -> "Pipeline":
+        """
+        Add padding to the image.
+
+        Domain: buffer → buffer
+
+        Args:
+            top: Padding on top edge.
+            bottom: Padding on bottom edge.
+            left: Padding on left edge.
+            right: Padding on right edge.
+            value: Fill value for "constant" mode (default 0).
+            mode: Padding mode - "constant", "edge", "reflect", "symmetric".
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If mode is invalid or current domain is not buffer.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").pad(top=10, bottom=10)
+            >>> pipe = Pipeline().source("image_bytes").pad(left=20, right=20, value=128)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "pad")
+
+        try:
+            mode_enum = PadMode(mode)
+        except ValueError as e:
+            valid = [m.value for m in PadMode]
+            msg = f"Invalid pad mode '{mode}'. Valid: {valid}"
+            raise ValueError(msg) from e
+
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="pad",
+                params={
+                    "top": new._track_expr(top),
+                    "bottom": new._track_expr(bottom),
+                    "left": new._track_expr(left),
+                    "right": new._track_expr(right),
+                    "value": ParamValue(is_expr=False, value=value),
+                    "mode": ParamValue(is_expr=False, value=mode_enum.value),
+                },
+            )
+        )
+        return new
+
+    def pad_to_size(
+        self,
+        *,
+        height: IntOrExpr,
+        width: IntOrExpr,
+        position: str = "center",
+        value: float = 0.0,
+    ) -> "Pipeline":
+        """
+        Pad image to exact target size.
+
+        Dimensions are computed at runtime. If image is larger than target,
+        it will NOT be cropped - use resize first if needed.
+
+        Domain: buffer → buffer
+
+        Args:
+            height: Target height.
+            width: Target width.
+            position: Where to place original content:
+                - "center": Center content in padded area (default)
+                - "top-left": Place at top-left corner
+                - "bottom-right": Place at bottom-right corner
+            value: Fill value for padding (default 0).
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If position is invalid or current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Pad 50x100 image to 100x200, centered
+            >>> pipe = Pipeline().source("image_bytes").pad_to_size(height=100, width=200)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "pad_to_size")
+
+        try:
+            pos_enum = PadPosition(position)
+        except ValueError as e:
+            valid = [p.value for p in PadPosition]
+            msg = f"Invalid position '{position}'. Valid: {valid}"
+            raise ValueError(msg) from e
+
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="pad_to_size",
+                params={
+                    "height": new._track_expr(height),
+                    "width": new._track_expr(width),
+                    "position": ParamValue(is_expr=False, value=pos_enum.value),
+                    "value": ParamValue(is_expr=False, value=value),
+                },
+            )
+        )
+        return new
+
+    def letterbox(
+        self,
+        *,
+        height: IntOrExpr,
+        width: IntOrExpr,
+        value: float = 0.0,
+    ) -> "Pipeline":
+        """
+        Resize image maintaining aspect ratio and pad to exact target size.
+
+        This is a composed operation that:
+        1. Resizes the image so it fits within the target dimensions
+        2. Pads to reach exact target size with centered positioning
+
+        Domain: buffer → buffer
+
+        Args:
+            height: Target height.
+            width: Target width.
+            value: Fill value for padding (default 0, typically black).
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> # Letterbox any image to 224x224 for VLM input
+            >>> pipe = Pipeline().source("image_bytes").letterbox(height=224, width=224)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "letterbox")
+
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="letterbox",
+                params={
+                    "height": new._track_expr(height),
+                    "width": new._track_expr(width),
+                    "value": ParamValue(is_expr=False, value=value),
+                },
+            )
+        )
+        return new
+
     def grayscale(self) -> "Pipeline":
         """
         Convert to grayscale.
@@ -1129,6 +1574,87 @@ class Pipeline:
         new._ops.append(OpSpec(op="reduce_popcount", params={}))
         new._current_domain = self.DOMAIN_SCALAR
         new._update_output_dtype("reduce_popcount")
+        return new
+
+    def histogram(
+        self,
+        bins: int = 256,
+        range: tuple[float, float] | None = None,
+        output: str = "counts",
+    ) -> "Pipeline":
+        """
+        Compute histogram of the buffer.
+
+        Computes a histogram of pixel values in the buffer. Can return
+        bin counts, normalized histogram, quantized image, or bin edges.
+
+        Domain transition: buffer → vector (for counts/normalized/edges)
+                          buffer → buffer (for quantized)
+
+        Args:
+            bins: Number of histogram bins (default 256).
+            range: Value range as (min, max) tuple. If None, auto-detect from data.
+                For uint8 images, typically use (0, 256).
+            output: Output mode:
+                - "counts": Bin counts as 1D array (default)
+                - "normalized": Histogram normalized to sum to 1.0
+                - "quantized": Input array with pixels replaced by bin indices
+                - "edges": Bin edge values (length = bins + 1)
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If current domain is not buffer.
+            ValueError: If output mode is invalid.
+
+        Example:
+            ```python
+            >>> # Compute histogram counts
+            >>> pipe = Pipeline().source("image_bytes").grayscale().histogram(bins=256)
+            >>> result = df.select(pl.col("image").cv.pipe(pipe).sink("list"))
+            >>>
+            >>> # Quantize image to fewer levels
+            >>> pipe = Pipeline().source("image_bytes").histogram(bins=8, output="quantized")
+            >>> result = df.select(pl.col("image").cv.pipe(pipe).sink("numpy"))
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "histogram")
+
+        # Validate output mode
+        try:
+            output_mode = HistogramOutput(output)
+        except ValueError as e:
+            valid = [o.value for o in HistogramOutput]
+            msg = f"Invalid histogram output mode '{output}'. Valid: {valid}"
+            raise ValueError(msg) from e
+
+        new = self._clone()
+
+        params: dict[str, ParamValue] = {
+            "bins": ParamValue(is_expr=False, value=bins),
+            "output": ParamValue(is_expr=False, value=output_mode.value),
+        }
+
+        if range is not None:
+            params["range_min"] = ParamValue(is_expr=False, value=range[0])
+            params["range_max"] = ParamValue(is_expr=False, value=range[1])
+
+        new._ops.append(OpSpec(op="histogram", params=params))
+
+        # Domain transition depends on output mode
+        if output_mode == HistogramOutput.QUANTIZED:
+            # Quantized preserves the buffer domain
+            new._current_domain = self.DOMAIN_BUFFER
+            new._output_dtype = "u32"
+        else:
+            # All other modes return a vector
+            new._current_domain = self.DOMAIN_VECTOR
+            if output_mode == HistogramOutput.COUNTS:
+                new._output_dtype = "u64"
+            else:  # normalized or edges
+                new._output_dtype = "f64"
+
         return new
 
     # --- Contour Measure Operations (contour → scalar/vector) ---
