@@ -26,6 +26,8 @@
 //! ```
 
 use polars::prelude::*;
+use polars_arrow::array::{BinaryViewArrayGeneric, View};
+use polars_arrow::bitmap::MutableBitmap;
 use view_buffer::{DType as VbDType, ViewBuffer};
 
 /// Get the Polars DataType for numpy/torch sink output.
@@ -126,22 +128,85 @@ pub fn build_numpy_series(name: PlSmallStr, rows: Vec<Option<ViewBuffer>>) -> Po
         .map(|ca| ca.into_series())
 }
 
-/// Build the 'data' column (Binary) from encoded rows.
+/// Build the 'data' column (Binary) from encoded rows using zero-copy buffer registration.
 ///
-/// Uses the buffer's slice directly to avoid unnecessary copying where possible.
-/// The polars_arrow::Buffer is Arc-backed, so slicing is cheap.
+/// This implementation uses BinaryViewArray which stores views into external buffers.
+/// For data > 12 bytes (all images), the data is stored in registered buffers and
+/// views point to those buffers without copying.
 ///
-/// Note: The actual zero-copy behavior depends on polars-arrow's internal
-/// implementation of BinaryViewArray. For values > 12 bytes, the view may
-/// reference external buffer storage.
+/// # Zero-Copy Mechanism
+///
+/// BinaryViewArray uses a two-part structure:
+/// 1. Views: 128-bit metadata entries (length, prefix, buffer_idx, offset)
+/// 2. Buffers: External Arc-backed memory regions
+///
+/// By registering our polars_arrow::Buffer<u8> directly, we achieve true zero-copy.
 fn build_data_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
-    // Build iterator that yields Option<&[u8]> - no intermediate Vec allocation
-    // The buffer's as_slice() returns a reference to the Arc-backed memory
-    let values = rows
-        .iter()
-        .map(|opt| opt.as_ref().map(|r| r.data.as_slice()));
+    use polars_arrow::datatypes::ArrowDataType;
 
-    let ca = BinaryChunked::from_iter_options(PlSmallStr::from_static("data"), values);
+    let n_rows = rows.len();
+    let mut views: Vec<View> = Vec::with_capacity(n_rows);
+    let mut buffers: Vec<polars_arrow::buffer::Buffer<u8>> = Vec::new();
+    let mut validity_builder: Option<MutableBitmap> = None;
+    let mut total_bytes_len: usize = 0;
+    let mut total_buffer_len: usize = 0;
+
+    for (idx, opt) in rows.iter().enumerate() {
+        match opt {
+            Some(row) => {
+                let data_len = row.data.len();
+                total_bytes_len += data_len;
+
+                if data_len <= 12 {
+                    // Inline small values directly in the view
+                    views.push(View::new_inline(row.data.as_slice()));
+                } else {
+                    // Register buffer and create view pointing to it
+                    let buffer_idx = buffers.len() as u32;
+                    total_buffer_len += row.data.len();
+                    buffers.push(row.data.clone()); // Arc clone, very cheap
+
+                    // Create view with buffer reference
+                    views.push(View::new_from_bytes(row.data.as_slice(), buffer_idx, 0));
+                }
+
+                // Update validity if we had nulls before
+                if let Some(ref mut validity) = validity_builder {
+                    validity.push(true);
+                }
+            }
+            None => {
+                // Handle null - initialize validity bitmap if first null
+                if validity_builder.is_none() {
+                    let mut bitmap = MutableBitmap::with_capacity(n_rows);
+                    // Set all previous entries as valid
+                    for _ in 0..idx {
+                        bitmap.push(true);
+                    }
+                    validity_builder = Some(bitmap);
+                }
+                validity_builder.as_mut().unwrap().push(false);
+                views.push(View::default());
+            }
+        }
+    }
+
+    // Build the BinaryViewArray with registered buffers
+    let validity = validity_builder.map(|v| v.into());
+
+    // Safety: We've constructed valid views that reference valid buffer indices
+    let array = unsafe {
+        BinaryViewArrayGeneric::<[u8]>::new_unchecked(
+            ArrowDataType::BinaryView,
+            views.into(),
+            buffers.into_iter().collect(),
+            validity,
+            total_bytes_len,
+            total_buffer_len,
+        )
+    };
+
+    let ca = BinaryChunked::with_chunk(PlSmallStr::from_static("data"), array);
     Ok(ca.into_series())
 }
 

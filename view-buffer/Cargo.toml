@@ -19,8 +19,9 @@ thiserror = "1.0"
 num-traits = "0.2"
 
 # Optional dependencies
-ndarray = { version = "0.15", optional = true }
+ndarray = { version = "0.17", optional = true }
 image = { version = "0.25", optional = true }
+fast_image_resize = { version = "5.0", optional = true }
 arrow = { version = "53.0", features = ["ffi"], optional = true }
 image_hasher = { version = "3.0", optional = true }
 polars-arrow = { version = "0.46", optional = true }
@@ -32,8 +33,9 @@ bytemuck = { version = "1.14", features = ["derive"], optional = true }
 
 [dev-dependencies]
 anyhow = "1.0"
-ndarray = "0.15"
+ndarray = "0.17"
 image = "0.25"
+fast_image_resize = "5.0"
 arrow = { version = "53.0", features = ["ffi"] }
 polars-arrow = "0.46"
 # Added for tests
@@ -41,12 +43,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [features]
-# No interops by default - minimal core for fast compilation
-default = []
+# Enable ndarray by default for strided scalar operations
+default = ["ndarray_interop"]
 
 # External crate interops (require dependencies)
 ndarray_interop = ["dep:ndarray"]
-image_interop = ["dep:image"]
+image_interop = ["dep:image", "dep:fast_image_resize"]
 arrow_interop = ["dep:arrow"]
 polars_interop = ["dep:polars-arrow"]
 

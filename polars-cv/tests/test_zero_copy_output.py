@@ -442,3 +442,238 @@ class TestDtypePreservation:
         assert shape[0] == 10  # Height
         assert shape[1] == 20  # Width
         assert shape[2] == 3   # Channels
+
+
+# ============================================================
+# Memory Efficiency Tests
+# ============================================================
+
+
+class TestMemoryEfficiency:
+    """Tests for zero-copy and memory efficiency."""
+
+    def test_large_batch_memory_efficiency(self) -> None:
+        """Process a batch of images and verify output is generated efficiently.
+
+        This test creates multiple images and processes them through the pipeline.
+        The test verifies correct output rather than memory usage, but the
+        underlying implementation should use zero-copy where possible.
+        """
+        # Create 50 small images (8x8 RGB)
+        images = []
+        for i in range(50):
+            img = np.full((8, 8, 3), i * 5, dtype=np.uint8)
+            pil_img = Image.fromarray(img)
+            buf = BytesIO()
+            pil_img.save(buf, format="PNG")
+            images.append(buf.getvalue())
+
+        df = pl.DataFrame({"image": images})
+
+        pipe = Pipeline().source("image_bytes").resize(height=16, width=16).sink("numpy")
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        # Verify all outputs are correct
+        assert len(result) == 50
+        for i in range(50):
+            arr = numpy_from_struct(result["output"][i])
+            assert arr.shape == (16, 16, 3)
+            # Mean should be close to original fill value (with some interpolation variance)
+            assert arr.dtype == np.uint8
+
+    def test_output_data_integrity(self, simple_rgb_bytes: bytes) -> None:
+        """Verify output data has correct values after zero-copy transfer."""
+        # Create image with known values
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        img[0, 0, :] = [255, 0, 0]    # Red pixel at top-left
+        img[3, 3, :] = [0, 255, 0]    # Green pixel at bottom-right
+        img[0, 3, :] = [0, 0, 255]    # Blue pixel at top-right
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = Pipeline().source("image_bytes").sink("numpy")
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        arr = numpy_from_struct(result["output"][0])
+
+        # Verify specific pixel values
+        np.testing.assert_array_equal(arr[0, 0, :], [255, 0, 0])
+        np.testing.assert_array_equal(arr[3, 3, :], [0, 255, 0])
+        np.testing.assert_array_equal(arr[0, 3, :], [0, 0, 255])
+
+    def test_binary_data_not_corrupted(self) -> None:
+        """Verify binary data is not corrupted during transfer."""
+        # Create image with specific pattern
+        pattern = np.arange(64 * 64 * 3, dtype=np.uint8).reshape((64, 64, 3))
+        pil_img = Image.fromarray(pattern)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = Pipeline().source("image_bytes").sink("numpy")
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        arr = numpy_from_struct(result["output"][0])
+
+        # Verify pattern is preserved (within PNG compression tolerance)
+        # PNG is lossless, so should be exact
+        np.testing.assert_array_equal(arr, pattern)
+
+
+# ============================================================
+# Strided Pipeline Tests
+# ============================================================
+
+
+class TestStridedPipeline:
+    """Tests for strided operations in pipelines."""
+
+    def test_flip_then_grayscale(self) -> None:
+        """Test flip (view op) followed by grayscale works correctly."""
+        # Create a gradient image for testing
+        img = np.zeros((10, 10, 3), dtype=np.uint8)
+        for i in range(10):
+            img[i, :, :] = i * 25
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        # Flip then grayscale should work on strided buffer
+        # axes=[0] is vertical flip (along height axis)
+        pipe = Pipeline().source("image_bytes").flip(axes=[0]).grayscale().sink("numpy")
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        arr = numpy_from_struct(result["output"][0])
+        assert arr.shape == (10, 10, 1)
+
+        # After vertical flip, the gradient should be reversed
+        # Top row (originally bottom) should be brighter
+        assert arr[0, 0, 0] > arr[9, 0, 0]
+
+    def test_flip_then_resize(self) -> None:
+        """Test flip followed by resize works correctly."""
+        img = np.full((20, 20, 3), 128, dtype=np.uint8)
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .flip(axes=[1])  # horizontal flip (along width axis)
+            .resize(height=10, width=10)
+            .sink("numpy")
+        )
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        arr = numpy_from_struct(result["output"][0])
+        assert arr.shape == (10, 10, 3)
+
+    def test_crop_then_grayscale(self) -> None:
+        """Test crop followed by grayscale works correctly."""
+        img = np.full((20, 20, 3), 128, dtype=np.uint8)
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .crop(top=5, left=5, height=10, width=10)
+            .grayscale()
+            .sink("numpy")
+        )
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        arr = numpy_from_struct(result["output"][0])
+        assert arr.shape == (10, 10, 1)
+
+    def test_flip_grayscale_resize_pipeline(self) -> None:
+        """Test full pipeline: flip -> grayscale -> resize."""
+        img = np.full((32, 32, 3), 100, dtype=np.uint8)
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .flip(axes=[0])  # vertical flip
+            .grayscale()
+            .resize(height=16, width=16)
+            .sink("numpy")
+        )
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        arr = numpy_from_struct(result["output"][0])
+        assert arr.shape == (16, 16, 1)
+
+    def test_normalize_after_flip(self) -> None:
+        """Test normalize operation after flip works correctly."""
+        img = np.full((10, 10, 3), 128, dtype=np.uint8)
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .flip(axes=[1])  # horizontal flip
+            .cast("f32")
+            .normalize(method="minmax")
+            .sink("numpy")
+        )
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        arr = numpy_from_struct(result["output"][0])
+        assert arr.dtype == np.float32
+        assert arr.shape == (10, 10, 3)
+        # All same values -> minmax should give 0
+        # (or handle constant array gracefully)
+
+    def test_multiple_view_ops_then_compute(self) -> None:
+        """Test multiple view operations followed by compute."""
+        # Create pattern without overflow - use modulo before converting to uint8
+        img = (np.arange(100 * 100 * 3) % 256).astype(np.uint8).reshape((100, 100, 3))
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"image": [img_bytes]})
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .flip(axes=[0])  # vertical flip
+            .flip(axes=[1])  # horizontal flip (back to original orientation with double flip)
+            .crop(top=10, left=10, height=80, width=80)
+            .grayscale()
+            .resize(height=40, width=40)
+            .sink("numpy")
+        )
+        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+
+        arr = numpy_from_struct(result["output"][0])
+        assert arr.shape == (40, 40, 1)

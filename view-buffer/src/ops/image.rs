@@ -82,9 +82,11 @@ impl Op for ImageOp {
     fn memory_effect(&self) -> MemoryEffect {
         match &self.kind {
             ImageOpKind::Threshold(_) => MemoryEffect::StridePreserving,
+            // Resize uses fast_image_resize which requires contiguous input
             ImageOpKind::Resize { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::Blur { .. } => MemoryEffect::RequiresContiguous,
-            ImageOpKind::Grayscale => MemoryEffect::RequiresContiguous,
+            // Grayscale has strided implementation
+            ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
         }
     }
 
@@ -94,10 +96,16 @@ impl Op for ImageOp {
     }
 
     fn infer_strides(&self, _input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>> {
-        match self.memory_effect() {
-            MemoryEffect::StridePreserving => Some(input_strides.to_vec()),
-            MemoryEffect::RequiresContiguous => None,
-            MemoryEffect::View => unreachable!(),
+        match &self.kind {
+            // Threshold preserves shape and strides
+            ImageOpKind::Threshold(_) => Some(input_strides.to_vec()),
+            // Grayscale changes shape (3 channels -> 1 channel) and always produces
+            // contiguous output, so return None to trigger contiguous stride calculation
+            ImageOpKind::Grayscale => None,
+            // Resize changes shape and produces contiguous output
+            ImageOpKind::Resize { .. } => None,
+            // Blur preserves shape but produces contiguous output
+            ImageOpKind::Blur { .. } => None,
         }
     }
 
