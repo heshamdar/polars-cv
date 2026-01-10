@@ -107,10 +107,7 @@ impl NumpyRowOutput {
 ///
 /// # Returns
 /// A Series with dtype Struct{data: Binary, dtype: String, shape: List[UInt64]}
-pub fn build_numpy_series(
-    name: PlSmallStr,
-    rows: Vec<Option<ViewBuffer>>,
-) -> PolarsResult<Series> {
+pub fn build_numpy_series(name: PlSmallStr, rows: Vec<Option<ViewBuffer>>) -> PolarsResult<Series> {
     let len = rows.len();
 
     // Convert each row to NumpyRowOutput

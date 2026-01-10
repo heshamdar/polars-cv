@@ -94,7 +94,11 @@ impl PolarsBufferRef {
     /// `None` if offset + len exceeds buffer length.
     pub fn new(buffer: Buffer<u8>, offset: usize, len: usize) -> Option<Self> {
         if offset + len <= buffer.len() {
-            Some(Self { buffer, offset, len })
+            Some(Self {
+                buffer,
+                offset,
+                len,
+            })
         } else {
             None
         }
@@ -274,15 +278,12 @@ pub fn fixed_shape_from_type(dt: &polars_arrow::datatypes::ArrowDataType) -> Vec
     let mut shape = Vec::new();
     let mut current = dt;
 
-    loop {
-        match current {
-            ArrowDataType::FixedSizeList(field, size) => {
-                shape.push(*size);
-                current = field.dtype();
-            }
-            _ => break,
-        }
+
+    while let ArrowDataType::FixedSizeList(field, size) = current {
+        shape.push(*size);
+        current = field.dtype();
     }
+
 
     shape
 }
@@ -337,11 +338,8 @@ mod tests {
         )));
         assert_eq!(nesting_depth(&list_u8), 1);
 
-        let list_list_u8 = ArrowDataType::List(Box::new(Field::new(
-            "item".into(),
-            list_u8.clone(),
-            false,
-        )));
+        let list_list_u8 =
+            ArrowDataType::List(Box::new(Field::new("item".into(), list_u8.clone(), false)));
         assert_eq!(nesting_depth(&list_list_u8), 2);
     }
 
@@ -368,4 +366,3 @@ mod tests {
         assert_eq!(fixed_shape_from_type(&ArrowDataType::UInt8), empty);
     }
 }
-

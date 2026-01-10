@@ -529,12 +529,16 @@ impl ViewBuffer {
         }
 
         // Only Rust storage can be unwrapped
-        let BufferStorage::Rust(arc) = self.data else {
-            return None;
-        };
-
-        // Try to unwrap the Arc - only succeeds if refcount == 1
-        Arc::try_unwrap(arc).ok()
+        match self.data {
+            BufferStorage::Rust(arc) => {
+                // Try to unwrap the Arc - only succeeds if refcount == 1
+                Arc::try_unwrap(arc).ok()
+            }
+            #[cfg(feature = "arrow_interop")]
+            BufferStorage::Arrow(_) => unreachable!("try_into_owned_bytes called on Arrow buffer"),
+            #[cfg(feature = "polars_interop")]
+            BufferStorage::PolarsArrow { .. } => unreachable!("try_into_owned_bytes called on PolarsArrow buffer"),
+        }
     }
 
     /// Convert to a polars-arrow Buffer, zero-copy when possible.
@@ -1121,7 +1125,7 @@ impl ViewBuffer {
     }
 
     /// Reshapes the buffer to a new shape.
-    pub(crate) fn reshape(mut self, shape: Vec<usize>) -> Self {
+    pub fn reshape(mut self, shape: Vec<usize>) -> Self {
         self.layout.shape = shape;
         self.layout = Layout::new_contiguous(self.layout.shape, self.layout.dtype);
         self
