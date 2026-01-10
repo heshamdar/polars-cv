@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::geometry::ops::GeometryOp;
 use crate::ops::binary::BinaryOp;
 use crate::ops::compute::ComputeOp;
+use crate::ops::histogram::HistogramOp;
 use crate::ops::image::ImageOp;
 use crate::ops::phash::PerceptualHashOp;
 use crate::ops::reduction::ReductionOp;
@@ -36,8 +37,84 @@ pub enum ViewDto {
     },
     /// Reduction operation (e.g., sum, mean, max) that reduces array to scalar or along axis.
     Reduction(ReductionOp),
+    /// Histogram operation - computes bin counts, normalized histogram, quantized image, or edges.
+    Histogram(HistogramOp),
+    /// Resize by scale factor - dimensions computed at runtime.
+    ResizeScale {
+        scale_x: f32,
+        scale_y: f32,
+        filter: crate::ops::image::FilterType,
+    },
+    /// Resize to target height, preserving aspect ratio - width computed at runtime.
+    ResizeToHeight {
+        height: u32,
+        filter: crate::ops::image::FilterType,
+    },
+    /// Resize to target width, preserving aspect ratio - height computed at runtime.
+    ResizeToWidth {
+        width: u32,
+        filter: crate::ops::image::FilterType,
+    },
+    /// Resize so max dimension equals target, preserving aspect ratio.
+    ResizeMax {
+        max_size: u32,
+        filter: crate::ops::image::FilterType,
+    },
+    /// Resize so min dimension equals target, preserving aspect ratio.
+    ResizeMin {
+        min_size: u32,
+        filter: crate::ops::image::FilterType,
+    },
+    /// Pad with specified amounts and mode.
+    Pad {
+        top: u32,
+        bottom: u32,
+        left: u32,
+        right: u32,
+        value: f32,
+        mode: PadMode,
+    },
+    /// Pad to exact size with positioning - dimensions computed at runtime.
+    PadToSize {
+        height: u32,
+        width: u32,
+        position: PadPosition,
+        value: f32,
+    },
+    /// Letterbox: resize maintaining aspect ratio, then pad to exact size.
+    Letterbox {
+        height: u32,
+        width: u32,
+        value: f32,
+    },
     // Helper for plugins to request materialization explicitly
     Materialize,
+}
+
+/// Padding mode for Pad operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum PadMode {
+    /// Fill with constant value.
+    Constant,
+    /// Replicate edge values.
+    Edge,
+    /// Reflect without edge.
+    Reflect,
+    /// Reflect with edge.
+    Symmetric,
+}
+
+/// Position for PadToSize operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum PadPosition {
+    /// Center content in padded area.
+    Center,
+    /// Place at top-left corner.
+    TopLeft,
+    /// Place at bottom-right corner.
+    BottomRight,
 }
 
 impl ViewDto {
@@ -58,6 +135,18 @@ impl ViewDto {
             ViewDto::Binary { .. } | ViewDto::ApplyMask { .. } => Domain::Buffer,
             // Reduction operations work on buffers
             ViewDto::Reduction(_) => Domain::Buffer,
+            // Histogram operations work on buffers
+            ViewDto::Histogram(_) => Domain::Buffer,
+            // Deferred resize operations work on buffers
+            ViewDto::ResizeScale { .. }
+            | ViewDto::ResizeToHeight { .. }
+            | ViewDto::ResizeToWidth { .. }
+            | ViewDto::ResizeMax { .. }
+            | ViewDto::ResizeMin { .. } => Domain::Buffer,
+            // Padding operations work on buffers
+            ViewDto::Pad { .. }
+            | ViewDto::PadToSize { .. }
+            | ViewDto::Letterbox { .. } => Domain::Buffer,
             // Materialize accepts any domain
             ViewDto::Materialize => Domain::Any,
         }
@@ -67,6 +156,8 @@ impl ViewDto {
     ///
     /// Returns the domain that the successor node will receive.
     pub fn output_domain(&self) -> Domain {
+        use crate::ops::histogram::HistogramOutput;
+
         match self {
             // View/Compute/Image operations produce buffers
             ViewDto::View(_) | ViewDto::Compute(_) | ViewDto::Image(_) => Domain::Buffer,
@@ -90,6 +181,21 @@ impl ViewDto {
                     _ => Domain::Buffer, // Axis reductions produce buffers
                 }
             }
+            // Histogram: Quantized mode produces buffer, other modes produce vector
+            ViewDto::Histogram(op) => match op.output {
+                HistogramOutput::Quantized => Domain::Buffer,
+                _ => Domain::Vector,
+            },
+            // Deferred resize operations produce buffers
+            ViewDto::ResizeScale { .. }
+            | ViewDto::ResizeToHeight { .. }
+            | ViewDto::ResizeToWidth { .. }
+            | ViewDto::ResizeMax { .. }
+            | ViewDto::ResizeMin { .. } => Domain::Buffer,
+            // Padding operations produce buffers
+            ViewDto::Pad { .. }
+            | ViewDto::PadToSize { .. }
+            | ViewDto::Letterbox { .. } => Domain::Buffer,
             // Materialize preserves domain
             ViewDto::Materialize => Domain::Any,
         }
@@ -106,6 +212,15 @@ impl ViewDto {
             ViewDto::Binary { op, .. } => op.name(),
             ViewDto::ApplyMask { .. } => "ApplyMask",
             ViewDto::Reduction(op) => op.name(),
+            ViewDto::Histogram(op) => op.name(),
+            ViewDto::ResizeScale { .. } => "ResizeScale",
+            ViewDto::ResizeToHeight { .. } => "ResizeToHeight",
+            ViewDto::ResizeToWidth { .. } => "ResizeToWidth",
+            ViewDto::ResizeMax { .. } => "ResizeMax",
+            ViewDto::ResizeMin { .. } => "ResizeMin",
+            ViewDto::Pad { .. } => "Pad",
+            ViewDto::PadToSize { .. } => "PadToSize",
+            ViewDto::Letterbox { .. } => "Letterbox",
             ViewDto::Materialize => "Materialize",
         }
     }

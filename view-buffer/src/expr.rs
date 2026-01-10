@@ -165,6 +165,38 @@ impl ViewExpr {
                      Use graph-level execution to handle domain transitions."
                 )
             }
+            ViewDto::Histogram(_) => {
+                // Histogram operations change domain (counts/normalized/edges → Vector)
+                // or preserve it (quantized → Buffer)
+                // They are handled by the graph executor to properly manage
+                // the domain transition and output conversion
+                panic!(
+                    "Histogram operations cannot be applied via ViewExpr. \
+                     Use graph-level execution to handle domain transitions."
+                )
+            }
+            ViewDto::ResizeScale { .. }
+            | ViewDto::ResizeToHeight { .. }
+            | ViewDto::ResizeToWidth { .. }
+            | ViewDto::ResizeMax { .. }
+            | ViewDto::ResizeMin { .. } => {
+                // Deferred resize operations need access to input buffer dimensions
+                // They are handled by the graph executor
+                panic!(
+                    "Deferred resize operations cannot be applied via ViewExpr. \
+                     Use graph-level execution to compute dimensions."
+                )
+            }
+            ViewDto::Pad { .. }
+            | ViewDto::PadToSize { .. }
+            | ViewDto::Letterbox { .. } => {
+                // Padding operations are handled by the graph executor
+                // to support constant padding and dimension computation
+                panic!(
+                    "Padding operations cannot be applied via ViewExpr. \
+                     Use graph-level execution."
+                )
+            }
         }
     }
 
