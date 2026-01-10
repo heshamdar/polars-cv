@@ -707,7 +707,10 @@ fn test_multiple_buffers_for_registration() {
     let ptrs: Vec<*const u8> = buffers.iter().map(|b| b.as_ptr()).collect();
     for i in 0..ptrs.len() {
         for j in (i + 1)..ptrs.len() {
-            assert_ne!(ptrs[i], ptrs[j], "Different buffers should have different pointers");
+            assert_ne!(
+                ptrs[i], ptrs[j],
+                "Different buffers should have different pointers"
+            );
         }
     }
 }
@@ -763,7 +766,6 @@ fn test_large_buffer_for_view_registration() {
 #[test]
 fn test_view_buffer_to_polars_buffer_arc_count() {
     use view_buffer::ViewBuffer;
-    use std::sync::Arc;
 
     // Create a buffer
     let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8];

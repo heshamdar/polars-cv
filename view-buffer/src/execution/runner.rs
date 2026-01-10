@@ -117,11 +117,25 @@ fn apply_normalize(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> Vi
                 NormalizeMethod::Preset { mean, std } => {
                     // Channel-wise normalization - need to iterate with channel awareness
                     let channels = if shape.len() == 3 { shape[2] } else { 1 };
-                    assert_eq!(mean.len(), channels, "Mean length {} must match channel count {}", mean.len(), channels);
-                    assert_eq!(std.len(), channels, "Std length {} must match channel count {}", std.len(), channels);
+                    assert_eq!(
+                        mean.len(),
+                        channels,
+                        "Mean length {} must match channel count {}",
+                        mean.len(),
+                        channels
+                    );
+                    assert_eq!(
+                        std.len(),
+                        channels,
+                        "Std length {} must match channel count {}",
+                        std.len(),
+                        channels
+                    );
 
                     // Collect all values with channel-wise normalization
-                    let new_data: Vec<f32> = view.iter().enumerate()
+                    let new_data: Vec<f32> = view
+                        .iter()
+                        .enumerate()
                         .map(|(i, &x)| {
                             let c = i % channels;
                             (x - mean[c]) / std[c]
@@ -162,8 +176,20 @@ fn apply_normalize(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> Vi
         }
         NormalizeMethod::Preset { mean, std } => {
             let channels = if shape.len() == 3 { shape[2] } else { 1 };
-            assert_eq!(mean.len(), channels, "Mean length {} must match channel count {}", mean.len(), channels);
-            assert_eq!(std.len(), channels, "Std length {} must match channel count {}", std.len(), channels);
+            assert_eq!(
+                mean.len(),
+                channels,
+                "Mean length {} must match channel count {}",
+                mean.len(),
+                channels
+            );
+            assert_eq!(
+                std.len(),
+                channels,
+                "Std length {} must match channel count {}",
+                std.len(),
+                channels
+            );
             src.iter()
                 .enumerate()
                 .map(|(i, &x)| {
@@ -289,7 +315,12 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
 /// Non-contiguous inputs are materialized first as fast_image_resize
 /// requires contiguous memory.
 #[cfg(feature = "image_interop")]
-fn resize_strided(buf: ViewBuffer, target_width: u32, target_height: u32, filter: FilterType) -> ViewBuffer {
+fn resize_strided(
+    buf: ViewBuffer,
+    target_width: u32,
+    target_height: u32,
+    filter: FilterType,
+) -> ViewBuffer {
     // Ensure contiguous input (fast_image_resize requires contiguous memory)
     let contig_buf = if buf.layout.is_contiguous() {
         buf
@@ -323,38 +354,29 @@ fn resize_strided(buf: ViewBuffer, target_width: u32, target_height: u32, filter
         1 => fir::PixelType::U8,
         3 => fir::PixelType::U8x3,
         4 => fir::PixelType::U8x4,
-        _ => panic!("Resize only supports 1, 3, or 4 channels, got {}", c),
+        _ => panic!("Resize only supports 1, 3, or 4 channels, got {c}"),
     };
 
     // Create source image (read-only reference)
-    let src_image = fir::images::ImageRef::new(
-        w as u32,
-        h as u32,
-        src_slice,
-        pixel_type,
-    ).expect("Failed to create source image");
+    let src_image = fir::images::ImageRef::new(w as u32, h as u32, src_slice, pixel_type)
+        .expect("Failed to create source image");
 
     // Create destination image (mutable)
-    let mut dst_image = fir::images::Image::from_slice_u8(
-        target_width,
-        target_height,
-        &mut dst_data,
-        pixel_type,
-    ).expect("Failed to create dest image");
+    let mut dst_image =
+        fir::images::Image::from_slice_u8(target_width, target_height, &mut dst_data, pixel_type)
+            .expect("Failed to create dest image");
 
     // Perform resize
     let mut resizer = fir::Resizer::new();
-    resizer.resize(
-        &src_image,
-        &mut dst_image,
-        &fir::ResizeOptions::new().resize_alg(fir_filter),
-    ).expect("Resize failed");
+    resizer
+        .resize(
+            &src_image,
+            &mut dst_image,
+            &fir::ResizeOptions::new().resize_alg(fir_filter),
+        )
+        .expect("Resize failed");
 
-    ViewBuffer::from_vec(dst_data).reshape(vec![
-        target_height as usize,
-        target_width as usize,
-        c,
-    ])
+    ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
 }
 
 /// Strided grayscale conversion that works on non-contiguous buffers.
@@ -384,9 +406,7 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
     // Fast path: contiguous RGB buffer with standard layout
     // Strides should be [w*3, 3, 1] for contiguous HWC layout
     if buf.layout.is_contiguous() && channels == 3 {
-        let data = unsafe {
-            std::slice::from_raw_parts(buf.as_ptr::<u8>(), h * w * 3)
-        };
+        let data = unsafe { std::slice::from_raw_parts(buf.as_ptr::<u8>(), h * w * 3) };
         let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
 
         // Process 1 pixel at a time with direct slice access (no bounds check per channel)
@@ -404,11 +424,8 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
 
     // Strided path: handles non-contiguous buffers (crop, flip, etc.)
     // Uses pointer arithmetic which handles both positive and negative strides
-    let (stride_h, stride_w, stride_c) = (
-        strides[0],
-        strides[1],
-        strides.get(2).copied().unwrap_or(1),
-    );
+    let (stride_h, stride_w, stride_c) =
+        (strides[0], strides[1], strides.get(2).copied().unwrap_or(1));
     let base_ptr = unsafe { buf.as_ptr::<u8>() };
 
     let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
@@ -475,16 +492,12 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 ViewBuffer::from_vec(new_data).reshape(contig_buf.shape().to_vec())
             }
         }
-        ImageOpKind::Grayscale => {
-            grayscale_strided(work_buf)
-        }
+        ImageOpKind::Grayscale => grayscale_strided(work_buf),
         ImageOpKind::Resize {
             width,
             height,
             filter,
-        } => {
-            resize_strided(work_buf, width, height, filter)
-        }
+        } => resize_strided(work_buf, width, height, filter),
         ImageOpKind::Blur { sigma } => {
             let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
                 && work_buf.layout.is_contiguous()

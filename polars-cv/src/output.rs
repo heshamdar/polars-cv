@@ -351,12 +351,23 @@ mod tests {
     fn test_numpy_output_dtype_schema() {
         let dtype = numpy_output_dtype();
         if let DataType::Struct(fields) = dtype {
-            assert_eq!(fields.len(), 3);
+            assert_eq!(fields.len(), 5);
             assert_eq!(fields[0].name().as_str(), "data");
             assert_eq!(fields[0].dtype(), &DataType::Binary);
             assert_eq!(fields[1].name().as_str(), "dtype");
             assert_eq!(fields[1].dtype(), &DataType::String);
             assert_eq!(fields[2].name().as_str(), "shape");
+            assert_eq!(
+                fields[2].dtype(),
+                &DataType::List(Box::new(DataType::UInt64))
+            );
+            assert_eq!(fields[3].name().as_str(), "strides");
+            assert_eq!(
+                fields[3].dtype(),
+                &DataType::List(Box::new(DataType::Int64))
+            );
+            assert_eq!(fields[4].name().as_str(), "offset");
+            assert_eq!(fields[4].dtype(), &DataType::UInt64);
         } else {
             panic!("Expected Struct dtype");
         }
