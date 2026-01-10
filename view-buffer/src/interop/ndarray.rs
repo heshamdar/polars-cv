@@ -1,15 +1,22 @@
 //! ndarray interoperability.
+//!
+//! This module provides zero-copy conversion between ViewBuffer and ndarray.
+//! It properly handles negative strides (from flip operations) by using
+//! ndarray's `invert_axis` method.
 
 use crate::core::buffer::{BufferError, ViewBuffer};
 use crate::core::dtype::ViewType;
 use crate::core::layout::ExternalLayout;
 use crate::interop::{validate_layout, ExternalView};
-use ndarray::{ArrayD, ArrayView, ArrayViewD, ShapeBuilder};
+use ndarray::{ArrayD, ArrayView, ArrayViewD, Axis, ShapeBuilder};
 use std::marker::PhantomData;
 
 // --- Adapter Implementation (The Source of Logic) ---
 
 /// Adapter for zero-copy ndarray views.
+///
+/// This adapter properly handles negative strides (from flip operations)
+/// by converting them to positive strides and using `invert_axis`.
 pub struct NdArrayViewAdapter<T>(PhantomData<T>);
 
 impl<'a, T: ViewType> ExternalView<'a> for NdArrayViewAdapter<T> {
@@ -29,19 +36,22 @@ impl<'a, T: ViewType> ExternalView<'a> for NdArrayViewAdapter<T> {
         }
 
         // 3. Logic: Construct strides and shape for ndarray
-        // This logic was previously hidden in ViewBuffer::as_array_view
+        // Handle negative strides by tracking flipped axes
         let shape = buf.layout.shape.clone();
         let elem_size = std::mem::size_of::<T>() as isize;
 
+        // Track which axes have negative strides (need to be inverted later)
+        let mut flipped_axes: Vec<usize> = Vec::new();
+
+        // Convert byte strides to element strides, using absolute values
         let strides: Vec<usize> = buf
             .layout
             .strides
             .iter()
-            .map(|&s| {
+            .enumerate()
+            .map(|(axis, &s)| {
                 // Ensure stride matches element alignment
                 if s % elem_size != 0 {
-                    // In a robust system, return generic error or handle this.
-                    // For now, this invariant should be held by ViewBuffer construction.
                     panic!(
                         "Misaligned stride for type {:?}: stride {} not divisible by {}",
                         T::DTYPE,
@@ -49,16 +59,45 @@ impl<'a, T: ViewType> ExternalView<'a> for NdArrayViewAdapter<T> {
                         elem_size
                     );
                 }
-                (s / elem_size) as usize
+
+                let elem_stride = s / elem_size;
+
+                if elem_stride < 0 {
+                    // Track this axis for later inversion
+                    flipped_axes.push(axis);
+                    // Use absolute value for ndarray (from_shape_ptr requires non-negative strides)
+                    (-elem_stride) as usize
+                } else {
+                    elem_stride as usize
+                }
             })
             .collect();
 
-        // 4. Construct View
-        unsafe {
-            let ptr = buf.as_ptr::<T>();
-            // ndarray handles the raw pointer + strides
-            Ok(ArrayView::from_shape_ptr(shape.strides(strides), ptr))
+        // 4. Compute adjusted base pointer for negative strides
+        // For each negative stride axis, we need to offset the pointer to point
+        // to what will become the first element after inversion
+        let mut ptr_offset: isize = 0;
+        for &axis in &flipped_axes {
+            let axis_len = shape[axis] as isize;
+            let byte_stride = buf.layout.strides[axis];
+            // Move pointer to the "last" element along this axis (which becomes first after invert)
+            ptr_offset += (axis_len - 1) * byte_stride;
         }
+
+        // 5. Construct View with positive strides
+        let mut view = unsafe {
+            let base_ptr = buf.as_ptr::<u8>();
+            // Offset the pointer for negative strides
+            let adjusted_ptr = base_ptr.offset(ptr_offset) as *const T;
+            ArrayView::from_shape_ptr(shape.strides(strides), adjusted_ptr)
+        };
+
+        // 6. Apply invert_axis for each flipped axis to restore correct order
+        for &axis in &flipped_axes {
+            view.invert_axis(Axis(axis));
+        }
+
+        Ok(view)
     }
 }
 
@@ -95,7 +134,8 @@ impl FromNdarray for ViewBuffer {
         };
 
         let shape = array.shape().to_vec();
-        let vec = array.into_raw_vec();
+        // Use the new API that returns offset (should be 0 for standard layout)
+        let (vec, _offset) = array.into_raw_vec_and_offset();
 
         ViewBuffer::from_vec(vec).reshape(shape)
     }

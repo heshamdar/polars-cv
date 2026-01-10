@@ -654,3 +654,127 @@ fn test_slice_policy_with_polars_arrow_storage() {
     assert!(view.can_zero_copy_transfer_with_policy(SlicePolicy::AlwaysCopy));
     assert!(view.can_zero_copy_transfer_with_policy(SlicePolicy::Heuristic { threshold: 0.99 }));
 }
+
+// ============================================================
+// Buffer Registration / BinaryViewArray Tests
+// ============================================================
+
+#[test]
+fn test_buffer_can_be_registered_for_binary_view() {
+    use view_buffer::ViewBuffer;
+
+    // Create a buffer that would be used as image data
+    let data: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
+    let buffer = ViewBuffer::from_vec(data);
+
+    // Get the polars buffer
+    let (polars_buf, _shape, _dtype) = buffer.into_polars_buffer();
+
+    // Verify the buffer can be cloned (Arc-based) for registration
+    let cloned = polars_buf.clone();
+    assert_eq!(polars_buf.len(), cloned.len());
+    assert_eq!(polars_buf.as_slice(), cloned.as_slice());
+
+    // Verify the data pointer is the same (true zero-copy)
+    assert_eq!(
+        polars_buf.as_ptr(),
+        cloned.as_ptr(),
+        "Buffer clone should share memory"
+    );
+}
+
+#[test]
+fn test_multiple_buffers_for_registration() {
+    use view_buffer::ViewBuffer;
+
+    // Create multiple buffers that would represent different rows
+    let buffers: Vec<Buffer<u8>> = (0..5)
+        .map(|i| {
+            let data: Vec<u8> = (0..100).map(|j| ((i * 100 + j) % 256) as u8).collect();
+            let vb = ViewBuffer::from_vec(data);
+            let (polars_buf, _, _) = vb.into_polars_buffer();
+            polars_buf
+        })
+        .collect();
+
+    // Each buffer should be independent
+    assert_eq!(buffers.len(), 5);
+    for buf in &buffers {
+        assert_eq!(buf.len(), 100);
+    }
+
+    // Different buffers should have different data pointers
+    let ptrs: Vec<*const u8> = buffers.iter().map(|b| b.as_ptr()).collect();
+    for i in 0..ptrs.len() {
+        for j in (i + 1)..ptrs.len() {
+            assert_ne!(ptrs[i], ptrs[j], "Different buffers should have different pointers");
+        }
+    }
+}
+
+#[test]
+fn test_buffer_len_for_view_creation() {
+    use view_buffer::ViewBuffer;
+
+    // Test various sizes including edge cases
+    let test_sizes = vec![0, 1, 12, 13, 100, 1000, 10000];
+
+    for size in test_sizes {
+        let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+        let buffer = ViewBuffer::from_vec(data);
+        let (polars_buf, _, _) = buffer.into_polars_buffer();
+
+        assert_eq!(
+            polars_buf.len(),
+            size,
+            "Buffer size mismatch for size {}",
+            size
+        );
+
+        // Verify data integrity
+        for (i, &byte) in polars_buf.as_slice().iter().enumerate() {
+            assert_eq!(byte, (i % 256) as u8, "Data mismatch at index {}", i);
+        }
+    }
+}
+
+#[test]
+fn test_large_buffer_for_view_registration() {
+    use view_buffer::ViewBuffer;
+
+    // Create a large buffer simulating a high-resolution image (1920x1080x3)
+    let width = 1920;
+    let height = 1080;
+    let channels = 3;
+    let size = width * height * channels;
+
+    let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+    let buffer = ViewBuffer::from_vec(data).reshape(vec![height, width, channels]);
+
+    assert_eq!(buffer.shape(), &[height, width, channels]);
+
+    let (polars_buf, shape, dtype) = buffer.into_polars_buffer();
+
+    assert_eq!(polars_buf.len(), size);
+    assert_eq!(shape, vec![height, width, channels]);
+    assert_eq!(dtype, DType::U8);
+}
+
+#[test]
+fn test_view_buffer_to_polars_buffer_arc_count() {
+    use view_buffer::ViewBuffer;
+    use std::sync::Arc;
+
+    // Create a buffer
+    let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    let buffer = ViewBuffer::from_vec(data);
+
+    // Get polars buffer and clone it
+    let (polars_buf, _, _) = buffer.into_polars_buffer();
+    let cloned1 = polars_buf.clone();
+    let cloned2 = polars_buf.clone();
+
+    // All clones should share the same underlying data
+    assert_eq!(polars_buf.as_ptr(), cloned1.as_ptr());
+    assert_eq!(polars_buf.as_ptr(), cloned2.as_ptr());
+}

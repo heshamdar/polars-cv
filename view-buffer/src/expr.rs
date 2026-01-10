@@ -201,33 +201,26 @@ impl ViewExpr {
     // Helper to calculate next strides
     fn calc_strides(&self, op: &impl Op, new_shape: &[usize]) -> Option<Vec<isize>> {
         if let Some(current_strides) = &self.strides {
-            // Special handling for Reshape which requires DType to calc new contiguous strides
-            // if we determined it's valid.
-            // Since Op trait definition was limited, we handle specific logic here or accept None.
-            // For now, simple delegation.
+            // Try to infer strides from the operation
             let res = op.infer_strides(&self.shape, current_strides);
 
-            // If Op returned None, but we know it produces contiguous output (RequiresContiguous),
-            // we can calculate default strides here using self.dtype (or new dtype).
-            if res.is_none() && op.memory_effect() == MemoryEffect::RequiresContiguous {
+            // If Op returned None, it means the operation produces contiguous output
+            // (either because it requires contiguous input, or because it allocates a new buffer).
+            // Calculate contiguous strides for the new shape.
+            if res.is_none() {
                 let new_dtype = op.infer_dtype(&[self.dtype]);
-                // Calculate default contiguous strides
                 let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
                 return Some(l.strides);
             }
 
-            // Special Check for Reshape:
-            // If it is a ViewOp::Reshape, we need to check contiguity.
-            // We use LayoutFacts logic.
-            // If contiguous, we return new contiguous strides.
-            // If NOT contiguous, Reshape as a view is INVALID.
-            // We can detect this here!
-            // (This check assumes we can cast Op to ViewOp to check variant, which is hard generically,
-            // but we are in builder methods below).
             res
         } else {
-            // If input strides are unknown, output usually unknown unless forced contiguous
-            if op.memory_effect() == crate::ops::MemoryEffect::RequiresContiguous {
+            // If input strides are unknown, calculate contiguous strides for allocating ops
+            // or ops that require contiguous input
+            let effect = op.memory_effect();
+            if effect == MemoryEffect::RequiresContiguous
+                || op.intrinsic_cost() == crate::ops::OpCost::Allocating
+            {
                 let new_dtype = op.infer_dtype(&[self.dtype]);
                 let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
                 return Some(l.strides);

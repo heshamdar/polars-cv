@@ -343,3 +343,165 @@ class TestPerformanceBasics:
                 assert result["out"][i] is None
             else:
                 assert result["out"][i] is not None
+
+
+# ============================================================
+# Full Zero-Copy Pipeline Tests
+# ============================================================
+
+
+class TestFullZeroCopyPipeline:
+    """Tests for complete zero-copy flow through the pipeline."""
+
+    def test_full_pipeline_with_strided_ops(self) -> None:
+        """Test complete zero-copy flow: input -> view ops -> strided ops -> output.
+
+        This test verifies that the entire pipeline from input through
+        view operations (flip, crop) to strided compute operations
+        (grayscale, resize) and finally to output works correctly.
+        """
+        # Create test image with gradient for verification
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        for i in range(100):
+            img[i, :, :] = i * 2  # Gradient from 0 to 198
+
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"data": [img_bytes]})
+
+        # Pipeline with strided ops
+        # flip: View op (zero-copy, creates strided view)
+        # crop: View op (zero-copy, creates strided view)
+        # grayscale: Now strided-compatible
+        # resize: Now strided-compatible via fast_image_resize
+        from polars_cv import numpy_from_struct
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .flip(axes=[0])             # View op (vertical flip)
+            .crop(top=10, left=10, height=80, width=80)  # View op
+            .grayscale()                # Strided op
+            .resize(height=64, width=64)  # Strided op
+            .sink("numpy")
+        )
+
+        result = df.with_columns(output=pl.col("data").cv.pipeline(pipe))
+
+        arr = numpy_from_struct(result["output"][0])
+
+        # Verify shape
+        assert arr.shape == (64, 64, 1)
+        assert arr.dtype == np.uint8
+
+        # Verify the flip worked - after vertical flip, bottom of original
+        # (brighter values) should be at top
+        # The gradient was 0-198 from top to bottom, so after flip
+        # the top should have higher values than the bottom
+        top_mean = arr[:16, :, 0].mean()
+        bottom_mean = arr[48:, :, 0].mean()
+        assert top_mean > bottom_mean, (
+            f"After vertical flip, top should be brighter: top={top_mean}, bottom={bottom_mean}"
+        )
+
+    def test_multiple_view_ops_preserved(self) -> None:
+        """Test that multiple view operations are properly accumulated."""
+        img = np.full((64, 64, 3), 100, dtype=np.uint8)
+        # Add a distinct corner
+        img[0:16, 0:16, 0] = 255  # Red top-left corner
+
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"data": [img_bytes]})
+
+        from polars_cv import numpy_from_struct
+
+        # Double flip should return to original orientation
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .flip(axes=[0])  # vertical flip
+            .flip(axes=[0])  # Back to original
+            .sink("numpy")
+        )
+
+        result = df.with_columns(output=pl.col("data").cv.pipeline(pipe))
+        arr = numpy_from_struct(result["output"][0])
+
+        # Red corner should still be at top-left
+        assert arr.shape == (64, 64, 3)
+        assert arr[0, 0, 0] == 255  # Red channel top-left
+        assert arr[63, 63, 0] == 100  # Bottom-right should be default
+
+    def test_normalize_on_strided_buffer(self) -> None:
+        """Test normalize operation works on strided (flipped) buffers."""
+        img = np.full((32, 32, 3), 128, dtype=np.uint8)
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"data": [img_bytes]})
+
+        from polars_cv import numpy_from_struct
+
+        # flip -> cast -> normalize should work on strided buffer
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .flip(axes=[1])  # horizontal flip
+            .cast("f32")
+            .normalize(method="minmax")
+            .sink("numpy")
+        )
+
+        result = df.with_columns(output=pl.col("data").cv.pipeline(pipe))
+        arr = numpy_from_struct(result["output"][0])
+
+        assert arr.dtype == np.float32
+        assert arr.shape == (32, 32, 3)
+
+    def test_large_pipeline_with_many_operations(self) -> None:
+        """Test a complex pipeline with many operations maintains data integrity."""
+        # Create a checkerboard pattern
+        img = np.zeros((64, 64, 3), dtype=np.uint8)
+        for i in range(64):
+            for j in range(64):
+                if (i // 8 + j // 8) % 2 == 0:
+                    img[i, j, :] = 200
+
+        pil_img = Image.fromarray(img)
+        buf = BytesIO()
+        pil_img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        df = pl.DataFrame({"data": [img_bytes]})
+
+        from polars_cv import numpy_from_struct
+
+        # Long pipeline with multiple operations
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .flip(axes=[0])             # View op (vertical flip)
+            .crop(top=8, left=8, height=48, width=48)  # View op, 48x48
+            .flip(axes=[1])             # View op (horizontal flip)
+            .grayscale()                # Strided op, 48x48x1
+            .resize(height=32, width=32)  # Strided op
+            .threshold(value=100)       # Element-wise op
+            .sink("numpy")
+        )
+
+        result = df.with_columns(output=pl.col("data").cv.pipeline(pipe))
+        arr = numpy_from_struct(result["output"][0])
+
+        assert arr.shape == (32, 32, 1)
+        assert arr.dtype == np.uint8
+        # After threshold, values should be 0 or 255
+        assert np.all((arr == 0) | (arr == 255))

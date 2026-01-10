@@ -22,6 +22,9 @@ use image::imageops;
 #[cfg(feature = "image_interop")]
 use image::{ImageBuffer, Luma, Rgb};
 
+#[cfg(feature = "image_interop")]
+use fast_image_resize as fir;
+
 /// High-level entry point to execute a plan described by a sequence of ViewDto operations.
 /// This acts as the bridge between the serialized plan (e.g. from Python) and the
 /// execution engine.
@@ -81,9 +84,58 @@ fn apply_normalize(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> Vi
         buf.clone()
     };
 
+    let shape = work_buf.shape().to_vec();
+
+    // Try ndarray path first (handles negative strides via invert_axis in ndarray 0.17+)
+    #[cfg(feature = "ndarray_interop")]
+    {
+        if let Ok(view) = work_buf.as_array_view::<f32>() {
+            match method {
+                NormalizeMethod::MinMax => {
+                    let min = view.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max = view.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    let range = max - min;
+                    if range == 0.0 {
+                        let result: ndarray::ArrayD<f32> = ndarray::Array::zeros(view.raw_dim());
+                        return ViewBuffer::from_array(result);
+                    }
+                    let result = view.mapv(|x| (x - min) / range);
+                    return ViewBuffer::from_array(result.into_owned());
+                }
+                NormalizeMethod::ZScore => {
+                    let n = view.len() as f32;
+                    let mean = view.iter().sum::<f32>() / n;
+                    let variance = view.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
+                    let std_val = variance.sqrt();
+                    if std_val == 0.0 {
+                        let result: ndarray::ArrayD<f32> = ndarray::Array::zeros(view.raw_dim());
+                        return ViewBuffer::from_array(result);
+                    }
+                    let result = view.mapv(|x| (x - mean) / std_val);
+                    return ViewBuffer::from_array(result.into_owned());
+                }
+                NormalizeMethod::Preset { mean, std } => {
+                    // Channel-wise normalization - need to iterate with channel awareness
+                    let channels = if shape.len() == 3 { shape[2] } else { 1 };
+                    assert_eq!(mean.len(), channels, "Mean length {} must match channel count {}", mean.len(), channels);
+                    assert_eq!(std.len(), channels, "Std length {} must match channel count {}", std.len(), channels);
+
+                    // Collect all values with channel-wise normalization
+                    let new_data: Vec<f32> = view.iter().enumerate()
+                        .map(|(i, &x)| {
+                            let c = i % channels;
+                            (x - mean[c]) / std[c]
+                        })
+                        .collect();
+                    return ViewBuffer::from_vec(new_data).reshape(shape);
+                }
+            }
+        }
+    }
+
+    // Fallback: use contiguous buffer
     let contig = work_buf.to_contiguous();
     let count = contig.layout.num_elements();
-    let shape = contig.shape();
     let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
 
     let new_data: Vec<f32> = match method {
@@ -92,8 +144,6 @@ fn apply_normalize(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> Vi
             let max = src.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let range = max - min;
             if range == 0.0 {
-                // Edge case: constant array - return 0.0 for all elements
-                // This avoids division by zero and gives a predictable result
                 vec![0.0; count]
             } else {
                 src.iter().map(|&x| (x - min) / range).collect()
@@ -103,36 +153,17 @@ fn apply_normalize(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> Vi
             let n = count as f32;
             let mean = src.iter().sum::<f32>() / n;
             let variance = src.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
-            let std = variance.sqrt();
-            if std == 0.0 {
-                // Edge case: constant array - return 0.0 for all elements
+            let std_val = variance.sqrt();
+            if std_val == 0.0 {
                 vec![0.0; count]
             } else {
-                src.iter().map(|&x| (x - mean) / std).collect()
+                src.iter().map(|&x| (x - mean) / std_val).collect()
             }
         }
         NormalizeMethod::Preset { mean, std } => {
-            // Channel-wise normalization with preset values
-            // Assumes HWC layout where last dimension is channels
             let channels = if shape.len() == 3 { shape[2] } else { 1 };
-
-            // Validate channel count matches mean/std length
-            assert_eq!(
-                mean.len(),
-                channels,
-                "Mean length {} must match channel count {}",
-                mean.len(),
-                channels
-            );
-            assert_eq!(
-                std.len(),
-                channels,
-                "Std length {} must match channel count {}",
-                std.len(),
-                channels
-            );
-
-            // Apply (x - mean[c]) / std[c] for each element
+            assert_eq!(mean.len(), channels, "Mean length {} must match channel count {}", mean.len(), channels);
+            assert_eq!(std.len(), channels, "Std length {} must match channel count {}", std.len(), channels);
             src.iter()
                 .enumerate()
                 .map(|(i, &x)| {
@@ -167,6 +198,7 @@ where
     };
 
     // Try to use ndarray if available for efficient strided iteration
+    // (ndarray 0.17+ handles negative strides via invert_axis)
     #[cfg(feature = "ndarray_interop")]
     {
         if let Ok(view) = work_buf.as_array_view::<f32>() {
@@ -251,6 +283,148 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
     }
 }
 
+/// Resize using fast_image_resize with SIMD optimization.
+///
+/// Uses SIMD-optimized resize algorithms for high performance.
+/// Non-contiguous inputs are materialized first as fast_image_resize
+/// requires contiguous memory.
+#[cfg(feature = "image_interop")]
+fn resize_strided(buf: ViewBuffer, target_width: u32, target_height: u32, filter: FilterType) -> ViewBuffer {
+    // Ensure contiguous input (fast_image_resize requires contiguous memory)
+    let contig_buf = if buf.layout.is_contiguous() {
+        buf
+    } else {
+        buf.to_contiguous()
+    };
+
+    let shape = contig_buf.shape();
+    let (h, w) = (shape[0], shape[1]);
+    let c = shape.get(2).copied().unwrap_or(1);
+
+    // Map our filter types to fast_image_resize types
+    let fir_filter = match filter {
+        FilterType::Nearest => fir::ResizeAlg::Nearest,
+        FilterType::Triangle => fir::ResizeAlg::Convolution(fir::FilterType::Bilinear),
+        FilterType::CatmullRom => fir::ResizeAlg::Convolution(fir::FilterType::CatmullRom),
+        FilterType::Gaussian => fir::ResizeAlg::Convolution(fir::FilterType::Gaussian),
+        FilterType::Lanczos3 => fir::ResizeAlg::Convolution(fir::FilterType::Lanczos3),
+    };
+
+    // Allocate destination buffer
+    let dst_size = (target_height as usize) * (target_width as usize) * c;
+    let mut dst_data = vec![0u8; dst_size];
+
+    // Get source buffer slice
+    let src_len = h * w * c;
+    let src_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), src_len) };
+
+    // Map channel count to pixel type
+    let pixel_type = match c {
+        1 => fir::PixelType::U8,
+        3 => fir::PixelType::U8x3,
+        4 => fir::PixelType::U8x4,
+        _ => panic!("Resize only supports 1, 3, or 4 channels, got {}", c),
+    };
+
+    // Create source image (read-only reference)
+    let src_image = fir::images::ImageRef::new(
+        w as u32,
+        h as u32,
+        src_slice,
+        pixel_type,
+    ).expect("Failed to create source image");
+
+    // Create destination image (mutable)
+    let mut dst_image = fir::images::Image::from_slice_u8(
+        target_width,
+        target_height,
+        &mut dst_data,
+        pixel_type,
+    ).expect("Failed to create dest image");
+
+    // Perform resize
+    let mut resizer = fir::Resizer::new();
+    resizer.resize(
+        &src_image,
+        &mut dst_image,
+        &fir::ResizeOptions::new().resize_alg(fir_filter),
+    ).expect("Resize failed");
+
+    ViewBuffer::from_vec(dst_data).reshape(vec![
+        target_height as usize,
+        target_width as usize,
+        c,
+    ])
+}
+
+/// Strided grayscale conversion that works on non-contiguous buffers.
+///
+/// Uses ndarray for strided access when available, falling back to manual
+/// strided iteration. This avoids the need to call `to_contiguous()` for
+/// flipped, cropped, or transposed buffers.
+///
+/// Uses BT.601 coefficients: Y = 0.299*R + 0.587*G + 0.114*B
+/// Implemented with fixed-point math: Y = (77*R + 150*G + 29*B + 128) >> 8
+#[cfg(feature = "image_interop")]
+fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
+    let shape = buf.shape();
+    let (h, w) = (shape[0], shape[1]);
+    let channels = shape.get(2).copied().unwrap_or(1);
+
+    if channels == 1 {
+        // Already grayscale
+        return buf;
+    }
+
+    // Use ndarray for strided access (handles negative strides via invert_axis in 0.17+)
+    #[cfg(feature = "ndarray_interop")]
+    {
+        if let Ok(view) = buf.as_array_view::<u8>() {
+            let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
+            for y in 0..h {
+                for x in 0..w {
+                    let r = view[[y, x, 0]] as u32;
+                    let g = view[[y, x, 1]] as u32;
+                    let b = view[[y, x, 2]] as u32;
+                    // BT.601 fixed-point
+                    let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
+                    gray_data.push(gray);
+                }
+            }
+            return ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1]);
+        }
+    }
+
+    // Fallback: manual strided iteration (for when ndarray is not available)
+    let strides = buf.strides_bytes();
+    let (stride_h, stride_w, stride_c) = (
+        strides[0],
+        strides[1],
+        strides.get(2).copied().unwrap_or(1),
+    );
+    let base_ptr = unsafe { buf.as_ptr::<u8>() };
+
+    let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
+
+    for y in 0..h {
+        for x in 0..w {
+            // Use pointer offset arithmetic to handle negative strides properly
+            let pixel_offset = y as isize * stride_h + x as isize * stride_w;
+            unsafe {
+                let pixel_ptr = base_ptr.offset(pixel_offset);
+                let r = *pixel_ptr as u32;
+                let g = *pixel_ptr.offset(stride_c) as u32;
+                let b = *pixel_ptr.offset(2 * stride_c) as u32;
+                // BT.601 fixed-point
+                let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
+                gray_data.push(gray);
+            }
+        }
+    }
+
+    ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1])
+}
+
 /// Applies an image operation to a buffer.
 ///
 /// Image operations accept any numeric input dtype and automatically convert
@@ -295,100 +469,14 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             }
         }
         ImageOpKind::Grayscale => {
-            let shape = work_buf.shape();
-            let channels = *shape.get(2).unwrap_or(&1);
-
-            if channels == 1 {
-                // Already grayscale, just ensure it's U8
-                return work_buf;
-            }
-
-            let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
-                && work_buf.layout.is_contiguous()
-            {
-                work_buf
-            } else {
-                work_buf.to_contiguous()
-            };
-
-            let (h, w) = (
-                contig_buf.shape()[0] as usize,
-                contig_buf.shape()[1] as usize,
-            );
-            let count = contig_buf.layout.num_elements();
-            let raw_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count) };
-
-            // Use BT.601 coefficients (same as OpenCV, Pillow, etc.)
-            // Y = 0.299*R + 0.587*G + 0.114*B
-            // Using fixed-point math for speed: Y = (77*R + 150*G + 29*B) >> 8
-            let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
-            for y in 0..h {
-                for x in 0..w {
-                    let idx = (y * w + x) * channels;
-                    let r = raw_slice[idx] as u32;
-                    let g = raw_slice[idx + 1] as u32;
-                    let b = raw_slice[idx + 2] as u32;
-                    // BT.601: 0.299*R + 0.587*G + 0.114*B
-                    // Fixed-point: (77*R + 150*G + 29*B + 128) >> 8
-                    let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
-                    gray_data.push(gray);
-                }
-            }
-            ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1])
+            grayscale_strided(work_buf)
         }
         ImageOpKind::Resize {
             width,
             height,
             filter,
         } => {
-            let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
-                && work_buf.layout.is_contiguous()
-            {
-                work_buf
-            } else {
-                work_buf.to_contiguous()
-            };
-
-            let shape = contig_buf.shape();
-            let (h, w, c) = (
-                shape[0] as u32,
-                shape[1] as u32,
-                *shape.get(2).unwrap_or(&1) as u32,
-            );
-
-            let img_filter = match filter {
-                FilterType::Nearest => imageops::FilterType::Nearest,
-                FilterType::Triangle => imageops::FilterType::Triangle,
-                FilterType::CatmullRom => imageops::FilterType::CatmullRom,
-                FilterType::Gaussian => imageops::FilterType::Gaussian,
-                FilterType::Lanczos3 => imageops::FilterType::Lanczos3,
-            };
-
-            let count = contig_buf.layout.num_elements();
-            let raw_vec =
-                unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count).to_vec() };
-
-            if c == 3 {
-                let img_buf: ImageBuffer<Rgb<u8>, Vec<u8>> =
-                    ImageBuffer::from_raw(w, h, raw_vec).expect("Failed to create ImageBuffer");
-                let resized = imageops::resize(&img_buf, width, height, img_filter);
-                ViewBuffer::from_vec(resized.into_raw()).reshape(vec![
-                    height as usize,
-                    width as usize,
-                    3,
-                ])
-            } else if c == 1 {
-                let img_buf: ImageBuffer<Luma<u8>, Vec<u8>> =
-                    ImageBuffer::from_raw(w, h, raw_vec).expect("Failed to create ImageBuffer");
-                let resized = imageops::resize(&img_buf, width, height, img_filter);
-                ViewBuffer::from_vec(resized.into_raw()).reshape(vec![
-                    height as usize,
-                    width as usize,
-                    1,
-                ])
-            } else {
-                panic!("Resize only supports 1 or 3 channels");
-            }
+            resize_strided(work_buf, width, height, filter)
         }
         ImageOpKind::Blur { sigma } => {
             let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
