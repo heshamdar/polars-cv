@@ -226,7 +226,10 @@ class Pipeline:
                 - "raw": Raw bytes (requires dtype; shape via assert_shape or reshape)
                 - "list": Polars nested List column (dtype auto-inferred or explicit)
                 - "array": Polars fixed-size Array column (dtype auto-inferred or explicit)
-                - "file_path": Read from file path string (local or cloud: s3://, gs://, az://)
+                - "file_path": Read from file path string. Supports:
+                    - Local paths: /path/to/image.png
+                    - Cloud storage: s3://, gs://, az://
+                    - HTTP/HTTPS URLs: http://, https://
                 - "contour": Rasterize contour struct to binary mask
             dtype: Data type for "raw" format (required), or optional override for
                 "list"/"array" formats. Examples: "u8", "f32", "i32".
@@ -263,6 +266,11 @@ class Pipeline:
             >>>
             >>> # Read from local file path
             >>> Pipeline().source('file_path').resize(224, 224).sink('numpy')
+            >>>
+            >>> # Read from HTTP/HTTPS URL
+            >>> df = pl.DataFrame({"url": ["https://example.com/image.png"]})
+            >>> pipe = Pipeline().source('file_path').sink('numpy')
+            >>> result = df.with_columns(image=pl.col("url").cv.pipeline(pipe))
             >>>
             >>> # Read from S3 with default credentials
             >>> Pipeline().source('file_path').resize(224, 224).sink('numpy')

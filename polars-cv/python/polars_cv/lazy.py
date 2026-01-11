@@ -646,6 +646,10 @@ class LazyPipelineExpr:
             - Can merge pipelines from different source columns (multi-source graph)
             - The merged node's output is the same as self (first argument)
         """
+
+        if not isinstance(self, LazyPipelineExpr):
+            raise TypeError("merge_pipe() must be called on a LazyPipelineExpr")
+
         # Clone the pipeline - the merge node acts as a passthrough
         new_pipeline = self._pipeline._clone()
 

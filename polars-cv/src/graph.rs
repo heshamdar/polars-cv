@@ -2607,21 +2607,23 @@ impl UnifiedGraph {
 
                                 match input_ca.get(row_idx) {
                                     Some(path) => {
-                                        // Read the file (local or cloud)
+                                        // Read the file (local, cloud, or HTTP)
                                         let bytes = if path.starts_with("s3://")
                                             || path.starts_with("gs://")
                                             || path.starts_with("az://")
                                             || path.starts_with("abfs://")
                                             || path.starts_with("abfss://")
+                                            || path.starts_with("http://")
+                                            || path.starts_with("https://")
                                         {
-                                            // Cloud storage path
+                                            // Remote path (cloud storage or HTTP URL)
                                             #[cfg(feature = "cloud")]
                                             {
                                                 match crate::cloud::read_file(path, None) {
                                                     Ok(b) => b,
                                                     Err(e) => {
                                                         return Err(format!(
-                                                        "Failed to read cloud file '{path}': {e}"
+                                                        "Failed to read remote file '{path}': {e}"
                                                     ))
                                                     }
                                                 }
@@ -2629,7 +2631,7 @@ impl UnifiedGraph {
                                             #[cfg(not(feature = "cloud"))]
                                             {
                                                 return Err(format!(
-                                                    "Cloud storage support is not enabled. \
+                                                    "Remote storage support is not enabled. \
                                                     Install with 'cloud' feature: \
                                                     pip install polars-cv[cloud] or \
                                                     cargo build --features cloud"

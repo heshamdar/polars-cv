@@ -31,7 +31,7 @@ class SourceFormat(str, Enum):
     IMAGE_BYTES = "image_bytes"  # Decode PNG/JPEG (auto-detect)
     BLOB = "blob"  # VIEW protocol binary
     RAW = "raw"  # Raw bytes (requires dtype and shape)
-    FILE_PATH = "file_path"  # Read from file path string
+    FILE_PATH = "file_path"  # Read from file path (local, cloud, or HTTP URL)
     CONTOUR = "contour"  # Contour struct data
     LIST = "list"  # Polars nested List column (requires dtype)
     ARRAY = "array"  # Polars fixed-size Array column (requires dtype)

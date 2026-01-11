@@ -20,6 +20,15 @@ maturin develop --release
 pip install polars-cv
 ```
 
+> **ℹ️ Note:**  
+> Polars typically operates on relatively small row sizes, which may require changing the `POLARS_IDEAL_MORSEL_SIZE` environment variable to a smaller value, to avoid memory allocation issues.  
+> You can set it like this before importing polars:
+> 
+> ```python
+> import os
+> os.environ["POLARS_IDEAL_MORSEL_SIZE"] = "10"
+> ```
+
 ## Quick Start
 
 ```python
