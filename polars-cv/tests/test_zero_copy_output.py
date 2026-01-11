@@ -18,12 +18,7 @@ import numpy as np
 import polars as pl
 import pytest
 from PIL import Image
-
-from polars_cv import (
-    NUMPY_OUTPUT_SCHEMA,
-    Pipeline,
-    numpy_from_struct,
-)
+from polars_cv import NUMPY_OUTPUT_SCHEMA, Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -66,13 +61,15 @@ class TestNumpyOutputSchema:
 
     def test_numpy_output_schema_structure(self) -> None:
         """NUMPY_OUTPUT_SCHEMA should have correct structure."""
-        assert NUMPY_OUTPUT_SCHEMA == pl.Struct({
-            "data": pl.Binary,
-            "dtype": pl.String,
-            "shape": pl.List(pl.UInt64),
-            "strides": pl.List(pl.Int64),
-            "offset": pl.UInt64,
-        })
+        assert NUMPY_OUTPUT_SCHEMA == pl.Struct(
+            {
+                "data": pl.Binary,
+                "dtype": pl.String,
+                "shape": pl.List(pl.UInt64),
+                "strides": pl.List(pl.Int64),
+                "offset": pl.UInt64,
+            }
+        )
 
     def test_numpy_sink_returns_struct(self, simple_rgb_bytes: bytes) -> None:
         """Numpy sink should return Struct type, not Binary."""
@@ -82,9 +79,9 @@ class TestNumpyOutputSchema:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_dtype = result["output"].dtype
-        assert isinstance(output_dtype, pl.Struct), (
-            f"Expected Struct dtype for numpy sink, got {output_dtype}"
-        )
+        assert isinstance(
+            output_dtype, pl.Struct
+        ), f"Expected Struct dtype for numpy sink, got {output_dtype}"
 
     def test_numpy_sink_struct_fields(self, simple_rgb_bytes: bytes) -> None:
         """Numpy sink struct should have data, dtype, shape fields."""
@@ -109,9 +106,9 @@ class TestNumpyOutputSchema:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_dtype = result["output"].dtype
-        assert isinstance(output_dtype, pl.Struct), (
-            f"Expected Struct dtype for torch sink, got {output_dtype}"
-        )
+        assert isinstance(
+            output_dtype, pl.Struct
+        ), f"Expected Struct dtype for torch sink, got {output_dtype}"
 
 
 # ============================================================
@@ -297,11 +294,11 @@ class TestExecutionModes:
 class TestNullHandling:
     """Tests for null value handling in output."""
 
-    def test_null_input_produces_null_struct_fields(self, simple_rgb_bytes: bytes) -> None:
+    def test_null_input_produces_null_struct_fields(
+        self, simple_rgb_bytes: bytes
+    ) -> None:
         """Null input should produce struct with null fields."""
-        df = pl.DataFrame({
-            "image": [simple_rgb_bytes, None, simple_rgb_bytes]
-        })
+        df = pl.DataFrame({"image": [simple_rgb_bytes, None, simple_rgb_bytes]})
 
         pipe = Pipeline().source("image_bytes").sink("numpy")
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
@@ -320,9 +317,7 @@ class TestNullHandling:
 
     def test_null_struct_raises_on_conversion(self, simple_rgb_bytes: bytes) -> None:
         """Attempting to convert null struct should raise ValueError."""
-        df = pl.DataFrame({
-            "image": [None]
-        }).cast({"image": pl.Binary})
+        df = pl.DataFrame({"image": [None]}).cast({"image": pl.Binary})
 
         pipe = Pipeline().source("image_bytes").sink("numpy")
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
@@ -369,9 +364,7 @@ class TestMultipleRows:
 
     def test_batch_processing_consistency(self, simple_rgb_bytes: bytes) -> None:
         """Batch processing should produce consistent results."""
-        df = pl.DataFrame({
-            "image": [simple_rgb_bytes] * 10
-        })
+        df = pl.DataFrame({"image": [simple_rgb_bytes] * 10})
 
         pipe = Pipeline().source("image_bytes").resize(height=8, width=8).sink("numpy")
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
@@ -398,7 +391,6 @@ class TestDtypePreservation:
         pipe = Pipeline().source("image_bytes").sink("numpy")
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
-        row = result["output"][0]
         # Check dtype field directly
         unnested = result["output"].struct.unnest()
         assert unnested["dtype"][0] == "uint8"
@@ -434,7 +426,9 @@ class TestDtypePreservation:
         """Shape field should contain correct dimensions."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").resize(height=10, width=20).sink("numpy")
+        pipe = (
+            Pipeline().source("image_bytes").resize(height=10, width=20).sink("numpy")
+        )
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         unnested = result["output"].struct.unnest()
@@ -443,7 +437,7 @@ class TestDtypePreservation:
         # Resize(height=10, width=20)
         assert shape[0] == 10  # Height
         assert shape[1] == 20  # Width
-        assert shape[2] == 3   # Channels
+        assert shape[2] == 3  # Channels
 
 
 # ============================================================
@@ -472,7 +466,9 @@ class TestMemoryEfficiency:
 
         df = pl.DataFrame({"image": images})
 
-        pipe = Pipeline().source("image_bytes").resize(height=16, width=16).sink("numpy")
+        pipe = (
+            Pipeline().source("image_bytes").resize(height=16, width=16).sink("numpy")
+        )
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         # Verify all outputs are correct
@@ -487,9 +483,9 @@ class TestMemoryEfficiency:
         """Verify output data has correct values after zero-copy transfer."""
         # Create image with known values
         img = np.zeros((4, 4, 3), dtype=np.uint8)
-        img[0, 0, :] = [255, 0, 0]    # Red pixel at top-left
-        img[3, 3, :] = [0, 255, 0]    # Green pixel at bottom-right
-        img[0, 3, :] = [0, 0, 255]    # Blue pixel at top-right
+        img[0, 0, :] = [255, 0, 0]  # Red pixel at top-left
+        img[3, 3, :] = [0, 255, 0]  # Green pixel at bottom-right
+        img[0, 3, :] = [0, 0, 255]  # Blue pixel at top-right
         pil_img = Image.fromarray(img)
         buf = BytesIO()
         pil_img.save(buf, format="PNG")
@@ -669,7 +665,9 @@ class TestStridedPipeline:
             Pipeline()
             .source("image_bytes")
             .flip(axes=[0])  # vertical flip
-            .flip(axes=[1])  # horizontal flip (back to original orientation with double flip)
+            .flip(
+                axes=[1]
+            )  # horizontal flip (back to original orientation with double flip)
             .crop(top=10, left=10, height=80, width=80)
             .grayscale()
             .resize(height=40, width=40)
@@ -712,7 +710,9 @@ class TestStridedZeroCopyOutput:
         df = pl.DataFrame({"image": [img_bytes]})
 
         # Simple resize produces contiguous output
-        pipe = Pipeline().source("image_bytes").resize(height=16, width=16).sink("numpy")
+        pipe = (
+            Pipeline().source("image_bytes").resize(height=16, width=16).sink("numpy")
+        )
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         # Access raw struct fields

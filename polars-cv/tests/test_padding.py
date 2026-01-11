@@ -186,9 +186,7 @@ class TestPadToSizeReference:
 
         assert padded.shape == (target_h, target_w, 3)
         # Verify content is centered
-        np.testing.assert_array_equal(
-            padded[25:75, 50:150, :], small_image
-        )
+        np.testing.assert_array_equal(padded[25:75, 50:150, :], small_image)
 
     def test_pad_to_size_topleft_reference(self, small_image: np.ndarray) -> None:
         """
@@ -226,7 +224,7 @@ class TestLetterboxReference:
         wide_img = rng.integers(0, 256, (100, 200, 3), dtype=np.uint8)
 
         # Target: 100x100
-        target_h, target_w = 100, 100
+        target_h, _ = 100, 100
 
         # First resize preserving aspect ratio
         # 200x100 (2:1), to fit in 100x100: max dimension is 200 (width)
@@ -260,7 +258,7 @@ class TestLetterboxReference:
         rng = np.random.default_rng(42)
         tall_img = rng.integers(0, 256, (200, 100, 3), dtype=np.uint8)
 
-        target_h, target_w = 100, 100
+        _, target_w = 100, 100
 
         # Resize preserving aspect ratio: 100x200 (1:2) to fit 100x100
         # Scale = 100/200 = 0.5 -> 50x100
@@ -300,7 +298,9 @@ class TestPadPolarsCV:
 
         df = pl.DataFrame({"img": [encode_png(small_image)]})
 
-        pipe = Pipeline().source("image_bytes").pad(top=10, bottom=10, left=20, right=20)
+        pipe = (
+            Pipeline().source("image_bytes").pad(top=10, bottom=10, left=20, right=20)
+        )
 
         result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
         actual = numpy_from_struct(result.row(0)[0])
@@ -382,8 +382,10 @@ class TestPadToSizePolarsCV:
 
         df = pl.DataFrame({"img": [encode_png(small_image)]})
 
-        pipe = Pipeline().source("image_bytes").pad_to_size(
-            height=100, width=200, position="top-left"
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .pad_to_size(height=100, width=200, position="top-left")
         )
 
         result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
@@ -450,7 +452,9 @@ class TestLetterboxPolarsCV:
         df = pl.DataFrame({"img": [encode_png(small_image)]})
 
         # 50x100 to 100x100: resize to 50x100, pad height by 50 (25 top, 25 bottom)
-        pipe = Pipeline().source("image_bytes").letterbox(height=100, width=100, value=128)
+        pipe = (
+            Pipeline().source("image_bytes").letterbox(height=100, width=100, value=128)
+        )
 
         result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
         actual = numpy_from_struct(result.row(0)[0])
