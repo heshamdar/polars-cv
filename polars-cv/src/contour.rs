@@ -172,12 +172,6 @@ pub struct ContourKwargs {
     /// Winding direction for ensure_winding.
     #[serde(default)]
     pub direction: Option<String>,
-    /// X coordinate for point tests.
-    #[serde(default)]
-    pub x: Option<f64>,
-    /// Y coordinate for point tests.
-    #[serde(default)]
-    pub y: Option<f64>,
     /// Origin for scale operations: "origin", "centroid", or "bbox_center".
     #[serde(default)]
     pub origin: Option<String>,
