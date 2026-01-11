@@ -6,6 +6,11 @@ This module provides adapters for polars-cv in both eager and streaming modes.
 
 from __future__ import annotations
 
+import os
+
+os.environ["POLARS_IDEAL_MORSEL_SIZE"] = "10"
+
+
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -653,4 +658,5 @@ class PolarsCVStreamingAdapter(PolarsCVAdapter):
 
     def __init__(self) -> None:
         """Initialize streaming adapter."""
+        super().__init__(streaming=True)
         super().__init__(streaming=True)
