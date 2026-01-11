@@ -790,7 +790,8 @@ fn pad_constant(
         DType::U8 => {
             let fill_val = value.clamp(0.0, 255.0) as u8;
             let mut output = vec![fill_val; output_h * output_w * channels];
-            let input = buffer.as_slice::<u8>();
+            let contig = buffer.to_contiguous();
+            let input = contig.as_slice::<u8>();
             for y in 0..input_h {
                 let src_start = y * input_row_stride;
                 let src_end = src_start + input_row_stride;
@@ -804,7 +805,8 @@ fn pad_constant(
         DType::F32 => {
             let fill_val = value;
             let mut output = vec![fill_val; output_h * output_w * channels];
-            let input = buffer.as_slice::<f32>();
+            let contig = buffer.to_contiguous();
+            let input = contig.as_slice::<f32>();
             for y in 0..input_h {
                 let src_start = y * input_row_stride;
                 let src_end = src_start + input_row_stride;
@@ -853,7 +855,8 @@ fn pad_edge(buffer: &ViewBuffer, top: u32, bottom: u32, left: u32, right: u32) -
     match buffer.dtype() {
         DType::U8 => {
             let mut output = vec![0u8; output_h * output_w * channels];
-            let input = buffer.as_slice::<u8>();
+            let contig = buffer.to_contiguous();
+            let input = contig.as_slice::<u8>();
             let replicate_pixel =
                 |output: &mut [u8], dst_start: usize, count: usize, src_pixel: &[u8]| {
                     for i in 0..count {

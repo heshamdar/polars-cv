@@ -372,6 +372,27 @@ class TestPadToSizePolarsCV:
         # Verify content is centered
         np.testing.assert_array_equal(actual[25:75, 50:150, :], small_image)
 
+    def test_flip_then_pad(
+        self, small_image: np.ndarray, encode_png: Callable[[np.ndarray], bytes]
+    ) -> None:
+        """Flip then pad."""
+        from polars_cv import Pipeline, numpy_from_struct
+
+        df = pl.DataFrame({"img": [encode_png(small_image)]})
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=50, width=50)
+            .flip_v()
+            .pad_to_size(height=100, width=200)
+        )
+
+        result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        actual = numpy_from_struct(result.row(0)[0])
+
+        assert actual.shape == (100, 200, 3)
+
     def test_pad_to_size_topleft(
         self,
         small_image: np.ndarray,
