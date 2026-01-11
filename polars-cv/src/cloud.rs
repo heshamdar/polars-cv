@@ -5,6 +5,7 @@
 //! - Amazon S3 (s3://)
 //! - Google Cloud Storage (gs://)
 //! - Azure Blob Storage (az:// or abfs://)
+//! - HTTP/HTTPS URLs (http://, https://)
 //!
 //! Credentials are resolved using the default chain:
 //! 1. Anonymous access (for public buckets)
@@ -79,10 +80,10 @@ impl CloudOptions {
     }
 }
 
-/// Read a file from a path (local or cloud).
+/// Read a file from a path (local, cloud, or HTTP URL).
 ///
 /// # Arguments
-/// * `path` - The file path (local path, or URL like s3://, gs://, az://)
+/// * `path` - The file path (local path, or URL like s3://, gs://, az://, http://, https://)
 /// * `options` - Optional cloud configuration
 ///
 /// # Returns
@@ -95,6 +96,7 @@ pub fn read_file(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, 
             "s3" => read_s3(&url, options),
             "gs" => read_gcs(&url, options),
             "az" | "abfs" | "abfss" => read_azure(&url, options),
+            "http" | "https" => read_http(path),
             scheme => Err(CloudError::UnsupportedScheme(scheme.to_string())),
         }
     } else {
@@ -243,7 +245,68 @@ fn read_azure(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, Clou
     })
 }
 
-/// Check if a path is a cloud URL.
+/// Read a file from an HTTP or HTTPS URL.
+///
+/// Uses async reqwest within a tokio runtime to avoid blocking issues
+/// when called from within Polars plugin execution context.
+///
+/// # Arguments
+/// * `url` - The HTTP/HTTPS URL to fetch
+///
+/// # Returns
+/// The file contents as bytes.
+///
+/// # Example
+/// ```ignore
+/// let bytes = read_http("https://example.com/image.png")?;
+/// ```
+fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
+    let runtime = create_runtime()?;
+    let url_string = url.to_string();
+
+    runtime.block_on(async {
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&url_string)
+            .send()
+            .await
+            .map_err(|e| CloudError::ReadError(format!("HTTP request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            return Err(CloudError::ReadError(format!(
+                "HTTP {} for URL: {url_string}",
+                response.status()
+            )));
+        }
+
+        response
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| CloudError::ReadError(format!("Failed to read response body: {e}")))
+    })
+}
+
+/// Check if a path is a remote URL (cloud storage or HTTP).
+///
+/// Returns true for:
+/// - Cloud storage URLs: s3://, gs://, az://, abfs://, abfss://
+/// - HTTP URLs: http://, https://
+#[allow(dead_code)]
+pub fn is_remote_path(path: &str) -> bool {
+    if let Ok(url) = Url::parse(path) {
+        matches!(
+            url.scheme(),
+            "s3" | "gs" | "az" | "abfs" | "abfss" | "http" | "https"
+        )
+    } else {
+        false
+    }
+}
+
+/// Check if a path is a cloud storage URL (S3, GCS, Azure).
+///
+/// Does NOT include HTTP/HTTPS URLs - use `is_remote_path` for that.
 #[allow(dead_code)]
 pub fn is_cloud_path(path: &str) -> bool {
     if let Ok(url) = Url::parse(path) {
@@ -259,13 +322,34 @@ mod tests {
 
     #[test]
     fn test_is_cloud_path() {
+        // Cloud storage paths
         assert!(is_cloud_path("s3://bucket/key"));
         assert!(is_cloud_path("gs://bucket/key"));
         assert!(is_cloud_path("az://container/path"));
         assert!(is_cloud_path("abfs://container/path"));
+        // HTTP is NOT a cloud path (use is_remote_path)
+        assert!(!is_cloud_path("http://example.com/image.png"));
+        assert!(!is_cloud_path("https://example.com/image.png"));
+        // Local paths
         assert!(!is_cloud_path("/local/path/file.png"));
         assert!(!is_cloud_path("relative/path.png"));
         assert!(!is_cloud_path("file:///local/path.png"));
+    }
+
+    #[test]
+    fn test_is_remote_path() {
+        // Cloud storage paths
+        assert!(is_remote_path("s3://bucket/key"));
+        assert!(is_remote_path("gs://bucket/key"));
+        assert!(is_remote_path("az://container/path"));
+        assert!(is_remote_path("abfs://container/path"));
+        // HTTP/HTTPS paths
+        assert!(is_remote_path("http://example.com/image.png"));
+        assert!(is_remote_path("https://example.com/image.png"));
+        // Local paths
+        assert!(!is_remote_path("/local/path/file.png"));
+        assert!(!is_remote_path("relative/path.png"));
+        assert!(!is_remote_path("file:///local/path.png"));
     }
 
     #[test]
@@ -281,5 +365,28 @@ mod tests {
 
         // Cleanup
         std::fs::remove_file(test_path).ok();
+    }
+
+    // Integration test for HTTP - requires network access
+    // Run with: cargo test --features cloud -- --ignored
+    #[test]
+    #[ignore]
+    fn test_read_http_url() {
+        // Use httpbin.org which returns known content
+        let result = read_http("https://httpbin.org/bytes/100");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 100);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_read_http_image() {
+        // Test with httpbin's PNG image endpoint
+        let result = read_file("https://httpbin.org/image/png", None);
+        assert!(result.is_ok());
+        // PNG files start with these magic bytes
+        let bytes = result.unwrap();
+        assert!(bytes.len() > 8);
+        assert_eq!(&bytes[0..4], &[0x89, 0x50, 0x4E, 0x47]); // PNG magic
     }
 }

@@ -51,9 +51,13 @@ object_store = { version = "0.12", features = ["aws", "gcp", "azure"], optional 
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 url = { version = "2", optional = true }
 
+# HTTP support for URL sources (http://, https://)
+# Uses async client within tokio runtime (same as cloud storage)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+
 [features]
 default = ["cloud"]
-cloud = ["dep:object_store", "dep:tokio", "dep:url"]
+cloud = ["dep:object_store", "dep:tokio", "dep:url", "dep:reqwest"]
 
 [dev-dependencies]
 # For testing

@@ -9,10 +9,9 @@ description = "A Polars plugin for vision/array operations"
 authors = [{ name = "Hesham Dar", email = "heshamdar@gmail.com" }]
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
-    "polars>=1.0",
-    "typing-extensions>=4.0.0; python_version < '3.10'",
+    "polars==1.37.0",
 ]
 classifiers = [
     "Programming Language :: Rust",
