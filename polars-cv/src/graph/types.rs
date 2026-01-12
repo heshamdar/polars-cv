@@ -513,6 +513,7 @@ impl UnifiedGraph {
                                     current_output = NodeOutput::from_buffer(result);
                                 }
                                 ViewDto::Reduction(reduction_op) => {
+                                    use view_buffer::DType;
                                     current_output =
                                         flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                     let current_buf =
@@ -524,7 +525,19 @@ impl UnifiedGraph {
                                         })?;
                                     let result = reduction_op.execute(current_buf);
                                     if result.shape() == [1] {
-                                        let scalar_val = result.as_slice::<f64>()[0];
+                                        // Extract scalar value based on actual dtype
+                                        let scalar_val = match result.dtype() {
+                                            DType::U8 => result.as_slice::<u8>()[0] as f64,
+                                            DType::I8 => result.as_slice::<i8>()[0] as f64,
+                                            DType::U16 => result.as_slice::<u16>()[0] as f64,
+                                            DType::I16 => result.as_slice::<i16>()[0] as f64,
+                                            DType::U32 => result.as_slice::<u32>()[0] as f64,
+                                            DType::I32 => result.as_slice::<i32>()[0] as f64,
+                                            DType::U64 => result.as_slice::<u64>()[0] as f64,
+                                            DType::I64 => result.as_slice::<i64>()[0] as f64,
+                                            DType::F32 => result.as_slice::<f32>()[0] as f64,
+                                            DType::F64 => result.as_slice::<f64>()[0],
+                                        };
                                         current_output = NodeOutput::Scalar(scalar_val);
                                     } else {
                                         current_output = NodeOutput::from_buffer(result);
@@ -795,6 +808,28 @@ impl UnifiedGraph {
                                         PadMode::Constant,
                                     );
                                     current_output = NodeOutput::from_buffer(result);
+                                }
+                                ViewDto::ExtractShape => {
+                                    // Extract shape from buffer and return as vector
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "ExtractShape requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    let shape = current_buf.shape();
+                                    // Return shape as f64 vector [height, width, channels]
+                                    let shape_vec: Vec<f64> =
+                                        shape.iter().map(|&d| d as f64).collect();
+                                    current_output = NodeOutput::from_vector(shape_vec);
+                                }
+                                ViewDto::Materialize => {
+                                    // Force materialization of pending ops
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 }
                                 _ => {
                                     pending_buffer_ops.push(view_dto.clone());

@@ -1013,6 +1013,61 @@ pub fn resolve_op(
             // Count set bits across entire buffer (for Hamming distance)
             Ok(ViewDto::Reduction(ReductionOp::PopCount))
         }
+        "reduce_max" => {
+            use view_buffer::ops::ReductionOp;
+            let axis = op_spec
+                .params
+                .get("axis")
+                .map(|p| p.resolve_usize(row_idx, expr_columns).ok())
+                .flatten();
+            Ok(ViewDto::Reduction(ReductionOp::Max { axis }))
+        }
+        "reduce_min" => {
+            use view_buffer::ops::ReductionOp;
+            let axis = op_spec
+                .params
+                .get("axis")
+                .map(|p| p.resolve_usize(row_idx, expr_columns).ok())
+                .flatten();
+            Ok(ViewDto::Reduction(ReductionOp::Min { axis }))
+        }
+        "reduce_mean" => {
+            use view_buffer::ops::ReductionOp;
+            let axis = op_spec
+                .params
+                .get("axis")
+                .map(|p| p.resolve_usize(row_idx, expr_columns).ok())
+                .flatten();
+            Ok(ViewDto::Reduction(ReductionOp::Mean { axis }))
+        }
+        "reduce_std" => {
+            use view_buffer::ops::ReductionOp;
+            let axis = op_spec
+                .params
+                .get("axis")
+                .map(|p| p.resolve_usize(row_idx, expr_columns).ok())
+                .flatten();
+            let ddof = op_spec
+                .params
+                .get("ddof")
+                .map(|p| p.resolve_usize(row_idx, expr_columns).unwrap_or(0) as u8)
+                .unwrap_or(0);
+            Ok(ViewDto::Reduction(ReductionOp::Std { axis, ddof }))
+        }
+        "reduce_argmax" => {
+            use view_buffer::ops::ReductionOp;
+            let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, expr_columns)?;
+            Ok(ViewDto::Reduction(ReductionOp::ArgMax { axis }))
+        }
+        "reduce_argmin" => {
+            use view_buffer::ops::ReductionOp;
+            let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, expr_columns)?;
+            Ok(ViewDto::Reduction(ReductionOp::ArgMin { axis }))
+        }
+        "extract_shape" => {
+            // Extract shape returns buffer dimensions as a vector
+            Ok(ViewDto::ExtractShape)
+        }
 
         // Histogram operation
         "histogram" => {

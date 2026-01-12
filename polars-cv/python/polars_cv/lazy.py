@@ -660,6 +660,183 @@ class LazyPipelineExpr:
             upstream=[self, *others],
         )
 
+    def statistics(
+        self,
+        include: list[str] | None = None,
+    ) -> pl.Expr:
+        """
+        Compute multiple statistics from the buffer in a single pass.
+
+        Returns a Struct column with named fields for each statistic.
+        By default includes: mean, std, min, max.
+
+        This is a convenience method that creates branching reduction pipelines
+        and merges them into a single multi-output expression.
+
+        Args:
+            include: List of statistics to compute. Valid options:
+                - "mean": Arithmetic mean
+                - "std": Standard deviation
+                - "min": Minimum value
+                - "max": Maximum value
+                - "sum": Sum of all values
+                If None, defaults to ["mean", "std", "min", "max"].
+
+        Returns:
+            A Polars expression that returns a Struct column with the
+            requested statistics as fields.
+
+        Example:
+            ```python
+            >>> # Get statistics for processed images
+            >>> pipe = Pipeline().source("image_bytes").grayscale()
+            >>> img = pl.col("image").cv.pipe(pipe)
+            >>> stats_expr = img.statistics()
+            >>> df.with_columns(stats=stats_expr)
+            >>> # Access: df["stats"].struct.field("mean")
+            >>>
+            >>> # Only compute specific stats
+            >>> stats_expr = img.statistics(include=["min", "max"])
+            ```
+        """
+        from polars_cv.pipeline import Pipeline
+
+        # Default statistics to compute
+        if include is None:
+            include = ["mean", "std", "min", "max"]
+
+        # Validate include list
+        valid_stats = {"mean", "std", "min", "max", "sum"}
+        for stat in include:
+            if stat not in valid_stats:
+                msg = (
+                    f"Unknown statistic '{stat}'. Valid options: {sorted(valid_stats)}"
+                )
+                raise ValueError(msg)
+
+        # Create reduction pipelines for each requested statistic
+        stat_nodes: list[LazyPipelineExpr] = []
+        sink_spec: dict[str, str] = {}
+
+        for stat in include:
+            if stat == "mean":
+                node = self.pipe(Pipeline().reduce_mean()).alias("mean")
+            elif stat == "std":
+                node = self.pipe(Pipeline().reduce_std()).alias("std")
+            elif stat == "min":
+                node = self.pipe(Pipeline().reduce_min()).alias("min")
+            elif stat == "max":
+                node = self.pipe(Pipeline().reduce_max()).alias("max")
+            elif stat == "sum":
+                node = self.pipe(Pipeline().reduce_sum()).alias("sum")
+            else:
+                continue
+
+            stat_nodes.append(node)
+            sink_spec[stat] = "native"
+
+        if not stat_nodes:
+            raise ValueError("At least one statistic must be included")
+
+        # Merge all stat nodes and sink as multi-output struct
+        if len(stat_nodes) == 1:
+            merged = stat_nodes[0]
+        else:
+            merged = stat_nodes[0].merge_pipe(*stat_nodes[1:])
+
+        return merged.sink(sink_spec)
+
+    def statistics_lazy(
+        self,
+        include: list[str] | None = None,
+    ) -> "LazyPipelineExpr":
+        """
+        Create a lazy pipeline for computing multiple statistics.
+
+        Unlike `statistics()` which returns a finalized pl.Expr, this method
+        returns a LazyPipelineExpr that can be merged with other pipelines
+        for multi-output composition.
+
+        When sunk, each statistic becomes a separate field in the output struct.
+        The stat nodes are aliased with prefixed names: "stat_mean", "stat_std", etc.
+
+        Args:
+            include: List of statistics to compute. Valid options:
+                - "mean": Arithmetic mean
+                - "std": Standard deviation
+                - "min": Minimum value
+                - "max": Maximum value
+                - "sum": Sum of all values
+                If None, defaults to ["mean", "std", "min", "max"].
+
+        Returns:
+            A LazyPipelineExpr representing the merged statistics pipelines.
+            Can be composed with other pipelines using merge_pipe().
+
+        Example:
+            ```python
+            >>> # Compose stats with other outputs
+            >>> pipe = Pipeline().source("image_bytes")
+            >>> img = pl.col("image").cv.pipe(pipe).alias("img")
+            >>> gray = img.pipe(Pipeline().grayscale()).alias("gray")
+            >>> stats = gray.statistics_lazy()  # Creates stat_mean, stat_std, etc.
+            >>>
+            >>> # Merge and sink together
+            >>> result = img.merge_pipe(gray, stats)
+            >>> expr = result.sink({
+            ...     "img": "numpy",
+            ...     "gray": "numpy",
+            ...     "stat_mean": "native",
+            ...     "stat_std": "native",
+            ...     "stat_min": "native",
+            ...     "stat_max": "native",
+            ... })
+            ```
+        """
+        from polars_cv.pipeline import Pipeline
+
+        # Default statistics to compute
+        if include is None:
+            include = ["mean", "std", "min", "max"]
+
+        # Validate include list
+        valid_stats = {"mean", "std", "min", "max", "sum"}
+        for stat in include:
+            if stat not in valid_stats:
+                msg = (
+                    f"Unknown statistic '{stat}'. Valid options: {sorted(valid_stats)}"
+                )
+                raise ValueError(msg)
+
+        # Create reduction pipelines for each requested statistic
+        stat_nodes: list[LazyPipelineExpr] = []
+
+        for stat in include:
+            alias_name = f"stat_{stat}"
+            if stat == "mean":
+                node = self.pipe(Pipeline().reduce_mean()).alias(alias_name)
+            elif stat == "std":
+                node = self.pipe(Pipeline().reduce_std()).alias(alias_name)
+            elif stat == "min":
+                node = self.pipe(Pipeline().reduce_min()).alias(alias_name)
+            elif stat == "max":
+                node = self.pipe(Pipeline().reduce_max()).alias(alias_name)
+            elif stat == "sum":
+                node = self.pipe(Pipeline().reduce_sum()).alias(alias_name)
+            else:
+                continue
+
+            stat_nodes.append(node)
+
+        if not stat_nodes:
+            raise ValueError("At least one statistic must be included")
+
+        # Merge all stat nodes
+        if len(stat_nodes) == 1:
+            return stat_nodes[0]
+        else:
+            return stat_nodes[0].merge_pipe(*stat_nodes[1:])
+
     # --- Internal Helpers ---
 
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
