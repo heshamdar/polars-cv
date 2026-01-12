@@ -11,7 +11,6 @@ import json
 from typing import TYPE_CHECKING
 
 import polars as pl
-
 from polars_cv import Pipeline
 from polars_cv._types import ParamValue
 
@@ -44,11 +43,17 @@ class TestParamValueSerialization:
         assert d["value"] == "hello"
 
     def test_expr_column_serialization(self) -> None:
-        """Test expression column serialization."""
+        """Test expression column serialization.
+
+        Note: Expression identifier uses string representation for uniqueness,
+        ensuring multiple expressions with the same root column are distinguished
+        (e.g., col("x").max() vs col("x").min()).
+        """
         param = ParamValue.from_arg(pl.col("my_column"))
         d = param.to_dict()
         assert d["type"] == "expr"
-        assert d["col"] == "my_column"
+        # Uses string representation as identifier
+        assert d["col"] == 'col("my_column")'
 
     def test_param_is_json_serializable(self) -> None:
         """Test that serialized params are JSON-serializable."""
@@ -146,16 +151,22 @@ class TestExpressionReferencesJson:
     """Tests for expression reference serialization."""
 
     def test_simple_column_reference(self) -> None:
-        """Test simple column reference serialization."""
+        """Test simple column reference serialization.
+
+        Expression identifier uses string representation for uniqueness.
+        """
         pipe = Pipeline().source().resize(height=pl.col("h"), width=100).sink("numpy")
         data = json.loads(pipe._to_json())
 
         height_param = data["ops"][0]["height"]
         assert height_param["type"] == "expr"
-        assert height_param["col"] == "h"
+        assert height_param["col"] == 'col("h")'
 
     def test_multiple_column_references(self) -> None:
-        """Test multiple column references."""
+        """Test multiple column references.
+
+        Expression identifier uses string representation for uniqueness.
+        """
         pipe = (
             Pipeline()
             .source()
@@ -166,12 +177,12 @@ class TestExpressionReferencesJson:
         data = json.loads(pipe._to_json())
 
         # resize
-        assert data["ops"][0]["height"]["col"] == "h"
-        assert data["ops"][0]["width"]["col"] == "w"
+        assert data["ops"][0]["height"]["col"] == 'col("h")'
+        assert data["ops"][0]["width"]["col"] == 'col("w")'
 
         # crop
-        assert data["ops"][1]["top"]["col"] == "y"
-        assert data["ops"][1]["left"]["col"] == "x"
+        assert data["ops"][1]["top"]["col"] == 'col("y")'
+        assert data["ops"][1]["left"]["col"] == 'col("x")'
 
     def test_expr_columns_tracking(self) -> None:
         """Test _get_expr_columns returns correct expressions."""

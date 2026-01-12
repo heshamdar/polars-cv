@@ -343,7 +343,12 @@ class PipelineGraph:
         shared_pipeline._shape_hints = template_node.pipeline._shape_hints
         shared_pipeline._ops = list(prefix_ops)  # Copy the prefix ops
         shared_pipeline._expr_refs = template_node.pipeline._expr_refs.copy()
-        shared_pipeline._current_domain = template_node.pipeline._current_domain
+
+        # Compute the correct domain and dtype for the prefix operations
+        # This ensures static type inference matches runtime behavior
+        domain, dtype = Pipeline._compute_output_domain_dtype(prefix_ops)
+        shared_pipeline._current_domain = domain
+        shared_pipeline._output_dtype = dtype
 
         # Create the shared node
         shared_node = GraphNode(
@@ -491,6 +496,13 @@ class PipelineGraph:
         Returns:
             Tuple of (expression_list, column_names_list).
             The expressions and names are in the same order.
+
+        Note:
+            Uses the expression's string representation as the identifier name.
+            This matches the key used in ParamValue.to_dict() to ensure expression
+            values can be correctly looked up on the Rust side. This avoids
+            collisions when multiple expressions share the same root column
+            (e.g., col("x").list.get(0).max() and col("x").list.get(1).max()).
         """
         seen: set[str] = set()
         expr_columns: list[pl.Expr] = []
@@ -503,15 +515,9 @@ class PipelineGraph:
                 if expr_str not in seen:
                     seen.add(expr_str)
                     expr_columns.append(expr)
-                    # Get the column name from the expression
-                    try:
-                        root_names = expr.meta.root_names()
-                        if root_names:
-                            expr_names.append(root_names[0])
-                        else:
-                            expr_names.append(expr_str)
-                    except Exception:
-                        expr_names.append(expr_str)
+                    # Use the expression's string representation as the identifier.
+                    # This matches the key used in ParamValue.to_dict() for lookups.
+                    expr_names.append(expr_str)
 
         return expr_columns, expr_names
 

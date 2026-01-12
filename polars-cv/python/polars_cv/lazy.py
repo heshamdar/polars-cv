@@ -196,7 +196,9 @@ class LazyPipelineExpr:
             # Only the NEW operations (not self's ops)
             new_pipeline._ops = pipeline._ops.copy()
             new_pipeline._expr_refs = pipeline._expr_refs.copy()
+            # Copy both domain and dtype for proper static type inference
             new_pipeline._current_domain = pipeline._current_domain
+            new_pipeline._output_dtype = pipeline._output_dtype
 
             return LazyPipelineExpr(
                 column=None,  # No column - receives from upstream, not from DataFrame
@@ -849,7 +851,9 @@ class LazyPipelineExpr:
         # already applied by the upstream node
         new_pipeline = PipelineClass()
         new_pipeline._source = SourceSpec(format=SourceFormat.BLOB)
+        # Copy both domain and dtype for proper static type inference
         new_pipeline._current_domain = self._pipeline._current_domain
+        new_pipeline._output_dtype = self._pipeline._output_dtype
         new_pipeline._add_binary_op(op, other._node_id)
 
         return LazyPipelineExpr(
