@@ -195,6 +195,14 @@ impl ViewExpr {
                      Use graph-level execution."
                 )
             }
+            ViewDto::ExtractShape => {
+                // ExtractShape changes domain from Buffer to Vector
+                // It is handled by the graph executor
+                panic!(
+                    "ExtractShape cannot be applied via ViewExpr. \
+                     Use graph-level execution to handle domain transitions."
+                )
+            }
         }
     }
 

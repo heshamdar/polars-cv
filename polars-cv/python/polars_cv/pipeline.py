@@ -1584,6 +1584,283 @@ class Pipeline:
         new._update_output_dtype("reduce_popcount")
         return new
 
+    def reduce_max(self, axis: int | None = None) -> "Pipeline":
+        """
+        Reduce buffer by computing the maximum value.
+
+        When axis is None, computes the global maximum across all elements,
+        returning a single scalar. When axis is specified, reduces along that
+        axis, returning a buffer with one fewer dimension.
+
+        Domain transition:
+            - axis=None: buffer → scalar
+            - axis=N: buffer → buffer (reduced shape)
+
+        Args:
+            axis: Axis to reduce along. None for global reduction.
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Global maximum
+            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_max()
+            >>> df.with_columns(max_val=pl.col("image").cv.pipe(pipe).sink("native"))
+            >>>
+            >>> # Maximum along height axis (returns 1D array per column)
+            >>> pipe = Pipeline().source("image_bytes").reduce_max(axis=0)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "reduce_max")
+        new = self._clone()
+        params: dict[str, ParamValue] = {}
+        if axis is not None:
+            params["axis"] = ParamValue(is_expr=False, value=axis)
+        new._ops.append(OpSpec(op="reduce_max", params=params))
+        if axis is None:
+            new._current_domain = self.DOMAIN_SCALAR
+        # axis reduction keeps buffer domain with reduced shape
+        new._update_output_dtype("reduce_max")
+        return new
+
+    def reduce_min(self, axis: int | None = None) -> "Pipeline":
+        """
+        Reduce buffer by computing the minimum value.
+
+        When axis is None, computes the global minimum across all elements,
+        returning a single scalar. When axis is specified, reduces along that
+        axis, returning a buffer with one fewer dimension.
+
+        Domain transition:
+            - axis=None: buffer → scalar
+            - axis=N: buffer → buffer (reduced shape)
+
+        Args:
+            axis: Axis to reduce along. None for global reduction.
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Global minimum
+            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_min()
+            >>> df.with_columns(min_val=pl.col("image").cv.pipe(pipe).sink("native"))
+            >>>
+            >>> # Minimum along width axis
+            >>> pipe = Pipeline().source("image_bytes").reduce_min(axis=1)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "reduce_min")
+        new = self._clone()
+        params: dict[str, ParamValue] = {}
+        if axis is not None:
+            params["axis"] = ParamValue(is_expr=False, value=axis)
+        new._ops.append(OpSpec(op="reduce_min", params=params))
+        if axis is None:
+            new._current_domain = self.DOMAIN_SCALAR
+        new._update_output_dtype("reduce_min")
+        return new
+
+    def reduce_mean(self, axis: int | None = None) -> "Pipeline":
+        """
+        Reduce buffer by computing the arithmetic mean.
+
+        When axis is None, computes the global mean across all elements,
+        returning a single scalar. When axis is specified, reduces along that
+        axis, returning a buffer with one fewer dimension.
+
+        Domain transition:
+            - axis=None: buffer → scalar
+            - axis=N: buffer → buffer (reduced shape)
+
+        Args:
+            axis: Axis to reduce along. None for global reduction.
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Global mean (average pixel value)
+            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_mean()
+            >>> df.with_columns(avg=pl.col("image").cv.pipe(pipe).sink("native"))
+            >>>
+            >>> # Mean along channel axis (per-channel average)
+            >>> pipe = Pipeline().source("image_bytes").reduce_mean(axis=2)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "reduce_mean")
+        new = self._clone()
+        params: dict[str, ParamValue] = {}
+        if axis is not None:
+            params["axis"] = ParamValue(is_expr=False, value=axis)
+        new._ops.append(OpSpec(op="reduce_mean", params=params))
+        if axis is None:
+            new._current_domain = self.DOMAIN_SCALAR
+        new._update_output_dtype("reduce_mean")
+        return new
+
+    def reduce_std(self, axis: int | None = None, ddof: int = 0) -> "Pipeline":
+        """
+        Reduce buffer by computing the standard deviation.
+
+        When axis is None, computes the global standard deviation across all
+        elements, returning a single scalar. When axis is specified, reduces
+        along that axis, returning a buffer with one fewer dimension.
+
+        Domain transition:
+            - axis=None: buffer → scalar
+            - axis=N: buffer → buffer (reduced shape)
+
+        Args:
+            axis: Axis to reduce along. None for global reduction.
+            ddof: Delta degrees of freedom. 0 for population std (default),
+                1 for sample std.
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Global standard deviation
+            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_std()
+            >>> df.with_columns(std=pl.col("image").cv.pipe(pipe).sink("native"))
+            >>>
+            >>> # Sample std (ddof=1)
+            >>> pipe = Pipeline().source("image_bytes").reduce_std(ddof=1)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "reduce_std")
+        new = self._clone()
+        params: dict[str, ParamValue] = {
+            "ddof": ParamValue(is_expr=False, value=ddof),
+        }
+        if axis is not None:
+            params["axis"] = ParamValue(is_expr=False, value=axis)
+        new._ops.append(OpSpec(op="reduce_std", params=params))
+        if axis is None:
+            new._current_domain = self.DOMAIN_SCALAR
+        new._update_output_dtype("reduce_std")
+        return new
+
+    def reduce_argmax(self, axis: int) -> "Pipeline":
+        """
+        Reduce buffer by finding the index of the maximum value along an axis.
+
+        Unlike other reductions, argmax always requires an axis since the global
+        argmax would be ambiguous for multi-dimensional arrays.
+
+        Domain transition: buffer → buffer (reduced shape, i64 dtype)
+
+        Args:
+            axis: Axis along which to find the maximum index.
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Find column with max value per row
+            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_argmax(axis=1)
+            >>> df.with_columns(max_col=pl.col("image").cv.pipe(pipe).sink("list"))
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "reduce_argmax")
+        new = self._clone()
+        params: dict[str, ParamValue] = {
+            "axis": ParamValue(is_expr=False, value=axis),
+        }
+        new._ops.append(OpSpec(op="reduce_argmax", params=params))
+        # argmax always returns buffer with reduced shape (indices)
+        new._update_output_dtype("reduce_argmax")
+        return new
+
+    def reduce_argmin(self, axis: int) -> "Pipeline":
+        """
+        Reduce buffer by finding the index of the minimum value along an axis.
+
+        Unlike other reductions, argmin always requires an axis since the global
+        argmin would be ambiguous for multi-dimensional arrays.
+
+        Domain transition: buffer → buffer (reduced shape, i64 dtype)
+
+        Args:
+            axis: Axis along which to find the minimum index.
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Find column with min value per row
+            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_argmin(axis=1)
+            >>> df.with_columns(min_col=pl.col("image").cv.pipe(pipe).sink("list"))
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "reduce_argmin")
+        new = self._clone()
+        params: dict[str, ParamValue] = {
+            "axis": ParamValue(is_expr=False, value=axis),
+        }
+        new._ops.append(OpSpec(op="reduce_argmin", params=params))
+        # argmin always returns buffer with reduced shape (indices)
+        new._update_output_dtype("reduce_argmin")
+        return new
+
+    def extract_shape(self) -> "Pipeline":
+        """
+        Extract the shape of the buffer as a struct.
+
+        Returns a struct with named fields for each dimension of the buffer:
+        - height: The height (first dimension)
+        - width: The width (second dimension)
+        - channels: The number of channels (third dimension, if present)
+
+        This is useful for getting image dimensions without processing the data.
+
+        Domain transition: buffer → vector
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Get image dimensions
+            >>> pipe = Pipeline().source("image_bytes").extract_shape()
+            >>> result = df.with_columns(shape=pl.col("image").cv.pipe(pipe).sink("native"))
+            >>> # Access: result["shape"].struct.field("height")
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "extract_shape")
+        new = self._clone()
+        new._ops.append(OpSpec(op="extract_shape", params={}))
+        new._current_domain = self.DOMAIN_VECTOR
+        new._update_output_dtype("extract_shape")
+        return new
+
     def histogram(
         self,
         bins: int = 256,
@@ -2136,4 +2413,5 @@ class Pipeline:
         if self._sink:
             parts.append(f"sink({self._sink.format.value!r})")
 
+        return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"

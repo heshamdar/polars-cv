@@ -89,6 +89,9 @@ pub enum ViewDto {
     },
     // Helper for plugins to request materialization explicitly
     Materialize,
+    /// Extract the shape of the buffer as a vector [height, width, channels].
+    /// Returns a Vector domain output with dimension values.
+    ExtractShape,
 }
 
 /// Padding mode for Pad operation.
@@ -149,6 +152,8 @@ impl ViewDto {
             }
             // Materialize accepts any domain
             ViewDto::Materialize => Domain::Any,
+            // ExtractShape works on buffers
+            ViewDto::ExtractShape => Domain::Buffer,
         }
     }
 
@@ -198,6 +203,8 @@ impl ViewDto {
             }
             // Materialize preserves domain
             ViewDto::Materialize => Domain::Any,
+            // ExtractShape produces a vector of dimension values
+            ViewDto::ExtractShape => Domain::Vector,
         }
     }
 
@@ -222,6 +229,7 @@ impl ViewDto {
             ViewDto::PadToSize { .. } => "PadToSize",
             ViewDto::Letterbox { .. } => "Letterbox",
             ViewDto::Materialize => "Materialize",
+            ViewDto::ExtractShape => "ExtractShape",
         }
     }
 

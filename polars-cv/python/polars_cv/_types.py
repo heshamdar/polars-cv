@@ -224,11 +224,18 @@ OPERATION_OUTPUT_DTYPE: dict[str, str] = {
     "scale": "f32",  # PromoteToFloat
     "clamp": "f32",  # PromoteToFloat
     "relu": "f32",  # PromoteToFloat
-    # Reductions - ForceF64
+    # Reductions - ForceF64 for global, PreserveInput for axis-based
     "reduce_sum": "f64",
+    "reduce_max": "f64",
+    "reduce_min": "f64",
     "reduce_mean": "f64",
     "reduce_std": "f64",
     "reduce_popcount": "f64",
+    # ArgMax/ArgMin always return i64 (indices)
+    "reduce_argmax": "i64",
+    "reduce_argmin": "i64",
+    # Shape extraction returns i64 values
+    "extract_shape": "i64",
     # Geometry -> scalar/vector
     "contour_area": "f64",
     "contour_perimeter": "f64",
