@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
-
 from polars_cv import Pipeline
 from polars_cv._types import DType, SinkFormat, SourceFormat
 
@@ -409,7 +408,12 @@ class TestPipelineSerialization:
         assert data["shape_hints"]["channels"]["value"] == 3
 
     def test_serialize_pipeline_with_expressions(self) -> None:
-        """Test serialization of pipeline with expressions."""
+        """Test serialization of pipeline with expressions.
+
+        Note: Expression parameters are serialized using their string representation
+        as the 'col' key. This ensures unique identifiers even when multiple expressions
+        share the same root column (e.g., col("x").max() and col("x").min()).
+        """
         pipe = Pipeline().source().resize(height=pl.col("h"), width=224).sink("numpy")
         json_str = pipe._to_json()
         data = json.loads(json_str)
@@ -418,7 +422,8 @@ class TestPipelineSerialization:
         width_param = data["ops"][0]["width"]
 
         assert height_param["type"] == "expr"
-        assert height_param["col"] == "h"
+        # Expression identifier uses string representation for uniqueness
+        assert height_param["col"] == 'col("h")'
         assert width_param["type"] == "literal"
         assert width_param["value"] == 224
 

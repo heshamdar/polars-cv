@@ -234,8 +234,10 @@ OPERATION_OUTPUT_DTYPE: dict[str, str] = {
     # ArgMax/ArgMin always return i64 (indices)
     "reduce_argmax": "i64",
     "reduce_argmin": "i64",
-    # Shape extraction returns i64 values
-    "extract_shape": "i64",
+    # Shape extraction returns f64 values (vector domain uses f64)
+    "extract_shape": "f64",
+    # Rasterize - produces u8 buffer
+    "rasterize": "u8",
     # Geometry -> scalar/vector
     "contour_area": "f64",
     "contour_perimeter": "f64",
@@ -303,22 +305,21 @@ class ParamValue:
 
         Returns:
             Dictionary with type and value/expr fields.
+
+        Note:
+            For expression parameters, we use the expression's string representation
+            as the identifier. This ensures unique keys even when multiple expressions
+            share the same root column (e.g., col("x").max() and col("x").min()).
+            The same string representation is used in _get_expr_columns() to ensure
+            the keys match when looking up expression values on the Rust side.
         """
         if self.is_expr:
-            # Serialize the expression - we'll use meta.serialize() if available,
-            # otherwise fall back to extracting column name
+            # Use the expression's string representation as a unique identifier.
+            # This avoids collisions when multiple expressions share the same root
+            # (e.g., height_expr.max() and width_expr.max() from the same source).
             expr = self.value
-            # Try to get the root column name from the expression
-            try:
-                # For simple column expressions, get the name
-                root_names = expr.meta.root_names()
-                if len(root_names) == 1:
-                    return {"type": "expr", "col": root_names[0]}
-                # For complex expressions, serialize the whole thing
-                return {"type": "expr", "expr_serialized": expr.meta.serialize()}
-            except Exception:
-                # Fallback: store string representation
-                return {"type": "expr", "expr_str": str(expr)}
+            expr_str = str(expr)
+            return {"type": "expr", "col": expr_str}
         return {"type": "literal", "value": self.value}
 
     @classmethod

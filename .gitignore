@@ -55,3 +55,17 @@ backup/**
 site/**
 polars-cv/site/**
 polars-cv/benchmark_data
+
+
+polars-cv/notebooks/**/*.jpg
+polars-cv/notebooks/**/*.jpeg
+polars-cv/notebooks/**/*.png
+polars-cv/notebooks/**/*.tiff
+polars-cv/notebooks/**/*.webp
+polars-cv/notebooks/**/*.gif
+polars-cv/notebooks/**/*.bmp
+polars-cv/notebooks/**/*.ico
+polars-cv/notebooks/**/*.svg
+polars-cv/notebooks/**/*.webp
+polars-cv/notebooks/**/*.gif
+polars-cv/notebooks/**/*.bmp

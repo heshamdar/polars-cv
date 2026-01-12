@@ -90,6 +90,28 @@ class Pipeline:
     DOMAIN_SCALAR = "scalar"
     DOMAIN_VECTOR = "vector"
 
+    # Mapping of operations to the domain they produce
+    # Operations not listed here preserve the current domain
+    # Note: reduce_argmax/reduce_argmin always preserve buffer domain (reduced shape)
+    _OPERATION_OUTPUT_DOMAIN: dict[str, str] = {
+        "extract_shape": DOMAIN_VECTOR,
+        "perceptual_hash": DOMAIN_VECTOR,
+        "histogram": DOMAIN_VECTOR,  # For most modes, quantized preserves buffer
+        "reduce_sum": DOMAIN_SCALAR,
+        "reduce_max": DOMAIN_SCALAR,  # When axis=None
+        "reduce_min": DOMAIN_SCALAR,
+        "reduce_mean": DOMAIN_SCALAR,
+        "reduce_std": DOMAIN_SCALAR,
+        "reduce_popcount": DOMAIN_SCALAR,
+        # reduce_argmax/reduce_argmin are NOT here - they always preserve buffer domain
+        "extract_contours": DOMAIN_CONTOUR,
+        "rasterize": DOMAIN_BUFFER,
+        "contour_area": DOMAIN_SCALAR,
+        "contour_perimeter": DOMAIN_SCALAR,
+        "contour_centroid": DOMAIN_VECTOR,
+        "contour_bounding_box": DOMAIN_VECTOR,
+    }
+
     def __init__(self) -> None:
         """Initialize an empty pipeline."""
         self._source: SourceSpec | None = None
@@ -101,6 +123,68 @@ class Pipeline:
         self._current_domain: str = self.DOMAIN_BUFFER
         # Output dtype tracking - starts as "u8" for image sources
         self._output_dtype: str = "u8"
+
+    @staticmethod
+    def _compute_output_domain_dtype(
+        ops: list["OpSpec"],
+        initial_domain: str = "buffer",
+        initial_dtype: str = "u8",
+    ) -> tuple[str, str]:
+        """
+        Compute the output domain and dtype after applying a sequence of operations.
+
+        This is used for static type inference to ensure planning-time types
+        match runtime types.
+
+        Args:
+            ops: Sequence of operations to analyze.
+            initial_domain: Starting domain (default: buffer for image sources).
+            initial_dtype: Starting dtype (default: u8 for image sources).
+
+        Returns:
+            Tuple of (output_domain, output_dtype) after all operations.
+        """
+        domain = initial_domain
+        dtype = initial_dtype
+
+        for op_spec in ops:
+            op_name = op_spec.op
+
+            # Update domain if this operation changes it
+            if op_name in Pipeline._OPERATION_OUTPUT_DOMAIN:
+                domain = Pipeline._OPERATION_OUTPUT_DOMAIN[op_name]
+
+            # Update dtype if this operation is in the dtype mapping
+            if op_name in OPERATION_OUTPUT_DTYPE:
+                dtype = OPERATION_OUTPUT_DTYPE[op_name]
+
+            # Handle special cases for histogram (mode-dependent)
+            if op_name == "histogram":
+                # Check for output_mode param
+                mode_param = op_spec.params.get("output_mode")
+                if mode_param and not mode_param.is_expr:
+                    mode = mode_param.value
+                    # Quantized mode keeps buffer domain
+                    if mode == 3:  # QUANTIZED enum value
+                        domain = Pipeline.DOMAIN_BUFFER
+                        dtype = "u32"
+                    elif mode == 0:  # COUNTS
+                        dtype = "u64"
+                    else:  # NORMALIZED or EDGES
+                        dtype = "f64"
+
+            # Handle axis-based reductions that keep buffer domain
+            if op_name in ("reduce_max", "reduce_min", "reduce_mean", "reduce_std"):
+                axis_param = op_spec.params.get("axis")
+                if (
+                    axis_param
+                    and not axis_param.is_expr
+                    and axis_param.value is not None
+                ):
+                    # Axis reduction keeps buffer domain
+                    domain = Pipeline.DOMAIN_BUFFER
+
+        return domain, dtype
 
     def _track_expr(self, value: IntOrExpr | FloatOrExpr) -> ParamValue:
         """
@@ -1475,6 +1559,8 @@ class Pipeline:
 
         new._ops.append(OpSpec(op="rasterize", params=params))
         new._current_domain = self.DOMAIN_BUFFER
+        # Rasterize produces a u8 buffer image
+        new._output_dtype = "u8"
         return new
 
     def extract_contours(
@@ -1968,6 +2054,7 @@ class Pipeline:
             )
         )
         new._current_domain = self.DOMAIN_SCALAR
+        new._update_output_dtype("contour_area")
         return new
 
     def perimeter(self) -> "Pipeline":
@@ -1986,6 +2073,7 @@ class Pipeline:
         new = self._clone()
         new._ops.append(OpSpec(op="contour_perimeter", params={}))
         new._current_domain = self.DOMAIN_SCALAR
+        new._update_output_dtype("contour_perimeter")
         return new
 
     def centroid(self) -> "Pipeline":
@@ -2004,6 +2092,7 @@ class Pipeline:
         new = self._clone()
         new._ops.append(OpSpec(op="contour_centroid", params={}))
         new._current_domain = self.DOMAIN_VECTOR
+        new._update_output_dtype("contour_centroid")
         return new
 
     def bounding_box(self) -> "Pipeline":
@@ -2022,6 +2111,7 @@ class Pipeline:
         new = self._clone()
         new._ops.append(OpSpec(op="contour_bounding_box", params={}))
         new._current_domain = self.DOMAIN_VECTOR
+        new._update_output_dtype("contour_bounding_box")
         return new
 
     # --- Contour Transform Operations (contour → contour) ---
@@ -2302,9 +2392,13 @@ class Pipeline:
         sub._shape_hints = self._shape_hints
         sub._ops = self._ops[start_op:end_op]
         sub._expr_refs = self._expr_refs.copy()
-        # Preserve domain and dtype tracking for static type inference
-        sub._current_domain = self._current_domain
-        sub._output_dtype = self._output_dtype
+
+        # Compute the correct domain and dtype for this subset of operations
+        # We need to compute from the beginning up to end_op to get correct state
+        ops_to_compute = self._ops[0:end_op]
+        domain, dtype = Pipeline._compute_output_domain_dtype(ops_to_compute)
+        sub._current_domain = domain
+        sub._output_dtype = dtype
 
         return sub
 
@@ -2413,5 +2507,6 @@ class Pipeline:
         if self._sink:
             parts.append(f"sink({self._sink.format.value!r})")
 
+        return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"

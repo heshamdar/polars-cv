@@ -70,8 +70,12 @@ impl ParamValue {
                     polars_err!(ComputeError: "Column '{}' not found in expression inputs", col_name)
                 })?;
 
-                // Get the value at this row
-                let value = series.get(row_idx)?;
+                // Get the value at this row, with scalar broadcasting support.
+                // When an expression is an aggregation (like .max()), Polars returns a
+                // single-element Series. We broadcast this scalar to all rows, matching
+                // Polars' contextual broadcasting behavior.
+                let idx = if series.len() == 1 { 0 } else { row_idx };
+                let value = series.get(idx)?;
                 value.try_extract::<i64>()
             }
         }
@@ -122,7 +126,9 @@ impl ParamValue {
                     polars_err!(ComputeError: "Column '{}' not found in expression inputs", col_name)
                 })?;
 
-                let value = series.get(row_idx)?;
+                // Scalar broadcasting: use index 0 for aggregation results (length 1)
+                let idx = if series.len() == 1 { 0 } else { row_idx };
+                let value = series.get(idx)?;
                 value.try_extract::<f64>()
             }
         }

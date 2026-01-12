@@ -59,12 +59,7 @@ import polars as pl
 if TYPE_CHECKING:
     import numpy as np
 
-from polars_cv._types import (
-    CloudOptions,
-    HashAlgorithm,
-    IMAGENET_MEAN,
-    IMAGENET_STD,
-)
+from polars_cv._types import IMAGENET_MEAN, IMAGENET_STD, CloudOptions, HashAlgorithm
 from polars_cv.expressions import CvNamespace
 from polars_cv.geometry import (
     BBOX_SCHEMA,
@@ -81,13 +76,15 @@ from polars_cv.pipeline import Pipeline
 
 # Schema for numpy/torch sink output struct
 # Matches the Rust output module schema
-NUMPY_OUTPUT_SCHEMA = pl.Struct({
-    "data": pl.Binary,
-    "dtype": pl.String,
-    "shape": pl.List(pl.UInt64),
-    "strides": pl.List(pl.Int64),
-    "offset": pl.UInt64,
-})
+NUMPY_OUTPUT_SCHEMA = pl.Struct(
+    {
+        "data": pl.Binary,
+        "dtype": pl.String,
+        "shape": pl.List(pl.UInt64),
+        "strides": pl.List(pl.Int64),
+        "offset": pl.UInt64,
+    }
+)
 
 
 def numpy_from_struct(
@@ -157,7 +154,9 @@ def numpy_from_struct(
             data = struct_data["data"][0]
             dtype_str = struct_data["dtype"][0]
             shape_list = struct_data["shape"][0]
-            strides_list = struct_data["strides"][0] if "strides" in struct_data.columns else None
+            strides_list = (
+                struct_data["strides"][0] if "strides" in struct_data.columns else None
+            )
             offset = struct_data["offset"][0] if "offset" in struct_data.columns else 0
         else:
             msg = f"Expected Struct Series, got {row.dtype}"
