@@ -13,4 +13,6 @@ pub mod tiling;
 
 pub use plan::{ExecutionPlan, PlanStep};
 pub use runner::execute_plan;
-pub use tiling::{get_tile_config, TileConfig, TilePolicy, with_tile_config};
+pub use tiling::{
+    configure_tiling, get_tile_config, set_tile_config, TileConfig, TilePolicy, with_tile_config,
+};

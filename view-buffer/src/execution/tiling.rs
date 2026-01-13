@@ -165,17 +165,94 @@ impl TilePolicy {
 // Thread-Local Configuration
 // ============================================================
 
+/// Initializes the default tile configuration.
+///
+/// Priority order:
+/// 1. Environment variable `VIEW_BUFFER_TILE_SIZE` (explicit tile size)
+/// 2. Environment variable `VIEW_BUFFER_TILING=0` or `false` (disable tiling)
+/// 3. Default: tiling ON with tile_size=256, min_image_size=512
+fn init_default_tile_config() -> Option<TileConfig> {
+    // Check for explicit tile size first
+    if let Ok(size_str) = std::env::var("VIEW_BUFFER_TILE_SIZE") {
+        if let Ok(size) = size_str.parse::<usize>() {
+            return Some(TileConfig::new(size));
+        }
+    }
+
+    // Check if tiling is explicitly disabled
+    if let Ok(val) = std::env::var("VIEW_BUFFER_TILING") {
+        let lower = val.to_lowercase();
+        if lower == "0" || lower == "false" || lower == "off" || lower == "no" {
+            return None;
+        }
+    }
+
+    // Default: tiling ON with default settings
+    Some(TileConfig::default())
+}
+
 thread_local! {
     /// Thread-local tile configuration.
     ///
-    /// Set via environment variable VIEW_BUFFER_TILE_SIZE at startup,
-    /// or programmatically via [`with_tile_config()`].
-    static TILE_CONFIG: RefCell<Option<TileConfig>> = RefCell::new(
-        std::env::var("VIEW_BUFFER_TILE_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .map(TileConfig::new)
-    );
+    /// Default: Tiling enabled with tile_size=256, min_image_size=512.
+    ///
+    /// Can be configured via:
+    /// - Environment variable `VIEW_BUFFER_TILE_SIZE=256` (set tile size)
+    /// - Environment variable `VIEW_BUFFER_TILING=0` (disable tiling)
+    /// - Programmatically via [`set_tile_config()`] or [`with_tile_config()`]
+    static TILE_CONFIG: RefCell<Option<TileConfig>> = RefCell::new(init_default_tile_config());
+}
+
+/// Sets the global tile configuration.
+///
+/// This sets the thread-local tile configuration that will be used for
+/// all subsequent operations on this thread.
+///
+/// # Arguments
+///
+/// * `config` - The tile configuration, or `None` to disable tiling.
+///
+/// # Example
+///
+/// ```ignore
+/// use view_buffer::{TileConfig, set_tile_config};
+///
+/// // Enable tiling with custom settings
+/// set_tile_config(Some(TileConfig::with_min_size(256, 1024)));
+///
+/// // Disable tiling entirely
+/// set_tile_config(None);
+/// ```
+pub fn set_tile_config(config: Option<TileConfig>) {
+    TILE_CONFIG.with(|c| {
+        *c.borrow_mut() = config;
+    });
+}
+
+/// Configures tiling with a minimum image size threshold.
+///
+/// This is a convenience function that enables tiling with the default
+/// tile size (256) but allows customizing when tiling activates.
+///
+/// # Arguments
+///
+/// * `min_image_size` - Minimum dimension (height or width) for tiling to activate.
+///   Pass `None` to disable tiling entirely.
+///
+/// # Example
+///
+/// ```ignore
+/// use view_buffer::configure_tiling;
+///
+/// // Only tile images larger than 1024 pixels
+/// configure_tiling(Some(1024));
+///
+/// // Disable tiling
+/// configure_tiling(None);
+/// ```
+pub fn configure_tiling(min_image_size: Option<usize>) {
+    let config = min_image_size.map(|size| TileConfig::with_min_size(256, size));
+    set_tile_config(config);
 }
 
 /// Gets the current tile configuration (if enabled).
