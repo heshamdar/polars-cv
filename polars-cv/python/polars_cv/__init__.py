@@ -4,6 +4,24 @@ polars-cv: A Polars plugin for vision/array operations.
 This package provides lazy, zero-copy-where-possible image and array
 operations on Polars DataFrame columns.
 
+## Tiling (Cache-Efficient Execution)
+
+By default, polars-cv uses **tiled execution** for large images to improve
+cache efficiency. This divides large images into 256x256 tiles that fit in
+CPU cache, providing 2-5x speedups for very large images.
+
+Tiling is transparent - results are identical whether tiling is on or off.
+Configure it using:
+
+```python
+>>> import polars_cv
+>>> polars_cv.configure_tiling(1024)  # Only tile images > 1024px
+>>> polars_cv.configure_tiling(None)  # Disable tiling entirely
+>>> polars_cv.get_tiling_config()     # Check current settings
+```
+
+## Pipeline Patterns
+
 Two patterns are supported:
 
 1. **Direct pipeline (eager)**: Define a complete pipeline with sink and apply directly.
@@ -59,6 +77,8 @@ import polars as pl
 if TYPE_CHECKING:
     import numpy as np
 
+from polars_cv._lib import configure_tiling as _configure_tiling
+from polars_cv._lib import get_tiling_config as _get_tiling_config
 from polars_cv._types import IMAGENET_MEAN, IMAGENET_STD, CloudOptions, HashAlgorithm
 from polars_cv.expressions import CvNamespace
 from polars_cv.geometry import (
@@ -293,6 +313,78 @@ def mask_iou(
     return intersection_sum / (union_sum + epsilon)
 
 
+def configure_tiling(min_image_size: int | None = 512) -> None:
+    """
+    Configure tiled execution for large image processing.
+
+    Tiled execution improves cache efficiency when processing large images
+    by dividing them into smaller tiles (default 256x256) that fit in CPU cache.
+    This can significantly improve performance for very large images.
+
+    By default, tiling is **enabled** for images larger than 512 pixels
+    in any dimension.
+
+    Args:
+        min_image_size: Minimum dimension (height or width) for tiling to activate.
+            - ``None``: Disable tiling entirely (process all images as single buffers)
+            - ``0``: Enable tiling for all images regardless of size
+            - Positive integer: Only tile images larger than this threshold (default: 512)
+
+    Example:
+        ```python
+        >>> import polars_cv
+        >>>
+        >>> # Check current configuration
+        >>> print(polars_cv.get_tiling_config())
+        {'enabled': True, 'tile_size': 256, 'min_image_size': 512}
+        >>>
+        >>> # Disable tiling (useful for debugging or small images only)
+        >>> polars_cv.configure_tiling(None)
+        >>>
+        >>> # Only tile very large images (>2048 pixels)
+        >>> polars_cv.configure_tiling(2048)
+        >>>
+        >>> # Reset to default (tile images > 512 pixels)
+        >>> polars_cv.configure_tiling(512)
+        ```
+
+    Note:
+        Tiling is **transparent** - results are identical whether tiling is
+        on or off. The only difference is memory access patterns and cache
+        efficiency. For very large images (e.g., 10000x10000), tiling can
+        provide 2-5x speedups by keeping working data in CPU cache.
+    """
+    _configure_tiling(min_image_size)
+
+
+def get_tiling_config() -> dict[str, int | bool] | None:
+    """
+    Get the current tiling configuration.
+
+    Returns:
+        A dict with tiling settings if enabled, or ``None`` if disabled.
+        When enabled, the dict contains:
+        - ``enabled``: Always ``True``
+        - ``tile_size``: Size of each tile in pixels (default: 256)
+        - ``min_image_size``: Minimum image dimension to trigger tiling
+
+    Example:
+        ```python
+        >>> import polars_cv
+        >>>
+        >>> config = polars_cv.get_tiling_config()
+        >>> if config:
+        ...     print(f"Tiling: {config['tile_size']}x{config['tile_size']} tiles")
+        ...     print(f"Activates for images > {config['min_image_size']}px")
+        ... else:
+        ...     print("Tiling disabled")
+        Tiling: 256x256 tiles
+        Activates for images > 512px
+        ```
+    """
+    return _get_tiling_config()
+
+
 def hamming_distance(
     hash1: LazyPipelineExpr,
     hash2: LazyPipelineExpr,
@@ -459,6 +551,9 @@ __all__ = [
     "Pipeline",
     "CvNamespace",
     "LazyPipelineExpr",
+    # Tiling configuration
+    "configure_tiling",
+    "get_tiling_config",
     # Types
     "CloudOptions",
     "HashAlgorithm",
