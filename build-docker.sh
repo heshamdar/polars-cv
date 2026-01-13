@@ -1,5 +1,9 @@
 #!/bin/bash
 # Build script for polars-cv using Docker
+colima stop
+colima delete -f
+colima start --cpu 4 --memory 8
+sleep 1 && wait
 
 set -e
 
@@ -118,3 +122,7 @@ echo -e "${GREEN}Build complete! Check the following locations for the built whe
 echo -e "${BLUE}  - polars-cv/target/wheels/${NC}"
 echo -e "${BLUE}  - target/wheels/ (workspace root)${NC}"
 
+echo -e "${RED}Stopping colima...${NC}"
+colima stop
+echo -e "${RED}Deleting colima...${NC}"
+colima delete -f

@@ -1,4 +1,5 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
+use crate::execution::tiling::TilePolicy;
 use crate::ops::cost::OpCost;
 use crate::ops::traits::{MemoryEffect, Op};
 
@@ -126,5 +127,21 @@ impl Op for ImageOp {
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         // Image operations always output U8
         OutputDTypeRule::Fixed(DType::U8)
+    }
+
+    fn tile_policy(&self) -> TilePolicy {
+        match &self.kind {
+            // Point-wise operations - no pixel dependencies
+            ImageOpKind::Threshold(_) => TilePolicy::PointWise,
+            ImageOpKind::Grayscale => TilePolicy::PointWise,
+
+            // Blur needs neighboring pixels - halo = 3*sigma (rounded up)
+            ImageOpKind::Blur { sigma } => TilePolicy::LocalNeighborhood {
+                halo: (*sigma * 3.0).ceil() as usize,
+            },
+
+            // Resize uses global resampling - cannot be tiled
+            ImageOpKind::Resize { .. } => TilePolicy::Global,
+        }
     }
 }

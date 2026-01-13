@@ -72,6 +72,14 @@ impl LayoutFacts {
         }
     }
 
+    /// Returns true if all strides are positive.
+    ///
+    /// Negative strides occur in flipped buffers and cannot be represented
+    /// by external libraries that expect forward iteration (e.g., image crate).
+    pub fn has_positive_strides(&self) -> bool {
+        self.strides.iter().all(|&s| s >= 0)
+    }
+
     /// Primary Predicate: Checks if this layout meets the requirements of a target crate.
     pub fn compatible_with(&self, target: ExternalLayout) -> bool {
         match target {
@@ -84,9 +92,11 @@ impl LayoutFacts {
                 // 1. Rank 2 (Grey) or 3 (RGB/A)
                 // 2. Channels last (for Rank 3)
                 // 3. Dense rows (no gaps between pixels)
+                // 4. Positive strides (no flipped buffers - can't iterate backwards)
                 (self.rank == 2 || self.rank == 3)
                     && (self.rank != 3 || self.is_channels_last())
                     && self.is_dense_rows()
+                    && self.has_positive_strides()
             }
             ExternalLayout::FastImageResize => {
                 // fast_image_resize usually requires strictly contiguous buffers
