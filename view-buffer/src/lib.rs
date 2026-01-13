@@ -29,6 +29,9 @@ pub use core::layout::{ExternalLayout, LayoutFacts, LayoutReport};
 // Re-exports - Execution
 pub use execution::{execute_plan, ExecutionPlan, PlanStep};
 
+// Re-exports - Tiling
+pub use execution::{get_tile_config, TileConfig, TilePolicy, with_tile_config};
+
 // Re-exports - Expression
 pub use expr::{PipelineCostReport, ViewExpr};
 

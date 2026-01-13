@@ -1,6 +1,7 @@
 //! Compute operations that transform data.
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
+use crate::execution::tiling::TilePolicy;
 use crate::ops::affine::AffineParams;
 use crate::ops::cost::OpCost;
 use crate::ops::scalar::FusedKernel;
@@ -210,6 +211,27 @@ impl Op for ComputeOp {
             // Others preserve input
             ComputeOp::Affine(_) => OutputDTypeRule::PreserveInput,
             ComputeOp::Fused(_) => OutputDTypeRule::PreserveInput,
+        }
+    }
+
+    fn tile_policy(&self) -> TilePolicy {
+        match self {
+            // Point-wise operations - no pixel dependencies
+            ComputeOp::Scale(_) => TilePolicy::PointWise,
+            ComputeOp::Relu => TilePolicy::PointWise,
+            ComputeOp::Clamp { .. } => TilePolicy::PointWise,
+            ComputeOp::Cast(_) => TilePolicy::PointWise,
+            ComputeOp::Fused(_) => TilePolicy::PointWise,
+
+            // Normalize with preset values is point-wise (fixed per-channel params)
+            ComputeOp::Normalize(NormalizeMethod::Preset { .. }) => TilePolicy::PointWise,
+
+            // Normalize with minmax/zscore needs global statistics
+            ComputeOp::Normalize(NormalizeMethod::MinMax) => TilePolicy::Global,
+            ComputeOp::Normalize(NormalizeMethod::ZScore) => TilePolicy::Global,
+
+            // Affine transformation needs global context
+            ComputeOp::Affine(_) => TilePolicy::Global,
         }
     }
 }
