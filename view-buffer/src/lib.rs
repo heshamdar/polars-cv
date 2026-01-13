@@ -31,7 +31,8 @@ pub use execution::{execute_plan, ExecutionPlan, PlanStep};
 
 // Re-exports - Tiling
 pub use execution::{
-    configure_tiling, get_tile_config, set_tile_config, TileConfig, TilePolicy, with_tile_config,
+    configure_tiling, get_tile_config, is_tiling_enabled, set_tile_config, TileConfig, TilePolicy,
+    with_tile_config,
 };
 
 // Re-exports - Expression

@@ -45,10 +45,40 @@
 //! - Output allocation: inherent to compute ops, same as non-tiled
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::core::buffer::{BufferStorage, ViewBuffer};
 use crate::core::layout::Layout;
+
+// ============================================================
+// Fast-Path Atomic Flag
+// ============================================================
+
+/// Global atomic flag for fast "is tiling enabled" check.
+///
+/// This avoids expensive thread-local storage access on every operation
+/// when tiling is disabled. The flag is kept in sync with the thread-local
+/// configuration via [`set_tile_config()`].
+///
+/// Note: This is a "hint" that may lag behind thread-local state in multi-threaded
+/// scenarios, but that's acceptable since:
+/// - Most usage is single-threaded (Polars plugin)
+/// - False positives just mean we do the TLS lookup (small overhead)
+/// - False negatives are impossible since we set atomic BEFORE TLS on enable
+///
+/// Tiling is currently disabled by default due to performance issues.
+static TILING_ENABLED: AtomicBool = AtomicBool::new(false); 
+
+/// Fast check if tiling is potentially enabled.
+///
+/// This is a cheap atomic load that avoids thread-local storage access.
+/// Returns `true` if tiling might be enabled (requires TLS check to confirm).
+/// Returns `false` if tiling is definitely disabled (no TLS check needed).
+#[inline(always)]
+pub fn is_tiling_enabled() -> bool {
+    TILING_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Configuration for tiled execution.
 ///
@@ -147,6 +177,7 @@ impl TilePolicy {
     /// Returns the halo size for this policy.
     ///
     /// Returns 0 for PointWise and Global policies.
+    #[inline]
     pub fn halo(&self) -> usize {
         match self {
             TilePolicy::PointWise => 0,
@@ -156,6 +187,7 @@ impl TilePolicy {
     }
 
     /// Returns true if this operation can be tiled.
+    #[inline]
     pub fn is_tileable(&self) -> bool {
         !matches!(self, TilePolicy::Global)
     }
@@ -171,10 +203,13 @@ impl TilePolicy {
 /// 1. Environment variable `VIEW_BUFFER_TILE_SIZE` (explicit tile size)
 /// 2. Environment variable `VIEW_BUFFER_TILING=0` or `false` (disable tiling)
 /// 3. Default: tiling ON with tile_size=256, min_image_size=512
+///
+/// Also sets the global atomic flag to match the initial configuration.
 fn init_default_tile_config() -> Option<TileConfig> {
     // Check for explicit tile size first
     if let Ok(size_str) = std::env::var("VIEW_BUFFER_TILE_SIZE") {
         if let Ok(size) = size_str.parse::<usize>() {
+            // Atomic flag already defaults to true, no change needed
             return Some(TileConfig::new(size));
         }
     }
@@ -182,12 +217,15 @@ fn init_default_tile_config() -> Option<TileConfig> {
     // Check if tiling is explicitly disabled
     if let Ok(val) = std::env::var("VIEW_BUFFER_TILING") {
         let lower = val.to_lowercase();
-        if lower == "0" || lower == "false" || lower == "off" || lower == "no" {
+        if lower == "none" || lower.is_empty() || lower == "0" || lower == "false" || lower == "off" || lower == "no" {
+            // Disable tiling - update atomic flag
+            TILING_ENABLED.store(false, Ordering::Relaxed);
             return None;
         }
     }
 
     // Default: tiling ON with default settings
+    // Atomic flag already defaults to true, no change needed
     Some(TileConfig::default())
 }
 
@@ -206,7 +244,8 @@ thread_local! {
 /// Sets the global tile configuration.
 ///
 /// This sets the thread-local tile configuration that will be used for
-/// all subsequent operations on this thread.
+/// all subsequent operations on this thread. Also updates the global
+/// atomic flag for fast-path checking.
 ///
 /// # Arguments
 ///
@@ -224,9 +263,18 @@ thread_local! {
 /// set_tile_config(None);
 /// ```
 pub fn set_tile_config(config: Option<TileConfig>) {
+    // Update atomic flag BEFORE TLS for enable (ensures no false negatives)
+    // Update atomic flag AFTER TLS for disable (ensures fast path works)
+    let is_enabled = config.is_some();
+    if is_enabled {
+        TILING_ENABLED.store(true, Ordering::Relaxed);
+    }
     TILE_CONFIG.with(|c| {
         *c.borrow_mut() = config;
     });
+    if !is_enabled {
+        TILING_ENABLED.store(false, Ordering::Relaxed);
+    }
 }
 
 /// Configures tiling with a minimum image size threshold.

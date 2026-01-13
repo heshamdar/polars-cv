@@ -214,6 +214,7 @@ impl Op for ComputeOp {
         }
     }
 
+    #[inline]
     fn tile_policy(&self) -> TilePolicy {
         match self {
             // Point-wise operations - no pixel dependencies

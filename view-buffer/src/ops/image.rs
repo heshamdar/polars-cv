@@ -129,6 +129,7 @@ impl Op for ImageOp {
         OutputDTypeRule::Fixed(DType::U8)
     }
 
+    #[inline]
     fn tile_policy(&self) -> TilePolicy {
         match &self.kind {
             // Point-wise operations - no pixel dependencies
