@@ -2,7 +2,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
-use crate::execution::tiling::{get_tile_config, maybe_tiled};
+use crate::execution::tiling::{get_tile_config, is_tiling_enabled, maybe_tiled};
 use crate::expr::ViewExpr;
 use crate::ops::dto::ViewDto;
 use crate::ops::traits::Op;
@@ -58,23 +58,31 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
 ///
 /// If tiling is enabled (via environment variable or [`with_tile_config`]),
 /// tileable operations will be executed tile-by-tile for improved cache efficiency.
+#[inline]
 pub fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
-    let tile_config = get_tile_config();
-    let policy = op.tile_policy();
-
-    // Check if this operation can be tiled
-    if policy.is_tileable() && tile_config.is_some() {
-        let halo = policy.halo();
-        let op_clone = op.clone();
-        maybe_tiled(buf, halo, tile_config.as_ref(), move |tile| {
-            apply_compute_inner(tile, op_clone.clone())
-        })
-    } else {
-        apply_compute_inner(buf, op)
+    // Fast path: atomic check avoids TLS access when tiling is disabled
+    if !is_tiling_enabled() {
+        return apply_compute_inner(buf, op);
     }
+
+    // Slow path: tiling might be enabled, check TLS and policy
+    let tile_config = get_tile_config();
+    if let Some(ref config) = tile_config {
+        let policy = op.tile_policy();
+        if policy.is_tileable() {
+            let halo = policy.halo();
+            let op_clone = op.clone();
+            return maybe_tiled(buf, halo, Some(config), move |tile| {
+                apply_compute_inner(tile, op_clone.clone())
+            });
+        }
+    }
+
+    apply_compute_inner(buf, op)
 }
 
 /// Inner implementation of compute operations (without tiling logic).
+#[inline]
 fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
     match op {
         ComputeOp::Cast(dtype) => buf.cast(dtype),
@@ -479,27 +487,35 @@ fn grayscale_strided(buf: ViewBuffer) -> ViewBuffer {
 /// If tiling is enabled (via environment variable or [`with_tile_config`]),
 /// tileable operations will be executed tile-by-tile for improved cache efficiency.
 #[cfg(feature = "image_interop")]
+#[inline]
 pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     // Convert to U8 if needed (dtype promotion for image ops)
     let work_buf = convert_to_u8_for_image(buf);
 
-    let tile_config = get_tile_config();
-    let policy = op.tile_policy();
-
-    // Check if this operation can be tiled
-    if policy.is_tileable() && tile_config.is_some() {
-        let halo = policy.halo();
-        let op_clone = op.clone();
-        maybe_tiled(work_buf, halo, tile_config.as_ref(), move |tile| {
-            apply_image_inner(tile, op_clone.clone())
-        })
-    } else {
-        apply_image_inner(work_buf, op)
+    // Fast path: atomic check avoids TLS access when tiling is disabled
+    if !is_tiling_enabled() {
+        return apply_image_inner(work_buf, op);
     }
+
+    // Slow path: tiling might be enabled, check TLS and policy
+    let tile_config = get_tile_config();
+    if let Some(ref config) = tile_config {
+        let policy = op.tile_policy();
+        if policy.is_tileable() {
+            let halo = policy.halo();
+            let op_clone = op.clone();
+            return maybe_tiled(work_buf, halo, Some(config), move |tile| {
+                apply_image_inner(tile, op_clone.clone())
+            });
+        }
+    }
+
+    apply_image_inner(work_buf, op)
 }
 
 /// Inner implementation of image operations (without tiling logic).
 #[cfg(feature = "image_interop")]
+#[inline]
 fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
         ImageOpKind::Threshold(thresh) => {
