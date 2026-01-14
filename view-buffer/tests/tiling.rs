@@ -11,7 +11,7 @@
 
 #![cfg(all(feature = "ndarray_interop", feature = "image_interop"))]
 
-use view_buffer::{DType, NormalizeMethod, TileConfig, ViewBuffer, ViewExpr, with_tile_config};
+use view_buffer::{with_tile_config, DType, NormalizeMethod, TileConfig, ViewBuffer, ViewExpr};
 
 // ============================================================
 // Helper Functions
@@ -102,7 +102,11 @@ fn assert_buffers_approx_equal(a: &ViewBuffer, b: &ViewBuffer, tolerance: f32) {
         assert!(
             diff <= tolerance,
             "Mismatch at index {}: {} vs {}, diff {} > tolerance {}",
-            i, av, bv, diff, tolerance
+            i,
+            av,
+            bv,
+            diff,
+            tolerance
         );
     }
 }
@@ -195,18 +199,12 @@ fn test_relu_tiled_vs_non_tiled() {
 
     // Run without tiling
     let result_no_tile = with_tile_config(None, || {
-        ViewExpr::new_source(input.clone())
-            .relu()
-            .plan()
-            .execute()
+        ViewExpr::new_source(input.clone()).relu().plan().execute()
     });
 
     // Run with tiling
     let result_tiled = with_tile_config(Some(test_tile_config()), || {
-        ViewExpr::new_source(input.clone())
-            .relu()
-            .plan()
-            .execute()
+        ViewExpr::new_source(input.clone()).relu().plan().execute()
     });
 
     assert_buffers_approx_equal(&result_no_tile, &result_tiled, 1e-6);
@@ -533,35 +531,60 @@ fn test_with_tile_config_restores_previous() {
 
 #[test]
 fn test_tile_policy_for_operations() {
-    use view_buffer::{ComputeOp, ImageOp, ImageOpKind};
     use view_buffer::ops::traits::Op;
+    use view_buffer::{ComputeOp, ImageOp, ImageOpKind};
 
     // Point-wise compute ops
     assert!(ComputeOp::Scale(2.0).tile_policy().is_tileable());
     assert!(ComputeOp::Relu.tile_policy().is_tileable());
-    assert!(ComputeOp::Clamp { min: 0.0, max: 1.0 }.tile_policy().is_tileable());
+    assert!(ComputeOp::Clamp { min: 0.0, max: 1.0 }
+        .tile_policy()
+        .is_tileable());
 
     // Global compute ops
-    assert!(!ComputeOp::Normalize(NormalizeMethod::MinMax).tile_policy().is_tileable());
-    assert!(!ComputeOp::Normalize(NormalizeMethod::ZScore).tile_policy().is_tileable());
+    assert!(!ComputeOp::Normalize(NormalizeMethod::MinMax)
+        .tile_policy()
+        .is_tileable());
+    assert!(!ComputeOp::Normalize(NormalizeMethod::ZScore)
+        .tile_policy()
+        .is_tileable());
 
     // Preset normalize is tileable
     assert!(ComputeOp::Normalize(NormalizeMethod::Preset {
         mean: vec![0.5],
         std: vec![0.5],
-    }).tile_policy().is_tileable());
+    })
+    .tile_policy()
+    .is_tileable());
 
     // Point-wise image ops
-    assert!(ImageOp { kind: ImageOpKind::Threshold(128) }.tile_policy().is_tileable());
-    assert!(ImageOp { kind: ImageOpKind::Grayscale }.tile_policy().is_tileable());
+    assert!(ImageOp {
+        kind: ImageOpKind::Threshold(128)
+    }
+    .tile_policy()
+    .is_tileable());
+    assert!(ImageOp {
+        kind: ImageOpKind::Grayscale
+    }
+    .tile_policy()
+    .is_tileable());
 
     // Neighborhood image ops (tileable with halo)
-    let blur_policy = ImageOp { kind: ImageOpKind::Blur { sigma: 2.0 } }.tile_policy();
+    let blur_policy = ImageOp {
+        kind: ImageOpKind::Blur { sigma: 2.0 },
+    }
+    .tile_policy();
     assert!(blur_policy.is_tileable());
     assert_eq!(blur_policy.halo(), 6); // 3 * sigma = 6
 
     // Global image ops
     assert!(!ImageOp {
-        kind: ImageOpKind::Resize { width: 100, height: 100, filter: view_buffer::FilterType::Nearest }
-    }.tile_policy().is_tileable());
+        kind: ImageOpKind::Resize {
+            width: 100,
+            height: 100,
+            filter: view_buffer::FilterType::Nearest
+        }
+    }
+    .tile_policy()
+    .is_tileable());
 }

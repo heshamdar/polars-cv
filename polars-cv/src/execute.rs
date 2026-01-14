@@ -1018,8 +1018,7 @@ pub fn resolve_op(
             let axis = op_spec
                 .params
                 .get("axis")
-                .map(|p| p.resolve_usize(row_idx, expr_columns).ok())
-                .flatten();
+                .and_then(|p| p.resolve_usize(row_idx, expr_columns).ok());
             Ok(ViewDto::Reduction(ReductionOp::Max { axis }))
         }
         "reduce_min" => {
@@ -1027,8 +1026,7 @@ pub fn resolve_op(
             let axis = op_spec
                 .params
                 .get("axis")
-                .map(|p| p.resolve_usize(row_idx, expr_columns).ok())
-                .flatten();
+                .and_then(|p| p.resolve_usize(row_idx, expr_columns).ok());
             Ok(ViewDto::Reduction(ReductionOp::Min { axis }))
         }
         "reduce_mean" => {
@@ -1036,8 +1034,7 @@ pub fn resolve_op(
             let axis = op_spec
                 .params
                 .get("axis")
-                .map(|p| p.resolve_usize(row_idx, expr_columns).ok())
-                .flatten();
+                .and_then(|p| p.resolve_usize(row_idx, expr_columns).ok());
             Ok(ViewDto::Reduction(ReductionOp::Mean { axis }))
         }
         "reduce_std" => {
@@ -1045,8 +1042,7 @@ pub fn resolve_op(
             let axis = op_spec
                 .params
                 .get("axis")
-                .map(|p| p.resolve_usize(row_idx, expr_columns).ok())
-                .flatten();
+                .and_then(|p| p.resolve_usize(row_idx, expr_columns).ok());
             let ddof = op_spec
                 .params
                 .get("ddof")

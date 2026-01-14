@@ -68,7 +68,7 @@ use crate::core::layout::Layout;
 /// - False negatives are impossible since we set atomic BEFORE TLS on enable
 ///
 /// Tiling is currently disabled by default due to performance issues.
-static TILING_ENABLED: AtomicBool = AtomicBool::new(false); 
+static TILING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Fast check if tiling is potentially enabled.
 ///
@@ -217,7 +217,13 @@ fn init_default_tile_config() -> Option<TileConfig> {
     // Check if tiling is explicitly disabled
     if let Ok(val) = std::env::var("VIEW_BUFFER_TILING") {
         let lower = val.to_lowercase();
-        if lower == "none" || lower.is_empty() || lower == "0" || lower == "false" || lower == "off" || lower == "no" {
+        if lower == "none"
+            || lower.is_empty()
+            || lower == "0"
+            || lower == "false"
+            || lower == "off"
+            || lower == "no"
+        {
             // Disable tiling - update atomic flag
             TILING_ENABLED.store(false, Ordering::Relaxed);
             return None;
@@ -404,7 +410,12 @@ pub fn should_tile(shape: &[usize], config: &TileConfig) -> bool {
 ///     |tile| apply_threshold(tile, 128),
 /// );
 /// ```
-pub fn maybe_tiled<F>(input: ViewBuffer, halo: usize, config: Option<&TileConfig>, op: F) -> ViewBuffer
+pub fn maybe_tiled<F>(
+    input: ViewBuffer,
+    halo: usize,
+    config: Option<&TileConfig>,
+    op: F,
+) -> ViewBuffer
 where
     F: Fn(ViewBuffer) -> ViewBuffer,
 {
@@ -603,6 +614,7 @@ where
 ///
 /// This function handles the strided copy from the output tile (which may
 /// have halo regions) to the final output buffer.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn copy_tile_to_output(
     tile: &ViewBuffer,
