@@ -513,27 +513,73 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     apply_image_inner(work_buf, op)
 }
 
+/// SIMD-friendly threshold implementation for contiguous u8 data.
+///
+/// Processes in chunks of 32 bytes (256 bits = AVX) to enable auto-vectorization.
+/// The compiler can vectorize the comparison and conditional select operations.
+#[cfg(feature = "image_interop")]
+#[inline]
+fn threshold_simd(src: &[u8], thresh: u8) -> Vec<u8> {
+    let count = src.len();
+    let mut new_data: Vec<u8> = Vec::with_capacity(count);
+
+    // Process in chunks of 32 for SIMD (u8 x 32 = 256 bits = AVX)
+    const CHUNK_SIZE: usize = 32;
+    let chunks = count / CHUNK_SIZE;
+    let remainder = count % CHUNK_SIZE;
+
+    // Process main chunks - compiler can auto-vectorize this pattern
+    for chunk_idx in 0..chunks {
+        let base = chunk_idx * CHUNK_SIZE;
+        let chunk = &src[base..base + CHUNK_SIZE];
+
+        // Fixed-size array enables SIMD optimization
+        let mut out = [0u8; CHUNK_SIZE];
+        for (i, &p) in chunk.iter().enumerate() {
+            // Simple comparison that vectorizes well
+            out[i] = if p > thresh { 255 } else { 0 };
+        }
+        new_data.extend_from_slice(&out);
+    }
+
+    // Handle remainder elements
+    let remainder_start = chunks * CHUNK_SIZE;
+    for i in 0..remainder {
+        let p = src[remainder_start + i];
+        new_data.push(if p > thresh { 255 } else { 0 });
+    }
+
+    new_data
+}
+
 /// Inner implementation of image operations (without tiling logic).
 #[cfg(feature = "image_interop")]
 #[inline]
 fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
         ImageOpKind::Threshold(thresh) => {
+            // Fast path: try grayscale image view (for HW1 layout with positive strides)
             if let Ok(view) = work_buf.as_image_view::<Luma<u8>>() {
-                let mut new_data: Vec<u8> = Vec::with_capacity((view.width * view.height) as usize);
+                // For image view, rows may have padding but are contiguous within
+                // Process each row using SIMD-friendly threshold
+                let total_pixels = (view.width * view.height) as usize;
+                let mut new_data: Vec<u8> = Vec::with_capacity(total_pixels);
+
                 for y in 0..view.height {
                     let row_start = (y as usize) * view.row_stride;
                     let row_slice = &view.data[row_start..row_start + view.width as usize];
-                    for &p in row_slice {
-                        new_data.push(if p > thresh { 255 } else { 0 });
-                    }
+                    // Use SIMD threshold for each row
+                    let thresholded = threshold_simd(row_slice, thresh);
+                    new_data.extend_from_slice(&thresholded);
                 }
+
                 ViewBuffer::from_vec(new_data).reshape(vec![
                     view.height as usize,
                     view.width as usize,
                     1,
                 ])
             } else {
+                // Fallback: ensure contiguous and use SIMD threshold
                 let contig_buf = if work_buf.layout.is_contiguous() {
                     work_buf
                 } else {
@@ -543,10 +589,8 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 let src_slice =
                     unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count) };
 
-                let new_data: Vec<u8> = src_slice
-                    .iter()
-                    .map(|&p| if p > thresh { 255 } else { 0 })
-                    .collect();
+                // Use SIMD-friendly threshold
+                let new_data = threshold_simd(src_slice, thresh);
 
                 ViewBuffer::from_vec(new_data).reshape(contig_buf.shape().to_vec())
             }
