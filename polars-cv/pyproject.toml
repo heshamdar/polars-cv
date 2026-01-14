@@ -43,6 +43,7 @@ docs = [
     "ruff"
 ]
 
+
 [tool.maturin]
 python-source = "python"
 module-name = "polars_cv._lib"
@@ -54,3 +55,7 @@ dev = [
     "jupytext>=1.18.1",
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "network: mark a test that requires network access",
+]
