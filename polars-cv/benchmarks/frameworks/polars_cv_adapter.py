@@ -609,40 +609,60 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
 
         return outputs
 
-    def prepare_decoded_images(self, png_bytes_list: list[bytes]) -> list[bytes]:
+    def prepare_decoded_images(self, png_bytes_list: list[bytes]) -> pl.DataFrame:
         """
-        Pre-decode PNG bytes to blob format for fair benchmarking.
+        Pre-decode PNG bytes to a DataFrame with blob column for fair benchmarking.
 
-        This converts PNG bytes to VIEW protocol blob format, removing
-        image decoding overhead from subsequent benchmark runs.
+        This converts PNG bytes to VIEW protocol blob format and stores them
+        in a pre-constructed DataFrame, removing both image decoding AND
+        DataFrame construction overhead from subsequent benchmark runs.
+
+        This provides parity with OpenCV benchmarks where images are pre-decoded
+        to numpy arrays before timing begins.
 
         Args:
             png_bytes_list: List of PNG image bytes.
 
         Returns:
-            List of blob-encoded image bytes.
+            DataFrame with 'images' column containing blob-encoded image bytes.
         """
-        return self.prepare_blob_images(png_bytes_list)
+        blob_images = self.prepare_blob_images(png_bytes_list)
+        return pl.DataFrame({"images": blob_images})
 
     def run_pipeline_on_decoded(
         self,
-        decoded_images: list[bytes],
+        decoded_images: pl.DataFrame,
         operations: list[OperationParams],
-    ) -> list[bytes]:
+    ) -> pl.DataFrame:
         """
-        Run operations on pre-decoded blob images (skips PNG decode overhead).
+        Run operations on pre-decoded DataFrame (skips decode + DataFrame creation).
 
-        This uses the blob source pipeline for fair comparison with other
-        frameworks that start from decoded arrays.
+        This provides fair comparison with other frameworks by:
+        - Starting from an already-constructed DataFrame (like OpenCV starts from arrays)
+        - Returning a DataFrame (not extracting to Python list)
 
         Args:
-            decoded_images: List of blob-encoded image bytes.
+            decoded_images: DataFrame with 'images' column containing blob bytes.
             operations: Operations to apply.
 
         Returns:
-            List of processed image bytes.
+            DataFrame with 'processed' column containing results.
         """
-        return self.apply_operations_blob(decoded_images, operations)
+        self._ensure_expressions_registered()
+        pipe = self._build_pipeline_blob_source(operations, sink_format="numpy")
+
+        if self.streaming:
+            result = (
+                decoded_images.lazy()
+                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .collect(engine="streaming")
+            )
+        else:
+            result = decoded_images.with_columns(
+                processed=pl.col("images").cv.pipeline(pipe)
+            )
+
+        return result
 
 
 class PolarsCVEagerAdapter(PolarsCVAdapter):
@@ -658,5 +678,4 @@ class PolarsCVStreamingAdapter(PolarsCVAdapter):
 
     def __init__(self) -> None:
         """Initialize streaming adapter."""
-        super().__init__(streaming=True)
         super().__init__(streaming=True)
