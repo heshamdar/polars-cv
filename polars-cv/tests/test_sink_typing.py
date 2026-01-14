@@ -173,10 +173,11 @@ class TestDtypePreservationListSink:
         Threshold outputs U8, list sink should preserve UInt8 as innermost type.
 
         The threshold operation has Fixed(U8) output dtype rule.
+        Note: Threshold requires single-channel input, so we convert to grayscale first.
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").threshold(128).sink("list")
+        pipe = Pipeline().source("image_bytes").grayscale().threshold(128).sink("list")
         result = df.with_columns(thresh=pl.col("image").cv.pipeline(pipe))
 
         thresh_col = result["thresh"]
