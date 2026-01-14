@@ -552,12 +552,54 @@ fn threshold_simd(src: &[u8], thresh: u8) -> Vec<u8> {
     new_data
 }
 
+/// Check if a shape represents a single-channel image.
+///
+/// Valid single-channel shapes:
+/// - `[H, W]` - 2D array
+/// - `[H, W, 1]` - 3D with 1 channel
+///
+/// Invalid (multi-channel):
+/// - `[H, W, C]` where C > 1
+#[cfg(feature = "image_interop")]
+#[inline]
+fn is_single_channel(shape: &[usize]) -> bool {
+    match shape.len() {
+        2 => true,                          // [H, W] - 2D is single channel
+        3 => shape[2] == 1,                 // [H, W, 1] - explicit single channel
+        _ => false,                         // Other ranks not supported
+    }
+}
+
+/// Get the number of channels from a shape.
+#[cfg(feature = "image_interop")]
+#[inline]
+fn get_channel_count(shape: &[usize]) -> usize {
+    match shape.len() {
+        2 => 1,              // [H, W] - implicit single channel
+        3 => shape[2],       // [H, W, C]
+        _ => 0,              // Invalid
+    }
+}
+
 /// Inner implementation of image operations (without tiling logic).
 #[cfg(feature = "image_interop")]
 #[inline]
 fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
         ImageOpKind::Threshold(thresh) => {
+            let shape = work_buf.shape();
+
+            // Validate: threshold only works on single-channel data
+            // Valid shapes: [H, W] or [H, W, 1]
+            if !is_single_channel(shape) {
+                let channels = get_channel_count(shape);
+                panic!(
+                    "Threshold requires single-channel input, but got {} channels (shape: {:?}). \
+                     Consider using .grayscale() first to convert multi-channel images to grayscale.",
+                    channels, shape
+                );
+            }
+
             // Fast path: try grayscale image view (for HW1 layout with positive strides)
             if let Ok(view) = work_buf.as_image_view::<Luma<u8>>() {
                 // For image view, rows may have padding but are contiguous within
