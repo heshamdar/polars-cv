@@ -564,9 +564,9 @@ fn threshold_simd(src: &[u8], thresh: u8) -> Vec<u8> {
 #[inline]
 fn is_single_channel(shape: &[usize]) -> bool {
     match shape.len() {
-        2 => true,                          // [H, W] - 2D is single channel
-        3 => shape[2] == 1,                 // [H, W, 1] - explicit single channel
-        _ => false,                         // Other ranks not supported
+        2 => true,          // [H, W] - 2D is single channel
+        3 => shape[2] == 1, // [H, W, 1] - explicit single channel
+        _ => false,         // Other ranks not supported
     }
 }
 
@@ -575,9 +575,9 @@ fn is_single_channel(shape: &[usize]) -> bool {
 #[inline]
 fn get_channel_count(shape: &[usize]) -> usize {
     match shape.len() {
-        2 => 1,              // [H, W] - implicit single channel
-        3 => shape[2],       // [H, W, C]
-        _ => 0,              // Invalid
+        2 => 1,        // [H, W] - implicit single channel
+        3 => shape[2], // [H, W, C]
+        _ => 0,        // Invalid
     }
 }
 
@@ -594,9 +594,8 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             if !is_single_channel(shape) {
                 let channels = get_channel_count(shape);
                 panic!(
-                    "Threshold requires single-channel input, but got {} channels (shape: {:?}). \
-                     Consider using .grayscale() first to convert multi-channel images to grayscale.",
-                    channels, shape
+                    "Threshold requires single-channel input, but got {channels} channels (shape: {shape:?}). \
+                     Consider using .grayscale() first to convert multi-channel images to grayscale."
                 );
             }
 
