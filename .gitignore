@@ -69,3 +69,9 @@ polars-cv/notebooks/**/*.svg
 polars-cv/notebooks/**/*.webp
 polars-cv/notebooks/**/*.gif
 polars-cv/notebooks/**/*.bmp
+polars-cv/notebooks/wiki/*
+notebooks/wiki/*
+
+polars-cv/notebooks/*.ipynb_checkpoints
+polars-cv/notebooks/*.pq
+polars-cv/notebooks/*.parquet
