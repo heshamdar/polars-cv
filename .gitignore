@@ -55,3 +55,9 @@ backup/**
 site/**
 polars-cv/site/**
 polars-cv/benchmark_data
+polars-cv/notebooks/wiki/*
+notebooks/wiki/*
+
+polars-cv/notebooks/*.ipynb_checkpoints
+polars-cv/notebooks/*.pq
+polars-cv/notebooks/*.parquet

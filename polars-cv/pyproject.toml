@@ -55,3 +55,12 @@ dev = [
     "jupytext>=1.18.1",
 ]
 
+viz = [
+    "graphviz>=0.21",
+    "pydot>=4.0.1",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: mark a test that requires network access",
+]

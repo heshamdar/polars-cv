@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from polars_cv._graph_viz import get_graphviz_out
+
 if TYPE_CHECKING:
+    import pydot
+
     from polars_cv._types import OpSpec
     from polars_cv.pipeline import Pipeline
 
@@ -515,17 +519,7 @@ class PipelineGraph:
 
         return expr_columns, expr_names
 
-    def _to_json(self) -> str:
-        """
-        Serialize the graph to JSON for the Rust backend.
-
-        Always uses unified "outputs" format. Single output uses "_output" key.
-        The Rust backend determines whether to return Binary or Struct based on
-        the number of outputs.
-
-        Returns:
-            JSON string representation of the graph.
-        """
+    def _to_dict(self) -> dict[str, Any]:
         if self._output is None and self._multi_output is None:
             raise ValueError("No output set")
 
@@ -578,6 +572,20 @@ class PipelineGraph:
             "column_bindings": self._column_bindings,
         }
 
+        return graph_spec
+
+    def _to_json(self) -> str:
+        """
+        Serialize the graph to JSON for the Rust backend.
+
+        Always uses unified "outputs" format. Single output uses "_output" key.
+        The Rust backend determines whether to return Binary or Struct based on
+        the number of outputs.
+
+        Returns:
+            JSON string representation of the graph.
+        """
+        graph_spec = self._to_dict()
         return json.dumps(graph_spec)
 
     def topological_order(self) -> list[str]:
@@ -634,3 +642,7 @@ class PipelineGraph:
             for node_id, _, _ in self._multi_output.outputs.values():
                 output_nodes.add(node_id)
         return output_nodes
+
+    def show_graph(self) -> pydot.Dot:
+        """Build dot representation of graph."""
+        return get_graphviz_out(self)

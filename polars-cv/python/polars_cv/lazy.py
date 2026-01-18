@@ -215,7 +215,12 @@ class LazyPipelineExpr:
 
     # --- Sink (materializes to pl.Expr) ---
 
-    def sink(self, format: str | dict[str, str] = "native", **kwargs: Any) -> pl.Expr:
+    def sink(
+        self,
+        format: str | dict[str, str] = "native",
+        return_expr: bool = True,
+        **kwargs: Any,
+    ) -> pl.Expr:
         """
         Finalize the pipeline graph and create executable pl.Expr.
 
@@ -281,8 +286,12 @@ class LazyPipelineExpr:
             # Single output mode
             graph.set_output(self._node_id, format, **kwargs)
 
-        # Register and return the fused expression
-        return graph.to_expr()
+        if return_expr:
+            # Register and return the fused expression
+            return graph.to_expr()
+
+        # Return the graph
+        return graph
 
     # --- Composition Methods ---
 
