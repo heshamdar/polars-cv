@@ -55,6 +55,7 @@ backup/**
 site/**
 polars-cv/site/**
 polars-cv/benchmark_data
+polars-cv/notebooks/wiki/*
 
 
 polars-cv/notebooks/**/*.jpg
