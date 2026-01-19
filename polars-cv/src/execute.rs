@@ -460,6 +460,8 @@ pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult
             ImageAdapter::encode_jpeg(buffer, quality)
                 .map_err(|e| polars_err!(ComputeError: "Failed to encode JPEG: {:?}", e))
         }
+        "webp" => ImageAdapter::encode(buffer, image::ImageFormat::WebP)
+            .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e)),
         "array" | "list" => {
             // For array/list, we return raw bytes that Polars will interpret
             // The actual type conversion happens in the output dtype

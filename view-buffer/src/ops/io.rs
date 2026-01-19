@@ -92,6 +92,11 @@ pub enum SinkFormat {
         /// JPEG quality (1-100).
         quality: u8,
     },
+    #[cfg(feature = "image_interop")]
+    WebP {
+        /// WebP quality (1-100).
+        quality: u8,
+    },
 
     /// Export as Arrow array.
     #[cfg(feature = "arrow_interop")]
@@ -116,6 +121,8 @@ impl SinkFormat {
             SinkFormat::Png => OpCost::IO,
             #[cfg(feature = "image_interop")]
             SinkFormat::Jpeg { .. } => OpCost::IO,
+            #[cfg(feature = "image_interop")]
+            SinkFormat::WebP { .. } => OpCost::IO,
             #[cfg(feature = "arrow_interop")]
             SinkFormat::Arrow { .. } => OpCost::Allocating,
         }
@@ -134,6 +141,8 @@ impl SinkFormat {
             SinkFormat::Png => "Png",
             #[cfg(feature = "image_interop")]
             SinkFormat::Jpeg { .. } => "Jpeg",
+            #[cfg(feature = "image_interop")]
+            SinkFormat::WebP { .. } => "WebP",
             #[cfg(feature = "arrow_interop")]
             SinkFormat::Arrow { .. } => "Arrow",
         }
