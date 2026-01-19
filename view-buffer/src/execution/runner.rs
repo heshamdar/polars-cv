@@ -51,6 +51,40 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
         }
         ViewOp::Flip(axes) => buf.flip(&axes),
         ViewOp::Crop { start, end } => buf.slice(&start, &end),
+        ViewOp::Rotate90 => {
+            // Rotate90: transpose [1,0] then flip axis 1 (width)
+            // For HWC layout: transpose swaps H and W, then flip W
+            let shape = buf.shape();
+            if shape.len() < 2 {
+                return buf; // Can't rotate 1D or 0D
+            }
+            let perm = if shape.len() == 2 {
+                vec![1, 0] // [H, W] -> [W, H]
+            } else {
+                vec![1, 0, 2] // [H, W, C] -> [W, H, C]
+            };
+            let transposed = buf.permute(&perm);
+            transposed.flip(&[1]) // Flip width axis
+        }
+        ViewOp::Rotate180 => {
+            // Rotate180: flip both height (axis 0) and width (axis 1)
+            buf.flip(&[0, 1])
+        }
+        ViewOp::Rotate270 => {
+            // Rotate270: transpose [1,0] then flip axis 0 (height)
+            // For HWC layout: transpose swaps H and W, then flip H
+            let shape = buf.shape();
+            if shape.len() < 2 {
+                return buf; // Can't rotate 1D or 0D
+            }
+            let perm = if shape.len() == 2 {
+                vec![1, 0] // [H, W] -> [W, H]
+            } else {
+                vec![1, 0, 2] // [H, W, C] -> [W, H, C]
+            };
+            let transposed = buf.permute(&perm);
+            transposed.flip(&[0]) // Flip height axis
+        }
     }
 }
 
@@ -581,6 +615,131 @@ fn get_channel_count(shape: &[usize]) -> usize {
     }
 }
 
+/// Rotate image by arbitrary angle using bilinear interpolation.
+///
+/// Supports strided input buffers and handles both expand and non-expand modes.
+/// When expand=false, the output has the same dimensions as input (corners may be cropped).
+/// When expand=true, the output dimensions are calculated to fit the rotated image.
+#[cfg(feature = "image_interop")]
+fn rotate_arbitrary(buf: ViewBuffer, angle: f32, expand: bool) -> ViewBuffer {
+    let shape = buf.shape();
+    if shape.len() < 2 {
+        return buf; // Can't rotate 1D or 0D
+    }
+
+    let h = shape[0] as f32;
+    let w = shape[1] as f32;
+    let channels = shape.get(2).copied().unwrap_or(1);
+    let shape_vec = shape.to_vec();
+    
+    let angle_rad = angle.to_radians();
+    let cos_a = angle_rad.cos();
+    let sin_a = angle_rad.sin();
+    
+    // Calculate output dimensions
+    let (out_h, out_w) = if expand {
+        // Calculate bounding box dimensions
+        let new_h = (h * cos_a.abs() + w * sin_a.abs()).ceil() as usize;
+        let new_w = (h * sin_a.abs() + w * cos_a.abs()).ceil() as usize;
+        (new_h, new_w)
+    } else {
+        (shape_vec[0], shape_vec[1])
+    };
+    
+    // Center points
+    let center_x_in = (w - 1.0) * 0.5;
+    let center_y_in = (h - 1.0) * 0.5;
+    let center_x_out = (out_w as f32 - 1.0) * 0.5;
+    let center_y_out = (out_h as f32 - 1.0) * 0.5;
+    
+    // Ensure contiguous input for efficient access
+    let contig_buf = if buf.layout.is_contiguous() {
+        buf
+    } else {
+        buf.to_contiguous()
+    };
+    
+    let src_data = unsafe {
+        std::slice::from_raw_parts(
+            contig_buf.as_ptr::<u8>(),
+            contig_buf.layout.num_elements(),
+        )
+    };
+    
+    // Allocate output buffer
+    let output_size = out_h * out_w * channels;
+    let mut dst_data = vec![0u8; output_size];
+    
+    // Inverse rotation: for each output pixel, find source pixel
+    // Rotation matrix (clockwise): [cos -sin] [x]
+    //                              [sin  cos] [y]
+    // Inverse (counter-clockwise): [cos  sin] [x]
+    //                              [-sin cos] [y]
+    for y_out in 0..out_h {
+        for x_out in 0..out_w {
+            // Translate to center-relative coordinates
+            let x_rel = x_out as f32 - center_x_out;
+            let y_rel = y_out as f32 - center_y_out;
+            
+            // Apply inverse rotation (counter-clockwise to get source)
+            let x_src = x_rel * cos_a + y_rel * sin_a + center_x_in;
+            let y_src = -x_rel * sin_a + y_rel * cos_a + center_y_in;
+            
+            // Bilinear interpolation
+            let x0 = x_src.floor() as i32;
+            let y0 = y_src.floor() as i32;
+            let x1 = x0 + 1;
+            let y1 = y0 + 1;
+            
+            let dx = x_src - x0 as f32;
+            let dy = y_src - y0 as f32;
+            
+            // Check bounds
+            if x0 < 0 || y0 < 0 || x1 >= w as i32 || y1 >= h as i32 {
+                // Out of bounds - set to 0 (black)
+                for c in 0..channels {
+                    dst_data[(y_out * out_w + x_out) * channels + c] = 0;
+                }
+                continue;
+            }
+            
+            // Get four corner pixels
+            let get_pixel = |x: i32, y: i32| -> &[u8] {
+                let idx = (y as usize * shape_vec[1] + x as usize) * channels;
+                &src_data[idx..idx + channels]
+            };
+            
+            let p00 = get_pixel(x0, y0);
+            let p10 = get_pixel(x1, y0);
+            let p01 = get_pixel(x0, y1);
+            let p11 = get_pixel(x1, y1);
+            
+            // Bilinear interpolation per channel
+            for c in 0..channels {
+                let v00 = p00[c] as f32;
+                let v10 = p10[c] as f32;
+                let v01 = p01[c] as f32;
+                let v11 = p11[c] as f32;
+                
+                let v0 = v00 * (1.0 - dx) + v10 * dx;
+                let v1 = v01 * (1.0 - dx) + v11 * dx;
+                let v = v0 * (1.0 - dy) + v1 * dy;
+                
+                dst_data[(y_out * out_w + x_out) * channels + c] = v.clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    
+    // Build output shape
+    let output_shape = if channels == 1 {
+        vec![out_h, out_w]
+    } else {
+        vec![out_h, out_w, channels]
+    };
+    
+    ViewBuffer::from_vec(dst_data).reshape(output_shape)
+}
+
 /// Inner implementation of image operations (without tiling logic).
 #[cfg(feature = "image_interop")]
 #[inline]
@@ -642,6 +801,9 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             height,
             filter,
         } => resize_strided(work_buf, width, height, filter),
+        ImageOpKind::Rotate { angle, expand } => {
+            rotate_arbitrary(work_buf, angle, expand)
+        }
         ImageOpKind::Blur { sigma } => {
             let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
                 && work_buf.layout.is_contiguous()

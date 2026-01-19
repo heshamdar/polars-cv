@@ -11,6 +11,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
+
 from polars_cv._types import (
     OPERATION_OUTPUT_DTYPE,
     CloudOptions,
@@ -1417,6 +1418,54 @@ class Pipeline:
             )
         )
         new._update_output_dtype("blur")
+        return new
+
+    def rotate(
+        self,
+        angle: FloatOrExpr,
+        *,
+        expand: bool = False,
+    ) -> "Pipeline":
+        """
+        Rotate image by specified angle.
+
+        For angles of 90, 180, or 270 degrees, this uses zero-copy view operations.
+        For arbitrary angles, uses bilinear interpolation with allocation.
+
+        Domain: buffer → buffer
+
+        Args:
+            angle: Rotation angle in degrees (positive = clockwise).
+                Can be a literal float or Polars expression.
+            expand: If True, expand output dimensions to fit rotated image.
+                If False (default), keep original dimensions (corners may be cropped).
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If current domain is not buffer.
+
+        Example:
+            ```python
+            >>> # Zero-copy 90-degree rotation
+            >>> pipe = Pipeline().source("image_bytes").rotate(90).sink("numpy")
+            >>>
+            >>> # Arbitrary angle with expansion
+            >>> pipe = Pipeline().source("image_bytes").rotate(45, expand=True).sink("numpy")
+            >>>
+            >>> # Dynamic angle from column
+            >>> pipe = Pipeline().source("image_bytes").rotate(pl.col("angle")).sink("numpy")
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "rotate")
+        new = self._clone()
+        params: dict[str, ParamValue] = {
+            "angle": new._track_expr(angle),
+            "expand": ParamValue(is_expr=False, value=expand),
+        }
+        new._ops.append(OpSpec(op="rotate", params=params))
+        new._update_output_dtype("rotate")
         return new
 
     def perceptual_hash(
