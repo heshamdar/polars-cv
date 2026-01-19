@@ -19,6 +19,10 @@ pub enum ImageOpKind {
         sigma: f32,
     },
     Grayscale,
+    Rotate {
+        angle: f32,
+        expand: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +48,7 @@ impl Op for ImageOp {
             ImageOpKind::Resize { .. } => "Resize",
             ImageOpKind::Blur { .. } => "Blur",
             ImageOpKind::Grayscale => "Grayscale",
+            ImageOpKind::Rotate { .. } => "Rotate",
         }
     }
 
@@ -69,6 +74,29 @@ impl Op for ImageOp {
                 }
                 s
             }
+            ImageOpKind::Rotate { angle, expand } => {
+                if input_shape.len() < 2 {
+                    return input_shape.to_vec();
+                }
+                let h = input_shape[0] as f32;
+                let w = input_shape[1] as f32;
+                let angle_rad = angle.to_radians();
+                let cos_a = angle_rad.cos().abs();
+                let sin_a = angle_rad.sin().abs();
+                
+                if *expand {
+                    // Calculate bounding box dimensions
+                    let new_h = (h * cos_a + w * sin_a).ceil() as usize;
+                    let new_w = (h * sin_a + w * cos_a).ceil() as usize;
+                    let mut s = input_shape.to_vec();
+                    s[0] = new_h;
+                    s[1] = new_w;
+                    s
+                } else {
+                    // Keep original dimensions
+                    input_shape.to_vec()
+                }
+            }
         }
     }
 
@@ -88,6 +116,8 @@ impl Op for ImageOp {
             ImageOpKind::Blur { .. } => MemoryEffect::RequiresContiguous,
             // Grayscale has strided implementation
             ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
+            // Rotation requires allocation for output
+            ImageOpKind::Rotate { .. } => MemoryEffect::RequiresContiguous,
         }
     }
 
@@ -107,6 +137,8 @@ impl Op for ImageOp {
             ImageOpKind::Resize { .. } => None,
             // Blur preserves shape but produces contiguous output
             ImageOpKind::Blur { .. } => None,
+            // Rotation produces contiguous output
+            ImageOpKind::Rotate { .. } => None,
         }
     }
 
@@ -143,6 +175,9 @@ impl Op for ImageOp {
 
             // Resize uses global resampling - cannot be tiled
             ImageOpKind::Resize { .. } => TilePolicy::Global,
+            
+            // Rotation uses global resampling - cannot be tiled
+            ImageOpKind::Rotate { .. } => TilePolicy::Global,
         }
     }
 }

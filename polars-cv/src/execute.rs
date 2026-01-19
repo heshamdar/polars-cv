@@ -742,6 +742,58 @@ pub fn resolve_op(
                 kind: ImageOpKind::Blur { sigma },
             }))
         }
+        "rotate" => {
+            let angle = get_param(&op_spec.params, "angle")?.resolve_f32(row_idx, expr_columns)?;
+            let expand = op_spec
+                .params
+                .get("expand")
+                .map(|p| {
+                    matches!(
+                        p,
+                        ParamValue::Literal {
+                            value: serde_json::Value::Bool(true)
+                        }
+                    )
+                })
+                .unwrap_or(false);
+            
+            // Normalize angle to [0, 360)
+            let normalized_angle = angle % 360.0;
+            let normalized_angle = if normalized_angle < 0.0 {
+                normalized_angle + 360.0
+            } else {
+                normalized_angle
+            };
+            
+            // Check for zero-copy rotations (90, 180, 270)
+            // Use a small epsilon for floating point comparison
+            const EPSILON: f32 = 0.001;
+            if (normalized_angle - 90.0).abs() < EPSILON {
+                Ok(ViewDto::View(ViewOp::Rotate90))
+            } else if (normalized_angle - 180.0).abs() < EPSILON {
+                Ok(ViewDto::View(ViewOp::Rotate180))
+            } else if (normalized_angle - 270.0).abs() < EPSILON || (normalized_angle - (-90.0)).abs() < EPSILON {
+                Ok(ViewDto::View(ViewOp::Rotate270))
+            } else if normalized_angle.abs() < EPSILON || (normalized_angle - 360.0).abs() < EPSILON {
+                // 0 or 360 degrees - no-op, but we'll use ViewOp for consistency
+                // Actually, we can just return the identity, but for simplicity use Rotate180 twice
+                // Or better: use a no-op view. But since we don't have that, we'll use ImageOp with 0 angle
+                Ok(ViewDto::Image(ImageOp {
+                    kind: ImageOpKind::Rotate {
+                        angle: normalized_angle,
+                        expand,
+                    },
+                }))
+            } else {
+                // Arbitrary angle - use ImageOp
+                Ok(ViewDto::Image(ImageOp {
+                    kind: ImageOpKind::Rotate {
+                        angle: normalized_angle,
+                        expand,
+                    },
+                }))
+            }
+        }
 
         // Perceptual hash operation
         "perceptual_hash" => {

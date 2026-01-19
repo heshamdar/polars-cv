@@ -19,6 +19,12 @@ pub enum ViewOp {
     Flip(Vec<usize>),
     /// Crops to a region defined by start and end indices.
     Crop { start: Vec<usize>, end: Vec<usize> },
+    /// Rotates 90 degrees clockwise (zero-copy via transpose + flip).
+    Rotate90,
+    /// Rotates 180 degrees (zero-copy via double flip).
+    Rotate180,
+    /// Rotates 270 degrees clockwise / 90 degrees counter-clockwise (zero-copy via transpose + flip).
+    Rotate270,
 }
 
 impl Op for ViewOp {
@@ -28,6 +34,9 @@ impl Op for ViewOp {
             ViewOp::Reshape(_) => "Reshape",
             ViewOp::Flip(_) => "Flip",
             ViewOp::Crop { .. } => "Crop",
+            ViewOp::Rotate90 => "Rotate90",
+            ViewOp::Rotate180 => "Rotate180",
+            ViewOp::Rotate270 => "Rotate270",
         }
     }
 
@@ -40,6 +49,17 @@ impl Op for ViewOp {
             ViewOp::Crop { start, end } => {
                 start.iter().zip(end.iter()).map(|(s, e)| e - s).collect()
             }
+            ViewOp::Rotate90 | ViewOp::Rotate270 => {
+                // For 2D images [H, W] or [H, W, C], swap H and W
+                if input_shape.len() >= 2 {
+                    let mut new_shape = input_shape.to_vec();
+                    new_shape.swap(0, 1);
+                    new_shape
+                } else {
+                    input_shape.to_vec()
+                }
+            }
+            ViewOp::Rotate180 => input_shape.to_vec(),
         }
     }
 
@@ -76,6 +96,41 @@ impl Op for ViewOp {
                 Some(new_strides)
             }
             ViewOp::Crop { .. } => Some(input_strides.to_vec()),
+            ViewOp::Rotate90 => {
+                // Rotate90: transpose [0,1] then flip axis 1
+                // Stride calculation: swap strides[0] and strides[1], then negate strides[1]
+                if input_strides.len() >= 2 {
+                    let mut new_strides = input_strides.to_vec();
+                    new_strides.swap(0, 1);
+                    new_strides[1] = -new_strides[1];
+                    Some(new_strides)
+                } else {
+                    Some(input_strides.to_vec())
+                }
+            }
+            ViewOp::Rotate180 => {
+                // Rotate180: flip both axes 0 and 1
+                if input_strides.len() >= 2 {
+                    let mut new_strides = input_strides.to_vec();
+                    new_strides[0] = -new_strides[0];
+                    new_strides[1] = -new_strides[1];
+                    Some(new_strides)
+                } else {
+                    Some(input_strides.to_vec())
+                }
+            }
+            ViewOp::Rotate270 => {
+                // Rotate270: transpose [0,1] then flip axis 0
+                // Stride calculation: swap strides[0] and strides[1], then negate strides[0]
+                if input_strides.len() >= 2 {
+                    let mut new_strides = input_strides.to_vec();
+                    new_strides.swap(0, 1);
+                    new_strides[0] = -new_strides[0];
+                    Some(new_strides)
+                } else {
+                    Some(input_strides.to_vec())
+                }
+            }
         }
     }
 }

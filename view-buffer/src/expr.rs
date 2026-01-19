@@ -116,6 +116,29 @@ impl ViewExpr {
                 ViewOp::Reshape(shape) => self.reshape(shape),
                 ViewOp::Flip(axes) => self.flip(axes),
                 ViewOp::Crop { start, end } => self.crop(start, end),
+                ViewOp::Rotate90 => {
+                    if self.shape.len() < 2 {
+                        return self.clone();
+                    }
+                    let perm = if self.shape.len() == 2 {
+                        vec![1, 0]
+                    } else {
+                        vec![1, 0, 2]
+                    };
+                    self.transpose(perm).flip(vec![1])
+                }
+                ViewOp::Rotate180 => self.flip(vec![0, 1]),
+                ViewOp::Rotate270 => {
+                    if self.shape.len() < 2 {
+                        return self.clone();
+                    }
+                    let perm = if self.shape.len() == 2 {
+                        vec![1, 0]
+                    } else {
+                        vec![1, 0, 2]
+                    };
+                    self.transpose(perm).flip(vec![0])
+                }
             },
             ViewDto::Compute(compute) => match compute {
                 ComputeOp::Cast(dtype) => self.cast(dtype),
@@ -135,6 +158,16 @@ impl ViewExpr {
                 } => self.resize(width, height, filter),
                 ImageOpKind::Blur { sigma } => self.blur(sigma),
                 ImageOpKind::Grayscale => self.grayscale(),
+                ImageOpKind::Rotate { .. } => {
+                    // Arbitrary rotation is handled in the execution layer
+                    // Here we just create the expression node
+                    Arc::new(Self {
+                        shape: img.infer_shape(&[&self.shape]),
+                        strides: None, // Rotation produces contiguous output
+                        dtype: self.dtype,
+                        node: ExprNode::Image(img, self.clone()),
+                    })
+                }
             },
             ViewDto::PerceptualHash(op) => self.perceptual_hash(op),
             ViewDto::Materialize => {

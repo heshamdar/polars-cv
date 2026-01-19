@@ -218,6 +218,7 @@ OPERATION_OUTPUT_DTYPE: dict[str, str] = {
     "resize": "u8",
     "blur": "u8",
     "threshold": "u8",
+    "rotate": "u8",
     # Perceptual hash - Fixed(U8)
     "perceptual_hash": "u8",
     # Compute operations - PromoteToFloat or Configurable(F32)
