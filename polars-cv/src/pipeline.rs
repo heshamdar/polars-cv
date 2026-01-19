@@ -112,7 +112,7 @@ impl PipelineSpec {
     #[allow(dead_code)]
     pub fn output_dtype(&self) -> PolarsResult<DataType> {
         match self.sink.format.as_str() {
-            "numpy" | "torch" | "blob" | "png" | "jpeg" => Ok(DataType::Binary),
+            "numpy" | "torch" | "blob" | "png" | "jpeg" | "webp" => Ok(DataType::Binary),
             "list" => Ok(DataType::List(Box::new(DataType::List(Box::new(
                 DataType::List(Box::new(DataType::UInt8)),
             ))))),

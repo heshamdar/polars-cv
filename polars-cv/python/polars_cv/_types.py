@@ -44,6 +44,7 @@ class SinkFormat(str, Enum):
     TORCH = "torch"  # PyTorch-compatible bytes
     PNG = "png"  # Re-encode as PNG
     JPEG = "jpeg"  # Re-encode as JPEG
+    WEBP = "webp"  # Re-encode as WebP
     BLOB = "blob"  # VIEW protocol (for chaining)
     ARRAY = "array"  # Polars Array type (fixed shape)
     LIST = "list"  # Polars nested List (variable shape)
@@ -475,13 +476,13 @@ class SinkSpec:
     """Specification for pipeline output sink."""
 
     format: SinkFormat
-    quality: int = 85  # For JPEG
+    quality: int = 85  # For JPEG and WebP
     shape: list[int] | None = None  # For ARRAY format
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
         result: dict[str, Any] = {"format": self.format.value}
-        if self.format == SinkFormat.JPEG:
+        if self.format == SinkFormat.JPEG or self.format == SinkFormat.WEBP:
             result["quality"] = self.quality
         if self.format == SinkFormat.ARRAY and self.shape is not None:
             result["shape"] = self.shape

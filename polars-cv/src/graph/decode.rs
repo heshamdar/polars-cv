@@ -554,7 +554,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
     let domain = spec.expected_domain.as_str();
     match (domain, format) {
         ("buffer", "numpy" | "torch") => crate::output::numpy_output_dtype(),
-        ("buffer", "png" | "jpeg" | "blob") => DataType::Binary,
+        ("buffer", "png" | "jpeg" | "webp" | "blob") => DataType::Binary,
         ("buffer", "list") => DataType::List(Box::new(dtype_str_to_polars(&spec.expected_dtype))),
         ("buffer", "array") => DataType::List(Box::new(dtype_str_to_polars(&spec.expected_dtype))),
         ("scalar", "native") => DataType::Float64,
@@ -586,7 +586,7 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> RowResult {
     let domain = spec.expected_domain.as_str();
     match (domain, format) {
         ("buffer", "numpy" | "torch") => RowResult::NumpyStruct(None),
-        ("buffer", "png" | "jpeg" | "blob") | (_, "binary") => RowResult::Binary(None),
+        ("buffer", "png" | "jpeg" | "webp" | "blob") | (_, "binary") => RowResult::Binary(None),
         ("buffer", "list") | ("vector", "native" | "list") => RowResult::TypedList(None),
         ("buffer", "array") => RowResult::TypedArray(None),
         ("scalar", "native") => RowResult::Scalar(None),
@@ -618,7 +618,7 @@ pub(crate) fn build_series_from_spec(
                 .collect();
             crate::output::build_numpy_series(name, buffers)
         }
-        ("buffer", "png" | "jpeg" | "blob") | (_, "binary") => {
+        ("buffer", "png" | "jpeg" | "webp" | "blob") | (_, "binary") => {
             let binary_data: Vec<Option<Vec<u8>>> = data
                 .iter()
                 .map(|r| match r {
