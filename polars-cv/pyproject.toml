@@ -4,14 +4,18 @@ build-backend = "maturin"
 
 [project]
 name = "polars-cv"
-version = "0.2.0"
+version = "0.4.0"
 description = "A Polars plugin for vision/array operations"
 authors = [{ name = "Hesham Dar", email = "heshamdar@gmail.com" }]
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
 requires-python = ">=3.10"
 dependencies = [
-    "polars==1.37.1",
+    "networkx>=3.4.2",
+    "numpy>=2.2.6",
+    "polars>=1.0,<2.0",
+    "graphviz>=0.21",
+    "pydot>=4.0.1",
 ]
 classifiers = [
     "Programming Language :: Rust",
@@ -23,7 +27,16 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "numpy>=1.20", "opencv-python>=4.8", "scipy>=1.10", "imagehash>=4.3", "pillow>=10.0"]
+
+dev = [
+    "pytest>=7.0",
+    "opencv-python>=4.8",
+    "scipy>=1.10",
+    "imagehash>=4.3",
+    "pillow>=10.0",
+    "jupyterlab-execute-time>=3.3.0",
+    "jupytext>=1.18.1",
+]
 bench = [
     "opencv-python>=4.8",
     "pillow>=10.0",
@@ -50,15 +63,6 @@ module-name = "polars_cv._lib"
 features = ["pyo3/extension-module", "pyo3/abi3-py39"]
 # Note: manylinux compatibility and universal2 are handled by CI workflow (publish.yml)
 
-[dependency-groups]
-dev = [
-    "jupytext>=1.18.1",
-]
-
-viz = [
-    "graphviz>=0.21",
-    "pydot>=4.0.1",
-]
 
 [tool.pytest.ini_options]
 markers = [
