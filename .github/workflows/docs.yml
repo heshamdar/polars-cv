@@ -1,0 +1,69 @@
+name: Docs (build & deploy)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and deploy docs (main)
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Determine package directory
+        id: package_dir
+        shell: bash
+        run: |
+          if [ -d "polars-cv" ]; then
+            echo "dir=polars-cv" >> $GITHUB_OUTPUT
+          else
+            echo "dir=." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install docs dependencies
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        run: |
+          uv sync --frozen --extra docs
+
+      - name: Build MkDocs site
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        run: |
+          uv run mkdocs build --clean
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ steps.package_dir.outputs.dir }}/site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
