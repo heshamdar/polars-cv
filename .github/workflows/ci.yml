@@ -12,14 +12,19 @@ env:
 
 jobs:
   test:
-    name: Test on ${{ matrix.os }} with Python ${{ matrix.python-version }}
+    name: Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        # With abi3-py39, one wheel works for all Python 3.9+ versions
-        # Test on minimum (3.9) and latest (3.13) to verify compatibility
-        os: [ubuntu-latest, macos-latest]
+        # Run only ubuntu-latest on PRs to save costs
+        # Run full matrix on main branch
+        os: >-
+          ${{ 
+            (github.event_name == 'push' && github.ref == 'refs/heads/main') 
+            && fromJSON('["ubuntu-latest", "macos-latest"]') 
+            || fromJSON('["ubuntu-latest"]') 
+          }}
         python-version: ["3.13"]
 
     steps:
@@ -27,6 +32,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -41,38 +48,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
-          version: "latest"
-
-      - name: Debug - Repository structure
-        shell: bash
-        run: |
-          echo "=== Repository root structure ==="
-          pwd
-          echo ""
-          echo "=== Top-level directories ==="
-          ls -la
-          echo ""
-          echo "=== Checking for polars-cv directory ==="
-          if [ -d "polars-cv" ]; then
-            echo "✓ polars-cv/ exists at repo root"
-            echo "Contents of polars-cv/:"
-            ls -la polars-cv/ | head -20
-            echo ""
-            echo "Checking for python/ in polars-cv/:"
-            if [ -d "polars-cv/python" ]; then
-              echo "✓ polars-cv/python/ exists"
-            else
-              echo "✗ polars-cv/python/ NOT FOUND"
-            fi
-          else
-            echo "✗ polars-cv/ NOT FOUND at repo root"
-            echo "This might be a single-package repo, checking for python/ at root:"
-            if [ -d "python" ]; then
-              echo "✓ python/ exists at repo root (single-package repo)"
-            else
-              echo "✗ python/ NOT FOUND at repo root either"
-            fi
-          fi
+          enable-cache: true
 
       - name: Determine package directory
         id: package_dir
@@ -80,118 +56,35 @@ jobs:
         run: |
           if [ -d "polars-cv" ]; then
             echo "dir=polars-cv" >> $GITHUB_OUTPUT
-            echo "Package directory: polars-cv (monorepo)"
-          elif [ -f "pyproject.toml" ] && [ -d "python" ]; then
+          else
             echo "dir=." >> $GITHUB_OUTPUT
-            echo "Package directory: . (single-package repo)"
-          else
-            echo "Could not determine package directory structure"
-            exit 1
           fi
 
-      - name: Create virtual environment
+      - name: Install dependencies
         working-directory: ${{ steps.package_dir.outputs.dir }}
-        run: uv venv .venv
+        run: |
+          uv venv
+          uv pip install maturin pytest polars numpy pillow opencv-python scipy imagehash
 
-      - name: Install maturin
+      - name: Build and Test (Rust & Python)
         working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
         run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            source .venv/Scripts/activate
-          else
-            source .venv/bin/activate
-          fi
-          uv pip install maturin
-
-      - name: Debug - Check directory structure
-        working-directory: ${{ steps.package_dir.outputs.dir }}
-        shell: bash
-        run: |
-          echo "=== Current working directory ==="
-          pwd
-          echo ""
-          echo "=== Directory contents ==="
-          ls -la
-          echo ""
-          echo "=== Python directory check ==="
-          if [ -d "python" ]; then
-            echo "✓ python/ directory exists"
-            ls -la python/ | head -10
-          else
-            echo "✗ python/ directory NOT FOUND"
-          fi
-          echo ""
-          echo "=== pyproject.toml check ==="
-          if [ -f "pyproject.toml" ]; then
-            echo "✓ pyproject.toml exists"
-            grep -A 3 "\[tool.maturin\]" pyproject.toml || echo "No [tool.maturin] section found"
-          else
-            echo "✗ pyproject.toml NOT FOUND"
-          fi
-          echo ""
-          echo "=== Cargo.toml check ==="
-          if [ -f "Cargo.toml" ]; then
-            echo "✓ Cargo.toml exists"
-          else
-            echo "✗ Cargo.toml NOT FOUND"
-          fi
-
-      - name: Build package with maturin
-        working-directory: ${{ steps.package_dir.outputs.dir }}
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            source .venv/Scripts/activate
-          else
-            source .venv/bin/activate
-          fi
-          echo "=== Building with maturin ==="
-          echo "Working directory before cd: $(pwd)"
-          # Explicitly ensure we're in the polars-cv directory
-          cd "$(pwd)"
-          echo "Working directory after cd: $(pwd)"
-          echo "Python directory exists: $([ -d python ] && echo 'YES' || echo 'NO')"
-          echo "Python directory absolute path: $(realpath python 2>/dev/null || echo 'NOT FOUND')"
-          echo "pyproject.toml exists: $([ -f pyproject.toml ] && echo 'YES' || echo 'NO')"
-          echo "Cargo.toml exists: $([ -f Cargo.toml ] && echo 'YES' || echo 'NO')"
-          echo ""
-          echo "=== Maturin version ==="
-          maturin --version || echo "Failed to get maturin version"
-          echo ""
-          echo "=== Running maturin develop (without cloud feature for speed) ==="
-          # Build without cloud feature to speed up CI
-          maturin develop --release --no-default-features --features pyo3/extension-module,pyo3/abi3-py39 --verbose || {
-            echo "Failed with --no-default-features, trying with defaults..."
-            maturin develop --release --verbose
-          }
-
-      - name: Install test dependencies
-        working-directory: ${{ steps.package_dir.outputs.dir }}
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            source .venv/Scripts/activate
-          else
-            source .venv/bin/activate
-          fi
-          uv pip install pytest polars numpy pillow opencv-python scipy imagehash
-
-      - name: Run tests
-        working-directory: ${{ steps.package_dir.outputs.dir }}
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            source .venv/Scripts/activate
-          else
-            source .venv/bin/activate
-          fi
+          source .venv/bin/activate
+          
+          echo "=== Running Rust Tests ==="
+          cargo test --release
+          
+          echo "=== Building Python Extension ==="
+          # Build without cloud feature for speed in CI
+          maturin develop --release --no-default-features --features pyo3/extension-module,pyo3/abi3-py39
+          
+          echo "=== Running Python Tests ==="
           pytest tests/ -x -v --tb=short
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    continue-on-error: false
     steps:
       - uses: actions/checkout@v4
 
@@ -205,77 +98,16 @@ jobs:
         with:
           workspaces: ". -> target"
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check || exit 1
-
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings || exit 1
-
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
       - name: Install uv
         uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
 
-      - name: Determine package directory
-        id: package_dir
-        shell: bash
+      - name: Check formatting and clippy
         run: |
-          if [ -d "polars-cv" ]; then
-            echo "dir=polars-cv" >> $GITHUB_OUTPUT
-          elif [ -f "pyproject.toml" ] && [ -d "python" ]; then
-            echo "dir=." >> $GITHUB_OUTPUT
-          else
-            echo "Could not determine package directory structure"
-            exit 1
-          fi
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Create virtual environment
-        working-directory: ${{ steps.package_dir.outputs.dir }}
-        run: uv venv .venv
-
-      - name: Install ruff
-        working-directory: ${{ steps.package_dir.outputs.dir }}
-        shell: bash
+      - name: Python Lint (Ruff)
         run: |
-          source .venv/bin/activate
-          uv pip install ruff
-
-      - name: Ruff check
-        working-directory: ${{ steps.package_dir.outputs.dir }}
-        shell: bash
-        run: |
-          source .venv/bin/activate
-          ruff check python tests benchmarks || exit 1
-
-      - name: Ruff format check
-        working-directory: ${{ steps.package_dir.outputs.dir }}
-        shell: bash
-        run: |
-          source .venv/bin/activate
-          ruff format --check python tests benchmarks || exit 1
-
-  build:
-    name: Build verification
-    runs-on: ubuntu-latest
-    continue-on-error: false
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-
-      - name: Build workspace
-        run: cargo build --release || exit 1
-
-      - name: Run Rust tests
-        run: cargo test --release || exit 1
+          if [ -d "polars-cv" ]; then cd polars-cv; fi
+          uv run ruff check python tests benchmarks
+          uv run ruff format --check python tests benchmarks
