@@ -19,53 +19,46 @@ pipe = (
 )
 ```
 
-## Lazy Chaining with `.pipe()`
+## Modular Chaining
 
-For more flexibility, use lazy mode and chain with `.pipe()`:
+The recommended way to compose complex pipelines is to chain modular `Pipeline` objects onto an expression using `.pipe()`.
 
 ```python
 import polars as pl
 from polars_cv import Pipeline
 
-# Define pipeline fragments
-resize_ops = Pipeline().resize(height=128, width=128)
-gray_ops = Pipeline().grayscale()
-thresh_ops = Pipeline().threshold(128)
+# 1. Define operation fragments
+preprocess = Pipeline().resize(height=128, width=128)
+gray_scale = Pipeline().grayscale()
+thresholding = Pipeline().threshold(128)
 
-# Chain using .pipe()
+# 2. Chain them onto a column
 base = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
-resized = base.pipe(resize_ops)
-gray = resized.pipe(gray_ops)
-binary = gray.pipe(thresh_ops)
+processed = (
+    base
+    .pipe(preprocess)
+    .pipe(gray_scale)
+    .pipe(thresholding)
+)
 
-# Execute
-result = df.with_columns(output=binary.sink("png"))
+# 3. Execute with a sink
+result = df.with_columns(output=processed.sink("png"))
 ```
 
-## Reusable Pipeline Fragments
+## Reusable Fragments
 
-Define reusable operation groups:
+Fragments can be reused across different pipelines:
 
 ```python
 # Define once
-preprocessing = Pipeline().resize(height=224, width=224).flip_h()
-normalization = Pipeline().grayscale().normalize(method="minmax")
-augmentation = Pipeline().blur(sigma=1.5)
+standard_size = Pipeline().resize(height=224, width=224)
+normalization = Pipeline().normalize(method="minmax")
 
-# Use in different pipelines
-train_pipeline = (
-    pl.col("image")
-    .cv.pipe(Pipeline().source("image_bytes"))
-    .pipe(preprocessing)
-    .pipe(augmentation)
+# Use in different expressions
+train_expr = (
+    pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
+    .pipe(standard_size)
     .pipe(normalization)
-)
-
-eval_pipeline = (
-    pl.col("image")
-    .cv.pipe(Pipeline().source("image_bytes"))
-    .pipe(preprocessing)
-    .pipe(normalization)  # No augmentation
 )
 ```
 

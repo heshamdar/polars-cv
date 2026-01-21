@@ -33,7 +33,7 @@ Example:
 ```
 """
 
-from polars_cv.geometry.schemas import (
+from .schemas import (
     ANNOTATED_POINT_SCHEMA,
     BBOX_SCHEMA,
     CONTOUR_SCHEMA,
@@ -42,7 +42,7 @@ from polars_cv.geometry.schemas import (
     POINT_SET_SCHEMA,
     RING_SCHEMA,
 )
-from polars_cv.geometry.validation import (
+from .validation import (
     CoordinateRangeError,
     GeometryValidationError,
     InvalidContourError,

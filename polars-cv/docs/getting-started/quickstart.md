@@ -14,18 +14,17 @@ A polars-cv pipeline has three parts:
 import polars as pl
 from polars_cv import Pipeline
 
-# Create a simple pipeline
+# 1. Define a pipeline
 pipe = (
     Pipeline()
-    .source("image_bytes")  # Input: PNG/JPEG bytes
-    .resize(height=224, width=224)  # Resize to 224x224
-    .sink("png")  # Output: PNG bytes
+    .source("image_bytes")  # Decode PNG/JPEG bytes
+    .resize(height=224, width=224)
 )
 
-# Apply to a DataFrame
+# 2. Apply to a DataFrame column and specify sink
 df = pl.DataFrame({"image": [png_bytes]})
 result = df.with_columns(
-    resized=pl.col("image").cv.pipeline(pipe)
+    resized=pl.col("image").cv.pipe(pipe).sink("numpy")
 )
 ```
 
@@ -35,29 +34,29 @@ result = df.with_columns(
 
 ```python
 # Grayscale conversion
-Pipeline().source("image_bytes").grayscale().sink("png")
+Pipeline().source("image_bytes").grayscale()
 
 # Blur with sigma=3
-Pipeline().source("image_bytes").blur(sigma=3.0).sink("png")
+Pipeline().source("image_bytes").blur(sigma=3.0)
 
 # Threshold to binary
-Pipeline().source("image_bytes").grayscale().threshold(128).sink("png")
+Pipeline().source("image_bytes").grayscale().threshold(128)
 
 # Crop region
-Pipeline().source("image_bytes").crop(top=10, left=10, height=100, width=100).sink("png")
+Pipeline().source("image_bytes").crop(top=10, left=10, height=100, width=100)
 
 # Flip horizontally
-Pipeline().source("image_bytes").flip_h().sink("png")
+Pipeline().source("image_bytes").flip_h()
 ```
 
 ### Normalization
 
 ```python
 # MinMax normalization [0, 1]
-Pipeline().source("image_bytes").normalize(method="minmax").sink("numpy")
+Pipeline().source("image_bytes").normalize(method="minmax")
 
 # ZScore normalization (mean=0, std=1)
-Pipeline().source("image_bytes").normalize(method="zscore").sink("numpy")
+Pipeline().source("image_bytes").normalize(method="zscore")
 ```
 
 ## Dynamic Parameters
@@ -76,54 +75,32 @@ pipe = (
     Pipeline()
     .source("image_bytes")
     .resize(height=pl.col("target_h"), width=pl.col("target_w"))
-    .sink("png")
 )
 
-result = df.with_columns(resized=pl.col("image").cv.pipeline(pipe))
+result = df.with_columns(
+    resized=pl.col("image").cv.pipe(pipe).sink("numpy")
+)
 ```
 
-## Output Formats
+## Output Formats (Sinks)
 
 | Format | Description | Use Case |
 |--------|-------------|----------|
-| `png` | PNG bytes | Display, storage |
-| `jpeg` | JPEG bytes | Web, compressed |
-| `numpy` | NumPy-compatible bytes | ML frameworks |
-| `torch` | PyTorch-compatible bytes | Deep learning |
-| `list` | Polars nested List | Analysis in Polars |
-| `array` | Polars fixed-size Array | Fixed-shape data |
-
-## Round-Trip Processing
-
-Data output to `list` can be later processed using `list` source:
-
-```python
-# Step 1: Convert image to Polars List
-pipe1 = Pipeline().source("image_bytes").sink("list")
-df2 = df.with_columns(pixels=pl.col("image").cv.pipeline(pipe1))
-
-# Step 2: Process the list data later
-pipe2 = Pipeline().source("list", dtype="u8").grayscale().sink("numpy")
-result = df2.with_columns(gray=pl.col("pixels").cv.pipeline(pipe2))
-```
+| `numpy` | NumPy-compatible bytes | NumPy, OpenCV, Scikit-image |
+| `png` | Re-encode as PNG bytes | Storage, display |
+| `jpeg` | Re-encode as JPEG bytes | Web usage |
+| `list` | Polars nested List | Internal Polars analysis |
+| `native` | Python primitive | Scalars (Area, Mean) |
 
 ## Reading from Files
 
 ```python
-# Local files
-pipe = Pipeline().source("file_path").resize(224, 224).sink("numpy")
+# Read from local paths or URLs
+df = pl.DataFrame({"path": ["/path/to/image.png", "https://example.com/img.jpg"]})
+pipe = Pipeline().source("file_path").resize(224, 224)
 
-df = pl.DataFrame({"path": ["/path/to/image.png"]})
-result = df.with_columns(tensor=pl.col("path").cv.pipeline(pipe))
-
-# Cloud storage (S3, GCS, Azure)
-df = pl.DataFrame({"path": ["s3://bucket/image.png"]})
-result = df.with_columns(tensor=pl.col("path").cv.pipeline(pipe))
+result = df.with_columns(
+    processed=pl.col("path").cv.pipe(pipe).sink("numpy")
+)
 ```
-
-## Next Steps
-
-- [Pipelines](../user-guide/concepts/pipelines.md) - Deep dive into pipeline concepts
-- [Composable Pipelines](../user-guide/concepts/lazy-vs-eager.md) - Learn about lazy composition
-- [Multi-Output](../user-guide/composition/multi-output.md) - Extract multiple outputs
 

@@ -41,48 +41,41 @@ if TYPE_CHECKING:
 
 class Pipeline:
     """
-    Lazy pipeline builder for image/array operations.
+    Modular pipeline builder for image and array operations.
+
+    A pipeline defines a sequence of operations that can be applied to a Polars
+    expression using the `.cv.pipe()` accessor. The pipeline is executed when
+    `.sink()` is called on the resulting expression.
 
     All operations accept either literal values or Polars expressions.
     Expressions are resolved at execution time per row.
 
-    Supports typed domain tracking for seamless multi-domain pipelines:
-    - buffer: Image/array data (default)
-    - contour: Extracted geometry (Vec of points)
-    - scalar: Single numeric value
-    - vector: Multiple numeric values (e.g., bounding box)
-
     Example:
         ```python
-        >>> # Static pipeline (all literals)
-        >>> static_pipe = (
+        >>> from polars_cv import Pipeline
+        >>> import polars as pl
+        >>>
+        >>> # Define a reusable pipeline (without a sink)
+        >>> preprocess = (
         ...     Pipeline()
         ...     .source("image_bytes")
         ...     .resize(height=224, width=224)
-        ...     .normalize(method="minmax")
-        ...     .sink("numpy")
-        ... )
-        >>>
-        >>> # Dynamic pipeline (expression arguments)
-        >>> dynamic_pipe = (
-        ...     Pipeline()
-        ...     .source("image_bytes")
-        ...     .assert_shape(channels=3)
-        ...     .resize(height=pl.col("target_h"), width=pl.col("target_w"))
-        ...     .sink("numpy")
-        ... )
-        >>>
-        >>> # Multi-domain pipeline with domain transitions
-        >>> contour_pipe = (
-        ...     Pipeline()
-        ...     .source("image_bytes")
         ...     .grayscale()
-        ...     .threshold(128)
-        ...     .extract_contours()   # buffer -> contour
-        ...     .area()               # contour -> scalar
-        ...     .sink("native")       # scalar returns Float64
+        ... )
+        >>>
+        >>> # Apply to a DataFrame and choose the output format at the sink
+        >>> df = pl.DataFrame({"image": [img_bytes]})
+        >>> result = df.with_columns(
+        ...     processed=pl.col("image").cv.pipe(preprocess).sink("numpy")
         ... )
         ```
+
+    Pipelines support typed domain tracking for transitions between images,
+    geometry, and numeric results:
+    - buffer: Image/array data (default)
+    - contour: Polygon geometry
+    - scalar: Single numeric values
+    - vector: Multiple numeric values (e.g., bounding boxes)
     """
 
     # Domain constants
@@ -307,63 +300,30 @@ class Pipeline:
         Args:
             format: How to interpret input data.
                 - "image_bytes": Decode PNG/JPEG (auto-detect)
-                - "blob": VIEW protocol binary (self-describing, includes dtype/shape)
-                - "raw": Raw bytes (requires dtype; shape via assert_shape or reshape)
-                - "list": Polars nested List column (dtype auto-inferred or explicit)
-                - "array": Polars fixed-size Array column (dtype auto-inferred or explicit)
-                - "file_path": Read from file path string. Supports:
-                    - Local paths: /path/to/image.png
-                    - Cloud storage: s3://, gs://, az://
-                    - HTTP/HTTPS URLs: http://, https://
+                - "blob": VIEW protocol binary (self-describing)
+                - "raw": Raw bytes (requires dtype)
+                - "list": Polars nested List column
+                - "array": Polars fixed-size Array column
+                - "file_path": Read from path (local, s3://, gs://, az://, http://)
                 - "contour": Rasterize contour struct to binary mask
-            dtype: Data type for "raw" format (required), or optional override for
-                "list"/"array" formats. Examples: "u8", "f32", "i32".
-                For list/array, dtype is auto-inferred from the Polars column type
-                if not specified.
-            width: Output mask width for "contour" format (required if 'shape' not specified).
-            height: Output mask height for "contour" format (required if 'shape' not specified).
-            shape: LazyPipelineExpr to infer dimensions from for "contour" format
-                (alternative to width/height).
-            fill_value: Value for pixels inside contour for "contour" format (default 255).
-            background: Value for pixels outside contour for "contour" format (default 0).
-            cloud_options: Cloud storage credentials and options for "file_path" format.
-                Can be a CloudOptions object with credential fields, a dict with keys
-                like 'aws_region', 'aws_access_key_id', etc., or None (default) to use
-                default credential chain.
-            require_contiguous: For "list"/"array" formats, whether to require contiguous
-                (rectangular) data for zero-copy. If True and data is jagged, an error
-                is raised. If False (default), jagged data is flattened with a copy.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If format is invalid or required params missing.
+            dtype: Data type for "raw" format (required), or override for "list"/"array".
+            width: Output mask width for "contour" format.
+            height: Output mask height for "contour" format.
+            shape: Infer dimensions from another pipeline for "contour" format.
+            fill_value: Value for pixels inside contour (default 255).
+            background: Value for pixels outside contour (default 0).
+            cloud_options: Credentials for cloud storage (S3, GCS, Azure).
+            require_contiguous: For "list"/"array", whether to require rectangular data.
 
         Example:
             ```python
-            >>> # Contour with explicit dimensions
-            >>> Pipeline().source('contour', width=200, height=200).sink('raw')
+            >>> # Decode PNG/JPEG bytes from a column
+            >>> pipe = Pipeline().source("image_bytes").resize(224, 224)
             >>>
-            >>> # Contour with dimensions from another pipeline
-            >>> img = pl.col('image').cv.pipe(Pipeline().source('image_bytes'))
-            >>> Pipeline().source('contour', shape=img).sink('raw')
-            >>>
-            >>> # Read from local file path
-            >>> Pipeline().source('file_path').resize(224, 224).sink('numpy')
-            >>>
-            >>> # Read from HTTP/HTTPS URL
+            >>> # Read from file paths or URLs
             >>> df = pl.DataFrame({"url": ["https://example.com/image.png"]})
-            >>> pipe = Pipeline().source('file_path').sink('numpy')
-            >>> result = df.with_columns(image=pl.col("url").cv.pipeline(pipe))
-            >>>
-            >>> # Read from S3 with default credentials
-            >>> Pipeline().source('file_path').resize(224, 224).sink('numpy')
-            >>>
-            >>> # Read from S3 with explicit credentials
-            >>> from polars_cv import CloudOptions
-            >>> creds = CloudOptions(aws_region='us-east-1', aws_access_key_id='...')
-            >>> Pipeline().source('file_path', cloud_options=creds).sink('numpy')
+            >>> pipe = Pipeline().source("file_path").grayscale()
+            >>> expr = pl.col("url").cv.pipe(pipe).sink("numpy")
             ```
         """
         from polars_cv.lazy import LazyPipelineExpr
@@ -604,16 +564,13 @@ class Pipeline:
         width: IntOrExpr | None = None,
     ) -> "Pipeline":
         """
-        Crop a region from the array.
+        Extract a rectangular region.
 
         Args:
-            top: Top offset (y-start).
-            left: Left offset (x-start).
+            top: Top offset.
+            left: Left offset.
             height: Crop height (None = to end).
             width: Crop width (None = to end).
-
-        Returns:
-            Self for chaining.
         """
         new = self._clone()
         params: dict[str, ParamValue] = {
@@ -667,19 +624,9 @@ class Pipeline:
         """
         Multiply all values by a factor.
 
-        This operation accepts any numeric input dtype and automatically handles
-        type promotion. Integers are promoted to float32; floats are preserved.
-
         Args:
-            factor: Scale factor (literal or expression).
-            out_dtype: Output dtype. Options:
-                - None: Promote integers to f32, preserve floats
-                - "f32": Output float32
-                - "f64": Output float64
-                - "preserve": Keep input dtype (floats preserved, integers -> f32)
-
-        Returns:
-            Self for chaining.
+            factor: Scale factor.
+            out_dtype: Output type (promotes to f32 if None and input is int).
         """
         new = self._clone()
         params: dict[str, ParamValue] = {
@@ -708,54 +655,14 @@ class Pipeline:
         out_dtype: str | None = None,
     ) -> "Pipeline":
         """
-        Normalize values.
-
-        This operation accepts any numeric input dtype and automatically handles
-        type promotion. By default, output is float32.
+        Normalize values to a standard range.
 
         Args:
-            method: Normalization method:
-                - "minmax": Scale to [0, 1] using per-image min/max
-                - "zscore": Standardize using per-image mean/std
-                - "preset": Channel-wise normalization with preset mean/std values
-            mean: Per-channel mean values (required for method="preset").
-                For RGB images, provide 3 values, e.g., [0.485, 0.456, 0.406].
-            std: Per-channel standard deviation values (required for method="preset").
-                For RGB images, provide 3 values, e.g., [0.229, 0.224, 0.225].
-            out_dtype: Output dtype. Options:
-                - None: Default to "f32" (float32)
-                - "f32": Output float32
-                - "f64": Output float64
-                - "preserve": Keep input dtype (floats preserved, integers -> f32)
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If method or out_dtype is invalid.
-            ValueError: If method="preset" but mean/std are not provided.
-            ValueError: If mean and std have different lengths.
+            method: "minmax" (scale to [0,1]) or "zscore" (mean=0, std=1).
+            out_dtype: Output type (default "f32").
 
         Example:
-            ```python
-            >>> # MinMax normalization to [0, 1]
-            >>> pipe = Pipeline().source().normalize(method="minmax").sink("numpy")
-            >>>
-            >>> # ZScore normalization (per-image mean=0, std=1)
-            >>> pipe = Pipeline().source().normalize(method="zscore").sink("numpy")
-            >>>
-            >>> # ImageNet-style channel-wise normalization
-            >>> # Note: Scale to [0, 1] first (like torchvision.ToTensor())
-            >>> from polars_cv import IMAGENET_MEAN, IMAGENET_STD
-            >>> pipe = (
-            ...     Pipeline()
-            ...     .source("image_bytes")
-            ...     .resize(height=224, width=224)
-            ...     .scale(1/255.0)  # [0, 255] -> [0, 1]
-            ...     .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
-            ...     .sink("torch")
-            ... )
-            ```
+            >>> Pipeline().source().normalize(method="minmax")
         """
         new = self._clone()
         try:
@@ -873,18 +780,13 @@ class Pipeline:
         """
         Resize image to specified dimensions.
 
-        Domain: buffer → buffer
-
         Args:
-            height: Target height (literal or expression).
-            width: Target width (literal or expression).
-            filter: Resize filter ("nearest", "bilinear", "lanczos3").
+            height: Target height.
+            width: Target width.
+            filter: Interpolation: "nearest", "bilinear", "lanczos3" (default).
 
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If filter is invalid or current domain is not buffer.
+        Example:
+            >>> Pipeline().source("image_bytes").resize(height=224, width=224)
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize")
         new = self._clone()
@@ -1354,13 +1256,7 @@ class Pipeline:
         """
         Convert to grayscale.
 
-        Domain: buffer → buffer
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
+        Uses standard luminance formula: 0.299R + 0.587G + 0.114B.
         """
         self._validate_domain(self.DOMAIN_BUFFER, "grayscale")
         new = self._clone()
@@ -1372,16 +1268,8 @@ class Pipeline:
         """
         Apply binary threshold.
 
-        Domain: buffer → buffer
-
         Args:
-            value: Threshold value (literal or expression).
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
+            value: Threshold value (0-255 for u8).
         """
         self._validate_domain(self.DOMAIN_BUFFER, "threshold")
         new = self._clone()
@@ -1398,16 +1286,8 @@ class Pipeline:
         """
         Apply Gaussian blur.
 
-        Domain: buffer → buffer
-
         Args:
-            sigma: Blur sigma (literal or expression).
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
+            sigma: Standard deviation for Gaussian kernel.
         """
         self._validate_domain(self.DOMAIN_BUFFER, "blur")
         new = self._clone()
@@ -1474,35 +1354,14 @@ class Pipeline:
         hash_size: int = 64,
     ) -> "Pipeline":
         """
-        Compute a perceptual hash of the image.
-
-        Perceptual hashes produce fixed-length fingerprints that are similar
-        for visually similar images, even under transformations like resize,
-        format conversion, or minor edits.
-
-        Domain transition: buffer → vector
+        Compute a perceptual hash fingerprint.
 
         Args:
-            algorithm: Hash algorithm to use. Options:
-                - PERCEPTUAL (default): DCT-based pHash, most robust
-                - AVERAGE: Mean-based aHash, fastest
-                - DIFFERENCE: Gradient-based dHash, good balance
-                - BLOCKHASH: Block-based, resistant to cropping
-            hash_size: Number of bits in the hash. Must be a power of 2.
-                Defaults to 64 (produces 8-byte hash).
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
+            algorithm: "perceptual" (pHash), "average" (aHash), "difference" (dHash).
+            hash_size: Number of bits in the hash (must be power of 2).
 
         Example:
-            ```python
-            >>> # Compute pHash for image matching
-            >>> pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
-            >>> df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
-            ```
+            >>> Pipeline().source("image_bytes").perceptual_hash()
         """
         self._validate_domain(self.DOMAIN_BUFFER, "perceptual_hash")
 
@@ -1547,29 +1406,16 @@ class Pipeline:
         anti_alias: bool = False,
     ) -> "Pipeline":
         """
-        Rasterize contour to binary mask.
-
-        Domain transition: contour → buffer
-
-        Dimensions can be specified EITHER:
-        - Explicitly with width/height
-        - Matching another pipeline's output with 'shape'
+        Rasterize contour to a binary mask.
 
         Args:
-            width: Output width in pixels (required if 'shape' not specified).
-            height: Output height in pixels (required if 'shape' not specified).
-            shape: Match dimensions from another LazyPipelineExpr (for composed pipelines).
-            fill_value: Value for contour interior (default 255).
-            background: Value for exterior (default 0).
-            anti_alias: Smooth edges (default False).
+            width: Mask width.
+            height: Mask height.
+            shape: Match dimensions from another pipeline.
+            fill_value: Inside value (default 255).
+            background: Outside value (default 0).
 
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If neither dimensions nor 'shape' specified.
-            ValueError: If both explicit dims and 'shape' specified.
-            ValueError: If current domain is not contour.
+        Domain transition: contour → buffer
         """
         self._validate_domain(self.DOMAIN_CONTOUR, "rasterize")
         new = self._clone()
@@ -1620,26 +1466,14 @@ class Pipeline:
         min_area: float | None = None,
     ) -> "Pipeline":
         """
-        Extract contours from binary/thresholded image.
-
-        Domain transition: buffer → contour
+        Extract contours from binary mask.
 
         Args:
-            mode: Which contours to extract:
-                - "external": Only outermost contours
-                - "tree": Full hierarchy (contours with holes)
-                - "all": All contours flattened
-            method: Contour approximation:
-                - "none": All boundary points
-                - "simple": Remove redundant points on lines
-                - "approx": Douglas-Peucker approximation
-            min_area: Filter out contours smaller than this (optional).
+            mode: "external" (outer only), "tree" (full hierarchy), "all".
+            method: "simple" (remove redundant), "none" (all points), "approx".
+            min_area: Filter small contours.
 
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
+        Domain transition: buffer → contour
         """
         self._validate_domain(self.DOMAIN_BUFFER, "extract_contours")
         new = self._clone()
@@ -1660,25 +1494,9 @@ class Pipeline:
 
     def reduce_sum(self) -> "Pipeline":
         """
-        Reduce buffer to scalar by summing all elements.
-
-        This is a global reduction operation that computes the sum of all
-        values in the buffer and returns a single scalar value.
+        Sum all elements in the buffer.
 
         Domain transition: buffer → scalar
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Sum all pixel values in an image
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_sum()
-            >>> df.with_columns(pixel_sum=pl.col("image").cv.pipe(pipe).sink("native"))
-            ```
         """
         self._validate_domain(self.DOMAIN_BUFFER, "reduce_sum")
         new = self._clone()
@@ -1689,28 +1507,9 @@ class Pipeline:
 
     def reduce_popcount(self) -> "Pipeline":
         """
-        Reduce buffer to scalar by counting all set bits.
-
-        This is a global reduction operation that counts the number of set bits
-        (1s) across all bytes in the buffer. Useful for:
-        - Computing Hamming distance between hashes (XOR then popcount)
-        - Counting pixels in binary masks
-        - Sparse array analysis
+        Count set bits (1s) in the buffer.
 
         Domain transition: buffer → scalar
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Compute Hamming distance via XOR + popcount
-            >>> xor_pipe = hash1.bitwise_xor(hash2).pipe(Pipeline().reduce_popcount())
-            >>> distance = df.with_columns(distance=xor_pipe.sink("native"))
-            ```
         """
         self._validate_domain(self.DOMAIN_BUFFER, "reduce_popcount")
         new = self._clone()
@@ -1806,34 +1605,14 @@ class Pipeline:
 
     def reduce_mean(self, axis: int | None = None) -> "Pipeline":
         """
-        Reduce buffer by computing the arithmetic mean.
+        Compute arithmetic mean.
 
-        When axis is None, computes the global mean across all elements,
-        returning a single scalar. When axis is specified, reduces along that
-        axis, returning a buffer with one fewer dimension.
+        Args:
+            axis: Axis to reduce along. If None, computes global mean.
 
         Domain transition:
             - axis=None: buffer → scalar
             - axis=N: buffer → buffer (reduced shape)
-
-        Args:
-            axis: Axis to reduce along. None for global reduction.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Global mean (average pixel value)
-            >>> pipe = Pipeline().source("image_bytes").grayscale().reduce_mean()
-            >>> df.with_columns(avg=pl.col("image").cv.pipe(pipe).sink("native"))
-            >>>
-            >>> # Mean along channel axis (per-channel average)
-            >>> pipe = Pipeline().source("image_bytes").reduce_mean(axis=2)
-            ```
         """
         self._validate_domain(self.DOMAIN_BUFFER, "reduce_mean")
         new = self._clone()
@@ -1964,30 +1743,9 @@ class Pipeline:
 
     def extract_shape(self) -> "Pipeline":
         """
-        Extract the shape of the buffer as a struct.
-
-        Returns a struct with named fields for each dimension of the buffer:
-        - height: The height (first dimension)
-        - width: The width (second dimension)
-        - channels: The number of channels (third dimension, if present)
-
-        This is useful for getting image dimensions without processing the data.
+        Extract buffer shape as a struct {height, width, channels}.
 
         Domain transition: buffer → vector
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-
-        Example:
-            ```python
-            >>> # Get image dimensions
-            >>> pipe = Pipeline().source("image_bytes").extract_shape()
-            >>> result = df.with_columns(shape=pl.col("image").cv.pipe(pipe).sink("native"))
-            >>> # Access: result["shape"].struct.field("height")
-            ```
         """
         self._validate_domain(self.DOMAIN_BUFFER, "extract_shape")
         new = self._clone()
@@ -2003,41 +1761,16 @@ class Pipeline:
         output: str = "counts",
     ) -> "Pipeline":
         """
-        Compute histogram of the buffer.
-
-        Computes a histogram of pixel values in the buffer. Can return
-        bin counts, normalized histogram, quantized image, or bin edges.
-
-        Domain transition: buffer → vector (for counts/normalized/edges)
-                          buffer → buffer (for quantized)
+        Compute pixel value histogram.
 
         Args:
-            bins: Number of histogram bins (default 256).
-            range: Value range as (min, max) tuple. If None, auto-detect from data.
-                For uint8 images, typically use (0, 256).
-            output: Output mode:
-                - "counts": Bin counts as 1D array (default)
-                - "normalized": Histogram normalized to sum to 1.0
-                - "quantized": Input array with pixels replaced by bin indices
-                - "edges": Bin edge values (length = bins + 1)
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not buffer.
-            ValueError: If output mode is invalid.
+            bins: Number of bins (default 256).
+            range: (min, max) tuple. Auto-detected if None.
+            output: "counts" (bin counts), "normalized" (sum to 1.0),
+                    "quantized" (pixel indices), "edges" (bin edges).
 
         Example:
-            ```python
-            >>> # Compute histogram counts
-            >>> pipe = Pipeline().source("image_bytes").grayscale().histogram(bins=256)
-            >>> result = df.select(pl.col("image").cv.pipe(pipe).sink("list"))
-            >>>
-            >>> # Quantize image to fewer levels
-            >>> pipe = Pipeline().source("image_bytes").histogram(bins=8, output="quantized")
-            >>> result = df.select(pl.col("image").cv.pipe(pipe).sink("numpy"))
-            ```
+            >>> Pipeline().source("image_bytes").grayscale().histogram(bins=8)
         """
         self._validate_domain(self.DOMAIN_BUFFER, "histogram")
 
@@ -2280,41 +2013,12 @@ class Pipeline:
         shape: list[int] | None = None,
     ) -> "Pipeline":
         """
-        Define output format. This must be the last operation in the pipeline.
-
-        For multi-output, use LazyPipelineExpr composition with .alias() and .sink()
-        at the expression level instead.
+        Define output format.
 
         Args:
-            format: Output format specification:
-                - "numpy": NumPy-compatible bytes (use np.frombuffer)
-                - "torch": PyTorch-compatible bytes
-                - "png": Re-encode as PNG
-                - "jpeg": Re-encode as JPEG
-                - "blob": VIEW protocol (for chaining pipelines)
-                - "array": Polars Array type (fixed shape, must specify shape)
-                - "list": Polars nested List (variable shape per row)
-                - "native": Native Python type (for scalars/contours)
-            quality: JPEG quality (1-100), only used for "jpeg".
-            shape: Required for "array" format - the fixed output shape.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If format is invalid or array format missing shape.
-
-        Example:
-            ```python
-            >>> # Single output
-            >>> pipe = Pipeline().source("image_bytes").resize(100, 200).sink("numpy")
-            >>>
-            >>> # For multi-output, use LazyPipelineExpr composition:
-            >>> base = pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
-            >>> resized = base.pipe(Pipeline().resize(100, 200)).alias("resized")
-            >>> gray = resized.pipe(Pipeline().grayscale()).alias("gray")
-            >>> result = gray.sink({"resized": "numpy", "gray": "numpy"})
-            ```
+            format: "numpy", "png", "jpeg", "blob", "array", "list", "native".
+            quality: JPEG quality (1-100).
+            shape: Required for "array" format.
         """
         new = self._clone()
 

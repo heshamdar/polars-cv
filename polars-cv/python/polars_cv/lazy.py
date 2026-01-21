@@ -24,39 +24,16 @@ def _generate_node_id() -> str:
 
 class LazyPipelineExpr:
     """
-    Lazy pipeline expression that can be composed before execution.
+    Lazy pipeline expression for composed operations.
 
-    This class represents a deferred pipeline computation that is NOT a pl.Expr.
-    Multiple LazyPipelineExpr instances can be composed together, and the entire
-    graph is fused into a single plugin call when .sink() is invoked.
+    This class represents a deferred computation that can be composed with 
+    other expressions. The entire graph is fused and executed when `.sink()` 
+    is called.
 
-    Using this directly in DataFrame operations will raise a TypeError with
-    helpful guidance to call .sink() first.
-
-    Example (basic):
-        >>> img_pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
-        >>> img = pl.col("image_data").cv.pipe(img_pipe)  # Returns LazyPipelineExpr
-        >>> expr = img.sink("numpy")  # Returns pl.Expr
-        >>> df.with_columns(output=expr)  # Now works!
-
-    Example (chaining with .pipe() for composition):
-        >>> # Define base processing once
-        >>> base = pl.col("image").cv.pipe(
-        ...     Pipeline().source("image_bytes").resize(50, 50)
-        ... ).alias("resized")
-        >>>
-        >>> # Branch into different outputs using .pipe() (no source = continuation)
-        >>> gray = base.pipe(Pipeline().grayscale()).alias("gray")
-        >>> thresh = gray.pipe(Pipeline().threshold(128)).alias("thresh")
-        >>> blur = gray.pipe(Pipeline().blur(5)).alias("blur")
-        >>>
-        >>> # CSE automatically shares the common prefix
-        >>> result = thresh.merge_pipe(blur).sink({
-        ...     "resized": "numpy",
-        ...     "gray": "numpy",
-        ...     "thresh": "numpy",
-        ...     "blur": "numpy",
-        ... })
+    Example:
+        >>> preprocess = Pipeline().source("image_bytes").resize(100, 200)
+        >>> img = pl.col("image").cv.pipe(preprocess)
+        >>> expr = img.sink("numpy")
     """
 
     def __init__(
@@ -107,34 +84,12 @@ class LazyPipelineExpr:
 
     def alias(self, name: str) -> "LazyPipelineExpr":
         """
-        Mark this node with a name for multi-output.
-
-        Aliases create named checkpoints that can be referenced when calling
-        `.sink()` with multiple outputs. The alias allows you to extract
-        intermediate results from the pipeline graph.
-
-        Args:
-            name: Unique name for this node.
-
-        Returns:
-            New LazyPipelineExpr with the alias set.
+        Name this checkpoint for multi-output extraction.
 
         Example:
-            ```python
-            >>> base = pl.col("image").cv.pipe(
-            ...     Pipeline().source("image_bytes").resize(100, 200)
-            ... ).alias("resized")
-            >>>
+            >>> base = pl.col("img").cv.pipe(pipe).alias("base")
             >>> gray = base.pipe(Pipeline().grayscale()).alias("gray")
-            >>> thresh = gray.pipe(Pipeline().threshold(128)).alias("thresh")
-            >>>
-            >>> # Return multiple outputs as Struct column
-            >>> expr = thresh.sink({
-            ...     "resized": "numpy",
-            ...     "gray": "png",
-            ...     "thresh": "numpy"
-            ... })
-            ```
+            >>> expr = gray.sink({"base": "numpy", "gray": "png"})
         """
         # Create a new LazyPipelineExpr with the alias set
         # This effectively creates a "checkpoint" that can be referenced
@@ -150,40 +105,10 @@ class LazyPipelineExpr:
 
     def pipe(self, pipeline: "Pipeline") -> "LazyPipelineExpr":
         """
-        Chain additional operations from a Pipeline onto this expression.
-
-        If the pipeline has no source, it continues from this expression's output.
-        If it has a source, it creates a new root node (for multi-source graphs).
-
-        This enables compositional reuse - define a base expression once and
-        branch from it:
+        Chain a Pipeline onto this expression.
 
         Args:
-            pipeline: Operations to apply. If no source(), inherits from this node.
-
-        Returns:
-            New LazyPipelineExpr with operations chained.
-
-        Example:
-            ```python
-            >>> # Define base processing
-            >>> base = pl.col("image").cv.pipe(
-            ...     Pipeline().source("image_bytes").resize(50, 50)
-            ... ).alias("resized")
-            >>>
-            >>> # Branch into different outputs (no source = continuation)
-            >>> gray = base.pipe(Pipeline().grayscale()).alias("gray")
-            >>> thresh = gray.pipe(Pipeline().threshold(128)).alias("thresh")
-            >>> blur = gray.pipe(Pipeline().blur(5)).alias("blur")
-            >>>
-            >>> # CSE automatically shares the common prefix
-            >>> result = thresh.merge_pipe(blur).sink({
-            ...     "resized": "numpy",
-            ...     "gray": "numpy",
-            ...     "thresh": "numpy",
-            ...     "blur": "numpy",
-            ... })
-            ```
+            pipeline: Operations to apply. If no source(), it continues from here.
         """
         if pipeline._source is None:
             # Continuation: new node receives input from self, only has NEW ops
@@ -224,43 +149,15 @@ class LazyPipelineExpr:
         **kwargs: Any,
     ) -> pl.Expr:
         """
-        Finalize the pipeline graph and create executable pl.Expr.
-
-        This is the ONLY way to convert LazyPipelineExpr to pl.Expr.
-        It fuses all upstream dependencies into a single plugin call.
-
-        Can be called with either:
-        - A single format string: returns Binary column with terminal node output
-        - A dict mapping alias names to formats: returns Struct column with
-          multiple named outputs
+        Finalize the pipeline graph and return a Polars expression.
 
         Args:
-            format: Output format specification. For single output use a string:
-                "numpy", "torch", "png", "jpeg", "blob". For multi-output use a dict:
-                {"alias1": "numpy", "alias2": "png"}.
-            kwargs: Additional sink parameters (e.g., quality for jpeg).
+            format: Output format string (e.g., "numpy", "png") or a dict 
+                    mapping aliases to formats for multi-output.
+            kwargs: Parameters for the sink (e.g., quality for jpeg).
 
         Returns:
-            A Polars expression that can be used in DataFrame operations.
-            - For single output: Binary column
-            - For multi-output: Struct column with named Binary fields
-
-        Raises:
-            ValueError: If circular dependencies are detected.
-            ValueError: If multi-output aliases are not found in the graph.
-
-        Example:
-            ```python
-            >>> # Single output
-            >>> expr = result.sink("numpy")
-            >>>
-            >>> # Multi-output
-            >>> expr = result.sink({
-            ...     "original": "png",
-            ...     "processed": "numpy",
-            ...     "mask": "blob"
-            ... })
-            ```
+            A Polars expression. Multi-output returns a Struct column.
         """
         from polars_cv._graph import PipelineGraph
 
