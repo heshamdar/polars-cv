@@ -22,18 +22,6 @@ result = df.with_columns(output=gray.sink("png"))
 
 ::: polars_cv.LazyPipelineExpr
     options:
-      members:
-        - pipe
-        - alias
-        - sink
-        - merge_pipe
-        - add
-        - subtract
-        - multiply
-        - divide
-        - blend
-        - apply_mask
-        - apply_contour_mask
       show_root_heading: true
       show_source: false
       heading_level: 3

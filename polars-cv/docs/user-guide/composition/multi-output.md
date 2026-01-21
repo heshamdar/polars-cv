@@ -135,7 +135,6 @@ result = df.with_columns(
     outputs=merged.sink({
         "display": "png",           # For display
         "analysis": "numpy",        # For NumPy analysis
-        "ml_input": "torch",        # For PyTorch
         "raw_data": "list",         # As Polars List
     })
 )
@@ -169,7 +168,7 @@ result = df.with_columns(
 
 | Approach | Execution Passes | Memory |
 |----------|-----------------|--------|
-| Separate `.cv.pipeline()` calls | N (one per output) | N buffers |
+| Separate `.cv.pipe()` calls | N (one per output) | N buffers |
 | Multi-output with `.sink({...})` | 1 | Shared buffers |
 
 ## Best Practices
@@ -183,5 +182,4 @@ result = df.with_columns(
 ## Next Steps
 
 - [Binary Operations](binary-ops.md) - Combine pipeline outputs
-- [Lazy vs Eager](../concepts/lazy-vs-eager.md) - Understanding execution modes
 

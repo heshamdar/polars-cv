@@ -40,6 +40,7 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
+          paths: [python]
           options:
             show_source: false
             docstring_style: google
@@ -76,19 +77,16 @@ nav:
   - User Guide:
     - Concepts:
       - Pipelines: user-guide/concepts/pipelines.md
-      - Lazy vs Eager: user-guide/concepts/lazy-vs-eager.md
       - Domains: user-guide/concepts/domains.md
     - Operations:
       - Image Operations: user-guide/operations/image-ops.md
       - Geometry: user-guide/operations/geometry.md
       - Hashing: user-guide/operations/hashing.md
+      - Reductions: user-guide/operations/reductions.md
     - Composition:
       - Chaining: user-guide/composition/chaining.md
       - Multi-Output: user-guide/composition/multi-output.md
       - Binary Operations: user-guide/composition/binary-ops.md
-    - Advanced:
-      - Cloud Sources: user-guide/cloud-sources.md
-      - ML Integration: user-guide/ml-integration.md
   - API Reference:
     - Pipeline: api/pipeline.md
     - LazyPipelineExpr: api/lazy.md

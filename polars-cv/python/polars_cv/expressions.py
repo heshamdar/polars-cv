@@ -90,28 +90,12 @@ def apply_pipeline(expr: "IntoExpr", pipe: "Pipeline") -> pl.Expr:
 @pl.api.register_expr_namespace("cv")
 class CvNamespace:
     """
-    Polars expression namespace for computer vision operations.
+    Namespace for computer vision operations on Polars expressions.
 
-    This namespace provides the `.cv` accessor on Polars expressions
-    for applying vision pipelines.
-
-    Two patterns are supported:
-
-    1. **Direct pipeline (eager)**: `.cv.pipeline(pipe)` returns a `pl.Expr` directly.
-       Requires the pipeline to have a sink defined.
-
-    2. **Composable pipeline (lazy)**: `.cv.pipe(pipe)` returns a `LazyPipelineExpr`
-       that can be composed with other lazy expressions before calling `.sink()`.
-
-    Example (eager):
-        >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224).sink("numpy")
-        >>> result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
-
-    Example (composable):
-        >>> img_pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
-        >>> img = pl.col("image").cv.pipe(img_pipe)  # LazyPipelineExpr
-        >>> expr = img.sink("numpy")  # Now a pl.Expr
-        >>> result = df.with_columns(processed=expr)
+    Example:
+        >>> pipe = Pipeline().source("image_bytes").resize(100, 200)
+        >>> expr = pl.col("image").cv.pipe(pipe).sink("numpy")
+        >>> df.with_columns(processed=expr)
     """
 
     def __init__(self, expr: pl.Expr) -> None:
@@ -125,32 +109,7 @@ class CvNamespace:
 
     def pipeline(self, pipe: "Pipeline") -> pl.Expr:
         """
-        Apply a vision pipeline to this column (eager mode).
-
-        The pipeline must have a sink defined. Returns a Polars expression
-        directly, suitable for single-pipeline use cases.
-
-        Args:
-            pipe: The Pipeline instance with source and sink defined.
-
-        Returns:
-            A Polars expression that will execute the pipeline on each element.
-
-        Raises:
-            ValueError: If pipeline has no sink. Use `.cv.pipe()` instead
-                for composable pipelines without a sink.
-
-        Example:
-            ```python
-            >>> pipe = (
-            ...     Pipeline()
-            ...     .source("image_bytes")
-            ...     .resize(height=224, width=224)
-            ...     .grayscale()
-            ...     .sink("numpy")
-            ... )
-            >>> df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
-            ```
+        Apply a finalized vision pipeline (with a sink) directly.
         """
         # Validate that sink is present with a helpful error message
         if not pipe.has_sink():
@@ -167,36 +126,10 @@ class CvNamespace:
 
     def pipe(self, pipe: "Pipeline") -> "LazyPipelineExpr":
         """
-        Create a composable lazy pipeline expression (lazy mode).
+        Apply a vision pipeline to this column.
 
-        Returns a LazyPipelineExpr that can be composed with other lazy
-        expressions using methods like `.apply_mask()`, `.add()`, etc.
-        Call `.sink(format)` to finalize and get a pl.Expr.
-
-        The pipeline should NOT have a sink defined (sink is specified
-        when calling `.sink()` on the returned LazyPipelineExpr).
-
-        Args:
-            pipe: The Pipeline instance with source defined (no sink).
-
-        Returns:
-            A LazyPipelineExpr that can be composed before execution.
-
-        Raises:
-            ValueError: If pipeline has a sink defined. Use `.cv.pipeline()`
-                instead for direct execution.
-
-        Example:
-            ```python
-            >>> img_pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
-            >>> mask_pipe = Pipeline().source("contour")
-            >>>
-            >>> img = pl.col("image").cv.pipe(img_pipe)
-            >>> mask = pl.col("contour").cv.pipe(mask_pipe)
-            >>>
-            >>> result = img.apply_contour_mask(mask).sink("numpy")
-            >>> df.with_columns(masked=result)
-            ```
+        Returns a LazyPipelineExpr that can be composed with other operations.
+        Call .sink(format) to finalize and get a Polars expression.
         """
         from polars_cv.lazy import LazyPipelineExpr
 

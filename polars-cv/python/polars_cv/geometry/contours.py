@@ -22,22 +22,13 @@ LIB_PATH = Path(__file__).parent.parent
 @pl.api.register_expr_namespace("contour")
 class ContourNamespace:
     """
-    Operations on contour columns.
-
-    This namespace provides geometric operations for contour data,
-    including area/perimeter computation, coordinate transformations,
-    winding direction, and pairwise measures.
-
-    The contour column must match CONTOUR_SCHEMA or CONTOUR_SET_SCHEMA.
-    Operations automatically handle both single contours and sets of contours.
+    Namespace for geometric operations on contour columns.
 
     Example:
-    ```python
         >>> df.with_columns(
         ...     area=pl.col("contour").contour.area(),
-        ...     perimeter=pl.col("contour").contour.perimeter(),
+        ...     bbox=pl.col("contour").contour.bounding_box(),
         ... )
-    ```
     """
 
     def __init__(self, expr: pl.Expr) -> None:

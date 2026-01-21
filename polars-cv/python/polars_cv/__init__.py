@@ -1,71 +1,15 @@
 """
-polars-cv: A Polars plugin for vision/array operations.
+polars-cv: High-performance vision and array processing for Polars.
 
-This package provides lazy, zero-copy-where-possible image and array
-operations on Polars DataFrame columns.
+This package provides modular image and array operations on Polars
+DataFrame columns using modular pipelines.
 
-## Tiling (Cache-Efficient Execution)
-
-By default, polars-cv uses **tiled execution** for large images to improve
-cache efficiency. This divides large images into 256x256 tiles that fit in
-CPU cache, providing 2-5x speedups for very large images.
-
-Tiling is transparent - results are identical whether tiling is on or off.
-Configure it using:
-
-```python
->>> import polars_cv
->>> polars_cv.configure_tiling(1024)  # Only tile images > 1024px
->>> polars_cv.configure_tiling(None)  # Disable tiling entirely
->>> polars_cv.get_tiling_config()     # Check current settings
-```
-
-## Pipeline Patterns
-
-Two patterns are supported:
-
-1. **Direct pipeline (eager)**: Define a complete pipeline with sink and apply directly.
-
-    ```python
+Example:
+    >>> from polars_cv import Pipeline
     >>> import polars as pl
-    >>> from polars_cv import Pipeline
     >>>
-    >>> pipe = (
-    ...     Pipeline()
-    ...     .source("image_bytes")
-    ...     .resize(height=224, width=224)
-    ...     .normalize(method="minmax")
-    ...     .sink("numpy")
-    ... )
-    >>> result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
-    ```
-2. **Composable pipeline (lazy)**: Define pipelines without sinks, compose them,
-   then call `.sink()` to finalize. Enables fused execution of multiple pipelines.
-
-    ```python
-    >>> from polars_cv import Pipeline
-    >>>
-    >>> img_pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
-    >>> mask_pipe = Pipeline().source("contour")
-    >>>
-    >>> img = pl.col("image").cv.pipe(img_pipe)    # LazyPipelineExpr
-    >>> mask = pl.col("contour").cv.pipe(mask_pipe)  # LazyPipelineExpr
-    >>>
-    >>> result = img.apply_contour_mask(mask).sink("numpy")  # Now a pl.Expr
-    >>> df.with_columns(masked=result)
-    ```
-3. **NumPy Conversion**: Use `numpy_from_struct()` to convert pipeline output to arrays.
-
-    The numpy/torch sink returns a Struct with `data`, `dtype`, and `shape` fields,
-    enabling zero-copy data transfer from Rust.
-
-    ```python
-    >>> from polars_cv import Pipeline, numpy_from_struct
-    >>>
-    >>> # Get the first row's output struct and convert to numpy
-    >>> output_struct = df.select("processed")["processed"][0]
-    >>> array = numpy_from_struct(output_struct)
-    ```
+    >>> pipe = Pipeline().source("image_bytes").resize(224, 224)
+    >>> df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
 """
 
 from __future__ import annotations
@@ -77,11 +21,11 @@ import polars as pl
 if TYPE_CHECKING:
     import numpy as np
 
-from polars_cv._lib import configure_tiling as _configure_tiling
-from polars_cv._lib import get_tiling_config as _get_tiling_config
-from polars_cv._types import IMAGENET_MEAN, IMAGENET_STD, CloudOptions, HashAlgorithm
-from polars_cv.expressions import CvNamespace
-from polars_cv.geometry import (
+from ._lib import configure_tiling as _configure_tiling
+from ._lib import get_tiling_config as _get_tiling_config
+from ._types import IMAGENET_MEAN, IMAGENET_STD, CloudOptions, HashAlgorithm
+from .expressions import CvNamespace
+from .geometry import (
     BBOX_SCHEMA,
     CONTOUR_SCHEMA,
     CONTOUR_SET_SCHEMA,
@@ -89,10 +33,10 @@ from polars_cv.geometry import (
     POINT_SET_SCHEMA,
     RING_SCHEMA,
 )
-from polars_cv.geometry.contours import ContourNamespace
-from polars_cv.geometry.points import PointNamespace
-from polars_cv.lazy import LazyPipelineExpr
-from polars_cv.pipeline import Pipeline
+from .geometry.contours import ContourNamespace
+from .geometry.points import PointNamespace
+from .lazy import LazyPipelineExpr
+from .pipeline import Pipeline
 
 # Schema for numpy/torch sink output struct
 # Matches the Rust output module schema
@@ -113,50 +57,11 @@ def numpy_from_struct(
     copy: bool = True,
 ) -> "np.ndarray":
     """
-    Convert polars-cv numpy/torch sink output struct to a numpy array.
-
-    The numpy/torch sink format is a Struct with five fields:
-    - data: Binary (raw array bytes, may be larger for strided views)
-    - dtype: String (numpy dtype name like "uint8", "float32")
-    - shape: List[UInt64] (array dimensions)
-    - strides: List[Int64] (byte strides per dimension)
-    - offset: UInt64 (byte offset into data buffer)
-
-    This format enables zero-copy data transfer from Rust to Python,
-    including for non-contiguous strided buffers (e.g., after crop/flip).
+    Convert numpy sink output struct to a NumPy array.
 
     Args:
-        row: A struct value from the output column. Can be:
-            - A dict with 'data', 'dtype', 'shape', 'strides', 'offset' keys
-            - A Series representing a single struct row
-        copy: Whether to copy the data (default True). If False, the returned
-            array may share memory with the underlying buffer, which can be
-            more efficient but requires care with lifetime management.
-            When False with strided data, creates a strided numpy view.
-
-    Returns:
-        A numpy array with the correct dtype and shape.
-
-    Raises:
-        ImportError: If numpy is not installed.
-        ValueError: If the input is not a valid numpy output struct.
-        KeyError: If required fields are missing.
-
-    Example:
-        ```python
-        >>> from polars_cv import Pipeline, numpy_from_struct
-        >>>
-        >>> pipe = Pipeline().source("image_bytes").resize(height=100, width=100).sink("numpy")
-        >>> result = df.select(processed=pl.col("images").cv.pipeline(pipe))
-        >>>
-        >>> # Convert first row to numpy array
-        >>> row = result["processed"][0]
-        >>> array = numpy_from_struct(row)
-        >>> print(array.shape)  # (100, 100, 3)
-        >>>
-        >>> # Zero-copy strided view (for crop/flip pipelines)
-        >>> array_view = numpy_from_struct(row, copy=False)
-        ```
+        row: Struct value from output column.
+        copy: Whether to copy data (default True). If False, returns a view.
     """
     import numpy as np
 
@@ -257,38 +162,11 @@ def mask_iou(
     epsilon: float = 1e-7,
 ) -> pl.Expr:
     """
-    Compute Intersection over Union (IoU) between two binary mask pipelines.
-
-    IoU = intersection_sum / union_sum
-
-    This function composes the bitwise operations and sum reductions, then
-    uses Polars' native scalar operations for the final division.
+    Compute Intersection over Union (IoU) between two binary masks.
 
     Args:
-        pred: LazyPipelineExpr producing the prediction mask (binary 0/255).
-        target: LazyPipelineExpr producing the ground truth mask (binary 0/255).
-        epsilon: Small value to avoid division by zero (default 1e-7).
-
-    Returns:
-        A Polars expression that computes IoU as a Float64 value in [0, 1].
-
-    Example:
-        ```python
-        >>> from polars_cv import Pipeline, mask_iou
-        >>>
-        >>> # Create mask pipelines
-        >>> mask_pipe = Pipeline().source("image_bytes").grayscale().threshold(128)
-        >>> pred = pl.col("pred_mask").cv.pipe(mask_pipe)
-        >>> target = pl.col("gt_mask").cv.pipe(mask_pipe)
-        >>>
-        >>> # Compute IoU
-        >>> iou_expr = mask_iou(pred, target)
-        >>> result = df.select(iou=iou_expr)
-        ```
-    Note:
-        Both masks should be binary (0 or non-zero values). The result is
-        based on summing all pixel values, so for 0/255 masks, both intersection
-        and union sums scale equally, yielding the correct IoU ratio.
+        pred: Mask expression (binary 0/255).
+        target: Target mask expression.
     """
     # Compute intersection and union, then reduce to scalars
     intersection = (
@@ -390,37 +268,11 @@ def hamming_distance(
     hash2: LazyPipelineExpr,
 ) -> pl.Expr:
     """
-    Compute Hamming distance between two hash buffers.
-
-    Hamming distance is the number of positions at which the corresponding
-    bits differ. This is useful for comparing perceptual hashes to determine
-    image similarity.
-
-    The computation is: XOR the two hash buffers, then count set bits (popcount).
+    Compute Hamming distance between two perceptual hashes.
 
     Args:
-        hash1: LazyPipelineExpr producing a hash buffer (e.g., from perceptual_hash()).
-        hash2: LazyPipelineExpr producing a hash buffer (same size as hash1).
-
-    Returns:
-        A Polars expression that computes the Hamming distance as a Float64 value.
-
-    Example:
-        ```python
-        >>> from polars_cv import Pipeline, hamming_distance
-        >>>
-        >>> # Compute perceptual hashes
-        >>> hash_pipe = Pipeline().source("image_bytes").perceptual_hash()
-        >>> hash1 = pl.col("image1").cv.pipe(hash_pipe)
-        >>> hash2 = pl.col("image2").cv.pipe(hash_pipe)
-        >>>
-        >>> # Compute Hamming distance (number of differing bits)
-        >>> distance_expr = hamming_distance(hash1, hash2)
-        >>> result = df.select(distance=distance_expr)
-        ```
-    Note:
-        For 64-bit perceptual hashes, the maximum Hamming distance is 64 (completely
-        different) and minimum is 0 (identical). Lower distance = more similar.
+        hash1: First hash expression.
+        hash2: Second hash expression.
     """
     # XOR the hashes and count set bits
     xor_result = hash1.bitwise_xor(hash2).pipe(Pipeline().reduce_popcount())
@@ -436,41 +288,12 @@ def hash_similarity(
     hash_bits: int = 64,
 ) -> pl.Expr:
     """
-    Compute similarity percentage between two hash buffers.
-
-    Similarity is computed as: (1 - hamming_distance / total_bits) * 100
-
-    This provides an intuitive percentage where:
-    - 100% = identical hashes
-    - 0% = completely different hashes
+    Compute similarity percentage [0, 100] between two hashes.
 
     Args:
-        hash1: LazyPipelineExpr producing a hash buffer (e.g., from perceptual_hash()).
-        hash2: LazyPipelineExpr producing a hash buffer (same size as hash1).
-        hash_bits: Total number of bits in the hash (default 64 for standard perceptual hash).
-
-    Returns:
-        A Polars expression that computes similarity as a Float64 percentage [0, 100].
-
-    Example:
-        ```python
-        >>> from polars_cv import Pipeline, hash_similarity
-        >>>
-        >>> # Compute perceptual hashes
-        >>> hash_pipe = Pipeline().source("image_bytes").perceptual_hash()
-        >>> hash1 = pl.col("original_image").cv.pipe(hash_pipe)
-        >>> hash2 = pl.col("modified_image").cv.pipe(hash_pipe)
-        >>>
-        >>> # Compute similarity percentage
-        >>> similarity_expr = hash_similarity(hash1, hash2)
-        >>> result = df.select(similarity=similarity_expr)
-        >>>
-        >>> # Filter for similar images (>90% similar)
-        >>> similar = df.filter(hash_similarity(hash1, hash2) > 90)
-        ```
-    Note:
-        The default hash_bits=64 is appropriate for standard perceptual hashes.
-        For larger hashes (e.g., 256-bit), pass hash_bits=256.
+        hash1: First hash expression.
+        hash2: Second hash expression.
+        hash_bits: Total bits in hash (default 64).
     """
     # XOR the hashes and count set bits
     xor_popcount = hash1.bitwise_xor(hash2).pipe(Pipeline().reduce_popcount())
@@ -489,38 +312,11 @@ def mask_dice(
     epsilon: float = 1e-7,
 ) -> pl.Expr:
     """
-    Compute Dice coefficient between two binary mask pipelines.
-
-    Dice = 2 * intersection_sum / (pred_sum + target_sum)
-
-    This function composes the bitwise operations and sum reductions, then
-    uses Polars' native scalar operations for the final calculation.
+    Compute Dice coefficient between two binary masks.
 
     Args:
-        pred: LazyPipelineExpr producing the prediction mask (binary 0/255).
-        target: LazyPipelineExpr producing the ground truth mask (binary 0/255).
-        epsilon: Small value to avoid division by zero (default 1e-7).
-
-    Returns:
-        A Polars expression that computes Dice coefficient as a Float64 value in [0, 1].
-
-    Example:
-        ```python
-        >>> from polars_cv import Pipeline, mask_dice
-        >>>
-        >>> # Create mask pipelines
-        >>> mask_pipe = Pipeline().source("image_bytes").grayscale().threshold(128)
-        >>> pred = pl.col("pred_mask").cv.pipe(mask_pipe)
-        >>> target = pl.col("gt_mask").cv.pipe(mask_pipe)
-        >>>
-        >>> # Compute Dice
-        >>> dice_expr = mask_dice(pred, target)
-        >>> result = df.select(dice=dice_expr)
-        ```
-    Note:
-        Both masks should be binary (0 or non-zero values). The result is
-        based on summing all pixel values, so for 0/255 masks, all sums
-        scale equally, yielding the correct Dice coefficient.
+        pred: Mask expression (binary 0/255).
+        target: Target mask expression.
     """
     # Compute intersection, pred sum, and target sum as scalars
     intersection = (
