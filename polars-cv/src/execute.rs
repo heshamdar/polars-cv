@@ -756,7 +756,7 @@ pub fn resolve_op(
                     )
                 })
                 .unwrap_or(false);
-            
+
             // Normalize angle to [0, 360)
             let normalized_angle = angle % 360.0;
             let normalized_angle = if normalized_angle < 0.0 {
@@ -764,7 +764,7 @@ pub fn resolve_op(
             } else {
                 normalized_angle
             };
-            
+
             // Check for zero-copy rotations (90, 180, 270)
             // Use a small epsilon for floating point comparison
             const EPSILON: f32 = 0.001;
@@ -772,9 +772,12 @@ pub fn resolve_op(
                 Ok(ViewDto::View(ViewOp::Rotate90))
             } else if (normalized_angle - 180.0).abs() < EPSILON {
                 Ok(ViewDto::View(ViewOp::Rotate180))
-            } else if (normalized_angle - 270.0).abs() < EPSILON || (normalized_angle - (-90.0)).abs() < EPSILON {
+            } else if (normalized_angle - 270.0).abs() < EPSILON
+                || (normalized_angle - (-90.0)).abs() < EPSILON
+            {
                 Ok(ViewDto::View(ViewOp::Rotate270))
-            } else if normalized_angle.abs() < EPSILON || (normalized_angle - 360.0).abs() < EPSILON {
+            } else if normalized_angle.abs() < EPSILON || (normalized_angle - 360.0).abs() < EPSILON
+            {
                 // 0 or 360 degrees - no-op, but we'll use ViewOp for consistency
                 // Actually, we can just return the identity, but for simplicity use Rotate180 twice
                 // Or better: use a no-op view. But since we don't have that, we'll use ImageOp with 0 angle
