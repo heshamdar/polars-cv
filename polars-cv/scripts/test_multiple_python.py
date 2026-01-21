@@ -8,7 +8,7 @@ isolated environments dynamically.
 Usage:
     python scripts/test_multiple_python.py                    # Use current Python environment
     python scripts/test_multiple_python.py --all              # Test all versions
-    python scripts/test_multiple_python.py --versions 3.9 3.13  # Test specific versions
+    python scripts/test_multiple_python.py --versions 3.10 3.13  # Test specific versions
     python scripts/test_multiple_python.py --fast             # Test only min and max versions
 """
 
@@ -20,8 +20,7 @@ from typing import List, Optional, Tuple
 
 # Python versions to test against
 DEFAULT_VERSIONS = [
-    "3.9",  # Minimum supported version
-    "3.10",
+    "3.10",  # Minimum supported version
     "3.11",
     "3.12",
     "3.13",  # Latest version
@@ -198,17 +197,17 @@ def main():
     parser.add_argument(
         "--versions",
         nargs="+",
-        help="Specific Python versions to test (e.g., --versions 3.9 3.13)",
+        help="Specific Python versions to test (e.g., --versions 3.10 3.13)",
     )
     parser.add_argument(
         "--fast",
         action="store_true",
-        help="Test only minimum and maximum versions (3.9 and 3.13)",
+        help="Test only minimum and maximum versions (3.10 and 3.13)",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Test all default Python versions (3.9, 3.10, 3.11, 3.12, 3.13)",
+        help="Test all default Python versions (3.10, 3.11, 3.12, 3.13)",
     )
     parser.add_argument(
         "--skip-versions",
@@ -228,7 +227,7 @@ def main():
     if args.versions:
         versions_to_test = args.versions
     elif args.fast:
-        versions_to_test = ["3.9", "3.13"]
+        versions_to_test = [DEFAULT_VERSIONS[0], DEFAULT_VERSIONS[-1]]
     elif args.all:
         versions_to_test = DEFAULT_VERSIONS
     else:

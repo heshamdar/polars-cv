@@ -1,0 +1,120 @@
+
+## Development
+
+### Testing Against Multiple Python Versions
+
+To test against multiple Python versions locally using `uv`:
+
+```bash
+# Use current Python environment (default - no arguments needed)
+python scripts/test_multiple_python.py
+
+# Test all supported Python versions (3.10, 3.11, 3.12, 3.13)
+python scripts/test_multiple_python.py --all
+
+# Test only minimum and maximum versions (faster)
+python scripts/test_multiple_python.py --fast
+
+# Test specific versions
+python scripts/test_multiple_python.py --versions 3.10 3.13
+```
+
+**Prerequisites:**
+- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- For multi-version testing, install Python versions: `uv python install 3.10 3.11 3.12 3.13`
+
+The test script will:
+1. Use current environment if no versions specified (default behavior)
+2. For specified versions, create isolated environments using `uv run --python`
+3. Build the package (without cloud feature for speed)
+4. Install test dependencies
+5. Run the full test suite
+6. Report which versions passed/failed
+
+## Development
+
+```bash
+# Run Python tests
+pytest tests/
+
+# Build for development
+maturin develop
+
+# Build release
+maturin build --release
+```
+
+## CI/CD and Publishing
+
+This project uses GitHub Actions for continuous integration and publishing to PyPI.
+
+### Workflows
+
+- **CI** (`ci.yml`): Runs on push/PR to main
+  - Linting (ruff, cargo clippy, cargo fmt)
+  - Tests across Python 3.10-3.13 on Linux, macOS, Windows
+  - Build verification
+
+- **Publish** (`publish.yml`): Runs on release creation
+  - Builds wheels for all platforms (Linux, macOS universal2, Windows)
+  - Publishes to TestPyPI first for validation
+  - Publishes to PyPI after TestPyPI succeeds
+
+### Required GitHub Secrets
+
+To enable publishing, configure these secrets in your GitHub repository settings
+(Settings → Secrets and variables → Actions → New repository secret):
+
+| Secret | Description | Source |
+|--------|-------------|--------|
+| (none required) | Uses trusted publishing with OIDC | Configure on PyPI |
+
+### PyPI Trusted Publisher Setup
+
+This project uses [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/) with OIDC,
+which is more secure than API tokens. To set it up:
+
+1. **PyPI** (https://pypi.org):
+   - Go to your account → Publishing → Add a new pending publisher
+   - Owner: `<your-github-username>`
+   - Repository name: `polars_plugin_dev`
+   - Workflow name: `publish.yml`
+   - Environment name: `pypi`
+
+2. **TestPyPI** (https://test.pypi.org):
+   - Same steps as above
+   - Environment name: `testpypi`
+
+### GitHub Environments
+
+Create two environments in your repository (Settings → Environments):
+
+1. **testpypi** - For TestPyPI publishing
+2. **pypi** - For production PyPI publishing (consider adding required reviewers)
+
+### Release Process
+
+1. Update version in both `Cargo.toml` and `pyproject.toml`
+2. Commit and push to main
+3. Create a GitHub release with a version tag (e.g., `v0.1.0`)
+4. GitHub Actions automatically:
+   - Builds wheels for all platforms
+   - Publishes to TestPyPI
+   - Tests installation from TestPyPI
+   - Publishes to PyPI
+
+### Manual Publishing (Alternative)
+
+If you prefer using API tokens instead of trusted publishing:
+
+```bash
+# Build wheels
+maturin build --release
+
+# Publish to TestPyPI
+maturin publish --repository testpypi
+
+# Publish to PyPI
+maturin publish
+```
+
