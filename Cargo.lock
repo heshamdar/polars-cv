@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "polars-cv"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "image",
  "object_store",
