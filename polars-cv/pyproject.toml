@@ -37,6 +37,7 @@ dev = [
     "jupytext>=1.18.1",
     "ruff>=0.9.0",
     "maturin>=1.7,<2.0",
+    "pre-commit>=4.5.1",
 ]
 bench = [
     "opencv-python>=4.8",

@@ -24,6 +24,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             manylinux: manylinux2014
+            container: zigbuild
           # macOS arm64
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -57,6 +58,7 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist --manifest-path polars-cv/Cargo.toml
           manylinux: ${{ matrix.manylinux }}
+          container: ${{ matrix.container }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -111,4 +113,3 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-
