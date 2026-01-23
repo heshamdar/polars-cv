@@ -57,6 +57,11 @@ class GraphNode:
         return self.pipeline.output_dtype()
 
     @property
+    def expected_ndim(self) -> int | None:
+        """Get the expected number of dimensions of this node's pipeline."""
+        return self.pipeline._expected_ndim
+
+    @property
     def expected_shape(self) -> list[int] | None:
         """Get the expected output shape of this node's pipeline if deterministic."""
         hints = self.pipeline._shape_hints
@@ -367,9 +372,13 @@ class PipelineGraph:
 
         # Compute the correct domain and dtype for the prefix operations
         # This ensures static type inference matches runtime behavior
-        domain, dtype = Pipeline._compute_output_domain_dtype(prefix_ops)
+        domain, dtype, ndim = Pipeline._compute_output_domain_dtype_ndim(
+            prefix_ops,
+            initial_ndim=template_node.pipeline._expected_ndim,
+        )
         shared_pipeline._current_domain = domain
         shared_pipeline._output_dtype = dtype
+        shared_pipeline._expected_ndim = ndim
 
         # Create the shared node
         shared_node = GraphNode(
@@ -574,6 +583,7 @@ class PipelineGraph:
                     "expected_domain": node.domain if node else "buffer",
                     "expected_dtype": node.output_dtype if node else "u8",
                     "expected_shape": node.expected_shape if node else None,
+                    "expected_ndim": node.expected_ndim if node else None,
                 }
         else:
             # Single output mode - use "_output" as the key
@@ -589,6 +599,7 @@ class PipelineGraph:
                 "expected_domain": node.domain if node else "buffer",
                 "expected_dtype": node.output_dtype if node else "u8",
                 "expected_shape": node.expected_shape if node else None,
+                "expected_ndim": node.expected_ndim if node else None,
             }
 
         graph_spec = {

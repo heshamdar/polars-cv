@@ -563,6 +563,12 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
                     dtype = DataType::List(Box::new(dtype));
                 }
                 dtype
+            } else if let Some(ndim) = spec.expected_ndim {
+                let mut dtype = inner;
+                for _ in 0..ndim {
+                    dtype = DataType::List(Box::new(dtype));
+                }
+                dtype
             } else {
                 DataType::List(Box::new(inner))
             }
@@ -576,6 +582,13 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
                     dtype = DataType::Array(Box::new(dtype), dim);
                 }
                 dtype
+            } else if let Some(ndim) = spec.expected_ndim {
+                // Fallback to List if exact shape is unknown but ndim is known
+                let mut dtype = inner;
+                for _ in 0..ndim {
+                    dtype = DataType::List(Box::new(dtype));
+                }
+                dtype
             } else {
                 DataType::List(Box::new(inner))
             }
@@ -586,6 +599,12 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
             if let Some(ref shape) = spec.expected_shape {
                 let mut dtype = inner;
                 for _ in 0..shape.len() {
+                    dtype = DataType::List(Box::new(dtype));
+                }
+                dtype
+            } else if let Some(ndim) = spec.expected_ndim {
+                let mut dtype = inner;
+                for _ in 0..ndim {
                     dtype = DataType::List(Box::new(dtype));
                 }
                 dtype

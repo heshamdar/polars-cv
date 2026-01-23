@@ -73,3 +73,33 @@ def test_lazy_schema_complex_chain():
     
     expected_type = pl.List(pl.List(pl.List(pl.Float64)))
     assert schema["image"] == expected_type
+
+def test_lazy_schema_unknown_shape_known_ndim():
+    """Test that file_path source (unknown shape) still provides 3D nesting for list sink."""
+    pipe = Pipeline().source("file_path")
+    
+    df = pl.DataFrame({"img_path": ["https://example.com/img.png"]})
+    schema = df.lazy().select(pl.col("img_path").cv.pipe(pipe).sink("list")).collect_schema()
+    
+    # Even if H/W are unknown, ndim=3 for image sources
+    expected_type = pl.List(pl.List(pl.List(pl.UInt8)))
+    assert schema["img_path"] == expected_type
+
+def test_lazy_schema_array_sink_requires_shape():
+    """Test that array sink fails if shape is not deterministic and not provided."""
+    pipe = Pipeline().source("file_path")
+    
+    df = pl.DataFrame({"img_path": ["https://example.com/img.png"]})
+    
+    with pytest.raises(ValueError, match="shape is required for 'array' sink format"):
+        df.lazy().select(pl.col("img_path").cv.pipe(pipe).sink("array"))
+
+def test_lazy_schema_array_sink_with_manual_shape():
+    """Test that array sink works with manual shape even if source shape is unknown."""
+    pipe = Pipeline().source("file_path")
+    
+    df = pl.DataFrame({"img_path": ["https://example.com/img.png"]})
+    schema = df.lazy().select(pl.col("img_path").cv.pipe(pipe).sink("array", shape=[100, 100, 3])).collect_schema()
+    
+    expected_type = pl.Array(pl.Array(pl.Array(pl.UInt8, 3), 100), 100)
+    assert schema["img_path"] == expected_type
