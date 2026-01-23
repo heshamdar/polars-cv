@@ -300,25 +300,13 @@ impl UnifiedGraph {
                                             || path.starts_with("http://")
                                             || path.starts_with("https://")
                                         {
-                                            #[cfg(feature = "cloud")]
-                                            {
-                                                match crate::cloud::read_file(path, None) {
-                                                    Ok(b) => b,
-                                                    Err(e) => {
-                                                        return Err(
-                                                                format!("Failed to read remote file '{path}': {e}"),
-                                                            );
-                                                    }
+                                            match crate::cloud::read_file(path, None) {
+                                                Ok(b) => b,
+                                                Err(e) => {
+                                                    return Err(format!(
+                                                        "Failed to read remote file '{path}': {e}"
+                                                    ));
                                                 }
-                                            }
-                                            #[cfg(not(feature = "cloud"))]
-                                            {
-                                                return Err(format!(
-                                                    "Remote storage support is not enabled. \
-                                                    Install with 'cloud' feature: \
-                                                    pip install polars-cv[cloud] or \
-                                                    cargo build --features cloud"
-                                                ));
                                             }
                                         } else {
                                             std::fs::read(path).map_err(|e| {

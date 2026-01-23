@@ -63,8 +63,7 @@ jobs:
       - name: Install dependencies
         working-directory: ${{ steps.package_dir.outputs.dir }}
         run: |
-          uv venv
-          uv pip install maturin pytest polars numpy pillow opencv-python scipy imagehash
+          uv sync --group dev
 
       - name: Build and Test (Rust & Python)
         working-directory: ${{ steps.package_dir.outputs.dir }}
@@ -76,8 +75,8 @@ jobs:
           cargo test --release
           
           echo "=== Building Python Extension ==="
-          # Build without cloud feature for speed in CI
-          maturin develop --release --no-default-features --features pyo3/extension-module,pyo3/abi3-py39
+          # Build with all features enabled (cloud support is now default)
+          maturin develop
           
           echo "=== Running Python Tests ==="
           pytest tests/ -x -v --tb=short

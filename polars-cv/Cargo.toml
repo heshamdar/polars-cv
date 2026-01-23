@@ -46,18 +46,17 @@ serde_json = "1.0"
 # Error handling
 thiserror = "1.0"
 
-# Cloud storage support (S3, GCS, Azure) - optional feature
-object_store = { version = "0.12", features = ["aws", "gcp", "azure"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
-url = { version = "2", optional = true }
+# Cloud storage support (S3, GCS, Azure)
+object_store = { version = "0.12", features = ["aws", "gcp", "azure"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+url = { version = "2" }
 
 # HTTP support for URL sources (http://, https://)
 # Uses async client within tokio runtime (same as cloud storage)
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [features]
-default = ["cloud"]
-cloud = ["dep:object_store", "dep:tokio", "dep:url", "dep:reqwest"]
+pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py39"]
 
 [dev-dependencies]
 # For testing

@@ -26,8 +26,8 @@ class LazyPipelineExpr:
     """
     Lazy pipeline expression for composed operations.
 
-    This class represents a deferred computation that can be composed with 
-    other expressions. The entire graph is fused and executed when `.sink()` 
+    This class represents a deferred computation that can be composed with
+    other expressions. The entire graph is fused and executed when `.sink()`
     is called.
 
     Example:
@@ -152,7 +152,7 @@ class LazyPipelineExpr:
         Finalize the pipeline graph and return a Polars expression.
 
         Args:
-            format: Output format string (e.g., "numpy", "png") or a dict 
+            format: Output format string (e.g., "numpy", "png") or a dict
                     mapping aliases to formats for multi-output.
             kwargs: Parameters for the sink (e.g., quality for jpeg).
 
@@ -181,8 +181,16 @@ class LazyPipelineExpr:
         if isinstance(format, dict):
             # Multi-output mode
             # Validate array sinks in multi-output
-            from polars_cv._types import SinkFormat
+
             for alias, fmt_str in format.items():
+
+                # Validate list sink ndim
+                if fmt_str == "list":
+                    node = self._find_node_by_alias(alias, all_nodes)
+                    if node and node._pipeline._expected_ndim is None:
+                        msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
+                        raise ValueError(msg)
+
                 if fmt_str == "array":
                     # For multi-output, we don't have a simple way to pass per-alias shape yet
                     # but we can check if the node has deterministic shape
@@ -194,12 +202,12 @@ class LazyPipelineExpr:
         else:
             # Single output mode
             # Validate array sink
-            from polars_cv._types import SinkFormat
+
             if format == "array" and "shape" not in kwargs:
                 if not self._pipeline._shape_hints.has_all_dims():
                     msg = "shape is required for 'array' sink format when output shape is not deterministic. Provide 'shape' in .sink() or use .resize() earlier."
                     raise ValueError(msg)
-            
+
             # Validate list sink ndim
             if format == "list":
                 if self._pipeline._expected_ndim is None:
@@ -792,7 +800,9 @@ class LazyPipelineExpr:
             upstream=[self, other],
         )
 
-    def _find_node_by_alias(self, alias: str, nodes: list["LazyPipelineExpr"]) -> "LazyPipelineExpr | None":
+    def _find_node_by_alias(
+        self, alias: str, nodes: list["LazyPipelineExpr"]
+    ) -> "LazyPipelineExpr | None":
         """Find a node in the graph by its alias."""
         for node in nodes:
             if node._alias == alias:
