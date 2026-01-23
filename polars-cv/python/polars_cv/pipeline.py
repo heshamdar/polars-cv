@@ -152,6 +152,12 @@ class Pipeline:
             if op_name in OPERATION_OUTPUT_DTYPE:
                 dtype = OPERATION_OUTPUT_DTYPE[op_name]
 
+            # Handle special cases for cast (param-dependent)
+            if op_name == "cast":
+                dtype_param = op_spec.params.get("dtype")
+                if dtype_param and not dtype_param.is_expr:
+                    dtype = dtype_param.value
+
             # Handle special cases for histogram (mode-dependent)
             if op_name == "histogram":
                 # Check for output_mode param
@@ -273,8 +279,114 @@ class Pipeline:
         Args:
             op_name: Name of the operation being added.
         """
-        if op_name in OPERATION_OUTPUT_DTYPE:
-            self._output_dtype = OPERATION_OUTPUT_DTYPE[op_name]
+        # Re-compute from all operations to handle parameter-dependent dtypes like cast
+        _, self._output_dtype = self._compute_output_domain_dtype(
+            self._ops,
+            initial_domain=self._current_domain,
+            initial_dtype=self._output_dtype,
+        )
+
+    def _update_shape_hints(self, op_name: str, params: dict[str, ParamValue]) -> None:
+        """
+        Update shape hints based on the operation being added.
+
+        Args:
+            op_name: Name of the operation.
+            params: Parameters of the operation.
+        """
+        if op_name == "resize":
+            h = params.get("height")
+            w = params.get("width")
+            if h and not h.is_expr:
+                self._shape_hints.height = h
+            if w and not w.is_expr:
+                self._shape_hints.width = w
+        elif op_name == "grayscale":
+            self._shape_hints.channels = ParamValue(is_expr=False, value=1)
+        elif op_name == "pad":
+            # If we have current hints and literal padding, we can update
+            if (
+                self._shape_hints.height
+                and not self._shape_hints.height.is_expr
+                and self._shape_hints.width
+                and not self._shape_hints.width.is_expr
+            ):
+                top = params.get("top")
+                bottom = params.get("bottom")
+                left = params.get("left")
+                right = params.get("right")
+
+                if (
+                    top
+                    and not top.is_expr
+                    and bottom
+                    and not bottom.is_expr
+                    and left
+                    and not left.is_expr
+                    and right
+                    and not right.is_expr
+                ):
+                    self._shape_hints.height = ParamValue(
+                        is_expr=False,
+                        value=self._shape_hints.height.value + top.value + bottom.value,
+                    )
+                    self._shape_hints.width = ParamValue(
+                        is_expr=False,
+                        value=self._shape_hints.width.value + left.value + right.value,
+                    )
+        elif op_name == "pad_to_size" or op_name == "letterbox":
+            h = params.get("height")
+            w = params.get("width")
+            if h and not h.is_expr:
+                self._shape_hints.height = h
+            if w and not w.is_expr:
+                self._shape_hints.width = w
+        elif op_name == "crop":
+            h = params.get("height")
+            w = params.get("width")
+            if h and not h.is_expr:
+                self._shape_hints.height = h
+            if w and not w.is_expr:
+                self._shape_hints.width = w
+        elif op_name == "reshape":
+            # shape param is a ParamValue(is_expr=False, value=[dict, dict, ...])
+            shape_val = params.get("shape")
+            if shape_val and not shape_val.is_expr:
+                shape_list = shape_val.value
+                if len(shape_list) >= 2:
+                    h_dict = shape_list[0]
+                    w_dict = shape_list[1]
+                    if h_dict["type"] == "literal":
+                        self._shape_hints.height = ParamValue(
+                            is_expr=False, value=h_dict["value"]
+                        )
+                    if w_dict["type"] == "literal":
+                        self._shape_hints.width = ParamValue(
+                            is_expr=False, value=w_dict["value"]
+                        )
+                    if len(shape_list) >= 3:
+                        c_dict = shape_list[2]
+                        if c_dict["type"] == "literal":
+                            self._shape_hints.channels = ParamValue(
+                                is_expr=False, value=c_dict["value"]
+                            )
+        elif op_name == "rotate":
+            angle = params.get("angle")
+            expand = params.get("expand")
+            if (
+                angle
+                and not angle.is_expr
+                and expand
+                and not expand.is_expr
+                and not expand.value
+            ):
+                # Non-expanding rotation
+                if angle.value in (90, 270, -90, -270):
+                    # Swap height and width
+                    h = self._shape_hints.height
+                    w = self._shape_hints.width
+                    self._shape_hints.height = w
+                    self._shape_hints.width = h
 
     # --- Source (required, starts the chain) ---
 
@@ -516,6 +628,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_shape_hints("reshape", new._ops[-1].params)
         return new
 
     def flip(self, axes: list[int]) -> "Pipeline":
@@ -583,6 +696,7 @@ class Pipeline:
             params["width"] = new._track_expr(width)
 
         new._ops.append(OpSpec(op="crop", params=params))
+        new._update_shape_hints("crop", new._ops[-1].params)
         return new
 
     # --- Compute Operations ---
@@ -614,6 +728,7 @@ class Pipeline:
                 params={"dtype": ParamValue(is_expr=False, value=dtype_enum.value)},
             )
         )
+        new._update_output_dtype("cast")
         return new
 
     def scale(
@@ -808,6 +923,7 @@ class Pipeline:
             )
         )
         new._update_output_dtype("resize")
+        new._update_shape_hints("resize", new._ops[-1].params)
         return new
 
     def resize_scale(
@@ -1145,6 +1261,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_shape_hints("pad", new._ops[-1].params)
         return new
 
     def pad_to_size(
@@ -1205,6 +1322,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_shape_hints("pad_to_size", new._ops[-1].params)
         return new
 
     def letterbox(
@@ -1250,6 +1368,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_shape_hints("letterbox", new._ops[-1].params)
         return new
 
     def grayscale(self) -> "Pipeline":
@@ -1262,6 +1381,7 @@ class Pipeline:
         new = self._clone()
         new._ops.append(OpSpec(op="grayscale", params={}))
         new._update_output_dtype("grayscale")
+        new._update_shape_hints("grayscale", {})
         return new
 
     def threshold(self, value: IntOrExpr) -> "Pipeline":
@@ -1346,6 +1466,7 @@ class Pipeline:
         }
         new._ops.append(OpSpec(op="rotate", params=params))
         new._update_output_dtype("rotate")
+        new._update_shape_hints("rotate", new._ops[-1].params)
         return new
 
     def perceptual_hash(

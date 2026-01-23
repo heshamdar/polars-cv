@@ -56,6 +56,23 @@ class GraphNode:
         """Get the expected output dtype of this node's pipeline."""
         return self.pipeline.output_dtype()
 
+    @property
+    def expected_shape(self) -> list[int] | None:
+        """Get the expected output shape of this node's pipeline if deterministic."""
+        hints = self.pipeline._shape_hints
+        if (
+            hints.height
+            and not hints.height.is_expr
+            and hints.width
+            and not hints.width.is_expr
+        ):
+            # Default to 3 channels if not specified for image sources
+            channels = 3
+            if hints.channels and not hints.channels.is_expr:
+                channels = hints.channels.value
+            return [hints.height.value, hints.width.value, channels]
+        return None
+
 
 @dataclass
 class GraphOutput:
@@ -556,6 +573,7 @@ class PipelineGraph:
                     # Add domain and dtype for static type inference
                     "expected_domain": node.domain if node else "buffer",
                     "expected_dtype": node.output_dtype if node else "u8",
+                    "expected_shape": node.expected_shape if node else None,
                 }
         else:
             # Single output mode - use "_output" as the key
@@ -570,6 +588,7 @@ class PipelineGraph:
                 # Add domain and dtype for static type inference
                 "expected_domain": node.domain if node else "buffer",
                 "expected_dtype": node.output_dtype if node else "u8",
+                "expected_shape": node.expected_shape if node else None,
             }
 
         graph_spec = {

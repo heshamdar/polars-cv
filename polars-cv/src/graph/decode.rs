@@ -555,11 +555,43 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
     match (domain, format) {
         ("buffer", "numpy" | "torch") => crate::output::numpy_output_dtype(),
         ("buffer", "png" | "jpeg" | "webp" | "blob") => DataType::Binary,
-        ("buffer", "list") => DataType::List(Box::new(dtype_str_to_polars(&spec.expected_dtype))),
-        ("buffer", "array") => DataType::List(Box::new(dtype_str_to_polars(&spec.expected_dtype))),
+        ("buffer", "list") => {
+            let inner = dtype_str_to_polars(&spec.expected_dtype);
+            if let Some(ref shape) = spec.expected_shape {
+                let mut dtype = inner;
+                for _ in 0..shape.len() {
+                    dtype = DataType::List(Box::new(dtype));
+                }
+                dtype
+            } else {
+                DataType::List(Box::new(inner))
+            }
+        }
+        ("buffer", "array") => {
+            let inner = dtype_str_to_polars(&spec.expected_dtype);
+            let shape = spec.sink.shape.as_ref().or(spec.expected_shape.as_ref());
+            if let Some(shape) = shape {
+                let mut dtype = inner;
+                for &dim in shape.iter().rev() {
+                    dtype = DataType::Array(Box::new(dtype), dim);
+                }
+                dtype
+            } else {
+                DataType::List(Box::new(inner))
+            }
+        }
         ("scalar", "native") => DataType::Float64,
         ("vector", "native" | "list") => {
-            DataType::List(Box::new(dtype_str_to_polars(&spec.expected_dtype)))
+            let inner = dtype_str_to_polars(&spec.expected_dtype);
+            if let Some(ref shape) = spec.expected_shape {
+                let mut dtype = inner;
+                for _ in 0..shape.len() {
+                    dtype = DataType::List(Box::new(dtype));
+                }
+                dtype
+            } else {
+                DataType::List(Box::new(inner))
+            }
         }
         ("contour", "native") => {
             let point_dtype = DataType::Struct(vec![

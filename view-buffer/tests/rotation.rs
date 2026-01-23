@@ -33,16 +33,16 @@ fn make_rgb_image(h: usize, w: usize) -> ViewBuffer {
 fn test_rotate90_zero_copy() {
     let buf = make_test_image(4, 6);
     let original_id = buf.storage_id();
-    
+
     // Rotate90 should be zero-copy
     let rotated = ViewExpr::new_source(buf)
         .apply_op(view_buffer::ViewDto::View(ViewOp::Rotate90))
         .plan()
         .execute();
-    
+
     // Check shape: [4, 6] -> [6, 4]
     assert_eq!(rotated.shape(), &[6, 4]);
-    
+
     // Verify zero-copy (should share storage)
     // Note: Rotate90 uses transpose + flip, which may create new views
     // but the underlying data should be shared
@@ -56,48 +56,56 @@ fn test_rotate90_zero_copy() {
 fn test_rotate180_zero_copy() {
     let buf = make_test_image(4, 6);
     let original_id = buf.storage_id();
-    
+
     // Rotate180 should be zero-copy
     let rotated = ViewExpr::new_source(buf)
         .apply_op(view_buffer::ViewDto::View(ViewOp::Rotate180))
         .plan()
         .execute();
-    
+
     // Check shape: [4, 6] -> [4, 6] (same)
     assert_eq!(rotated.shape(), &[4, 6]);
-    
+
     // Verify zero-copy
-    assert_eq!(original_id, rotated.storage_id(), "Rotate180 should be zero-copy");
+    assert_eq!(
+        original_id,
+        rotated.storage_id(),
+        "Rotate180 should be zero-copy"
+    );
 }
 
 #[test]
 fn test_rotate270_zero_copy() {
     let buf = make_test_image(4, 6);
     let original_id = buf.storage_id();
-    
+
     // Rotate270 should be zero-copy
     let rotated = ViewExpr::new_source(buf)
         .apply_op(view_buffer::ViewDto::View(ViewOp::Rotate270))
         .plan()
         .execute();
-    
+
     // Check shape: [4, 6] -> [6, 4]
     assert_eq!(rotated.shape(), &[6, 4]);
-    
+
     // Verify zero-copy
-    assert_eq!(original_id, rotated.storage_id(), "Rotate270 should be zero-copy");
+    assert_eq!(
+        original_id,
+        rotated.storage_id(),
+        "Rotate270 should be zero-copy"
+    );
 }
 
 #[test]
 fn test_rotate90_rgb() {
     let buf = make_rgb_image(3, 5);
-    
+
     // Rotate90 on RGB image
     let rotated = ViewExpr::new_source(buf)
         .apply_op(view_buffer::ViewDto::View(ViewOp::Rotate90))
         .plan()
         .execute();
-    
+
     // Check shape: [3, 5, 3] -> [5, 3, 3]
     assert_eq!(rotated.shape(), &[5, 3, 3]);
 }
@@ -107,23 +115,26 @@ fn test_rotate_double_180() {
     // Rotating 180 twice should return to original
     let buf = make_test_image(4, 6);
     let original_data = buf.to_contiguous().as_slice::<u8>().to_vec();
-    
+
     let rotated = ViewExpr::new_source(buf)
         .apply_op(view_buffer::ViewDto::View(ViewOp::Rotate180))
         .apply_op(view_buffer::ViewDto::View(ViewOp::Rotate180))
         .plan()
         .execute();
-    
+
     let rotated_data = rotated.to_contiguous().as_slice::<u8>().to_vec();
-    assert_eq!(original_data, rotated_data, "Double 180 rotation should return to original");
+    assert_eq!(
+        original_data, rotated_data,
+        "Double 180 rotation should return to original"
+    );
 }
 
 #[test]
 fn test_rotate_arbitrary_angle() {
     use view_buffer::ops::{ImageOp, ImageOpKind};
-    
+
     let buf = make_test_image(10, 10);
-    
+
     // Test arbitrary angle rotation (45 degrees)
     let rotated = ViewExpr::new_source(buf)
         .apply_op(view_buffer::ViewDto::Image(ImageOp {
@@ -134,7 +145,7 @@ fn test_rotate_arbitrary_angle() {
         }))
         .plan()
         .execute();
-    
+
     // With expand=true, output should be larger
     assert!(rotated.shape()[0] >= 10);
     assert!(rotated.shape()[1] >= 10);
@@ -143,10 +154,10 @@ fn test_rotate_arbitrary_angle() {
 #[test]
 fn test_rotate_arbitrary_no_expand() {
     use view_buffer::ops::{ImageOp, ImageOpKind};
-    
+
     let buf = make_test_image(10, 10);
     let original_shape = buf.shape().to_vec();
-    
+
     // Test arbitrary angle rotation without expansion
     let rotated = ViewExpr::new_source(buf)
         .apply_op(view_buffer::ViewDto::Image(ImageOp {
@@ -157,7 +168,7 @@ fn test_rotate_arbitrary_no_expand() {
         }))
         .plan()
         .execute();
-    
+
     // Without expand, output should have same dimensions
     assert_eq!(rotated.shape(), original_shape.as_slice());
 }

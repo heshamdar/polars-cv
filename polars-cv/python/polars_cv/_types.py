@@ -236,6 +236,8 @@ OPERATION_OUTPUT_DTYPE: dict[str, str] = {
     # ArgMax/ArgMin always return i64 (indices)
     "reduce_argmax": "i64",
     "reduce_argmin": "i64",
+    # Cast - Configurable
+    "cast": "u8",  # Default, overridden by params
     # Shape extraction returns f64 values (vector domain uses f64)
     "extract_shape": "f64",
     # Rasterize - produces u8 buffer
