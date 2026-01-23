@@ -83,7 +83,7 @@ impl Op for ImageOp {
                 let angle_rad = angle.to_radians();
                 let cos_a = angle_rad.cos().abs();
                 let sin_a = angle_rad.sin().abs();
-                
+
                 if *expand {
                     // Calculate bounding box dimensions
                     let new_h = (h * cos_a + w * sin_a).ceil() as usize;
@@ -175,7 +175,7 @@ impl Op for ImageOp {
 
             // Resize uses global resampling - cannot be tiled
             ImageOpKind::Resize { .. } => TilePolicy::Global,
-            
+
             // Rotation uses global resampling - cannot be tiled
             ImageOpKind::Rotate { .. } => TilePolicy::Global,
         }

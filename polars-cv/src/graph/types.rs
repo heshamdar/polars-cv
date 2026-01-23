@@ -35,6 +35,9 @@ pub struct OutputSpec {
     /// Expected output dtype for list/array sinks.
     #[serde(default = "default_dtype")]
     pub expected_dtype: String,
+    /// Expected output shape for list/array sinks.
+    #[serde(default)]
+    pub expected_shape: Option<Vec<usize>>,
 }
 /// Result type for individual row execution.
 ///
