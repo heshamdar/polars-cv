@@ -520,6 +520,13 @@ class ShapeHints:
             x is not None for x in [self.height, self.width, self.channels, self.batch]
         )
 
+    def has_all_dims(self) -> bool:
+        """Check if all image dimensions (H, W, C) are provided."""
+        return all(
+            x is not None and not x.is_expr
+            for x in [self.height, self.width, self.channels]
+        )
+
 
 @dataclass
 class OpSpec:

@@ -180,9 +180,32 @@ class LazyPipelineExpr:
 
         if isinstance(format, dict):
             # Multi-output mode
+            # Validate array sinks in multi-output
+            from polars_cv._types import SinkFormat
+            for alias, fmt_str in format.items():
+                if fmt_str == "array":
+                    # For multi-output, we don't have a simple way to pass per-alias shape yet
+                    # but we can check if the node has deterministic shape
+                    node = self._find_node_by_alias(alias, all_nodes)
+                    if node and not node._pipeline._shape_hints.has_all_dims():
+                        msg = f"Multi-output 'array' sink for alias '{alias}' requires deterministic shape. Use .resize() or .assert_shape() on that branch."
+                        raise ValueError(msg)
             graph.set_multi_output(format, **kwargs)
         else:
             # Single output mode
+            # Validate array sink
+            from polars_cv._types import SinkFormat
+            if format == "array" and "shape" not in kwargs:
+                if not self._pipeline._shape_hints.has_all_dims():
+                    msg = "shape is required for 'array' sink format when output shape is not deterministic. Provide 'shape' in .sink() or use .resize() earlier."
+                    raise ValueError(msg)
+            
+            # Validate list sink ndim
+            if format == "list":
+                if self._pipeline._expected_ndim is None:
+                    msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
+                    raise ValueError(msg)
+
             graph.set_output(self._node_id, format, **kwargs)
 
         if return_expr:
@@ -768,6 +791,13 @@ class LazyPipelineExpr:
             node_id=_generate_node_id(),
             upstream=[self, other],
         )
+
+    def _find_node_by_alias(self, alias: str, nodes: list["LazyPipelineExpr"]) -> "LazyPipelineExpr | None":
+        """Find a node in the graph by its alias."""
+        for node in nodes:
+            if node._alias == alias:
+                return node
+        return None
 
     def _collect_dependency_graph(self) -> list["LazyPipelineExpr"]:
         """

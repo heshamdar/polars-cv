@@ -38,6 +38,9 @@ pub struct OutputSpec {
     /// Expected output shape for list/array sinks.
     #[serde(default)]
     pub expected_shape: Option<Vec<usize>>,
+    /// Expected number of dimensions for list sinks.
+    #[serde(default)]
+    pub expected_ndim: Option<usize>,
 }
 /// Result type for individual row execution.
 ///

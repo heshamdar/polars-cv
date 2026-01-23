@@ -117,15 +117,18 @@ class Pipeline:
         self._current_domain: str = self.DOMAIN_BUFFER
         # Output dtype tracking - starts as "u8" for image sources
         self._output_dtype: str = "u8"
+        # Number of dimensions tracking
+        self._expected_ndim: int | None = None
 
     @staticmethod
-    def _compute_output_domain_dtype(
+    def _compute_output_domain_dtype_ndim(
         ops: list["OpSpec"],
         initial_domain: str = "buffer",
         initial_dtype: str = "u8",
-    ) -> tuple[str, str]:
+        initial_ndim: int | None = None,
+    ) -> tuple[str, str, int | None]:
         """
-        Compute the output domain and dtype after applying a sequence of operations.
+        Compute the output domain, dtype, and ndim after applying operations.
 
         This is used for static type inference to ensure planning-time types
         match runtime types.
@@ -134,12 +137,14 @@ class Pipeline:
             ops: Sequence of operations to analyze.
             initial_domain: Starting domain (default: buffer for image sources).
             initial_dtype: Starting dtype (default: u8 for image sources).
+            initial_ndim: Starting number of dimensions.
 
         Returns:
-            Tuple of (output_domain, output_dtype) after all operations.
+            Tuple of (output_domain, output_dtype, output_ndim) after all operations.
         """
         domain = initial_domain
         dtype = initial_dtype
+        ndim = initial_ndim
 
         for op_spec in ops:
             op_name = op_spec.op
@@ -168,10 +173,16 @@ class Pipeline:
                     if mode == 3:  # QUANTIZED enum value
                         domain = Pipeline.DOMAIN_BUFFER
                         dtype = "u32"
+                        # ndim remains same
                     elif mode == 0:  # COUNTS
                         dtype = "u64"
+                        ndim = 1
                     else:  # NORMALIZED or EDGES
                         dtype = "f64"
+                        ndim = 1
+                else:
+                    # Default mode is counts -> ndim=1
+                    ndim = 1
 
             # Handle axis-based reductions that keep buffer domain
             if op_name in ("reduce_max", "reduce_min", "reduce_mean", "reduce_std"):
@@ -181,10 +192,33 @@ class Pipeline:
                     and not axis_param.is_expr
                     and axis_param.value is not None
                 ):
-                    # Axis reduction keeps buffer domain
+                    # Axis reduction keeps buffer domain but reduces ndim
                     domain = Pipeline.DOMAIN_BUFFER
+                    if ndim is not None:
+                        ndim = max(0, ndim - 1)
+                else:
+                    # Global reduction -> scalar
+                    domain = Pipeline.DOMAIN_SCALAR
+                    ndim = 0
 
-        return domain, dtype
+            # Handle global reductions
+            if op_name in ("reduce_sum", "reduce_popcount"):
+                domain = Pipeline.DOMAIN_SCALAR
+                ndim = 0
+
+            # Handle other domain changes
+            if domain == Pipeline.DOMAIN_SCALAR:
+                ndim = 0
+            elif domain == Pipeline.DOMAIN_VECTOR:
+                ndim = 1
+            elif op_name == "perceptual_hash":
+                ndim = 1
+            elif op_name == "extract_shape":
+                ndim = 1
+            elif op_name == "rasterize":
+                ndim = 3
+
+        return domain, dtype, ndim
 
     def _track_expr(self, value: IntOrExpr | FloatOrExpr) -> ParamValue:
         """
@@ -214,6 +248,7 @@ class Pipeline:
         new._expr_refs = self._expr_refs.copy()
         new._current_domain = self._current_domain
         new._output_dtype = self._output_dtype
+        new._expected_ndim = self._expected_ndim
         return new
 
     def _source_equal(self, other: "Pipeline") -> bool:
@@ -280,10 +315,11 @@ class Pipeline:
             op_name: Name of the operation being added.
         """
         # Re-compute from all operations to handle parameter-dependent dtypes like cast
-        _, self._output_dtype = self._compute_output_domain_dtype(
+        _, self._output_dtype, self._expected_ndim = self._compute_output_domain_dtype_ndim(
             self._ops,
             initial_domain=self._current_domain,
             initial_dtype=self._output_dtype,
+            initial_ndim=self._expected_ndim,
         )
 
     def _update_shape_hints(self, op_name: str, params: dict[str, ParamValue]) -> None:
@@ -465,6 +501,7 @@ class Pipeline:
 
         # Handle contour source format
         if fmt == SourceFormat.CONTOUR:
+            new._expected_ndim = 3  # Rasterized mask is 3D (H, W, 1)
             has_explicit_dims = width is not None or height is not None
             has_shape = shape is not None
 
@@ -543,6 +580,16 @@ class Pipeline:
                 cloud_options=cloud_opts,
                 require_contiguous=require_contiguous,
             )
+            # Default ndim for image/buffer sources
+            if fmt in (
+                SourceFormat.IMAGE_BYTES,
+                SourceFormat.FILE_PATH,
+                SourceFormat.BLOB,
+                SourceFormat.RAW,
+                SourceFormat.LIST,
+                SourceFormat.ARRAY,
+            ):
+                new._expected_ndim = 3
 
         return new
 
@@ -2151,8 +2198,13 @@ class Pipeline:
             raise ValueError(msg) from e
 
         if fmt == SinkFormat.ARRAY and shape is None:
-            msg = "shape is required for 'array' sink format"
-            raise ValueError(msg)
+            # Check if shape is deterministic in the pipeline
+            if not new._shape_hints.has_all_dims():
+                msg = (
+                    "shape is required for 'array' sink format when output shape is not deterministic. "
+                    "Provide 'shape' in .sink() or use .resize()/.assert_shape() earlier."
+                )
+                raise ValueError(msg)
 
         new._sink = SinkSpec(format=fmt, quality=quality, shape=shape)
 
@@ -2270,9 +2322,13 @@ class Pipeline:
         # Compute the correct domain and dtype for this subset of operations
         # We need to compute from the beginning up to end_op to get correct state
         ops_to_compute = self._ops[0:end_op]
-        domain, dtype = Pipeline._compute_output_domain_dtype(ops_to_compute)
+        domain, dtype, ndim = Pipeline._compute_output_domain_dtype_ndim(
+            ops_to_compute,
+            initial_ndim=self._expected_ndim,
+        )
         sub._current_domain = domain
         sub._output_dtype = dtype
+        sub._expected_ndim = ndim
 
         return sub
 
