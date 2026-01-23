@@ -20,15 +20,13 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: manylinux2014
-          # Linux aarch64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            manylinux: manylinux2014
-            container: zigbuild
           # macOS arm64
           - os: macos-latest
             target: aarch64-apple-darwin
-            manylinux: auto
+          - os: ubuntu-24.04-arm
+            architecture: aarch64
+            target: aarch64-unknown-linux-gnu
+            manylinux: manylinux2014
 
     steps:
       - uses: actions/checkout@v4
