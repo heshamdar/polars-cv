@@ -65,4 +65,4 @@ result = df.with_columns(
 - **Analysis**: `histogram`, `perceptual_hash`, `extract_shape`.
 - **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`.
 
-For full details, see the [Documentation]([https://polars-cv.readthedocs.io](https://heshamdar.github.io/polars-cv/)).
+For full details, see the [Documentation](https://heshamdar.github.io/polars-cv/)
