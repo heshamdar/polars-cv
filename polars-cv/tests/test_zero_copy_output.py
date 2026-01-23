@@ -79,9 +79,9 @@ class TestNumpyOutputSchema:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_dtype = result["output"].dtype
-        assert isinstance(
-            output_dtype, pl.Struct
-        ), f"Expected Struct dtype for numpy sink, got {output_dtype}"
+        assert isinstance(output_dtype, pl.Struct), (
+            f"Expected Struct dtype for numpy sink, got {output_dtype}"
+        )
 
     def test_numpy_sink_struct_fields(self, simple_rgb_bytes: bytes) -> None:
         """Numpy sink struct should have data, dtype, shape fields."""
@@ -106,9 +106,9 @@ class TestNumpyOutputSchema:
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_dtype = result["output"].dtype
-        assert isinstance(
-            output_dtype, pl.Struct
-        ), f"Expected Struct dtype for torch sink, got {output_dtype}"
+        assert isinstance(output_dtype, pl.Struct), (
+            f"Expected Struct dtype for torch sink, got {output_dtype}"
+        )
 
 
 # ============================================================

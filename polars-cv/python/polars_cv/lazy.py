@@ -183,7 +183,6 @@ class LazyPipelineExpr:
             # Validate array sinks in multi-output
 
             for alias, fmt_str in format.items():
-
                 # Validate list sink ndim
                 if fmt_str == "list":
                     node = self._find_node_by_alias(alias, all_nodes)

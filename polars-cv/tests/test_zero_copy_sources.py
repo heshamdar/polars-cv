@@ -314,7 +314,9 @@ class TestPerformanceBasics:
 
         df = pl.DataFrame({"img": [buf.getvalue()]})
 
-        pipeline = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipeline = (
+            Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        )
 
         result = df.with_columns(out=pl.col("img").cv.pipeline(pipeline))
 
@@ -382,9 +384,9 @@ class TestFullZeroCopyPipeline:
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .flip(axes=[0])             # View op (vertical flip)
+            .flip(axes=[0])  # View op (vertical flip)
             .crop(top=10, left=10, height=80, width=80)  # View op
-            .grayscale()                # Strided op
+            .grayscale()  # Strided op
             .resize(height=64, width=64)  # Strided op
             .sink("numpy")
         )
@@ -489,12 +491,12 @@ class TestFullZeroCopyPipeline:
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .flip(axes=[0])             # View op (vertical flip)
+            .flip(axes=[0])  # View op (vertical flip)
             .crop(top=8, left=8, height=48, width=48)  # View op, 48x48
-            .flip(axes=[1])             # View op (horizontal flip)
-            .grayscale()                # Strided op, 48x48x1
+            .flip(axes=[1])  # View op (horizontal flip)
+            .grayscale()  # Strided op, 48x48x1
             .resize(height=32, width=32)  # Strided op
-            .threshold(value=100)       # Element-wise op
+            .threshold(value=100)  # Element-wise op
             .sink("numpy")
         )
 
