@@ -314,12 +314,16 @@ class TestResizeScalePolarsCV:
         """Scale factor from column expression."""
         from polars_cv import Pipeline, numpy_from_struct
 
-        df = pl.DataFrame({
-            "img": [encode_png(square_image)],
-            "scale_factor": [0.5],
-        })
+        df = pl.DataFrame(
+            {
+                "img": [encode_png(square_image)],
+                "scale_factor": [0.5],
+            }
+        )
 
-        pipe = Pipeline().source("image_bytes").resize_scale(scale=pl.col("scale_factor"))
+        pipe = (
+            Pipeline().source("image_bytes").resize_scale(scale=pl.col("scale_factor"))
+        )
 
         result = df.select(output=pl.col("img").cv.pipe(pipe).sink("numpy"))
         actual = numpy_from_struct(result.row(0)[0])
@@ -417,10 +421,12 @@ class TestAspectRatioResizePolarsCV:
         """Target height from column expression."""
         from polars_cv import Pipeline, numpy_from_struct
 
-        df = pl.DataFrame({
-            "img": [encode_png(rectangular_image)],
-            "target_h": [50],
-        })
+        df = pl.DataFrame(
+            {
+                "img": [encode_png(rectangular_image)],
+                "target_h": [50],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes").resize_to_height(pl.col("target_h"))
 

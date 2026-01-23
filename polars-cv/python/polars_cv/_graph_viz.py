@@ -9,7 +9,6 @@ from graphviz import Source
 from networkx.drawing.nx_pydot import to_pydot
 
 if TYPE_CHECKING:
-
     from polars_cv._graph import PipelineGraph
 
 
@@ -139,7 +138,7 @@ def style_node(payload: BaseNode) -> Dict[str, Any]:
 
         return {
             "shape": "box",
-            "label": (f"{payload.alias}\n" f"{ops}" f"output_type: {payload.dtype}"),
+            "label": (f"{payload.alias}\n{ops}output_type: {payload.dtype}"),
         }
 
     if payload.kind == NodeKind.OUTPUT:

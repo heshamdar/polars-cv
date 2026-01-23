@@ -315,11 +315,13 @@ class Pipeline:
             op_name: Name of the operation being added.
         """
         # Re-compute from all operations to handle parameter-dependent dtypes like cast
-        _, self._output_dtype, self._expected_ndim = self._compute_output_domain_dtype_ndim(
-            self._ops,
-            initial_domain=self._current_domain,
-            initial_dtype=self._output_dtype,
-            initial_ndim=self._expected_ndim,
+        _, self._output_dtype, self._expected_ndim = (
+            self._compute_output_domain_dtype_ndim(
+                self._ops,
+                initial_domain=self._current_domain,
+                initial_dtype=self._output_dtype,
+                initial_ndim=self._expected_ndim,
+            )
         )
 
     def _update_shape_hints(self, op_name: str, params: dict[str, ParamValue]) -> None:
