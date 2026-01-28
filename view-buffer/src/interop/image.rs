@@ -109,8 +109,21 @@ pub struct ImageAdapter;
 impl ImageAdapter {
     /// Decodes raw image bytes (PNG, JPEG, etc.) into a ViewBuffer [H, W, C].
     pub fn decode(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
-        let img = image::load_from_memory(encoded_bytes)?;
-        Ok(Self::from_dynamic_image(img))
+        // Check if it's a TIFF file by magic bytes
+        if encoded_bytes.len() >= 4
+            && (
+                &encoded_bytes[0..4] == b"II*\x00" ||  // Little-endian TIFF
+            &encoded_bytes[0..4] == b"MM\x00*"
+                // Big-endian TIFF
+            )
+        {
+            // Use our custom TIFF decoder for floating-point support
+            Self::decode_tiff(encoded_bytes)
+        } else {
+            // Use image crate for other formats
+            let img = image::load_from_memory(encoded_bytes)?;
+            Ok(Self::from_dynamic_image(img))
+        }
     }
 
     /// Opens an image from disk and decodes it into a ViewBuffer.
@@ -163,28 +176,40 @@ impl ImageAdapter {
     /// making it suitable for medical imaging and scientific data.
     /// Uses the tiff crate directly for native floating-point support with LZW compression.
     pub fn encode_tiff(buffer: &ViewBuffer) -> Result<Vec<u8>, image::ImageError> {
-        use tiff::encoder::{colortype, Compression, TiffEncoder};
         use std::io::Cursor;
+        use tiff::encoder::{colortype, Compression, TiffEncoder};
 
         // Ensure buffer is contiguous
         let contiguous = buffer.to_contiguous();
         let shape = contiguous.shape();
 
         // Validate shape - support [H, W] or [H, W, 1] for grayscale
-        let (h, w, channels) = if shape.len() == 2 {
-            (shape[0] as u32, shape[1] as u32, 1)
-        } else if shape.len() == 3 && shape[2] == 1 {
-            (shape[0] as u32, shape[1] as u32, 1)
-        } else if shape.len() == 3 && shape[2] == 3 {
-            (shape[0] as u32, shape[1] as u32, 3)
-        } else {
-            return Err(image::ImageError::Parameter(
-                image::error::ParameterError::from_kind(
-                    image::error::ParameterErrorKind::Generic(
-                        "TIFF encoder supports grayscale [H, W] or [H, W, 1] and RGB [H, W, 3] formats".to_string(),
+        let (h, w, channels) = match shape.len() {
+            2 => (shape[0] as u32, shape[1] as u32, 1),
+            3 => {
+                if shape[2] == 1 {
+                    (shape[0] as u32, shape[1] as u32, 1)
+                } else if shape[2] == 3 {
+                    (shape[0] as u32, shape[1] as u32, 3)
+                } else {
+                    return Err(image::ImageError::Parameter(
+                        image::error::ParameterError::from_kind(
+                            image::error::ParameterErrorKind::Generic(
+                                "TIFF encoder supports grayscale [H, W] or [H, W, 1] and RGB [H, W, 3] formats".to_string(),
+                            ),
+                        ),
+                    ));
+                }
+            }
+            _ => {
+                return Err(image::ImageError::Parameter(
+                    image::error::ParameterError::from_kind(
+                        image::error::ParameterErrorKind::Generic(
+                            "TIFF encoder supports grayscale [H, W] or [H, W, 1] and RGB [H, W, 3] formats".to_string(),
+                        ),
                     ),
-                ),
-            ));
+                ));
+            }
         };
 
         // Choose compression based on data type and characteristics
@@ -198,10 +223,9 @@ impl ImageAdapter {
         let mut cursor = Cursor::new(&mut bytes);
         let mut encoder = TiffEncoder::new(&mut cursor)
             .map_err(|e| {
-                image::ImageError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("TIFF encoder creation failed: {}", e),
-                ))
+                image::ImageError::IoError(std::io::Error::other(format!(
+                    "TIFF encoder creation failed: {e}"
+                )))
             })?
             .with_compression(compression);
 
@@ -212,10 +236,9 @@ impl ImageAdapter {
                 encoder
                     .write_image::<colortype::Gray8>(w, h, data)
                     .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("TIFF encoding failed: {}", e),
-                        ))
+                        image::ImageError::IoError(std::io::Error::other(format!(
+                            "TIFF encoding failed: {e}"
+                        )))
                     })?;
             }
             (crate::core::dtype::DType::U8, 3) => {
@@ -223,10 +246,9 @@ impl ImageAdapter {
                 encoder
                     .write_image::<colortype::RGB8>(w, h, data)
                     .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("TIFF encoding failed: {}", e),
-                        ))
+                        image::ImageError::IoError(std::io::Error::other(format!(
+                            "TIFF encoding failed: {e}"
+                        )))
                     })?;
             }
             (crate::core::dtype::DType::U16, 1) => {
@@ -234,10 +256,9 @@ impl ImageAdapter {
                 encoder
                     .write_image::<colortype::Gray16>(w, h, data)
                     .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("TIFF encoding failed: {}", e),
-                        ))
+                        image::ImageError::IoError(std::io::Error::other(format!(
+                            "TIFF encoding failed: {e}"
+                        )))
                     })?;
             }
             (crate::core::dtype::DType::U16, 3) => {
@@ -245,10 +266,9 @@ impl ImageAdapter {
                 encoder
                     .write_image::<colortype::RGB16>(w, h, data)
                     .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("TIFF encoding failed: {}", e),
-                        ))
+                        image::ImageError::IoError(std::io::Error::other(format!(
+                            "TIFF encoding failed: {e}"
+                        )))
                     })?;
             }
             (crate::core::dtype::DType::F32, 1) => {
@@ -256,10 +276,9 @@ impl ImageAdapter {
                 encoder
                     .write_image::<colortype::Gray32Float>(w, h, data)
                     .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("TIFF encoding failed: {}", e),
-                        ))
+                        image::ImageError::IoError(std::io::Error::other(format!(
+                            "TIFF encoding failed: {e}"
+                        )))
                     })?;
             }
             (crate::core::dtype::DType::F64, 1) => {
@@ -267,17 +286,16 @@ impl ImageAdapter {
                 encoder
                     .write_image::<colortype::Gray64Float>(w, h, data)
                     .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("TIFF encoding failed: {}", e),
-                        ))
+                        image::ImageError::IoError(std::io::Error::other(format!(
+                            "TIFF encoding failed: {e}"
+                        )))
                     })?;
             }
             (dtype, channels) => {
                 return Err(image::ImageError::Parameter(
                     image::error::ParameterError::from_kind(
                         image::error::ParameterErrorKind::Generic(
-                            format!("Unsupported combination for TIFF encoding: {:?} with {} channels", dtype, channels),
+                            format!("Unsupported combination for TIFF encoding: {dtype:?} with {channels} channels"),
                         ),
                     ),
                 ));
@@ -285,6 +303,142 @@ impl ImageAdapter {
         }
 
         Ok(bytes)
+    }
+
+    /// Decodes TIFF bytes with native support for floating-point data.
+    ///
+    /// This method supports both integer and floating-point TIFF files,
+    /// making it suitable for reading medical imaging and scientific data.
+    /// Uses the tiff crate directly for native floating-point support.
+    pub fn decode_tiff(encoded_bytes: &[u8]) -> Result<ViewBuffer, image::ImageError> {
+        use std::io::Cursor;
+        use tiff::decoder::{Decoder, DecodingResult};
+
+        let mut cursor = Cursor::new(encoded_bytes);
+        let mut decoder = Decoder::new(&mut cursor).map_err(|e| {
+            image::ImageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("TIFF decoder creation failed: {e}"),
+            ))
+        })?;
+
+        // Get image dimensions and format info
+        let (width, height) = decoder.dimensions().map_err(|e| {
+            image::ImageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to get TIFF dimensions: {e}"),
+            ))
+        })?;
+
+        let colortype = decoder.colortype().map_err(|e| {
+            image::ImageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to get TIFF color type: {e}"),
+            ))
+        })?;
+
+        // Decode the image data
+        let decoding_result = decoder.read_image().map_err(|e| {
+            image::ImageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("TIFF decoding failed: {e}"),
+            ))
+        })?;
+
+        // Convert the decoded data to ViewBuffer based on the data type
+        match decoding_result {
+            DecodingResult::U8(data) => {
+                let channels = match colortype {
+                    tiff::ColorType::Gray(_) => 1,
+                    tiff::ColorType::RGB(_) => 3,
+                    tiff::ColorType::Palette(_) => 3, // Palette gets converted to RGB
+                    tiff::ColorType::GrayA(_) => 2,
+                    tiff::ColorType::RGBA(_) => 4,
+                    _ => {
+                        return Err(image::ImageError::IoError(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Unsupported TIFF color type: {colortype:?}"),
+                        )));
+                    }
+                };
+
+                let shape = if channels == 1 {
+                    vec![height as usize, width as usize]
+                } else {
+                    vec![height as usize, width as usize, channels]
+                };
+
+                Ok(ViewBuffer::from_vec(data).reshape(shape))
+            }
+            DecodingResult::U16(data) => {
+                let channels = match colortype {
+                    tiff::ColorType::Gray(_) => 1,
+                    tiff::ColorType::RGB(_) => 3,
+                    tiff::ColorType::GrayA(_) => 2,
+                    tiff::ColorType::RGBA(_) => 4,
+                    _ => {
+                        return Err(image::ImageError::IoError(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Unsupported TIFF color type: {colortype:?}"),
+                        )));
+                    }
+                };
+
+                let shape = if channels == 1 {
+                    vec![height as usize, width as usize]
+                } else {
+                    vec![height as usize, width as usize, channels]
+                };
+
+                Ok(ViewBuffer::from_vec(data).reshape(shape))
+            }
+            DecodingResult::F32(data) => {
+                // Floating-point TIFF - this is what we need for medical imaging
+                let channels = match colortype {
+                    tiff::ColorType::Gray(_) => 1,
+                    tiff::ColorType::RGB(_) => 3,
+                    _ => {
+                        return Err(image::ImageError::IoError(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Unsupported TIFF color type: {colortype:?}"),
+                        )));
+                    }
+                };
+
+                let shape = if channels == 1 {
+                    vec![height as usize, width as usize]
+                } else {
+                    vec![height as usize, width as usize, channels]
+                };
+
+                Ok(ViewBuffer::from_vec(data).reshape(shape))
+            }
+            DecodingResult::F64(data) => {
+                // Double-precision floating-point TIFF
+                let channels = match colortype {
+                    tiff::ColorType::Gray(_) => 1,
+                    tiff::ColorType::RGB(_) => 3,
+                    _ => {
+                        return Err(image::ImageError::IoError(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Unsupported TIFF color type: {colortype:?}"),
+                        )));
+                    }
+                };
+
+                let shape = if channels == 1 {
+                    vec![height as usize, width as usize]
+                } else {
+                    vec![height as usize, width as usize, channels]
+                };
+
+                Ok(ViewBuffer::from_vec(data).reshape(shape))
+            }
+            _ => Err(image::ImageError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Unsupported TIFF data type",
+            ))),
+        }
     }
 
     /// Saves a ViewBuffer to a file.
@@ -412,5 +566,56 @@ mod tests {
 
         // Verify TIFF magic bytes
         assert_eq!(&encoded[0..4], b"II*\0"); // Little-endian TIFF header
+    }
+
+    #[test]
+    fn test_tiff_f32_round_trip() {
+        let original_data: Vec<f32> = vec![1.0, 0.5, 0.25, 0.125];
+        let original_buffer = ViewBuffer::from_vec(original_data.clone()).reshape(vec![2, 2]);
+
+        // Encode to TIFF
+        let encoded = ImageAdapter::encode_tiff(&original_buffer).unwrap();
+        assert!(!encoded.is_empty());
+        assert_eq!(&encoded[0..4], b"II*\0");
+
+        // Decode back from TIFF
+        let decoded_buffer = ImageAdapter::decode_tiff(&encoded).unwrap();
+
+        // Verify shape is preserved
+        assert_eq!(decoded_buffer.shape(), &[2, 2]);
+        assert_eq!(decoded_buffer.dtype(), crate::core::dtype::DType::F32);
+
+        // Verify data is preserved (floating-point precision)
+        let decoded_data = decoded_buffer.as_slice::<f32>();
+        assert_eq!(decoded_data.len(), original_data.len());
+
+        for (original, decoded) in original_data.iter().zip(decoded_data.iter()) {
+            assert!(
+                (original - decoded).abs() < f32::EPSILON,
+                "Original: {original}, Decoded: {decoded}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tiff_u8_round_trip() {
+        let original_data: Vec<u8> = vec![255, 128, 64, 32];
+        let original_buffer = ViewBuffer::from_vec(original_data.clone()).reshape(vec![2, 2]);
+
+        // Encode to TIFF
+        let encoded = ImageAdapter::encode_tiff(&original_buffer).unwrap();
+        assert!(!encoded.is_empty());
+        assert_eq!(&encoded[0..4], b"II*\0");
+
+        // Decode back from TIFF
+        let decoded_buffer = ImageAdapter::decode_tiff(&encoded).unwrap();
+
+        // Verify shape and data type are preserved
+        assert_eq!(decoded_buffer.shape(), &[2, 2]);
+        assert_eq!(decoded_buffer.dtype(), crate::core::dtype::DType::U8);
+
+        // Verify data is preserved exactly
+        let decoded_data = decoded_buffer.as_slice::<u8>();
+        assert_eq!(decoded_data, &original_data);
     }
 }

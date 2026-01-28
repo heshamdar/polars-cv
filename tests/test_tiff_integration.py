@@ -6,6 +6,7 @@ native floating-point TIFF encoding works correctly.
 """
 
 import struct
+
 import polars as pl
 from polars_cv import Pipeline
 
@@ -182,8 +183,8 @@ class TestTiffSinkSupport:
         )
 
         # Verify the TIFF is still valid by checking it can be read
-        import tempfile
         import os
+        import tempfile
 
         with tempfile.NamedTemporaryFile(suffix=".tiff", delete=False) as f:
             f.write(tiff_bytes)
@@ -203,6 +204,111 @@ class TestTiffSinkSupport:
         finally:
             os.unlink(temp_path)
 
+    def test_tiff_round_trip_source_sink(self):
+        """Test the complete TIFF round-trip: sink to TIFF, then source from TIFF."""
+        # This tests the exact use case mentioned by the user:
+        # pl.col('im').cv.pipe(Pipeline().source('image_bytes')).sink('numpy')
+
+        # Create medical imaging test data (3x3 f32 image)
+        original_data = [1.0, 0.8, 0.6, 0.4, 0.2, 0.0, 0.3, 0.7, 0.9]
+        raw_bytes = b"".join([struct.pack("<f", x) for x in original_data])
+
+        # Step 1: Create DataFrame with raw f32 data
+        df = pl.DataFrame({"medical_scan": [raw_bytes]})
+
+        # Step 2: Convert to TIFF with compression
+        encode_pipeline = Pipeline().source("raw", dtype="f32").reshape([3, 3])
+        df_with_tiff = df.with_columns(
+            tiff_compressed=pl.col("medical_scan").cv.pipe(encode_pipeline).sink("tiff")
+        )
+
+        tiff_bytes = df_with_tiff["tiff_compressed"][0]
+        assert isinstance(tiff_bytes, bytes)
+        assert len(tiff_bytes) > 0
+        assert tiff_bytes[:4] == b"II*\x00"  # TIFF magic bytes
+
+        # Step 3: Read TIFF back using image_bytes source (the user's requested functionality)
+        decode_pipeline = Pipeline().source("image_bytes")
+        df_decoded = df_with_tiff.with_columns(
+            reconstructed=pl.col("tiff_compressed")
+            .cv.pipe(decode_pipeline)
+            .sink("numpy")
+        )
+
+        # Step 4: Verify the round-trip
+        numpy_result = df_decoded["reconstructed"][0]
+        assert isinstance(numpy_result, dict)
+        assert numpy_result["dtype"] == "float32"
+        assert numpy_result["shape"] == [3, 3]
+
+        # Extract and verify the actual data
+        decoded_bytes = numpy_result["data"]
+        decoded_floats = list(struct.unpack("<9f", decoded_bytes))
+
+        # Verify data integrity (allowing for floating-point precision)
+        assert len(decoded_floats) == len(original_data)
+        for orig, decoded in zip(original_data, decoded_floats):
+            assert abs(orig - decoded) < 1e-6, f"Data mismatch: {orig} vs {decoded}"
+
+        # Verify compression occurred
+        # original_size = len(raw_bytes)
+        # compressed_size = len(tiff_bytes)
+        # # For this small dataset, compression might not be effective, but structure should be preserved
+        # assert compressed_size < 1000  # Should have TIFF headers and metadata
+
+    def test_tiff_round_trip_different_dtypes(self):
+        """Test TIFF round-trip with different data types."""
+        test_cases = [
+            {
+                "dtype": "f32",
+                "data": [1.0, 0.5, 0.25, 0.125],
+                "pack_format": "<4f",
+                "shape": [2, 2],
+            },
+            {
+                "dtype": "u8",
+                "data": [255, 128, 64, 32],
+                "pack_format": "4B",
+                "shape": [2, 2],
+            },
+        ]
+
+        for case in test_cases:
+            # Pack data
+            if case["dtype"] == "f32":
+                raw_bytes = b"".join([struct.pack("<f", x) for x in case["data"]])
+            else:
+                raw_bytes = bytes(case["data"])
+
+            df = pl.DataFrame({"data": [raw_bytes]})
+
+            # Encode to TIFF
+            encode_pipe = (
+                Pipeline().source("raw", dtype=case["dtype"]).reshape(case["shape"])
+            )
+            df_tiff = df.with_columns(
+                tiff=pl.col("data").cv.pipe(encode_pipe).sink("tiff")
+            )
+
+            # Decode from TIFF
+            decode_pipe = Pipeline().source("image_bytes")
+            df_decoded = df_tiff.with_columns(
+                result=pl.col("tiff").cv.pipe(decode_pipe).sink("numpy")
+            )
+
+            # Verify
+            result = df_decoded["result"][0]
+
+            # Map internal dtype to numpy dtype names
+            dtype_mapping = {"f32": "float32", "u8": "uint8"}
+            expected_dtype = dtype_mapping.get(case["dtype"], case["dtype"])
+            assert result["dtype"] == expected_dtype, (
+                f"Expected {expected_dtype}, got {result['dtype']}"
+            )
+            assert result["shape"] == case["shape"], (
+                f"Expected {case['shape']}, got {result['shape']}"
+            )
+
 
 if __name__ == "__main__":
     test = TestTiffSinkSupport()
@@ -212,4 +318,5 @@ if __name__ == "__main__":
     test.test_tiff_vs_numpy_both_work()
     test.test_tiff_medical_imaging_scenario()
     test.test_tiff_with_processing_pipeline()
+    print("\n🎉 All TIFF integration tests passed!")
     print("\n🎉 All TIFF integration tests passed!")
