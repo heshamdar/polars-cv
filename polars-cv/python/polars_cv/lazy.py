@@ -183,12 +183,13 @@ class LazyPipelineExpr:
             # Validate array sinks in multi-output
 
             for alias, fmt_str in format.items():
-                # Validate list sink ndim
+                # Validate list sink ndim (allow None for auto-inferred sources)
                 if fmt_str == "list":
                     node = self._find_node_by_alias(alias, all_nodes)
                     if node and node._pipeline._expected_ndim is None:
-                        msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
-                        raise ValueError(msg)
+                        if not node._pipeline._auto_infer_from_input:
+                            msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
+                            raise ValueError(msg)
 
                 if fmt_str == "array":
                     # For multi-output, we don't have a simple way to pass per-alias shape yet
@@ -207,11 +208,12 @@ class LazyPipelineExpr:
                     msg = "shape is required for 'array' sink format when output shape is not deterministic. Provide 'shape' in .sink() or use .resize() earlier."
                     raise ValueError(msg)
 
-            # Validate list sink ndim
+            # Validate list sink ndim (allow None for auto-inferred list/array sources)
             if format == "list":
                 if self._pipeline._expected_ndim is None:
-                    msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
-                    raise ValueError(msg)
+                    if not self._pipeline._auto_infer_from_input:
+                        msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
+                        raise ValueError(msg)
 
             graph.set_output(self._node_id, format, **kwargs)
 

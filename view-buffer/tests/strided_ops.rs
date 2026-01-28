@@ -176,8 +176,8 @@ fn test_normalize_on_transposed_buffer() {
     let slice = normalized.as_slice::<f32>();
     let min = slice.iter().cloned().fold(f32::INFINITY, f32::min);
     let max = slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    assert!((min - 0.0).abs() < 1e-6, "Min should be ~0, got {}", min);
-    assert!((max - 1.0).abs() < 1e-6, "Max should be ~1, got {}", max);
+    assert!((min - 0.0).abs() < 1e-6, "Min should be ~0, got {min}");
+    assert!((max - 1.0).abs() < 1e-6, "Max should be ~1, got {max}");
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn test_normalize_on_flipped_buffer() {
     let slice = normalized.as_slice::<f32>();
     let n = slice.len() as f32;
     let mean: f32 = slice.iter().sum::<f32>() / n;
-    assert!(mean.abs() < 1e-4, "Mean should be ~0, got {}", mean);
+    assert!(mean.abs() < 1e-4, "Mean should be ~0, got {mean}");
 }
 
 // ============================================================
@@ -235,8 +235,7 @@ fn test_relu_on_flipped_buffer() {
     let min = slice.iter().cloned().fold(f32::INFINITY, f32::min);
     assert!(
         min >= 0.0,
-        "ReLU should have no negative values, got min={}",
-        min
+        "ReLU should have no negative values, got min={min}"
     );
 }
 

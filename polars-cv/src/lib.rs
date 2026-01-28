@@ -168,7 +168,23 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
     };
 
     // Parse the graph JSON to extract output specifications
-    let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
+    let mut graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
+
+    // If we have input fields, extract the inner dtype and nesting depth
+    // so we can resolve "auto" sentinels in output specs.
+    if !input_fields.is_empty() {
+        let (leaf_dtype, ndim) = peel_nesting(input_fields[0].dtype());
+        let inferred_dtype_str = polars_dtype_to_str(&leaf_dtype);
+
+        for spec in graph.outputs.values_mut() {
+            if spec.expected_dtype == "auto" {
+                spec.expected_dtype = inferred_dtype_str.to_string();
+            }
+            if spec.expected_ndim.is_none() && ndim > 0 {
+                spec.expected_ndim = Some(ndim);
+            }
+        }
+    }
 
     if graph.is_single_output() {
         // Single output mode - return typed field based on domain/sink/dtype
@@ -176,22 +192,52 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
             .outputs
             .get("_output")
             .ok_or_else(|| polars_err!(ComputeError: "Single output graph missing _output key"))?;
-        let dtype = crate::graph::dtype_for_output(spec);
+        let dtype = crate::graph::dtype_for_output(spec)?;
         Ok(Field::new(name, dtype))
     } else {
         // Multi-output mode - build Struct with typed fields
         let mut output_names: Vec<&String> = graph.outputs.keys().collect();
         output_names.sort();
 
-        let fields: Vec<Field> = output_names
-            .into_iter()
-            .map(|alias| {
-                let spec = graph.outputs.get(alias).unwrap();
-                let dtype = crate::graph::dtype_for_output(spec);
-                Field::new(PlSmallStr::from(alias.as_str()), dtype)
-            })
-            .collect();
+        let mut fields: Vec<Field> = Vec::with_capacity(output_names.len());
+        for alias in output_names {
+            let spec = graph.outputs.get(alias).unwrap();
+            let dtype = crate::graph::dtype_for_output(spec)?;
+            fields.push(Field::new(PlSmallStr::from(alias.as_str()), dtype));
+        }
 
         Ok(Field::new(name, DataType::Struct(fields)))
+    }
+}
+
+/// Recursively peel List/Array nesting to find the leaf dtype and depth.
+fn peel_nesting(dt: &DataType) -> (DataType, usize) {
+    match dt {
+        DataType::List(inner) => {
+            let (leaf, depth) = peel_nesting(inner);
+            (leaf, depth + 1)
+        }
+        DataType::Array(inner, _) => {
+            let (leaf, depth) = peel_nesting(inner);
+            (leaf, depth + 1)
+        }
+        other => (other.clone(), 0),
+    }
+}
+
+/// Convert a Polars DataType to the dtype string used in output specs.
+fn polars_dtype_to_str(dt: &DataType) -> &'static str {
+    match dt {
+        DataType::UInt8 => "u8",
+        DataType::Int8 => "i8",
+        DataType::UInt16 => "u16",
+        DataType::Int16 => "i16",
+        DataType::UInt32 => "u32",
+        DataType::Int32 => "i32",
+        DataType::UInt64 => "u64",
+        DataType::Int64 => "i64",
+        DataType::Float32 => "f32",
+        DataType::Float64 => "f64",
+        _ => "u8", // fallback for non-numeric types
     }
 }

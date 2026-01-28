@@ -77,8 +77,7 @@ fn assert_buffers_equal(a: &ViewBuffer, b: &ViewBuffer) {
     for (i, (&av, &bv)) in a_slice.iter().zip(b_slice.iter()).enumerate() {
         assert_eq!(
             av, bv,
-            "Mismatch at byte index {}: expected {}, got {}",
-            i, av, bv
+            "Mismatch at byte index {i}: expected {av}, got {bv}"
         );
     }
 }
@@ -101,12 +100,7 @@ fn assert_buffers_approx_equal(a: &ViewBuffer, b: &ViewBuffer, tolerance: f32) {
         let diff = (av - bv).abs();
         assert!(
             diff <= tolerance,
-            "Mismatch at index {}: {} vs {}, diff {} > tolerance {}",
-            i,
-            av,
-            bv,
-            diff,
-            tolerance
+            "Mismatch at index {i}: {av} vs {bv}, diff {diff} > tolerance {tolerance}"
         );
     }
 }
