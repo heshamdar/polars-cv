@@ -446,7 +446,7 @@ pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult
         "numpy" | "torch" => {
             // numpy/torch now use struct-based output via crate::output module
             // This path should not be reached in normal operation
-            Err(polars_err!(ComputeError: 
+            Err(polars_err!(ComputeError:
                 "numpy/torch sinks should use output module for zero-copy struct encoding"))
         }
         "blob" => {
@@ -462,6 +462,8 @@ pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult
         }
         "webp" => ImageAdapter::encode(buffer, image::ImageFormat::WebP)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e)),
+        "tiff" => ImageAdapter::encode_tiff(buffer)
+            .map_err(|e| polars_err!(ComputeError: "Failed to encode TIFF: {:?}", e)),
         "array" | "list" => {
             // For array/list, we return raw bytes that Polars will interpret
             // The actual type conversion happens in the output dtype
