@@ -122,7 +122,22 @@ pub struct GraphKwargs {
 /// Handles both single-output and multi-output graphs uniformly.
 fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series> {
     // Parse the unified graph specification
-    let graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
+    let mut graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
+
+    // Resolve "auto" dtype/ndim from input series (mirrors unified_output_dtype logic)
+    if !inputs.is_empty() {
+        let (leaf_dtype, ndim) = peel_nesting(inputs[0].dtype());
+        let inferred_dtype_str = polars_dtype_to_str(&leaf_dtype);
+
+        for spec in graph.outputs.values_mut() {
+            if spec.expected_dtype == "auto" {
+                spec.expected_dtype = inferred_dtype_str.to_string();
+            }
+            if spec.expected_ndim.is_none() && ndim > 0 {
+                spec.expected_ndim = Some(ndim);
+            }
+        }
+    }
 
     // Count the number of root node column bindings to determine where expression columns start
     let num_source_columns = graph.column_bindings.len().max(1);

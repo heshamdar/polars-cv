@@ -171,3 +171,49 @@ class TestSchemaInferenceExecution:
         assert len(result_lists) == 1
         assert result_lists[0][0][0] == pytest.approx(1.5)
         assert result_lists[0][0][1] == pytest.approx(2.5)
+
+
+# ============================================================
+# Tests: Execution-time schema consistency for null data
+# ============================================================
+
+
+class TestNullDataSchemaConsistency:
+    """Execution-time schema must match planning-time schema even with null data."""
+
+    def test_list_sink_all_null_preserves_nesting(self):
+        """All-null List input should preserve nested List schema."""
+        df = pl.DataFrame(
+            {
+                "data": pl.Series(
+                    "data", [None, None], dtype=pl.List(pl.List(pl.Float64))
+                )
+            }
+        )
+        pipe = Pipeline().source("list").sink("list")
+        result = df.select(pl.col("data").cv.pipeline(pipe))
+        # Schema should be List(List(Float64)), not List(UInt8)
+        assert result["data"].dtype == pl.List(pl.List(pl.Float64))
+
+    def test_array_sink_all_null_preserves_shape(self):
+        """All-null file_path input with assert_shape should preserve Array schema."""
+        df = pl.DataFrame({"path": pl.Series("path", [None], dtype=pl.String)})
+        pipe = (
+            Pipeline()
+            .source("file_path")
+            .assert_shape(height=10, width=10, channels=3)
+            .sink("array")
+        )
+        result = df.select(pl.col("path").cv.pipeline(pipe))
+        expected = pl.Array(pl.Array(pl.Array(pl.UInt8, 3), 10), 10)
+        assert result["path"].dtype == expected
+
+    def test_list_sink_mixed_null(self):
+        """Mixed null/non-null should still produce correct nested schema."""
+        data = np.random.rand(4, 4).astype(np.float64)
+        rows = [data.tolist(), None]
+        col = pl.Series("data", rows)
+        df = pl.DataFrame({"data": col})
+        pipe = Pipeline().source("list").sink("list")
+        result = df.select(pl.col("data").cv.pipeline(pipe))
+        assert result["data"].dtype == pl.List(pl.List(pl.Float64))

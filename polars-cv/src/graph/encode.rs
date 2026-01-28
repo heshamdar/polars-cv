@@ -467,21 +467,37 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
     name: PlSmallStr,
     rows: &[TypedListRow],
     dtype_str: &str,
+    expected_shape: Option<&Vec<usize>>,
+    expected_ndim: Option<usize>,
 ) -> PolarsResult<Series> {
     let first_row = rows.iter().find_map(|r| r.as_ref());
     let actual_dtype_str = first_row
         .map(|(data, _)| data.dtype_str())
         .unwrap_or(dtype_str);
-    let shape = first_row.map(|(_, s)| s.clone());
-    if let Some(shape) = shape {
-        if shape.len() > 1 {
-            return build_typed_nested_list_series_from_rows_with_dtype(
-                name,
-                rows,
-                actual_dtype_str,
-                &shape,
-            );
-        }
+    let shape = first_row
+        .map(|(_, s)| s.clone())
+        .or_else(|| expected_shape.cloned());
+
+    // Determine if we need nested List structure
+    let needs_nesting = shape.as_ref().map(|s| s.len() > 1).unwrap_or(false)
+        || expected_ndim.map(|n| n > 1).unwrap_or(false);
+
+    if needs_nesting {
+        let ndim = shape
+            .as_ref()
+            .map(|s| s.len())
+            .or(expected_ndim)
+            .unwrap_or(1);
+        // Use shape if available, otherwise synthesize a dummy shape with correct ndim.
+        // The nested builder uses shape.len() for recursion depth; actual sizes only
+        // matter for non-null rows (which carry their own shape).
+        let effective_shape = shape.unwrap_or_else(|| vec![0; ndim]);
+        return build_typed_nested_list_series_from_rows_with_dtype(
+            name,
+            rows,
+            actual_dtype_str,
+            &effective_shape,
+        );
     }
     match actual_dtype_str {
         "u8" => build_typed_list_u8(name, rows),
@@ -585,12 +601,16 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
     rows: &[TypedListRow],
     dtype_str: &str,
     sink_shape: &Option<Vec<usize>>,
+    expected_shape: Option<&Vec<usize>>,
 ) -> PolarsResult<Series> {
     let shape = sink_shape
         .clone()
+        .or_else(|| expected_shape.cloned())
         .or_else(|| rows.iter().find_map(|r| r.as_ref().map(|(_, s)| s.clone())));
     let Some(shape) = shape else {
-        return build_typed_list_series_from_rows_with_dtype(name, rows, dtype_str);
+        return Err(
+            polars_err!(ComputeError: "Cannot determine shape for array sink. Provide shape via .sink(shape=[...]) or use .resize()/.assert_shape()."),
+        );
     };
     let inner_dtype = dtype_str_to_polars(dtype_str);
     let mut dtype = inner_dtype.clone();
