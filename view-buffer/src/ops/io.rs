@@ -98,6 +98,11 @@ pub enum SinkFormat {
         quality: u8,
     },
 
+    /// Encode as TIFF image bytes.
+    /// Supports floating-point data types for medical imaging.
+    #[cfg(feature = "image_interop")]
+    Tiff,
+
     /// Export as Arrow array.
     #[cfg(feature = "arrow_interop")]
     Arrow {
@@ -123,6 +128,8 @@ impl SinkFormat {
             SinkFormat::Jpeg { .. } => OpCost::IO,
             #[cfg(feature = "image_interop")]
             SinkFormat::WebP { .. } => OpCost::IO,
+            #[cfg(feature = "image_interop")]
+            SinkFormat::Tiff => OpCost::IO,
             #[cfg(feature = "arrow_interop")]
             SinkFormat::Arrow { .. } => OpCost::Allocating,
         }
@@ -143,6 +150,8 @@ impl SinkFormat {
             SinkFormat::Jpeg { .. } => "Jpeg",
             #[cfg(feature = "image_interop")]
             SinkFormat::WebP { .. } => "WebP",
+            #[cfg(feature = "image_interop")]
+            SinkFormat::Tiff => "Tiff",
             #[cfg(feature = "arrow_interop")]
             SinkFormat::Arrow { .. } => "Arrow",
         }

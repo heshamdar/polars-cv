@@ -21,6 +21,7 @@ num-traits = "0.2"
 # Optional dependencies
 ndarray = { version = "0.17", optional = true }
 image = { version = "0.25", optional = true }
+tiff = { version = "0.10", optional = true }
 fast_image_resize = { version = "5.0", optional = true }
 arrow = { version = "53.0", features = ["ffi"], optional = true }
 image_hasher = { version = "3.0", optional = true }
@@ -35,6 +36,7 @@ bytemuck = { version = "1.14", features = ["derive"], optional = true }
 anyhow = "1.0"
 ndarray = "0.17"
 image = "0.25"
+tiff = "0.10"
 fast_image_resize = "5.0"
 arrow = { version = "53.0", features = ["ffi"] }
 polars-arrow = "0.46"
@@ -48,7 +50,7 @@ default = ["ndarray_interop"]
 
 # External crate interops (require dependencies)
 ndarray_interop = ["dep:ndarray"]
-image_interop = ["dep:image", "dep:fast_image_resize"]
+image_interop = ["dep:image", "dep:fast_image_resize", "dep:tiff"]
 arrow_interop = ["dep:arrow"]
 polars_interop = ["dep:polars-arrow"]
 

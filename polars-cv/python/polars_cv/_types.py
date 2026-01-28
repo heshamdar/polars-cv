@@ -45,6 +45,7 @@ class SinkFormat(str, Enum):
     PNG = "png"  # Re-encode as PNG
     JPEG = "jpeg"  # Re-encode as JPEG
     WEBP = "webp"  # Re-encode as WebP
+    TIFF = "tiff"  # Re-encode as TIFF with LZW compression (supports floating-point)
     BLOB = "blob"  # VIEW protocol (for chaining)
     ARRAY = "array"  # Polars Array type (fixed shape)
     LIST = "list"  # Polars nested List (variable shape)

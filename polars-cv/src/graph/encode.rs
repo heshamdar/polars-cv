@@ -704,7 +704,7 @@ pub(crate) fn encode_node_output(
         (NodeOutput::Buffer(buf), "numpy" | "torch") => {
             Ok(OutputValue::NumpyStruct((**buf).clone()))
         }
-        (NodeOutput::Buffer(buf), "png" | "jpeg" | "webp" | "blob") => {
+        (NodeOutput::Buffer(buf), "png" | "jpeg" | "webp" | "tiff" | "blob") => {
             let pipeline = PipelineSpec {
                 source: SourceSpec {
                     format: "blob".to_string(),
@@ -768,17 +768,17 @@ pub(crate) fn encode_node_output(
         (NodeOutput::Scalar(val), "native") => Ok(OutputValue::Scalar(*val)),
         (NodeOutput::Vector(vals), "native") => Ok(OutputValue::Vector(vals.clone())),
         (NodeOutput::Vector(vals), "list") => Ok(OutputValue::Vector(vals.clone())),
-        (NodeOutput::Contours(_), "numpy" | "png" | "jpeg" | "webp") => {
+        (NodeOutput::Contours(_), "numpy" | "png" | "jpeg" | "webp" | "tiff") => {
             Err(
                 format!(
                     "Cannot encode Contours as {format}. Use 'native' or add .rasterize() first."
                 ),
             )
         }
-        (NodeOutput::Scalar(_), "numpy" | "png" | "jpeg" | "webp") => {
+        (NodeOutput::Scalar(_), "numpy" | "png" | "jpeg" | "webp" | "tiff") => {
             Err(format!("Cannot encode Scalar as {format}. Use 'native' format."))
         }
-        (NodeOutput::Vector(_), "numpy" | "png" | "jpeg" | "webp") => {
+        (NodeOutput::Vector(_), "numpy" | "png" | "jpeg" | "webp" | "tiff") => {
             Err(format!("Cannot encode Vector as {format}. Use 'native' format."))
         }
         _ => Err(format!("Unsupported sink format: {format}")),
