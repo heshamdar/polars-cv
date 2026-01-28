@@ -549,12 +549,12 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
 /// Get the Polars DataType for a given output specification.
 ///
 /// Returns the appropriate dtype based on domain, sink format, and expected dtype.
-pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
+pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
     let format = spec.sink.format.as_str();
     let domain = spec.expected_domain.as_str();
     match (domain, format) {
-        ("buffer", "numpy" | "torch") => crate::output::numpy_output_dtype(),
-        ("buffer", "png" | "jpeg" | "webp" | "blob") => DataType::Binary,
+        ("buffer", "numpy" | "torch") => Ok(crate::output::numpy_output_dtype()),
+        ("buffer", "png" | "jpeg" | "webp" | "blob") => Ok(DataType::Binary),
         ("buffer", "list") => {
             let inner = dtype_str_to_polars(&spec.expected_dtype);
             if let Some(ref shape) = spec.expected_shape {
@@ -562,15 +562,15 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
                 for _ in 0..shape.len() {
                     dtype = DataType::List(Box::new(dtype));
                 }
-                dtype
+                Ok(dtype)
             } else if let Some(ndim) = spec.expected_ndim {
                 let mut dtype = inner;
                 for _ in 0..ndim {
                     dtype = DataType::List(Box::new(dtype));
                 }
-                dtype
+                Ok(dtype)
             } else {
-                DataType::List(Box::new(inner))
+                Ok(DataType::List(Box::new(inner)))
             }
         }
         ("buffer", "array") => {
@@ -581,19 +581,16 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
                 for &dim in shape.iter().rev() {
                     dtype = DataType::Array(Box::new(dtype), dim);
                 }
-                dtype
-            } else if let Some(ndim) = spec.expected_ndim {
-                // Fallback to List if exact shape is unknown but ndim is known
-                let mut dtype = inner;
-                for _ in 0..ndim {
-                    dtype = DataType::List(Box::new(dtype));
-                }
-                dtype
+                Ok(dtype)
             } else {
-                DataType::List(Box::new(inner))
+                polars_bail!(ComputeError:
+                    "array sink requires a known shape at planning time. \
+                     Provide shape via .sink(shape=[...]) or use .resize()/.assert_shape() \
+                     so the planner can determine output dimensions."
+                );
             }
         }
-        ("scalar", "native") => DataType::Float64,
+        ("scalar", "native") => Ok(DataType::Float64),
         ("vector", "native" | "list") => {
             let inner = dtype_str_to_polars(&spec.expected_dtype);
             if let Some(ref shape) = spec.expected_shape {
@@ -601,15 +598,15 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
                 for _ in 0..shape.len() {
                     dtype = DataType::List(Box::new(dtype));
                 }
-                dtype
+                Ok(dtype)
             } else if let Some(ndim) = spec.expected_ndim {
                 let mut dtype = inner;
                 for _ in 0..ndim {
                     dtype = DataType::List(Box::new(dtype));
                 }
-                dtype
+                Ok(dtype)
             } else {
-                DataType::List(Box::new(inner))
+                Ok(DataType::List(Box::new(inner)))
             }
         }
         ("contour", "native") => {
@@ -617,15 +614,15 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> DataType {
                 Field::new("x".into(), DataType::Float64),
                 Field::new("y".into(), DataType::Float64),
             ]);
-            DataType::Struct(vec![
+            Ok(DataType::Struct(vec![
                 Field::new(
                     "exterior".into(),
                     DataType::List(Box::new(point_dtype.clone())),
                 ),
                 Field::new("interiors".into(), DataType::Null),
-            ])
+            ]))
         }
-        _ => DataType::Binary,
+        _ => Ok(DataType::Binary),
     }
 }
 /// Create a null RowResult with the correct type based on OutputSpec.

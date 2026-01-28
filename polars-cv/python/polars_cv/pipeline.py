@@ -119,6 +119,8 @@ class Pipeline:
         self._output_dtype: str = "u8"
         # Number of dimensions tracking
         self._expected_ndim: int | None = None
+        # Whether dtype/ndim should be auto-inferred from the Polars column at planning time
+        self._auto_infer_from_input: bool = False
 
     @staticmethod
     def _compute_output_domain_dtype_ndim(
@@ -249,6 +251,7 @@ class Pipeline:
         new._current_domain = self._current_domain
         new._output_dtype = self._output_dtype
         new._expected_ndim = self._expected_ndim
+        new._auto_infer_from_input = self._auto_infer_from_input
         return new
 
     def _source_equal(self, other: "Pipeline") -> bool:
@@ -588,10 +591,19 @@ class Pipeline:
                 SourceFormat.FILE_PATH,
                 SourceFormat.BLOB,
                 SourceFormat.RAW,
-                SourceFormat.LIST,
-                SourceFormat.ARRAY,
             ):
                 new._expected_ndim = 3
+            elif fmt in (SourceFormat.LIST, SourceFormat.ARRAY):
+                # For list/array sources, infer dtype and ndim from the
+                # Polars column at planning time when not explicitly given.
+                if dtype_enum is not None:
+                    # User provided explicit dtype — use it, default ndim=3
+                    new._expected_ndim = 3
+                else:
+                    # Mark as "auto" so Rust resolves from input_fields
+                    new._output_dtype = "auto"
+                    new._expected_ndim = None
+                    new._auto_infer_from_input = True
 
         return new
 

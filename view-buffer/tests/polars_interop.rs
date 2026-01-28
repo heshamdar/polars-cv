@@ -730,13 +730,12 @@ fn test_buffer_len_for_view_creation() {
         assert_eq!(
             polars_buf.len(),
             size,
-            "Buffer size mismatch for size {}",
-            size
+            "Buffer size mismatch for size {size}"
         );
 
         // Verify data integrity
         for (i, &byte) in polars_buf.as_slice().iter().enumerate() {
-            assert_eq!(byte, (i % 256) as u8, "Data mismatch at index {}", i);
+            assert_eq!(byte, (i % 256) as u8, "Data mismatch at index {i}");
         }
     }
 }
