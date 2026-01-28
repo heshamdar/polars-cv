@@ -2338,11 +2338,13 @@ class Pipeline:
         ops_to_compute = self._ops[0:end_op]
         domain, dtype, ndim = Pipeline._compute_output_domain_dtype_ndim(
             ops_to_compute,
+            initial_dtype=self._output_dtype,
             initial_ndim=self._expected_ndim,
         )
         sub._current_domain = domain
         sub._output_dtype = dtype
         sub._expected_ndim = ndim
+        sub._auto_infer_from_input = self._auto_infer_from_input
 
         return sub
 

@@ -687,7 +687,13 @@ pub(crate) fn build_series_from_spec(
                     _ => None,
                 })
                 .collect();
-            build_typed_list_series_from_rows_with_dtype(name, &rows, dtype)
+            build_typed_list_series_from_rows_with_dtype(
+                name,
+                &rows,
+                dtype,
+                spec.expected_shape.as_ref(),
+                spec.expected_ndim,
+            )
         }
         ("buffer", "array") => {
             let rows: Vec<TypedListRow> = data
@@ -699,7 +705,13 @@ pub(crate) fn build_series_from_spec(
                     _ => None,
                 })
                 .collect();
-            build_typed_array_series_from_rows_with_dtype(name, &rows, dtype, &spec.sink.shape)
+            build_typed_array_series_from_rows_with_dtype(
+                name,
+                &rows,
+                dtype,
+                &spec.sink.shape,
+                spec.expected_shape.as_ref(),
+            )
         }
         ("scalar", "native") => {
             let scalar_data: Vec<Option<f64>> = data
@@ -725,7 +737,13 @@ pub(crate) fn build_series_from_spec(
                     _ => None,
                 })
                 .collect();
-            build_typed_list_series_from_rows_with_dtype(name, &rows, dtype)
+            build_typed_list_series_from_rows_with_dtype(
+                name,
+                &rows,
+                dtype,
+                spec.expected_shape.as_ref(),
+                spec.expected_ndim,
+            )
         }
         ("vector", "array") => {
             let rows: Vec<TypedListRow> = data
@@ -741,7 +759,13 @@ pub(crate) fn build_series_from_spec(
                     _ => None,
                 })
                 .collect();
-            build_typed_array_series_from_rows_with_dtype(name, &rows, dtype, &spec.sink.shape)
+            build_typed_array_series_from_rows_with_dtype(
+                name,
+                &rows,
+                dtype,
+                &spec.sink.shape,
+                spec.expected_shape.as_ref(),
+            )
         }
         ("contour", "native") => {
             let values: PolarsResult<Vec<AnyValue<'static>>> = data
