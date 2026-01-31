@@ -2,7 +2,7 @@
 # Build script for polars-cv using Docker
 colima stop
 colima delete -f
-colima start --cpu 4 --memory 8
+colima start --cpu 4 --memory 8 --vm-type=vz --vz-rosetta
 sleep 1 && wait
 
 set -e
