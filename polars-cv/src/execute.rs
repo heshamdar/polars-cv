@@ -1107,6 +1107,11 @@ pub fn resolve_op(
                 .unwrap_or(0);
             Ok(ViewDto::Reduction(ReductionOp::Std { axis, ddof }))
         }
+        "reduce_percentile" => {
+            use view_buffer::ops::ReductionOp;
+            let q = get_param(&op_spec.params, "q")?.resolve_f64(row_idx, expr_columns)?;
+            Ok(ViewDto::Reduction(ReductionOp::Percentile { q }))
+        }
         "reduce_argmax" => {
             use view_buffer::ops::ReductionOp;
             let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, expr_columns)?;

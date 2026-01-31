@@ -234,6 +234,7 @@ OPERATION_OUTPUT_DTYPE: dict[str, str] = {
     "reduce_mean": "f64",
     "reduce_std": "f64",
     "reduce_popcount": "f64",
+    "reduce_percentile": "f64",
     # ArgMax/ArgMin always return i64 (indices)
     "reduce_argmax": "i64",
     "reduce_argmin": "i64",
