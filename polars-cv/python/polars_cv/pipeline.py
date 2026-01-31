@@ -1687,6 +1687,28 @@ class Pipeline:
         new._update_output_dtype("reduce_sum")
         return new
 
+    def reduce_percentile(self, q: float) -> "Pipeline":
+        """
+        Compute the q-th percentile of all values.
+
+        Uses linear interpolation matching numpy.percentile default behavior.
+
+        Args:
+            q: Percentile to compute, in [0, 100].
+
+        Domain transition: buffer → scalar
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "reduce_percentile")
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="reduce_percentile", params={"q": ParamValue(is_expr=False, value=q)}
+            )
+        )
+        new._current_domain = self.DOMAIN_SCALAR
+        new._update_output_dtype("reduce_percentile")
+        return new
+
     def reduce_popcount(self) -> "Pipeline":
         """
         Count set bits (1s) in the buffer.

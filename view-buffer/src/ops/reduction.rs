@@ -63,6 +63,14 @@ pub enum ReductionOp {
     ///
     /// For integer types, counts actual bits. For float types, casts to i64 first.
     PopCount,
+    /// Percentile value (global only).
+    ///
+    /// Computes the q-th percentile of all elements using linear interpolation.
+    /// q is in [0, 100]. Always returns F64.
+    Percentile {
+        /// Percentile to compute, in [0, 100].
+        q: f64,
+    },
 }
 
 impl ReductionOp {
@@ -73,6 +81,11 @@ impl ReductionOp {
         // PopCount has special handling for each type
         if matches!(self, ReductionOp::PopCount) {
             return self.execute_popcount(&contig);
+        }
+
+        // Percentile has special handling (needs sorting)
+        if let ReductionOp::Percentile { q } = self {
+            return self.execute_percentile(&contig, *q);
         }
 
         match buffer.dtype() {
@@ -146,6 +159,48 @@ impl ReductionOp {
         };
 
         ViewBuffer::from_scalar(count as f64)
+    }
+
+    /// Execute percentile reduction with linear interpolation (matches numpy default).
+    fn execute_percentile(&self, buffer: &ViewBuffer, q: f64) -> ViewBuffer {
+        let mut values: Vec<f64> = match buffer.dtype() {
+            DType::U8 => buffer.as_slice::<u8>().iter().map(|&x| x as f64).collect(),
+            DType::I8 => buffer.as_slice::<i8>().iter().map(|&x| x as f64).collect(),
+            DType::U16 => buffer.as_slice::<u16>().iter().map(|&x| x as f64).collect(),
+            DType::I16 => buffer.as_slice::<i16>().iter().map(|&x| x as f64).collect(),
+            DType::U32 => buffer.as_slice::<u32>().iter().map(|&x| x as f64).collect(),
+            DType::I32 => buffer.as_slice::<i32>().iter().map(|&x| x as f64).collect(),
+            DType::U64 => buffer.as_slice::<u64>().iter().map(|&x| x as f64).collect(),
+            DType::I64 => buffer.as_slice::<i64>().iter().map(|&x| x as f64).collect(),
+            DType::F32 => buffer.as_slice::<f32>().iter().map(|&x| x as f64).collect(),
+            DType::F64 => buffer.as_slice::<f64>().to_vec(),
+        };
+
+        if values.is_empty() {
+            return ViewBuffer::from_scalar(f64::NAN);
+        }
+
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let n = values.len();
+        if n == 1 {
+            return ViewBuffer::from_scalar(values[0]);
+        }
+
+        // Linear interpolation matching numpy.percentile default method
+        let q_frac = q.clamp(0.0, 100.0) / 100.0;
+        let pos = q_frac * (n - 1) as f64;
+        let lo = pos.floor() as usize;
+        let hi = lo + 1;
+        let frac = pos - lo as f64;
+
+        let result = if hi >= n {
+            values[lo]
+        } else {
+            values[lo] * (1.0 - frac) + values[hi] * frac
+        };
+
+        ViewBuffer::from_scalar(result)
     }
 
     fn execute_typed<T>(&self, buffer: &ViewBuffer) -> ViewBuffer
@@ -271,8 +326,9 @@ impl ReductionOp {
             }
             ReductionOp::ArgMax { axis } => self.reduce_axis_argmax::<T>(buffer, *axis, true),
             ReductionOp::ArgMin { axis } => self.reduce_axis_argmax::<T>(buffer, *axis, false),
-            // PopCount is handled specially in execute() before calling execute_typed()
+            // PopCount and Percentile are handled specially in execute() before calling execute_typed()
             ReductionOp::PopCount => unreachable!("PopCount is handled in execute()"),
+            ReductionOp::Percentile { .. } => unreachable!("Percentile is handled in execute()"),
         }
     }
 
@@ -419,6 +475,7 @@ impl Op for ReductionOp {
             ReductionOp::ArgMax { .. } => "ArgMax",
             ReductionOp::ArgMin { .. } => "ArgMin",
             ReductionOp::PopCount => "PopCount",
+            ReductionOp::Percentile { .. } => "Percentile",
         }
     }
 
@@ -432,8 +489,8 @@ impl Op for ReductionOp {
             | ReductionOp::Std { axis, .. }
             | ReductionOp::Sum { axis } => *axis,
             ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => Some(*axis),
-            // PopCount is always a global reduction
-            ReductionOp::PopCount => None,
+            // PopCount and Percentile are always global reductions
+            ReductionOp::PopCount | ReductionOp::Percentile { .. } => None,
         };
 
         match axis {
@@ -457,8 +514,8 @@ impl Op for ReductionOp {
             ReductionOp::Sum { axis: None } => DType::F64,
             ReductionOp::Sum { axis: Some(_) } => DType::F64,
             ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => DType::I64,
-            // PopCount returns the count as f64
-            ReductionOp::PopCount => DType::F64,
+            // PopCount and Percentile return f64
+            ReductionOp::PopCount | ReductionOp::Percentile { .. } => DType::F64,
             _ => inputs[0],
         }
     }
@@ -491,8 +548,8 @@ impl Op for ReductionOp {
             | ReductionOp::Std { axis, .. }
             | ReductionOp::Sum { axis } => *axis,
             ReductionOp::ArgMax { axis } | ReductionOp::ArgMin { axis } => Some(*axis),
-            // PopCount is always a global reduction (no axis)
-            ReductionOp::PopCount => None,
+            // PopCount and Percentile are always global reductions (no axis)
+            ReductionOp::PopCount | ReductionOp::Percentile { .. } => None,
         };
 
         if let Some(ax) = axis {
@@ -520,7 +577,8 @@ impl Op for ReductionOp {
             ReductionOp::Mean { .. }
             | ReductionOp::Std { .. }
             | ReductionOp::Sum { .. }
-            | ReductionOp::PopCount => OutputDTypeRule::ForceF64,
+            | ReductionOp::PopCount
+            | ReductionOp::Percentile { .. } => OutputDTypeRule::ForceF64,
             ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => OutputDTypeRule::ForceI64,
             _ => OutputDTypeRule::PreserveInput,
         }
