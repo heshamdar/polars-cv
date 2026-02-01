@@ -114,8 +114,8 @@ impl Op for ImageOp {
             // Resize uses fast_image_resize which requires contiguous input
             ImageOpKind::Resize { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::Blur { .. } => MemoryEffect::RequiresContiguous,
-            // Grayscale has strided implementation
-            ImageOpKind::Grayscale => MemoryEffect::StridePreserving,
+            // Grayscale changes shape (removes channel dim) so needs allocation
+            ImageOpKind::Grayscale => MemoryEffect::RequiresContiguous,
             // Rotation requires allocation for output
             ImageOpKind::Rotate { .. } => MemoryEffect::RequiresContiguous,
         }

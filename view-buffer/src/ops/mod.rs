@@ -37,6 +37,7 @@ pub mod phash;
 pub mod reduction;
 pub mod scalar;
 pub mod traits;
+pub(crate) mod util;
 pub mod validation;
 pub mod view;
 

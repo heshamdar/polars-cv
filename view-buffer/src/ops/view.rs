@@ -84,11 +84,7 @@ impl Op for ViewOp {
                 // Both contiguous and non-contiguous cases return None here.
                 None
             }
-            ViewOp::Flip(_) => {
-                let axes = match self {
-                    ViewOp::Flip(a) => a,
-                    _ => unreachable!(),
-                };
+            ViewOp::Flip(axes) => {
                 let mut new_strides = input_strides.to_vec();
                 for &axis in axes {
                     new_strides[axis] = -new_strides[axis];

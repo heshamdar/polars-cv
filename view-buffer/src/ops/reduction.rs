@@ -157,6 +157,7 @@ impl ReductionOp {
 
         match self {
             ReductionOp::Max { axis: None } => {
+                assert!(!data.is_empty(), "Cannot reduce Max on empty buffer");
                 let max_val = data
                     .iter()
                     .copied()
@@ -164,6 +165,7 @@ impl ReductionOp {
                 ViewBuffer::from_scalar(max_val)
             }
             ReductionOp::Min { axis: None } => {
+                assert!(!data.is_empty(), "Cannot reduce Min on empty buffer");
                 let min_val = data
                     .iter()
                     .copied()
@@ -181,6 +183,10 @@ impl ReductionOp {
             }
             ReductionOp::Std { axis: None, ddof } => {
                 let n = data.len() as f64;
+                let denominator = n - *ddof as f64;
+                if denominator <= 0.0 {
+                    return ViewBuffer::from_scalar(f64::NAN);
+                }
                 let sum: f64 = data
                     .iter()
                     .copied()
@@ -195,7 +201,7 @@ impl ReductionOp {
                         (xf - mean).powi(2)
                     })
                     .sum::<f64>()
-                    / (n - *ddof as f64);
+                    / denominator;
                 let std = variance.sqrt();
                 ViewBuffer::from_scalar(std)
             }
@@ -242,6 +248,10 @@ impl ReductionOp {
                 let ddof_val = *ddof;
                 self.reduce_axis_to_f64::<T, _>(buffer, *ax, move |slice: &[T]| {
                     let n = slice.len() as f64;
+                    let denominator = n - ddof_val as f64;
+                    if denominator <= 0.0 {
+                        return f64::NAN;
+                    }
                     let sum: f64 = slice
                         .iter()
                         .copied()
@@ -256,7 +266,7 @@ impl ReductionOp {
                             (xf - mean).powi(2)
                         })
                         .sum::<f64>()
-                        / (n - ddof_val as f64);
+                        / denominator;
                     variance.sqrt()
                 })
             }
@@ -535,19 +545,7 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
     strides
 }
 
-fn linear_to_coords(index: usize, shape: &[usize]) -> Vec<usize> {
-    let mut coords = vec![0; shape.len()];
-    let mut remaining = index;
-    for i in (0..shape.len()).rev() {
-        coords[i] = remaining % shape[i];
-        remaining /= shape[i];
-    }
-    coords
-}
-
-fn coords_to_linear(coords: &[usize], strides: &[usize]) -> usize {
-    coords.iter().zip(strides.iter()).map(|(c, s)| c * s).sum()
-}
+use super::util::{linear_to_coords, coords_to_linear};
 
 #[cfg(test)]
 mod tests {

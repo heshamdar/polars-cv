@@ -240,8 +240,18 @@ impl ViewBuffer {
             std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, aligned_ptr, len_bytes);
         }
 
-        // Create a Vec from the aligned allocation
-        let aligned_vec = unsafe { Vec::from_raw_parts(aligned_ptr, len_bytes, len_bytes) };
+        // Wrap in a Vec that knows about our custom alignment.
+        // SAFETY: We must deallocate with the same layout we allocated with.
+        // Vec::from_raw_parts assumes alignment of 1 (for u8), so dropping it
+        // would deallocate with the wrong alignment (UB). Instead, we copy
+        // the aligned data into a standard Vec which handles its own deallocation.
+        let aligned_vec = unsafe {
+            let mut v = Vec::with_capacity(len_bytes);
+            std::ptr::copy_nonoverlapping(aligned_ptr, v.as_mut_ptr(), len_bytes);
+            v.set_len(len_bytes);
+            std::alloc::dealloc(aligned_ptr, alloc_layout);
+            v
+        };
 
         let shape = vec![data.len()];
         let dtype = T::DTYPE;
@@ -549,6 +559,13 @@ impl ViewBuffer {
             self.layout.is_contiguous(),
             "Buffer must be contiguous to get a slice. Call to_contiguous() first."
         );
+        assert_eq!(
+            T::DTYPE,
+            self.layout.dtype,
+            "Type mismatch: requested {:?} but buffer has {:?}",
+            T::DTYPE,
+            self.layout.dtype
+        );
 
         let len: usize = self.layout.shape.iter().product();
         unsafe {
@@ -614,11 +631,9 @@ impl ViewBuffer {
                 Arc::try_unwrap(arc).ok()
             }
             #[cfg(feature = "arrow_interop")]
-            BufferStorage::Arrow(_) => unreachable!("try_into_owned_bytes called on Arrow buffer"),
+            BufferStorage::Arrow(_) => None,
             #[cfg(feature = "polars_interop")]
-            BufferStorage::PolarsArrow { .. } => {
-                unreachable!("try_into_owned_bytes called on PolarsArrow buffer")
-            }
+            BufferStorage::PolarsArrow { .. } => None
         }
     }
 
@@ -1171,8 +1186,9 @@ impl ViewBuffer {
         }
 
         // 1. Read Header
-        // Unsafe cast from bytes to struct (valid due to #[repr(C)] and POD nature)
-        let header = unsafe { &*(data.as_ptr() as *const ViewHeader) };
+        // Read header using ptr::read_unaligned to avoid UB from unaligned access.
+        // The input &[u8] may not be aligned to ViewHeader's required alignment.
+        let header = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const ViewHeader) };
 
         // Validate Magic
         if header.magic != MAGIC_BYTES {

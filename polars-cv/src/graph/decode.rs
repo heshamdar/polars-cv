@@ -832,7 +832,11 @@ pub(crate) fn pad_buffer(
         PadMode::Constant => pad_constant(buffer, top, bottom, left, right, value),
         PadMode::Edge => pad_edge(buffer, top, bottom, left, right),
         PadMode::Reflect | PadMode::Symmetric => {
-            pad_constant(buffer, top, bottom, left, right, value)
+            // TODO: implement proper reflect/symmetric padding
+            // For now, log a warning and fall back to edge padding which is
+            // a better approximation than constant padding
+            eprintln!("Warning: {:?} pad mode not yet implemented, falling back to edge padding", mode);
+            pad_edge(buffer, top, bottom, left, right)
         }
     }
 }
@@ -889,22 +893,25 @@ fn pad_constant(
             }
             ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
         }
-        _ => {
-            let contig = buffer.to_contiguous();
-            let input = contig.as_slice::<u8>();
-            let fill_val = value.clamp(0.0, 255.0) as u8;
+        DType::F64 => {
+            let fill_val = value as f64;
             let mut output = vec![fill_val; output_h * output_w * channels];
+            let contig = buffer.to_contiguous();
+            let input = contig.as_slice::<f64>();
             for y in 0..input_h {
                 let src_start = y * input_row_stride;
                 let src_end = src_start + input_row_stride;
-                if src_end <= input.len() {
-                    let dst_y = y + top as usize;
-                    let dst_start = dst_y * output_row_stride + left as usize * channels;
-                    let dst_end = dst_start + input_row_stride;
-                    output[dst_start..dst_end].copy_from_slice(&input[src_start..src_end]);
-                }
+                let dst_y = y + top as usize;
+                let dst_start = dst_y * output_row_stride + left as usize * channels;
+                let dst_end = dst_start + input_row_stride;
+                output[dst_start..dst_end].copy_from_slice(&input[src_start..src_end]);
             }
             ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
+        }
+        _ => {
+            // For other dtypes, cast to F32 first, pad, then the caller can cast back if needed
+            let cast_buf = buffer.cast_to(DType::F32);
+            pad_constant(&cast_buf, top, bottom, left, right, value)
         }
     }
 }

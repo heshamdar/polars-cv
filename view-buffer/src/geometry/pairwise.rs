@@ -5,6 +5,29 @@
 use super::contour::{Contour, Point};
 use super::measures::area;
 
+/// Computes the areas and intersection area of two contours.
+/// Returns `None` if either contour has near-zero area or their bounding boxes don't intersect.
+fn contour_intersection_areas(a: &Contour, b: &Contour) -> Option<(f64, f64, f64)> {
+    let area_a = area(a, false);
+    let area_b = area(b, false);
+
+    if area_a < 1e-10 || area_b < 1e-10 {
+        return None;
+    }
+
+    let bbox_a = a.bounding_box()?;
+    let bbox_b = b.bounding_box()?;
+
+    if !bbox_a.intersects(&bbox_b) {
+        return None;
+    }
+
+    let intersection = polygon_intersection(&a.exterior, &b.exterior);
+    let intersection_area = polygon_area(&intersection);
+
+    Some((area_a, area_b, intersection_area))
+}
+
 /// Computes Intersection over Union (IoU) between two contours.
 ///
 /// IoU = intersection_area / union_area
@@ -20,30 +43,10 @@ use super::measures::area;
 /// # Returns
 /// IoU value in [0, 1]
 pub fn iou(a: &Contour, b: &Contour) -> f64 {
-    let area_a = area(a, false);
-    let area_b = area(b, false);
-
-    if area_a < 1e-10 || area_b < 1e-10 {
-        return 0.0;
-    }
-
-    // Check bounding box intersection first (fast rejection)
-    let bbox_a = match a.bounding_box() {
-        Some(bb) => bb,
+    let (area_a, area_b, intersection_area) = match contour_intersection_areas(a, b) {
+        Some(v) => v,
         None => return 0.0,
     };
-    let bbox_b = match b.bounding_box() {
-        Some(bb) => bb,
-        None => return 0.0,
-    };
-
-    if !bbox_a.intersects(&bbox_b) {
-        return 0.0;
-    }
-
-    // Use Sutherland-Hodgman polygon clipping for intersection
-    let intersection = polygon_intersection(&a.exterior, &b.exterior);
-    let intersection_area = polygon_area(&intersection);
 
     let union_area = area_a + area_b - intersection_area;
 
@@ -65,28 +68,10 @@ pub fn iou(a: &Contour, b: &Contour) -> f64 {
 /// # Returns
 /// Dice coefficient in [0, 1]
 pub fn dice(a: &Contour, b: &Contour) -> f64 {
-    let area_a = area(a, false);
-    let area_b = area(b, false);
-
-    if area_a < 1e-10 || area_b < 1e-10 {
-        return 0.0;
-    }
-
-    let bbox_a = match a.bounding_box() {
-        Some(bb) => bb,
+    let (area_a, area_b, intersection_area) = match contour_intersection_areas(a, b) {
+        Some(v) => v,
         None => return 0.0,
     };
-    let bbox_b = match b.bounding_box() {
-        Some(bb) => bb,
-        None => return 0.0,
-    };
-
-    if !bbox_a.intersects(&bbox_b) {
-        return 0.0;
-    }
-
-    let intersection = polygon_intersection(&a.exterior, &b.exterior);
-    let intersection_area = polygon_area(&intersection);
 
     let denominator = area_a + area_b;
 
@@ -225,21 +210,9 @@ fn line_intersection(p1: &Point, p2: &Point, p3: &Point, p4: &Point) -> Option<P
 }
 
 /// Computes the area of a polygon using the Shoelace formula.
+/// Delegates to `measures::signed_area` to avoid duplication.
 fn polygon_area(points: &[Point]) -> f64 {
-    if points.len() < 3 {
-        return 0.0;
-    }
-
-    let n = points.len();
-    let mut area = 0.0;
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        area += points[i].x * points[j].y;
-        area -= points[j].x * points[i].y;
-    }
-
-    (area / 2.0).abs()
+    super::measures::signed_area(points).abs()
 }
 
 #[cfg(test)]
