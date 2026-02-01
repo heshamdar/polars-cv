@@ -60,11 +60,6 @@ pub trait ToArrowFFI {
 
 impl ToArrowFFI for ViewBuffer {
     fn to_arrow_ffi(&self) -> Result<(FFI_ArrowSchema, FFI_ArrowArray), ArrowFFIError> {
-        // Ensure contiguous for clean FFI export
-        if !self.layout.is_contiguous() {
-            return Err(ArrowFFIError::NotContiguous);
-        }
-
         let contig = self.to_contiguous();
         let count = contig.layout.num_elements();
 
@@ -132,7 +127,7 @@ impl FromArrowFFI for ViewBuffer {
     ) -> Result<ViewBuffer, ArrowFFIError> {
         // Import from FFI to Arrow ArrayData
         let data = arrow::ffi::from_ffi(array, schema)
-            .map_err(|e| ArrowFFIError::ExportFailed(e.to_string()))?;
+            .map_err(|e| ArrowFFIError::ExportFailed(format!("Arrow FFI import failed: {e}")))?;
 
         // Determine dtype from Arrow data type
         use arrow::datatypes::DataType;

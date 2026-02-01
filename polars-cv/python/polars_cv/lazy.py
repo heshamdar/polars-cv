@@ -147,17 +147,18 @@ class LazyPipelineExpr:
         format: str | dict[str, str] = "native",
         return_expr: bool = True,
         **kwargs: Any,
-    ) -> pl.Expr:
+    ) -> "pl.Expr | PipelineGraph":
         """
         Finalize the pipeline graph and return a Polars expression.
 
         Args:
             format: Output format string (e.g., "numpy", "png") or a dict
                     mapping aliases to formats for multi-output.
+            return_expr: If True (default), return a pl.Expr. If False, return the PipelineGraph.
             kwargs: Parameters for the sink (e.g., quality for jpeg).
 
         Returns:
-            A Polars expression. Multi-output returns a Struct column.
+            A Polars expression (or PipelineGraph if return_expr=False).
         """
         from polars_cv._graph import PipelineGraph
 
@@ -586,9 +587,6 @@ class LazyPipelineExpr:
             - Can merge pipelines from different source columns (multi-source graph)
             - The merged node's output is the same as self (first argument)
         """
-
-        if not isinstance(self, LazyPipelineExpr):
-            raise TypeError("merge_pipe() must be called on a LazyPipelineExpr")
 
         # Clone the pipeline - the merge node acts as a passthrough
         new_pipeline = self._pipeline._clone()

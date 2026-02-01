@@ -293,146 +293,36 @@ macro_rules! impl_typed_list_builder {
         }
     };
 }
-fn extract_as_u8(data: &TypedBufferData) -> Vec<u8> {
-    match data {
-        TypedBufferData::U8(v) => v.clone(),
-        TypedBufferData::I8(v) => v.iter().map(|&x| x as u8).collect(),
-        TypedBufferData::U16(v) => v.iter().map(|&x| x as u8).collect(),
-        TypedBufferData::I16(v) => v.iter().map(|&x| x as u8).collect(),
-        TypedBufferData::U32(v) => v.iter().map(|&x| x as u8).collect(),
-        TypedBufferData::I32(v) => v.iter().map(|&x| x as u8).collect(),
-        TypedBufferData::U64(v) => v.iter().map(|&x| x as u8).collect(),
-        TypedBufferData::I64(v) => v.iter().map(|&x| x as u8).collect(),
-        TypedBufferData::F32(v) => v.iter().map(|&x| x as u8).collect(),
-        TypedBufferData::F64(v) => v.iter().map(|&x| x as u8).collect(),
-    }
+macro_rules! impl_extract_as {
+    ($name:ident, $target:ty, $variant:ident) => {
+        #[allow(unreachable_patterns)]
+        fn $name(data: &TypedBufferData) -> Vec<$target> {
+            match data {
+                TypedBufferData::$variant(v) => v.clone(),
+                TypedBufferData::U8(v) => v.iter().map(|&x| x as $target).collect(),
+                TypedBufferData::I8(v) => v.iter().map(|&x| x as $target).collect(),
+                TypedBufferData::U16(v) => v.iter().map(|&x| x as $target).collect(),
+                TypedBufferData::I16(v) => v.iter().map(|&x| x as $target).collect(),
+                TypedBufferData::U32(v) => v.iter().map(|&x| x as $target).collect(),
+                TypedBufferData::I32(v) => v.iter().map(|&x| x as $target).collect(),
+                TypedBufferData::U64(v) => v.iter().map(|&x| x as $target).collect(),
+                TypedBufferData::I64(v) => v.iter().map(|&x| x as $target).collect(),
+                TypedBufferData::F32(v) => v.iter().map(|&x| x as $target).collect(),
+                TypedBufferData::F64(v) => v.iter().map(|&x| x as $target).collect(),
+            }
+        }
+    };
 }
-fn extract_as_i8(data: &TypedBufferData) -> Vec<i8> {
-    match data {
-        TypedBufferData::U8(v) => v.iter().map(|&x| x as i8).collect(),
-        TypedBufferData::I8(v) => v.clone(),
-        TypedBufferData::U16(v) => v.iter().map(|&x| x as i8).collect(),
-        TypedBufferData::I16(v) => v.iter().map(|&x| x as i8).collect(),
-        TypedBufferData::U32(v) => v.iter().map(|&x| x as i8).collect(),
-        TypedBufferData::I32(v) => v.iter().map(|&x| x as i8).collect(),
-        TypedBufferData::U64(v) => v.iter().map(|&x| x as i8).collect(),
-        TypedBufferData::I64(v) => v.iter().map(|&x| x as i8).collect(),
-        TypedBufferData::F32(v) => v.iter().map(|&x| x as i8).collect(),
-        TypedBufferData::F64(v) => v.iter().map(|&x| x as i8).collect(),
-    }
-}
-fn extract_as_u16(data: &TypedBufferData) -> Vec<u16> {
-    match data {
-        TypedBufferData::U8(v) => v.iter().map(|&x| x as u16).collect(),
-        TypedBufferData::I8(v) => v.iter().map(|&x| x as u16).collect(),
-        TypedBufferData::U16(v) => v.clone(),
-        TypedBufferData::I16(v) => v.iter().map(|&x| x as u16).collect(),
-        TypedBufferData::U32(v) => v.iter().map(|&x| x as u16).collect(),
-        TypedBufferData::I32(v) => v.iter().map(|&x| x as u16).collect(),
-        TypedBufferData::U64(v) => v.iter().map(|&x| x as u16).collect(),
-        TypedBufferData::I64(v) => v.iter().map(|&x| x as u16).collect(),
-        TypedBufferData::F32(v) => v.iter().map(|&x| x as u16).collect(),
-        TypedBufferData::F64(v) => v.iter().map(|&x| x as u16).collect(),
-    }
-}
-fn extract_as_i16(data: &TypedBufferData) -> Vec<i16> {
-    match data {
-        TypedBufferData::U8(v) => v.iter().map(|&x| x as i16).collect(),
-        TypedBufferData::I8(v) => v.iter().map(|&x| x as i16).collect(),
-        TypedBufferData::U16(v) => v.iter().map(|&x| x as i16).collect(),
-        TypedBufferData::I16(v) => v.clone(),
-        TypedBufferData::U32(v) => v.iter().map(|&x| x as i16).collect(),
-        TypedBufferData::I32(v) => v.iter().map(|&x| x as i16).collect(),
-        TypedBufferData::U64(v) => v.iter().map(|&x| x as i16).collect(),
-        TypedBufferData::I64(v) => v.iter().map(|&x| x as i16).collect(),
-        TypedBufferData::F32(v) => v.iter().map(|&x| x as i16).collect(),
-        TypedBufferData::F64(v) => v.iter().map(|&x| x as i16).collect(),
-    }
-}
-fn extract_as_u32(data: &TypedBufferData) -> Vec<u32> {
-    match data {
-        TypedBufferData::U8(v) => v.iter().map(|&x| x as u32).collect(),
-        TypedBufferData::I8(v) => v.iter().map(|&x| x as u32).collect(),
-        TypedBufferData::U16(v) => v.iter().map(|&x| x as u32).collect(),
-        TypedBufferData::I16(v) => v.iter().map(|&x| x as u32).collect(),
-        TypedBufferData::U32(v) => v.clone(),
-        TypedBufferData::I32(v) => v.iter().map(|&x| x as u32).collect(),
-        TypedBufferData::U64(v) => v.iter().map(|&x| x as u32).collect(),
-        TypedBufferData::I64(v) => v.iter().map(|&x| x as u32).collect(),
-        TypedBufferData::F32(v) => v.iter().map(|&x| x as u32).collect(),
-        TypedBufferData::F64(v) => v.iter().map(|&x| x as u32).collect(),
-    }
-}
-fn extract_as_i32(data: &TypedBufferData) -> Vec<i32> {
-    match data {
-        TypedBufferData::U8(v) => v.iter().map(|&x| x as i32).collect(),
-        TypedBufferData::I8(v) => v.iter().map(|&x| x as i32).collect(),
-        TypedBufferData::U16(v) => v.iter().map(|&x| x as i32).collect(),
-        TypedBufferData::I16(v) => v.iter().map(|&x| x as i32).collect(),
-        TypedBufferData::U32(v) => v.iter().map(|&x| x as i32).collect(),
-        TypedBufferData::I32(v) => v.clone(),
-        TypedBufferData::U64(v) => v.iter().map(|&x| x as i32).collect(),
-        TypedBufferData::I64(v) => v.iter().map(|&x| x as i32).collect(),
-        TypedBufferData::F32(v) => v.iter().map(|&x| x as i32).collect(),
-        TypedBufferData::F64(v) => v.iter().map(|&x| x as i32).collect(),
-    }
-}
-fn extract_as_u64(data: &TypedBufferData) -> Vec<u64> {
-    match data {
-        TypedBufferData::U8(v) => v.iter().map(|&x| x as u64).collect(),
-        TypedBufferData::I8(v) => v.iter().map(|&x| x as u64).collect(),
-        TypedBufferData::U16(v) => v.iter().map(|&x| x as u64).collect(),
-        TypedBufferData::I16(v) => v.iter().map(|&x| x as u64).collect(),
-        TypedBufferData::U32(v) => v.iter().map(|&x| x as u64).collect(),
-        TypedBufferData::I32(v) => v.iter().map(|&x| x as u64).collect(),
-        TypedBufferData::U64(v) => v.clone(),
-        TypedBufferData::I64(v) => v.iter().map(|&x| x as u64).collect(),
-        TypedBufferData::F32(v) => v.iter().map(|&x| x as u64).collect(),
-        TypedBufferData::F64(v) => v.iter().map(|&x| x as u64).collect(),
-    }
-}
-fn extract_as_i64(data: &TypedBufferData) -> Vec<i64> {
-    match data {
-        TypedBufferData::U8(v) => v.iter().map(|&x| x as i64).collect(),
-        TypedBufferData::I8(v) => v.iter().map(|&x| x as i64).collect(),
-        TypedBufferData::U16(v) => v.iter().map(|&x| x as i64).collect(),
-        TypedBufferData::I16(v) => v.iter().map(|&x| x as i64).collect(),
-        TypedBufferData::U32(v) => v.iter().map(|&x| x as i64).collect(),
-        TypedBufferData::I32(v) => v.iter().map(|&x| x as i64).collect(),
-        TypedBufferData::U64(v) => v.iter().map(|&x| x as i64).collect(),
-        TypedBufferData::I64(v) => v.clone(),
-        TypedBufferData::F32(v) => v.iter().map(|&x| x as i64).collect(),
-        TypedBufferData::F64(v) => v.iter().map(|&x| x as i64).collect(),
-    }
-}
-fn extract_as_f32(data: &TypedBufferData) -> Vec<f32> {
-    match data {
-        TypedBufferData::U8(v) => v.iter().map(|&x| x as f32).collect(),
-        TypedBufferData::I8(v) => v.iter().map(|&x| x as f32).collect(),
-        TypedBufferData::U16(v) => v.iter().map(|&x| x as f32).collect(),
-        TypedBufferData::I16(v) => v.iter().map(|&x| x as f32).collect(),
-        TypedBufferData::U32(v) => v.iter().map(|&x| x as f32).collect(),
-        TypedBufferData::I32(v) => v.iter().map(|&x| x as f32).collect(),
-        TypedBufferData::U64(v) => v.iter().map(|&x| x as f32).collect(),
-        TypedBufferData::I64(v) => v.iter().map(|&x| x as f32).collect(),
-        TypedBufferData::F32(v) => v.clone(),
-        TypedBufferData::F64(v) => v.iter().map(|&x| x as f32).collect(),
-    }
-}
-fn extract_as_f64(data: &TypedBufferData) -> Vec<f64> {
-    match data {
-        TypedBufferData::U8(v) => v.iter().map(|&x| x as f64).collect(),
-        TypedBufferData::I8(v) => v.iter().map(|&x| x as f64).collect(),
-        TypedBufferData::U16(v) => v.iter().map(|&x| x as f64).collect(),
-        TypedBufferData::I16(v) => v.iter().map(|&x| x as f64).collect(),
-        TypedBufferData::U32(v) => v.iter().map(|&x| x as f64).collect(),
-        TypedBufferData::I32(v) => v.iter().map(|&x| x as f64).collect(),
-        TypedBufferData::U64(v) => v.iter().map(|&x| x as f64).collect(),
-        TypedBufferData::I64(v) => v.iter().map(|&x| x as f64).collect(),
-        TypedBufferData::F32(v) => v.iter().map(|&x| x as f64).collect(),
-        TypedBufferData::F64(v) => v.clone(),
-    }
-}
+impl_extract_as!(extract_as_u8, u8, U8);
+impl_extract_as!(extract_as_i8, i8, I8);
+impl_extract_as!(extract_as_u16, u16, U16);
+impl_extract_as!(extract_as_i16, i16, I16);
+impl_extract_as!(extract_as_u32, u32, U32);
+impl_extract_as!(extract_as_i32, i32, I32);
+impl_extract_as!(extract_as_u64, u64, U64);
+impl_extract_as!(extract_as_i64, i64, I64);
+impl_extract_as!(extract_as_f32, f32, F32);
+impl_extract_as!(extract_as_f64, f64, F64);
 fn build_typed_list_u8(name: PlSmallStr, rows: &[TypedListRow]) -> PolarsResult<Series> {
     let mut builder =
         ListPrimitiveChunkedBuilder::<UInt8Type>::new(name, rows.len(), 64, DataType::UInt8);

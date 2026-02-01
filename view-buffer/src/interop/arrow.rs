@@ -31,10 +31,7 @@ impl FromArrow for ViewBuffer {
             let list_array = current_array
                 .as_any()
                 .downcast_ref::<FixedSizeListArray>()
-                .ok_or(BufferError::TypeMismatch {
-                    expected: DType::U8,
-                    got: DType::U8,
-                })?;
+                .ok_or(BufferError::NotContiguous)?;  // FixedSizeList downcast failed
             current_array = list_array.values().as_ref();
         }
 
@@ -102,10 +99,9 @@ impl FromArrow for ViewBuffer {
                 (buf, DType::U8)
             }
             _ => {
-                return Err(BufferError::TypeMismatch {
-                    expected: DType::F32,
-                    got: DType::U8,
-                })
+                return Err(BufferError::InvalidProtocol(
+                    format!("Unsupported Arrow data type: {:?}", current_array.data_type()),
+                ))
             }
         };
 
@@ -203,7 +199,11 @@ impl ToArrow for ViewBuffer {
                 }
                 current_array
             }
-            _ => unimplemented!("Arrow export for this dtype not implemented"),
+            _other => {
+                // Cast to F32 for unsupported dtypes rather than panicking
+                let f32_buf = contig.cast_to(DType::F32);
+                return f32_buf.to_arrow_list();
+            }
         }
     }
 }

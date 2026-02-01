@@ -63,13 +63,15 @@ class PointNamespace:
         Returns:
             Point with coordinates in [0,1] range.
         """
+        if isinstance(ref_width, pl.Expr) or isinstance(ref_height, pl.Expr):
+            raise TypeError("point.normalize() does not support pl.Expr arguments; pass literal int values")
         return register_plugin_function(
             plugin_path=LIB_PATH,
             function_name="point_normalize",
             args=[self._expr],
             kwargs={
-                "ref_width": ref_width if isinstance(ref_width, int) else None,
-                "ref_height": ref_height if isinstance(ref_height, int) else None,
+                "ref_width": ref_width,
+                "ref_height": ref_height,
             },
             is_elementwise=True,
         )
@@ -89,13 +91,15 @@ class PointNamespace:
         Returns:
             Point with pixel coordinates.
         """
+        if isinstance(ref_width, pl.Expr) or isinstance(ref_height, pl.Expr):
+            raise TypeError("point.to_absolute() does not support pl.Expr arguments; pass literal int values")
         return register_plugin_function(
             plugin_path=LIB_PATH,
             function_name="point_to_absolute",
             args=[self._expr],
             kwargs={
-                "ref_width": ref_width if isinstance(ref_width, int) else None,
-                "ref_height": ref_height if isinstance(ref_height, int) else None,
+                "ref_width": ref_width,
+                "ref_height": ref_height,
             },
             is_elementwise=True,
         )
@@ -115,13 +119,15 @@ class PointNamespace:
         Returns:
             Translated point.
         """
+        if isinstance(dx, pl.Expr) or isinstance(dy, pl.Expr):
+            raise TypeError("point.translate() does not support pl.Expr arguments; pass literal numeric values")
         return register_plugin_function(
             plugin_path=LIB_PATH,
             function_name="point_translate",
             args=[self._expr],
             kwargs={
-                "dx": dx if isinstance(dx, (int, float)) else None,
-                "dy": dy if isinstance(dy, (int, float)) else None,
+                "dx": dx,
+                "dy": dy,
             },
             is_elementwise=True,
         )
@@ -141,13 +147,15 @@ class PointNamespace:
         Returns:
             Scaled point.
         """
+        if isinstance(sx, pl.Expr) or isinstance(sy, pl.Expr):
+            raise TypeError("point.scale() does not support pl.Expr arguments; pass literal numeric values")
         return register_plugin_function(
             plugin_path=LIB_PATH,
             function_name="point_scale",
             args=[self._expr],
             kwargs={
-                "sx": sx if isinstance(sx, (int, float)) else None,
-                "sy": sy if isinstance(sy, (int, float)) else None,
+                "sx": sx,
+                "sy": sy,
             },
             is_elementwise=True,
         )

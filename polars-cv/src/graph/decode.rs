@@ -972,37 +972,113 @@ fn pad_edge(buffer: &ViewBuffer, top: u32, bottom: u32, left: u32, right: u32) -
             }
             ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
         }
-        _ => pad_constant(buffer, top, bottom, left, right, 0.0),
+        DType::F32 => {
+            let mut output = vec![0.0f32; output_h * output_w * channels];
+            let contig = buffer.to_contiguous();
+            let input = contig.as_slice::<f32>();
+            let replicate_pixel =
+                |output: &mut [f32], dst_start: usize, count: usize, src_pixel: &[f32]| {
+                    for i in 0..count {
+                        let dst_idx = dst_start + i * channels;
+                        output[dst_idx..dst_idx + channels].copy_from_slice(src_pixel);
+                    }
+                };
+            for dst_y in 0..output_h {
+                let src_y = if dst_y < top_usize {
+                    0
+                } else if dst_y >= top_usize + input_h {
+                    input_h - 1
+                } else {
+                    dst_y - top_usize
+                };
+                let src_row_start = src_y * input_row_stride;
+                let dst_row_start = dst_y * output_row_stride;
+                if left_usize > 0 {
+                    let first_pixel = &input[src_row_start..src_row_start + channels];
+                    replicate_pixel(&mut output, dst_row_start, left_usize, first_pixel);
+                }
+                let src_end = src_row_start + input_row_stride;
+                let dst_interior_start = dst_row_start + left_usize * channels;
+                let dst_interior_end = dst_interior_start + input_row_stride;
+                output[dst_interior_start..dst_interior_end]
+                    .copy_from_slice(&input[src_row_start..src_end]);
+                let right_count = output_w - left_usize - input_w;
+                if right_count > 0 {
+                    let last_pixel_start = src_row_start + (input_w - 1) * channels;
+                    let last_pixel = &input[last_pixel_start..last_pixel_start + channels];
+                    let dst_right_start = dst_interior_end;
+                    replicate_pixel(&mut output, dst_right_start, right_count, last_pixel);
+                }
+            }
+            ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
+        }
+        _ => {
+            // For other dtypes, cast to F32, pad, then the execution layer handles output dtype
+            let cast_buf = buffer.cast_to(DType::F32);
+            pad_edge(&cast_buf, top, bottom, left, right)
+        }
     }
 }
 /// - 255 values zero out the pixel
 ///
 /// Uses normalized blending: pixel * (mask / 255)
 pub(crate) fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffer {
+    use view_buffer::DType;
+
     let buf_shape = buffer.shape();
     let mask_shape = mask.shape();
+
+    // Cast mask to match buffer dtype for proper blending
+    let mask_dtype = buffer.dtype();
+    let is_float = matches!(mask_dtype, DType::F32 | DType::F64);
+
     let effective_mask = if mask_shape.len() == 2 && buf_shape.len() == 3 {
         let h = mask_shape[0];
         let w = mask_shape[1];
         let c = buf_shape[2];
-        let mask_contig = mask.to_contiguous();
-        let mask_data = mask_contig.as_slice::<u8>();
-        let mut expanded: Vec<u8> = Vec::with_capacity(h * w * c);
-        for y in 0..h {
-            for x in 0..w {
-                let raw_val = mask_data[y * w + x];
-                let mask_val = if invert { 255 - raw_val } else { raw_val };
-                for _ in 0..c {
-                    expanded.push(mask_val);
+        if is_float {
+            // For float buffers, mask values should be in [0, 1]
+            let mask_f32 = mask.cast_to(DType::F32).to_contiguous();
+            let mask_data = mask_f32.as_slice::<f32>();
+            let mut expanded: Vec<f32> = Vec::with_capacity(h * w * c);
+            for y in 0..h {
+                for x in 0..w {
+                    let raw_val = mask_data[y * w + x];
+                    let mask_val = if invert { 1.0 - raw_val } else { raw_val };
+                    for _ in 0..c {
+                        expanded.push(mask_val);
+                    }
                 }
             }
+            ViewBuffer::from_vec_with_shape(expanded, vec![h, w, c])
+        } else {
+            // For U8 buffers, mask values in [0, 255]
+            let mask_contig = mask.cast_to(DType::U8).to_contiguous();
+            let mask_data = mask_contig.as_slice::<u8>();
+            let mut expanded: Vec<u8> = Vec::with_capacity(h * w * c);
+            for y in 0..h {
+                for x in 0..w {
+                    let raw_val = mask_data[y * w + x];
+                    let mask_val = if invert { 255 - raw_val } else { raw_val };
+                    for _ in 0..c {
+                        expanded.push(mask_val);
+                    }
+                }
+            }
+            ViewBuffer::from_vec_with_shape(expanded, vec![h, w, c])
         }
-        ViewBuffer::from_vec_with_shape(expanded, vec![h, w, c])
     } else if invert {
-        let mask_contig = mask.to_contiguous();
-        let mask_data = mask_contig.as_slice::<u8>();
-        let inverted: Vec<u8> = mask_data.iter().map(|&v| 255 - v).collect();
-        ViewBuffer::from_vec_with_shape(inverted, mask_shape.to_vec())
+        if is_float {
+            let mask_f32 = mask.cast_to(DType::F32).to_contiguous();
+            let mask_data = mask_f32.as_slice::<f32>();
+            let inverted: Vec<f32> = mask_data.iter().map(|&v| 1.0 - v).collect();
+            ViewBuffer::from_vec_with_shape(inverted, mask_shape.to_vec())
+        } else {
+            let mask_contig = mask.cast_to(DType::U8).to_contiguous();
+            let mask_data = mask_contig.as_slice::<u8>();
+            let inverted: Vec<u8> = mask_data.iter().map(|&v| 255 - v).collect();
+            ViewBuffer::from_vec_with_shape(inverted, mask_shape.to_vec())
+        }
     } else {
         mask.clone()
     };

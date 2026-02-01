@@ -230,67 +230,30 @@ impl ImageAdapter {
             })?
             .with_compression(compression);
 
+        // Helper to map tiff encoding errors
+        let tiff_err = |e: tiff::TiffError| -> image::ImageError {
+            image::ImageError::IoError(std::io::Error::other(format!("TIFF encoding failed: {e}")))
+        };
+
         // Encode based on data type and channels
         match (contiguous.dtype(), channels) {
             (crate::core::dtype::DType::U8, 1) => {
-                let data = contiguous.as_slice::<u8>();
-                encoder
-                    .write_image::<colortype::Gray8>(w, h, data)
-                    .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::other(format!(
-                            "TIFF encoding failed: {e}"
-                        )))
-                    })?;
+                encoder.write_image::<colortype::Gray8>(w, h, contiguous.as_slice::<u8>()).map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U8, 3) => {
-                let data = contiguous.as_slice::<u8>();
-                encoder
-                    .write_image::<colortype::RGB8>(w, h, data)
-                    .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::other(format!(
-                            "TIFF encoding failed: {e}"
-                        )))
-                    })?;
+                encoder.write_image::<colortype::RGB8>(w, h, contiguous.as_slice::<u8>()).map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U16, 1) => {
-                let data = contiguous.as_slice::<u16>();
-                encoder
-                    .write_image::<colortype::Gray16>(w, h, data)
-                    .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::other(format!(
-                            "TIFF encoding failed: {e}"
-                        )))
-                    })?;
+                encoder.write_image::<colortype::Gray16>(w, h, contiguous.as_slice::<u16>()).map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U16, 3) => {
-                let data = contiguous.as_slice::<u16>();
-                encoder
-                    .write_image::<colortype::RGB16>(w, h, data)
-                    .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::other(format!(
-                            "TIFF encoding failed: {e}"
-                        )))
-                    })?;
+                encoder.write_image::<colortype::RGB16>(w, h, contiguous.as_slice::<u16>()).map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::F32, 1) => {
-                let data = contiguous.as_slice::<f32>();
-                encoder
-                    .write_image::<colortype::Gray32Float>(w, h, data)
-                    .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::other(format!(
-                            "TIFF encoding failed: {e}"
-                        )))
-                    })?;
+                encoder.write_image::<colortype::Gray32Float>(w, h, contiguous.as_slice::<f32>()).map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::F64, 1) => {
-                let data = contiguous.as_slice::<f64>();
-                encoder
-                    .write_image::<colortype::Gray64Float>(w, h, data)
-                    .map_err(|e| {
-                        image::ImageError::IoError(std::io::Error::other(format!(
-                            "TIFF encoding failed: {e}"
-                        )))
-                    })?;
+                encoder.write_image::<colortype::Gray64Float>(w, h, contiguous.as_slice::<f64>()).map_err(tiff_err)?;
             }
             (dtype, channels) => {
                 return Err(image::ImageError::Parameter(
@@ -346,94 +309,47 @@ impl ImageAdapter {
             ))
         })?;
 
+        // Helper: determine channel count from TIFF color type
+        let channels_for = |ct: &tiff::ColorType, allow_alpha: bool| -> Result<usize, image::ImageError> {
+            match ct {
+                tiff::ColorType::Gray(_) => Ok(1),
+                tiff::ColorType::RGB(_) => Ok(3),
+                tiff::ColorType::Palette(_) if allow_alpha => Ok(3),
+                tiff::ColorType::GrayA(_) if allow_alpha => Ok(2),
+                tiff::ColorType::RGBA(_) if allow_alpha => Ok(4),
+                _ => Err(image::ImageError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Unsupported TIFF color type: {ct:?}"),
+                ))),
+            }
+        };
+
+        // Helper: build shape from dimensions and channels
+        let make_shape = |h: u32, w: u32, c: usize| -> Vec<usize> {
+            if c == 1 {
+                vec![h as usize, w as usize]
+            } else {
+                vec![h as usize, w as usize, c]
+            }
+        };
+
         // Convert the decoded data to ViewBuffer based on the data type
         match decoding_result {
             DecodingResult::U8(data) => {
-                let channels = match colortype {
-                    tiff::ColorType::Gray(_) => 1,
-                    tiff::ColorType::RGB(_) => 3,
-                    tiff::ColorType::Palette(_) => 3, // Palette gets converted to RGB
-                    tiff::ColorType::GrayA(_) => 2,
-                    tiff::ColorType::RGBA(_) => 4,
-                    _ => {
-                        return Err(image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Unsupported TIFF color type: {colortype:?}"),
-                        )));
-                    }
-                };
-
-                let shape = if channels == 1 {
-                    vec![height as usize, width as usize]
-                } else {
-                    vec![height as usize, width as usize, channels]
-                };
-
-                Ok(ViewBuffer::from_vec(data).reshape(shape))
+                let channels = channels_for(&colortype, true)?;
+                Ok(ViewBuffer::from_vec(data).reshape(make_shape(height, width, channels)))
             }
             DecodingResult::U16(data) => {
-                let channels = match colortype {
-                    tiff::ColorType::Gray(_) => 1,
-                    tiff::ColorType::RGB(_) => 3,
-                    tiff::ColorType::GrayA(_) => 2,
-                    tiff::ColorType::RGBA(_) => 4,
-                    _ => {
-                        return Err(image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Unsupported TIFF color type: {colortype:?}"),
-                        )));
-                    }
-                };
-
-                let shape = if channels == 1 {
-                    vec![height as usize, width as usize]
-                } else {
-                    vec![height as usize, width as usize, channels]
-                };
-
-                Ok(ViewBuffer::from_vec(data).reshape(shape))
+                let channels = channels_for(&colortype, true)?;
+                Ok(ViewBuffer::from_vec(data).reshape(make_shape(height, width, channels)))
             }
             DecodingResult::F32(data) => {
-                // Floating-point TIFF - this is what we need for medical imaging
-                let channels = match colortype {
-                    tiff::ColorType::Gray(_) => 1,
-                    tiff::ColorType::RGB(_) => 3,
-                    _ => {
-                        return Err(image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Unsupported TIFF color type: {colortype:?}"),
-                        )));
-                    }
-                };
-
-                let shape = if channels == 1 {
-                    vec![height as usize, width as usize]
-                } else {
-                    vec![height as usize, width as usize, channels]
-                };
-
-                Ok(ViewBuffer::from_vec(data).reshape(shape))
+                let channels = channels_for(&colortype, false)?;
+                Ok(ViewBuffer::from_vec(data).reshape(make_shape(height, width, channels)))
             }
             DecodingResult::F64(data) => {
-                // Double-precision floating-point TIFF
-                let channels = match colortype {
-                    tiff::ColorType::Gray(_) => 1,
-                    tiff::ColorType::RGB(_) => 3,
-                    _ => {
-                        return Err(image::ImageError::IoError(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Unsupported TIFF color type: {colortype:?}"),
-                        )));
-                    }
-                };
-
-                let shape = if channels == 1 {
-                    vec![height as usize, width as usize]
-                } else {
-                    vec![height as usize, width as usize, channels]
-                };
-
-                Ok(ViewBuffer::from_vec(data).reshape(shape))
+                let channels = channels_for(&colortype, false)?;
+                Ok(ViewBuffer::from_vec(data).reshape(make_shape(height, width, channels)))
             }
             _ => Err(image::ImageError::IoError(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
