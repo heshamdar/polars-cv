@@ -514,18 +514,7 @@ pub fn promote_dtypes(a: DType, b: DType) -> DType {
     }
 }
 
-/// Convert a linear index to multi-dimensional coordinates.
-fn linear_to_coords(index: usize, shape: &[usize]) -> Vec<usize> {
-    let mut coords = vec![0; shape.len()];
-    let mut remaining = index;
-
-    for i in (0..shape.len()).rev() {
-        coords[i] = remaining % shape[i];
-        remaining /= shape[i];
-    }
-
-    coords
-}
+use super::util::linear_to_coords;
 
 /// Get the linear index for broadcast access.
 fn broadcast_index(coords: &[usize], shape: &[usize]) -> usize {

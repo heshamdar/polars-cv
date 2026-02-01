@@ -98,7 +98,12 @@ impl HistogramOp {
             }
         };
 
-        let bin_width = (max_val - min_val) / self.bins as f64;
+        // Guard against division by zero when all values are identical
+        let bin_width = if (max_val - min_val).abs() < f64::EPSILON {
+            1.0 // All values are the same; they'll all fall into bin 0
+        } else {
+            (max_val - min_val) / self.bins as f64
+        };
 
         match self.output {
             HistogramOutput::Counts => {

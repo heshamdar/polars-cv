@@ -774,9 +774,7 @@ pub fn resolve_op(
                 Ok(ViewDto::View(ViewOp::Rotate90))
             } else if (normalized_angle - 180.0).abs() < EPSILON {
                 Ok(ViewDto::View(ViewOp::Rotate180))
-            } else if (normalized_angle - 270.0).abs() < EPSILON
-                || (normalized_angle - (-90.0)).abs() < EPSILON
-            {
+            } else if (normalized_angle - 270.0).abs() < EPSILON {
                 Ok(ViewDto::View(ViewOp::Rotate270))
             } else if normalized_angle.abs() < EPSILON || (normalized_angle - 360.0).abs() < EPSILON
             {

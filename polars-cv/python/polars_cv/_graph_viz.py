@@ -4,9 +4,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-import networkx as nx
-from graphviz import Source
-from networkx.drawing.nx_pydot import to_pydot
+try:
+    import networkx as nx
+    from graphviz import Source
+    from networkx.drawing.nx_pydot import to_pydot
+
+    _VIZ_AVAILABLE = True
+except ImportError:
+    _VIZ_AVAILABLE = False
 
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
@@ -167,6 +172,11 @@ def get_graphviz_out(graph: PipelineGraph) -> Source:
     """
     Returns a Graphviz object for the given pipeline graph.
     """
+    if not _VIZ_AVAILABLE:
+        raise ImportError(
+            "Graph visualization requires 'networkx', 'graphviz', and 'pydot' packages. "
+            "Install them with: pip install networkx graphviz pydot"
+        )
     spec = graph._to_dict()
 
     logical = parse_logical_graph(spec)

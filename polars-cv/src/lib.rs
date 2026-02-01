@@ -52,7 +52,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 ///     >>> # Only tile very large images (>2048 pixels)
 ///     >>> polars_cv.configure_tiling(2048)
 ///     >>>
-///     >>> # Tile all images regardless of size
+///     >>> # Disable tiling (same as None)
 ///     >>> polars_cv.configure_tiling(0)
 ///
 /// Note:

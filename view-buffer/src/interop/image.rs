@@ -127,9 +127,10 @@ impl ImageAdapter {
     }
 
     /// Opens an image from disk and decodes it into a ViewBuffer.
+    /// Routes through `decode()` to use the custom TIFF decoder for float TIFF support.
     pub fn open(path: impl AsRef<Path>) -> Result<ViewBuffer, image::ImageError> {
-        let img = image::open(path)?;
-        Ok(Self::from_dynamic_image(img))
+        let bytes = std::fs::read(path.as_ref()).map_err(image::ImageError::IoError)?;
+        Self::decode(&bytes)
     }
 
     /// Converts a loaded DynamicImage into a ViewBuffer.

@@ -189,8 +189,14 @@ impl ParamValue {
                 arr.iter()
                     .map(|v| {
                         v.as_i64()
-                            .map(|i| i as usize)
-                            .ok_or_else(|| polars_err!(ComputeError: "Expected integer in array"))
+                            .and_then(|i| {
+                                if i < 0 {
+                                    None
+                                } else {
+                                    Some(i as usize)
+                                }
+                            })
+                            .ok_or_else(|| polars_err!(ComputeError: "Expected non-negative integer in array"))
                     })
                     .collect()
             }

@@ -113,27 +113,34 @@ impl UnifiedGraph {
     /// Includes all nodes reachable from any output.
     fn compute_topological_order(&self) -> PolarsResult<Vec<String>> {
         let mut visited: HashSet<String> = HashSet::new();
+        let mut in_stack: HashSet<String> = HashSet::new();
         let mut order: Vec<String> = Vec::new();
         fn dfs(
             node_id: &str,
             nodes: &HashMap<String, GraphNode>,
             visited: &mut HashSet<String>,
+            in_stack: &mut HashSet<String>,
             order: &mut Vec<String>,
         ) -> PolarsResult<()> {
             if visited.contains(node_id) {
                 return Ok(());
             }
-            visited.insert(node_id.to_string());
+            if in_stack.contains(node_id) {
+                polars_bail!(ComputeError: "Cycle detected in graph at node '{}'", node_id);
+            }
+            in_stack.insert(node_id.to_string());
             if let Some(node) = nodes.get(node_id) {
                 for upstream_id in &node.upstream {
-                    dfs(upstream_id, nodes, visited, order)?;
+                    dfs(upstream_id, nodes, visited, in_stack, order)?;
                 }
             }
+            in_stack.remove(node_id);
+            visited.insert(node_id.to_string());
             order.push(node_id.to_string());
             Ok(())
         }
         for spec in self.outputs.values() {
-            dfs(&spec.node, &self.nodes, &mut visited, &mut order)?;
+            dfs(&spec.node, &self.nodes, &mut visited, &mut in_stack, &mut order)?;
         }
         Ok(order)
     }

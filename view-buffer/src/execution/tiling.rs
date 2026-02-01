@@ -230,9 +230,9 @@ fn init_default_tile_config() -> Option<TileConfig> {
         }
     }
 
-    // Default: tiling ON with default settings
-    // Atomic flag already defaults to true, no change needed
-    Some(TileConfig::default())
+    // Default: tiling OFF (disabled by default due to performance issues)
+    // Matches the TILING_ENABLED atomic which defaults to false
+    None
 }
 
 thread_local! {
@@ -344,10 +344,12 @@ pub fn get_tile_config() -> Option<TileConfig> {
 /// });
 /// ```
 pub fn with_tile_config<T, F: FnOnce() -> T>(config: Option<TileConfig>, f: F) -> T {
-    // Save current config
+    // Save current config and atomic state
     let prev = TILE_CONFIG.with(|c| c.borrow().clone());
+    let prev_enabled = TILING_ENABLED.load(Ordering::Relaxed);
 
-    // Set new config
+    // Set new config and update atomic to match
+    TILING_ENABLED.store(config.is_some(), Ordering::Relaxed);
     TILE_CONFIG.with(|c| {
         *c.borrow_mut() = config;
     });
@@ -355,7 +357,8 @@ pub fn with_tile_config<T, F: FnOnce() -> T>(config: Option<TileConfig>, f: F) -
     // Execute closure
     let result = f();
 
-    // Restore previous config
+    // Restore previous config and atomic state
+    TILING_ENABLED.store(prev_enabled, Ordering::Relaxed);
     TILE_CONFIG.with(|c| {
         *c.borrow_mut() = prev;
     });

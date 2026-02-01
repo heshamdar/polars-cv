@@ -60,13 +60,18 @@ class ContourNamespace:
         Raises:
             CoordinateRangeError: If any coordinate exceeds ref dimensions.
         """
+        if isinstance(ref_width, pl.Expr) or isinstance(ref_height, pl.Expr):
+            raise TypeError(
+                "contour normalize does not support expression parameters. "
+                "Pass literal int values for ref_width and ref_height."
+            )
         return register_plugin_function(
             plugin_path=LIB_PATH,
             function_name="contour_normalize",
             args=[self._expr],
             kwargs={
-                "ref_width": ref_width if isinstance(ref_width, int) else None,
-                "ref_height": ref_height if isinstance(ref_height, int) else None,
+                "ref_width": ref_width,
+                "ref_height": ref_height,
             },
             is_elementwise=True,
         )
@@ -86,13 +91,18 @@ class ContourNamespace:
         Returns:
             Contour with pixel coordinates.
         """
+        if isinstance(ref_width, pl.Expr) or isinstance(ref_height, pl.Expr):
+            raise TypeError(
+                "contour to_absolute does not support expression parameters. "
+                "Pass literal int values for ref_width and ref_height."
+            )
         return register_plugin_function(
             plugin_path=LIB_PATH,
             function_name="contour_to_absolute",
             args=[self._expr],
             kwargs={
-                "ref_width": ref_width if isinstance(ref_width, int) else None,
-                "ref_height": ref_height if isinstance(ref_height, int) else None,
+                "ref_width": ref_width,
+                "ref_height": ref_height,
             },
             is_elementwise=True,
         )
@@ -263,13 +273,18 @@ class ContourNamespace:
         Returns:
             Translated contour.
         """
+        if isinstance(dx, pl.Expr) or isinstance(dy, pl.Expr):
+            raise TypeError(
+                "contour translate does not support expression parameters. "
+                "Pass literal numeric values for dx and dy."
+            )
         return register_plugin_function(
             plugin_path=LIB_PATH,
             function_name="contour_translate",
             args=[self._expr],
             kwargs={
-                "dx": dx if isinstance(dx, (int, float)) else None,
-                "dy": dy if isinstance(dy, (int, float)) else None,
+                "dx": dx,
+                "dy": dy,
             },
             is_elementwise=True,
         )
@@ -295,13 +310,18 @@ class ContourNamespace:
         Returns:
             Scaled contour.
         """
+        if isinstance(sx, pl.Expr) or isinstance(sy, pl.Expr):
+            raise TypeError(
+                "contour scale does not support expression parameters. "
+                "Pass literal numeric values for sx and sy."
+            )
         return register_plugin_function(
             plugin_path=LIB_PATH,
             function_name="contour_scale",
             args=[self._expr],
             kwargs={
-                "sx": sx if isinstance(sx, (int, float)) else None,
-                "sy": sy if isinstance(sy, (int, float)) else None,
+                "sx": sx,
+                "sy": sy,
                 "origin": origin,
             },
             is_elementwise=True,

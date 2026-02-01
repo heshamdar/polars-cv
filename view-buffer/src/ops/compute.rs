@@ -202,7 +202,7 @@ impl Op for ComputeOp {
             ComputeOp::Normalize(_) => OutputDTypeRule::Configurable(DType::F32),
             // Scale: promote integers to float, preserve floats
             ComputeOp::Scale(_) => OutputDTypeRule::PromoteToFloat,
-            // Clamp: preserve input dtype (user expects same type back)
+            // Clamp: promote to float for proper clamping of fractional bounds
             ComputeOp::Clamp { .. } => OutputDTypeRule::PromoteToFloat,
             // Relu: promote to float for proper negative handling
             ComputeOp::Relu => OutputDTypeRule::PromoteToFloat,
