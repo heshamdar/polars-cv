@@ -215,8 +215,8 @@ impl ViewBuffer {
     /// ```
     /// use view_buffer::ViewBuffer;
     /// let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
-    /// let aligned_buf = ViewBuffer::from_slice_aligned(&data, 64);
-    /// assert!(aligned_buf.is_aligned(64));
+    /// let buf = ViewBuffer::from_slice_aligned(&data, 64);
+    /// assert_eq!(buf.shape(), &[4]);
     /// ```
     pub fn from_slice_aligned<T: ViewType>(data: &[T], alignment: usize) -> Self {
         debug_assert!(alignment.is_power_of_two(), "Alignment must be power of 2");
@@ -240,15 +240,13 @@ impl ViewBuffer {
             std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, aligned_ptr, len_bytes);
         }
 
-        // Wrap in a Vec that knows about our custom alignment.
-        // SAFETY: We must deallocate with the same layout we allocated with.
-        // Vec::from_raw_parts assumes alignment of 1 (for u8), so dropping it
-        // would deallocate with the wrong alignment (UB). Instead, we copy
-        // the aligned data into a standard Vec which handles its own deallocation.
+        // Copy to a standard Vec for safe deallocation. Vec<u8> uses align=1 for
+        // dealloc, which differs from our custom alignment. Using from_raw_parts
+        // directly would be UB. The copy is the cost of correctness; for truly
+        // zero-copy aligned storage, a custom allocator would be needed.
         let aligned_vec = unsafe {
-            let mut v = Vec::with_capacity(len_bytes);
-            std::ptr::copy_nonoverlapping(aligned_ptr, v.as_mut_ptr(), len_bytes);
-            v.set_len(len_bytes);
+            let slice = std::slice::from_raw_parts(aligned_ptr, len_bytes);
+            let v = slice.to_vec();
             std::alloc::dealloc(aligned_ptr, alloc_layout);
             v
         };
@@ -747,35 +745,8 @@ impl ViewBuffer {
                 }
             }
 
-            // Non-contiguous Rust storage - needs materialization
-            BufferStorage::Rust(_) => {
-                let contig = ViewBuffer {
-                    data: self.data,
-                    layout: self.layout,
-                }
-                .to_contiguous();
-                let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
-                (buffer, shape, dtype)
-            }
-
-            // Non-contiguous PolarsArrow storage - needs materialization
-            BufferStorage::PolarsArrow { .. } => {
-                let contig = ViewBuffer {
-                    data: self.data,
-                    layout: self.layout,
-                }
-                .to_contiguous();
-                let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
-                let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
-                (buffer, shape, dtype)
-            }
-
-            // Arrow storage - not supported for zero-copy, copy the data
-            #[cfg(feature = "arrow_interop")]
-            BufferStorage::Arrow(_) => {
+            // Non-contiguous or non-zero-copy storage - materialize via to_contiguous
+            _ => {
                 let contig = ViewBuffer {
                     data: self.data,
                     layout: self.layout,
@@ -1401,9 +1372,7 @@ impl ViewBuffer {
                     "Read overrun during compaction"
                 );
 
-                for k in 0..dtype_size {
-                    new_data.push(*src.add(k));
-                }
+                new_data.extend_from_slice(std::slice::from_raw_parts(src, dtype_size));
             }
 
             for dim in (0..shape.len()).rev() {

@@ -110,9 +110,19 @@ fn read_local_file(path: &str) -> Result<Vec<u8>, CloudError> {
     std::fs::read(Path::new(path)).map_err(|e| CloudError::ReadError(e.to_string()))
 }
 
-/// Create a tokio runtime for async operations.
-fn create_runtime() -> Result<Runtime, CloudError> {
-    Runtime::new().map_err(|e| CloudError::RuntimeError(e.to_string()))
+/// Get or create a tokio runtime for async operations.
+///
+/// Reuses a thread-local runtime to avoid the overhead of creating a new
+/// runtime for every cloud file read.
+fn get_runtime() -> Result<&'static Runtime, CloudError> {
+    use std::sync::OnceLock;
+    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+    if let Some(rt) = RUNTIME.get() {
+        return Ok(rt);
+    }
+    let rt = Runtime::new().map_err(|e| CloudError::RuntimeError(e.to_string()))?;
+    // Race is fine - OnceLock guarantees only one wins, others drop theirs
+    Ok(RUNTIME.get_or_init(|| rt))
 }
 
 /// Read a file from Amazon S3.
@@ -122,7 +132,7 @@ fn read_s3(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudEr
         .ok_or_else(|| CloudError::UrlParse("Missing bucket name in S3 URL".to_string()))?;
     let key = url.path().trim_start_matches('/');
 
-    let runtime = create_runtime()?;
+    let runtime = get_runtime()?;
 
     // Build S3 client with credentials
     let mut builder = AmazonS3Builder::new().with_bucket_name(bucket);
@@ -171,7 +181,7 @@ fn read_gcs(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudE
         .ok_or_else(|| CloudError::UrlParse("Missing bucket name in GCS URL".to_string()))?;
     let key = url.path().trim_start_matches('/');
 
-    let runtime = create_runtime()?;
+    let runtime = get_runtime()?;
 
     // Build GCS client
     let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(bucket);
@@ -210,7 +220,7 @@ fn read_azure(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, Clou
         .ok_or_else(|| CloudError::UrlParse("Missing container name in Azure URL".to_string()))?;
     let key = url.path().trim_start_matches('/');
 
-    let runtime = create_runtime()?;
+    let runtime = get_runtime()?;
 
     // Build Azure client
     let mut builder = MicrosoftAzureBuilder::new().with_container_name(container);
@@ -261,7 +271,7 @@ fn read_azure(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, Clou
 /// let bytes = read_http("https://example.com/image.png")?;
 /// ```
 fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
-    let runtime = create_runtime()?;
+    let runtime = get_runtime()?;
     let url_string = url.to_string();
 
     runtime.block_on(async {
