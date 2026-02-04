@@ -10,6 +10,7 @@ mod graph;
 mod output;
 mod params;
 mod pipeline;
+mod point;
 
 use polars::prelude::*;
 use pyo3::prelude::*;

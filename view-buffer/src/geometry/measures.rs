@@ -229,6 +229,171 @@ pub fn contour_winding(contour: &Contour) -> Winding {
     winding(&contour.exterior)
 }
 
+// ============================================================================
+// Point Distance Operations
+// ============================================================================
+
+/// Computes the minimum distance from a point to a line segment.
+///
+/// This is the distance to the closest point on the segment, not the infinite line.
+///
+/// # Arguments
+/// * `point` - The query point
+/// * `seg_start` - Start of the line segment
+/// * `seg_end` - End of the line segment
+///
+/// # Returns
+/// Minimum distance to the segment
+pub fn distance_to_segment(point: &Point, seg_start: &Point, seg_end: &Point) -> f64 {
+    let dx = seg_end.x - seg_start.x;
+    let dy = seg_end.y - seg_start.y;
+    let length_sq = dx * dx + dy * dy;
+
+    if length_sq < 1e-10 {
+        // Degenerate segment (start == end)
+        return point.distance_to(seg_start);
+    }
+
+    // Project point onto the line, clamped to [0, 1] for segment bounds
+    let t = ((point.x - seg_start.x) * dx + (point.y - seg_start.y) * dy) / length_sq;
+    let t_clamped = t.clamp(0.0, 1.0);
+
+    // Closest point on segment
+    let closest_x = seg_start.x + t_clamped * dx;
+    let closest_y = seg_start.y + t_clamped * dy;
+
+    let px = point.x - closest_x;
+    let py = point.y - closest_y;
+    (px * px + py * py).sqrt()
+}
+
+/// Computes the minimum distance from a point to a polygon boundary.
+///
+/// # Arguments
+/// * `point` - The query point
+/// * `polygon` - Slice of points forming a closed polygon
+///
+/// # Returns
+/// Minimum distance to any edge of the polygon
+pub fn distance_to_polygon(point: &Point, polygon: &[Point]) -> f64 {
+    if polygon.is_empty() {
+        return f64::INFINITY;
+    }
+    if polygon.len() == 1 {
+        return point.distance_to(&polygon[0]);
+    }
+
+    let n = polygon.len();
+    let mut min_dist = f64::INFINITY;
+
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let dist = distance_to_segment(point, &polygon[i], &polygon[j]);
+        if dist < min_dist {
+            min_dist = dist;
+        }
+    }
+
+    min_dist
+}
+
+/// Computes the minimum distance from a point to a contour boundary.
+///
+/// Considers both the exterior ring and any holes.
+///
+/// # Arguments
+/// * `point` - The query point
+/// * `contour` - The contour to measure distance to
+///
+/// # Returns
+/// Minimum distance to the contour boundary
+pub fn distance_to_contour(point: &Point, contour: &Contour) -> f64 {
+    let mut min_dist = distance_to_polygon(point, &contour.exterior);
+
+    for hole in &contour.holes {
+        let hole_dist = distance_to_polygon(point, hole);
+        if hole_dist < min_dist {
+            min_dist = hole_dist;
+        }
+    }
+
+    min_dist
+}
+
+/// Finds the nearest point on a polygon boundary.
+///
+/// # Arguments
+/// * `point` - The query point
+/// * `polygon` - Slice of points forming a closed polygon
+///
+/// # Returns
+/// The nearest point on the polygon boundary, or None if polygon is empty
+pub fn nearest_point_on_polygon(point: &Point, polygon: &[Point]) -> Option<Point> {
+    if polygon.is_empty() {
+        return None;
+    }
+    if polygon.len() == 1 {
+        return Some(polygon[0]);
+    }
+
+    let n = polygon.len();
+    let mut min_dist = f64::INFINITY;
+    let mut nearest = polygon[0];
+
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let seg_start = &polygon[i];
+        let seg_end = &polygon[j];
+
+        let dx = seg_end.x - seg_start.x;
+        let dy = seg_end.y - seg_start.y;
+        let length_sq = dx * dx + dy * dy;
+
+        let closest = if length_sq < 1e-10 {
+            *seg_start
+        } else {
+            let t = ((point.x - seg_start.x) * dx + (point.y - seg_start.y) * dy) / length_sq;
+            let t_clamped = t.clamp(0.0, 1.0);
+            Point::new(seg_start.x + t_clamped * dx, seg_start.y + t_clamped * dy)
+        };
+
+        let dist = point.distance_to(&closest);
+        if dist < min_dist {
+            min_dist = dist;
+            nearest = closest;
+        }
+    }
+
+    Some(nearest)
+}
+
+/// Finds the nearest point on a contour boundary.
+///
+/// Considers both the exterior ring and any holes.
+///
+/// # Arguments
+/// * `point` - The query point
+/// * `contour` - The contour to search
+///
+/// # Returns
+/// The nearest point on the contour boundary
+pub fn nearest_point_on_contour(point: &Point, contour: &Contour) -> Option<Point> {
+    let mut nearest = nearest_point_on_polygon(point, &contour.exterior)?;
+    let mut min_dist = point.distance_to(&nearest);
+
+    for hole in &contour.holes {
+        if let Some(hole_nearest) = nearest_point_on_polygon(point, hole) {
+            let hole_dist = point.distance_to(&hole_nearest);
+            if hole_dist < min_dist {
+                min_dist = hole_dist;
+                nearest = hole_nearest;
+            }
+        }
+    }
+
+    Some(nearest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +477,61 @@ mod tests {
     fn test_winding_cw() {
         let contour = Contour::from_tuples(&[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)]);
         assert_eq!(contour_winding(&contour), Winding::Clockwise);
+    }
+
+    #[test]
+    fn test_distance_to_segment() {
+        let seg_start = Point::new(0.0, 0.0);
+        let seg_end = Point::new(10.0, 0.0);
+
+        // Point perpendicular to middle of segment
+        let point = Point::new(5.0, 5.0);
+        assert!((distance_to_segment(&point, &seg_start, &seg_end) - 5.0).abs() < 1e-10);
+
+        // Point beyond end of segment
+        let point = Point::new(15.0, 0.0);
+        assert!((distance_to_segment(&point, &seg_start, &seg_end) - 5.0).abs() < 1e-10);
+
+        // Point on segment
+        let point = Point::new(5.0, 0.0);
+        assert!(distance_to_segment(&point, &seg_start, &seg_end) < 1e-10);
+    }
+
+    #[test]
+    fn test_distance_to_polygon() {
+        let polygon = vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ];
+
+        // Point outside, closest to right edge
+        let point = Point::new(15.0, 5.0);
+        assert!((distance_to_polygon(&point, &polygon) - 5.0).abs() < 1e-10);
+
+        // Point inside (still computes distance to boundary)
+        let point = Point::new(5.0, 5.0);
+        assert!((distance_to_polygon(&point, &polygon) - 5.0).abs() < 1e-10);
+
+        // Point on boundary
+        let point = Point::new(10.0, 5.0);
+        assert!(distance_to_polygon(&point, &polygon) < 1e-10);
+    }
+
+    #[test]
+    fn test_nearest_point_on_polygon() {
+        let polygon = vec![
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ];
+
+        // Point outside, closest to right edge
+        let point = Point::new(15.0, 5.0);
+        let nearest = nearest_point_on_polygon(&point, &polygon).unwrap();
+        assert!((nearest.x - 10.0).abs() < 1e-10);
+        assert!((nearest.y - 5.0).abs() < 1e-10);
     }
 }

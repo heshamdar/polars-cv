@@ -545,7 +545,7 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
     strides
 }
 
-use super::util::{linear_to_coords, coords_to_linear};
+use super::util::{coords_to_linear, linear_to_coords};
 
 #[cfg(test)]
 mod tests {

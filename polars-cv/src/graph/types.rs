@@ -140,7 +140,13 @@ impl UnifiedGraph {
             Ok(())
         }
         for spec in self.outputs.values() {
-            dfs(&spec.node, &self.nodes, &mut visited, &mut in_stack, &mut order)?;
+            dfs(
+                &spec.node,
+                &self.nodes,
+                &mut visited,
+                &mut in_stack,
+                &mut order,
+            )?;
         }
         Ok(order)
     }

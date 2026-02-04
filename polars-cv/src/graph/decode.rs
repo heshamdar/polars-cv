@@ -835,7 +835,9 @@ pub(crate) fn pad_buffer(
             // TODO: implement proper reflect/symmetric padding
             // For now, log a warning and fall back to edge padding which is
             // a better approximation than constant padding
-            eprintln!("Warning: {:?} pad mode not yet implemented, falling back to edge padding", mode);
+            eprintln!(
+                "Warning: {mode:?} pad mode not yet implemented, falling back to edge padding"
+            );
             pad_edge(buffer, top, bottom, left, right)
         }
     }
