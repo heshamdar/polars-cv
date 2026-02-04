@@ -238,22 +238,34 @@ impl ImageAdapter {
         // Encode based on data type and channels
         match (contiguous.dtype(), channels) {
             (crate::core::dtype::DType::U8, 1) => {
-                encoder.write_image::<colortype::Gray8>(w, h, contiguous.as_slice::<u8>()).map_err(tiff_err)?;
+                encoder
+                    .write_image::<colortype::Gray8>(w, h, contiguous.as_slice::<u8>())
+                    .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U8, 3) => {
-                encoder.write_image::<colortype::RGB8>(w, h, contiguous.as_slice::<u8>()).map_err(tiff_err)?;
+                encoder
+                    .write_image::<colortype::RGB8>(w, h, contiguous.as_slice::<u8>())
+                    .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U16, 1) => {
-                encoder.write_image::<colortype::Gray16>(w, h, contiguous.as_slice::<u16>()).map_err(tiff_err)?;
+                encoder
+                    .write_image::<colortype::Gray16>(w, h, contiguous.as_slice::<u16>())
+                    .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U16, 3) => {
-                encoder.write_image::<colortype::RGB16>(w, h, contiguous.as_slice::<u16>()).map_err(tiff_err)?;
+                encoder
+                    .write_image::<colortype::RGB16>(w, h, contiguous.as_slice::<u16>())
+                    .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::F32, 1) => {
-                encoder.write_image::<colortype::Gray32Float>(w, h, contiguous.as_slice::<f32>()).map_err(tiff_err)?;
+                encoder
+                    .write_image::<colortype::Gray32Float>(w, h, contiguous.as_slice::<f32>())
+                    .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::F64, 1) => {
-                encoder.write_image::<colortype::Gray64Float>(w, h, contiguous.as_slice::<f64>()).map_err(tiff_err)?;
+                encoder
+                    .write_image::<colortype::Gray64Float>(w, h, contiguous.as_slice::<f64>())
+                    .map_err(tiff_err)?;
             }
             (dtype, channels) => {
                 return Err(image::ImageError::Parameter(
@@ -310,19 +322,20 @@ impl ImageAdapter {
         })?;
 
         // Helper: determine channel count from TIFF color type
-        let channels_for = |ct: &tiff::ColorType, allow_alpha: bool| -> Result<usize, image::ImageError> {
-            match ct {
-                tiff::ColorType::Gray(_) => Ok(1),
-                tiff::ColorType::RGB(_) => Ok(3),
-                tiff::ColorType::Palette(_) if allow_alpha => Ok(3),
-                tiff::ColorType::GrayA(_) if allow_alpha => Ok(2),
-                tiff::ColorType::RGBA(_) if allow_alpha => Ok(4),
-                _ => Err(image::ImageError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Unsupported TIFF color type: {ct:?}"),
-                ))),
-            }
-        };
+        let channels_for =
+            |ct: &tiff::ColorType, allow_alpha: bool| -> Result<usize, image::ImageError> {
+                match ct {
+                    tiff::ColorType::Gray(_) => Ok(1),
+                    tiff::ColorType::RGB(_) => Ok(3),
+                    tiff::ColorType::Palette(_) if allow_alpha => Ok(3),
+                    tiff::ColorType::GrayA(_) if allow_alpha => Ok(2),
+                    tiff::ColorType::RGBA(_) if allow_alpha => Ok(4),
+                    _ => Err(image::ImageError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Unsupported TIFF color type: {ct:?}"),
+                    ))),
+                }
+            };
 
         // Helper: build shape from dimensions and channels
         let make_shape = |h: u32, w: u32, c: usize| -> Vec<usize> {

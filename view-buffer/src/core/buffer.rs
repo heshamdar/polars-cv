@@ -631,7 +631,7 @@ impl ViewBuffer {
             #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(_) => None,
             #[cfg(feature = "polars_interop")]
-            BufferStorage::PolarsArrow { .. } => None
+            BufferStorage::PolarsArrow { .. } => None,
         }
     }
 
