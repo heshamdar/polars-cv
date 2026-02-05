@@ -35,6 +35,18 @@ Find the index of the maximum or minimum value along an axis.
 Pipeline().source("image_bytes").grayscale().reduce_argmax(axis=1)
 ```
 
+## Percentile
+
+Compute the q-th percentile of all values using linear interpolation (matching NumPy's default behavior).
+
+```python
+# Compute median (50th percentile)
+Pipeline().source("image_bytes").grayscale().reduce_percentile(q=50)
+
+# Compute 95th percentile
+Pipeline().source("image_bytes").grayscale().reduce_percentile(q=95)
+```
+
 ## Popcount
 
 Count the number of set bits (1s) in the buffer. Useful for binary masks or Hamming distances.

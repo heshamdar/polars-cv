@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 if TYPE_CHECKING:
+    from polars_cv._graph import PipelineGraph
     from polars_cv.pipeline import Pipeline
 
 
