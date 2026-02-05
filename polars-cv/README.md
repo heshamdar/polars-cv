@@ -1,5 +1,5 @@
 # polars-cv
-**ℹ️ Note:** 
+**ℹ️ Note:**
 This is a largely AI developed project and still in its early stages. Use at your own discretion.
 
 A Polars plugin for high-performance vision and array operations.
@@ -62,7 +62,8 @@ result = df.with_columns(
 - **Image**: `resize`, `grayscale`, `blur`, `threshold`, `crop`, `rotate`, `pad`, `flip`.
 - **Compute**: `normalize`, `scale`, `clamp`, `relu`, `cast`.
 - **Geometry**: `extract_contours`, `rasterize`, `area`, `perimeter`, `centroid`, `bounding_box`.
+- **Points**: `normalize`, `translate`, `scale`, `rotate`, `distance`, `manhattan_distance`, `distance_to_contour`, `signed_distance_to_contour`, `nearest_point_on_contour`, `angle_to`, `midpoint`, `interpolate`, `within_bbox`.
 - **Analysis**: `histogram`, `perceptual_hash`, `extract_shape`.
-- **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`.
+- **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_percentile`.
 
 For full details, see the [Documentation](https://heshamdar.github.io/polars-cv/)

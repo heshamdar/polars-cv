@@ -366,7 +366,7 @@ class PointNamespace:
         Args:
             other: Target point column.
             t: Interpolation parameter (0 = self, 1 = other).
-               Values outside [0, 1] extrapolate beyond the endpoints.
+                Values outside [0, 1] extrapolate beyond the endpoints.
 
         Returns:
             Interpolated point.

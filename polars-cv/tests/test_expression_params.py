@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
-from polars_cv.geometry import CONTOUR_SCHEMA, POINT_SCHEMA
 
 
 # ---------------------------------------------------------------------------
@@ -47,9 +46,7 @@ class TestContourExpressionParams:
 
     def test_normalize_rejects_both_expr(self, square_contour: dict) -> None:
         with pytest.raises(TypeError, match="expression parameters"):
-            pl.col("c").contour.normalize(
-                ref_width=pl.col("w"), ref_height=pl.col("h")
-            )
+            pl.col("c").contour.normalize(ref_width=pl.col("w"), ref_height=pl.col("h"))
 
     def test_normalize_accepts_literal_ints(self, square_contour: dict) -> None:
         """Sanity check: literal ints should not raise."""

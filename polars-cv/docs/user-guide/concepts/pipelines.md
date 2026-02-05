@@ -56,6 +56,7 @@ result = df.with_columns(
 | `numpy` | Binary | NumPy-compatible bytes |
 | `png` | Binary | PNG bytes |
 | `jpeg` | Binary | JPEG bytes |
+| `tiff` | Binary | TIFF bytes with LZW compression (supports floating-point) |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
 | `native` | Varies | Native Python type (for scalars/vectors) |
@@ -84,4 +85,3 @@ pipe = (
 
 - [Domains](domains.md) - Multi-domain pipelines
 - [Multi-Output](../composition/multi-output.md) - Extracting multiple results
-

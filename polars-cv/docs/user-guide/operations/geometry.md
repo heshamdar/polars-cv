@@ -1,22 +1,26 @@
 # Geometry Operations
 
-polars-cv provides comprehensive geometry operations through the `.contour` namespace on Polars expressions.
+polars-cv provides two expression namespaces for geometry: `.contour` for polygon operations and `.point` for point operations.
 
-## Contour Schema
+## Schemas
 
-Contours are stored as Polars Struct columns:
+Geometry data uses Polars Struct columns:
 
 ```python
 from polars_cv import CONTOUR_SCHEMA, POINT_SCHEMA, BBOX_SCHEMA
 
 # POINT_SCHEMA: Struct({x: f64, y: f64})
-# CONTOUR_SCHEMA: Struct({exterior: List(POINT), holes: List(List(POINT)), is_closed: bool})
 # BBOX_SCHEMA: Struct({x: f64, y: f64, width: f64, height: f64})
+# CONTOUR_SCHEMA: Struct({exterior: List(POINT), holes: List(List(POINT)), is_closed: bool})
 ```
 
-## Measurements
+---
 
-Compute geometric properties directly on columns:
+## Contours
+
+The `.contour` namespace operates on polygon columns.
+
+### Measurements
 
 ```python
 df.with_columns(
@@ -27,23 +31,22 @@ df.with_columns(
 )
 ```
 
-## Transforms
+### Transforms
 
 ```python
 df.with_columns(
     moved=pl.col("contour").contour.translate(dx=10, dy=20),
     scaled=pl.col("contour").contour.scale(sx=2.0, sy=2.0),
-    simple=pl.col("contour").contour.simplify(tolerance=1.0),
+    simplified=pl.col("contour").contour.simplify(tolerance=1.0),
     hull=pl.col("contour").contour.convex_hull(),
 )
 ```
 
-## Rasterization
+### Rasterization
 
-Convert contours to binary masks using pipelines:
+Convert contours to binary masks:
 
 ```python
-# Rasterize to 200x200 mask
 pipe = Pipeline().source("contour", width=200, height=200)
 
 result = df.with_columns(
@@ -51,18 +54,57 @@ result = df.with_columns(
 )
 ```
 
-### Shape Inference
-
-Infer dimensions from an existing image pipeline:
+Infer dimensions from an existing image:
 
 ```python
 img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(200, 200))
-
-# Rasterize contour to match image dimensions
 mask = pl.col("contour").cv.pipe(Pipeline().source("contour", shape=img))
 ```
 
-## Native Mask Metrics
+---
+
+## Points
+
+The `.point` namespace operates on point columns.
+
+### Transforms
+
+```python
+df.with_columns(
+    normalized=pl.col("point").point.normalize(ref_width=100, ref_height=100),
+    absolute=pl.col("point").point.to_absolute(ref_width=100, ref_height=100),
+    moved=pl.col("point").point.translate(dx=10, dy=20),
+    scaled=pl.col("point").point.scale(sx=2.0, sy=2.0),
+    rotated=pl.col("point").point.rotate(math.pi / 2),
+)
+```
+
+### Distances
+
+```python
+df.with_columns(
+    euclidean=pl.col("p1").point.distance(pl.col("p2")),
+    manhattan=pl.col("p1").point.manhattan_distance(pl.col("p2")),
+    to_boundary=pl.col("point").point.distance_to_contour(pl.col("contour")),
+    signed=pl.col("point").point.signed_distance_to_contour(pl.col("contour")),
+)
+```
+
+### Geometric Operations
+
+```python
+df.with_columns(
+    angle=pl.col("p1").point.angle_to(pl.col("p2")),
+    mid=pl.col("p1").point.midpoint(pl.col("p2")),
+    interp=pl.col("p1").point.interpolate(pl.col("p2"), t=0.25),
+    nearest=pl.col("point").point.nearest_point_on_contour(pl.col("contour")),
+    inside=pl.col("point").point.within_bbox(pl.col("bbox")),
+)
+```
+
+---
+
+## Mask Metrics
 
 Pixel-based metrics for binary masks:
 
@@ -74,4 +116,3 @@ result = df.with_columns(
     dice=mask_dice(pred_expr, gt_expr),
 )
 ```
-
