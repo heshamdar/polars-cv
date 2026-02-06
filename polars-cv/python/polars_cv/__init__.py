@@ -129,7 +129,38 @@ def numpy_from_struct(
     else:
         offset = int(offset)
 
-    # Create numpy dtype
+    # Create numpy dtype — validate against allowlist to prevent arbitrary dtype strings
+    _ALLOWED_DTYPES = frozenset(
+        {
+            "uint8",
+            "u1",
+            "int8",
+            "i1",
+            "uint16",
+            "u2",
+            "int16",
+            "i2",
+            "uint32",
+            "u4",
+            "int32",
+            "i4",
+            "uint64",
+            "u8",
+            "int64",
+            "i8",
+            "float16",
+            "f2",
+            "float32",
+            "f4",
+            "float64",
+            "f8",
+            "bool",
+            "b1",
+        }
+    )
+    if dtype_str not in _ALLOWED_DTYPES:
+        msg = f"Unsupported dtype '{dtype_str}'. Allowed: {sorted(_ALLOWED_DTYPES)}"
+        raise ValueError(msg)
     dtype = np.dtype(dtype_str)
 
     if copy:
@@ -137,6 +168,9 @@ def numpy_from_struct(
         arr = np.frombuffer(bytes(data), dtype=dtype, offset=offset).copy()
         return arr.reshape(shape)
     else:
+        # TODO: True zero-copy requires using memoryview or buffer protocol
+        # directly instead of bytes(data), which always copies. This depends
+        # on the underlying data object supporting the buffer protocol.
         # Zero-copy path: create strided view if strides are available
         if strides is not None:
             # Create strided numpy array view directly

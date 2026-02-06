@@ -75,7 +75,9 @@ def apply_pipeline(expr: "IntoExpr", pipe: "Pipeline") -> pl.Expr:
     graph = pipe.to_graph(column=expr)
 
     # Single output - the terminal node alias is "_output"
-    assert pipe._sink is not None
+    if pipe._sink is None:
+        msg = "Pipeline must have a sink before it can be applied as an expression."
+        raise RuntimeError(msg)
     sink_params = {}
     if pipe._sink.quality != 85:
         sink_params["quality"] = pipe._sink.quality

@@ -202,8 +202,11 @@ impl UnifiedGraph {
             results.insert((*alias).clone(), Vec::with_capacity(len));
         }
         let batch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Allocate node_outputs once outside the loop and reuse via clear()
+            // to avoid per-row HashMap allocation overhead.
+            let mut node_outputs: HashMap<String, NodeOutput> = HashMap::new();
             for row_idx in 0..len {
-                let mut node_outputs: HashMap<String, NodeOutput> = HashMap::new();
+                node_outputs.clear();
                 for node_id in order {
                     let node = match self.nodes.get(node_id) {
                         Some(n) => n,
@@ -288,6 +291,9 @@ impl UnifiedGraph {
                                 }
                                 _ => None,
                             }
+                        // TODO: Add path allowlisting/sandboxing for file_path source.
+                        // Currently reads arbitrary local files without sanitization.
+                        // This is safe when data comes from trusted input only.
                         } else if source_format == "file_path" {
                             if input_series.dtype() == &DataType::Null {
                                 None
@@ -932,6 +938,21 @@ pub(crate) enum TypedBufferData {
     F64(Vec<f64>),
 }
 impl TypedBufferData {
+    /// Get the number of elements in this typed buffer.
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            TypedBufferData::U8(v) => v.len(),
+            TypedBufferData::I8(v) => v.len(),
+            TypedBufferData::U16(v) => v.len(),
+            TypedBufferData::I16(v) => v.len(),
+            TypedBufferData::U32(v) => v.len(),
+            TypedBufferData::I32(v) => v.len(),
+            TypedBufferData::U64(v) => v.len(),
+            TypedBufferData::I64(v) => v.len(),
+            TypedBufferData::F32(v) => v.len(),
+            TypedBufferData::F64(v) => v.len(),
+        }
+    }
     /// Extract typed data from a ViewBuffer, preserving its dtype.
     pub(crate) fn from_buffer(buf: &ViewBuffer) -> Self {
         let contig = buf.to_contiguous();

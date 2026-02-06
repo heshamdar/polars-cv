@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Union
+from typing import Any, ClassVar, Union
 
 try:
     from typing import TypeAlias
@@ -377,6 +377,37 @@ class CloudOptions:
     azure_storage_access_key: str | None = None
     anonymous: bool | None = None
 
+    # Fields that contain sensitive credential data and should be masked
+    _SENSITIVE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "aws_secret_access_key",
+            "aws_access_key_id",
+            "aws_session_token",
+            "azure_storage_access_key",
+        }
+    )
+
+    def __repr__(self) -> str:
+        """Return string representation with sensitive fields masked."""
+        parts: list[str] = []
+        for field_name in [
+            "aws_region",
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+            "gcs_service_account_key",
+            "azure_storage_account",
+            "azure_storage_access_key",
+            "anonymous",
+        ]:
+            value = getattr(self, field_name)
+            if value is not None:
+                if field_name in self._SENSITIVE_FIELDS:
+                    parts.append(f"{field_name}='***'")
+                else:
+                    parts.append(f"{field_name}={value!r}")
+        return f"CloudOptions({', '.join(parts)})"
+
     def to_dict(self) -> dict[str, str]:
         """
         Serialize to dictionary for JSON encoding.
@@ -437,6 +468,7 @@ class SourceSpec:
             and self.fill_value == other.fill_value
             and self.background == other.background
             and self.shape_pipeline == other.shape_pipeline
+            and self.cloud_options == other.cloud_options
             and self.require_contiguous == other.require_contiguous
         )
 
@@ -451,6 +483,7 @@ class SourceSpec:
                 self.fill_value,
                 self.background,
                 str(self.shape_pipeline) if self.shape_pipeline else None,
+                str(self.cloud_options) if self.cloud_options else None,
                 self.require_contiguous,
             )
         )
@@ -572,7 +605,7 @@ class OutputSpec:
 
     alias: str  # The user-defined alias name
     format: SinkFormat  # Output format for this alias
-    quality: int = 85  # For JPEG format
+    quality: int = 85  # For JPEG and WebP
     shape: list[int] | None = None  # For ARRAY format
 
     def to_dict(self) -> dict[str, Any]:
@@ -581,7 +614,7 @@ class OutputSpec:
             "alias": self.alias,
             "format": self.format.value,
         }
-        if self.format == SinkFormat.JPEG:
+        if self.format == SinkFormat.JPEG or self.format == SinkFormat.WEBP:
             result["quality"] = self.quality
         if self.format == SinkFormat.ARRAY and self.shape is not None:
             result["shape"] = self.shape

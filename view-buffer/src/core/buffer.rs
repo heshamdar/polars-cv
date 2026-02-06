@@ -1553,6 +1553,10 @@ impl ViewBuffer {
     }
 
     /// Casts the buffer to a different data type.
+    ///
+    /// TODO: Only 4 of 90 possible cast pairs are implemented. Consider
+    /// unifying with `cast_to` which has more complete coverage, or
+    /// systematically implementing all pairs.
     pub fn cast(&self, target: DType) -> Self {
         if self.dtype() == target {
             return self.clone();
