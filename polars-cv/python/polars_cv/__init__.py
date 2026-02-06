@@ -168,25 +168,46 @@ def numpy_from_struct(
         arr = np.frombuffer(bytes(data), dtype=dtype, offset=offset).copy()
         return arr.reshape(shape)
     else:
-        # TODO: True zero-copy requires using memoryview or buffer protocol
-        # directly instead of bytes(data), which always copies. This depends
-        # on the underlying data object supporting the buffer protocol.
-        # Zero-copy path: create strided view if strides are available
+        # Zero-copy path: avoid bytes(data) which always copies.
+        # Use the buffer protocol directly when available.
+        buf = _as_buffer(data)
+
         if strides is not None:
             # Create strided numpy array view directly
-            # This is the true zero-copy path for non-contiguous data
             arr = np.ndarray(
                 shape=shape,
                 dtype=dtype,
-                buffer=bytes(data),
+                buffer=buf,
                 offset=offset,
                 strides=strides,
             )
             return arr
         else:
-            # Legacy path: no strides, assume contiguous
-            arr = np.frombuffer(bytes(data), dtype=dtype, offset=offset)
+            # Contiguous path
+            arr = np.frombuffer(buf, dtype=dtype, offset=offset)
             return arr.reshape(shape)
+
+
+def _as_buffer(data: object) -> object:
+    """Get a buffer-protocol object from data, avoiding unnecessary copies.
+
+    Tries to use memoryview for zero-copy access. Falls back to bytes()
+    if the object doesn't support the buffer protocol.
+
+    Args:
+        data: The data object (typically bytes from a Polars Binary column).
+
+    Returns:
+        A buffer-protocol compatible object.
+    """
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        return data
+    # Try memoryview for objects that support the buffer protocol
+    try:
+        return memoryview(data)  # type: ignore[arg-type]
+    except TypeError:
+        # Fallback: copy into bytes
+        return bytes(data)  # type: ignore[arg-type]
 
 
 def mask_iou(

@@ -342,6 +342,7 @@ impl ReductionOp {
         }
     }
 
+    #[allow(clippy::needless_range_loop)]
     fn reduce_axis<T, F>(&self, buffer: &ViewBuffer, axis: usize, f: F) -> ViewBuffer
     where
         T: Copy + Default + ViewType + 'static,
@@ -364,27 +365,34 @@ impl ReductionOp {
         // Compute strides
         let strides = compute_strides(shape);
 
-        // Iterate over output positions
+        // Allocate gather buffer once and reuse for each output element
+        // to avoid O(out_size) heap allocations.
+        let mut gather_buf = vec![T::default(); axis_size];
+        let mut in_coords = vec![0usize; shape.len()];
+
         for (out_idx, out) in output.iter_mut().enumerate() {
-            // Convert to coordinates
             let out_coords = linear_to_coords(out_idx, &out_shape);
 
-            // Gather values along axis
-            let mut slice = Vec::with_capacity(axis_size);
-            for a in 0..axis_size {
-                // Insert axis coordinate
-                let mut in_coords = out_coords.clone();
-                in_coords.insert(axis, a);
-                let in_idx = coords_to_linear(&in_coords, &strides);
-                slice.push(data[in_idx]);
+            // Build full input coordinates from output coordinates with axis slot
+            for (i, &c) in out_coords.iter().enumerate() {
+                let target = if i < axis { i } else { i + 1 };
+                in_coords[target] = c;
             }
 
-            *out = f(&slice);
+            // Gather values along the reduction axis
+            for a in 0..axis_size {
+                in_coords[axis] = a;
+                let in_idx = coords_to_linear(&in_coords, &strides);
+                gather_buf[a] = data[in_idx];
+            }
+
+            *out = f(&gather_buf);
         }
 
         ViewBuffer::from_vec_with_shape(output, out_shape)
     }
 
+    #[allow(clippy::needless_range_loop)]
     fn reduce_axis_to_f64<T, F>(&self, buffer: &ViewBuffer, axis: usize, f: F) -> ViewBuffer
     where
         T: Copy + Default + num_traits::NumCast + ViewType + 'static,
@@ -405,18 +413,25 @@ impl ReductionOp {
 
         let strides = compute_strides(shape);
 
+        // Allocate gather buffer once and reuse
+        let mut gather_buf = vec![T::default(); axis_size];
+        let mut in_coords = vec![0usize; shape.len()];
+
         for (out_idx, out) in output.iter_mut().enumerate() {
             let out_coords = linear_to_coords(out_idx, &out_shape);
 
-            let mut slice = Vec::with_capacity(axis_size);
-            for a in 0..axis_size {
-                let mut in_coords = out_coords.clone();
-                in_coords.insert(axis, a);
-                let in_idx = coords_to_linear(&in_coords, &strides);
-                slice.push(data[in_idx]);
+            for (i, &c) in out_coords.iter().enumerate() {
+                let target = if i < axis { i } else { i + 1 };
+                in_coords[target] = c;
             }
 
-            *out = f(&slice);
+            for a in 0..axis_size {
+                in_coords[axis] = a;
+                let in_idx = coords_to_linear(&in_coords, &strides);
+                gather_buf[a] = data[in_idx];
+            }
+
+            *out = f(&gather_buf);
         }
 
         ViewBuffer::from_vec_with_shape(output, out_shape)
@@ -441,18 +456,25 @@ impl ReductionOp {
 
         let strides = compute_strides(shape);
 
+        // Reusable coordinate buffer (avoids per-iteration clone + insert)
+        let mut in_coords = vec![0usize; shape.len()];
+
         for (out_idx, out) in output.iter_mut().enumerate() {
             let out_coords = linear_to_coords(out_idx, &out_shape);
 
-            let mut best_idx = 0usize;
-            let mut in_coords = out_coords.clone();
-            in_coords.insert(axis, 0);
+            // Build full coordinates from output coords
+            for (i, &c) in out_coords.iter().enumerate() {
+                let target = if i < axis { i } else { i + 1 };
+                in_coords[target] = c;
+            }
+
+            in_coords[axis] = 0;
             let first_in_idx = coords_to_linear(&in_coords, &strides);
             let mut best_val = data[first_in_idx];
+            let mut best_idx = 0usize;
 
             for a in 1..axis_size {
-                let mut in_coords = out_coords.clone();
-                in_coords.insert(axis, a);
+                in_coords[axis] = a;
                 let in_idx = coords_to_linear(&in_coords, &strides);
                 let val = data[in_idx];
 
