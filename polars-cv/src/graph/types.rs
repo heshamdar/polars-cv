@@ -954,19 +954,35 @@ impl TypedBufferData {
         }
     }
     /// Extract typed data from a ViewBuffer, preserving its dtype.
+    ///
+    /// The buffer is made contiguous if it isn't already. If the caller
+    /// has already ensured contiguity (e.g. via `to_contiguous()`), use
+    /// `from_contiguous_buffer` instead to avoid redundant work.
+    #[allow(dead_code)]
     pub(crate) fn from_buffer(buf: &ViewBuffer) -> Self {
         let contig = buf.to_contiguous();
-        match contig.dtype() {
-            view_buffer::DType::U8 => TypedBufferData::U8(contig.as_slice::<u8>().to_vec()),
-            view_buffer::DType::I8 => TypedBufferData::I8(contig.as_slice::<i8>().to_vec()),
-            view_buffer::DType::U16 => TypedBufferData::U16(contig.as_slice::<u16>().to_vec()),
-            view_buffer::DType::I16 => TypedBufferData::I16(contig.as_slice::<i16>().to_vec()),
-            view_buffer::DType::U32 => TypedBufferData::U32(contig.as_slice::<u32>().to_vec()),
-            view_buffer::DType::I32 => TypedBufferData::I32(contig.as_slice::<i32>().to_vec()),
-            view_buffer::DType::U64 => TypedBufferData::U64(contig.as_slice::<u64>().to_vec()),
-            view_buffer::DType::I64 => TypedBufferData::I64(contig.as_slice::<i64>().to_vec()),
-            view_buffer::DType::F32 => TypedBufferData::F32(contig.as_slice::<f32>().to_vec()),
-            view_buffer::DType::F64 => TypedBufferData::F64(contig.as_slice::<f64>().to_vec()),
+        Self::from_contiguous_buffer(&contig)
+    }
+    /// Extract typed data from a buffer that is already contiguous.
+    ///
+    /// This avoids the redundant `to_contiguous()` call when the caller
+    /// has already materialized the buffer.
+    ///
+    /// # Panics
+    /// Panics if the buffer is not contiguous (via `as_slice` assertion).
+    pub(crate) fn from_contiguous_buffer(buf: &ViewBuffer) -> Self {
+        // as_slice asserts contiguity internally
+        match buf.dtype() {
+            view_buffer::DType::U8 => TypedBufferData::U8(buf.as_slice::<u8>().to_vec()),
+            view_buffer::DType::I8 => TypedBufferData::I8(buf.as_slice::<i8>().to_vec()),
+            view_buffer::DType::U16 => TypedBufferData::U16(buf.as_slice::<u16>().to_vec()),
+            view_buffer::DType::I16 => TypedBufferData::I16(buf.as_slice::<i16>().to_vec()),
+            view_buffer::DType::U32 => TypedBufferData::U32(buf.as_slice::<u32>().to_vec()),
+            view_buffer::DType::I32 => TypedBufferData::I32(buf.as_slice::<i32>().to_vec()),
+            view_buffer::DType::U64 => TypedBufferData::U64(buf.as_slice::<u64>().to_vec()),
+            view_buffer::DType::I64 => TypedBufferData::I64(buf.as_slice::<i64>().to_vec()),
+            view_buffer::DType::F32 => TypedBufferData::F32(buf.as_slice::<f32>().to_vec()),
+            view_buffer::DType::F64 => TypedBufferData::F64(buf.as_slice::<f64>().to_vec()),
         }
     }
     /// Get the Polars DataType for this typed data.

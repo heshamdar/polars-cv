@@ -120,69 +120,91 @@ impl BinaryOp {
 
         let same_shape = a.shape() == b.shape() && a.shape() == output_shape;
 
-        for (i, out) in output.iter_mut().enumerate() {
-            let (a_val, b_val) = if same_shape {
-                (a_data[i], b_data[i])
-            } else {
+        if same_shape {
+            // Fast path: same shapes, process in chunks for better auto-vectorization
+            Self::execute_u8_same_shape(self, a_data, b_data, &mut output);
+        } else {
+            // Broadcast path: element-by-element with coordinate mapping
+            for (i, out) in output.iter_mut().enumerate() {
                 let coords = linear_to_coords(i, output_shape);
                 let a_idx = broadcast_index(&coords, a.shape());
                 let b_idx = broadcast_index(&coords, b.shape());
-                (a_data[a_idx], b_data[b_idx])
-            };
-
-            *out = match self {
-                BinaryOp::Add => a_val.saturating_add(b_val),
-                BinaryOp::Subtract => a_val.saturating_sub(b_val),
-                BinaryOp::Multiply => {
-                    // Saturating multiply: clamp to 255
-                    let result = (a_val as u16) * (b_val as u16);
-                    if result > 255 {
-                        255
-                    } else {
-                        result as u8
-                    }
-                }
-                BinaryOp::Blend => {
-                    // Normalized blend: (a/255) * (b/255) * 255
-                    // = (a * b) / 255
-                    let product = (a_val as u32) * (b_val as u32);
-                    // Use rounding division: (product + 127) / 255
-                    ((product + 127) / 255) as u8
-                }
-                BinaryOp::Divide => {
-                    // Integer division with zero protection
-                    if b_val == 0 {
-                        0
-                    } else {
-                        a_val / b_val
-                    }
-                }
-                BinaryOp::Ratio => {
-                    // Scaled ratio: (a/b) * 255, clamped
-                    if b_val == 0 {
-                        if a_val == 0 {
-                            0
-                        } else {
-                            255 // a/0 where a > 0 saturates to max
-                        }
-                    } else {
-                        let ratio = (a_val as u32) * 255 / (b_val as u32);
-                        if ratio > 255 {
-                            255
-                        } else {
-                            ratio as u8
-                        }
-                    }
-                }
-                BinaryOp::Maximum => a_val.max(b_val),
-                BinaryOp::Minimum => a_val.min(b_val),
-                BinaryOp::BitwiseAnd => a_val & b_val,
-                BinaryOp::BitwiseOr => a_val | b_val,
-                BinaryOp::BitwiseXor => a_val ^ b_val,
-            };
+                *out = self.apply_u8(a_data[a_idx], b_data[b_idx]);
+            }
         }
 
         ViewBuffer::from_vec_with_shape(output, output_shape.to_vec())
+    }
+
+    /// Apply u8 binary operation on a single pair of values.
+    #[inline(always)]
+    fn apply_u8(&self, a_val: u8, b_val: u8) -> u8 {
+        match self {
+            BinaryOp::Add => a_val.saturating_add(b_val),
+            BinaryOp::Subtract => a_val.saturating_sub(b_val),
+            BinaryOp::Multiply => {
+                let result = (a_val as u16) * (b_val as u16);
+                if result > 255 {
+                    255
+                } else {
+                    result as u8
+                }
+            }
+            BinaryOp::Blend => {
+                let product = (a_val as u32) * (b_val as u32);
+                ((product + 127) / 255) as u8
+            }
+            BinaryOp::Divide => {
+                if b_val == 0 {
+                    0
+                } else {
+                    a_val / b_val
+                }
+            }
+            BinaryOp::Ratio => {
+                if b_val == 0 {
+                    if a_val == 0 {
+                        0
+                    } else {
+                        255
+                    }
+                } else {
+                    let ratio = (a_val as u32) * 255 / (b_val as u32);
+                    if ratio > 255 {
+                        255
+                    } else {
+                        ratio as u8
+                    }
+                }
+            }
+            BinaryOp::Maximum => a_val.max(b_val),
+            BinaryOp::Minimum => a_val.min(b_val),
+            BinaryOp::BitwiseAnd => a_val & b_val,
+            BinaryOp::BitwiseOr => a_val | b_val,
+            BinaryOp::BitwiseXor => a_val ^ b_val,
+        }
+    }
+
+    /// SIMD-friendly same-shape u8 operation using chunked processing.
+    #[inline]
+    fn execute_u8_same_shape(&self, a: &[u8], b: &[u8], output: &mut [u8]) {
+        // Process in chunks of 32 for u8 (32 bytes = 256 bits = AVX2)
+        const CHUNK: usize = 32;
+        let len = output.len();
+        let chunks = len / CHUNK;
+        let remainder = len % CHUNK;
+
+        for c in 0..chunks {
+            let base = c * CHUNK;
+            for j in 0..CHUNK {
+                output[base + j] = self.apply_u8(a[base + j], b[base + j]);
+            }
+        }
+
+        let rem_start = chunks * CHUNK;
+        for j in 0..remainder {
+            output[rem_start + j] = self.apply_u8(a[rem_start + j], b[rem_start + j]);
+        }
     }
 
     /// Execute operation on u16 buffers with image-processing semantics.
@@ -263,6 +285,9 @@ impl BinaryOp {
     }
 
     /// Execute operation on float buffers with standard numerical semantics.
+    ///
+    /// Uses chunked processing for same-shape operations to enable SIMD
+    /// auto-vectorization (e.g. 8 f32s = 256-bit AVX).
     fn execute_float<T>(&self, a: &ViewBuffer, b: &ViewBuffer, output_shape: &[usize]) -> ViewBuffer
     where
         T: Copy
@@ -287,56 +312,120 @@ impl BinaryOp {
         let same_shape = a.shape() == b.shape() && a.shape() == output_shape;
         let zero: T = num_traits::NumCast::from(0.0f64).unwrap_or(T::default());
 
-        for (i, out) in output.iter_mut().enumerate() {
-            let (a_val, b_val) = if same_shape {
-                (a_data[i], b_data[i])
-            } else {
+        if same_shape {
+            // Fast path: chunked processing for SIMD auto-vectorization
+            // Process in chunks of 8 (f32 x 8 = 256 bits = AVX, f64 x 4 = 256 bits)
+            const CHUNK: usize = 8;
+            let chunks = total_elements / CHUNK;
+            let remainder = total_elements % CHUNK;
+
+            // Simple operations get dedicated tight loops for best vectorization
+            match self {
+                BinaryOp::Add => {
+                    for c in 0..chunks {
+                        let base = c * CHUNK;
+                        for j in 0..CHUNK {
+                            output[base + j] = a_data[base + j] + b_data[base + j];
+                        }
+                    }
+                    let rem = chunks * CHUNK;
+                    for j in 0..remainder {
+                        output[rem + j] = a_data[rem + j] + b_data[rem + j];
+                    }
+                }
+                BinaryOp::Subtract => {
+                    for c in 0..chunks {
+                        let base = c * CHUNK;
+                        for j in 0..CHUNK {
+                            output[base + j] = a_data[base + j] - b_data[base + j];
+                        }
+                    }
+                    let rem = chunks * CHUNK;
+                    for j in 0..remainder {
+                        output[rem + j] = a_data[rem + j] - b_data[rem + j];
+                    }
+                }
+                BinaryOp::Multiply | BinaryOp::Blend => {
+                    for c in 0..chunks {
+                        let base = c * CHUNK;
+                        for j in 0..CHUNK {
+                            output[base + j] = a_data[base + j] * b_data[base + j];
+                        }
+                    }
+                    let rem = chunks * CHUNK;
+                    for j in 0..remainder {
+                        output[rem + j] = a_data[rem + j] * b_data[rem + j];
+                    }
+                }
+                _ => {
+                    // Other ops: fall through to per-element
+                    for (i, out) in output.iter_mut().enumerate() {
+                        *out = self.apply_float(a_data[i], b_data[i], zero);
+                    }
+                }
+            }
+        } else {
+            // Broadcast path: element-by-element with coordinate mapping
+            for (i, out) in output.iter_mut().enumerate() {
                 let coords = linear_to_coords(i, output_shape);
                 let a_idx = broadcast_index(&coords, a.shape());
                 let b_idx = broadcast_index(&coords, b.shape());
-                (a_data[a_idx], b_data[b_idx])
-            };
-
-            *out = match self {
-                BinaryOp::Add => a_val + b_val,
-                BinaryOp::Subtract => a_val - b_val,
-                BinaryOp::Multiply | BinaryOp::Blend => a_val * b_val,
-                BinaryOp::Divide | BinaryOp::Ratio => {
-                    if b_val == zero {
-                        zero
-                    } else {
-                        a_val / b_val
-                    }
-                }
-                BinaryOp::Maximum => {
-                    if a_val > b_val {
-                        a_val
-                    } else {
-                        b_val
-                    }
-                }
-                BinaryOp::Minimum => {
-                    if a_val < b_val {
-                        a_val
-                    } else {
-                        b_val
-                    }
-                }
-                BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
-                    let a_int: i64 = num_traits::NumCast::from(a_val).unwrap_or(0);
-                    let b_int: i64 = num_traits::NumCast::from(b_val).unwrap_or(0);
-                    let result = match self {
-                        BinaryOp::BitwiseAnd => a_int & b_int,
-                        BinaryOp::BitwiseOr => a_int | b_int,
-                        BinaryOp::BitwiseXor => a_int ^ b_int,
-                        _ => unreachable!(),
-                    };
-                    num_traits::NumCast::from(result).unwrap_or(zero)
-                }
-            };
+                *out = self.apply_float(a_data[a_idx], b_data[b_idx], zero);
+            }
         }
 
         ViewBuffer::from_vec_with_shape(output, output_shape.to_vec())
+    }
+
+    /// Apply float binary operation on a single pair of values.
+    #[inline(always)]
+    fn apply_float<T>(&self, a_val: T, b_val: T, zero: T) -> T
+    where
+        T: Copy
+            + std::ops::Add<Output = T>
+            + std::ops::Sub<Output = T>
+            + std::ops::Mul<Output = T>
+            + std::ops::Div<Output = T>
+            + PartialOrd
+            + num_traits::NumCast,
+    {
+        match self {
+            BinaryOp::Add => a_val + b_val,
+            BinaryOp::Subtract => a_val - b_val,
+            BinaryOp::Multiply | BinaryOp::Blend => a_val * b_val,
+            BinaryOp::Divide | BinaryOp::Ratio => {
+                if b_val == zero {
+                    zero
+                } else {
+                    a_val / b_val
+                }
+            }
+            BinaryOp::Maximum => {
+                if a_val > b_val {
+                    a_val
+                } else {
+                    b_val
+                }
+            }
+            BinaryOp::Minimum => {
+                if a_val < b_val {
+                    a_val
+                } else {
+                    b_val
+                }
+            }
+            BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
+                let a_int: i64 = num_traits::NumCast::from(a_val).unwrap_or(0);
+                let b_int: i64 = num_traits::NumCast::from(b_val).unwrap_or(0);
+                let result = match self {
+                    BinaryOp::BitwiseAnd => a_int & b_int,
+                    BinaryOp::BitwiseOr => a_int | b_int,
+                    BinaryOp::BitwiseXor => a_int ^ b_int,
+                    _ => unreachable!(),
+                };
+                num_traits::NumCast::from(result).unwrap_or(zero)
+            }
+        }
     }
 }
 

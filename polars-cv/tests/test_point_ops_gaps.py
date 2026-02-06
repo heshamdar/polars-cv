@@ -79,9 +79,6 @@ class TestPointExtraction:
 
 
 @plugin_required
-@pytest.mark.xfail(
-    reason="TODO: point_distance plugin function not yet implemented in Rust backend",
-)
 class TestPointDistance:
     """Tests for point distance operations."""
 
@@ -94,9 +91,7 @@ class TestPointDistance:
             },
             schema={"a": POINT_SCHEMA, "b": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            dist=pl.col("a").point.distance(pl.col("b"))
-        )
+        result = df.with_columns(dist=pl.col("a").point.distance(pl.col("b")))
         assert result["dist"][0] == pytest.approx(5.0)
 
     def test_euclidean_distance_same_point_is_zero(self) -> None:
@@ -108,9 +103,7 @@ class TestPointDistance:
             },
             schema={"a": POINT_SCHEMA, "b": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            dist=pl.col("a").point.distance(pl.col("b"))
-        )
+        result = df.with_columns(dist=pl.col("a").point.distance(pl.col("b")))
         assert result["dist"][0] == pytest.approx(0.0)
 
     def test_euclidean_distance_is_symmetric(self) -> None:
@@ -137,9 +130,7 @@ class TestPointDistance:
             },
             schema={"a": POINT_SCHEMA, "b": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            dist=pl.col("a").point.distance(pl.col("b"))
-        )
+        result = df.with_columns(dist=pl.col("a").point.distance(pl.col("b")))
         assert result["dist"][0] == pytest.approx(math.sqrt(2))
 
     def test_manhattan_distance_known(self) -> None:
@@ -151,9 +142,7 @@ class TestPointDistance:
             },
             schema={"a": POINT_SCHEMA, "b": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            dist=pl.col("a").point.manhattan_distance(pl.col("b"))
-        )
+        result = df.with_columns(dist=pl.col("a").point.manhattan_distance(pl.col("b")))
         assert result["dist"][0] == pytest.approx(7.0)
 
     def test_manhattan_distance_same_point_is_zero(self) -> None:
@@ -165,9 +154,7 @@ class TestPointDistance:
             },
             schema={"a": POINT_SCHEMA, "b": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            dist=pl.col("a").point.manhattan_distance(pl.col("b"))
-        )
+        result = df.with_columns(dist=pl.col("a").point.manhattan_distance(pl.col("b")))
         assert result["dist"][0] == pytest.approx(0.0)
 
 
@@ -177,9 +164,6 @@ class TestPointDistance:
 
 
 @plugin_required
-@pytest.mark.xfail(
-    reason="TODO: point_translate plugin function not yet implemented in Rust backend",
-)
 class TestPointTranslate:
     """Verify translate produces correct coordinate changes."""
 
@@ -189,9 +173,7 @@ class TestPointTranslate:
             {"pt": [{"x": 5.0, "y": 15.0}]},
             schema={"pt": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            moved=pl.col("pt").point.translate(dx=10.0, dy=20.0)
-        )
+        result = df.with_columns(moved=pl.col("pt").point.translate(dx=10.0, dy=20.0))
         p = result["moved"][0]
         assert p["x"] == pytest.approx(15.0)
         assert p["y"] == pytest.approx(35.0)
@@ -202,9 +184,7 @@ class TestPointTranslate:
             {"pt": [{"x": 20.0, "y": 30.0}]},
             schema={"pt": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            moved=pl.col("pt").point.translate(dx=-5.0, dy=-10.0)
-        )
+        result = df.with_columns(moved=pl.col("pt").point.translate(dx=-5.0, dy=-10.0))
         p = result["moved"][0]
         assert p["x"] == pytest.approx(15.0)
         assert p["y"] == pytest.approx(20.0)
@@ -215,9 +195,7 @@ class TestPointTranslate:
             {"pt": [{"x": 42.0, "y": 99.0}]},
             schema={"pt": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            moved=pl.col("pt").point.translate(dx=0.0, dy=0.0)
-        )
+        result = df.with_columns(moved=pl.col("pt").point.translate(dx=0.0, dy=0.0))
         p = result["moved"][0]
         assert p["x"] == pytest.approx(42.0)
         assert p["y"] == pytest.approx(99.0)
@@ -229,9 +207,6 @@ class TestPointTranslate:
 
 
 @plugin_required
-@pytest.mark.xfail(
-    reason="TODO: point_scale plugin function not yet implemented in Rust backend",
-)
 class TestPointScale:
     """Verify scale produces correct coordinate changes."""
 
@@ -241,9 +216,7 @@ class TestPointScale:
             {"pt": [{"x": 10.0, "y": 20.0}]},
             schema={"pt": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            scaled=pl.col("pt").point.scale(sx=2.0, sy=2.0)
-        )
+        result = df.with_columns(scaled=pl.col("pt").point.scale(sx=2.0, sy=2.0))
         p = result["scaled"][0]
         assert p["x"] == pytest.approx(20.0)
         assert p["y"] == pytest.approx(40.0)
@@ -254,9 +227,7 @@ class TestPointScale:
             {"pt": [{"x": 10.0, "y": 20.0}]},
             schema={"pt": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            scaled=pl.col("pt").point.scale(sx=1.0, sy=1.0)
-        )
+        result = df.with_columns(scaled=pl.col("pt").point.scale(sx=1.0, sy=1.0))
         p = result["scaled"][0]
         assert p["x"] == pytest.approx(10.0)
         assert p["y"] == pytest.approx(20.0)
@@ -267,9 +238,7 @@ class TestPointScale:
             {"pt": [{"x": 100.0, "y": 10.0}]},
             schema={"pt": POINT_SCHEMA},
         )
-        result = df.with_columns(
-            scaled=pl.col("pt").point.scale(sx=0.5, sy=3.0)
-        )
+        result = df.with_columns(scaled=pl.col("pt").point.scale(sx=0.5, sy=3.0))
         p = result["scaled"][0]
         assert p["x"] == pytest.approx(50.0)
         assert p["y"] == pytest.approx(30.0)
@@ -281,9 +250,6 @@ class TestPointScale:
 
 
 @plugin_required
-@pytest.mark.xfail(
-    reason="TODO: point_normalize plugin function not yet implemented in Rust backend",
-)
 class TestPointNormalizeRoundTrip:
     """Verify normalize → to_absolute produces original coordinates."""
 

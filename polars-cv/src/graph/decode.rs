@@ -118,12 +118,10 @@ pub(crate) fn decode_binary_zero_copy(
 }
 /// Decode a blob (VIEW protocol) with zero-copy.
 ///
-/// Parses the header from the slice, then creates a ViewBuffer pointing
-/// directly into the data portion of the original buffer.
-///
-/// TODO: Preserve stride information from the blob header. Currently assumes
-/// contiguous layout, which means round-tripping a non-contiguous buffer
-/// through blob serialization always materializes to contiguous.
+/// Parses the header from the slice (including shape and stride arrays),
+/// then creates a ViewBuffer pointing directly into the data portion of
+/// the original buffer. If the blob has a non-contiguous layout (indicated
+/// by the flags field), the stored strides are preserved.
 fn decode_blob_zero_copy(
     buffer: polars_arrow::buffer::Buffer<u8>,
     base_offset: usize,
@@ -145,8 +143,12 @@ fn decode_blob_zero_copy(
     let dtype_code = slice[6];
     let rank = slice[7] as usize;
     let data_offset = u64::from_le_bytes(slice[8..16].try_into().unwrap()) as usize;
+    // Read flags field (bytes 16..24): 1 = contiguous
+    let flags = u64::from_le_bytes(slice[16..24].try_into().unwrap());
     let dtype =
         u8_to_dtype(dtype_code).ok_or_else(|| format!("Unknown dtype code: {dtype_code}"))?;
+
+    // Read shape array
     let shape_start = HEADER_SIZE;
     let mut shape = Vec::with_capacity(rank);
     for i in 0..rank {
@@ -157,6 +159,19 @@ fn decode_blob_zero_copy(
         let dim = u64::from_le_bytes(slice[pos..pos + 8].try_into().unwrap()) as usize;
         shape.push(dim);
     }
+
+    // Read stride array (follows shape)
+    let stride_start = shape_start + rank * 8;
+    let mut strides = Vec::with_capacity(rank);
+    for i in 0..rank {
+        let pos = stride_start + i * 8;
+        if pos + 8 > total_len {
+            return Err("Blob truncated reading strides".into());
+        }
+        let s = i64::from_le_bytes(slice[pos..pos + 8].try_into().unwrap()) as isize;
+        strides.push(s);
+    }
+
     let num_elements: usize = shape
         .iter()
         .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
@@ -171,13 +186,27 @@ fn decode_blob_zero_copy(
             ),
         );
     }
-    Ok(ViewBuffer::from_polars_buffer_slice(
-        buffer,
-        base_offset + data_offset,
-        expected_data_len,
-        shape,
-        dtype,
-    ))
+
+    // If flags indicate contiguous (1) or strides were not stored, use contiguous layout.
+    // Otherwise preserve the stored strides for non-contiguous views.
+    if flags == 1 || strides.is_empty() {
+        Ok(ViewBuffer::from_polars_buffer_slice(
+            buffer,
+            base_offset + data_offset,
+            expected_data_len,
+            shape,
+            dtype,
+        ))
+    } else {
+        Ok(ViewBuffer::from_polars_buffer_slice_with_strides(
+            buffer,
+            base_offset + data_offset,
+            expected_data_len,
+            shape,
+            strides,
+            dtype,
+        ))
+    }
 }
 /// Infer view-buffer DType from Polars DataType.
 ///

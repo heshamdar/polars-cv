@@ -623,11 +623,9 @@ pub(crate) fn encode_node_output(
                 .map_err(|e| format!("Encode error: {e}"))
         }
         (NodeOutput::Buffer(buf), "list") => {
-            // TODO: TypedBufferData::from_buffer also calls to_contiguous() internally.
-            // The second call is a no-op but could be eliminated by passing data directly.
             let contig = buf.to_contiguous();
             let shape = contig.shape().to_vec();
-            let data = TypedBufferData::from_buffer(&contig);
+            let data = TypedBufferData::from_contiguous_buffer(&contig);
             Ok(OutputValue::TypedList {
                 data,
                 shape,
@@ -650,7 +648,7 @@ pub(crate) fn encode_node_output(
             } else {
                 buffer_shape
             };
-            let data = TypedBufferData::from_buffer(&contig);
+            let data = TypedBufferData::from_contiguous_buffer(&contig);
             Ok(OutputValue::TypedArray {
                 data,
                 shape,

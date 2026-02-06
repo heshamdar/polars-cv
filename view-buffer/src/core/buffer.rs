@@ -32,7 +32,6 @@
 
 use std::sync::Arc;
 
-use num_traits::AsPrimitive;
 use thiserror::Error;
 
 use crate::core::dtype::{DType, ViewType};
@@ -488,6 +487,53 @@ impl ViewBuffer {
         );
 
         let layout = Layout::new_contiguous(shape, dtype);
+        Self {
+            data: BufferStorage::PolarsArrow {
+                buffer,
+                offset,
+                len,
+            },
+            layout,
+        }
+    }
+
+    /// Creates a ViewBuffer from a Polars Arrow buffer with explicit strides.
+    ///
+    /// This is the strided variant of `from_polars_buffer_slice`, used when
+    /// the blob format stores a non-contiguous layout.
+    ///
+    /// # Arguments
+    /// * `buffer` - The underlying Polars Arrow buffer (reference-counted).
+    /// * `offset` - Byte offset into the buffer where data starts.
+    /// * `len` - Total byte length of the data region.
+    /// * `shape` - Shape of the buffer.
+    /// * `strides` - Byte strides for each dimension.
+    /// * `dtype` - Element data type.
+    pub fn from_polars_buffer_slice_with_strides(
+        buffer: polars_arrow::buffer::Buffer<u8>,
+        offset: usize,
+        len: usize,
+        shape: Vec<usize>,
+        strides: Vec<isize>,
+        dtype: DType,
+    ) -> Self {
+        assert!(
+            offset + len <= buffer.len(),
+            "Polars buffer slice out of bounds: offset={offset}, len={len}, buffer_len={}",
+            buffer.len()
+        );
+        assert_eq!(
+            shape.len(),
+            strides.len(),
+            "Shape and strides must have same rank"
+        );
+
+        let layout = Layout {
+            shape,
+            strides,
+            offset: 0, // offset is handled by BufferStorage
+            dtype,
+        };
         Self {
             data: BufferStorage::PolarsArrow {
                 buffer,
@@ -1148,7 +1194,11 @@ impl ViewBuffer {
     }
 
     /// Deserializes a ViewBuffer from a binary blob.
-    /// Currently performs a copy of the data payload into a new Vec<u8>.
+    ///
+    /// Reads the full VIEW protocol header including shape and strides.
+    /// If the blob was serialized with a non-contiguous layout, the stored
+    /// strides are preserved. Performs a copy of the data payload into a
+    /// new `Vec<u8>`.
     pub fn from_blob(data: &[u8]) -> Result<ViewBuffer, BufferError> {
         if data.len() < HEADER_SIZE {
             return Err(BufferError::InvalidProtocol(
@@ -1173,6 +1223,7 @@ impl ViewBuffer {
         }
 
         let rank = header.rank as usize;
+        let flags = header.flags;
         let dtype = u8_to_dtype(header.dtype).ok_or_else(|| {
             BufferError::InvalidProtocol(format!("Unknown dtype code: {}", header.dtype))
         })?;
@@ -1230,8 +1281,17 @@ impl ViewBuffer {
         // Create owned buffer
         let vec_data = raw_data[0..expected_bytes].to_vec();
 
-        // 4. Construct ViewBuffer
-        let layout = Layout::new_contiguous(shape, dtype);
+        // 4. Construct ViewBuffer — use stored strides if non-contiguous
+        let layout = if flags == 1 || strides.is_empty() {
+            Layout::new_contiguous(shape, dtype)
+        } else {
+            Layout {
+                shape,
+                strides,
+                offset: 0,
+                dtype,
+            }
+        };
 
         Ok(ViewBuffer {
             data: BufferStorage::Rust(Arc::new(vec_data)),
@@ -1322,6 +1382,9 @@ impl ViewBuffer {
 
     /// Converts the buffer to a contiguous layout, copying if necessary.
     ///
+    /// When the innermost dimension has contiguous stride, copies entire rows
+    /// at once (memcpy) instead of element-by-element for much better performance.
+    ///
     /// # Panics
     /// Panics if the total allocation size would overflow `usize`.
     pub fn to_contiguous(&self) -> Self {
@@ -1342,52 +1405,100 @@ impl ViewBuffer {
             .checked_mul(dtype_size)
             .expect("allocation size overflow: buffer is too large to materialize");
 
-        let mut new_data = Vec::with_capacity(total_bytes);
-
-        let mut indices = vec![0; self.layout.shape.len()];
         let shape = &self.layout.shape;
         let strides = &self.layout.strides;
-        let ptr = self.data.as_ptr();
-        let base_offset = self.layout.offset;
-        let data_len = self.data.len();
+        let ndim = shape.len();
 
-        for _ in 0..total_elems {
-            let mut offset = base_offset as isize;
-            for (dim, &idx) in indices.iter().enumerate() {
-                offset += (idx as isize) * strides[dim];
-            }
+        // Optimization: check if innermost dimension is contiguous (stride == dtype_size).
+        // If so, we can copy entire rows at once using memcpy instead of element-by-element.
+        let inner_contiguous = ndim > 0 && strides[ndim - 1] == dtype_size as isize;
 
-            // Safety Recommendation 2: Bounds Checking in Debug
-            debug_assert!(offset >= 0, "Negative offset calculation");
-            debug_assert!(
-                (offset as usize) < data_len,
-                "Offset out of bounds: {offset} vs len {data_len}"
-            );
+        if inner_contiguous && ndim >= 2 {
+            // Fast path: copy row-by-row
+            let row_len = shape[ndim - 1];
+            let row_bytes = row_len * dtype_size;
+            // Number of rows = product of all outer dimensions
+            let num_rows: usize = shape[..ndim - 1].iter().product();
 
-            unsafe {
-                let src = ptr.offset(offset);
-                // Ensure we don't read past end when reading the scalar value
+            let mut new_data = Vec::with_capacity(total_bytes);
+            let ptr = self.data.as_ptr();
+            let base_offset = self.layout.offset;
+            let data_len = self.data.len();
+
+            let mut indices = vec![0usize; ndim - 1]; // Only outer dims
+
+            for _ in 0..num_rows {
+                // Compute offset for this row's first element
+                let mut offset = base_offset as isize;
+                for (dim, &idx) in indices.iter().enumerate() {
+                    offset += (idx as isize) * strides[dim];
+                }
+
+                debug_assert!(offset >= 0, "Negative offset in row-copy path");
                 debug_assert!(
-                    (offset as usize) + dtype_size <= data_len,
-                    "Read overrun during compaction"
+                    (offset as usize) + row_bytes <= data_len,
+                    "Row read overrun: offset={offset}, row_bytes={row_bytes}, data_len={data_len}"
                 );
 
-                new_data.extend_from_slice(std::slice::from_raw_parts(src, dtype_size));
-            }
-
-            for dim in (0..shape.len()).rev() {
-                indices[dim] += 1;
-                if indices[dim] < shape[dim] {
-                    break;
+                unsafe {
+                    let src = ptr.offset(offset);
+                    new_data.extend_from_slice(std::slice::from_raw_parts(src, row_bytes));
                 }
-                indices[dim] = 0;
-            }
-        }
 
-        let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
-        Self {
-            data: BufferStorage::Rust(Arc::new(new_data)),
-            layout: new_layout,
+                // Increment outer indices
+                for dim in (0..indices.len()).rev() {
+                    indices[dim] += 1;
+                    if indices[dim] < shape[dim] {
+                        break;
+                    }
+                    indices[dim] = 0;
+                }
+            }
+
+            let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
+            Self {
+                data: BufferStorage::Rust(Arc::new(new_data)),
+                layout: new_layout,
+            }
+        } else {
+            // Slow path: element-by-element copy for non-contiguous innermost dim
+            let mut new_data = Vec::with_capacity(total_bytes);
+            let mut indices = vec![0; ndim];
+            let ptr = self.data.as_ptr();
+            let base_offset = self.layout.offset;
+            let data_len = self.data.len();
+
+            for _ in 0..total_elems {
+                let mut offset = base_offset as isize;
+                for (dim, &idx) in indices.iter().enumerate() {
+                    offset += (idx as isize) * strides[dim];
+                }
+
+                debug_assert!(offset >= 0, "Negative offset calculation");
+                debug_assert!(
+                    (offset as usize) + dtype_size <= data_len,
+                    "Read overrun during compaction: offset={offset}, dtype_size={dtype_size}, data_len={data_len}"
+                );
+
+                unsafe {
+                    let src = ptr.offset(offset);
+                    new_data.extend_from_slice(std::slice::from_raw_parts(src, dtype_size));
+                }
+
+                for dim in (0..ndim).rev() {
+                    indices[dim] += 1;
+                    if indices[dim] < shape[dim] {
+                        break;
+                    }
+                    indices[dim] = 0;
+                }
+            }
+
+            let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
+            Self {
+                data: BufferStorage::Rust(Arc::new(new_data)),
+                layout: new_layout,
+            }
         }
     }
 
@@ -1554,38 +1665,10 @@ impl ViewBuffer {
 
     /// Casts the buffer to a different data type.
     ///
-    /// TODO: Only 4 of 90 possible cast pairs are implemented. Consider
-    /// unifying with `cast_to` which has more complete coverage, or
-    /// systematically implementing all pairs.
+    /// Supports all dtype pairs (u8, i8, u16, i16, u32, i32, u64, i64, f32, f64).
+    /// This is an alias for [`cast_to`] for API compatibility.
     pub fn cast(&self, target: DType) -> Self {
-        if self.dtype() == target {
-            return self.clone();
-        }
-        let contig = self.to_contiguous();
-
-        match (contig.dtype(), target) {
-            (DType::U8, DType::F32) => contig.cast_impl::<u8, f32>(),
-            (DType::F32, DType::U8) => contig.cast_impl::<f32, u8>(),
-            (DType::I32, DType::F32) => contig.cast_impl::<i32, f32>(),
-            (DType::F32, DType::I32) => contig.cast_impl::<f32, i32>(),
-            _ => unimplemented!(
-                "Cast pair {:?} -> {:?} not implemented",
-                self.dtype(),
-                target
-            ),
-        }
-    }
-
-    fn cast_impl<S, D>(&self) -> Self
-    where
-        S: ViewType + AsPrimitive<D>,
-        D: ViewType + Copy + 'static,
-    {
-        let elem_count = self.layout.shape.iter().product();
-        let src_slice = unsafe { std::slice::from_raw_parts(self.as_ptr::<S>(), elem_count) };
-
-        let new_data: Vec<D> = src_slice.iter().map(|&x| x.as_()).collect();
-        Self::from_vec(new_data).reshape(self.layout.shape.clone())
+        self.cast_to(target)
     }
 
     /// Reshapes the buffer to a new shape.
