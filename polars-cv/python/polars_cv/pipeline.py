@@ -7,6 +7,7 @@ processing pipelines that can be applied to Polars DataFrame columns.
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -244,7 +245,7 @@ class Pipeline:
         """Create a shallow clone of this pipeline for chaining."""
         new = Pipeline()
         new._source = self._source
-        new._shape_hints = self._shape_hints
+        new._shape_hints = copy.deepcopy(self._shape_hints)
         new._ops = self._ops.copy()
         new._sink = self._sink
         new._expr_refs = self._expr_refs.copy()
@@ -773,8 +774,9 @@ class Pipeline:
             Self for chaining.
 
         Raises:
-            ValueError: If dtype is invalid.
+            ValueError: If dtype is invalid or domain is not buffer.
         """
+        self._validate_domain(self.DOMAIN_BUFFER, "cast")
         new = self._clone()
         try:
             dtype_enum = DType(dtype)
@@ -803,7 +805,11 @@ class Pipeline:
         Args:
             factor: Scale factor.
             out_dtype: Output type (promotes to f32 if None and input is int).
+
+        Raises:
+            ValueError: If domain is not buffer.
         """
+        self._validate_domain(self.DOMAIN_BUFFER, "scale")
         new = self._clone()
         params: dict[str, ParamValue] = {
             "factor": new._track_expr(factor),
@@ -834,11 +840,34 @@ class Pipeline:
         Normalize values to a standard range.
 
         Args:
-            method: "minmax" (scale to [0,1]) or "zscore" (mean=0, std=1).
+            method: Normalization method. One of:
+                - ``"minmax"``: Scale values to [0, 1] range using per-element
+                  min/max. Output dtype is f32 by default.
+                - ``"zscore"``: Standardize to mean=0, std=1 using per-element
+                  statistics. Output dtype is f32 by default.
+                - ``"preset"``: Apply ImageNet-style channel-wise normalization
+                  using provided ``mean`` and ``std`` values. Each channel is
+                  normalized as ``(x - mean[c]) / std[c]``.
+            mean: Per-channel mean values. Required when ``method="preset"``.
+                Common preset: ``[0.485, 0.456, 0.406]`` (ImageNet).
+            std: Per-channel standard deviation values. Required when
+                ``method="preset"``. Common preset: ``[0.229, 0.224, 0.225]``
+                (ImageNet).
             out_dtype: Output type (default "f32").
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If method is invalid or preset is missing mean/std.
 
         Example:
             >>> Pipeline().source().normalize(method="minmax")
+            >>> Pipeline().source().normalize(
+            ...     method="preset",
+            ...     mean=[0.485, 0.456, 0.406],
+            ...     std=[0.229, 0.224, 0.225],
+            ... )
         """
         new = self._clone()
         try:
@@ -903,7 +932,11 @@ class Pipeline:
 
         Returns:
             Self for chaining.
+
+        Raises:
+            ValueError: If domain is not buffer.
         """
+        self._validate_domain(self.DOMAIN_BUFFER, "clamp")
         new = self._clone()
         params: dict[str, ParamValue] = {
             "min": new._track_expr(min_val),
@@ -934,11 +967,15 @@ class Pipeline:
         Returns:
             Self for chaining.
 
+        Raises:
+            ValueError: If domain is not buffer.
+
         Example:
             ```python
             >>> pipe = Pipeline().source("image_bytes").relu().sink("numpy")
             ```
         """
+        self._validate_domain(self.DOMAIN_BUFFER, "relu")
         new = self._clone()
         new._ops.append(OpSpec(op="relu", params={}))
         new._update_output_dtype("relu")
@@ -2475,6 +2512,4 @@ class Pipeline:
         if self._sink:
             parts.append(f"sink({self._sink.format.value!r})")
 
-        return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
-        return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"

@@ -568,7 +568,15 @@ fn build_typed_nested_array_value(
     Ok(AnyValue::Array(series, outer_dim))
 }
 /// Slice typed buffer data by index range.
+///
+/// # Panics
+/// Panics if `start > end` or `end > data.len()`.
 fn slice_typed_data(data: &TypedBufferData, start: usize, end: usize) -> TypedBufferData {
+    let len = data.len();
+    assert!(
+        start <= end && end <= len,
+        "slice_typed_data: bounds check failed: start={start}, end={end}, len={len}"
+    );
     match data {
         TypedBufferData::U8(vals) => TypedBufferData::U8(vals[start..end].to_vec()),
         TypedBufferData::I8(vals) => TypedBufferData::I8(vals[start..end].to_vec()),
@@ -615,6 +623,8 @@ pub(crate) fn encode_node_output(
                 .map_err(|e| format!("Encode error: {e}"))
         }
         (NodeOutput::Buffer(buf), "list") => {
+            // TODO: TypedBufferData::from_buffer also calls to_contiguous() internally.
+            // The second call is a no-op but could be eliminated by passing data directly.
             let contig = buf.to_contiguous();
             let shape = contig.shape().to_vec();
             let data = TypedBufferData::from_buffer(&contig);

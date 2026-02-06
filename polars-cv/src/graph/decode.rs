@@ -46,9 +46,9 @@ fn count_non_null(series: &Series) -> usize {
 }
 /// Check if a specific row is null in a series.
 ///
-/// This is a convenience wrapper that handles the ChunkedArray result.
+/// Uses `AnyValue::Null` check to avoid allocating a full boolean array.
 fn is_row_null(series: &Series, row_idx: usize) -> bool {
-    series.is_null().get(row_idx).unwrap_or(true)
+    matches!(series.get(row_idx), Ok(AnyValue::Null) | Err(_))
 }
 /// Extract binary data from a BinaryChunked at a specific row.
 ///
@@ -120,6 +120,10 @@ pub(crate) fn decode_binary_zero_copy(
 ///
 /// Parses the header from the slice, then creates a ViewBuffer pointing
 /// directly into the data portion of the original buffer.
+///
+/// TODO: Preserve stride information from the blob header. Currently assumes
+/// contiguous layout, which means round-tripping a non-contiguous buffer
+/// through blob serialization always materializes to contiguous.
 fn decode_blob_zero_copy(
     buffer: polars_arrow::buffer::Buffer<u8>,
     base_offset: usize,
@@ -153,8 +157,13 @@ fn decode_blob_zero_copy(
         let dim = u64::from_le_bytes(slice[pos..pos + 8].try_into().unwrap()) as usize;
         shape.push(dim);
     }
-    let num_elements: usize = shape.iter().product();
-    let expected_data_len = num_elements * dtype.size_of();
+    let num_elements: usize = shape
+        .iter()
+        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+        .ok_or_else(|| "Shape product overflow: dimensions too large".to_string())?;
+    let expected_data_len = num_elements
+        .checked_mul(dtype.size_of())
+        .ok_or_else(|| "Data length overflow: buffer too large".to_string())?;
     if data_offset + expected_data_len > total_len {
         return Err(
             format!(
@@ -543,7 +552,9 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
         "i64" => DataType::Int64,
         "f32" => DataType::Float32,
         "f64" => DataType::Float64,
-        _ => DataType::Float64,
+        // Default to UInt8 (consistent with encode::default_dtype) for unknown
+        // dtype strings. This matches the natural default for image data.
+        _ => DataType::UInt8,
     }
 }
 /// Get the Polars DataType for a given output specification.

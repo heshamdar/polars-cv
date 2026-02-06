@@ -45,7 +45,7 @@ ANNOTATED_POINT_SCHEMA = pl.Struct(
     [
         pl.Field("x", pl.Float64),
         pl.Field("y", pl.Float64),
-        pl.Field("label", pl.Utf8),
+        pl.Field("label", pl.String),
         pl.Field("confidence", pl.Float64),
     ]
 )
