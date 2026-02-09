@@ -61,9 +61,7 @@ class TestResizeFilterTypes:
     """Test resize with each supported filter type."""
 
     @pytest.mark.parametrize("filter_name", ["nearest", "bilinear", "lanczos3"])
-    def test_resize_with_filter(
-        self, test_image_png: bytes, filter_name: str
-    ) -> None:
+    def test_resize_with_filter(self, test_image_png: bytes, filter_name: str) -> None:
         """Each filter type should produce correct output dimensions."""
         df = pl.DataFrame({"img": [test_image_png]})
         pipe = (
@@ -111,9 +109,7 @@ class TestResizeScale:
     def test_asymmetric_scale(self, test_image_png: bytes) -> None:
         """scale_x and scale_y can differ."""
         df = pl.DataFrame({"img": [test_image_png]})
-        pipe = Pipeline().source("image_bytes").resize_scale(
-            scale_x=0.5, scale_y=2.0
-        )
+        pipe = Pipeline().source("image_bytes").resize_scale(scale_x=0.5, scale_y=2.0)
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (128, 32, 3)

@@ -147,34 +147,22 @@ class TestContourAreaSigned:
 
     def test_signed_area_ccw_positive(self, ccw_square: dict) -> None:
         """CCW contour should yield positive signed area."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
-        result = df.with_columns(
-            area=pl.col("contour").contour.area(signed=True)
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
+        result = df.with_columns(area=pl.col("contour").contour.area(signed=True))
         assert result["area"][0] > 0
         assert result["area"][0] == pytest.approx(10000.0, rel=0.01)
 
     def test_signed_area_cw_negative(self, cw_square: dict) -> None:
         """CW contour should yield negative signed area."""
-        df = pl.DataFrame(
-            {"contour": [cw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
-        result = df.with_columns(
-            area=pl.col("contour").contour.area(signed=True)
-        )
+        df = pl.DataFrame({"contour": [cw_square]}, schema={"contour": CONTOUR_SCHEMA})
+        result = df.with_columns(area=pl.col("contour").contour.area(signed=True))
         assert result["area"][0] < 0
         assert result["area"][0] == pytest.approx(-10000.0, rel=0.01)
 
     def test_unsigned_area_always_positive(self, cw_square: dict) -> None:
         """Default signed=False should always return positive area."""
-        df = pl.DataFrame(
-            {"contour": [cw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
-        result = df.with_columns(
-            area=pl.col("contour").contour.area(signed=False)
-        )
+        df = pl.DataFrame({"contour": [cw_square]}, schema={"contour": CONTOUR_SCHEMA})
+        result = df.with_columns(area=pl.col("contour").contour.area(signed=False))
         assert result["area"][0] > 0
 
     def test_signed_area_both_windings_same_magnitude(
@@ -185,12 +173,8 @@ class TestContourAreaSigned:
             {"contour": [ccw_square, cw_square]},
             schema={"contour": CONTOUR_SCHEMA},
         )
-        result = df.with_columns(
-            area=pl.col("contour").contour.area(signed=True)
-        )
-        assert abs(result["area"][0]) == pytest.approx(
-            abs(result["area"][1]), rel=0.01
-        )
+        result = df.with_columns(area=pl.col("contour").contour.area(signed=True))
+        assert abs(result["area"][0]) == pytest.approx(abs(result["area"][1]), rel=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -204,9 +188,7 @@ class TestContourFlipWinding:
 
     def test_flip_reverses_winding(self, ccw_square: dict) -> None:
         """Flipping a CCW contour should produce CW winding."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             original_winding=pl.col("contour").contour.winding(),
             flipped=pl.col("contour").contour.flip(),
@@ -220,9 +202,7 @@ class TestContourFlipWinding:
 
     def test_double_flip_restores_winding(self, ccw_square: dict) -> None:
         """Flipping twice should restore original winding."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             original_winding=pl.col("contour").contour.winding(),
             double_flipped=pl.col("contour").contour.flip().contour.flip(),
@@ -233,9 +213,7 @@ class TestContourFlipWinding:
 
     def test_flip_preserves_area(self, ccw_square: dict) -> None:
         """Flipping should not change unsigned area."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             orig_area=pl.col("contour").contour.area(),
             flipped_area=pl.col("contour").contour.flip().contour.area(),
@@ -256,9 +234,7 @@ class TestEnsureWinding:
 
     def test_ensure_ccw_on_ccw_is_noop(self, ccw_square: dict) -> None:
         """Already-CCW contour should be unchanged by ensure_winding('ccw')."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             ensured=pl.col("contour").contour.ensure_winding("ccw"),
         ).with_columns(
@@ -268,9 +244,7 @@ class TestEnsureWinding:
 
     def test_ensure_cw_on_ccw_flips(self, ccw_square: dict) -> None:
         """CCW contour with ensure_winding('cw') should become CW."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             ensured=pl.col("contour").contour.ensure_winding("cw"),
         ).with_columns(
@@ -280,9 +254,7 @@ class TestEnsureWinding:
 
     def test_ensure_ccw_on_cw_flips(self, cw_square: dict) -> None:
         """CW contour with ensure_winding('ccw') should become CCW."""
-        df = pl.DataFrame(
-            {"contour": [cw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [cw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             ensured=pl.col("contour").contour.ensure_winding("ccw"),
         ).with_columns(
@@ -304,9 +276,7 @@ class TestContourSimplify:
         self, ccw_square: dict
     ) -> None:
         """Zero tolerance should preserve all points."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             simplified=pl.col("contour").contour.simplify(tolerance=0.0),
         )
@@ -317,9 +287,7 @@ class TestContourSimplify:
 
     def test_simplify_large_tolerance_reduces_points(self, l_shape: dict) -> None:
         """Large tolerance should reduce point count on complex shape."""
-        df = pl.DataFrame(
-            {"contour": [l_shape]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [l_shape]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             simplified=pl.col("contour").contour.simplify(tolerance=100.0),
         )
@@ -329,9 +297,7 @@ class TestContourSimplify:
 
     def test_simplify_preserves_closure(self, ccw_square: dict) -> None:
         """Simplified contour should remain closed."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             simplified=pl.col("contour").contour.simplify(tolerance=1.0),
         )
@@ -349,9 +315,7 @@ class TestContourScaleOrigins:
 
     def test_scale_origin_default(self, ccw_square: dict) -> None:
         """Scale from origin (0,0) – points should multiply."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             scaled=pl.col("contour").contour.scale(sx=2.0, sy=2.0, origin="origin"),
         )
@@ -364,14 +328,10 @@ class TestContourScaleOrigins:
 
     def test_scale_origin_centroid(self, ccw_square: dict) -> None:
         """Scale from centroid – centroid should stay fixed."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             orig_centroid=pl.col("contour").contour.centroid(),
-            scaled=pl.col("contour").contour.scale(
-                sx=2.0, sy=2.0, origin="centroid"
-            ),
+            scaled=pl.col("contour").contour.scale(sx=2.0, sy=2.0, origin="centroid"),
         ).with_columns(
             scaled_centroid=pl.col("scaled").contour.centroid(),
         )
@@ -382,9 +342,7 @@ class TestContourScaleOrigins:
 
     def test_scale_origin_bbox_center(self, ccw_square: dict) -> None:
         """Scale from bbox_center – bbox center should stay fixed."""
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             orig_bbox=pl.col("contour").contour.bounding_box(),
             scaled=pl.col("contour").contour.scale(
@@ -418,9 +376,7 @@ class TestPairwiseOverlapScenarios:
             {"a": [ccw_square], "b": [ccw_square]},
             schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
         )
-        result = df.with_columns(
-            iou=pl.col("a").contour.iou(pl.col("b"))
-        )
+        result = df.with_columns(iou=pl.col("a").contour.iou(pl.col("b")))
         assert result["iou"][0] == pytest.approx(1.0, abs=0.05)
 
     def test_iou_no_overlap_is_zero(
@@ -432,9 +388,7 @@ class TestPairwiseOverlapScenarios:
             {"a": [c1], "b": [c2]},
             schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
         )
-        result = df.with_columns(
-            iou=pl.col("a").contour.iou(pl.col("b"))
-        )
+        result = df.with_columns(iou=pl.col("a").contour.iou(pl.col("b")))
         assert result["iou"][0] == pytest.approx(0.0, abs=0.05)
 
     def test_iou_partial_overlap_in_range(
@@ -446,9 +400,7 @@ class TestPairwiseOverlapScenarios:
             {"a": [c1], "b": [c2]},
             schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
         )
-        result = df.with_columns(
-            iou=pl.col("a").contour.iou(pl.col("b"))
-        )
+        result = df.with_columns(iou=pl.col("a").contour.iou(pl.col("b")))
         val = result["iou"][0]
         assert 0.0 < val < 1.0
 
@@ -458,9 +410,7 @@ class TestPairwiseOverlapScenarios:
             {"a": [ccw_square], "b": [ccw_square]},
             schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
         )
-        result = df.with_columns(
-            dice=pl.col("a").contour.dice(pl.col("b"))
-        )
+        result = df.with_columns(dice=pl.col("a").contour.dice(pl.col("b")))
         assert result["dice"][0] == pytest.approx(1.0, abs=0.05)
 
     def test_dice_no_overlap_is_zero(
@@ -472,9 +422,7 @@ class TestPairwiseOverlapScenarios:
             {"a": [c1], "b": [c2]},
             schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
         )
-        result = df.with_columns(
-            dice=pl.col("a").contour.dice(pl.col("b"))
-        )
+        result = df.with_columns(dice=pl.col("a").contour.dice(pl.col("b")))
         assert result["dice"][0] == pytest.approx(0.0, abs=0.05)
 
     def test_hausdorff_identical_is_zero(self, ccw_square: dict) -> None:
@@ -581,19 +529,11 @@ class TestIsConvex:
     """Verify is_convex() correctness for convex and non-convex shapes."""
 
     def test_square_is_convex(self, ccw_square: dict) -> None:
-        df = pl.DataFrame(
-            {"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA}
-        )
-        result = df.with_columns(
-            convex=pl.col("contour").contour.is_convex()
-        )
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
+        result = df.with_columns(convex=pl.col("contour").contour.is_convex())
         assert result["convex"][0] is True
 
     def test_l_shape_is_not_convex(self, l_shape: dict) -> None:
-        df = pl.DataFrame(
-            {"contour": [l_shape]}, schema={"contour": CONTOUR_SCHEMA}
-        )
-        result = df.with_columns(
-            convex=pl.col("contour").contour.is_convex()
-        )
+        df = pl.DataFrame({"contour": [l_shape]}, schema={"contour": CONTOUR_SCHEMA})
+        result = df.with_columns(convex=pl.col("contour").contour.is_convex())
         assert result["convex"][0] is False
