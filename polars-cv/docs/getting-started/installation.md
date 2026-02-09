@@ -70,10 +70,10 @@ export AZURE_STORAGE_ACCESS_KEY=your_key
 
 ### For Documentation (development only)
 
+When working in the project repository, install the docs dependency group:
+
 ```bash
-pip install polars-cv[docs]
-# or
-uv add polars-cv --extra docs
+uv sync --group docs
 ```
 
 ### For PyTorch Integration
@@ -90,4 +90,3 @@ pipe = Pipeline().source("image_bytes").normalize().sink("torch")
 # Convert to PyTorch tensor (result is a struct with data, dtype, shape fields)
 tensor = torch.from_numpy(numpy_from_struct(result))
 ```
-

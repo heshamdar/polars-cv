@@ -49,7 +49,7 @@ jobs:
       - name: Install docs dependencies
         working-directory: ${{ steps.package_dir.outputs.dir }}
         run: |
-          uv sync --frozen --extra docs
+          uv sync --frozen --group docs
 
       - name: Build MkDocs site
         working-directory: ${{ steps.package_dir.outputs.dir }}
