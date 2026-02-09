@@ -1,6 +1,6 @@
 [package]
 name = "view-buffer"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A zero-copy, stride-aware tensor orchestration framework for Rust."

@@ -431,4 +431,4 @@ __all__ = [
     "CONTOUR_SET_SCHEMA",
     "BBOX_SCHEMA",
 ]
-__version__ = "0.6.0"
+__version__ = "0.7.0"
