@@ -220,10 +220,12 @@ class TestApplyMaskInvert:
         mask = np.zeros((50, 50, 3), dtype=np.uint8)
         mask[15:35, 15:35] = 255
 
-        df = pl.DataFrame({
-            "image": [encode_png(img)],
-            "mask": [encode_png(mask)],
-        })
+        df = pl.DataFrame(
+            {
+                "image": [encode_png(img)],
+                "mask": [encode_png(mask)],
+            }
+        )
 
         img_pipe = Pipeline().source("image_bytes")
         mask_pipe = Pipeline().source("image_bytes").grayscale()
@@ -252,10 +254,12 @@ class TestApplyMaskInvert:
         mask = np.zeros((30, 30, 3), dtype=np.uint8)
         mask[10:20, 10:20] = 255
 
-        df = pl.DataFrame({
-            "image": [encode_png(img)],
-            "mask": [encode_png(mask)],
-        })
+        df = pl.DataFrame(
+            {
+                "image": [encode_png(img)],
+                "mask": [encode_png(mask)],
+            }
+        )
 
         img_pipe = Pipeline().source("image_bytes")
         mask_pipe = Pipeline().source("image_bytes").grayscale()
@@ -263,9 +267,7 @@ class TestApplyMaskInvert:
         img_expr = pl.col("image").cv.pipe(img_pipe)
         mask_expr = pl.col("mask").cv.pipe(mask_pipe)
 
-        r_normal = df.select(
-            out=img_expr.apply_mask(mask_expr).sink("numpy")
-        )
+        r_normal = df.select(out=img_expr.apply_mask(mask_expr).sink("numpy"))
         r_invert = df.select(
             out=img_expr.apply_mask(mask_expr, invert=True).sink("numpy")
         )

@@ -93,9 +93,7 @@ class TestPadReflectPlugin:
             .source("image_bytes")
             .pad(top=2, bottom=2, left=3, right=3, mode="reflect")
         )
-        result = df.select(
-            out=pl.col("img").cv.pipe(pipe).sink("numpy")
-        )
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape[0] == small_image.shape[0] + 4  # 4+4=8
         assert arr.shape[1] == small_image.shape[1] + 6  # 6+6=12
@@ -111,9 +109,7 @@ class TestPadReflectPlugin:
             .source("image_bytes")
             .pad(top=2, bottom=2, left=3, right=3, mode="reflect")
         )
-        result = df.select(
-            out=pl.col("img").cv.pipe(pipe).sink("numpy")
-        )
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(arr[2:6, 3:9], small_image)
 
@@ -133,9 +129,7 @@ class TestPadSymmetricPlugin:
             .source("image_bytes")
             .pad(top=1, bottom=1, left=1, right=1, mode="symmetric")
         )
-        result = df.select(
-            out=pl.col("img").cv.pipe(pipe).sink("numpy")
-        )
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape[0] == small_image.shape[0] + 2
         assert arr.shape[1] == small_image.shape[1] + 2
@@ -151,9 +145,7 @@ class TestPadSymmetricPlugin:
             .source("image_bytes")
             .pad(top=1, bottom=1, left=1, right=1, mode="symmetric")
         )
-        result = df.select(
-            out=pl.col("img").cv.pipe(pipe).sink("numpy")
-        )
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])
         np.testing.assert_array_equal(arr[1:5, 1:7], small_image)
 
@@ -177,9 +169,7 @@ class TestPadAsymmetric:
             .source("image_bytes")
             .pad(top=5, bottom=10, left=15, right=20, mode="constant", value=0)
         )
-        result = df.select(
-            out=pl.col("img").cv.pipe(pipe).sink("numpy")
-        )
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (35, 65, 3)  # 20+5+10, 30+15+20
 
@@ -252,11 +242,7 @@ class TestLetterboxEdgeCases:
         img = np.full((100, 100, 3), 42, dtype=np.uint8)
         png = encode_png(img)
         df = pl.DataFrame({"img": [png]})
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .letterbox(height=100, width=100)
-        )
+        pipe = Pipeline().source("image_bytes").letterbox(height=100, width=100)
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (100, 100, 3)
@@ -268,11 +254,7 @@ class TestLetterboxEdgeCases:
         img = np.full((100, 100, 3), 128, dtype=np.uint8)
         png = encode_png(img)
         df = pl.DataFrame({"img": [png]})
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .letterbox(height=100, width=400)
-        )
+        pipe = Pipeline().source("image_bytes").letterbox(height=100, width=400)
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])
         assert arr.shape == (100, 400, 3)
@@ -283,9 +265,7 @@ class TestLetterboxEdgeCases:
         png = encode_png(img)
         df = pl.DataFrame({"img": [png]})
         pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .letterbox(height=100, width=100, value=42)
+            Pipeline().source("image_bytes").letterbox(height=100, width=100, value=42)
         )
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])

@@ -223,17 +223,17 @@ class TestSinkReturnExpr:
 class TestBlendRatioExecution:
     """Execute blend/ratio and verify output is valid."""
 
-    def test_blend_execution_produces_valid_output(
-        self, encode_png: Callable
-    ) -> None:
+    def test_blend_execution_produces_valid_output(self, encode_png: Callable) -> None:
         """blend should execute without error and produce correct shape."""
         rng = np.random.default_rng(42)
         img1 = rng.integers(0, 256, (30, 30, 3), dtype=np.uint8)
         img2 = rng.integers(0, 256, (30, 30, 3), dtype=np.uint8)
-        df = pl.DataFrame({
-            "a": [encode_png(img1)],
-            "b": [encode_png(img2)],
-        })
+        df = pl.DataFrame(
+            {
+                "a": [encode_png(img1)],
+                "b": [encode_png(img2)],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes")
         expr1 = pl.col("a").cv.pipe(pipe)
@@ -244,17 +244,17 @@ class TestBlendRatioExecution:
         assert arr.shape == (30, 30, 3)
         assert arr.dtype == np.uint8
 
-    def test_ratio_execution_produces_valid_output(
-        self, encode_png: Callable
-    ) -> None:
+    def test_ratio_execution_produces_valid_output(self, encode_png: Callable) -> None:
         """ratio should execute without error and produce correct shape."""
         rng = np.random.default_rng(42)
         img1 = rng.integers(0, 256, (30, 30, 3), dtype=np.uint8)
         img2 = rng.integers(0, 256, (30, 30, 3), dtype=np.uint8)
-        df = pl.DataFrame({
-            "a": [encode_png(img1)],
-            "b": [encode_png(img2)],
-        })
+        df = pl.DataFrame(
+            {
+                "a": [encode_png(img1)],
+                "b": [encode_png(img2)],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes")
         expr1 = pl.col("a").cv.pipe(pipe)
@@ -274,10 +274,12 @@ class TestBitwiseExecution:
         rng = np.random.default_rng(42)
         img1 = rng.integers(0, 256, (20, 20, 3), dtype=np.uint8)
         img2 = rng.integers(0, 256, (20, 20, 3), dtype=np.uint8)
-        df = pl.DataFrame({
-            "a": [encode_png(img1)],
-            "b": [encode_png(img2)],
-        })
+        df = pl.DataFrame(
+            {
+                "a": [encode_png(img1)],
+                "b": [encode_png(img2)],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes")
         expr1 = pl.col("a").cv.pipe(pipe)
@@ -292,10 +294,12 @@ class TestBitwiseExecution:
         rng = np.random.default_rng(42)
         img1 = rng.integers(0, 256, (20, 20, 3), dtype=np.uint8)
         img2 = rng.integers(0, 256, (20, 20, 3), dtype=np.uint8)
-        df = pl.DataFrame({
-            "a": [encode_png(img1)],
-            "b": [encode_png(img2)],
-        })
+        df = pl.DataFrame(
+            {
+                "a": [encode_png(img1)],
+                "b": [encode_png(img2)],
+            }
+        )
 
         pipe = Pipeline().source("image_bytes")
         expr1 = pl.col("a").cv.pipe(pipe)
