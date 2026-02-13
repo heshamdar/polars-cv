@@ -251,12 +251,36 @@ class DTypeEffect(str, Enum):
         """
         Resolve the concrete output dtype given the current input dtype.
 
+        When ``input_dtype`` is ``"auto"`` (unknown at plan time, e.g. from
+        image sources), only effects with a deterministic output can resolve
+        it.  ``PRESERVE`` and ``PROMOTE_TO_FLOAT`` propagate ``"auto"``
+        because their output depends on the actual input dtype.
+
         Args:
-            input_dtype: The dtype of the data entering this operation.
+            input_dtype: The dtype of the data entering this operation,
+                or ``"auto"`` when the dtype is not yet known.
 
         Returns:
-            The expected output dtype string (e.g. ``"f32"``, ``"u8"``).
+            The expected output dtype string (e.g. ``"f32"``, ``"u8"``,
+            or ``"auto"`` if still unknown).
         """
+        if input_dtype == "auto":
+            # Fixed-output effects resolve regardless of input
+            if self in (
+                DTypeEffect.FIXED_U8,
+                DTypeEffect.FIXED_F32,
+                DTypeEffect.FIXED_F64,
+                DTypeEffect.FIXED_I64,
+                DTypeEffect.FIXED_U64,
+                DTypeEffect.FIXED_U32,
+            ):
+                return self.value
+            if self is DTypeEffect.CONFIGURABLE_F32:
+                # Default output is f32; caller handles out_dtype override.
+                return "f32"
+            # PRESERVE, PROMOTE_TO_FLOAT: output depends on input -> still unknown
+            return "auto"
+
         if self is DTypeEffect.PRESERVE:
             return input_dtype
         if self is DTypeEffect.PROMOTE_TO_FLOAT:
@@ -408,16 +432,6 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
     ),  # ndim param-dependent
     "flip": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
     "transpose": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-}
-
-# ---------------------------------------------------------------------------
-# Deprecated compatibility alias.
-#
-# External code that reads ``OPERATION_OUTPUT_DTYPE`` will still work, but
-# new code should use ``OPERATION_CONTRACTS`` directly.
-# ---------------------------------------------------------------------------
-OPERATION_OUTPUT_DTYPE: dict[str, str] = {
-    name: contract.resolve_dtype("u8") for name, contract in OPERATION_CONTRACTS.items()
 }
 
 

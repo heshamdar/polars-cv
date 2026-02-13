@@ -120,7 +120,7 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("list")
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
         result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
 
         gray_col = result["gray"]
@@ -143,7 +143,12 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").normalize(method="minmax").sink("list")
+        pipe = (
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .normalize(method="minmax")
+            .sink("list")
+        )
         result = df.with_columns(normalized=pl.col("image").cv.pipeline(pipe))
 
         norm_col = result["normalized"]
@@ -160,7 +165,9 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").scale(factor=2.0).sink("list")
+        pipe = (
+            Pipeline().source("image_bytes", dtype="u8").scale(factor=2.0).sink("list")
+        )
         result = df.with_columns(scaled=pl.col("image").cv.pipeline(pipe))
 
         scaled_col = result["scaled"]
@@ -177,7 +184,13 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().threshold(128).sink("list")
+        pipe = (
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .grayscale()
+            .threshold(128)
+            .sink("list")
+        )
         result = df.with_columns(thresh=pl.col("image").cv.pipeline(pipe))
 
         thresh_col = result["thresh"]
@@ -193,7 +206,12 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").resize(height=16, width=16).sink("list")
+        pipe = (
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .resize(height=16, width=16)
+            .sink("list")
+        )
         result = df.with_columns(resized=pl.col("image").cv.pipeline(pipe))
 
         resized_col = result["resized"]
@@ -247,7 +265,7 @@ class TestNullValueHandling:
         """
         df = pl.DataFrame({"image": [None, simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("list")
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
         result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
 
         gray_col = result["gray"]
@@ -269,7 +287,7 @@ class TestNullValueHandling:
         """
         df = pl.DataFrame({"image": [None, None]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("list")
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
         result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
 
         gray_col = result["gray"]
@@ -413,7 +431,7 @@ class TestUnifiedGraphEntry:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("list")
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
         result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
 
         output_col = result["output"]
@@ -615,7 +633,7 @@ class TestNestedListShape:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("list")
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
         result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
 
         gray_col = result["gray"]
@@ -664,7 +682,7 @@ class TestNestedListShape:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("list")
+        pipe = Pipeline().source("image_bytes", dtype="u8").sink("list")
         result = df.with_columns(rgb=pl.col("image").cv.pipeline(pipe))
 
         rgb_col = result["rgb"]
@@ -707,7 +725,12 @@ class TestNestedListShape:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").resize(height=16, width=16).sink("list")
+        pipe = (
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .resize(height=16, width=16)
+            .sink("list")
+        )
         result = df.with_columns(resized=pl.col("image").cv.pipeline(pipe))
 
         resized_col = result["resized"]

@@ -100,7 +100,7 @@ class TestPipelineSink:
 
     def test_sink_array_with_shape(self) -> None:
         """Test array sink format with shape."""
-        pipe = Pipeline().source().sink("array", shape=[224, 224, 3])
+        pipe = Pipeline().source(dtype="u8").sink("array", shape=[224, 224, 3])
         assert pipe._sink is not None
         assert pipe._sink.format == SinkFormat.ARRAY
         assert pipe._sink.shape == [224, 224, 3]
@@ -112,7 +112,7 @@ class TestPipelineSink:
 
     def test_sink_list(self) -> None:
         """Test list sink format."""
-        pipe = Pipeline().source().sink("list")
+        pipe = Pipeline().source(dtype="u8").sink("list")
         assert pipe._sink is not None
         assert pipe._sink.format == SinkFormat.LIST
 

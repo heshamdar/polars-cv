@@ -165,7 +165,10 @@ class TestArraySink:
 
         # Grayscale produces shape [2, 2, 1] (H, W, C)
         pipe = (
-            Pipeline().source("image_bytes").grayscale().sink("array", shape=[2, 2, 1])
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .grayscale()
+            .sink("array", shape=[2, 2, 1])
         )
         result = df.select(values=pl.col("mask").cv.pipeline(pipe))
 
@@ -182,7 +185,12 @@ class TestArraySink:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         # Wrong shape: [3, 3] = 9 elements but image has 4 elements (2x2x1 grayscale)
-        pipe = Pipeline().source("image_bytes").grayscale().sink("array", shape=[3, 3])
+        pipe = (
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .grayscale()
+            .sink("array", shape=[3, 3])
+        )
 
         # This should fail because element count doesn't match
         with pytest.raises(Exception):
@@ -197,7 +205,12 @@ class TestArraySink:
 
         # Buffer shape is [2, 2, 1] (grayscale), but we specify [2, 2]
         # Both have 4 elements but different structure
-        pipe = Pipeline().source("image_bytes").grayscale().sink("array", shape=[2, 2])
+        pipe = (
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .grayscale()
+            .sink("array", shape=[2, 2])
+        )
 
         # This should fail because exact shape doesn't match (use squeeze() first)
         with pytest.raises(Exception):
@@ -217,7 +230,10 @@ class TestArraySink:
 
         # Shape [4, 4, 1] for 4x4 grayscale image
         pipe = (
-            Pipeline().source("image_bytes").grayscale().sink("array", shape=[4, 4, 1])
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .grayscale()
+            .sink("array", shape=[4, 4, 1])
         )
         result = df.select(values=pl.col("mask").cv.pipeline(pipe))
 

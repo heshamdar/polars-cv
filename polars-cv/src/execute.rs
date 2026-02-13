@@ -405,8 +405,17 @@ pub fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<View
     match pipeline.source_format() {
         "image_bytes" => {
             // Use image crate to decode
-            ImageAdapter::decode(bytes)
-                .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))
+            let buf = ImageAdapter::decode(bytes)
+                .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?;
+            // If source spec declares an expected dtype, cast to it.
+            // This is a no-op when the decoded dtype already matches.
+            if let Some(ref dtype_str) = pipeline.source.dtype {
+                let target = parse_dtype(dtype_str)?;
+                if buf.dtype() != target {
+                    return Ok(buf.cast(target));
+                }
+            }
+            Ok(buf)
         }
         "blob" => {
             // Decode from VIEW protocol

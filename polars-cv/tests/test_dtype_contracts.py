@@ -196,10 +196,10 @@ class TestContractConsistency:
 class TestPipelineOutputDtype:
     """Verify that Pipeline.output_dtype tracks dtype correctly."""
 
-    def test_image_source_resize_stays_u8(self) -> None:
-        """image_bytes source -> resize should keep u8 (preserve input u8)."""
+    def test_image_source_resize_stays_auto(self) -> None:
+        """image_bytes source -> resize should keep auto (preserve propagates auto)."""
         pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
-        assert pipe.output_dtype() == "u8"
+        assert pipe.output_dtype() == "auto"
 
     def test_list_f32_source_resize_preserves_f32(self) -> None:
         """list source with dtype=f32 -> resize should keep f32."""
@@ -253,8 +253,9 @@ class TestPipelineOutputDtype:
         pipe_f32 = Pipeline().source("list", dtype="f32").grayscale()
         assert pipe_f32.output_dtype() == "f32"
 
-        pipe_u8 = Pipeline().source("image_bytes").grayscale()
-        assert pipe_u8.output_dtype() == "u8"
+        # image_bytes starts as "auto"; grayscale (PRESERVE) keeps it "auto"
+        pipe_auto = Pipeline().source("image_bytes").grayscale()
+        assert pipe_auto.output_dtype() == "auto"
 
         pipe_u16 = Pipeline().source("list", dtype="u16").grayscale()
         assert pipe_u16.output_dtype() == "u16"
@@ -264,8 +265,9 @@ class TestPipelineOutputDtype:
         pipe_f32 = Pipeline().source("list", dtype="f32").rotate(45.0)
         assert pipe_f32.output_dtype() == "f32"
 
-        pipe_u8 = Pipeline().source("image_bytes").rotate(90.0)
-        assert pipe_u8.output_dtype() == "u8"
+        # image_bytes starts as "auto"; rotate (PRESERVE) keeps it "auto"
+        pipe_auto = Pipeline().source("image_bytes").rotate(90.0)
+        assert pipe_auto.output_dtype() == "auto"
 
         pipe_f64 = Pipeline().source("list", dtype="f64").rotate(30.0)
         assert pipe_f64.output_dtype() == "f64"
@@ -287,8 +289,13 @@ class TestPipelineOutputDtype:
         assert pipe.output_dtype() == "f32"
 
     def test_scale_promotes_to_float(self) -> None:
-        """Scale on u8 input should promote to f32."""
+        """Scale on auto input should stay auto (PROMOTE_TO_FLOAT on auto)."""
         pipe = Pipeline().source("image_bytes").scale(1.0 / 255.0)
+        assert pipe.output_dtype() == "auto"
+
+    def test_scale_promotes_u8_to_f32(self) -> None:
+        """Scale on known u8 input should promote to f32."""
+        pipe = Pipeline().source("image_bytes", dtype="u8").scale(1.0 / 255.0)
         assert pipe.output_dtype() == "f32"
 
 

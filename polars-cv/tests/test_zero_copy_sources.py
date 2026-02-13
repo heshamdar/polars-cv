@@ -271,7 +271,7 @@ class TestRoundTrip:
 
         # Image -> blob -> blob -> list (to verify)
         to_blob = Pipeline().source("image_bytes").sink("blob")
-        from_blob = Pipeline().source("blob").sink("list")
+        from_blob = Pipeline().source("blob", dtype="u8").sink("list")
 
         blob_df = df.with_columns(blob=pl.col("img").cv.pipeline(to_blob))
         result = blob_df.with_columns(arr=pl.col("blob").cv.pipeline(from_blob))

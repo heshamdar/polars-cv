@@ -111,7 +111,13 @@ class TestListSinkShapePreservation:
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
         # Grayscale produces [4, 4, 1], reshape to [4, 4]
-        pipe = Pipeline().source("image_bytes").grayscale().reshape([4, 4]).sink("list")
+        pipe = (
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .grayscale()
+            .reshape([4, 4])
+            .sink("list")
+        )
         result = df.with_columns(out=pl.col("image").cv.pipeline(pipe))
 
         # 2D shape [4, 4] -> List(List(UInt8))
@@ -124,7 +130,7 @@ class TestListSinkShapePreservation:
         """3D buffer should produce 3-level nested List."""
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("list")
+        pipe = Pipeline().source("image_bytes", dtype="u8").sink("list")
         result = df.with_columns(out=pl.col("image").cv.pipeline(pipe))
 
         # 3D shape [4, 4, 3] -> List(List(List(UInt8)))
@@ -179,7 +185,7 @@ class TestListSource:
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
         # First: convert image to list
-        pipe1 = Pipeline().source("image_bytes").sink("list")
+        pipe1 = Pipeline().source("image_bytes", dtype="u8").sink("list")
         df2 = df.with_columns(pixels=pl.col("image").cv.pipeline(pipe1))
 
         # Second: use list source for processing
@@ -245,14 +251,15 @@ class TestSourceFormatValidation:
         assert "image_bytes" in str(exc_info.value)
 
     def test_image_bytes_source(self, simple_image_bytes: bytes) -> None:
-        """image_bytes source should decode PNG/JPEG."""
+        """image_bytes source should decode PNG/JPEG preserving native channels."""
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
         pipe = Pipeline().source("image_bytes").sink("numpy")
         result = df.with_columns(out=pl.col("image").cv.pipeline(pipe))
 
         arr = numpy_from_struct(result["out"][0])
-        assert arr.shape == (4, 4, 3)  # Decoded to RGB
+        # Grayscale PNG decodes to [H, W, 1] preserving native channel count
+        assert arr.shape == (4, 4, 1)
 
     def test_blob_source(self, simple_image_bytes: bytes) -> None:
         """blob source should decode VIEW protocol binary."""
@@ -267,4 +274,5 @@ class TestSourceFormatValidation:
         result = df2.with_columns(out=pl.col("blob").cv.pipeline(pipe2))
 
         arr = numpy_from_struct(result["out"][0])
-        assert arr.shape == (4, 4, 3)
+        # Grayscale PNG decodes to [H, W, 1] preserving native channel count
+        assert arr.shape == (4, 4, 1)
