@@ -211,47 +211,213 @@ class ExpectedDType(str, Enum):
     FLOAT64 = "f64"
 
 
-# Mapping of operations to their output dtype rules
-# This mirrors the Rust OutputDTypeRule for each operation
+class DTypeEffect(str, Enum):
+    """
+    How an operation affects the buffer dtype.
+
+    Mirrors the Rust ``OutputDTypeRule`` enum so that plan-time dtype inference
+    on the Python side agrees with the Rust execution layer.  Each operation
+    declares exactly one ``DTypeEffect`` in its ``OpContract``.
+    """
+
+    PRESERVE = "preserve"
+    """Output dtype == input dtype (e.g. resize, pad, crop)."""
+
+    FIXED_U8 = "u8"
+    """Output is always UInt8 (e.g. grayscale, threshold)."""
+
+    FIXED_F32 = "f32"
+    """Output is always Float32."""
+
+    FIXED_F64 = "f64"
+    """Output is always Float64 (e.g. global reductions)."""
+
+    FIXED_I64 = "i64"
+    """Output is always Int64 (e.g. argmax/argmin)."""
+
+    FIXED_U64 = "u64"
+    """Output is always UInt64 (e.g. histogram counts)."""
+
+    FIXED_U32 = "u32"
+    """Output is always UInt32 (e.g. histogram quantized)."""
+
+    PROMOTE_TO_FLOAT = "promote"
+    """Integer inputs become Float32; float inputs are unchanged."""
+
+    CONFIGURABLE_F32 = "config_f32"
+    """Default Float32, but overridable via ``out_dtype`` parameter."""
+
+    def resolve(self, input_dtype: str) -> str:
+        """
+        Resolve the concrete output dtype given the current input dtype.
+
+        Args:
+            input_dtype: The dtype of the data entering this operation.
+
+        Returns:
+            The expected output dtype string (e.g. ``"f32"``, ``"u8"``).
+        """
+        if self is DTypeEffect.PRESERVE:
+            return input_dtype
+        if self is DTypeEffect.PROMOTE_TO_FLOAT:
+            return input_dtype if input_dtype in ("f32", "f64") else "f32"
+        if self is DTypeEffect.CONFIGURABLE_F32:
+            # Caller should check params for out_dtype override first.
+            # This default is used when no override is present.
+            return "f32"
+        # All FIXED_* variants: the enum value *is* the dtype string.
+        return self.value
+
+
+class NdimEffect(str, Enum):
+    """
+    How an operation affects the number of dimensions.
+
+    Used at plan-time to track the expected dimensionality of the buffer
+    through a pipeline.
+    """
+
+    PRESERVE = "preserve"
+    """Ndim unchanged (e.g. resize, blur, pad)."""
+
+    REDUCE_ONE = "reduce_one"
+    """Ndim decreases by 1 (axis-based reduction)."""
+
+    TO_ZERO = "to_zero"
+    """Global reduction to scalar (ndim → 0)."""
+
+    TO_ONE = "to_one"
+    """Output is a 1-D vector (e.g. perceptual_hash, extract_shape)."""
+
+    TO_THREE = "to_three"
+    """Output is 3-D (e.g. rasterize → [H, W, C])."""
+
+
+@dataclass(frozen=True)
+class OpContract:
+    """
+    Plan-time declaration of an operation's effects on dtype and ndim.
+
+    Every operation must have an ``OpContract`` entry in
+    :data:`OPERATION_CONTRACTS`.  The contract is the **single source of truth**
+    on the Python side for dtype and ndim inference; it mirrors the Rust
+    ``OutputDTypeRule`` and is validated at execution time.
+    """
+
+    dtype_effect: DTypeEffect
+    ndim_effect: NdimEffect
+
+    def resolve_dtype(
+        self,
+        input_dtype: str,
+        params: "dict[str, ParamValue] | None" = None,
+    ) -> str:
+        """
+        Resolve the concrete output dtype for this contract.
+
+        Handles the ``CONFIGURABLE_F32`` case by checking for an
+        ``out_dtype`` parameter override; otherwise delegates to
+        :meth:`DTypeEffect.resolve`.
+
+        Args:
+            input_dtype: Dtype string entering the operation.
+            params: Operation parameters (may contain ``out_dtype``).
+
+        Returns:
+            The expected output dtype string.
+        """
+        if (
+            self.dtype_effect is DTypeEffect.CONFIGURABLE_F32
+            and params
+            and (od := params.get("out_dtype"))
+            and not od.is_expr
+        ):
+            return str(od.value)
+        return self.dtype_effect.resolve(input_dtype)
+
+
+# ---------------------------------------------------------------------------
+# Operation contracts – one entry per operation name.
+#
+# This replaces the old ``OPERATION_OUTPUT_DTYPE`` flat dict.  Each entry
+# declares the dtype and ndim effects so that ``_compute_output_domain_dtype_ndim``
+# can infer the output schema at plan-time.
+#
+# Notes on ``ndim_effect``:
+#   - Reductions with an optional ``axis`` parameter may be either
+#     ``REDUCE_ONE`` (axis given) or ``TO_ZERO`` (global).  The dict stores
+#     the *global* variant; the axis case is handled by a param-dependent
+#     override inside ``_compute_output_domain_dtype_ndim``.
+#   - ``cast`` and ``histogram`` are param-dependent for dtype; the dict
+#     stores sensible defaults that are overridden by param inspection.
+# ---------------------------------------------------------------------------
+OPERATION_CONTRACTS: dict[str, OpContract] = {
+    # --- Image (spatial) operations – preserve input dtype ---
+    "resize": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "resize_scale": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "resize_to_height": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "resize_to_width": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "resize_max": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "resize_min": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # --- Image operations ---
+    # Grayscale is a channel reduction that preserves element dtype.
+    "grayscale": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # Threshold always produces a U8 binary mask (0 or 255) regardless of input dtype.
+    "threshold": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE),
+    # Blur uses the image crate internally — requires and produces U8.
+    "blur": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE),
+    # Rotate is a dtype-preserving spatial transformation.
+    "rotate": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # --- Perceptual hash ---
+    "perceptual_hash": OpContract(DTypeEffect.FIXED_U8, NdimEffect.TO_ONE),
+    # --- Compute operations ---
+    "normalize": OpContract(DTypeEffect.CONFIGURABLE_F32, NdimEffect.PRESERVE),
+    "scale": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    "clamp": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    "relu": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    "cast": OpContract(
+        DTypeEffect.FIXED_U8, NdimEffect.PRESERVE
+    ),  # overridden by params
+    # --- Reductions (global defaults – axis variants overridden in code) ---
+    "reduce_sum": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
+    "reduce_mean": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
+    "reduce_std": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
+    "reduce_max": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
+    "reduce_min": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
+    "reduce_popcount": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
+    "reduce_percentile": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
+    "reduce_argmax": OpContract(DTypeEffect.FIXED_I64, NdimEffect.TO_ZERO),
+    "reduce_argmin": OpContract(DTypeEffect.FIXED_I64, NdimEffect.TO_ZERO),
+    # --- Shape / domain transitions ---
+    "extract_shape": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
+    "rasterize": OpContract(DTypeEffect.FIXED_U8, NdimEffect.TO_THREE),
+    # --- Geometry scalars / vectors ---
+    "contour_area": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
+    "contour_perimeter": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
+    "contour_centroid": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
+    "contour_bounding_box": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
+    # --- Histogram (default is counts mode – overridden by params) ---
+    "histogram": OpContract(DTypeEffect.FIXED_U64, NdimEffect.TO_ONE),
+    # --- Padding / spatial view operations – preserve dtype ---
+    "pad": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "pad_to_size": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "letterbox": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "crop": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "reshape": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE
+    ),  # ndim param-dependent
+    "flip": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "transpose": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+}
+
+# ---------------------------------------------------------------------------
+# Deprecated compatibility alias.
+#
+# External code that reads ``OPERATION_OUTPUT_DTYPE`` will still work, but
+# new code should use ``OPERATION_CONTRACTS`` directly.
+# ---------------------------------------------------------------------------
 OPERATION_OUTPUT_DTYPE: dict[str, str] = {
-    # Image operations - Fixed(U8)
-    "grayscale": "u8",
-    "resize": "u8",
-    "blur": "u8",
-    "threshold": "u8",
-    "rotate": "u8",
-    # Perceptual hash - Fixed(U8)
-    "perceptual_hash": "u8",
-    # Compute operations - PromoteToFloat or Configurable(F32)
-    "normalize": "f32",  # Configurable, default F32
-    "scale": "f32",  # PromoteToFloat
-    "clamp": "f32",  # PromoteToFloat
-    "relu": "f32",  # PromoteToFloat
-    # Reductions - ForceF64 for global, PreserveInput for axis-based
-    "reduce_sum": "f64",
-    "reduce_max": "f64",
-    "reduce_min": "f64",
-    "reduce_mean": "f64",
-    "reduce_std": "f64",
-    "reduce_popcount": "f64",
-    "reduce_percentile": "f64",
-    # ArgMax/ArgMin always return i64 (indices)
-    "reduce_argmax": "i64",
-    "reduce_argmin": "i64",
-    # Cast - Configurable
-    "cast": "u8",  # Default, overridden by params
-    # Shape extraction returns f64 values (vector domain uses f64)
-    "extract_shape": "f64",
-    # Rasterize - produces u8 buffer
-    "rasterize": "u8",
-    # Geometry -> scalar/vector
-    "contour_area": "f64",
-    "contour_perimeter": "f64",
-    "contour_centroid": "f64",
-    "contour_bounding_box": "f64",
-    # Histogram - output dtype depends on mode
-    # counts -> u64, normalized -> f64, quantized -> u32, edges -> f64
-    "histogram": "u64",  # Default for counts mode
+    name: contract.resolve_dtype("u8") for name, contract in OPERATION_CONTRACTS.items()
 }
 
 

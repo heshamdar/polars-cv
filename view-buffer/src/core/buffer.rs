@@ -509,6 +509,7 @@ impl ViewBuffer {
     /// * `shape` - Shape of the buffer.
     /// * `strides` - Byte strides for each dimension.
     /// * `dtype` - Element data type.
+    #[cfg(feature = "polars_interop")]
     pub fn from_polars_buffer_slice_with_strides(
         buffer: polars_arrow::buffer::Buffer<u8>,
         offset: usize,

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._types import (
-    OPERATION_OUTPUT_DTYPE,
+    OPERATION_CONTRACTS,
     CloudOptions,
     DType,
     FilterType,
@@ -22,6 +22,7 @@ from polars_cv._types import (
     HashAlgorithm,
     HistogramOutput,
     IntOrExpr,
+    NdimEffect,
     NormalizeMethod,
     OpSpec,
     OutputDType,
@@ -133,8 +134,9 @@ class Pipeline:
         """
         Compute the output domain, dtype, and ndim after applying operations.
 
-        This is used for static type inference to ensure planning-time types
-        match runtime types.
+        Uses :data:`OPERATION_CONTRACTS` for dtype and ndim inference.
+        Param-dependent overrides (cast, histogram, axis reductions) are
+        handled as special cases on top of the contract defaults.
 
         Args:
             ops: Sequence of operations to analyze.
@@ -152,31 +154,35 @@ class Pipeline:
         for op_spec in ops:
             op_name = op_spec.op
 
-            # Update domain if this operation changes it
+            # --- Domain ---
             if op_name in Pipeline._OPERATION_OUTPUT_DOMAIN:
                 domain = Pipeline._OPERATION_OUTPUT_DOMAIN[op_name]
 
-            # Update dtype if this operation is in the dtype mapping
-            if op_name in OPERATION_OUTPUT_DTYPE:
-                dtype = OPERATION_OUTPUT_DTYPE[op_name]
+            # --- Dtype (contract-based) ---
+            # Save the pre-contract dtype so axis-based reductions that
+            # PRESERVE can fall back to the input dtype rather than the
+            # contract's global default.
+            pre_contract_dtype = dtype
+            contract = OPERATION_CONTRACTS.get(op_name)
+            if contract is not None:
+                dtype = contract.resolve_dtype(dtype, op_spec.params)
 
-            # Handle special cases for cast (param-dependent)
+            # Param-dependent override: cast uses the explicit dtype param
             if op_name == "cast":
                 dtype_param = op_spec.params.get("dtype")
                 if dtype_param and not dtype_param.is_expr:
                     dtype = dtype_param.value
 
-            # Handle special cases for histogram (mode-dependent)
+            # Param-dependent override: histogram mode determines dtype & ndim
             if op_name == "histogram":
-                # Check for output_mode param
                 mode_param = op_spec.params.get("output_mode")
                 if mode_param and not mode_param.is_expr:
                     mode = mode_param.value
-                    # Quantized mode keeps buffer domain
                     if mode == 3:  # QUANTIZED enum value
                         domain = Pipeline.DOMAIN_BUFFER
                         dtype = "u32"
-                        # ndim remains same
+                        # ndim remains same – skip generic ndim logic below
+                        continue
                     elif mode == 0:  # COUNTS
                         dtype = "u64"
                         ndim = 1
@@ -186,40 +192,65 @@ class Pipeline:
                 else:
                     # Default mode is counts -> ndim=1
                     ndim = 1
+                continue  # ndim already set; skip generic ndim logic
 
-            # Handle axis-based reductions that keep buffer domain
-            if op_name in ("reduce_max", "reduce_min", "reduce_mean", "reduce_std"):
+            # --- Ndim ---
+            # Axis-based reductions: check for axis param to decide between
+            # REDUCE_ONE (axis given) and TO_ZERO (global).
+            if op_name in (
+                "reduce_max",
+                "reduce_min",
+                "reduce_mean",
+                "reduce_std",
+                "reduce_argmax",
+                "reduce_argmin",
+            ):
                 axis_param = op_spec.params.get("axis")
                 if (
                     axis_param
                     and not axis_param.is_expr
                     and axis_param.value is not None
                 ):
-                    # Axis reduction keeps buffer domain but reduces ndim
+                    # Axis reduction: keeps buffer domain, reduces ndim by 1.
+                    # Dtype for axis-based reduce_max/reduce_min is PRESERVE
+                    # (the contract's global FIXED_F64 doesn't apply here).
+                    if op_name in ("reduce_max", "reduce_min"):
+                        dtype = pre_contract_dtype
                     domain = Pipeline.DOMAIN_BUFFER
                     if ndim is not None:
                         ndim = max(0, ndim - 1)
+                    continue
                 else:
                     # Global reduction -> scalar
                     domain = Pipeline.DOMAIN_SCALAR
                     ndim = 0
+                    continue
 
-            # Handle global reductions
-            if op_name in ("reduce_sum", "reduce_popcount"):
+            # Global reductions that always reduce to scalar
+            if op_name in ("reduce_sum", "reduce_popcount", "reduce_percentile"):
                 domain = Pipeline.DOMAIN_SCALAR
                 ndim = 0
+                continue
 
-            # Handle other domain changes
+            # Generic ndim from contract
+            if contract is not None:
+                ndim_eff = contract.ndim_effect
+                if ndim_eff is NdimEffect.TO_ZERO:
+                    ndim = 0
+                elif ndim_eff is NdimEffect.TO_ONE:
+                    ndim = 1
+                elif ndim_eff is NdimEffect.TO_THREE:
+                    ndim = 3
+                elif ndim_eff is NdimEffect.REDUCE_ONE:
+                    if ndim is not None:
+                        ndim = max(0, ndim - 1)
+                # PRESERVE → ndim unchanged
+
+            # Sync ndim with domain for scalar/vector domains
             if domain == Pipeline.DOMAIN_SCALAR:
                 ndim = 0
             elif domain == Pipeline.DOMAIN_VECTOR:
                 ndim = 1
-            elif op_name == "perceptual_hash":
-                ndim = 1
-            elif op_name == "extract_shape":
-                ndim = 1
-            elif op_name == "rasterize":
-                ndim = 3
 
         return domain, dtype, ndim
 
@@ -341,8 +372,32 @@ class Pipeline:
             w = params.get("width")
             if h and not h.is_expr:
                 self._shape_hints.height = h
+            else:
+                self._shape_hints.height = None
             if w and not w.is_expr:
                 self._shape_hints.width = w
+            else:
+                self._shape_hints.width = None
+        elif op_name == "resize_to_height":
+            # Height is known; width is computed at runtime (aspect ratio).
+            h = params.get("height")
+            if h and not h.is_expr:
+                self._shape_hints.height = h
+            else:
+                self._shape_hints.height = None
+            self._shape_hints.width = None  # unknown (runtime)
+        elif op_name == "resize_to_width":
+            # Width is known; height is computed at runtime (aspect ratio).
+            w = params.get("width")
+            if w and not w.is_expr:
+                self._shape_hints.width = w
+            else:
+                self._shape_hints.width = None
+            self._shape_hints.height = None  # unknown (runtime)
+        elif op_name in ("resize_scale", "resize_max", "resize_min"):
+            # Both dimensions are computed at runtime.
+            self._shape_hints.height = None
+            self._shape_hints.width = None
         elif op_name == "grayscale":
             self._shape_hints.channels = ParamValue(is_expr=False, value=1)
         elif op_name == "pad":
@@ -594,11 +649,15 @@ class Pipeline:
                 SourceFormat.RAW,
             ):
                 new._expected_ndim = 3
+                # RAW format: propagate the explicit dtype to the pipeline
+                if fmt == SourceFormat.RAW and dtype_enum is not None:
+                    new._output_dtype = dtype_enum.value
             elif fmt in (SourceFormat.LIST, SourceFormat.ARRAY):
                 # For list/array sources, infer dtype and ndim from the
                 # Polars column at planning time when not explicitly given.
                 if dtype_enum is not None:
                     # User provided explicit dtype — use it, default ndim=3
+                    new._output_dtype = dtype_enum.value
                     new._expected_ndim = 3
                 else:
                     # Mark as "auto" so Rust resolves from input_fields
@@ -1098,7 +1157,8 @@ class Pipeline:
                 },
             )
         )
-        new._update_output_dtype("resize")
+        new._update_output_dtype("resize_scale")
+        new._update_shape_hints("resize_scale", new._ops[-1].params)
         return new
 
     def resize_to_height(
@@ -1147,7 +1207,8 @@ class Pipeline:
                 },
             )
         )
-        new._update_output_dtype("resize")
+        new._update_output_dtype("resize_to_height")
+        new._update_shape_hints("resize_to_height", new._ops[-1].params)
         return new
 
     def resize_to_width(
@@ -1196,7 +1257,8 @@ class Pipeline:
                 },
             )
         )
-        new._update_output_dtype("resize")
+        new._update_output_dtype("resize_to_width")
+        new._update_shape_hints("resize_to_width", new._ops[-1].params)
         return new
 
     def resize_max(
@@ -1246,7 +1308,8 @@ class Pipeline:
                 },
             )
         )
-        new._update_output_dtype("resize")
+        new._update_output_dtype("resize_max")
+        new._update_shape_hints("resize_max", new._ops[-1].params)
         return new
 
     def resize_min(
@@ -1296,7 +1359,8 @@ class Pipeline:
                 },
             )
         )
-        new._update_output_dtype("resize")
+        new._update_output_dtype("resize_min")
+        new._update_shape_hints("resize_min", new._ops[-1].params)
         return new
 
     # --- Padding Operations ---
@@ -1482,12 +1546,19 @@ class Pipeline:
         new._update_shape_hints("grayscale", {})
         return new
 
-    def threshold(self, value: IntOrExpr) -> "Pipeline":
+    def threshold(self, value: "IntOrExpr | FloatOrExpr") -> "Pipeline":
         """
         Apply binary threshold.
 
+        Each element is compared against the threshold; the output is a
+        U8 binary mask (255 if element > value, 0 otherwise).
+
+        The threshold value range depends on the input dtype:
+        - For u8 input: typically 0-255.
+        - For float input (e.g., normalized [0, 1]): use a float value like 0.5.
+
         Args:
-            value: Threshold value (0-255 for u8).
+            value: Threshold value (int or float, or Polars expression).
         """
         self._validate_domain(self.DOMAIN_BUFFER, "threshold")
         new = self._clone()

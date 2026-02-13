@@ -125,6 +125,29 @@ pub trait Op {
             .resolve(input_dtype, out_dtype_override)
     }
 
+    /// Validate that a produced buffer matches this operation's dtype contract.
+    ///
+    /// Returns `Ok(())` when the output dtype matches the declared
+    /// [`output_dtype_rule`](Op::output_dtype_rule) for the given
+    /// `input_dtype`, or an `Err` with a human-readable description of the
+    /// mismatch.
+    ///
+    /// This is intended to be called after execution as a runtime guardrail.
+    fn validate_output_dtype(&self, input_dtype: DType, output_dtype: DType) -> Result<(), String> {
+        let expected = self.output_dtype_rule().resolve(input_dtype, None);
+        if output_dtype != expected {
+            return Err(format!(
+                "{}: expected output dtype {:?} (rule {:?} with input {:?}), but got {:?}",
+                self.name(),
+                expected,
+                self.output_dtype_rule(),
+                input_dtype,
+                output_dtype,
+            ));
+        }
+        Ok(())
+    }
+
     // --- Tiling Support ---
 
     /// Returns the tiling policy for this operation.
@@ -176,7 +199,7 @@ pub trait Op {
 /// impl DomainOp for ExtractContoursOp {
 ///     fn input_domain(&self) -> Domain { Domain::Buffer }
 ///     fn output_domain(&self) -> Domain { Domain::Contour }
-///     
+///
 ///     fn execute_typed(&self, input: NodeOutput) -> Result<NodeOutput, String> {
 ///         let buffer = input.as_buffer()
 ///             .ok_or("Expected Buffer input")?;
