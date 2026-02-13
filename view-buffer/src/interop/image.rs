@@ -134,14 +134,44 @@ impl ImageAdapter {
     }
 
     /// Converts a loaded DynamicImage into a ViewBuffer.
+    ///
+    /// Preserves native dtype (u8, u16, f32) and always produces 3D `[H, W, C]`.
+    /// Alpha channels are stripped for now (RGBA -> RGB, LumaA -> Luma).
     pub fn from_dynamic_image(img: DynamicImage) -> ViewBuffer {
         let (w, h) = img.dimensions();
-        let shape = vec![h as usize, w as usize, 3];
 
-        let rgb_img = img.to_rgb8();
-        let raw_bytes = rgb_img.into_raw();
-
-        ViewBuffer::from_vec(raw_bytes).reshape(shape)
+        match &img {
+            // 16-bit RGB (strip alpha if present)
+            DynamicImage::ImageRgb16(_) | DynamicImage::ImageRgba16(_) => {
+                let rgb16 = img.to_rgb16();
+                let shape = vec![h as usize, w as usize, 3];
+                ViewBuffer::from_vec(rgb16.into_raw()).reshape(shape)
+            }
+            // 16-bit grayscale (strip alpha if present)
+            DynamicImage::ImageLuma16(_) | DynamicImage::ImageLumaA16(_) => {
+                let luma16 = img.to_luma16();
+                let shape = vec![h as usize, w as usize, 1];
+                ViewBuffer::from_vec(luma16.into_raw()).reshape(shape)
+            }
+            // 8-bit grayscale (strip alpha if present)
+            DynamicImage::ImageLuma8(_) | DynamicImage::ImageLumaA8(_) => {
+                let luma8 = img.to_luma8();
+                let shape = vec![h as usize, w as usize, 1];
+                ViewBuffer::from_vec(luma8.into_raw()).reshape(shape)
+            }
+            // 32-bit float RGB
+            DynamicImage::ImageRgb32F(_) => {
+                let rgb32f = img.to_rgb32f();
+                let shape = vec![h as usize, w as usize, 3];
+                ViewBuffer::from_vec(rgb32f.into_raw()).reshape(shape)
+            }
+            // Everything else: default to u8 RGB (common case: RGB8, RGBA8)
+            _ => {
+                let rgb_img = img.to_rgb8();
+                let shape = vec![h as usize, w as usize, 3];
+                ViewBuffer::from_vec(rgb_img.into_raw()).reshape(shape)
+            }
+        }
     }
 
     /// Encodes a ViewBuffer into bytes (PNG/JPEG/etc).
@@ -337,14 +367,10 @@ impl ImageAdapter {
                 }
             };
 
-        // Helper: build shape from dimensions and channels
-        let make_shape = |h: u32, w: u32, c: usize| -> Vec<usize> {
-            if c == 1 {
-                vec![h as usize, w as usize]
-            } else {
-                vec![h as usize, w as usize, c]
-            }
-        };
+        // Helper: build shape from dimensions and channels.
+        // Always produces 3D [H, W, C] for consistency with PNG/JPEG decoding.
+        let make_shape =
+            |h: u32, w: u32, c: usize| -> Vec<usize> { vec![h as usize, w as usize, c] };
 
         // Convert the decoded data to ViewBuffer based on the data type
         match decoding_result {

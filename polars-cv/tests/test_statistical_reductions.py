@@ -134,7 +134,9 @@ class TestAxisReductions:
         """Test max reduction along axis 0 (height)."""
         from polars_cv.pipeline import Pipeline
 
-        pipe = Pipeline().source("image_bytes").grayscale().reduce_max(axis=0)
+        pipe = (
+            Pipeline().source("image_bytes", dtype="u8").grayscale().reduce_max(axis=0)
+        )
         df = pl.DataFrame({"image": [simple_image]})
         result = df.select(output=pl.col("image").cv.pipeline(pipe.sink("list")))
 

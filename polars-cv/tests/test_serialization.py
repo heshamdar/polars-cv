@@ -108,7 +108,7 @@ class TestPipelineJsonFormat:
 
     def test_sink_spec_array_shape(self) -> None:
         """Test sink specification with array shape."""
-        pipe = Pipeline().source().sink("array", shape=[224, 224, 3])
+        pipe = Pipeline().source(dtype="u8").sink("array", shape=[224, 224, 3])
         data = json.loads(pipe._to_json())
 
         assert data["sink"]["format"] == "array"

@@ -117,12 +117,11 @@ class Pipeline:
         self._expr_refs: list[pl.Expr] = []
         # Domain tracking for typed pipelines
         self._current_domain: str = self.DOMAIN_BUFFER
-        # Output dtype tracking - starts as "u8" for image sources
-        self._output_dtype: str = "u8"
+        # Output dtype tracking — "auto" means unknown until runtime or
+        # until an operation with a deterministic output dtype resolves it.
+        self._output_dtype: str = "auto"
         # Number of dimensions tracking
         self._expected_ndim: int | None = None
-        # Whether dtype/ndim should be auto-inferred from the Polars column at planning time
-        self._auto_infer_from_input: bool = False
 
     @staticmethod
     def _compute_output_domain_dtype_ndim(
@@ -283,7 +282,6 @@ class Pipeline:
         new._current_domain = self._current_domain
         new._output_dtype = self._output_dtype
         new._expected_ndim = self._expected_ndim
-        new._auto_infer_from_input = self._auto_infer_from_input
         return new
 
     def _source_equal(self, other: "Pipeline") -> bool:
@@ -335,10 +333,12 @@ class Pipeline:
         Get the expected output dtype of the pipeline.
 
         This is the dtype of the buffer after all operations have been applied.
-        Used for static type inference in list/array sinks.
+        Used for static type inference in list/array sinks.  May be ``"auto"``
+        if the dtype has not yet been determined (e.g. an image source with
+        no dtype-fixing operation applied).
 
         Returns:
-            Output dtype string: "u8", "f32", "f64", etc.
+            Output dtype string: ``"u8"``, ``"f32"``, ``"f64"``, ``"auto"``, etc.
         """
         return self._output_dtype
 
@@ -506,16 +506,34 @@ class Pipeline:
         """
         Define the input source format.
 
+        Image sources (``"image_bytes"`` and ``"file_path"``) auto-detect the
+        format and preserve native dtype.  PNG/JPEG decode to u8, 16-bit PNG
+        to u16, and TIFF may produce u8, u16, f32, or f64.  All decoded
+        images are always 3D ``[H, W, C]``.
+
+        Because the dtype is not known until runtime, it starts as ``"auto"``
+        in the contract system.  Operations with deterministic output dtypes
+        (e.g. ``normalize`` -> f32, ``threshold`` -> u8, ``cast``) resolve it.
+        If you sink to ``"list"`` or ``"array"``, the dtype must be known at
+        planning time — either via an explicit ``dtype`` here, a ``cast()`` in
+        the pipeline, or an operation that fixes the output dtype.
+
         Args:
             format: How to interpret input data.
-                - "image_bytes": Decode PNG/JPEG (auto-detect)
+                - "image_bytes": Decode PNG/JPEG/TIFF (auto-detect format
+                  and dtype; always 3D ``[H, W, C]``)
                 - "blob": VIEW protocol binary (self-describing)
                 - "raw": Raw bytes (requires dtype)
                 - "list": Polars nested List column
                 - "array": Polars fixed-size Array column
-                - "file_path": Read from path (local, s3://, gs://, az://, http://)
+                - "file_path": Read from path (local, s3://, gs://, az://,
+                  http://); decodes like ``"image_bytes"``
                 - "contour": Rasterize contour struct to binary mask
-            dtype: Data type for "raw" format (required), or override for "list"/"array".
+            dtype: For ``"raw"``: required data type of the raw bytes.
+                For ``"image_bytes"`` / ``"file_path"``: asserts the expected
+                dtype — at runtime, images with a different dtype are cast to
+                this type (no-op if already matching).  For ``"list"`` /
+                ``"array"``: override for the inferred column element type.
             width: Output mask width for "contour" format.
             height: Output mask height for "contour" format.
             shape: Infer dimensions from another pipeline for "contour" format.
@@ -533,6 +551,10 @@ class Pipeline:
             >>> df = pl.DataFrame({"url": ["https://example.com/image.png"]})
             >>> pipe = Pipeline().source("file_path").grayscale()
             >>> expr = pl.col("url").cv.pipe(pipe).sink("numpy")
+            >>>
+            >>> # Assert dtype for list sink (cast if needed at runtime)
+            >>> pipe = Pipeline().source("image_bytes", dtype="f32").resize(224, 224)
+            >>> expr = pl.col("img").cv.pipe(pipe).sink("list")
             ```
         """
         from polars_cv.lazy import LazyPipelineExpr
@@ -641,17 +663,30 @@ class Pipeline:
                 cloud_options=cloud_opts,
                 require_contiguous=require_contiguous,
             )
-            # Default ndim for image/buffer sources
-            if fmt in (
-                SourceFormat.IMAGE_BYTES,
-                SourceFormat.FILE_PATH,
-                SourceFormat.BLOB,
-                SourceFormat.RAW,
-            ):
+            # Set dtype and ndim based on source format
+            if fmt == SourceFormat.RAW:
+                # Raw bytes always require explicit dtype (validated above)
+                assert dtype_enum is not None
                 new._expected_ndim = 3
-                # RAW format: propagate the explicit dtype to the pipeline
-                if fmt == SourceFormat.RAW and dtype_enum is not None:
+                new._output_dtype = dtype_enum.value
+            elif fmt == SourceFormat.BLOB:
+                # Blob is self-describing; dtype/ndim unknown until runtime.
+                # User may assert dtype for planning (e.g., list/array sinks).
+                new._expected_ndim = None
+                if dtype_enum is not None:
                     new._output_dtype = dtype_enum.value
+                else:
+                    new._output_dtype = "auto"
+            elif fmt in (SourceFormat.IMAGE_BYTES, SourceFormat.FILE_PATH):
+                # Decoded images are always 3D [H, W, C]
+                new._expected_ndim = 3
+                if dtype_enum is not None:
+                    # User asserted dtype — at runtime, decoded images with
+                    # a different dtype will be cast to this type.
+                    new._output_dtype = dtype_enum.value
+                else:
+                    # Dtype unknown until runtime (TIFF=f32, PNG=u8, etc.)
+                    new._output_dtype = "auto"
             elif fmt in (SourceFormat.LIST, SourceFormat.ARRAY):
                 # For list/array sources, infer dtype and ndim from the
                 # Polars column at planning time when not explicitly given.
@@ -663,7 +698,6 @@ class Pipeline:
                     # Mark as "auto" so Rust resolves from input_fields
                     new._output_dtype = "auto"
                     new._expected_ndim = None
-                    new._auto_infer_from_input = True
 
         return new
 
@@ -2350,6 +2384,28 @@ class Pipeline:
                 )
                 raise ValueError(msg)
 
+        # Enforce known dtype for list/array sinks — Polars requires the
+        # inner dtype and nesting depth at planning time.
+        # Exception: list/array *sources* with "auto" are fine because Rust
+        # resolves the dtype from the Polars column type at planning time.
+        if fmt in (SinkFormat.LIST, SinkFormat.ARRAY):
+            if new._output_dtype == "auto":
+                source_can_resolve = new._source is not None and new._source.format in (
+                    SourceFormat.LIST,
+                    SourceFormat.ARRAY,
+                )
+                if not source_can_resolve:
+                    msg = (
+                        f"Cannot determine output dtype for '{format}' sink. "
+                        f"Image sources have variable dtypes (u8, u16, f32, f64). "
+                        f"Either:\n"
+                        f"  1. Add .cast('f32') or .cast('u8') before the sink\n"
+                        f"  2. Specify dtype in .source(..., dtype='f32')\n"
+                        f"  3. Use an operation that determines dtype "
+                        f"(e.g., .normalize(), .threshold())"
+                    )
+                    raise ValueError(msg)
+
         new._sink = SinkSpec(format=fmt, quality=quality, shape=shape)
 
         return new
@@ -2474,7 +2530,6 @@ class Pipeline:
         sub._current_domain = domain
         sub._output_dtype = dtype
         sub._expected_ndim = ndim
-        sub._auto_infer_from_input = self._auto_infer_from_input
 
         return sub
 

@@ -162,6 +162,7 @@ class LazyPipelineExpr:
             A Polars expression (or PipelineGraph if return_expr=False).
         """
         from polars_cv._graph import PipelineGraph
+        from polars_cv._types import SourceFormat
 
         # Validate no cycles
         self._validate_no_cycles()
@@ -185,11 +186,17 @@ class LazyPipelineExpr:
             # Validate array sinks in multi-output
 
             for alias, fmt_str in format.items():
-                # Validate list sink ndim (allow None for auto-inferred sources)
+                # Validate list sink ndim — allow None when Rust can resolve
+                # it from the Polars column type (list/array sources).
                 if fmt_str == "list":
                     node = self._find_node_by_alias(alias, all_nodes)
                     if node and node._pipeline._expected_ndim is None:
-                        if not node._pipeline._auto_infer_from_input:
+                        source_can_resolve = (
+                            node._pipeline._source is not None
+                            and node._pipeline._source.format
+                            in (SourceFormat.LIST, SourceFormat.ARRAY)
+                        )
+                        if not source_can_resolve:
                             msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
                             raise ValueError(msg)
 
@@ -210,10 +217,16 @@ class LazyPipelineExpr:
                     msg = "shape is required for 'array' sink format when output shape is not deterministic. Provide 'shape' in .sink() or use .resize() earlier."
                     raise ValueError(msg)
 
-            # Validate list sink ndim (allow None for auto-inferred list/array sources)
+            # Validate list sink ndim — allow None when Rust can resolve
+            # it from the Polars column type (list/array sources).
             if format == "list":
                 if self._pipeline._expected_ndim is None:
-                    if not self._pipeline._auto_infer_from_input:
+                    source_can_resolve = (
+                        self._pipeline._source is not None
+                        and self._pipeline._source.format
+                        in (SourceFormat.LIST, SourceFormat.ARRAY)
+                    )
+                    if not source_can_resolve:
                         msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
                         raise ValueError(msg)
 

@@ -125,14 +125,27 @@ fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series
     // Parse the unified graph specification
     let mut graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
 
-    // Resolve "auto" dtype/ndim from input series (mirrors unified_output_dtype logic)
+    // Resolve "auto" dtype/ndim from input series (mirrors unified_output_dtype logic).
+    // Only resolve from the Polars column type when the leaf is a numeric type
+    // (i.e., inside List/Array nesting). For Binary/String columns (image/file
+    // sources), the column type does not reflect the decoded buffer dtype, so
+    // leave "auto" unresolved — runtime validation will be skipped.
     if !inputs.is_empty() {
         let (leaf_dtype, ndim) = peel_nesting(inputs[0].dtype());
         let inferred_dtype_str = polars_dtype_to_str(&leaf_dtype);
 
         for spec in graph.outputs.values_mut() {
             if spec.expected_dtype == "auto" {
-                spec.expected_dtype = inferred_dtype_str.to_string();
+                match &leaf_dtype {
+                    DataType::Binary | DataType::String | DataType::Null => {
+                        // Image/file sources: cannot infer buffer dtype from column type.
+                        // Leave as "auto" — validation will be skipped.
+                    }
+                    _ => {
+                        // List/array sources: leaf type is meaningful.
+                        spec.expected_dtype = inferred_dtype_str.to_string();
+                    }
+                }
             }
             if spec.expected_ndim.is_none() && ndim > 0 {
                 spec.expected_ndim = Some(ndim);
@@ -188,13 +201,25 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
 
     // If we have input fields, extract the inner dtype and nesting depth
     // so we can resolve "auto" sentinels in output specs.
+    // Only resolve from the Polars column type when the leaf is numeric
+    // (List/Array sources). For Binary/String (image/file sources), the
+    // column type does not reflect the decoded buffer dtype.
     if !input_fields.is_empty() {
         let (leaf_dtype, ndim) = peel_nesting(input_fields[0].dtype());
         let inferred_dtype_str = polars_dtype_to_str(&leaf_dtype);
 
         for spec in graph.outputs.values_mut() {
             if spec.expected_dtype == "auto" {
-                spec.expected_dtype = inferred_dtype_str.to_string();
+                match &leaf_dtype {
+                    DataType::Binary | DataType::String | DataType::Null => {
+                        // Image/file sources: cannot infer buffer dtype from column type.
+                        // Leave as "auto" — schema will use a safe default.
+                    }
+                    _ => {
+                        // List/array sources: leaf type is meaningful.
+                        spec.expected_dtype = inferred_dtype_str.to_string();
+                    }
+                }
             }
             if spec.expected_ndim.is_none() && ndim > 0 {
                 spec.expected_ndim = Some(ndim);

@@ -581,8 +581,10 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
         "i64" => DataType::Int64,
         "f32" => DataType::Float32,
         "f64" => DataType::Float64,
-        // Default to UInt8 (consistent with encode::default_dtype) for unknown
-        // dtype strings. This matches the natural default for image data.
+        // "auto" means dtype was not resolved at planning time.
+        // For binary sinks this is irrelevant; for list/array sinks Python
+        // enforces a concrete dtype before reaching here.  Fall back to UInt8
+        // as a safe default for schema inference.
         _ => DataType::UInt8,
     }
 }

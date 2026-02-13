@@ -723,7 +723,7 @@ pub(crate) fn default_domain() -> String {
     "buffer".to_string()
 }
 pub(crate) fn default_dtype() -> String {
-    "u8".to_string()
+    "auto".to_string()
 }
 #[cfg(test)]
 mod tests {
