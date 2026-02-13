@@ -1,6 +1,6 @@
 [package]
 name = "polars-cv"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "A Polars plugin for vision/array operations powered by view-buffer"
 license = "MIT OR Apache-2.0"

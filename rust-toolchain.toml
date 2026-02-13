@@ -1,0 +1,3 @@
+# Use latest stable Rust (1.78+) so Cargo understands Cargo.lock version 4.
+[toolchain]
+channel = "stable"
