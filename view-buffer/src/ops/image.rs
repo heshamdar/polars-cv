@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ImageOpKind {
-    Threshold(u8),
+    Threshold(f64),
     Resize {
         width: u32,
         height: u32,
@@ -101,11 +101,8 @@ impl Op for ImageOp {
     }
 
     fn infer_dtype(&self, inputs: &[DType]) -> DType {
-        match &self.kind {
-            ImageOpKind::Grayscale => DType::U8,
-            ImageOpKind::Threshold(_) => DType::U8,
-            _ => inputs[0],
-        }
+        // Delegate to output_dtype_rule so there is a single source of truth.
+        self.output_dtype_rule().resolve(inputs[0], None)
     }
 
     fn memory_effect(&self) -> MemoryEffect {
@@ -151,14 +148,32 @@ impl Op for ImageOp {
     }
 
     fn working_dtype(&self) -> Option<DType> {
-        // All image operations work internally with U8
-        // For float inputs, we scale and convert to U8 first
-        Some(DType::U8)
+        match &self.kind {
+            // Resize operates on the input's native dtype via fast_image_resize.
+            ImageOpKind::Resize { .. } => None,
+            // Rotate uses custom bilinear interpolation that works on any dtype.
+            ImageOpKind::Rotate { .. } => None,
+            // Grayscale uses BT.601 channel reduction — generic over dtype.
+            ImageOpKind::Grayscale => None,
+            // Threshold compares each element against a float threshold — generic.
+            ImageOpKind::Threshold(_) => None,
+            // Blur uses the `image` crate which requires U8 data internally.
+            ImageOpKind::Blur { .. } => Some(DType::U8),
+        }
     }
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
-        // Image operations always output U8
-        OutputDTypeRule::Fixed(DType::U8)
+        match &self.kind {
+            // Spatial transformations preserve the input dtype.
+            ImageOpKind::Resize { .. } => OutputDTypeRule::PreserveInput,
+            ImageOpKind::Rotate { .. } => OutputDTypeRule::PreserveInput,
+            // Grayscale is a channel reduction that preserves element dtype.
+            ImageOpKind::Grayscale => OutputDTypeRule::PreserveInput,
+            // Threshold always produces a U8 binary mask (0 or 255).
+            ImageOpKind::Threshold(_) => OutputDTypeRule::Fixed(DType::U8),
+            // Blur uses the `image` crate which produces U8 output.
+            ImageOpKind::Blur { .. } => OutputDTypeRule::Fixed(DType::U8),
+        }
     }
 
     #[inline]

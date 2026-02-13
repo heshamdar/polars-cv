@@ -499,7 +499,7 @@ impl ViewExpr {
         })
     }
 
-    pub fn threshold(self: &Arc<Self>, value: u8) -> Arc<Self> {
+    pub fn threshold(self: &Arc<Self>, value: f64) -> Arc<Self> {
         let op = ImageOp {
             kind: ImageOpKind::Threshold(value),
         };

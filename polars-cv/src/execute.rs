@@ -732,8 +732,7 @@ pub fn resolve_op(
             kind: ImageOpKind::Grayscale,
         })),
         "threshold" => {
-            let value =
-                get_param(&op_spec.params, "value")?.resolve_usize(row_idx, expr_columns)? as u8;
+            let value = get_param(&op_spec.params, "value")?.resolve_f64(row_idx, expr_columns)?;
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Threshold(value),
             }))

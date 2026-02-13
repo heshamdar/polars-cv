@@ -855,6 +855,25 @@ impl UnifiedGraph {
                 }
                 for (alias, spec) in &self.outputs {
                     if let Some(output) = node_outputs.get(&spec.node) {
+                        // Validate that the buffer dtype matches the planned
+                        // expected_dtype from the Python contract system.
+                        // "auto" is resolved elsewhere and skipped here.
+                        if spec.expected_dtype != "auto" {
+                            if let Some(buf) = output.as_buffer() {
+                                if let Ok(expected) =
+                                    super::decode::parse_dtype_str(&spec.expected_dtype)
+                                {
+                                    let actual = buf.dtype();
+                                    if actual != expected {
+                                        return Err(format!(
+                                            "Output '{alias}': planned dtype {expected:?} but execution \
+                                             produced {actual:?}. This indicates a mismatch between \
+                                             the Python OpContract and the Rust implementation."
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         match encode_node_output(output, &spec.sink) {
                             Ok(encoded) => {
                                 let row_result = match encoded {

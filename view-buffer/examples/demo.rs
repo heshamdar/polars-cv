@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .cast(DType::F32)
         .normalize(NormalizeMethod::MinMax)
         .grayscale()
-        .threshold(128);
+        .threshold(128.0);
 
     // Note: We could add .threshold(128) here if we wanted a binary mask,
     // but let's keep it RGB for the visual demo.

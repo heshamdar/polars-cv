@@ -188,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .crop(vec![10, 10, 0], vec![90, 90, 3]) // Crop center 80x80
         .flip(vec![1]) // Horizontal flip
         .grayscale() // Convert to grayscale
-        .threshold(128); // Binary threshold
+        .threshold(128.0); // Binary threshold
 
     println!("\nPipeline: resize(100,100) -> crop(80x80) -> flip -> grayscale -> threshold");
 

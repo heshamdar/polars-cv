@@ -121,7 +121,7 @@ fn test_threshold_tiled_vs_non_tiled() {
     // Run without tiling
     let result_no_tile = with_tile_config(None, || {
         ViewExpr::new_source(input.clone())
-            .threshold(128)
+            .threshold(128.0)
             .plan()
             .execute()
     });
@@ -129,7 +129,7 @@ fn test_threshold_tiled_vs_non_tiled() {
     // Run with tiling
     let result_tiled = with_tile_config(Some(test_tile_config()), || {
         ViewExpr::new_source(input.clone())
-            .threshold(128)
+            .threshold(128.0)
             .plan()
             .execute()
     });
@@ -328,7 +328,7 @@ fn test_tiled_on_flipped_buffer() {
     // Run without tiling
     let result_no_tile = with_tile_config(None, || {
         ViewExpr::new_source(flipped.clone())
-            .threshold(128)
+            .threshold(128.0)
             .plan()
             .execute()
     });
@@ -336,7 +336,7 @@ fn test_tiled_on_flipped_buffer() {
     // Run with tiling
     let result_tiled = with_tile_config(Some(test_tile_config()), || {
         ViewExpr::new_source(flipped.clone())
-            .threshold(128)
+            .threshold(128.0)
             .plan()
             .execute()
     });
@@ -382,7 +382,7 @@ fn test_tiling_skipped_for_small_images() {
     // With tiling enabled but image too small
     let result = with_tile_config(Some(test_tile_config()), || {
         ViewExpr::new_source(input.clone())
-            .threshold(128)
+            .threshold(128.0)
             .plan()
             .execute()
     });
@@ -399,7 +399,7 @@ fn test_tiling_with_non_tile_aligned_dimensions() {
     // Run without tiling
     let result_no_tile = with_tile_config(None, || {
         ViewExpr::new_source(input.clone())
-            .threshold(100)
+            .threshold(100.0)
             .plan()
             .execute()
     });
@@ -407,7 +407,7 @@ fn test_tiling_with_non_tile_aligned_dimensions() {
     // Run with tiling
     let result_tiled = with_tile_config(Some(test_tile_config()), || {
         ViewExpr::new_source(input.clone())
-            .threshold(100)
+            .threshold(100.0)
             .plan()
             .execute()
     });
@@ -451,7 +451,7 @@ fn test_chained_ops_tiled_consistency() {
         ViewExpr::new_source(input.clone())
             .grayscale()
             .blur(1.5)
-            .threshold(128)
+            .threshold(128.0)
             .plan()
             .execute()
     });
@@ -460,7 +460,7 @@ fn test_chained_ops_tiled_consistency() {
         ViewExpr::new_source(input.clone())
             .grayscale()
             .blur(1.5)
-            .threshold(128)
+            .threshold(128.0)
             .plan()
             .execute()
     });
@@ -553,7 +553,7 @@ fn test_tile_policy_for_operations() {
 
     // Point-wise image ops
     assert!(ImageOp {
-        kind: ImageOpKind::Threshold(128)
+        kind: ImageOpKind::Threshold(128.0)
     }
     .tile_policy()
     .is_tileable());

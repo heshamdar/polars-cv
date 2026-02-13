@@ -231,7 +231,7 @@ fn dtype_from_polars_datatype(dt: &DataType) -> Option<view_buffer::DType> {
     }
 }
 /// Parse dtype string to view-buffer DType.
-fn parse_dtype_str(dtype_str: &str) -> Result<view_buffer::DType, String> {
+pub(super) fn parse_dtype_str(dtype_str: &str) -> Result<view_buffer::DType, String> {
     match dtype_str {
         "u8" => Ok(view_buffer::DType::U8),
         "i8" => Ok(view_buffer::DType::I8),
