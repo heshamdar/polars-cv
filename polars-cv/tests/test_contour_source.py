@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 import pytest
-
 from polars_cv import Pipeline, numpy_from_struct
 from polars_cv.geometry import CONTOUR_SCHEMA
 
@@ -60,8 +59,8 @@ class TestContourSourceExplicitDims:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
-        result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
+        pipe = Pipeline().source("contour", width=100, height=100)
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         assert isinstance(result["mask"].dtype, pl.Struct)
         assert result["mask"].len() == 1
@@ -80,12 +79,10 @@ class TestContourSourceExplicitDims:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = (
-            Pipeline()
-            .source("contour", width=100, height=100, fill_value=128, background=64)
-            .sink("numpy")
+        pipe = Pipeline().source(
+            "contour", width=100, height=100, fill_value=128, background=64
         )
-        result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["mask"][0])
 
@@ -105,8 +102,8 @@ class TestContourSourceExplicitDims:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
-        result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
+        pipe = Pipeline().source("contour", width=100, height=100)
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         assert result["mask"].len() == 2
 
@@ -126,10 +123,8 @@ class TestContourSourceExplicitDims:
         ).cast({"contour": CONTOUR_SCHEMA})
 
         # Rasterize and then blur
-        pipe = (
-            Pipeline().source("contour", width=100, height=100).blur(2.0).sink("numpy")
-        )
-        result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
+        pipe = Pipeline().source("contour", width=100, height=100).blur(2.0)
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["mask"][0])
         assert arr.shape == (100, 100, 1)
@@ -150,9 +145,8 @@ class TestContourSourceExplicitDims:
             Pipeline()
             .source("contour", width=100, height=100)
             .resize(width=50, height=50)
-            .sink("numpy")
         )
-        result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["mask"][0])
         assert arr.shape == (50, 50, 1)
@@ -174,12 +168,8 @@ class TestContourSourceDynamicDims:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = (
-            Pipeline()
-            .source("contour", width=pl.col("w"), height=pl.col("h"))
-            .sink("numpy")
-        )
-        result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
+        pipe = Pipeline().source("contour", width=pl.col("w"), height=pl.col("h"))
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         # First row: 50x50
         arr1 = numpy_from_struct(result["mask"][0])
@@ -229,8 +219,8 @@ class TestContourSourceNullHandling:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
-        result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
+        pipe = Pipeline().source("contour", width=100, height=100)
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         # First and third rows should have data
         assert result["mask"][0].get("data") is not None
@@ -251,13 +241,8 @@ class TestContourSourceIntegration:
             }
         ).cast({"contour": CONTOUR_SCHEMA})
 
-        pipe = (
-            Pipeline()
-            .source("contour", width=100, height=100)
-            .threshold(128)
-            .sink("numpy")
-        )
-        result = df.with_columns(mask=pl.col("contour").cv.pipeline(pipe))
+        pipe = Pipeline().source("contour", width=100, height=100).threshold(128)
+        result = df.with_columns(mask=pl.col("contour").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["mask"][0])
 

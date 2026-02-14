@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 import pytest
-
 from polars_cv import Pipeline
 from polars_cv.geometry.schemas import contour_from_points
 
@@ -166,10 +165,10 @@ class TestUnifiedGraphSingleOutput:
 
     def test_basic_pipeline(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test a basic pipeline through the graph path."""
-        pipe = Pipeline().source("blob").transpose([2, 0, 1]).sink("numpy")
+        pipe = Pipeline().source("blob").transpose([2, 0, 1])
 
         result = synthetic_image_df.with_columns(
-            processed=pl.col("images").cv.pipeline(pipe)
+            processed=pl.col("images").cv.pipe(pipe).sink("numpy")
         )
 
         assert "processed" in result.columns
@@ -177,10 +176,10 @@ class TestUnifiedGraphSingleOutput:
 
     def test_resize_pipeline(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test resize operation through the graph path."""
-        pipe = Pipeline().source("blob").resize(height=32, width=32).sink("numpy")
+        pipe = Pipeline().source("blob").resize(height=32, width=32)
 
         result = synthetic_image_df.with_columns(
-            resized=pl.col("images").cv.pipeline(pipe)
+            resized=pl.col("images").cv.pipe(pipe).sink("numpy")
         )
 
         assert "resized" in result.columns
@@ -189,15 +188,11 @@ class TestUnifiedGraphSingleOutput:
     def test_multiple_operations(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test multiple operations chained together."""
         pipe = (
-            Pipeline()
-            .source("blob")
-            .resize(height=64, width=64)
-            .transpose([2, 0, 1])
-            .sink("numpy")
+            Pipeline().source("blob").resize(height=64, width=64).transpose([2, 0, 1])
         )
 
         result = synthetic_image_df.with_columns(
-            normalized=pl.col("images").cv.pipeline(pipe)
+            normalized=pl.col("images").cv.pipe(pipe).sink("numpy")
         )
 
         assert "normalized" in result.columns
@@ -242,9 +237,11 @@ class TestContourSourceGraph:
 
     def test_contour_source_rasterization(self, contour_df: pl.DataFrame) -> None:
         """Test contour source is properly rasterized through graph."""
-        pipe = Pipeline().source("contour", width=100, height=100).sink("numpy")
+        pipe = Pipeline().source("contour", width=100, height=100)
 
-        result = contour_df.with_columns(rasterized=pl.col("contour").cv.pipeline(pipe))
+        result = contour_df.with_columns(
+            rasterized=pl.col("contour").cv.pipe(pipe).sink("numpy")
+        )
 
         assert "rasterized" in result.columns
         assert isinstance(result["rasterized"].dtype, pl.Struct)
@@ -255,10 +252,11 @@ class TestContourSourceGraph:
             Pipeline()
             .source("contour", width=100, height=100)
             .resize(height=50, width=50)
-            .sink("numpy")
         )
 
-        result = contour_df.with_columns(processed=pl.col("contour").cv.pipeline(pipe))
+        result = contour_df.with_columns(
+            processed=pl.col("contour").cv.pipe(pipe).sink("numpy")
+        )
 
         assert "processed" in result.columns
 
@@ -268,15 +266,13 @@ class TestExpressionArgumentsGraph:
 
     def test_dynamic_resize(self, contour_df: pl.DataFrame) -> None:
         """Test dynamic resize with expression arguments."""
-        pipe = (
-            Pipeline()
-            .source(
-                "contour", width=pl.col("target_width"), height=pl.col("target_height")
-            )
-            .sink("numpy")
+        pipe = Pipeline().source(
+            "contour", width=pl.col("target_width"), height=pl.col("target_height")
         )
 
-        result = contour_df.with_columns(rasterized=pl.col("contour").cv.pipeline(pipe))
+        result = contour_df.with_columns(
+            rasterized=pl.col("contour").cv.pipe(pipe).sink("numpy")
+        )
 
         assert "rasterized" in result.columns
         assert result["rasterized"].null_count() == 0
@@ -319,9 +315,9 @@ class TestGraphEdgeCases:
         """Test pipeline on empty DataFrame."""
         df = pl.DataFrame({"images": []}, schema={"images": pl.Binary})
 
-        pipe = Pipeline().source("blob").sink("numpy")
+        pipe = Pipeline().source("blob")
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
 
         assert len(result) == 0
         assert "processed" in result.columns
@@ -335,9 +331,9 @@ class TestGraphEdgeCases:
             }
         )
 
-        pipe = Pipeline().source("blob").sink("numpy")
+        pipe = Pipeline().source("blob")
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
 
         # With struct output, null rows have null 'data' field
         data_nulls = result["processed"].struct.field("data").null_count()
@@ -346,10 +342,10 @@ class TestGraphEdgeCases:
 
     def test_identity_pipeline(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test pipeline with no operations (identity)."""
-        pipe = Pipeline().source("blob").sink("numpy")
+        pipe = Pipeline().source("blob")
 
         result = synthetic_image_df.with_columns(
-            identity=pl.col("images").cv.pipeline(pipe)
+            identity=pl.col("images").cv.pipe(pipe).sink("numpy")
         )
 
         # Output should be same shape as input

@@ -25,13 +25,7 @@ from typing import Callable
 import numpy as np
 import polars as pl
 import pytest
-
-from polars_cv import (
-    Pipeline,
-    numpy_from_struct,
-    CONTOUR_SCHEMA,
-)
-
+from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_struct
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1161,7 +1155,7 @@ class TestHistogramCorrectness:
 
         # Auto-range puts all in bin 0 (bug)
         pipe = Pipeline().source("image_bytes").grayscale().histogram(bins=256)
-        result = df.select(out=pl.col("img").cv.pipeline(pipe.sink("list")))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))
         hist = result["out"][0].to_list()
         assert len(hist) == 256
         assert sum(hist) == 100  # Total count is correct
@@ -1183,7 +1177,7 @@ class TestHistogramCorrectness:
             .grayscale()
             .histogram(bins=256, range=(0, 256))
         )
-        result = df.select(out=pl.col("img").cv.pipeline(pipe.sink("list")))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))
         hist = result["out"][0].to_list()
         assert len(hist) == 256
         assert hist[128] == 100
@@ -1205,7 +1199,7 @@ class TestHistogramCorrectness:
             .grayscale()
             .histogram(bins=256, range=(0, 256))
         )
-        result = df.select(out=pl.col("img").cv.pipeline(pipe.sink("list")))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))
         hist = result["out"][0].to_list()
 
         assert hist[0] == 1
@@ -1293,7 +1287,7 @@ class TestContourExtractionCorrectness:
             .threshold(128)
             .extract_contours()
         )
-        result = df.select(out=pl.col("img").cv.pipeline(pipe.sink("native")))
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("native"))
 
         # Should have at least 1 contour
         contours = result["out"][0]

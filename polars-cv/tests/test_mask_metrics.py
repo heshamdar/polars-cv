@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 from PIL import Image
-
 from polars_cv import Pipeline, mask_dice, mask_iou
 
 if TYPE_CHECKING:
@@ -164,13 +163,10 @@ class TestArraySink:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         # Grayscale produces shape [2, 2, 1] (H, W, C)
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .grayscale()
-            .sink("array", shape=[2, 2, 1])
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
+        result = df.select(
+            values=pl.col("mask").cv.pipe(pipe).sink("array", shape=[2, 2, 1])
         )
-        result = df.select(values=pl.col("mask").cv.pipeline(pipe))
 
         # The result should be an Array type with nested structure
         assert str(result["values"].dtype).startswith("Array"), (
@@ -185,16 +181,11 @@ class TestArraySink:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         # Wrong shape: [3, 3] = 9 elements but image has 4 elements (2x2x1 grayscale)
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .grayscale()
-            .sink("array", shape=[3, 3])
-        )
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
 
         # This should fail because element count doesn't match
         with pytest.raises(Exception):
-            df.select(values=pl.col("mask").cv.pipeline(pipe))
+            df.select(values=pl.col("mask").cv.pipe(pipe).sink("array", shape=[3, 3]))
 
     def test_array_sink_shape_validation_exact_match(self) -> None:
         """Test that array sink requires exact shape match, not just element count."""
@@ -205,16 +196,11 @@ class TestArraySink:
 
         # Buffer shape is [2, 2, 1] (grayscale), but we specify [2, 2]
         # Both have 4 elements but different structure
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .grayscale()
-            .sink("array", shape=[2, 2])
-        )
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
 
         # This should fail because exact shape doesn't match (use squeeze() first)
         with pytest.raises(Exception):
-            df.select(values=pl.col("mask").cv.pipeline(pipe))
+            df.select(values=pl.col("mask").cv.pipe(pipe).sink("array", shape=[2, 2]))
 
     def test_array_sink_values_structure(self) -> None:
         """Test that array sink preserves nested structure."""
@@ -229,13 +215,10 @@ class TestArraySink:
         df = pl.DataFrame({"mask": [mask_bytes]})
 
         # Shape [4, 4, 1] for 4x4 grayscale image
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .grayscale()
-            .sink("array", shape=[4, 4, 1])
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
+        result = df.select(
+            values=pl.col("mask").cv.pipe(pipe).sink("array", shape=[4, 4, 1])
         )
-        result = df.select(values=pl.col("mask").cv.pipeline(pipe))
 
         # Check the dtype is correctly nested (grayscale outputs U8)
         expected_dtype = pl.Array(pl.Array(pl.Array(pl.UInt8, 1), 4), 4)

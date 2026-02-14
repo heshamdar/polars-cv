@@ -45,7 +45,7 @@ class TestGlobalReductions:
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_max()
         df = pl.DataFrame({"image": [known_values_image]})
-        result = df.select(max_val=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(max_val=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Maximum value in our test image is 200
         assert result["max_val"][0] == 200.0
@@ -56,7 +56,7 @@ class TestGlobalReductions:
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_min()
         df = pl.DataFrame({"image": [known_values_image]})
-        result = df.select(min_val=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(min_val=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Minimum value in our test image is 0
         assert result["min_val"][0] == 0.0
@@ -67,7 +67,7 @@ class TestGlobalReductions:
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_mean()
         df = pl.DataFrame({"image": [known_values_image]})
-        result = df.select(mean_val=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(mean_val=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Mean of [0, 100, 200, 50] = 87.5
         expected_mean = (0 + 100 + 200 + 50) / 4.0
@@ -79,7 +79,7 @@ class TestGlobalReductions:
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_std(ddof=0)
         df = pl.DataFrame({"image": [known_values_image]})
-        result = df.select(std_val=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(std_val=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Calculate expected population std
         values = np.array([0, 100, 200, 50], dtype=np.float64)
@@ -92,7 +92,7 @@ class TestGlobalReductions:
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_std(ddof=1)
         df = pl.DataFrame({"image": [known_values_image]})
-        result = df.select(std_val=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(std_val=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Calculate expected sample std
         values = np.array([0, 100, 200, 50], dtype=np.float64)
@@ -105,7 +105,7 @@ class TestGlobalReductions:
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_sum()
         df = pl.DataFrame({"image": [known_values_image]})
-        result = df.select(sum_val=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(sum_val=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Sum of [0, 100, 200, 50] = 350
         expected_sum = float(0 + 100 + 200 + 50)
@@ -138,7 +138,7 @@ class TestAxisReductions:
             Pipeline().source("image_bytes", dtype="u8").grayscale().reduce_max(axis=0)
         )
         df = pl.DataFrame({"image": [simple_image]})
-        result = df.select(output=pl.col("image").cv.pipeline(pipe.sink("list")))
+        result = df.select(output=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # Max along height: [70, 80, 90]
         output_list = result["output"][0].to_list()
@@ -151,7 +151,7 @@ class TestAxisReductions:
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_mean(axis=1)
         df = pl.DataFrame({"image": [simple_image]})
-        result = df.select(output=pl.col("image").cv.pipeline(pipe.sink("list")))
+        result = df.select(output=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # Mean along width: [20, 50, 80]
         output_list = result["output"][0].to_list()
@@ -182,7 +182,7 @@ class TestArgReductions:
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_argmax(axis=1)
         df = pl.DataFrame({"image": [simple_image]})
-        result = df.select(output=pl.col("image").cv.pipeline(pipe.sink("list")))
+        result = df.select(output=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # Argmax along axis 1 (width):
         # Row 0: max at col 1 (90) -> 1
@@ -197,7 +197,7 @@ class TestArgReductions:
 
         pipe = Pipeline().source("image_bytes").grayscale().reduce_argmin(axis=0)
         df = pl.DataFrame({"image": [simple_image]})
-        result = df.select(output=pl.col("image").cv.pipeline(pipe.sink("list")))
+        result = df.select(output=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # Argmin along axis 0 (height):
         # Col 0: min at row 0 (10) -> 0
@@ -223,7 +223,7 @@ class TestExtractShape:
 
         pipe = Pipeline().source("image_bytes").extract_shape()
         df = pl.DataFrame({"image": [sample_image]})
-        result = df.select(shape=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(shape=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Shape should be [height, width, channels] = [50, 75, 3]
         shape_list = result["shape"][0].to_list()
@@ -240,7 +240,7 @@ class TestExtractShape:
             .extract_shape()
         )
         df = pl.DataFrame({"image": [sample_image]})
-        result = df.select(shape=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(shape=pl.col("image").cv.pipe(pipe).sink("native"))
 
         shape_list = result["shape"][0].to_list()
         assert shape_list == [100.0, 200.0, 3.0]
@@ -251,7 +251,7 @@ class TestExtractShape:
 
         pipe = Pipeline().source("image_bytes").grayscale().extract_shape()
         df = pl.DataFrame({"image": [sample_image]})
-        result = df.select(shape=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(shape=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Grayscale adds a channel dimension of 1
         shape_list = result["shape"][0].to_list()
@@ -379,7 +379,7 @@ class TestReductionDomainTransitions:
         # First verify normal reduction works on buffer
         pipe_valid = Pipeline().source("image_bytes").reduce_mean()
         df = pl.DataFrame({"image": [image_bytes]})
-        result = df.select(pl.col("image").cv.pipeline(pipe_valid.sink("native")))
+        result = df.select(pl.col("image").cv.pipe(pipe_valid).sink("native"))
         assert result is not None
 
         # Now test that reduction fails after domain change to contour
@@ -409,7 +409,7 @@ class TestMultipleRows:
         )
 
         pipe = Pipeline().source("image_bytes").reduce_mean()
-        result = df.select(mean=pl.col("image").cv.pipeline(pipe.sink("native")))
+        result = df.select(mean=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # All pixels in each image are the same, so mean = pixel value
         assert result["mean"].to_list() == [100.0, 200.0, 50.0]

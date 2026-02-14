@@ -16,7 +16,6 @@ import numpy as np
 import polars as pl
 import pytest
 from PIL import Image
-
 from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
@@ -62,8 +61,8 @@ class TestRawSource:
         raw_bytes = data.tobytes()
 
         df = pl.DataFrame({"raw": [raw_bytes]})
-        pipe = Pipeline().source("raw", dtype="f32").sink("list")
-        result = df.with_columns(out=pl.col("raw").cv.pipeline(pipe))
+        pipe = Pipeline().source("raw", dtype="f32")
+        result = df.with_columns(out=pl.col("raw").cv.pipe(pipe).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.Float32)
         assert result["out"][0].to_list() == [1.0, 2.5, 100.0]
@@ -74,8 +73,8 @@ class TestRawSource:
         raw_bytes = data.tobytes()
 
         df = pl.DataFrame({"raw": [raw_bytes]})
-        pipe = Pipeline().source("raw", dtype="f32").reshape([2, 2]).sink("list")
-        result = df.with_columns(out=pl.col("raw").cv.pipeline(pipe))
+        pipe = Pipeline().source("raw", dtype="f32").reshape([2, 2])
+        result = df.with_columns(out=pl.col("raw").cv.pipe(pipe).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.List(pl.Float32))
         assert result["out"][0].to_list() == [[1.0, 2.0], [3.0, 4.0]]
@@ -98,8 +97,8 @@ class TestListSinkShapePreservation:
         """1D buffer (e.g., perceptual hash) should produce flat List."""
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
-        result = df.with_columns(out=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        result = df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # 1D shape [8] -> List(UInt8)
         assert result["out"].dtype == pl.List(pl.UInt8)
@@ -111,14 +110,8 @@ class TestListSinkShapePreservation:
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
         # Grayscale produces [4, 4, 1], reshape to [4, 4]
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .grayscale()
-            .reshape([4, 4])
-            .sink("list")
-        )
-        result = df.with_columns(out=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().reshape([4, 4])
+        result = df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # 2D shape [4, 4] -> List(List(UInt8))
         assert result["out"].dtype == pl.List(pl.List(pl.UInt8))
@@ -130,8 +123,8 @@ class TestListSinkShapePreservation:
         """3D buffer should produce 3-level nested List."""
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes", dtype="u8").sink("list")
-        result = df.with_columns(out=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8")
+        result = df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # 3D shape [4, 4, 3] -> List(List(List(UInt8)))
         assert result["out"].dtype == pl.List(pl.List(pl.List(pl.UInt8)))
@@ -156,8 +149,8 @@ class TestListSource:
         df = pl.DataFrame({"pixels": [pixels]})
 
         # Process with list source
-        pipe = Pipeline().source("list", dtype="u8").sink("list")
-        result = df.with_columns(out=pl.col("pixels").cv.pipeline(pipe))
+        pipe = Pipeline().source("list", dtype="u8")
+        result = df.with_columns(out=pl.col("pixels").cv.pipe(pipe).sink("list"))
 
         # Should preserve the structure
         assert result["out"].dtype == pl.List(pl.List(pl.UInt8))
@@ -173,8 +166,8 @@ class TestListSource:
         df = pl.DataFrame({"pixels": [pixels]})
 
         # Process with list source - just sink back to list to verify shape preserved
-        pipe = Pipeline().source("list", dtype="u8").sink("list")
-        result = df.with_columns(out=pl.col("pixels").cv.pipeline(pipe))
+        pipe = Pipeline().source("list", dtype="u8")
+        result = df.with_columns(out=pl.col("pixels").cv.pipe(pipe).sink("list"))
 
         # Should preserve 3D nested structure
         assert result["out"].dtype == pl.List(pl.List(pl.List(pl.UInt8)))
@@ -185,12 +178,12 @@ class TestListSource:
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
         # First: convert image to list
-        pipe1 = Pipeline().source("image_bytes", dtype="u8").sink("list")
-        df2 = df.with_columns(pixels=pl.col("image").cv.pipeline(pipe1))
+        pipe1 = Pipeline().source("image_bytes", dtype="u8")
+        df2 = df.with_columns(pixels=pl.col("image").cv.pipe(pipe1).sink("list"))
 
         # Second: use list source for processing
-        pipe2 = Pipeline().source("list", dtype="u8").grayscale().sink("numpy")
-        result = df2.with_columns(gray=pl.col("pixels").cv.pipeline(pipe2))
+        pipe2 = Pipeline().source("list", dtype="u8").grayscale()
+        result = df2.with_columns(gray=pl.col("pixels").cv.pipe(pipe2).sink("numpy"))
 
         # Verify grayscale output
         gray_arr = numpy_from_struct(result["gray"][0])
@@ -212,8 +205,8 @@ class TestArraySource:
             {"data": pl.Array(pl.UInt8, 4)}
         )
 
-        pipe = Pipeline().source("array", dtype="u8").sink("list")
-        result = df.with_columns(out=pl.col("data").cv.pipeline(pipe))
+        pipe = Pipeline().source("array", dtype="u8")
+        result = df.with_columns(out=pl.col("data").cv.pipe(pipe).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.UInt8)
         assert result["out"][0].to_list() == [1, 2, 3, 4]
@@ -226,8 +219,8 @@ class TestArraySource:
             {"data": pl.Array(pl.Array(pl.UInt8, 3), 2)}
         )
 
-        pipe = Pipeline().source("array", dtype="u8").sink("list")
-        result = df.with_columns(out=pl.col("data").cv.pipeline(pipe))
+        pipe = Pipeline().source("array", dtype="u8")
+        result = df.with_columns(out=pl.col("data").cv.pipe(pipe).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.List(pl.UInt8))
         assert result["out"][0].to_list() == data
@@ -254,8 +247,8 @@ class TestSourceFormatValidation:
         """image_bytes source should decode PNG/JPEG preserving native channels."""
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(out=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["out"][0])
         # Grayscale PNG decodes to [H, W, 1] preserving native channel count
@@ -266,12 +259,12 @@ class TestSourceFormatValidation:
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
         # First encode as blob
-        pipe1 = Pipeline().source("image_bytes").sink("blob")
-        df2 = df.with_columns(blob=pl.col("image").cv.pipeline(pipe1))
+        pipe1 = Pipeline().source("image_bytes")
+        df2 = df.with_columns(blob=pl.col("image").cv.pipe(pipe1).sink("blob"))
 
         # Then decode from blob
-        pipe2 = Pipeline().source("blob").sink("numpy")
-        result = df2.with_columns(out=pl.col("blob").cv.pipeline(pipe2))
+        pipe2 = Pipeline().source("blob")
+        result = df2.with_columns(out=pl.col("blob").cv.pipe(pipe2).sink("numpy"))
 
         arr = numpy_from_struct(result["out"][0])
         # Grayscale PNG decodes to [H, W, 1] preserving native channel count

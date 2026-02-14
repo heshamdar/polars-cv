@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
-
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:
@@ -71,36 +70,36 @@ class TestBatchWithValidImages:
 
     def test_single_valid_image_succeeds(self) -> None:
         """Single valid image should process without error."""
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
         assert "processed" in result.columns
         assert result["processed"].dtype == pl.Binary
         assert result["processed"][0] is not None
 
     def test_multiple_valid_images_succeed(self) -> None:
         """Multiple valid images should all process correctly."""
-        pipe = Pipeline().source("image_bytes").resize(height=32, width=32).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=32, width=32)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes] * 10})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
         assert result["processed"].len() == 10
         for i in range(10):
             assert result["processed"][i] is not None
 
     def test_large_batch_succeeds(self) -> None:
         """Large batch of valid images should process correctly."""
-        pipe = Pipeline().source("image_bytes").grayscale().sink("blob")
+        pipe = Pipeline().source("image_bytes").grayscale()
 
         png_bytes = create_test_png(50, 50)
         df = pl.DataFrame({"images": [png_bytes] * 100})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
         assert result["processed"].len() == 100
         # Verify all results are non-null
         assert result["processed"].null_count() == 0
@@ -112,14 +111,14 @@ class TestCorruptedImageHandling:
 
     def test_corrupted_bytes_fails_gracefully(self) -> None:
         """Corrupted image bytes should produce an error, not panic."""
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         # Completely random garbage bytes
         corrupted_bytes = b"this is not a valid image at all"
         df = pl.DataFrame({"images": [corrupted_bytes]})
 
         with pytest.raises(Exception) as exc_info:
-            df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # Verify we got a meaningful error message
         error_message = str(exc_info.value).lower()
@@ -130,7 +129,7 @@ class TestCorruptedImageHandling:
 
     def test_truncated_png_fails_gracefully(self) -> None:
         """Truncated PNG should produce clear error."""
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         # Create a valid PNG then truncate it
         png_bytes = create_test_png(100, 100)
@@ -139,7 +138,7 @@ class TestCorruptedImageHandling:
         df = pl.DataFrame({"images": [truncated]})
 
         with pytest.raises(Exception) as exc_info:
-            df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # Should get an error about decoding
         error_message = str(exc_info.value).lower()
@@ -149,12 +148,12 @@ class TestCorruptedImageHandling:
 
     def test_empty_bytes_fails_gracefully(self) -> None:
         """Empty bytes should produce clear error."""
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         df = pl.DataFrame({"images": [b""]})
 
         with pytest.raises(Exception) as exc_info:
-            df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # Should get an error about decoding
         error_message = str(exc_info.value).lower()
@@ -170,12 +169,12 @@ class TestNullHandling:
 
     def test_null_value_produces_null_output(self) -> None:
         """Null input values should produce null outputs."""
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes, None, png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # First and last should be non-null
         assert result["processed"][0] is not None
@@ -185,11 +184,11 @@ class TestNullHandling:
 
     def test_all_null_values(self) -> None:
         """All null inputs should produce all null outputs."""
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         df = pl.DataFrame({"images": [None, None, None]}).cast({"images": pl.Binary})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         assert result["processed"].null_count() == 3
 
@@ -199,12 +198,12 @@ class TestNullHandling:
         This tests whether null handling at the start affects subsequent rows.
         Regression test for potential memory/state issues after encountering nulls.
         """
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [None, png_bytes, png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # First should be null
         assert result["processed"][0] is None
@@ -217,12 +216,12 @@ class TestNullHandling:
 
         This tests whether multiple consecutive nulls affect subsequent processing.
         """
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes, None, None, png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # First and last should be non-null
         assert result["processed"][0] is not None
@@ -236,12 +235,12 @@ class TestNullHandling:
 
         This tests whether null at the end is handled correctly.
         """
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes, png_bytes, None]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # First two should be non-null
         assert result["processed"][0] is not None
@@ -254,12 +253,12 @@ class TestNullHandling:
 
         This tests state management with frequent null/non-null transitions.
         """
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes, None, png_bytes, None, png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # Odd indices (0, 2, 4) should be non-null
         assert result["processed"][0] is not None
@@ -276,7 +275,7 @@ class TestNullHandling:
         or memory aliasing affects null handling behavior.
         Regression test for potential issues with shared byte references.
         """
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         # Create SEPARATE blob objects (different byte instances)
         png1 = create_test_png(100, 100, (255, 0, 0))  # Red
@@ -285,7 +284,7 @@ class TestNullHandling:
 
         df = pl.DataFrame({"images": [png1, None, png2, None, png3]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # Non-null rows should be processed
         assert result["processed"][0] is not None
@@ -302,13 +301,13 @@ class TestNullHandling:
         Polars/Arrow memory handling causes issues with aliased data.
         Regression test for potential pointer/slice aliasing bugs.
         """
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         # Use the SAME bytes object for all rows
         shared_png = create_test_png(100, 100)
         df = pl.DataFrame({"images": [shared_png, None, shared_png]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # First and last should be non-null
         assert result["processed"][0] is not None
@@ -324,14 +323,14 @@ class TestNullHandling:
 
         Stress test for null handling in realistic batch sizes.
         """
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         png_bytes = create_test_png(100, 100)
         # Create pattern: blob, null, blob, null, ... (50 total)
         images = [png_bytes if i % 2 == 0 else None for i in range(50)]
         df = pl.DataFrame({"images": images})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # Check all results
         for i in range(50):
@@ -351,13 +350,12 @@ class TestNullHandling:
             .resize(height=64, width=64)
             .grayscale()
             .threshold(128)
-            .sink("blob")
         )
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes, None, png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # First and last should be non-null
         assert result["processed"][0] is not None
@@ -372,14 +370,14 @@ class TestErrorMessageQuality:
 
     def test_error_indicates_row_or_nature_of_failure(self) -> None:
         """Error message should be informative about the failure."""
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         # Invalid image data
         invalid_bytes = b"PNG\x00\x00\x00\x00invalid"
         df = pl.DataFrame({"images": [invalid_bytes]})
 
         with pytest.raises(Exception) as exc_info:
-            df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         error_message = str(exc_info.value)
         # Error should not be completely empty or generic
@@ -393,7 +391,6 @@ class TestErrorMessageQuality:
             .resize(height=100, width=100)
             .grayscale()
             .threshold(128)
-            .sink("blob")
         )
 
         # Invalid data should fail at decode stage
@@ -401,7 +398,7 @@ class TestErrorMessageQuality:
         df = pl.DataFrame({"images": [invalid_bytes]})
 
         with pytest.raises(Exception) as exc_info:
-            df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         error_message = str(exc_info.value).lower()
         # Should mention decode or image failure
@@ -416,7 +413,7 @@ class TestStreamingErrorHandling:
 
     def test_streaming_corrupted_image_error(self) -> None:
         """Corrupted images in streaming mode should fail gracefully."""
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         corrupted_bytes = b"not an image"
         df = pl.DataFrame({"images": [corrupted_bytes]})
@@ -424,20 +421,20 @@ class TestStreamingErrorHandling:
         with pytest.raises(Exception):
             (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
 
     def test_streaming_null_handling(self) -> None:
         """Null values in streaming mode should produce null outputs."""
-        pipe = Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes, None, png_bytes]})
 
         result = (
             df.lazy()
-            .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
             .collect(engine="streaming")
         )
 

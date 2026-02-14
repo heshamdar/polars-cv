@@ -96,8 +96,8 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # Check the inner dtype of the list column
         hash_col = result["hash"]
@@ -120,8 +120,8 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
-        result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
+        result = df.with_columns(gray=pl.col("image").cv.pipe(pipe).sink("list"))
 
         gray_col = result["gray"]
         # Grayscale produces 3D shape [H, W, 1] -> nested lists
@@ -143,13 +143,8 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .normalize(method="minmax")
-            .sink("list")
-        )
-        result = df.with_columns(normalized=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").normalize(method="minmax")
+        result = df.with_columns(normalized=pl.col("image").cv.pipe(pipe).sink("list"))
 
         norm_col = result["normalized"]
         # Normalize produces 3D shape -> nested lists with Float32
@@ -165,10 +160,8 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = (
-            Pipeline().source("image_bytes", dtype="u8").scale(factor=2.0).sink("list")
-        )
-        result = df.with_columns(scaled=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").scale(factor=2.0)
+        result = df.with_columns(scaled=pl.col("image").cv.pipe(pipe).sink("list"))
 
         scaled_col = result["scaled"]
         assert get_innermost_dtype(scaled_col.dtype) == pl.Float32, (
@@ -184,14 +177,8 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .grayscale()
-            .threshold(128)
-            .sink("list")
-        )
-        result = df.with_columns(thresh=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().threshold(128)
+        result = df.with_columns(thresh=pl.col("image").cv.pipe(pipe).sink("list"))
 
         thresh_col = result["thresh"]
         assert get_innermost_dtype(thresh_col.dtype) == pl.UInt8, (
@@ -206,13 +193,8 @@ class TestDtypePreservationListSink:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .resize(height=16, width=16)
-            .sink("list")
-        )
-        result = df.with_columns(resized=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=16, width=16)
+        result = df.with_columns(resized=pl.col("image").cv.pipe(pipe).sink("list"))
 
         resized_col = result["resized"]
         assert get_innermost_dtype(resized_col.dtype) == pl.UInt8, (
@@ -231,10 +213,10 @@ class TestDtypePreservationArraySink:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = (
-            Pipeline().source("image_bytes").perceptual_hash().sink("array", shape=[8])
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        result = df.with_columns(
+            hash=pl.col("image").cv.pipe(pipe).sink("array", shape=[8])
         )
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
 
         hash_col = result["hash"]
         # Array type should be Array[UInt8, 8]
@@ -265,8 +247,8 @@ class TestNullValueHandling:
         """
         df = pl.DataFrame({"image": [None, simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
-        result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
+        result = df.with_columns(gray=pl.col("image").cv.pipe(pipe).sink("list"))
 
         gray_col = result["gray"]
         # Type should have UInt8 as innermost type even with null first row
@@ -287,8 +269,8 @@ class TestNullValueHandling:
         """
         df = pl.DataFrame({"image": [None, None]})
 
-        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
-        result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
+        result = df.with_columns(gray=pl.col("image").cv.pipe(pipe).sink("list"))
 
         gray_col = result["gray"]
         # Type should have UInt8 as innermost type even with all nulls
@@ -306,8 +288,8 @@ class TestNullValueHandling:
         """
         df = pl.DataFrame({"image": [None, rgb_image_bytes, None, rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
 
         hash_col = result["hash"]
         # Perceptual hash is 1D -> flat list
@@ -335,8 +317,8 @@ class TestNativeSinkTypes:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().reduce_sum().sink("native")
-        result = df.with_columns(pixel_sum=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").grayscale().reduce_sum()
+        result = df.with_columns(pixel_sum=pl.col("image").cv.pipe(pipe).sink("native"))
 
         sum_col = result["pixel_sum"]
         assert sum_col.dtype == pl.Float64, (
@@ -363,9 +345,8 @@ class TestNativeSinkTypes:
             .grayscale()
             .threshold(128)
             .extract_contours()
-            .sink("native")
         )
-        result = df.with_columns(contour=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(contour=pl.col("image").cv.pipe(pipe).sink("native"))
 
         contour_col = result["contour"]
         # Should be a Struct type
@@ -382,10 +363,10 @@ class TestNativeSinkTypes:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("native")
+        pipe = Pipeline().source("image_bytes").grayscale()
 
         with pytest.raises(Exception) as exc_info:
-            df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+            df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Should mention that buffer requires explicit format
         error_msg = str(exc_info.value).lower()
@@ -410,8 +391,8 @@ class TestUnifiedGraphEntry:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").grayscale()
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         output_col = result["output"]
         assert isinstance(output_col.dtype, pl.Struct), (
@@ -431,8 +412,8 @@ class TestUnifiedGraphEntry:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("list"))
 
         output_col = result["output"]
         # Should be properly typed list
@@ -446,8 +427,8 @@ class TestUnifiedGraphEntry:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().reduce_sum().sink("native")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").grayscale().reduce_sum()
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("native"))
 
         output_col = result["output"]
         assert output_col.dtype == pl.Float64, (
@@ -546,14 +527,8 @@ class TestOperationChainDtype:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .grayscale()
-            .normalize(method="minmax")
-            .sink("list")
-        )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").grayscale().normalize(method="minmax")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("list"))
 
         output_col = result["output"]
         assert get_innermost_dtype(output_col.dtype) == pl.Float32, (
@@ -573,9 +548,8 @@ class TestOperationChainDtype:
             .source("image_bytes")
             .grayscale()
             .threshold(128)  # Threshold on U8 range
-            .sink("list")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("list"))
 
         output_col = result["output"]
         assert get_innermost_dtype(output_col.dtype) == pl.UInt8, (
@@ -595,9 +569,8 @@ class TestOperationChainDtype:
             .source("image_bytes")
             .resize(height=64, width=64)
             .perceptual_hash()
-            .sink("list")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("list"))
 
         output_col = result["output"]
         # Perceptual hash is 1D -> flat list
@@ -633,8 +606,8 @@ class TestNestedListShape:
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale().sink("list")
-        result = df.with_columns(gray=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
+        result = df.with_columns(gray=pl.col("image").cv.pipe(pipe).sink("list"))
 
         gray_col = result["gray"]
 
@@ -682,8 +655,8 @@ class TestNestedListShape:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = Pipeline().source("image_bytes", dtype="u8").sink("list")
-        result = df.with_columns(rgb=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8")
+        result = df.with_columns(rgb=pl.col("image").cv.pipe(pipe).sink("list"))
 
         rgb_col = result["rgb"]
 
@@ -725,13 +698,8 @@ class TestNestedListShape:
         """
         df = pl.DataFrame({"image": [rgb_image_bytes]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes", dtype="u8")
-            .resize(height=16, width=16)
-            .sink("list")
-        )
-        result = df.with_columns(resized=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=16, width=16)
+        result = df.with_columns(resized=pl.col("image").cv.pipe(pipe).sink("list"))
 
         resized_col = result["resized"]
 

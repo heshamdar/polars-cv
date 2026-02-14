@@ -17,8 +17,7 @@ import numpy as np
 import polars as pl
 import pytest
 from PIL import Image
-
-from polars_cv import Pipeline
+from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
     pass
@@ -64,9 +63,9 @@ class TestDtypeAutoInference:
         df = pl.DataFrame({"arr": [data]}).cast({"arr": pl.List(pl.List(pl.UInt8))})
 
         # Pipeline without explicit dtype
-        pipeline = Pipeline().source("list").sink("list")
+        pipeline = Pipeline().source("list")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.List(pl.UInt8))
         assert result["out"][0].to_list() == [[1, 2, 3], [4, 5, 6]]
@@ -76,9 +75,9 @@ class TestDtypeAutoInference:
         data = [[1.0, 2.0], [3.0, 4.0]]
         df = pl.DataFrame({"arr": [data]}).cast({"arr": pl.List(pl.List(pl.Float32))})
 
-        pipeline = Pipeline().source("list").sink("list")
+        pipeline = Pipeline().source("list")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.List(pl.Float32))
 
@@ -87,9 +86,9 @@ class TestDtypeAutoInference:
         data = [1, 2, 3, 4, 5]
         df = pl.DataFrame({"arr": [data]}).cast({"arr": pl.List(pl.Int32)})
 
-        pipeline = Pipeline().source("list").sink("list")
+        pipeline = Pipeline().source("list")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.Int32)
         assert result["out"][0].to_list() == [1, 2, 3, 4, 5]
@@ -100,9 +99,9 @@ class TestDtypeAutoInference:
         data = [1, 2, 3, 4]
         df = pl.DataFrame({"arr": [data]}).cast({"arr": pl.Array(pl.UInt8, 4)})
 
-        pipeline = Pipeline().source("array").sink("list")
+        pipeline = Pipeline().source("array")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.UInt8)
         assert result["out"][0].to_list() == [1, 2, 3, 4]
@@ -114,9 +113,9 @@ class TestDtypeAutoInference:
         df = pl.DataFrame({"arr": [data]}).cast({"arr": pl.List(pl.Int32)})
 
         # Explicit dtype overrides column type
-        pipeline = Pipeline().source("list", dtype="f32").sink("list")
+        pipeline = Pipeline().source("list", dtype="f32")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         # Data is cast to f32
         assert result["out"].dtype == pl.List(pl.Float32)
@@ -136,9 +135,9 @@ class TestNullHandling:
             {"img": [simple_grayscale_bytes, None, simple_grayscale_bytes]}
         )
 
-        pipeline = Pipeline().source("image_bytes").sink("blob")
+        pipeline = Pipeline().source("image_bytes")
 
-        result = df.with_columns(out=pl.col("img").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("img").cv.pipe(pipeline).sink("blob"))
 
         assert result["out"][0] is not None
         assert result["out"][1] is None
@@ -149,9 +148,9 @@ class TestNullHandling:
         df = pl.DataFrame({"arr": [[[1, 2], [3, 4]], None, [[5, 6], [7, 8]]]})
         df = df.cast({"arr": pl.List(pl.List(pl.UInt8))})
 
-        pipeline = Pipeline().source("list").sink("list")
+        pipeline = Pipeline().source("list")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"][0] is not None
         assert result["out"][1] is None
@@ -171,9 +170,9 @@ class TestContiguityValidation:
         # Nested arrays are always contiguous
         df = pl.DataFrame({"arr": [[1, 2, 3, 4]]}).cast({"arr": pl.Array(pl.UInt8, 4)})
 
-        pipeline = Pipeline().source("array", require_contiguous=True).sink("list")
+        pipeline = Pipeline().source("array", require_contiguous=True)
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"][0].to_list() == [1, 2, 3, 4]
 
@@ -184,9 +183,9 @@ class TestContiguityValidation:
         df = pl.DataFrame({"arr": [data]}).cast({"arr": pl.List(pl.List(pl.UInt8))})
 
         # Should work with require_contiguous=False (default)
-        pipeline = Pipeline().source("list", require_contiguous=False).sink("list")
+        pipeline = Pipeline().source("list", require_contiguous=False)
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"][0].to_list() == [[1, 2, 3], [4, 5, 6]]
 
@@ -203,9 +202,9 @@ class TestShapeInference:
         """1D list should produce 1D array."""
         df = pl.DataFrame({"arr": [[1, 2, 3, 4, 5]]}).cast({"arr": pl.List(pl.UInt8)})
 
-        pipeline = Pipeline().source("list").sink("list")
+        pipeline = Pipeline().source("list")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.UInt8)
         assert len(result["out"][0]) == 5
@@ -215,9 +214,9 @@ class TestShapeInference:
         data = [[1, 2, 3], [4, 5, 6]]
         df = pl.DataFrame({"arr": [data]}).cast({"arr": pl.List(pl.List(pl.UInt8))})
 
-        pipeline = Pipeline().source("list").sink("list")
+        pipeline = Pipeline().source("list")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.List(pl.UInt8))
         assert result["out"][0].to_list() == [[1, 2, 3], [4, 5, 6]]
@@ -233,9 +232,9 @@ class TestShapeInference:
             {"arr": pl.List(pl.List(pl.List(pl.UInt8)))}
         )
 
-        pipeline = Pipeline().source("list").sink("list")
+        pipeline = Pipeline().source("list")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.List(pl.List(pl.UInt8)))
 
@@ -243,9 +242,9 @@ class TestShapeInference:
         """Polars Array type should produce correct shape."""
         df = pl.DataFrame({"arr": [[1, 2, 3, 4]]}).cast({"arr": pl.Array(pl.UInt8, 4)})
 
-        pipeline = Pipeline().source("array").sink("list")
+        pipeline = Pipeline().source("array")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"].dtype == pl.List(pl.UInt8)
         assert result["out"][0].to_list() == [1, 2, 3, 4]
@@ -269,19 +268,18 @@ class TestRoundTrip:
 
         df = pl.DataFrame({"img": [buf.getvalue()]})
 
-        # Image -> blob -> blob -> list (to verify)
-        to_blob = Pipeline().source("image_bytes").sink("blob")
-        from_blob = Pipeline().source("blob", dtype="u8").sink("list")
+        # Image -> blob -> blob -> numpy (to verify)
+        to_blob = Pipeline().source("image_bytes")
+        from_blob = Pipeline().source("blob", dtype="u8")
 
-        blob_df = df.with_columns(blob=pl.col("img").cv.pipeline(to_blob))
-        result = blob_df.with_columns(arr=pl.col("blob").cv.pipeline(from_blob))
+        blob_df = df.with_columns(blob=pl.col("img").cv.pipe(to_blob).sink("blob"))
+        result = blob_df.with_columns(
+            arr=pl.col("blob").cv.pipe(from_blob).sink("numpy")
+        )
 
-        # PNG decodes to 3x4 grayscale with channel (3x4x1 or 3x4) -> List[List[...]]
-        # The dtype depends on the shape - 2D produces List(List(UInt8))
-        arr = result["arr"][0]
-        # Just verify we got data back (the exact dtype depends on image dimensions)
+        arr = numpy_from_struct(result["arr"][0])
         assert arr is not None
-        assert len(arr) == 3  # 3 rows
+        assert arr.shape[0] == 3
 
     def test_list_round_trip_preserves_data(self) -> None:
         """list source -> list sink should preserve data."""
@@ -289,9 +287,9 @@ class TestRoundTrip:
         df = pl.DataFrame({"arr": [data]}).cast({"arr": pl.List(pl.List(pl.UInt8))})
 
         # List -> list -> verify
-        pipeline = Pipeline().source("list").sink("list")
+        pipeline = Pipeline().source("list")
 
-        result = df.with_columns(out=pl.col("arr").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("arr").cv.pipe(pipeline).sink("list"))
 
         assert result["out"][0].to_list() == [[1, 2, 3], [4, 5, 6]]
 
@@ -314,11 +312,9 @@ class TestPerformanceBasics:
 
         df = pl.DataFrame({"img": [buf.getvalue()]})
 
-        pipeline = (
-            Pipeline().source("image_bytes").resize(height=50, width=50).sink("blob")
-        )
+        pipeline = Pipeline().source("image_bytes").resize(height=50, width=50)
 
-        result = df.with_columns(out=pl.col("img").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("img").cv.pipe(pipeline).sink("blob"))
 
         assert result["out"][0] is not None
 
@@ -335,9 +331,9 @@ class TestPerformanceBasics:
         data = [img_bytes if i % 5 != 0 else None for i in range(20)]
         df = pl.DataFrame({"img": data})
 
-        pipeline = Pipeline().source("image_bytes").sink("blob")
+        pipeline = Pipeline().source("image_bytes")
 
-        result = df.with_columns(out=pl.col("img").cv.pipeline(pipeline))
+        result = df.with_columns(out=pl.col("img").cv.pipe(pipeline).sink("blob"))
 
         # Verify null pattern is preserved
         for i in range(20):
@@ -388,10 +384,9 @@ class TestFullZeroCopyPipeline:
             .crop(top=10, left=10, height=80, width=80)  # View op
             .grayscale()  # Strided op
             .resize(height=64, width=64)  # Strided op
-            .sink("numpy")
         )
 
-        result = df.with_columns(output=pl.col("data").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
 
@@ -430,10 +425,9 @@ class TestFullZeroCopyPipeline:
             .source("image_bytes")
             .flip(axes=[0])  # vertical flip
             .flip(axes=[0])  # Back to original
-            .sink("numpy")
         )
 
-        result = df.with_columns(output=pl.col("data").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result["output"][0])
 
         # Red corner should still be at top-left
@@ -460,10 +454,9 @@ class TestFullZeroCopyPipeline:
             .flip(axes=[1])  # horizontal flip
             .cast("f32")
             .normalize(method="minmax")
-            .sink("numpy")
         )
 
-        result = df.with_columns(output=pl.col("data").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result["output"][0])
 
         assert arr.dtype == np.float32
@@ -497,10 +490,9 @@ class TestFullZeroCopyPipeline:
             .grayscale()  # Strided op, 48x48x1
             .resize(height=32, width=32)  # Strided op
             .threshold(value=100)  # Element-wise op
-            .sink("numpy")
         )
 
-        result = df.with_columns(output=pl.col("data").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("data").cv.pipe(pipe).sink("numpy"))
         arr = numpy_from_struct(result["output"][0])
 
         assert arr.shape == (32, 32, 1)

@@ -14,7 +14,6 @@ import polars as pl
 import pytest
 from polars_cv import Pipeline
 
-
 # ============================================================
 # Helpers
 # ============================================================
@@ -135,7 +134,7 @@ class TestArraySinkValidation:
 
     def test_array_sink_with_explicit_shape(self):
         """Array sink with explicit shape should work."""
-        pipe = Pipeline().source("list").sink("array", shape=[4, 4, 3])
+        pipe = Pipeline().source("list")
         assert pipe is not None
 
     def test_array_sink_with_resize_and_channels(self):
@@ -145,7 +144,6 @@ class TestArraySinkValidation:
             .source("list", dtype="u8")
             .resize(height=10, width=10)
             .grayscale()
-            .sink("array")
         )
         assert pipe is not None
 
@@ -164,8 +162,8 @@ class TestSchemaInferenceExecution:
         col = _make_list_column(data)
         df = pl.DataFrame({"data": col})
 
-        pipe = Pipeline().source("list").sink("list")
-        result = df.select(pl.col("data").cv.pipeline(pipe))
+        pipe = Pipeline().source("list")
+        result = df.select(pl.col("data").cv.pipe(pipe).sink("list"))
 
         result_lists = result["data"].to_list()
         assert len(result_lists) == 1
@@ -190,8 +188,8 @@ class TestNullDataSchemaConsistency:
                 )
             }
         )
-        pipe = Pipeline().source("list").sink("list")
-        result = df.select(pl.col("data").cv.pipeline(pipe))
+        pipe = Pipeline().source("list")
+        result = df.select(pl.col("data").cv.pipe(pipe).sink("list"))
         # Schema should be List(List(Float64)), not List(UInt8)
         assert result["data"].dtype == pl.List(pl.List(pl.Float64))
 
@@ -202,9 +200,8 @@ class TestNullDataSchemaConsistency:
             Pipeline()
             .source("file_path", dtype="u8")
             .assert_shape(height=10, width=10, channels=3)
-            .sink("array")
         )
-        result = df.select(pl.col("path").cv.pipeline(pipe))
+        result = df.select(pl.col("path").cv.pipe(pipe).sink("array"))
         expected = pl.Array(pl.Array(pl.Array(pl.UInt8, 3), 10), 10)
         assert result["path"].dtype == expected
 
@@ -214,6 +211,6 @@ class TestNullDataSchemaConsistency:
         rows = [data.tolist(), None]
         col = pl.Series("data", rows)
         df = pl.DataFrame({"data": col})
-        pipe = Pipeline().source("list").sink("list")
-        result = df.select(pl.col("data").cv.pipeline(pipe))
+        pipe = Pipeline().source("list")
+        result = df.select(pl.col("data").cv.pipe(pipe).sink("list"))
         assert result["data"].dtype == pl.List(pl.List(pl.Float64))

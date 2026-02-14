@@ -17,7 +17,6 @@ import polars as pl
 
 if TYPE_CHECKING:
     from polars._typing import IntoExpr
-
     from polars_cv.lazy import LazyPipelineExpr
     from polars_cv.pipeline import Pipeline
 
@@ -116,7 +115,7 @@ class CvNamespace:
         # Validate that sink is present with a helpful error message
         if not pipe.has_sink():
             msg = (
-                "Pipeline must have a sink for eager execution with .cv.pipeline(). "
+                "Pipeline must have a sink for eager execution with .cv.pipe(). "
                 "Either:\n"
                 "  1. Add a sink to the pipeline: pipe.sink('numpy')\n"
                 "  2. Use .cv.pipe() for composable pipelines: "
@@ -142,7 +141,7 @@ class CvNamespace:
             warnings.warn(
                 "Pipeline has a sink defined, but .cv.pipe() is for composable "
                 "pipelines. The sink will be overridden when you call .sink() "
-                "on the returned LazyPipelineExpr. Consider using .cv.pipeline() "
+                "on the returned LazyPipelineExpr. Consider using .cv.pipe() "
                 "instead for direct execution.",
                 UserWarning,
                 stacklevel=2,

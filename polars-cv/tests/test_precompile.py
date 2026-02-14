@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 import pytest
-
 from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
@@ -93,14 +92,12 @@ class TestLiteralPipelineCorrectness:
 
     def test_literal_resize_produces_correct_dimensions(self) -> None:
         """Fixed resize dimensions should produce correct output shape."""
-        pipe = (
-            Pipeline().source("image_bytes").resize(height=50, width=50).sink("numpy")
-        )
+        pipe = Pipeline().source("image_bytes").resize(height=50, width=50)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
         output_struct = result["processed"][0]
 
         # Verify dimensions using struct shape field
@@ -111,16 +108,13 @@ class TestLiteralPipelineCorrectness:
     def test_literal_crop_produces_correct_dimensions(self) -> None:
         """Fixed crop dimensions should produce correct output shape."""
         pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .crop(top=10, left=10, height=30, width=40)
-            .sink("numpy")
+            Pipeline().source("image_bytes").crop(top=10, left=10, height=30, width=40)
         )
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
         output_struct = result["processed"][0]
 
         shape = get_shape(output_struct)
@@ -135,13 +129,12 @@ class TestLiteralPipelineCorrectness:
             .resize(height=64, width=64)
             .grayscale()
             .threshold(128)
-            .sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100, (200, 100, 50))
         df = pl.DataFrame({"images": [png_bytes, png_bytes, png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
 
         # All rows should produce identical output (same input, same literal pipeline)
         arr0 = numpy_from_struct(result["processed"][0])
@@ -153,15 +146,13 @@ class TestLiteralPipelineCorrectness:
 
     def test_literal_batch_consistency(self) -> None:
         """Large batch with literal pipeline should produce consistent results."""
-        pipe = (
-            Pipeline().source("image_bytes").resize(height=32, width=32).sink("numpy")
-        )
+        pipe = Pipeline().source("image_bytes").resize(height=32, width=32)
 
         png_bytes = create_test_png(50, 50)
         # Create a batch of 100 identical images
         df = pl.DataFrame({"images": [png_bytes] * 100})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
 
         # All outputs should have same shape
         first_shape = get_shape(result["processed"][0])
@@ -180,7 +171,6 @@ class TestExpressionPipelineCorrectness:
             Pipeline()
             .source("image_bytes")
             .resize(height=pl.col("h"), width=pl.col("w"))
-            .sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100)
@@ -192,7 +182,7 @@ class TestExpressionPipelineCorrectness:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
 
         # Each row should have different dimensions based on h/w columns
         shape0 = get_shape(result["processed"][0])
@@ -215,7 +205,6 @@ class TestExpressionPipelineCorrectness:
             Pipeline()
             .source("image_bytes")
             .crop(top=pl.col("t"), left=pl.col("l"), height=20, width=20)
-            .sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100)
@@ -227,7 +216,7 @@ class TestExpressionPipelineCorrectness:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
 
         # Both should produce 20x20 crops, but from different positions
         shape0 = get_shape(result["processed"][0])
@@ -247,7 +236,6 @@ class TestExpressionPipelineCorrectness:
             Pipeline()
             .source("image_bytes")
             .resize(height=pl.col("target_size"), width=pl.col("target_size"))
-            .sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100)
@@ -258,7 +246,7 @@ class TestExpressionPipelineCorrectness:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
 
         # Verify each row has the correct size - NOT all using first row's value
         for i, expected_size in enumerate([10, 20, 30, 40]):
@@ -283,7 +271,6 @@ class TestMixedLiteralExpressionPipeline:
             Pipeline()
             .source("image_bytes")
             .resize(height=50, width=pl.col("w"))  # height literal, width expression
-            .sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100)
@@ -294,7 +281,7 @@ class TestMixedLiteralExpressionPipeline:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
 
         # Height should be 50 for all, width should vary
         shape0 = get_shape(result["processed"][0])
@@ -323,7 +310,6 @@ class TestMixedLiteralExpressionPipeline:
                 height=32,  # literal
                 width=32,  # literal
             )
-            .sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100)
@@ -335,7 +321,7 @@ class TestMixedLiteralExpressionPipeline:
             }
         )
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
 
         # Both should produce 32x32 output (literal crop dimensions)
         shape0 = get_shape(result["processed"][0])
@@ -351,9 +337,7 @@ class TestStreamingVsEagerPrecompile:
 
     def test_literal_pipeline_streaming(self) -> None:
         """Literal pipeline with streaming execution."""
-        pipe = (
-            Pipeline().source("image_bytes").resize(height=32, width=32).sink("numpy")
-        )
+        pipe = Pipeline().source("image_bytes").resize(height=32, width=32)
 
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"images": [png_bytes] * 10})
@@ -361,7 +345,7 @@ class TestStreamingVsEagerPrecompile:
         # Use streaming execution
         result = (
             df.lazy()
-            .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
             .collect(engine="streaming")
         )
 
@@ -376,7 +360,6 @@ class TestStreamingVsEagerPrecompile:
             Pipeline()
             .source("image_bytes")
             .resize(height=pl.col("h"), width=pl.col("w"))
-            .sink("numpy")
         )
 
         png_bytes = create_test_png(100, 100)
@@ -391,7 +374,7 @@ class TestStreamingVsEagerPrecompile:
         # Use streaming execution
         result = (
             df.lazy()
-            .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("numpy"))
             .collect(engine="streaming")
         )
 

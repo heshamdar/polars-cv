@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
-
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:
@@ -223,12 +222,12 @@ class TestPluginExecution:
 
     def test_simple_pipeline_execution(self) -> None:
         """Test basic pipeline execution."""
-        pipe = Pipeline().source("image_bytes").resize(height=10, width=10).sink("blob")
+        pipe = Pipeline().source("image_bytes").resize(height=10, width=10)
 
         png_bytes = create_test_png(10, 10)
         df = pl.DataFrame({"images": [png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
         assert "processed" in result.columns
         assert result["processed"].dtype == pl.Binary
 
@@ -238,23 +237,22 @@ class TestPluginExecution:
             Pipeline()
             .source("image_bytes")
             .resize(height=pl.col("h"), width=pl.col("w"))
-            .sink("blob")
         )
 
         png_bytes = create_test_png(10, 10)
         df = pl.DataFrame({"images": [png_bytes, png_bytes], "h": [5, 8], "w": [5, 8]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
         assert "processed" in result.columns
 
     def test_grayscale_pipeline(self) -> None:
         """Test grayscale conversion."""
-        pipe = Pipeline().source("image_bytes").grayscale().sink("blob")
+        pipe = Pipeline().source("image_bytes").grayscale()
 
         png_bytes = create_test_png(5, 5, (100, 150, 200))
         df = pl.DataFrame({"images": [png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
         assert result["processed"].dtype == pl.Binary
 
     def test_multiple_operations(self) -> None:
@@ -266,13 +264,12 @@ class TestPluginExecution:
             .flip_v()
             .grayscale()
             .threshold(128)
-            .sink("blob")
         )
 
         png_bytes = create_test_png(10, 10)
         df = pl.DataFrame({"images": [png_bytes]})
 
-        result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
         assert result["processed"].dtype == pl.Binary
 
 

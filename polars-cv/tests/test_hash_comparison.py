@@ -11,7 +11,6 @@ from io import BytesIO
 
 import polars as pl
 from PIL import Image
-
 from polars_cv import Pipeline, hamming_distance, hash_similarity
 
 
@@ -81,15 +80,9 @@ class TestReducePopcount:
 
         df = pl.DataFrame({"image": [buffer.getvalue()]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .grayscale()
-            .reduce_popcount()
-            .sink("native")
-        )
+        pipe = Pipeline().source("image_bytes").grayscale().reduce_popcount()
 
-        result = df.with_columns(popcount=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(popcount=pl.col("image").cv.pipe(pipe).sink("native"))
         popcount = result["popcount"][0]
 
         # 8 + 0 + 4 + 4 = 16 bits
@@ -103,15 +96,9 @@ class TestReducePopcount:
 
         df = pl.DataFrame({"image": [buffer.getvalue()]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .grayscale()
-            .reduce_popcount()
-            .sink("native")
-        )
+        pipe = Pipeline().source("image_bytes").grayscale().reduce_popcount()
 
-        result = df.with_columns(popcount=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(popcount=pl.col("image").cv.pipe(pipe).sink("native"))
         assert result["popcount"][0] == 0.0
 
     def test_popcount_all_ones(self) -> None:
@@ -123,15 +110,9 @@ class TestReducePopcount:
 
         df = pl.DataFrame({"image": [buffer.getvalue()]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .grayscale()
-            .reduce_popcount()
-            .sink("native")
-        )
+        pipe = Pipeline().source("image_bytes").grayscale().reduce_popcount()
 
-        result = df.with_columns(popcount=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(popcount=pl.col("image").cv.pipe(pipe).sink("native"))
         # 16 pixels * 8 bits = 128 bits
         assert result["popcount"][0] == 128.0
 
