@@ -75,8 +75,8 @@ class TestNumpyOutputSchema:
         """Numpy sink should return Struct type, not Binary."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         output_dtype = result["output"].dtype
         assert isinstance(output_dtype, pl.Struct), (
@@ -87,8 +87,8 @@ class TestNumpyOutputSchema:
         """Numpy sink struct should have data, dtype, shape fields."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         output_dtype = result["output"].dtype
         assert isinstance(output_dtype, pl.Struct)
@@ -102,8 +102,8 @@ class TestNumpyOutputSchema:
         """Torch sink should also return Struct type."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("torch")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         output_dtype = result["output"].dtype
         assert isinstance(output_dtype, pl.Struct), (
@@ -123,8 +123,8 @@ class TestNumpyFromStruct:
         """Basic struct to numpy conversion should work."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         row = result["output"][0]
         arr = numpy_from_struct(row)
@@ -137,8 +137,8 @@ class TestNumpyFromStruct:
         """Conversion should work after resize operation."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").resize(height=8, width=8).sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").resize(height=8, width=8)
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
 
@@ -148,8 +148,8 @@ class TestNumpyFromStruct:
         """Conversion should work after grayscale operation."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").grayscale()
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
 
@@ -160,8 +160,8 @@ class TestNumpyFromStruct:
         """Conversion should preserve dtype after cast."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").cast("f32").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").cast("f32")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
 
@@ -172,14 +172,8 @@ class TestNumpyFromStruct:
         """Conversion should work with normalize operation."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .cast("f32")
-            .normalize(method="minmax")
-            .sink("numpy")
-        )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").cast("f32").normalize(method="minmax")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
 
@@ -192,8 +186,8 @@ class TestNumpyFromStruct:
         """Conversion should work from dict representation."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # Access struct as dict via unnest
         struct_col = result["output"]
@@ -213,8 +207,8 @@ class TestNumpyFromStruct:
         """copy=False should work (may share memory)."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         row = result["output"][0]
 
@@ -239,8 +233,8 @@ class TestExecutionModes:
         """Eager pipeline execution should produce correct struct output."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").resize(height=6, width=6).sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").resize(height=6, width=6)
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape == (6, 6, 3)
@@ -300,8 +294,8 @@ class TestNullHandling:
         """Null input should produce struct with null fields."""
         df = pl.DataFrame({"image": [simple_rgb_bytes, None, simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # First and third rows should have data
         row0 = result["output"][0]
@@ -319,8 +313,8 @@ class TestNullHandling:
         """Attempting to convert null struct should raise ValueError."""
         df = pl.DataFrame({"image": [None]}).cast({"image": pl.Binary})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         row = result["output"][0]
 
@@ -353,8 +347,8 @@ class TestMultipleRows:
 
         df = pl.DataFrame({"image": images})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # Each output should match input value
         for i, expected_val in enumerate([100, 150, 200]):
@@ -366,8 +360,8 @@ class TestMultipleRows:
         """Batch processing should produce consistent results."""
         df = pl.DataFrame({"image": [simple_rgb_bytes] * 10})
 
-        pipe = Pipeline().source("image_bytes").resize(height=8, width=8).sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").resize(height=8, width=8)
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # All outputs should be identical
         first_arr = numpy_from_struct(result["output"][0])
@@ -388,8 +382,8 @@ class TestDtypePreservation:
         """UInt8 dtype should be preserved."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # Check dtype field directly
         unnested = result["output"].struct.unnest()
@@ -399,8 +393,8 @@ class TestDtypePreservation:
         """Float32 dtype should be correct after cast."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = Pipeline().source("image_bytes").cast("f32").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").cast("f32")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         unnested = result["output"].struct.unnest()
         assert unnested["dtype"][0] == "float32"
@@ -410,14 +404,8 @@ class TestDtypePreservation:
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
         # Cast to f32 then apply ops - dtype should stay f32
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .cast("f32")
-            .normalize(method="minmax")
-            .sink("numpy")
-        )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").cast("f32").normalize(method="minmax")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         unnested = result["output"].struct.unnest()
         assert unnested["dtype"][0] == "float32"
@@ -426,10 +414,8 @@ class TestDtypePreservation:
         """Shape field should contain correct dimensions."""
         df = pl.DataFrame({"image": [simple_rgb_bytes]})
 
-        pipe = (
-            Pipeline().source("image_bytes").resize(height=10, width=20).sink("numpy")
-        )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").resize(height=10, width=20)
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         unnested = result["output"].struct.unnest()
         shape = unnested["shape"][0].to_list()
@@ -466,10 +452,8 @@ class TestMemoryEfficiency:
 
         df = pl.DataFrame({"image": images})
 
-        pipe = (
-            Pipeline().source("image_bytes").resize(height=16, width=16).sink("numpy")
-        )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").resize(height=16, width=16)
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # Verify all outputs are correct
         assert len(result) == 50
@@ -493,8 +477,8 @@ class TestMemoryEfficiency:
 
         df = pl.DataFrame({"image": [img_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
 
@@ -514,8 +498,8 @@ class TestMemoryEfficiency:
 
         df = pl.DataFrame({"image": [img_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
 
@@ -547,8 +531,8 @@ class TestStridedPipeline:
 
         # Flip then grayscale should work on strided buffer
         # axes=[0] is vertical flip (along height axis)
-        pipe = Pipeline().source("image_bytes").flip(axes=[0]).grayscale().sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").flip(axes=[0]).grayscale()
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape == (10, 10, 1)
@@ -572,9 +556,8 @@ class TestStridedPipeline:
             .source("image_bytes")
             .flip(axes=[1])  # horizontal flip (along width axis)
             .resize(height=10, width=10)
-            .sink("numpy")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape == (10, 10, 3)
@@ -594,9 +577,8 @@ class TestStridedPipeline:
             .source("image_bytes")
             .crop(top=5, left=5, height=10, width=10)
             .grayscale()
-            .sink("numpy")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape == (10, 10, 1)
@@ -617,9 +599,8 @@ class TestStridedPipeline:
             .flip(axes=[0])  # vertical flip
             .grayscale()
             .resize(height=16, width=16)
-            .sink("numpy")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape == (16, 16, 1)
@@ -640,9 +621,8 @@ class TestStridedPipeline:
             .flip(axes=[1])  # horizontal flip
             .cast("f32")
             .normalize(method="minmax")
-            .sink("numpy")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
         assert arr.dtype == np.float32
@@ -671,9 +651,8 @@ class TestStridedPipeline:
             .crop(top=10, left=10, height=80, width=80)
             .grayscale()
             .resize(height=40, width=40)
-            .sink("numpy")
         )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         arr = numpy_from_struct(result["output"][0])
         assert arr.shape == (40, 40, 1)
@@ -710,10 +689,8 @@ class TestStridedZeroCopyOutput:
         df = pl.DataFrame({"image": [img_bytes]})
 
         # Simple resize produces contiguous output
-        pipe = (
-            Pipeline().source("image_bytes").resize(height=16, width=16).sink("numpy")
-        )
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").resize(height=16, width=16)
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # Access raw struct fields
         struct_data = result["output"].struct.unnest()
@@ -737,8 +714,8 @@ class TestStridedZeroCopyOutput:
 
         df = pl.DataFrame({"image": [img_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").grayscale()
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         struct_data = result["output"].struct.unnest()
         shape = struct_data["shape"][0].to_list()
@@ -759,8 +736,8 @@ class TestStridedZeroCopyOutput:
 
         df = pl.DataFrame({"image": [img_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # Get array with copy=False
         arr = numpy_from_struct(result["output"][0], copy=False)
@@ -780,8 +757,8 @@ class TestStridedZeroCopyOutput:
 
         df = pl.DataFrame({"image": [img_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # Get array with copy=True (default)
         arr = numpy_from_struct(result["output"][0], copy=True)
@@ -804,8 +781,8 @@ class TestStridedZeroCopyOutput:
 
         df = pl.DataFrame({"image": [img_bytes]})
 
-        pipe = Pipeline().source("image_bytes").sink("numpy")
-        result = df.with_columns(output=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes")
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         # Test both copy modes produce same result
         arr_copy = numpy_from_struct(result["output"][0], copy=True)

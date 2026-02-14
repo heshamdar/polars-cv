@@ -11,7 +11,6 @@ from io import BytesIO
 
 import polars as pl
 from PIL import Image
-
 from polars_cv import HashAlgorithm, Pipeline
 
 
@@ -75,10 +74,10 @@ class TestPerceptualHashPipeline:
         df = pl.DataFrame({"image": [image_bytes]})
 
         # Build pipeline with perceptual hash
-        pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
 
         # Execute pipeline
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # Verify output
         hash_value = result["hash"][0]
@@ -102,13 +101,8 @@ class TestPerceptualHashPipeline:
         ]
 
         for algo in algorithms:
-            pipe = (
-                Pipeline()
-                .source("image_bytes")
-                .perceptual_hash(algorithm=algo)
-                .sink("list")
-            )
-            result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+            pipe = Pipeline().source("image_bytes").perceptual_hash(algorithm=algo)
+            result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
             hash_value = result["hash"][0]
 
             assert hash_value is not None, f"Algorithm {algo} returned None"
@@ -120,8 +114,8 @@ class TestPerceptualHashPipeline:
 
         df = pl.DataFrame({"image": [image_bytes, image_bytes]})
 
-        pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # List columns return Series when indexed, so convert to list
         hash1 = result["hash"][0].to_list()
@@ -158,8 +152,8 @@ class TestPerceptualHashPipeline:
 
         df = pl.DataFrame({"image": [buffer1.getvalue(), buffer2.getvalue()]})
 
-        pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # List columns return Series when indexed, so convert to list
         hash1 = result["hash"][0].to_list()
@@ -183,10 +177,9 @@ class TestPerceptualHashPipeline:
             .resize(height=128, width=128)
             .grayscale()
             .perceptual_hash()
-            .sink("list")
         )
 
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
         hash_value = result["hash"][0]
 
         assert hash_value is not None
@@ -199,11 +192,9 @@ class TestPerceptualHashPipeline:
         df = pl.DataFrame({"image": [image_bytes]})
 
         # Use 256-bit hash (32 bytes)
-        pipe = (
-            Pipeline().source("image_bytes").perceptual_hash(hash_size=256).sink("list")
-        )
+        pipe = Pipeline().source("image_bytes").perceptual_hash(hash_size=256)
 
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
         hash_value = result["hash"][0]
 
         assert hash_value is not None
@@ -216,14 +207,9 @@ class TestPerceptualHashPipeline:
         df = pl.DataFrame({"image": [image_bytes]})
 
         # Use string instead of enum
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .perceptual_hash(algorithm="perceptual")
-            .sink("list")
-        )
+        pipe = Pipeline().source("image_bytes").perceptual_hash(algorithm="perceptual")
 
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
         hash_value = result["hash"][0]
 
         assert hash_value is not None
@@ -241,8 +227,8 @@ class TestPerceptualHashPipeline:
 
         df = pl.DataFrame({"image": images})
 
-        pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # All rows should have hashes
         assert result["hash"].null_count() == 0
@@ -291,8 +277,8 @@ class TestHashSimilarity:
 
         df = pl.DataFrame({"image": [original, resized]})
 
-        pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # List columns return Series when indexed, so convert to list
         hash1 = result["hash"][0].to_list()
@@ -324,8 +310,8 @@ class TestHashSimilarity:
 
         df = pl.DataFrame({"image": [png_bytes, jpeg_bytes]})
 
-        pipe = Pipeline().source("image_bytes").perceptual_hash().sink("list")
-        result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
 
         # List columns return Series when indexed, so convert to list
         hash1 = result["hash"][0].to_list()
@@ -355,13 +341,8 @@ class TestHashAlgorithmComparison:
 
         hashes = {}
         for algo in algorithms:
-            pipe = (
-                Pipeline()
-                .source("image_bytes")
-                .perceptual_hash(algorithm=algo)
-                .sink("list")
-            )
-            result = df.with_columns(hash=pl.col("image").cv.pipeline(pipe))
+            pipe = Pipeline().source("image_bytes").perceptual_hash(algorithm=algo)
+            result = df.with_columns(hash=pl.col("image").cv.pipe(pipe).sink("list"))
             hashes[algo] = result["hash"][0]
 
         # At least some algorithms should produce different hashes

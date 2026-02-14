@@ -14,7 +14,6 @@ import numpy as np
 import polars as pl
 import pytest
 from PIL import Image
-
 from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
@@ -318,7 +317,7 @@ class TestCSEEdgeCases:
         pipe = Pipeline().source("image_bytes").resize(width=50, height=50).grayscale()
 
         result = sample_df.with_columns(
-            output=pl.col("image").cv.pipeline(pipe.sink("numpy"))
+            output=pl.col("image").cv.pipe(pipe).sink("numpy")
         )
 
         arr = numpy_from_struct(result["output"][0])

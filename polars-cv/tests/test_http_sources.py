@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
-
 from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
@@ -58,8 +57,8 @@ class TestHttpSources:
         """Basic HTTP URL should load and decode as image."""
         df = pl.DataFrame({"url": [placeholder_url]})
 
-        pipe = Pipeline().source("file_path").sink("numpy")
-        result = df.with_columns(out=pl.col("url").cv.pipeline(pipe))
+        pipe = Pipeline().source("file_path")
+        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("numpy"))
 
         # Should produce a valid image array
         arr = numpy_from_struct(result["out"][0])
@@ -71,8 +70,8 @@ class TestHttpSources:
         """HTTPS URL should work (most common case)."""
         df = pl.DataFrame({"url": [placeholder_url]})
 
-        pipe = Pipeline().source("file_path").grayscale().sink("numpy")
-        result = df.with_columns(out=pl.col("url").cv.pipeline(pipe))
+        pipe = Pipeline().source("file_path").grayscale()
+        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("numpy"))
 
         # Should produce grayscale output
         arr = numpy_from_struct(result["out"][0])
@@ -82,14 +81,8 @@ class TestHttpSources:
         """HTTP URL source should work with pipeline operations."""
         df = pl.DataFrame({"url": [placeholder_url]})
 
-        pipe = (
-            Pipeline()
-            .source("file_path")
-            .resize(width=5, height=5)
-            .grayscale()
-            .sink("png")
-        )
-        result = df.with_columns(out=pl.col("url").cv.pipeline(pipe))
+        pipe = Pipeline().source("file_path").resize(width=5, height=5).grayscale()
+        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("png"))
 
         # Should produce PNG bytes
         assert result["out"].dtype == pl.Binary
@@ -103,8 +96,8 @@ class TestHttpSources:
         # Use same URL twice to test batch processing
         df = pl.DataFrame({"url": [placeholder_url, placeholder_url]})
 
-        pipe = Pipeline().source("file_path").sink("numpy")
-        result = df.with_columns(out=pl.col("url").cv.pipeline(pipe))
+        pipe = Pipeline().source("file_path")
+        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("numpy"))
 
         assert len(result) == 2
         arr1 = numpy_from_struct(result["out"][0])
@@ -115,8 +108,8 @@ class TestHttpSources:
         """DataFrame with null URL should handle gracefully."""
         df = pl.DataFrame({"url": [placeholder_url, None]})
 
-        pipe = Pipeline().source("file_path").sink("numpy")
-        result = df.with_columns(out=pl.col("url").cv.pipeline(pipe))
+        pipe = Pipeline().source("file_path")
+        result = df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("png"))
 
         # First row should have data
         assert result["out"][0] is not None
@@ -138,21 +131,21 @@ class TestHttpErrorHandling:
         """Invalid URL should produce an error (not crash)."""
         df = pl.DataFrame({"url": ["http://not-a-valid-url-12345.invalid/image.png"]})
 
-        pipe = Pipeline().source("file_path").sink("numpy")
+        pipe = Pipeline().source("file_path")
 
         # Should raise an error during execution, not crash
         with pytest.raises(Exception):
-            df.with_columns(out=pl.col("url").cv.pipeline(pipe))
+            df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("png"))
 
     def test_404_url(self) -> None:
         """404 URL should produce a meaningful error."""
         df = pl.DataFrame({"url": ["https://httpbin.org/status/404"]})
 
-        pipe = Pipeline().source("file_path").sink("numpy")
+        pipe = Pipeline().source("file_path")
 
         # Should raise an error with meaningful message
         with pytest.raises(Exception) as exc_info:
-            df.with_columns(out=pl.col("url").cv.pipeline(pipe))
+            df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("png"))
 
         # Error message should mention HTTP status or the URL
         error_msg = str(exc_info.value).lower()

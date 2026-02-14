@@ -67,10 +67,11 @@ class TestMultiPhaseWorkaround:
             .resize(height=50, width=50)
             .grayscale()
             .threshold(128)
-            .sink("numpy")
         )
 
-        result = sample_df.with_columns(thresholded=pl.col("image").cv.pipeline(pipe))
+        result = sample_df.with_columns(
+            thresholded=pl.col("image").cv.pipe(pipe).sink("numpy")
+        )
 
         arr = numpy_from_struct(result["thresholded"][0])
         assert arr.shape == (50, 50, 1)
@@ -91,10 +92,11 @@ class TestMultiPhaseWorkaround:
             .grayscale()
             .threshold(128)
             .extract_contours()
-            .sink("native")
         )
 
-        result = sample_df.with_columns(contours=pl.col("image").cv.pipeline(pipe))
+        result = sample_df.with_columns(
+            contours=pl.col("image").cv.pipe(pipe).sink("native")
+        )
 
         # Should return a struct with contour data
         assert result["contours"] is not None
@@ -181,10 +183,11 @@ class TestSeamlessPipeline:
             .grayscale()
             .threshold(128)
             .extract_contours()
-            .sink("native")  # Should return contour struct
         )
 
-        result = sample_df.with_columns(contours=pl.col("image").cv.pipeline(pipe))
+        result = sample_df.with_columns(
+            contours=pl.col("image").cv.pipe(pipe).sink("native")
+        )
 
         # Verify output is not null and is a struct
         assert result["contours"] is not None
@@ -371,10 +374,11 @@ class TestSeamlessPipeline:
             .threshold(128)
             .extract_contours()
             .area()
-            .sink("native")
         )
 
-        result = sample_df.with_columns(area=pl.col("image").cv.pipeline(pipe))
+        result = sample_df.with_columns(
+            area=pl.col("image").cv.pipe(pipe).sink("native")
+        )
 
         # Should be Float64, not Binary
         assert result["area"].dtype == pl.Float64
@@ -396,10 +400,11 @@ class TestSeamlessPipeline:
             .threshold(128)
             .extract_contours()  # Buffer → Contour
             .rasterize(width=50, height=50)  # Contour → Buffer
-            .sink("numpy")  # Buffer → Binary
         )
 
-        result = sample_df.with_columns(mask=pl.col("image").cv.pipeline(pipe))
+        result = sample_df.with_columns(
+            mask=pl.col("image").cv.pipe(pipe).sink("numpy")
+        )
 
         # Should be Struct (numpy output with data, dtype, shape fields)
         assert isinstance(result["mask"].dtype, pl.Struct)
@@ -418,10 +423,11 @@ class TestSeamlessPipeline:
             .extract_contours()  # Buffer → Contour
             .translate(dx=10, dy=10)  # Contour → Contour
             .scale_contour(sx=0.5, sy=0.5)  # Contour → Contour
-            .sink("native")  # Contour → Struct
         )
 
-        result = sample_df.with_columns(contours=pl.col("image").cv.pipeline(pipe))
+        result = sample_df.with_columns(
+            contours=pl.col("image").cv.pipe(pipe).sink("native")
+        )
 
         # Should be a struct with at least an exterior field (contour data)
         # Note: The Rust output schema uses "interiors" instead of "holes",
@@ -511,10 +517,10 @@ class TestMergePipeBranches:
         expr = merged.sink("numpy")
 
         # Execute both ways and compare
-        direct_pipe = Pipeline().source("image_bytes").grayscale().sink("numpy")
+        direct_pipe = Pipeline().source("image_bytes").grayscale()
         df = sample_df.with_columns(
             merged=expr,
-            direct=pl.col("image").cv.pipeline(direct_pipe),
+            direct=pl.col("image").cv.pipe(direct_pipe).sink("numpy"),
         )
         assert df["merged"][0] == df["direct"][0]
 

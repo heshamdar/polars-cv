@@ -24,7 +24,7 @@ class TestPipelineSource:
 
     def test_source_default_format(self) -> None:
         """Test default source format is image_bytes."""
-        pipe = Pipeline().source()
+        pipe = Pipeline().source().sink("numpy")
         assert pipe._source is not None
         assert pipe._source.format == SourceFormat.IMAGE_BYTES
 
