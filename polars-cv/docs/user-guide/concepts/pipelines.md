@@ -42,12 +42,27 @@ result = df.with_columns(
 
 | Format | Input Type | Description |
 |--------|-----------|-------------|
-| `image_bytes` | Binary | PNG/JPEG bytes (auto-detect) |
-| `file_path` | String | Local or cloud file path |
+| `image_bytes` | Binary | Decode PNG/JPEG/TIFF bytes (auto format+dtype detect) |
+| `file_path` | String | Local/cloud/HTTP path; decodes like `image_bytes` |
 | `raw` | Binary | Raw bytes (requires `dtype`) |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
 | `contour` | Struct | Contour geometry to rasterize |
+
+### Auto DType for Image Sources
+
+For `image_bytes` and `file_path`, decoded dtype is determined at runtime:
+
+- PNG/JPEG typically decode to `u8`
+- 16-bit PNG decodes to `u16`
+- TIFF can decode to `u8`, `u16`, `f32`, or `f64`
+
+Because of this variability, the pipeline tracks dtype as `auto` until it can be resolved by:
+
+- `source(..., dtype="...")`
+- a dtype-fixing operation such as `normalize`, `threshold`, or `cast`
+
+If you use `sink("list")` or `sink("array")`, dtype must be known at planning time.
 
 ## Sink Formats
 
@@ -83,5 +98,6 @@ pipe = (
 
 ## Next Steps
 
+- [Sources](sources.md) - Source formats and auto dtype behavior
 - [Domains](domains.md) - Multi-domain pipelines
 - [Multi-Output](../composition/multi-output.md) - Extracting multiple results

@@ -32,6 +32,39 @@ result = df.with_columns(
 )
 ```
 
+## Source Behavior (Auto DType)
+
+`image_bytes` and `file_path` sources decode image format and dtype at runtime:
+
+- PNG/JPEG usually decode as `u8`
+- 16-bit PNG decodes as `u16`
+- TIFF may decode as `u8`, `u16`, `f32`, or `f64`
+
+This means the pipeline dtype starts as `auto` for these sources unless you pin it with `dtype=...` or an operation that determines dtype (such as `normalize`, `threshold`, or `cast`).
+
+```python
+# Runtime decode with automatic dtype
+auto_pipe = Pipeline().source("image_bytes").resize(224, 224)
+
+# Pin expected dtype at source (runtime cast when needed)
+typed_pipe = Pipeline().source("image_bytes", dtype="f32").resize(224, 224)
+```
+
+When using `sink("list")` or `sink("array")`, dtype must be known at planning time. For `image_bytes` / `file_path`, choose one of:
+
+- set `dtype` in `source(...)`
+- add `.cast("...")`
+- use a dtype-fixing operation before the sink
+
+```python
+safe_for_list = (
+    Pipeline()
+    .source("file_path", dtype="f32")
+    .resize(224, 224)
+    .sink("list")
+)
+```
+
 ## Dynamic Pipelines
 
 Use Polars expressions for per-row parameter values:

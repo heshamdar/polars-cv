@@ -17,7 +17,7 @@ from polars_cv import Pipeline
 # 1. Define a pipeline
 pipe = (
     Pipeline()
-    .source("image_bytes")  # Decode PNG/JPEG bytes
+    .source("image_bytes")  # Decode image bytes (PNG/JPEG/TIFF)
     .resize(height=224, width=224)
 )
 
@@ -104,3 +104,22 @@ result = df.with_columns(
 )
 ```
 
+## Auto DType and Planning-Time Requirements
+
+`image_bytes` and `file_path` decode dtype at runtime, so pipelines from these sources begin with dtype `auto` unless explicitly constrained.
+
+- Common decodes: PNG/JPEG -> `u8`, 16-bit PNG -> `u16`
+- TIFF may produce `u8`, `u16`, `f32`, or `f64`
+
+For `sink("numpy")`, `sink("png")`, `sink("jpeg")`, etc., this is usually fine.
+For `sink("list")` or `sink("array")`, dtype must be known during planning.
+
+```python
+# Option 1: pin dtype at source
+pipe = Pipeline().source("image_bytes", dtype="f32").resize(224, 224)
+
+# Option 2: resolve dtype in the pipeline
+pipe = Pipeline().source("file_path").resize(224, 224).cast("f32")
+
+result = df.with_columns(values=pl.col("image").cv.pipe(pipe).sink("list"))
+```
