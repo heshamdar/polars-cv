@@ -50,4 +50,3 @@ result = df.with_columns(
 
 - [Image Operations](image-ops.md) - Preprocessing before hashing
 - [Reductions](reductions.md) - Custom analysis
-

@@ -38,4 +38,3 @@ result = df.with_columns(
 1. [Installation](getting-started/installation.md)
 2. [Quickstart](getting-started/quickstart.md)
 3. [User Guide](user-guide/concepts/pipelines.md)
-

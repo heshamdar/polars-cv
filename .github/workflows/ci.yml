@@ -20,10 +20,10 @@ jobs:
         # Run only ubuntu-latest on PRs to save costs
         # Run full matrix on main branch
         os: >-
-          ${{ 
-            (github.event_name == 'push' && github.ref == 'refs/heads/main') 
-            && fromJSON('["ubuntu-latest", "macos-latest"]') 
-            || fromJSON('["ubuntu-latest"]') 
+          ${{
+            (github.event_name == 'push' && github.ref == 'refs/heads/main')
+            && fromJSON('["ubuntu-latest", "macos-latest"]')
+            || fromJSON('["ubuntu-latest"]')
           }}
         python-version: ["3.13"]
 
@@ -70,14 +70,14 @@ jobs:
         shell: bash
         run: |
           source .venv/bin/activate
-          
+
           echo "=== Running Rust Tests ==="
           cargo test
-          
+
           echo "=== Building Python Extension ==="
           # Build with all features enabled (cloud support is now default)
           maturin develop
-          
+
           echo "=== Running Python Tests ==="
           pytest tests/ -x -v --tb=short
 

@@ -81,4 +81,3 @@ pl.col("image").cv.pipe(pipe).sink("png")
 # Returns Float64 (Scalar)
 pl.col("contour").contour.area()
 ```
-

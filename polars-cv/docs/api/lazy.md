@@ -25,4 +25,3 @@ result = df.with_columns(output=gray.sink("png"))
       show_root_heading: true
       show_source: false
       heading_level: 3
-

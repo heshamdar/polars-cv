@@ -191,4 +191,3 @@ Both operands must:
 
 - [Multi-Output](multi-output.md) - Extract intermediate results
 - [Domains](../concepts/domains.md) - Mask from contours
-

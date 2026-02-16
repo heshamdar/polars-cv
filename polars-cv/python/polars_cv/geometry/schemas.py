@@ -121,6 +121,32 @@ Multiple contours (e.g., multiple detected objects).
 A list of CONTOUR_SCHEMA structs.
 """
 
+MATCH_RESULT_SCHEMA = pl.Struct(
+    [
+        pl.Field("pred_idx", pl.List(pl.UInt32)),
+        pl.Field("gt_idx", pl.List(pl.UInt32)),
+        pl.Field("iou", pl.List(pl.Float64)),
+        pl.Field("n_preds", pl.UInt32),
+        pl.Field("n_gts", pl.UInt32),
+        pl.Field("n_tp", pl.UInt32),
+        pl.Field("n_fp", pl.UInt32),
+        pl.Field("n_fn", pl.UInt32),
+    ]
+)
+"""
+Detection matching output schema.
+
+Fields:
+    pred_idx: Prediction indices in evaluation order.
+    gt_idx: Matched GT indices for each prediction; null indicates unmatched FP.
+    iou: IoU value for each prediction's chosen match (0.0 for unmatched).
+    n_preds: Number of predictions in the row.
+    n_gts: Number of ground-truth contours in the row.
+    n_tp: Number of matched true positives.
+    n_fp: Number of unmatched false positives.
+    n_fn: Number of unmatched false negatives.
+"""
+
 # --- Bounding Box Schema ---
 
 BBOX_SCHEMA = pl.Struct(

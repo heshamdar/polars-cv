@@ -23,4 +23,3 @@ volumes:
   cargo-cache:
   cargo-git-cache:
   cargo-target:
-

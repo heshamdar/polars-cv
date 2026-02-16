@@ -88,4 +88,3 @@ docker rmi polars-cv-builder:latest
 - **Tools**: uv, maturin, build-essential
 
 The final image size is approximately 1-2GB including all build dependencies.
-

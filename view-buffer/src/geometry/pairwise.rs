@@ -5,6 +5,27 @@
 use super::contour::{Contour, Point};
 use super::measures::area;
 
+/// Pairwise matching result for a set of predictions and ground truths.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetectionMatchResult {
+    /// Prediction indices in processing order.
+    pub pred_idx: Vec<usize>,
+    /// Matched GT index for each prediction, or None when unmatched.
+    pub gt_idx: Vec<Option<usize>>,
+    /// IoU value associated with each prediction match decision.
+    pub iou: Vec<f64>,
+    /// Total number of predictions.
+    pub n_preds: usize,
+    /// Total number of ground truths.
+    pub n_gts: usize,
+    /// Number of true positives.
+    pub n_tp: usize,
+    /// Number of false positives.
+    pub n_fp: usize,
+    /// Number of false negatives.
+    pub n_fn: usize,
+}
+
 /// Computes the areas and intersection area of two contours.
 /// Returns `None` if either contour has near-zero area or their bounding boxes don't intersect.
 fn contour_intersection_areas(a: &Contour, b: &Contour) -> Option<(f64, f64, f64)> {
@@ -55,6 +76,110 @@ pub fn iou(a: &Contour, b: &Contour) -> f64 {
     }
 
     (intersection_area / union_area).clamp(0.0, 1.0)
+}
+
+/// Computes a full pairwise IoU matrix between two contour sets.
+///
+/// Returns an `N x M` matrix where `N = a.len()` and `M = b.len()`.
+/// Matrix element `(i, j)` is `iou(&a[i], &b[j])`.
+pub fn iou_matrix(a: &[Contour], b: &[Contour]) -> Vec<Vec<f64>> {
+    if a.is_empty() {
+        return Vec::new();
+    }
+
+    if b.is_empty() {
+        return vec![Vec::new(); a.len()];
+    }
+
+    let mut matrix = Vec::with_capacity(a.len());
+    for contour_a in a {
+        let mut row = Vec::with_capacity(b.len());
+        for contour_b in b {
+            row.push(iou(contour_a, contour_b));
+        }
+        matrix.push(row);
+    }
+    matrix
+}
+
+/// Greedy one-to-one detection matching using IoU thresholding.
+///
+/// Predictions are processed in `pred_order` if provided, otherwise in natural
+/// order. For each prediction, the unmatched GT with highest IoU is selected.
+/// Ties are broken by choosing the smallest GT index for determinism.
+pub fn match_detections(
+    preds: &[Contour],
+    gts: &[Contour],
+    threshold: f64,
+    pred_order: Option<&[usize]>,
+) -> DetectionMatchResult {
+    let n_preds = preds.len();
+    let n_gts = gts.len();
+    let matrix = iou_matrix(preds, gts);
+
+    let mut order: Vec<usize> = match pred_order {
+        Some(indices) => indices.to_vec(),
+        None => (0..n_preds).collect(),
+    };
+    if order.is_empty() && n_preds > 0 {
+        order = (0..n_preds).collect();
+    }
+
+    let mut gt_taken = vec![false; n_gts];
+    let mut gt_by_pred: Vec<Option<usize>> = vec![None; n_preds];
+    let mut iou_by_pred: Vec<f64> = vec![0.0; n_preds];
+
+    for pred_idx in order {
+        if pred_idx >= n_preds {
+            continue;
+        }
+
+        let mut best_gt: Option<usize> = None;
+        let mut best_iou = -1.0_f64;
+        for (gt_idx, is_taken) in gt_taken.iter().enumerate().take(n_gts) {
+            if *is_taken {
+                continue;
+            }
+            let cand_iou = matrix[pred_idx][gt_idx];
+            if cand_iou > best_iou {
+                best_iou = cand_iou;
+                best_gt = Some(gt_idx);
+            } else if (cand_iou - best_iou).abs() < 1e-12 {
+                if let Some(current_best) = best_gt {
+                    if gt_idx < current_best {
+                        best_gt = Some(gt_idx);
+                    }
+                }
+            }
+        }
+
+        match best_gt {
+            Some(gt_idx) if best_iou >= threshold => {
+                gt_taken[gt_idx] = true;
+                gt_by_pred[pred_idx] = Some(gt_idx);
+                iou_by_pred[pred_idx] = best_iou;
+            }
+            _ => {
+                gt_by_pred[pred_idx] = None;
+                iou_by_pred[pred_idx] = 0.0;
+            }
+        }
+    }
+
+    let n_tp = gt_by_pred.iter().filter(|v| v.is_some()).count();
+    let n_fp = n_preds.saturating_sub(n_tp);
+    let n_fn = n_gts.saturating_sub(n_tp);
+
+    DetectionMatchResult {
+        pred_idx: (0..n_preds).collect(),
+        gt_idx: gt_by_pred,
+        iou: iou_by_pred,
+        n_preds,
+        n_gts,
+        n_tp,
+        n_fp,
+        n_fn,
+    }
 }
 
 /// Computes the Dice coefficient between two contours.

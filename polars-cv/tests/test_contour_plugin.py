@@ -139,18 +139,12 @@ class TestContourArea:
         assert result["area"][0] == pytest.approx(5000.0, rel=0.01)
 
     def test_area_with_hole(self, contour_with_hole: dict) -> None:
-        """Area with hole - currently only exterior is parsed.
-
-        Note: Hole parsing is not yet implemented in the Rust backend,
-        so this returns the exterior area only. When hole parsing is
-        implemented, this should return 7500 (10000 - 2500).
-        """
+        """Area with hole subtracts the hole area from the exterior."""
         df = pl.DataFrame(
             {"contour": [contour_with_hole]}, schema={"contour": CONTOUR_SCHEMA}
         )
         result = df.with_columns(area=pl.col("contour").contour.area())
-        # Currently returns exterior area only (holes not parsed yet)
-        assert result["area"][0] == pytest.approx(10000.0, rel=0.01)
+        assert result["area"][0] == pytest.approx(7500.0, rel=0.01)
 
 
 @plugin_required

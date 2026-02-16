@@ -62,7 +62,7 @@ src/
 │   ├── measures.rs     # Area, perimeter, centroid
 │   ├── transforms.rs   # Translate, scale, rotate contours
 │   ├── ops.rs          # GeometryOp enum
-│   ├── pairwise.rs     # Pairwise operations (IoU, distance)
+│   ├── pairwise.rs     # Pairwise ops (IoU/Dice/Hausdorff, IoU matrix, greedy matching)
 │   └── predicates.rs   # Spatial predicates (contains, intersects)
 ├── protocol.rs         # VIEW binary protocol (header + data serialization)
 └── interop/            # External library integration
@@ -126,7 +126,7 @@ The `resolve_op` function in `polars-cv/src/execute.rs` maps operation names fro
 | **Compute** | No | Cast, scale, normalize, clamp, relu — element-wise, can be fused |
 | **Image** | No | Resize, blur, grayscale, threshold — require materialization |
 | **Binary** | No | Pixel-wise operations between two buffers |
-| **Geometry** | N/A | Contour extraction, rasterization, measures |
+| **Geometry** | N/A | Contour extraction, rasterization, measures, pairwise matching primitives |
 | **Reduction** | No | Sum, mean, std, min, max, percentile → scalar/vector |
 
 ### Kernel Fusion
