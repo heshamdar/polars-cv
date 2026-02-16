@@ -98,18 +98,18 @@ from typing import Any
 def build_pipeline(config: dict[str, Any]) -> Pipeline:
     """Build a pipeline from configuration."""
     pipe = Pipeline().source("image_bytes")
-    
+
     if "target_size" in config:
         size = config["target_size"]
         pipe = pipe.resize(height=size, width=size)
-    
+
     if config.get("grayscale", False):
         pipe = pipe.grayscale()
-    
+
     if config.get("normalize", False):
         method = config.get("normalize_method", "minmax")
         pipe = pipe.normalize(method=method)
-    
+
     return pipe
 
 
@@ -180,4 +180,3 @@ result = df.with_columns(
 
 - [Multi-Output](multi-output.md) - Extract multiple outputs
 - [Binary Operations](binary-ops.md) - Combine pipelines
-

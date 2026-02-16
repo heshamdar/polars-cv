@@ -364,6 +364,86 @@ class ContourNamespace:
             is_elementwise=True,
         )
 
+    def pairwise_iou(self, other: pl.Expr) -> pl.Expr:
+        """
+        Compute full pairwise IoU matrix between contour sets.
+
+        Args:
+            other: Ground-truth contour-set expression (`List[Contour]`).
+
+        Returns:
+            A nested list (`List[List[Float64]]`) representing an N x M IoU matrix.
+        """
+        return register_plugin_function(
+            plugin_path=LIB_PATH,
+            function_name="contour_pairwise_iou",
+            args=[self._expr, other],
+            is_elementwise=True,
+        )
+
+    def match_detections(
+        self,
+        other: pl.Expr,
+        *,
+        threshold: float = 0.5,
+        scores: pl.Expr | None = None,
+        strategy: Literal["greedy"] = "greedy",
+    ) -> pl.Expr:
+        """
+        Match prediction contour set against ground truth contour set.
+
+        Args:
+            other: Ground-truth contour-set expression (`List[Contour]`).
+            threshold: IoU threshold for positive matches.
+            scores: Optional per-prediction confidence score list used for ordering.
+            strategy: Matching strategy. Currently only ``"greedy"`` is supported.
+
+        Returns:
+            A struct containing per-prediction match indices, IoUs, and TP/FP/FN counts.
+        """
+        args = [self._expr, other]
+        if scores is not None:
+            args.append(scores)
+        return register_plugin_function(
+            plugin_path=LIB_PATH,
+            function_name="contour_match_detections",
+            args=args,
+            kwargs={
+                "threshold": threshold,
+                "strategy": strategy,
+            },
+            is_elementwise=True,
+        )
+
+    def label_reduce(
+        self,
+        heatmap: pl.Expr,
+        *,
+        reduction: Literal["max", "mean", "sum"] = "max",
+        region_mode: Literal["interior", "bbox"] = "interior",
+    ) -> pl.Expr:
+        """
+        Score each contour from a heatmap with configurable reduction.
+
+        Args:
+            heatmap: Heatmap expression aligned by row with contour sets.
+            reduction: Aggregation method over pixels in each contour region.
+            region_mode: Region selector - ``"interior"`` or ``"bbox"``.
+
+        Returns:
+            A list of float scores, aligned to the input contour order.
+        """
+        return register_plugin_function(
+            plugin_path=LIB_PATH,
+            function_name="contour_label_reduce",
+            args=[self._expr, heatmap],
+            kwargs={
+                "reduction": reduction,
+                "region_mode": region_mode,
+            },
+            is_elementwise=True,
+        )
+
     def dice(self, other: pl.Expr) -> pl.Expr:
         """
         Compute Dice coefficient with another contour.

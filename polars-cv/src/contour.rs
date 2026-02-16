@@ -8,6 +8,7 @@ use polars::prelude::*;
 use polars_arrow::array::{ListArray, PrimitiveArray, StructArray as ArrowStructArray};
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
+use std::cmp::Ordering;
 
 // Import geometry operations from view-buffer
 use view_buffer::geometry::{
@@ -175,6 +176,18 @@ pub struct ContourKwargs {
     /// Origin for scale operations: "origin", "centroid", or "bbox_center".
     #[serde(default)]
     pub origin: Option<String>,
+    /// IoU threshold for detection matching.
+    #[serde(default)]
+    pub threshold: Option<f64>,
+    /// Matching strategy name.
+    #[serde(default)]
+    pub strategy: Option<String>,
+    /// Reduction method for label scoring.
+    #[serde(default)]
+    pub reduction: Option<String>,
+    /// Region mode for label scoring.
+    #[serde(default)]
+    pub region_mode: Option<String>,
 }
 
 /// Helper function to parse a contour from a Polars Struct value.
@@ -185,55 +198,76 @@ fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
     match value {
         AnyValue::StructOwned(boxed) => {
             let (values, fields) = boxed.as_ref();
+            let mut exterior: Option<Vec<Point>> = None;
+            let mut holes: Vec<Vec<Point>> = Vec::new();
 
-            // Find the exterior field
             for (i, field) in fields.iter().enumerate() {
-                if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
-                    if let Some(AnyValue::List(series)) = values.get(i) {
-                        let points = extract_points_from_series(series)?;
-                        return Ok(Contour::new(points));
+                match field.name().as_str() {
+                    "exterior" | "points" => {
+                        if let Some(AnyValue::List(series)) = values.get(i) {
+                            exterior = Some(extract_points_from_series(series)?);
+                        }
+                    }
+                    "holes" => {
+                        if let Some(AnyValue::List(series)) = values.get(i) {
+                            holes = extract_holes_from_series(series)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let exterior = if let Some(points) = exterior {
+                points
+            } else {
+                // Backward-compatible fallback: first list field as exterior.
+                let mut fallback: Option<Vec<Point>> = None;
+                for av in values.iter() {
+                    if let AnyValue::List(series) = av {
+                        fallback = Some(extract_points_from_series(series)?);
+                        break;
                     }
                 }
-            }
+                fallback.ok_or_else(
+                    || polars_err!(ComputeError: "Contour struct missing exterior/points field"),
+                )?
+            };
 
-            // If no named field found, try to use the first list field
-            for av in values.iter() {
-                if let AnyValue::List(series) = av {
-                    let points = extract_points_from_series(series)?;
-                    return Ok(Contour::new(points));
-                }
-            }
-
-            Err(polars_err!(ComputeError: "Contour struct missing exterior/points field"))
+            Ok(Contour::with_holes(exterior, holes))
         }
         // Handle AnyValue::Struct (non-owned variant with row index and array reference)
         AnyValue::Struct(row_idx, struct_array, fields) => {
-            // Find the exterior field in the struct array
-            for (i, field) in fields.iter().enumerate() {
-                if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
-                    // Get the column from the struct array
-                    let column = struct_array.values()[i].clone();
-                    // Get the value at the row index
-                    let list_arr = column.as_any().downcast_ref::<ListArray<i64>>();
-                    if let Some(list_arr) = list_arr {
-                        // Extract the points from the list at this row
-                        let offsets = list_arr.offsets();
-                        let start = offsets[*row_idx] as usize;
-                        let end = offsets[*row_idx + 1] as usize;
-                        let values_arr = list_arr.values();
+            let mut exterior: Option<Vec<Point>> = None;
+            let mut holes: Vec<Vec<Point>> = Vec::new();
 
-                        // The values should be a struct array of points
-                        if let Some(struct_arr) =
-                            values_arr.as_any().downcast_ref::<ArrowStructArray>()
-                        {
-                            let points = extract_points_from_struct_array(struct_arr, start, end)?;
-                            return Ok(Contour::new(points));
+            for (i, field) in fields.iter().enumerate() {
+                let column = struct_array.values()[i].clone();
+                match field.name().as_str() {
+                    "exterior" | "points" => {
+                        if let Some(list_arr) = column.as_any().downcast_ref::<ListArray<i64>>() {
+                            let offsets = list_arr.offsets();
+                            let start = offsets[*row_idx] as usize;
+                            let end = offsets[*row_idx + 1] as usize;
+                            let values_arr = list_arr.values();
+                            if let Some(struct_arr) =
+                                values_arr.as_any().downcast_ref::<ArrowStructArray>()
+                            {
+                                exterior =
+                                    Some(extract_points_from_struct_array(struct_arr, start, end)?);
+                            }
                         }
                     }
+                    "holes" => {
+                        holes = extract_holes_from_arrow_array(column.as_ref(), *row_idx)?;
+                    }
+                    _ => {}
                 }
             }
 
-            Err(polars_err!(ComputeError: "Contour struct missing exterior/points field"))
+            let exterior = exterior.ok_or_else(
+                || polars_err!(ComputeError: "Contour struct missing exterior/points field"),
+            )?;
+            Ok(Contour::with_holes(exterior, holes))
         }
         AnyValue::List(series) => {
             // Direct list of points (simpler format)
@@ -242,6 +276,106 @@ fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
         }
         _ => Err(polars_err!(ComputeError: "Expected Struct or List for contour, got {:?}", value)),
     }
+}
+
+/// Parse a list of contours from an AnyValue list expression.
+fn parse_contour_list(value: &AnyValue) -> PolarsResult<Vec<Contour>> {
+    match value {
+        AnyValue::List(series) => {
+            let mut contours = Vec::with_capacity(series.len());
+            for i in 0..series.len() {
+                let item = series.get(i)?;
+                if item.is_null() {
+                    continue;
+                }
+                contours.push(parse_contour(&item)?);
+            }
+            Ok(contours)
+        }
+        AnyValue::Null => Ok(Vec::new()),
+        _ => Err(polars_err!(ComputeError: "Expected List[Contour], got {:?}", value)),
+    }
+}
+
+/// Parse optional score list aligned with contour list.
+fn parse_score_list(value: &AnyValue) -> PolarsResult<Vec<f64>> {
+    match value {
+        AnyValue::List(series) => {
+            let mut scores = Vec::with_capacity(series.len());
+            for i in 0..series.len() {
+                let item = series.get(i)?;
+                let score = item.try_extract::<f64>().map_err(|_| {
+                    polars_err!(ComputeError: "scores must contain numeric values, found {:?}", item)
+                })?;
+                scores.push(score);
+            }
+            Ok(scores)
+        }
+        AnyValue::Null => Ok(Vec::new()),
+        _ => Err(polars_err!(ComputeError: "Expected List[Float64] for scores, got {:?}", value)),
+    }
+}
+
+/// Parse holes from a Series where each element is a ring list of points.
+fn extract_holes_from_series(series: &Series) -> PolarsResult<Vec<Vec<Point>>> {
+    let mut holes: Vec<Vec<Point>> = Vec::with_capacity(series.len());
+    for i in 0..series.len() {
+        let value = series.get(i)?;
+        if value.is_null() {
+            continue;
+        }
+        match value {
+            AnyValue::List(ring_series) => {
+                holes.push(extract_points_from_series(&ring_series)?);
+            }
+            _ => {
+                return Err(polars_err!(
+                    ComputeError: "Expected hole ring as List[Point], got {:?}", value
+                ));
+            }
+        }
+    }
+    Ok(holes)
+}
+
+/// Parse holes from Arrow representation of nested lists at a specific row index.
+fn extract_holes_from_arrow_array(
+    array: &dyn polars_arrow::array::Array,
+    row_idx: usize,
+) -> PolarsResult<Vec<Vec<Point>>> {
+    let Some(outer_list) = array.as_any().downcast_ref::<ListArray<i64>>() else {
+        return Ok(Vec::new());
+    };
+
+    let outer_offsets = outer_list.offsets();
+    let hole_start = outer_offsets[row_idx] as usize;
+    let hole_end = outer_offsets[row_idx + 1] as usize;
+    if hole_start == hole_end {
+        return Ok(Vec::new());
+    }
+
+    let inner_values = outer_list.values();
+    let Some(inner_list) = inner_values.as_any().downcast_ref::<ListArray<i64>>() else {
+        return Err(polars_err!(ComputeError: "holes field must be List[List[Point]]"));
+    };
+
+    let inner_offsets = inner_list.offsets();
+    let point_values = inner_list.values();
+    let Some(point_struct_arr) = point_values.as_any().downcast_ref::<ArrowStructArray>() else {
+        return Err(polars_err!(ComputeError: "holes rings must contain point structs"));
+    };
+
+    let mut holes: Vec<Vec<Point>> = Vec::with_capacity(hole_end - hole_start);
+    for ring_idx in hole_start..hole_end {
+        let start = inner_offsets[ring_idx] as usize;
+        let end = inner_offsets[ring_idx + 1] as usize;
+        holes.push(extract_points_from_struct_array(
+            point_struct_arr,
+            start,
+            end,
+        )?);
+    }
+    Ok(holes)
 }
 
 /// Extract points from a StructArray slice (for use with AnyValue::Struct variant).
@@ -329,6 +463,265 @@ fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
     }
 
     Ok(points)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ScoreReduction {
+    Max,
+    Mean,
+    Sum,
+}
+
+impl ScoreReduction {
+    fn parse(value: Option<&str>) -> PolarsResult<Self> {
+        match value.unwrap_or("max") {
+            "max" => Ok(Self::Max),
+            "mean" => Ok(Self::Mean),
+            "sum" => Ok(Self::Sum),
+            other => Err(polars_err!(
+                ComputeError: "Unsupported reduction '{}'. Expected one of: max, mean, sum",
+                other
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RegionMode {
+    Interior,
+    BBox,
+}
+
+impl RegionMode {
+    fn parse(value: Option<&str>) -> PolarsResult<Self> {
+        match value.unwrap_or("interior") {
+            "interior" => Ok(Self::Interior),
+            "bbox" => Ok(Self::BBox),
+            other => Err(polars_err!(
+                ComputeError: "Unsupported region_mode '{}'. Expected one of: interior, bbox",
+                other
+            )),
+        }
+    }
+}
+
+fn parse_numeric_series(series: &Series) -> PolarsResult<Vec<f64>> {
+    let mut values = Vec::with_capacity(series.len());
+    for i in 0..series.len() {
+        let av = series.get(i)?;
+        if av.is_null() {
+            continue;
+        }
+        let value = av.try_extract::<f64>().map_err(
+            |_| polars_err!(ComputeError: "Heatmap values must be numeric, found {:?}", av),
+        )?;
+        values.push(value);
+    }
+    Ok(values)
+}
+
+fn parse_heatmap(value: &AnyValue) -> PolarsResult<Vec<Vec<f64>>> {
+    match value {
+        AnyValue::List(series) => {
+            if series.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let mut first_non_null: Option<AnyValue> = None;
+            for i in 0..series.len() {
+                let item = series.get(i)?;
+                if !item.is_null() {
+                    first_non_null = Some(item);
+                    break;
+                }
+            }
+
+            let Some(sample) = first_non_null else {
+                return Ok(Vec::new());
+            };
+
+            if matches!(sample, AnyValue::List(_)) {
+                let mut rows = Vec::with_capacity(series.len());
+                for i in 0..series.len() {
+                    let row = series.get(i)?;
+                    if row.is_null() {
+                        continue;
+                    }
+                    let AnyValue::List(row_series) = row else {
+                        return Err(polars_err!(
+                            ComputeError: "Heatmap rows must be lists of numeric values"
+                        ));
+                    };
+                    rows.push(parse_numeric_series(&row_series)?);
+                }
+                if rows.windows(2).any(|w| w[0].len() != w[1].len()) {
+                    return Err(polars_err!(ComputeError: "Heatmap rows must have uniform width"));
+                }
+                Ok(rows)
+            } else {
+                Ok(vec![parse_numeric_series(series)?])
+            }
+        }
+        AnyValue::Null => Ok(Vec::new()),
+        _ => Err(polars_err!(ComputeError: "Expected heatmap as nested list, got {:?}", value)),
+    }
+}
+
+fn float_list_anyvalue(values: &[f64], name: PlSmallStr) -> AnyValue<'static> {
+    AnyValue::List(Series::new(name, values.to_vec()))
+}
+
+fn optional_u32_list_anyvalue(values: &[Option<u32>], name: PlSmallStr) -> AnyValue<'static> {
+    let series = UInt32Chunked::from_iter_options(name, values.iter().copied()).into_series();
+    AnyValue::List(series)
+}
+
+fn u32_list_anyvalue(values: &[u32], name: PlSmallStr) -> AnyValue<'static> {
+    AnyValue::List(Series::new(name, values.to_vec()))
+}
+
+fn matrix_anyvalue(matrix: &[Vec<f64>]) -> PolarsResult<AnyValue<'static>> {
+    let rows: Vec<AnyValue> = matrix
+        .iter()
+        .map(|row| float_list_anyvalue(row, PlSmallStr::from_static("iou_row")))
+        .collect();
+    let inner_dtype = DataType::List(Box::new(DataType::Float64));
+    let row_series = Series::from_any_values_and_dtype(
+        PlSmallStr::from_static("iou_rows"),
+        &rows,
+        &inner_dtype,
+        false,
+    )?;
+    Ok(AnyValue::List(row_series))
+}
+
+fn build_pairwise_matrix_series(
+    name: PlSmallStr,
+    rows: Vec<AnyValue<'static>>,
+) -> PolarsResult<Series> {
+    let dtype = DataType::List(Box::new(DataType::List(Box::new(DataType::Float64))));
+    Series::from_any_values_and_dtype(name, &rows, &dtype, true)
+}
+
+fn pairwise_iou_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let name = input_fields
+        .first()
+        .map(|f| f.name().clone())
+        .unwrap_or_else(|| PlSmallStr::from_static("pairwise_iou"));
+    Ok(Field::new(
+        name,
+        DataType::List(Box::new(DataType::List(Box::new(DataType::Float64)))),
+    ))
+}
+
+fn match_detections_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let name = input_fields
+        .first()
+        .map(|f| f.name().clone())
+        .unwrap_or_else(|| PlSmallStr::from_static("match"));
+    let fields = vec![
+        Field::new(
+            PlSmallStr::from_static("pred_idx"),
+            DataType::List(Box::new(DataType::UInt32)),
+        ),
+        Field::new(
+            PlSmallStr::from_static("gt_idx"),
+            DataType::List(Box::new(DataType::UInt32)),
+        ),
+        Field::new(
+            PlSmallStr::from_static("iou"),
+            DataType::List(Box::new(DataType::Float64)),
+        ),
+        Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
+    ];
+    Ok(Field::new(name, DataType::Struct(fields)))
+}
+
+fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let name = input_fields
+        .first()
+        .map(|f| f.name().clone())
+        .unwrap_or_else(|| PlSmallStr::from_static("label_reduce"));
+    Ok(Field::new(
+        name,
+        DataType::List(Box::new(DataType::Float64)),
+    ))
+}
+
+fn contour_score(
+    contour: &Contour,
+    heatmap: &[Vec<f64>],
+    reduction: ScoreReduction,
+    region_mode: RegionMode,
+) -> f64 {
+    let height = heatmap.len();
+    if height == 0 {
+        return 0.0;
+    }
+    let width = heatmap[0].len();
+    if width == 0 {
+        return 0.0;
+    }
+
+    let Some(bbox) = contour.bounding_box() else {
+        return 0.0;
+    };
+
+    let x0 = bbox.x.floor().max(0.0) as usize;
+    let y0 = bbox.y.floor().max(0.0) as usize;
+    let x1 = (bbox.x + bbox.width).ceil().min(width as f64).max(0.0) as usize;
+    let y1 = (bbox.y + bbox.height).ceil().min(height as f64).max(0.0) as usize;
+
+    if x0 >= x1 || y0 >= y1 {
+        return 0.0;
+    }
+
+    let mut acc = 0.0;
+    let mut max_val = f64::NEG_INFINITY;
+    let mut count = 0usize;
+
+    for (y, row) in heatmap.iter().enumerate().skip(y0).take(y1 - y0) {
+        for (x, value) in row.iter().enumerate().skip(x0).take(x1 - x0) {
+            let include = match region_mode {
+                RegionMode::BBox => true,
+                RegionMode::Interior => {
+                    // TODO: Add exact rasterization-based contour fill mode for sub-pixel accurate scoring.
+                    predicates::contains_point(contour, x as f64 + 0.5, y as f64 + 0.5)
+                }
+            };
+            if include {
+                let val = *value;
+                acc += val;
+                max_val = max_val.max(val);
+                count += 1;
+            }
+        }
+    }
+
+    if count == 0 {
+        return 0.0;
+    }
+
+    match reduction {
+        ScoreReduction::Max => max_val,
+        ScoreReduction::Mean => acc / count as f64,
+        ScoreReduction::Sum => acc,
+    }
+}
+
+fn score_order(scores: &[f64]) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..scores.len()).collect();
+    indices.sort_by(|a, b| {
+        scores[*b]
+            .partial_cmp(&scores[*a])
+            .unwrap_or(Ordering::Equal)
+            .then(a.cmp(b))
+    });
+    indices
 }
 
 // ============================================================================
@@ -606,6 +999,182 @@ fn contour_contains_point(inputs: &[Series]) -> PolarsResult<Series> {
 // ============================================================================
 // Contour Plugin Functions - Pairwise Comparisons
 // ============================================================================
+
+/// Compute full pairwise IoU matrix between two contour sets.
+#[polars_expr(output_type_func=pairwise_iou_output_type)]
+fn contour_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
+    let pred_series = &inputs[0];
+    let gt_series = &inputs[1];
+    let len = pred_series.len();
+    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let preds_value = pred_series.get(i)?;
+        let gts_value = gt_series.get(i)?;
+        if preds_value.is_null() || gts_value.is_null() {
+            rows.push(AnyValue::Null);
+            continue;
+        }
+
+        let preds = parse_contour_list(&preds_value)?;
+        let gts = parse_contour_list(&gts_value)?;
+        let matrix = pairwise::iou_matrix(&preds, &gts);
+        rows.push(matrix_anyvalue(&matrix)?);
+    }
+
+    build_pairwise_matrix_series(pred_series.name().clone(), rows)
+}
+
+/// Match detection contour sets with greedy one-to-one IoU assignment.
+#[polars_expr(output_type_func=match_detections_output_type)]
+fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
+    let pred_series = &inputs[0];
+    let gt_series = &inputs[1];
+    let score_series = inputs.get(2);
+    let len = pred_series.len();
+    let threshold = kwargs.threshold.unwrap_or(0.5);
+
+    if !(0.0..=1.0).contains(&threshold) {
+        return Err(polars_err!(ComputeError: "threshold must be in [0, 1], got {}", threshold));
+    }
+
+    if let Some(strategy) = kwargs.strategy.as_deref() {
+        if strategy != "greedy" {
+            return Err(polars_err!(
+                ComputeError: "Unsupported strategy '{}'. Expected: greedy",
+                strategy
+            ));
+        }
+    }
+
+    let match_dtype = DataType::Struct(vec![
+        Field::new(
+            PlSmallStr::from_static("pred_idx"),
+            DataType::List(Box::new(DataType::UInt32)),
+        ),
+        Field::new(
+            PlSmallStr::from_static("gt_idx"),
+            DataType::List(Box::new(DataType::UInt32)),
+        ),
+        Field::new(
+            PlSmallStr::from_static("iou"),
+            DataType::List(Box::new(DataType::Float64)),
+        ),
+        Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
+    ]);
+
+    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
+    for i in 0..len {
+        let preds_value = pred_series.get(i)?;
+        let gts_value = gt_series.get(i)?;
+        if preds_value.is_null() || gts_value.is_null() {
+            rows.push(AnyValue::Null);
+            continue;
+        }
+
+        let preds = parse_contour_list(&preds_value)?;
+        let gts = parse_contour_list(&gts_value)?;
+
+        let pred_order = if let Some(scores_col) = score_series {
+            let score_value = scores_col.get(i)?;
+            if score_value.is_null() {
+                None
+            } else {
+                let scores = parse_score_list(&score_value)?;
+                if scores.len() != preds.len() {
+                    return Err(polars_err!(
+                        ComputeError:
+                        "scores length ({}) must match prediction count ({}) in row {}",
+                        scores.len(),
+                        preds.len(),
+                        i
+                    ));
+                }
+                Some(score_order(&scores))
+            }
+        } else {
+            None
+        };
+
+        let result = pairwise::match_detections(&preds, &gts, threshold, pred_order.as_deref());
+
+        let pred_idx_u32: Vec<u32> = result.pred_idx.iter().map(|v| *v as u32).collect();
+        let gt_idx_u32: Vec<Option<u32>> =
+            result.gt_idx.iter().map(|v| v.map(|x| x as u32)).collect();
+
+        rows.push(AnyValue::StructOwned(Box::new((
+            vec![
+                u32_list_anyvalue(&pred_idx_u32, PlSmallStr::from_static("pred_idx")),
+                optional_u32_list_anyvalue(&gt_idx_u32, PlSmallStr::from_static("gt_idx")),
+                float_list_anyvalue(&result.iou, PlSmallStr::from_static("iou")),
+                AnyValue::UInt32(result.n_preds as u32),
+                AnyValue::UInt32(result.n_gts as u32),
+                AnyValue::UInt32(result.n_tp as u32),
+                AnyValue::UInt32(result.n_fp as u32),
+                AnyValue::UInt32(result.n_fn as u32),
+            ],
+            vec![
+                Field::new(
+                    PlSmallStr::from_static("pred_idx"),
+                    DataType::List(Box::new(DataType::UInt32)),
+                ),
+                Field::new(
+                    PlSmallStr::from_static("gt_idx"),
+                    DataType::List(Box::new(DataType::UInt32)),
+                ),
+                Field::new(
+                    PlSmallStr::from_static("iou"),
+                    DataType::List(Box::new(DataType::Float64)),
+                ),
+                Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
+                Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
+                Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
+                Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
+                Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
+            ],
+        ))));
+    }
+
+    Series::from_any_values_and_dtype(pred_series.name().clone(), &rows, &match_dtype, true)
+}
+
+/// Score each contour against a heatmap using a configurable reduction.
+#[polars_expr(output_type_func=label_reduce_output_type)]
+fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
+    let contour_series = &inputs[0];
+    let heatmap_series = &inputs[1];
+    let len = contour_series.len();
+    let reduction = ScoreReduction::parse(kwargs.reduction.as_deref())?;
+    let region_mode = RegionMode::parse(kwargs.region_mode.as_deref())?;
+    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let contours_value = contour_series.get(i)?;
+        let heatmap_value = heatmap_series.get(i)?;
+        if contours_value.is_null() || heatmap_value.is_null() {
+            rows.push(AnyValue::Null);
+            continue;
+        }
+
+        let contours = parse_contour_list(&contours_value)?;
+        let heatmap = parse_heatmap(&heatmap_value)?;
+        let scores: Vec<f64> = contours
+            .iter()
+            .map(|contour| contour_score(contour, &heatmap, reduction, region_mode))
+            .collect();
+        rows.push(float_list_anyvalue(
+            &scores,
+            PlSmallStr::from_static("scores"),
+        ));
+    }
+
+    let dtype = DataType::List(Box::new(DataType::Float64));
+    Series::from_any_values_and_dtype(contour_series.name().clone(), &rows, &dtype, true)
+}
 
 /// Compute IoU between two contours.
 #[polars_expr(output_type=Float64)]

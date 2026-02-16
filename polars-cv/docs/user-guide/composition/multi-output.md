@@ -71,7 +71,7 @@ flowchart LR
         A1[resize] --> B1[grayscale] --> C1[blur]
         A2[resize] --> B2[grayscale] --> D1[threshold]
     end
-    
+
     subgraph After["After CSE"]
         A[resize] --> B[grayscale]
         B --> C[blur]
@@ -89,7 +89,7 @@ gray = base.pipe(Pipeline().grayscale()).alias("gray")
 # Branch 1: blur
 blur = gray.pipe(Pipeline().blur(2.0)).alias("blur")
 
-# Branch 2: threshold  
+# Branch 2: threshold
 thresh = gray.pipe(Pipeline().threshold(128)).alias("thresh")
 
 # CSE automatically shares the gray computation
@@ -182,4 +182,3 @@ result = df.with_columns(
 ## Next Steps
 
 - [Binary Operations](binary-ops.md) - Combine pipeline outputs
-

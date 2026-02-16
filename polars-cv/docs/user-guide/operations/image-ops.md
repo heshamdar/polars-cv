@@ -78,4 +78,3 @@ Pipeline().source("image_bytes").flip_v()
 - [Geometry Operations](geometry.md)
 - [Hashing](hashing.md)
 - [Reductions](reductions.md)
-

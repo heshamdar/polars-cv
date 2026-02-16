@@ -45,4 +45,3 @@ ENV CARGO_TERM_COLOR=always \
 # Default command: build the project
 # This assumes the project is mounted at /workspace
 CMD ["bash", "-c", "if [ -d polars-cv ]; then cd polars-cv; fi && uv venv .venv && source .venv/bin/activate && uv pip install maturin && maturin build --release"]
-

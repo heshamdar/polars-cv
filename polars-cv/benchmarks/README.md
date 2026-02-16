@@ -231,14 +231,14 @@ from benchmarks.frameworks.base import BaseFrameworkAdapter
 class MyFrameworkAdapter(BaseFrameworkAdapter):
     name = "my-framework"
     supports_gpu = False
-    
+
     def is_available(self) -> bool:
         try:
             import my_framework
             return True
         except ImportError:
             return False
-    
+
     # Implement all abstract methods...
 ```
 
@@ -320,4 +320,3 @@ benchmarks/
 2. **Memory Accuracy**: Memory measurements are more accurate with fewer concurrent processes
 3. **GPU Warmup**: GPU benchmarks automatically include warmup iterations
 4. **Fair Comparison**: Use `--validate` to ensure all frameworks produce equivalent results
-

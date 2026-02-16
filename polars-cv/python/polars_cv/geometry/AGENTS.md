@@ -14,8 +14,8 @@ Geometry data is represented as Polars Struct columns with well-defined schemas.
 | File | Responsibility |
 |------|---------------|
 | `__init__.py` | Re-exports schemas and validation errors |
-| `schemas.py` | Schema constants (`POINT_SCHEMA`, `CONTOUR_SCHEMA`, `BBOX_SCHEMA`, etc.), validation helpers, factory functions |
-| `contours.py` | `ContourNamespace` (`.contour`) — area, perimeter, centroid, bounding_box, IoU, Dice, winding, simplify, etc. |
+| `schemas.py` | Schema constants (`POINT_SCHEMA`, `CONTOUR_SCHEMA`, `CONTOUR_SET_SCHEMA`, `MATCH_RESULT_SCHEMA`, `BBOX_SCHEMA`, etc.), validation helpers, factory functions |
+| `contours.py` | `ContourNamespace` (`.contour`) — area, perimeter, centroid, bounding_box, IoU/Dice/Hausdorff, set-level matching (`pairwise_iou`, `match_detections`), and heatmap scoring (`label_reduce`) |
 | `points.py` | `PointNamespace` (`.point`) — normalize, to_absolute, translate, scale, rotate, distance, angle_to, etc. |
 | `validation.py` | Error classes: `GeometryValidationError`, `OpenContourError`, `CoordinateRangeError`, `InvalidContourError` |
 
@@ -54,6 +54,11 @@ Winding is **computed from point order**, not stored:
 ### `.contour` (ContourNamespace)
 
 Registered on `pl.Expr` for columns matching `CONTOUR_SCHEMA`. Each method calls `register_plugin_function` with a specific Rust function name (e.g., `contour_area`, `contour_iou`).
+
+Set-level detection helpers also live here and operate on `CONTOUR_SET_SCHEMA`:
+- `pairwise_iou(other)` -> `List[List[Float64]]`
+- `match_detections(other, threshold, scores, strategy)` -> `MATCH_RESULT_SCHEMA`
+- `label_reduce(heatmap, reduction, region_mode)` -> `List[Float64]`
 
 ### `.point` (PointNamespace)
 

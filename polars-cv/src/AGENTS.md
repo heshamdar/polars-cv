@@ -39,7 +39,7 @@ The crate produces a `cdylib` (`_lib.abi3.so` / `_lib.pyd`) that Polars loads as
 | `params.rs` | `ParamValue` — literal vs expression parameter resolution |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `cloud.rs` | Cloud storage (S3, GCS, Azure) and HTTP file reads via `object_store` + `reqwest` |
-| `contour.rs` | Contour pipeline helpers |
+| `contour.rs` | Contour namespace plugin functions (scalar + set-level primitives, contour parsing/serialization) |
 | `point.rs` | Point geometry plugin functions |
 
 ## Core Architecture
@@ -119,6 +119,19 @@ This function runs at Polars planning time (NOT execution time). It:
 3. Returns the Polars `Field` with the correct output `DataType`
 
 **Critical invariant:** The dtype returned here MUST match what `execute_graph` actually produces. If they diverge, Polars will error at collect time.
+
+## Contour Namespace Plugin Path
+
+`point.rs` and `contour.rs` expose direct plugin expression functions used by
+Python `.point` / `.contour` namespaces. These bypass `vb_graph` and operate on
+Struct/List columns directly.
+
+Recent additions for detection workflows in `contour.rs`:
+- `contour_pairwise_iou` (`List[Contour] x List[Contour] -> List[List[f64]]`)
+- `contour_match_detections` (greedy one-to-one matching with deterministic ties)
+- `contour_label_reduce` (per-contour scoring from heatmap lists)
+
+When updating these, keep null propagation and nested list/struct parsing behavior explicit.
 
 ## Legacy Code
 

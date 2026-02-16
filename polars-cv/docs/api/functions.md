@@ -126,4 +126,3 @@ Pipeline().perceptual_hash(algorithm=HashAlgorithm.AVERAGE)
 Pipeline().perceptual_hash(algorithm=HashAlgorithm.DIFFERENCE)
 Pipeline().perceptual_hash(algorithm=HashAlgorithm.BLOCKHASH)
 ```
-
