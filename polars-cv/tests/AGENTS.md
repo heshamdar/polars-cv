@@ -102,6 +102,7 @@ Files with `_gaps` in the name (e.g., `test_binary_ops_gaps.py`, `test_resize_ga
 - **Docstrings**: All test classes and methods should have docstrings
 - **Type annotations**: All fixtures and test methods should have return type annotations
 - **Section comments**: Files use `# ==== Section Name ====` separators
+- **Contour native sink shape**: `extract_contours().sink("native")` returns `List[Struct]` (a list of contours), not a single struct. Assertions should access contour members via list operations (for example, `.list.get(0).struct.field("exterior")`).
 
 ### Plugin Requirement
 

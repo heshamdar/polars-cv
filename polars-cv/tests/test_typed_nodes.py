@@ -177,7 +177,7 @@ class TestSeamlessPipeline:
     """
 
     def test_extract_contours_with_native_sink(self, sample_df: pl.DataFrame) -> None:
-        """Extract contours and output as native Polars struct."""
+        """Extract contours and output as a native list of contour structs."""
         pipe = (
             Pipeline()
             .source("image_bytes")
@@ -190,11 +190,12 @@ class TestSeamlessPipeline:
             contours=pl.col("image").cv.pipe(pipe).sink("native")
         )
 
-        # Verify output is not null and is a struct
+        # Verify output is not null and contains at least one contour.
         assert result["contours"] is not None
-        contour = result["contours"][0]
-        # The contour should have an exterior field
-        assert contour is not None
+        assert result["contours"].dtype.base_type() == pl.List
+        assert result["contours"].list.len()[0] > 0
+        first_exterior = result["contours"].list.get(0).struct.field("exterior")[0]
+        assert first_exterior is not None
 
     def test_image_to_contour_to_mask_seamless(self, sample_df: pl.DataFrame) -> None:
         """
@@ -298,7 +299,7 @@ class TestSeamlessPipeline:
         Multi-output with DIFFERENT domains in a single sink.
 
         - resized: Buffer → numpy
-        - contours: Contour → native struct
+        - contours: Contour → native list[struct]
         - area: Scalar → native float
         """
         img_pipe = (
@@ -333,7 +334,7 @@ class TestSeamlessPipeline:
         result_expr = merged.sink(
             {
                 "resized": "numpy",  # Buffer → Binary
-                "contours": "native",  # Contour → Struct
+                "contours": "native",  # Contour → List[Struct]
                 "area": "native",  # Scalar → Float64
             }
         )
@@ -344,11 +345,12 @@ class TestSeamlessPipeline:
         resized = numpy_from_struct(result["outputs"].struct.field("resized")[0])
         assert resized.shape == (50, 50, 1)
 
-        # The contours output should have an exterior field
-        contours_output = result["outputs"].struct.field("contours")[0]
-        assert contours_output is not None
-        # Note: Rust outputs "interiors" instead of "holes" field
-        assert "exterior" in result["outputs"].struct.field("contours").struct.fields
+        # Contour output is now list[struct] with at least one contour.
+        contours_series = result["outputs"].struct.field("contours")
+        assert contours_series.dtype.base_type() == pl.List
+        assert contours_series.list.len()[0] > 0
+        first_exterior = contours_series.list.get(0).struct.field("exterior")[0]
+        assert first_exterior is not None
 
         area_val = result["outputs"].struct.field("area")[0]
         assert isinstance(area_val, float)
@@ -430,18 +432,17 @@ class TestSeamlessPipeline:
             contours=pl.col("image").cv.pipe(pipe).sink("native")
         )
 
-        # Should be a struct with at least an exterior field (contour data)
-        # Note: The Rust output schema uses "interiors" instead of "holes",
-        # and omits "is_closed", so we check for functional correctness
-        # rather than exact schema match.
-        assert result["contours"].dtype.base_type() == pl.Struct
-        contour_data = result["contours"][0]
+        # Output remains a contour list, and each entry is a contour struct.
+        assert result["contours"].dtype.base_type() == pl.List
+        assert result["contours"].list.len()[0] > 0
+        contour_data = result["contours"].list.get(0)[0]
         assert contour_data is not None
         # Check that exterior points exist and are transformed
         # (the original square is centered around 50,50 with width 50)
         # After translate(10,10) and scale(0.5,0.5 from centroid):
         # the contour should be smaller and offset
-        assert "exterior" in result["contours"].struct.fields
+        first_exterior = result["contours"].list.get(0).struct.field("exterior")[0]
+        assert first_exterior is not None
 
 
 class TestMergePipeBranches:
