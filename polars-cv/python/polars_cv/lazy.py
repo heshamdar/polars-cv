@@ -272,6 +272,34 @@ class LazyPipelineExpr:
             upstream=[self, mask],
         )
 
+    def label_reduce(
+        self,
+        *,
+        contours: pl.Expr,
+        reduction: str = "max",
+        region_mode: str = "interior",
+    ) -> "LazyPipelineExpr":
+        """
+        Score contour regions from this buffer expression.
+
+        Args:
+            contours: Contour-set expression (`List[Contour]`) aligned by row.
+            reduction: Aggregation over region values (`"max"`, `"mean"`, `"sum"`).
+            region_mode: Region selector (`"interior"` or `"bbox"`).
+
+        Returns:
+            New lazy expression in vector domain (list of scores).
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(
+            Pipeline().label_reduce(
+                contours=contours,
+                reduction=reduction,
+                region_mode=region_mode,
+            )
+        )
+
     def add(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """
         Element-wise addition with another array.

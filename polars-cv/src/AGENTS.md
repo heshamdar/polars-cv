@@ -109,7 +109,7 @@ match op_spec.op.as_str() {
 | `blob` | Binary | VIEW protocol serialization |
 | `list` | List(...) | Typed nested list preserving dtype |
 | `array` | Array(..., shape) | Fixed-size array preserving dtype |
-| `native` | Varies | Domain-dependent: scalar → Float64, vector → List(Float64), contour → Struct |
+| `native` | Varies | Domain-dependent: scalar → Float64, vector → List(Float64), contour → List[Struct] |
 
 ### Planning-Time Type Inference (`unified_output_dtype`)
 
@@ -129,7 +129,12 @@ Struct/List columns directly.
 Recent additions for detection workflows in `contour.rs`:
 - `contour_pairwise_iou` (`List[Contour] x List[Contour] -> List[List[f64]]`)
 - `contour_match_detections` (greedy one-to-one matching with deterministic ties)
-- `contour_label_reduce` (per-contour scoring from heatmap lists)
+- `contour_label_reduce` (per-contour scoring from image/array values)
+
+Recent graph-side primitive additions:
+- `label_reduce` in `resolve_op` / graph execution (`buffer -> vector`)
+- Uses a buffer input plus contour expression parameter (`contours=pl.col(...)`)
+- Produces score lists equivalent to `.contour.label_reduce(...)` for the same inputs
 
 When updating these, keep null propagation and nested list/struct parsing behavior explicit.
 

@@ -417,26 +417,36 @@ class ContourNamespace:
 
     def label_reduce(
         self,
-        heatmap: pl.Expr,
+        image: pl.Expr | None = None,
         *,
+        heatmap: pl.Expr | None = None,
         reduction: Literal["max", "mean", "sum"] = "max",
         region_mode: Literal["interior", "bbox"] = "interior",
     ) -> pl.Expr:
         """
-        Score each contour from a heatmap with configurable reduction.
+        Score each contour from an image/array expression with configurable reduction.
 
         Args:
-            heatmap: Heatmap expression aligned by row with contour sets.
+            image: Image/array expression aligned by row with contour sets.
+            heatmap: Backward-compatible alias for ``image``.
             reduction: Aggregation method over pixels in each contour region.
             region_mode: Region selector - ``"interior"`` or ``"bbox"``.
 
         Returns:
             A list of float scores, aligned to the input contour order.
         """
+        if image is None and heatmap is None:
+            msg = "Either `image` or `heatmap` must be provided."
+            raise ValueError(msg)
+        if image is not None and heatmap is not None:
+            msg = "Provide only one of `image` or `heatmap`."
+            raise ValueError(msg)
+        image_expr = image if image is not None else heatmap
+        assert image_expr is not None
         return register_plugin_function(
             plugin_path=LIB_PATH,
             function_name="contour_label_reduce",
-            args=[self._expr, heatmap],
+            args=[self._expr, image_expr],
             kwargs={
                 "reduction": reduction,
                 "region_mode": region_mode,

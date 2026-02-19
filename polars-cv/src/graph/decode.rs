@@ -11,7 +11,7 @@ use view_buffer::{BinaryOp, ViewBuffer};
 
 use super::encode::{
     build_typed_array_series_from_rows_with_dtype, build_typed_list_series_from_rows_with_dtype,
-    contours_to_polars_value, TypedListRow,
+    contour_struct_dtype, contours_to_polars_value, TypedListRow,
 };
 use super::types::{OutputSpec, RowResult, TypedBufferData};
 
@@ -651,19 +651,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
                 Ok(DataType::List(Box::new(inner)))
             }
         }
-        ("contour", "native") => {
-            let point_dtype = DataType::Struct(vec![
-                Field::new("x".into(), DataType::Float64),
-                Field::new("y".into(), DataType::Float64),
-            ]);
-            Ok(DataType::Struct(vec![
-                Field::new(
-                    "exterior".into(),
-                    DataType::List(Box::new(point_dtype.clone())),
-                ),
-                Field::new("interiors".into(), DataType::Null),
-            ]))
-        }
+        ("contour", "native") => Ok(DataType::List(Box::new(contour_struct_dtype()))),
         _ => Ok(DataType::Binary),
     }
 }
@@ -818,17 +806,7 @@ pub(crate) fn build_series_from_spec(
                 })
                 .collect();
             let values = values?;
-            let point_dtype = DataType::Struct(vec![
-                Field::new("x".into(), DataType::Float64),
-                Field::new("y".into(), DataType::Float64),
-            ]);
-            let contour_dtype = DataType::Struct(vec![
-                Field::new(
-                    "exterior".into(),
-                    DataType::List(Box::new(point_dtype.clone())),
-                ),
-                Field::new("interiors".into(), DataType::Null),
-            ]);
+            let contour_dtype = DataType::List(Box::new(contour_struct_dtype()));
             Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
         }
         _ => {

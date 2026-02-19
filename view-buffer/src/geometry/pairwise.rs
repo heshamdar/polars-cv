@@ -117,13 +117,10 @@ pub fn match_detections(
     let n_gts = gts.len();
     let matrix = iou_matrix(preds, gts);
 
-    let mut order: Vec<usize> = match pred_order {
+    let order: Vec<usize> = match pred_order {
         Some(indices) => indices.to_vec(),
         None => (0..n_preds).collect(),
     };
-    if order.is_empty() && n_preds > 0 {
-        order = (0..n_preds).collect();
-    }
 
     let mut gt_taken = vec![false; n_gts];
     let mut gt_by_pred: Vec<Option<usize>> = vec![None; n_preds];
@@ -144,12 +141,10 @@ pub fn match_detections(
             if cand_iou > best_iou {
                 best_iou = cand_iou;
                 best_gt = Some(gt_idx);
-            } else if (cand_iou - best_iou).abs() < 1e-12 {
-                if let Some(current_best) = best_gt {
-                    if gt_idx < current_best {
-                        best_gt = Some(gt_idx);
-                    }
-                }
+            } else if (cand_iou - best_iou).abs() < 1e-12
+                && matches!(best_gt, Some(current_best) if gt_idx < current_best)
+            {
+                best_gt = Some(gt_idx);
             }
         }
 

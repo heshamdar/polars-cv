@@ -236,6 +236,14 @@ impl ViewExpr {
                      Use graph-level execution to handle domain transitions."
                 )
             }
+            ViewDto::LabelReduce { .. } => {
+                // LabelReduce changes domain from Buffer to Vector and depends
+                // on contour expression inputs. It is handled by graph execution.
+                panic!(
+                    "LabelReduce cannot be applied via ViewExpr. \
+                     Use graph-level execution to handle contour expression inputs."
+                )
+            }
         }
     }
 

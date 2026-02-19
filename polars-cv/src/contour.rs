@@ -279,7 +279,7 @@ fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
 }
 
 /// Parse a list of contours from an AnyValue list expression.
-fn parse_contour_list(value: &AnyValue) -> PolarsResult<Vec<Contour>> {
+pub(crate) fn parse_contour_list(value: &AnyValue) -> PolarsResult<Vec<Contour>> {
     match value {
         AnyValue::List(series) => {
             let mut contours = Vec::with_capacity(series.len());
@@ -513,16 +513,88 @@ fn parse_numeric_series(series: &Series) -> PolarsResult<Vec<f64>> {
             continue;
         }
         let value = av.try_extract::<f64>().map_err(
-            |_| polars_err!(ComputeError: "Heatmap values must be numeric, found {:?}", av),
+            |_| polars_err!(ComputeError: "Image/array values must be numeric, found {:?}", av),
         )?;
         values.push(value);
     }
     Ok(values)
 }
 
+fn parse_row_values_with_optional_channel(series: &Series) -> PolarsResult<Vec<f64>> {
+    let mut first_non_null: Option<AnyValue> = None;
+    for i in 0..series.len() {
+        let item = series.get(i)?;
+        if !item.is_null() {
+            first_non_null = Some(item);
+            break;
+        }
+    }
+    let Some(sample) = first_non_null else {
+        return Ok(Vec::new());
+    };
+
+    if matches!(sample, AnyValue::List(_) | AnyValue::Array(_, _)) {
+        let mut values = Vec::with_capacity(series.len());
+        for i in 0..series.len() {
+            let pixel = series.get(i)?;
+            if pixel.is_null() {
+                continue;
+            }
+            let pixel_series = match pixel {
+                AnyValue::List(inner) => inner,
+                AnyValue::Array(inner, _) => inner,
+                _ => {
+                    return Err(polars_err!(
+                        ComputeError: "Expected pixel channel values as list/array, found {:?}",
+                        pixel
+                    ))
+                }
+            };
+            let channels = parse_numeric_series(&pixel_series)?;
+            if channels.len() != 1 {
+                return Err(polars_err!(
+                    ComputeError: "Only single-channel row values are supported, found {} channels",
+                    channels.len()
+                ));
+            }
+            values.push(channels[0]);
+        }
+        return Ok(values);
+    }
+
+    parse_numeric_series(series)
+}
+
+fn parse_grid_rows(series: &Series) -> PolarsResult<Vec<Vec<f64>>> {
+    let mut rows = Vec::with_capacity(series.len());
+    for i in 0..series.len() {
+        let row = series.get(i)?;
+        if row.is_null() {
+            continue;
+        }
+        let row_series = match row {
+            AnyValue::List(inner) => inner,
+            AnyValue::Array(inner, _) => inner,
+            _ => {
+                return Err(polars_err!(
+                    ComputeError: "Image rows must be list/array values, found {:?}",
+                    row
+                ))
+            }
+        };
+        rows.push(parse_row_values_with_optional_channel(&row_series)?);
+    }
+    if rows.windows(2).any(|w| w[0].len() != w[1].len()) {
+        return Err(polars_err!(
+            ComputeError: "Image rows must have uniform width"
+        ));
+    }
+    Ok(rows)
+}
+
 fn parse_heatmap(value: &AnyValue) -> PolarsResult<Vec<Vec<f64>>> {
     match value {
-        AnyValue::List(series) => {
+        AnyValue::List(series) | AnyValue::Array(series, _) => {
             if series.is_empty() {
                 return Ok(Vec::new());
             }
@@ -540,30 +612,17 @@ fn parse_heatmap(value: &AnyValue) -> PolarsResult<Vec<Vec<f64>>> {
                 return Ok(Vec::new());
             };
 
-            if matches!(sample, AnyValue::List(_)) {
-                let mut rows = Vec::with_capacity(series.len());
-                for i in 0..series.len() {
-                    let row = series.get(i)?;
-                    if row.is_null() {
-                        continue;
-                    }
-                    let AnyValue::List(row_series) = row else {
-                        return Err(polars_err!(
-                            ComputeError: "Heatmap rows must be lists of numeric values"
-                        ));
-                    };
-                    rows.push(parse_numeric_series(&row_series)?);
-                }
-                if rows.windows(2).any(|w| w[0].len() != w[1].len()) {
-                    return Err(polars_err!(ComputeError: "Heatmap rows must have uniform width"));
-                }
-                Ok(rows)
+            if matches!(sample, AnyValue::List(_) | AnyValue::Array(_, _)) {
+                parse_grid_rows(series)
             } else {
                 Ok(vec![parse_numeric_series(series)?])
             }
         }
         AnyValue::Null => Ok(Vec::new()),
-        _ => Err(polars_err!(ComputeError: "Expected heatmap as nested list, got {:?}", value)),
+        _ => Err(polars_err!(
+            ComputeError: "Expected image/array values as list/array, got {:?}",
+            value
+        )),
     }
 }
 
