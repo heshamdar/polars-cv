@@ -23,6 +23,7 @@ This is the **user-facing Python layer**. It is responsible for:
 | `__init__.py` | Public API surface, `numpy_from_struct`, mask/hash comparison helpers, tiling config re-export | ~430 |
 | `pipeline.py` | `Pipeline` builder — source, operations, sink, domain tracking, dtype tracking, shape inference | ~2600 |
 | `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops | ~900 |
+| `metrics/` | Detection metrics API (`FROCAnalyzer`, `LROCAnalyzer`), bootstrap CI, AUC helpers | ~500 |
 | `expressions.py` | `CvNamespace` (`.cv.pipe()`, ~~`.cv.pipeline()`~~), `apply_pipeline()` | ~150 |
 | `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `SourceFormat`, `SinkFormat`, `DType`, `OPERATION_CONTRACTS` | ~850 |
 | `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE optimization, `register_plugin_function` call | ~680 |
@@ -96,6 +97,22 @@ pipe.resize(height=224, width=pl.col("target_w"))
 ```
 
 `ParamValue` wraps this distinction. Expression params are tracked in `_expr_columns` and passed to Rust as additional input columns.
+
+### Metrics Helpers (`metrics/`)
+
+The `metrics/` subpackage provides high-level detection metrics that compose
+existing primitives rather than introducing new Rust kernels:
+
+- shared lazy preparation table for FROC/LROC (`prepare_detection_table`)
+- shape alignment (`auto_resize`) for heatmap/mask inputs
+- contour extraction (`threshold` + `extract_contours`)
+- contour scoring (`label_reduce`) via either:
+  - buffer-space pipeline op: `Pipeline().label_reduce(contours=...)`
+  - contour namespace op: `.contour.label_reduce(image=...)`
+- detection matching (`match_detections`)
+- strict alignment checks on match payloads (`pred_idx`/`gt_idx`) before expansion
+- detection expansion via Polars `explode`/`group_by` (no Python `iter_rows` loops)
+- curve aggregation, AUC, and bootstrap confidence intervals in Polars/Python
 
 ## What the Canonical API Path Looks Like
 
