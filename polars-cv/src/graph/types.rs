@@ -7,10 +7,12 @@ use polars::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use view_buffer::geometry::predicates;
 use view_buffer::geometry::Contour;
 use view_buffer::ops::NodeOutput;
 use view_buffer::{ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr};
 
+use crate::contour::parse_contour_list;
 use crate::execute::{
     decode_contour_source, decode_contour_source_with_dims, decode_source, resolve_op,
 };
@@ -62,6 +64,198 @@ pub(crate) enum RowResult {
     TypedArray(Option<(TypedBufferData, Vec<usize>)>),
     /// Numpy/Torch struct output (zero-copy ViewBuffer ownership transfer).
     NumpyStruct(Option<ViewBuffer>),
+}
+
+#[derive(Clone, Copy)]
+enum LabelReduction {
+    Max,
+    Mean,
+    Sum,
+}
+
+#[derive(Clone, Copy)]
+enum LabelRegionMode {
+    Interior,
+    Bbox,
+}
+
+fn parse_label_reduction(value: &str) -> Result<LabelReduction, String> {
+    match value {
+        "max" => Ok(LabelReduction::Max),
+        "mean" => Ok(LabelReduction::Mean),
+        "sum" => Ok(LabelReduction::Sum),
+        other => Err(format!(
+            "Unsupported reduction '{other}'. Expected one of: max, mean, sum"
+        )),
+    }
+}
+
+fn parse_label_region_mode(value: &str) -> Result<LabelRegionMode, String> {
+    match value {
+        "interior" => Ok(LabelRegionMode::Interior),
+        "bbox" => Ok(LabelRegionMode::Bbox),
+        other => Err(format!(
+            "Unsupported region_mode '{other}'. Expected one of: interior, bbox"
+        )),
+    }
+}
+
+fn buffer_to_grid(buffer: &ViewBuffer) -> Result<Vec<Vec<f64>>, String> {
+    let shape = buffer.shape();
+    if shape.len() < 2 {
+        return Err(format!(
+            "label_reduce requires at least 2D buffer input, got shape {:?}",
+            shape
+        ));
+    }
+    let height = shape[0];
+    let width = shape[1];
+    let channels = if shape.len() > 2 { shape[2] } else { 1 };
+    if channels != 1 {
+        return Err(format!(
+            "label_reduce currently requires a single-channel buffer, got {channels} channels"
+        ));
+    }
+    let contig = buffer.to_contiguous();
+    let mut grid = vec![vec![0.0; width]; height];
+    match contig.dtype() {
+        view_buffer::DType::U8 => {
+            let data = contig.as_slice::<u8>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x] as f64;
+                }
+            }
+        }
+        view_buffer::DType::I8 => {
+            let data = contig.as_slice::<i8>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x] as f64;
+                }
+            }
+        }
+        view_buffer::DType::U16 => {
+            let data = contig.as_slice::<u16>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x] as f64;
+                }
+            }
+        }
+        view_buffer::DType::I16 => {
+            let data = contig.as_slice::<i16>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x] as f64;
+                }
+            }
+        }
+        view_buffer::DType::U32 => {
+            let data = contig.as_slice::<u32>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x] as f64;
+                }
+            }
+        }
+        view_buffer::DType::I32 => {
+            let data = contig.as_slice::<i32>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x] as f64;
+                }
+            }
+        }
+        view_buffer::DType::U64 => {
+            let data = contig.as_slice::<u64>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x] as f64;
+                }
+            }
+        }
+        view_buffer::DType::I64 => {
+            let data = contig.as_slice::<i64>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x] as f64;
+                }
+            }
+        }
+        view_buffer::DType::F32 => {
+            let data = contig.as_slice::<f32>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x] as f64;
+                }
+            }
+        }
+        view_buffer::DType::F64 => {
+            let data = contig.as_slice::<f64>();
+            for y in 0..height {
+                for x in 0..width {
+                    grid[y][x] = data[y * width + x];
+                }
+            }
+        }
+    }
+    Ok(grid)
+}
+
+fn contour_score_on_grid(
+    contour: &Contour,
+    grid: &[Vec<f64>],
+    reduction: LabelReduction,
+    region_mode: LabelRegionMode,
+) -> f64 {
+    let height = grid.len();
+    if height == 0 {
+        return 0.0;
+    }
+    let width = grid[0].len();
+    if width == 0 {
+        return 0.0;
+    }
+    let Some(bbox) = contour.bounding_box() else {
+        return 0.0;
+    };
+
+    let x0 = bbox.x.floor().max(0.0) as usize;
+    let y0 = bbox.y.floor().max(0.0) as usize;
+    let x1 = (bbox.x + bbox.width).ceil().min(width as f64).max(0.0) as usize;
+    let y1 = (bbox.y + bbox.height).ceil().min(height as f64).max(0.0) as usize;
+    if x0 >= x1 || y0 >= y1 {
+        return 0.0;
+    }
+
+    let mut acc = 0.0;
+    let mut max_val = f64::NEG_INFINITY;
+    let mut count = 0usize;
+    for (y, row) in grid.iter().enumerate().skip(y0).take(y1 - y0) {
+        for (x, value) in row.iter().enumerate().skip(x0).take(x1 - x0) {
+            let include = match region_mode {
+                LabelRegionMode::Bbox => true,
+                LabelRegionMode::Interior => {
+                    predicates::contains_point(contour, x as f64 + 0.5, y as f64 + 0.5)
+                }
+            };
+            if include {
+                let val = *value;
+                acc += val;
+                max_val = max_val.max(val);
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        return 0.0;
+    }
+    match reduction {
+        LabelReduction::Max => max_val,
+        LabelReduction::Mean => acc / count as f64,
+        LabelReduction::Sum => acc,
+    }
 }
 /// Unified pipeline graph specification.
 ///
@@ -838,6 +1032,60 @@ impl UnifiedGraph {
                                     let shape_vec: Vec<f64> =
                                         shape.iter().map(|&d| d as f64).collect();
                                     current_output = NodeOutput::from_vector(shape_vec);
+                                }
+                                ViewDto::LabelReduce {
+                                    contours_expr,
+                                    reduction,
+                                    region_mode,
+                                } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "LabelReduce requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    let contour_series =
+                                        expr_columns.get(contours_expr).ok_or_else(|| {
+                                            format!(
+                                                "LabelReduce contour column '{contours_expr}' not found in expression inputs"
+                                            )
+                                        })?;
+                                    let contour_idx = if contour_series.len() == 1 {
+                                        0
+                                    } else {
+                                        row_idx
+                                    };
+                                    let contour_value = contour_series.get(contour_idx).map_err(|e| {
+                                        format!(
+                                            "LabelReduce failed to read contours at row {contour_idx}: {e}"
+                                        )
+                                    })?;
+                                    if contour_value.is_null() {
+                                        current_output = NodeOutput::from_vector(Vec::new());
+                                        continue;
+                                    }
+                                    let contours =
+                                        parse_contour_list(&contour_value).map_err(|e| {
+                                            format!("LabelReduce contour parsing failed: {e}")
+                                        })?;
+                                    let parsed_reduction = parse_label_reduction(reduction)?;
+                                    let parsed_region_mode = parse_label_region_mode(region_mode)?;
+                                    let grid = buffer_to_grid(current_buf)?;
+                                    let scores: Vec<f64> = contours
+                                        .iter()
+                                        .map(|contour| {
+                                            contour_score_on_grid(
+                                                contour,
+                                                &grid,
+                                                parsed_reduction,
+                                                parsed_region_mode,
+                                            )
+                                        })
+                                        .collect();
+                                    current_output = NodeOutput::from_vector(scores);
                                 }
                                 ViewDto::Materialize => {
                                     // Force materialization of pending ops

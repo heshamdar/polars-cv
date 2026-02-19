@@ -420,6 +420,7 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
     "contour_perimeter": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
     "contour_centroid": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
     "contour_bounding_box": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
+    "label_reduce": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
     # --- Histogram (default is counts mode – overridden by params) ---
     "histogram": OpContract(DTypeEffect.FIXED_U64, NdimEffect.TO_ONE),
     # --- Padding / spatial view operations – preserve dtype ---

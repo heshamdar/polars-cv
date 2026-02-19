@@ -328,14 +328,14 @@ class TestNativeSinkTypes:
         # Value should be positive (sum of grayscale pixels)
         assert sum_col[0] > 0
 
-    def test_extract_contours_native_returns_struct(
+    def test_extract_contours_native_returns_list_of_structs(
         self, binary_mask_image_bytes: bytes
     ) -> None:
         """
-        Contour extraction with native sink should return Struct.
+        Contour extraction with native sink should return List[Struct].
 
         extract_contours() transitions to contour domain, native sink should
-        return a struct matching CONTOUR_SCHEMA.
+        return a contour-set list matching CONTOUR_SET_SCHEMA.
         """
         df = pl.DataFrame({"image": [binary_mask_image_bytes]})
 
@@ -349,9 +349,9 @@ class TestNativeSinkTypes:
         result = df.with_columns(contour=pl.col("image").cv.pipe(pipe).sink("native"))
 
         contour_col = result["contour"]
-        # Should be a Struct type
-        assert contour_col.dtype.base_type() == pl.Struct, (
-            f"Expected Struct for extract_contours native, got {contour_col.dtype}"
+        # Should be a List[Struct] type
+        assert contour_col.dtype.base_type() == pl.List, (
+            f"Expected List for extract_contours native, got {contour_col.dtype}"
         )
 
     def test_buffer_domain_native_errors(self, simple_image_bytes: bytes) -> None:

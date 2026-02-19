@@ -121,7 +121,8 @@ class TestMultiPhaseWorkaround:
                 {"x": 37.5, "y": 37.5},
                 {"x": 12.5, "y": 37.5},
             ],
-            "interiors": None,
+            "holes": [],
+            "is_closed": True,
         }
 
         df = sample_df.with_columns(pl.lit(contour_data).alias("contour")).cast(

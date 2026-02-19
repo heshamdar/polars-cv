@@ -12,6 +12,7 @@ use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Con
 use view_buffer::ops::NodeOutput;
 use view_buffer::{GeometryOp, Op, ViewBuffer};
 
+use crate::contour::contour_to_anyvalue;
 use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
 
 use super::decode::dtype_str_to_polars;
@@ -687,37 +688,28 @@ pub(super) fn contours_to_polars_value(contours: &[Contour]) -> PolarsResult<Any
     if contours.is_empty() {
         return Ok(AnyValue::Null);
     }
-    let contour = &contours[0];
-    let points: Vec<AnyValue<'static>> = contour
-        .exterior
-        .iter()
-        .map(|p| {
-            let values = vec![AnyValue::Float64(p.x), AnyValue::Float64(p.y)];
-            let fields = vec![
-                Field::new("x".into(), DataType::Float64),
-                Field::new("y".into(), DataType::Float64),
-            ];
-            AnyValue::StructOwned(Box::new((values, fields)))
-        })
-        .collect();
+    let contour_values: Vec<AnyValue<'static>> = contours.iter().map(contour_to_anyvalue).collect();
+    let contour_series = Series::from_any_values_and_dtype(
+        PlSmallStr::EMPTY,
+        &contour_values,
+        &contour_struct_dtype(),
+        true,
+    )?;
+    Ok(AnyValue::List(contour_series))
+}
+
+/// Shared contour struct dtype used by native contour encoding.
+pub(super) fn contour_struct_dtype() -> DataType {
     let point_dtype = DataType::Struct(vec![
         Field::new("x".into(), DataType::Float64),
         Field::new("y".into(), DataType::Float64),
     ]);
-    let exterior_series =
-        Series::from_any_values_and_dtype("exterior".into(), &points, &point_dtype, true)?;
-    let contour_values = vec![AnyValue::List(exterior_series), AnyValue::Null];
-    let contour_fields = vec![
-        Field::new(
-            "exterior".into(),
-            DataType::List(Box::new(point_dtype.clone())),
-        ),
-        Field::new("interiors".into(), DataType::Null),
-    ];
-    Ok(AnyValue::StructOwned(Box::new((
-        contour_values,
-        contour_fields,
-    ))))
+    let hole_dtype = DataType::List(Box::new(point_dtype.clone()));
+    DataType::Struct(vec![
+        Field::new("exterior".into(), DataType::List(Box::new(point_dtype))),
+        Field::new("holes".into(), DataType::List(Box::new(hole_dtype))),
+        Field::new("is_closed".into(), DataType::Boolean),
+    ])
 }
 pub(crate) fn default_domain() -> String {
     "buffer".to_string()

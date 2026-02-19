@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+from polars_cv import Pipeline
 from polars_cv.geometry import CONTOUR_SET_SCHEMA, MATCH_RESULT_SCHEMA
+
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -181,6 +183,52 @@ class TestLabelReducePrimitive:
         assert out["s_max"][0][0] == pytest.approx(4.0)
         assert out["s_mean"][0][0] == pytest.approx(2.5)
         assert out["s_sum"][0][0] == pytest.approx(10.0)
+
+    def test_buffer_space_label_reduce_matches_contour_namespace(self) -> None:
+        """Buffer-space and contour-space label reduction produce identical scores."""
+        contour = _square(0.0, 0.0, 2.0)
+        df = pl.DataFrame(
+            {
+                "preds": [[contour]],
+                "image": [[[1.0, 2.0], [3.0, 4.0]]],
+            },
+            schema={
+                "preds": CONTOUR_SET_SCHEMA,
+                "image": pl.List(pl.List(pl.Float64)),
+            },
+        )
+        score_pipe = (
+            Pipeline()
+            .source("list", dtype="f32")
+            .label_reduce(contours=pl.col("preds"), reduction="max", region_mode="bbox")
+        )
+        out = df.with_columns(
+            contour_scores=pl.col("preds").contour.label_reduce(
+                image=pl.col("image"), reduction="max", region_mode="bbox"
+            ),
+            buffer_scores=pl.col("image").cv.pipe(score_pipe).sink("native"),
+        )
+        assert out["contour_scores"][0].to_list() == out["buffer_scores"][0].to_list()
+
+    def test_label_reduce_accepts_array_input(self) -> None:
+        """Contour label_reduce accepts fixed-size array image input."""
+        contour = _square(0.0, 0.0, 2.0)
+        df = pl.DataFrame(
+            {
+                "preds": [[contour]],
+                "image": [[[1.0, 2.0], [3.0, 4.0]]],
+            },
+            schema={
+                "preds": CONTOUR_SET_SCHEMA,
+                "image": pl.List(pl.List(pl.Float64)),
+            },
+        ).cast({"image": pl.Array(pl.Array(pl.Float64, 2), 2)})
+        out = df.with_columns(
+            score=pl.col("preds").contour.label_reduce(
+                image=pl.col("image"), reduction="max", region_mode="bbox"
+            )
+        )
+        assert out["score"][0][0] == pytest.approx(4.0)
 
 
 @plugin_required

@@ -92,6 +92,13 @@ pub enum ViewDto {
     /// Extract the shape of the buffer as a vector [height, width, channels].
     /// Returns a Vector domain output with dimension values.
     ExtractShape,
+    /// Reduce an image/array buffer over contour regions.
+    /// Contours are provided via an expression column key resolved per-row.
+    LabelReduce {
+        contours_expr: String,
+        reduction: String,
+        region_mode: String,
+    },
 }
 
 /// Padding mode for Pad operation.
@@ -154,6 +161,7 @@ impl ViewDto {
             ViewDto::Materialize => Domain::Any,
             // ExtractShape works on buffers
             ViewDto::ExtractShape => Domain::Buffer,
+            ViewDto::LabelReduce { .. } => Domain::Buffer,
         }
     }
 
@@ -205,6 +213,7 @@ impl ViewDto {
             ViewDto::Materialize => Domain::Any,
             // ExtractShape produces a vector of dimension values
             ViewDto::ExtractShape => Domain::Vector,
+            ViewDto::LabelReduce { .. } => Domain::Vector,
         }
     }
 
@@ -230,6 +239,7 @@ impl ViewDto {
             ViewDto::Letterbox { .. } => "Letterbox",
             ViewDto::Materialize => "Materialize",
             ViewDto::ExtractShape => "ExtractShape",
+            ViewDto::LabelReduce { .. } => "LabelReduce",
         }
     }
 

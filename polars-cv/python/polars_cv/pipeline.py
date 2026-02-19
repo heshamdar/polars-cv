@@ -106,6 +106,7 @@ class Pipeline:
         "contour_perimeter": DOMAIN_SCALAR,
         "contour_centroid": DOMAIN_VECTOR,
         "contour_bounding_box": DOMAIN_VECTOR,
+        "label_reduce": DOMAIN_VECTOR,
     }
 
     def __init__(self) -> None:
@@ -2098,6 +2099,61 @@ class Pipeline:
         new._ops.append(OpSpec(op="extract_shape", params={}))
         new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("extract_shape")
+        return new
+
+    def label_reduce(
+        self,
+        *,
+        contours: pl.Expr,
+        reduction: str = "max",
+        region_mode: str = "interior",
+    ) -> "Pipeline":
+        """
+        Score contour regions against the current buffer values.
+
+        This is the buffer-space variant of label reduction. It accepts contours
+        via a Polars expression and returns one score per contour.
+
+        Domain transition: buffer -> vector
+
+        Args:
+            contours: Contour-set expression (`List[Contour]`) to score.
+            reduction: Reduction over contour region values (`"max"`, `"mean"`, `"sum"`).
+            region_mode: Region selection mode (`"interior"` or `"bbox"`).
+
+        Returns:
+            New pipeline with label reduction appended.
+
+        Raises:
+            ValueError: If current domain is not buffer or args are invalid.
+            TypeError: If `contours` is not a Polars expression.
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "label_reduce")
+        if not isinstance(contours, pl.Expr):
+            msg = "`contours` must be a Polars expression"
+            raise TypeError(msg)
+        if reduction not in {"max", "mean", "sum"}:
+            msg = f"Invalid reduction '{reduction}'. Expected one of: max, mean, sum"
+            raise ValueError(msg)
+        if region_mode not in {"interior", "bbox"}:
+            msg = (
+                f"Invalid region_mode '{region_mode}'. Expected one of: interior, bbox"
+            )
+            raise ValueError(msg)
+
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="label_reduce",
+                params={
+                    "contours": new._track_expr(contours),
+                    "reduction": ParamValue(is_expr=False, value=reduction),
+                    "region_mode": ParamValue(is_expr=False, value=region_mode),
+                },
+            )
+        )
+        new._current_domain = self.DOMAIN_VECTOR
+        new._update_output_dtype("label_reduce")
         return new
 
     def histogram(

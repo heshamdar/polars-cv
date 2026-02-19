@@ -1134,6 +1134,39 @@ pub fn resolve_op(
             // Extract shape returns buffer dimensions as a vector
             Ok(ViewDto::ExtractShape)
         }
+        "label_reduce" => {
+            let contours_param = get_param(&op_spec.params, "contours")?;
+            let contours_expr = match contours_param {
+                ParamValue::Expr { col: Some(col), .. } => col.clone(),
+                ParamValue::Expr { col: None, .. } => {
+                    return Err(polars_err!(
+                        ComputeError: "label_reduce requires a contour expression with a column key"
+                    ))
+                }
+                ParamValue::Literal { .. } => {
+                    return Err(polars_err!(
+                        ComputeError: "label_reduce contours parameter must be a Polars expression"
+                    ))
+                }
+            };
+            let reduction = op_spec
+                .params
+                .get("reduction")
+                .map(|p| p.resolve_string())
+                .transpose()?
+                .unwrap_or_else(|| "max".to_string());
+            let region_mode = op_spec
+                .params
+                .get("region_mode")
+                .map(|p| p.resolve_string())
+                .transpose()?
+                .unwrap_or_else(|| "interior".to_string());
+            Ok(ViewDto::LabelReduce {
+                contours_expr,
+                reduction,
+                region_mode,
+            })
+        }
 
         // Histogram operation
         "histogram" => {
