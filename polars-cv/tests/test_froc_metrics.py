@@ -126,6 +126,22 @@ class TestFrocMetrics:
                 image_id_col="image_id",
             )
 
+    def test_froc_shape_mismatch_auto_resize(self) -> None:
+        """Auto-resize handles shape mismatches without eager preprocessing."""
+        df = _dataset().with_columns(
+            pred_heatmap=pl.when(pl.col("image_id") == "a")
+            .then(pl.lit([[0.0 for _ in range(8)] for _ in range(8)]))
+            .otherwise(pl.col("pred_heatmap"))
+        )
+        result = FROCAnalyzer(auto_resize=True).compute(
+            df.lazy(),
+            pred_col="pred_heatmap",
+            gt_mask_col="gt_mask",
+            gt_label_col="gt_label",
+            image_id_col="image_id",
+        )
+        assert result.curve.height >= 1
+
     def test_froc_bootstrap_ci_runs(self) -> None:
         """Bootstrap CI returns bounded interval and expected sample count."""
         result = FROCAnalyzer().compute(

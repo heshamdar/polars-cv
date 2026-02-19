@@ -86,7 +86,7 @@ Pipelines track data domain through operations:
 
 | Namespace | Registration | Purpose |
 |-----------|-------------|---------|
-| `.cv` | `CvNamespace` | Image/array pipelines via `.pipe()` → `.sink()` |
+| `.cv` | `CvNamespace` | Image/array pipelines via `.pipe()` → `.sink()` (includes buffer-space `label_reduce(contours=...)`) |
 | `.point` | `PointNamespace` | Point geometry ops (normalize, distance, etc.) |
 | `.contour` | `ContourNamespace` | Contour geometry ops (area, perimeter, IoU, etc.) |
 
@@ -113,7 +113,7 @@ polars-cv/                          # Workspace root (this file)
 │   │   └── AGENTS.md               # Agent guide for tests
 │   ├── benchmarks/                 # Benchmark suite
 │   │   └── AGENTS.md               # Agent guide for benchmarks
-│   ├── notebooks/                  # Demo notebooks (mostly throwaway)
+│   ├── notebooks/                  # Demo scripts/notebooks (includes parameterized FROC detection + visualization demo)
 │   ├── docs/                       # MkDocs user-guide documentation
 │   └── scripts/                    # Utility scripts (multi-Python testing)
 └── .cursor/
@@ -126,6 +126,7 @@ polars-cv/                          # Workspace root (this file)
 |---|---|
 | Adding a new image operation | Root → `polars-cv/python/polars_cv/AGENTS.md` → `polars-cv/src/AGENTS.md` → `view-buffer/AGENTS.md` → `.cursor/polars-cv-contribution-guide.md` |
 | Working on pipeline builder or lazy composition | Root → `polars-cv/python/polars_cv/AGENTS.md` |
+| Working on FROC/LROC metrics | Root → `polars-cv/python/polars_cv/AGENTS.md` → `polars-cv/python/polars_cv/metrics/AGENTS.md` |
 | Working on geometry (points, contours) | Root → `polars-cv/python/polars_cv/geometry/AGENTS.md` |
 | Working on graph execution or sources/sinks | Root → `polars-cv/src/AGENTS.md` |
 | Working on view-buffer ops or ViewExpr | Root → `view-buffer/AGENTS.md` |

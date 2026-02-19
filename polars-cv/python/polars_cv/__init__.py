@@ -36,6 +36,7 @@ from .geometry import (
 from .geometry.contours import ContourNamespace
 from .geometry.points import PointNamespace
 from .lazy import LazyPipelineExpr
+from .metrics import FROCAnalyzer, FROCResult, LROCAnalyzer, LROCResult
 from .pipeline import Pipeline
 
 # Schema for numpy/torch sink output struct
@@ -420,6 +421,11 @@ __all__ = [
     # Hash comparison functions
     "hamming_distance",
     "hash_similarity",
+    # Detection metrics
+    "FROCAnalyzer",
+    "FROCResult",
+    "LROCAnalyzer",
+    "LROCResult",
     # Geometry namespaces (registered automatically via decorators)
     "ContourNamespace",
     "PointNamespace",

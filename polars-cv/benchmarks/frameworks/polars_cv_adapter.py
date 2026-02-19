@@ -222,10 +222,10 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         Pipeline = self._get_pipeline_class()
 
         # Pipeline: decode PNG, encode to blob
-        pipe = Pipeline().source("image_bytes").sink("blob")
+        pipe = Pipeline().source("image_bytes")
 
         df = pl.DataFrame({"images": png_bytes_list})
-        result = df.with_columns(blob=pl.col("images").cv.pipeline(pipe))
+        result = df.with_columns(blob=pl.col("images").cv.pipe(pipe).sink("blob"))
         return result["blob"].to_list()
 
     def apply_operations_blob(
@@ -254,11 +254,13 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"].to_list()
 
@@ -281,18 +283,19 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             Pipeline()
             .source("image_bytes")
             .resize(height=height, width=width, filter="bilinear")
-            .sink("blob")
         )
 
         df = pl.DataFrame({"images": [img]})
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"][0]
 
@@ -309,17 +312,19 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         self._ensure_expressions_registered()
         Pipeline = self._get_pipeline_class()
 
-        pipe = Pipeline().source("image_bytes").grayscale().sink("blob")
+        pipe = Pipeline().source("image_bytes").grayscale()
 
         df = pl.DataFrame({"images": [img]})
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"][0]
 
@@ -336,17 +341,19 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         self._ensure_expressions_registered()
         Pipeline = self._get_pipeline_class()
 
-        pipe = Pipeline().source("image_bytes").normalize(method="minmax").sink("blob")
+        pipe = Pipeline().source("image_bytes").normalize(method="minmax")
 
         df = pl.DataFrame({"images": [img]})
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"][0]
 
@@ -363,17 +370,17 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         self._ensure_expressions_registered()
         Pipeline = self._get_pipeline_class()
 
-        pipe = Pipeline().source("image_bytes").flip_h().sink("blob")
+        pipe = Pipeline().source("image_bytes").flip_h()
 
         df = pl.DataFrame({"images": [img]})
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(processed=pl.col("images").cv.pipe(pipe))
 
         return result["processed"][0]
 
@@ -390,17 +397,17 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         self._ensure_expressions_registered()
         Pipeline = self._get_pipeline_class()
 
-        pipe = Pipeline().source("image_bytes").flip_v().sink("blob")
+        pipe = Pipeline().source("image_bytes").flip_v()
 
         df = pl.DataFrame({"images": [img]})
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(processed=pl.col("images").cv.pipe(pipe))
 
         return result["processed"][0]
 
@@ -425,18 +432,19 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             Pipeline()
             .source("image_bytes")
             .crop(top=top, left=left, height=height, width=width)
-            .sink("blob")
         )
 
         df = pl.DataFrame({"images": [img]})
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"][0]
 
@@ -454,17 +462,19 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         self._ensure_expressions_registered()
         Pipeline = self._get_pipeline_class()
 
-        pipe = Pipeline().source("image_bytes").blur(sigma=sigma).sink("blob")
+        pipe = Pipeline().source("image_bytes").blur(sigma=sigma)
 
         df = pl.DataFrame({"images": [img]})
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"][0]
 
@@ -482,17 +492,19 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         self._ensure_expressions_registered()
         Pipeline = self._get_pipeline_class()
 
-        pipe = Pipeline().source("image_bytes").threshold(value=value).sink("blob")
+        pipe = Pipeline().source("image_bytes").threshold(value=value)
 
         df = pl.DataFrame({"images": [img]})
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"][0]
 
@@ -562,11 +574,13 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"].to_list()
 
@@ -595,11 +609,13 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipeline(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         # Convert struct output to numpy arrays
         outputs = []
@@ -654,12 +670,12 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         if self.streaming:
             result = (
                 decoded_images.lazy()
-                .with_columns(processed=pl.col("images").cv.pipeline(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
             result = decoded_images.with_columns(
-                processed=pl.col("images").cv.pipeline(pipe)
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
             )
 
         return result

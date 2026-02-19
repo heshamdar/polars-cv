@@ -298,8 +298,8 @@ df = pl.DataFrame(
     }
 )
 
-# Apply the pipeline using .cv.pipeline()
-result = df.with_columns(resized=pl.col("image").cv.pipeline(resize_pipe))
+# Apply the pipeline using .cv.pipe()
+result = df.with_columns(resized=pl.col("image").cv.pipe(resize_pipe))
 
 print(f"Original DataFrame schema: {df.schema}")
 print(f"Result DataFrame schema: {result.schema}")
@@ -331,7 +331,7 @@ for filter_type in filters:
         .sink("png")
     )
     result = pl.DataFrame({"img": [test_images["checkerboard"]]}).with_columns(
-        out=pl.col("img").cv.pipeline(pipe)
+        out=pl.col("img").cv.pipe(pipe)
     )
     resized_images.append(result["out"][0])
 
@@ -358,9 +358,9 @@ blur_pipe = Pipeline().source("image_bytes").blur(sigma=3.0).sink("png")
 # Apply all to gradient image
 test_df = pl.DataFrame({"img": [test_images["gradient"]]})
 ops_result = test_df.with_columns(
-    gray=pl.col("img").cv.pipeline(gray_pipe),
-    threshold=pl.col("img").cv.pipeline(threshold_pipe),
-    blur=pl.col("img").cv.pipeline(blur_pipe),
+    gray=pl.col("img").cv.pipe(gray_pipe),
+    threshold=pl.col("img").cv.pipe(threshold_pipe),
+    blur=pl.col("img").cv.pipe(blur_pipe),
 )
 
 row = ops_result.row(0, named=True)
@@ -382,9 +382,9 @@ crop_pipe = (
 
 test_df = pl.DataFrame({"img": [test_images["gradient"]]})
 flip_result = test_df.with_columns(
-    flip_h=pl.col("img").cv.pipeline(flip_h_pipe),
-    flip_v=pl.col("img").cv.pipeline(flip_v_pipe),
-    crop=pl.col("img").cv.pipeline(crop_pipe),
+    flip_h=pl.col("img").cv.pipe(flip_h_pipe),
+    flip_v=pl.col("img").cv.pipe(flip_v_pipe),
+    crop=pl.col("img").cv.pipe(crop_pipe),
 )
 
 row = flip_result.row(0, named=True)
@@ -414,7 +414,7 @@ print(ml_preprocess_pipe)
 
 # Apply to test image
 result = pl.DataFrame({"img": [test_images["circles"]]}).with_columns(
-    processed=pl.col("img").cv.pipeline(ml_preprocess_pipe)
+    processed=pl.col("img").cv.pipe(ml_preprocess_pipe)
 )
 
 row = result.row(0, named=True)
@@ -457,8 +457,8 @@ zscore_pipe = (
 
 # Apply both
 result = pl.DataFrame({"img": [test_images["gradient"]]}).with_columns(
-    minmax=pl.col("img").cv.pipeline(minmax_pipe),
-    zscore=pl.col("img").cv.pipeline(zscore_pipe),
+    minmax=pl.col("img").cv.pipe(minmax_pipe),
+    zscore=pl.col("img").cv.pipe(zscore_pipe),
 )
 
 # Convert back to arrays for visualization using numpy_from_struct
@@ -498,8 +498,8 @@ clamp_pipe = (
 )
 
 result = pl.DataFrame({"img": [test_images["gradient"]]}).with_columns(
-    scaled=pl.col("img").cv.pipeline(scale_pipe),
-    clamped=pl.col("img").cv.pipeline(clamp_pipe),
+    scaled=pl.col("img").cv.pipe(scale_pipe),
+    clamped=pl.col("img").cv.pipe(clamp_pipe),
 )
 
 # scale output is f32 (promoted from u8), clamp is also f32
@@ -545,7 +545,7 @@ df = pl.DataFrame(
     }
 )
 
-result = df.with_columns(resized=pl.col("image").cv.pipeline(dynamic_resize_pipe))
+result = df.with_columns(resized=pl.col("image").cv.pipe(dynamic_resize_pipe))
 
 print("Each image resized to different dimensions:")
 print(
@@ -592,7 +592,7 @@ df = pl.DataFrame(
     }
 )
 
-result = df.with_columns(cropped=pl.col("image").cv.pipeline(dynamic_crop_pipe))
+result = df.with_columns(cropped=pl.col("image").cv.pipe(dynamic_crop_pipe))
 
 display_images(
     [result["cropped"][i] for i in range(3)],
@@ -678,7 +678,7 @@ contour_pipe = Pipeline().source("contour", width=200, height=200).sink("numpy")
 
 # Apply to contour DataFrame
 contour_raster_result = contour_df.with_columns(
-    mask=pl.col("contour").cv.pipeline(contour_pipe)
+    mask=pl.col("contour").cv.pipe(contour_pipe)
 )
 print(contour_raster_result.select("name", "mask"))
 
@@ -714,7 +714,7 @@ display_arrays(
 #
 # | Mode | Syntax | Returns | Use Case |
 # |------|--------|---------|----------|
-# | **Eager** | `pl.col("x").cv.pipeline(pipe)` | `pl.Expr` | Simple, single-output pipelines |
+# | **Eager** | `pl.col("x").cv.pipe(pipe)` | `pl.Expr` | Simple, single-output pipelines |
 # | **Lazy** | `pl.col("x").cv.pipe(pipe)` | `LazyPipelineExpr` | Composition, multi-output |
 #
 # The key insight: **Use `.cv.pipe()` for composition, call `.sink()` at the end to materialize.**
@@ -1258,7 +1258,7 @@ binary_pipe = (
 
 # Apply to segmentation test image
 df_domain = pl.DataFrame({"image": [test_images["segmentation"]]})
-result = df_domain.with_columns(binary=pl.col("image").cv.pipeline(binary_pipe))
+result = df_domain.with_columns(binary=pl.col("image").cv.pipe(binary_pipe))
 
 display_images(
     [test_images["segmentation"], result["binary"][0]],
@@ -1302,7 +1302,7 @@ print(result_props)
 # Rasterize contours back to masks (contour → buffer)
 raster_pipe = Pipeline().source("contour", width=200, height=200).sink("numpy")
 
-df_raster = df_shapes.with_columns(mask=pl.col("contour").cv.pipeline(raster_pipe))
+df_raster = df_shapes.with_columns(mask=pl.col("contour").cv.pipe(raster_pipe))
 
 masks = [numpy_from_struct(df_raster["mask"][i]).squeeze() for i in range(3)]
 display_arrays(
@@ -1584,9 +1584,7 @@ if TORCH_AVAILABLE:
         }
     )
 
-    processed = batch_df.with_columns(
-        tensor_bytes=pl.col("image").cv.pipeline(torch_pipe)
-    )
+    processed = batch_df.with_columns(tensor_bytes=pl.col("image").cv.pipe(torch_pipe))
 
     print(f"Processed {len(processed)} images")
     print(f"Tensor bytes column dtype: {processed['tensor_bytes'].dtype}")
@@ -1663,7 +1661,7 @@ if TORCH_AVAILABLE:
             """
             # Batch preprocess ALL images with polars-cv
             # This leverages Polars' parallel execution and SIMD optimizations
-            self.df = df.with_columns(_tensor=pl.col(image_col).cv.pipeline(pipeline))
+            self.df = df.with_columns(_tensor=pl.col(image_col).cv.pipe(pipeline))
             self.label_col = label_col
             self.transform = transform  # Per-sample augmentation (PyTorch)
 
@@ -1770,7 +1768,7 @@ hash_df = pl.DataFrame(
     }
 )
 
-hash_result = hash_df.with_columns(hash=pl.col("image").cv.pipeline(phash_pipe))
+hash_result = hash_df.with_columns(hash=pl.col("image").cv.pipe(phash_pipe))
 
 print("Perceptual hashes for test images:")
 for row in hash_result.iter_rows(named=True):
@@ -1842,9 +1840,9 @@ jpeg_pipe = Pipeline().source("image_bytes").sink("jpeg")
 # Apply transformations
 transform_df = pl.DataFrame({"image": [original_img]})
 transformed = transform_df.with_columns(
-    resized=pl.col("image").cv.pipeline(resize_pipe),
-    blurred=pl.col("image").cv.pipeline(blur_pipe),
-    jpeg=pl.col("image").cv.pipeline(jpeg_pipe),
+    resized=pl.col("image").cv.pipe(resize_pipe),
+    blurred=pl.col("image").cv.pipe(blur_pipe),
+    jpeg=pl.col("image").cv.pipe(jpeg_pipe),
 )
 
 # Now compute perceptual hashes for all versions
@@ -1860,7 +1858,7 @@ variants_df = pl.DataFrame(
     }
 )
 
-variants_hashed = variants_df.with_columns(hash=pl.col("image").cv.pipeline(phash_pipe))
+variants_hashed = variants_df.with_columns(hash=pl.col("image").cv.pipe(phash_pipe))
 
 # Display images side by side
 display_images(
@@ -1970,7 +1968,7 @@ diff_df = pl.DataFrame(
     }
 )
 
-diff_hashed = diff_df.with_columns(hash=pl.col("image").cv.pipeline(phash_pipe))
+diff_hashed = diff_df.with_columns(hash=pl.col("image").cv.pipe(phash_pipe))
 
 # Compare circles (our reference) with all other images using native functions
 reference_name = "circles"
@@ -2029,7 +2027,7 @@ test_image = test_images["circles"]
 
 # Create a transformed version (resize)
 resized_test = pl.DataFrame({"image": [test_image]}).with_columns(
-    resized=pl.col("image").cv.pipeline(resize_pipe)
+    resized=pl.col("image").cv.pipe(resize_pipe)
 )["resized"][0]
 
 algorithms = [
