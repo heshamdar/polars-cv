@@ -62,7 +62,7 @@ src/
 │   ├── measures.rs     # Area, perimeter, centroid
 │   ├── transforms.rs   # Translate, scale, rotate contours
 │   ├── ops.rs          # GeometryOp enum
-│   ├── pairwise.rs     # Pairwise ops (IoU/Dice/Hausdorff, IoU matrix, greedy matching)
+│   ├── pairwise.rs     # Pairwise ops (IoU/Dice/Hausdorff, IoU matrix, greedy matching, bbox variants)
 │   └── predicates.rs   # Spatial predicates (contains, intersects)
 ├── protocol.rs         # VIEW binary protocol (header + data serialization)
 └── interop/            # External library integration

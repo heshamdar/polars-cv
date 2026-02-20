@@ -175,7 +175,7 @@ result = df.with_columns(
 
 1. **Use `.alias()`**: Name every checkpoint you want to output
 2. **Merge All Branches**: Call `.merge_pipe()` to include all in graph
-3. **CSE is Automatic**: Don't manually deduplicate—it's handled
+3. **CSE is Automatic**: No need to manually deduplicate
 4. **Match Output Names**: Sink dict keys must match alias names
 5. **Extract Early**: Pull out needed fields to avoid carrying the whole Struct
 

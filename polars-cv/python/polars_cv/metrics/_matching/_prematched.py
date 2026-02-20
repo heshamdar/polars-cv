@@ -1,0 +1,179 @@
+"""Pre-matched adapter: pass-through for already-matched detection data."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import polars as pl
+
+from .._types import (
+    COL_CLASS_ID,
+    COL_DET_IDX,
+    COL_GROUP_ID,
+    COL_GT_IDX,
+    COL_GT_LABEL,
+    COL_IMAGE_ID,
+    COL_IOU,
+    COL_IS_TP,
+    COL_N_GTS,
+    COL_SCORE,
+    COL_WEIGHT,
+    DEFAULT_CLASS,
+    DetectionTable,
+    ensure_columns_exist,
+    to_lazy,
+)
+
+if TYPE_CHECKING:
+    pass
+
+
+class PreMatchedAdapter:
+    """Adapter for data that already has per-detection TP/FP assignments.
+
+    Expects a flat table where each row is one detection with at minimum:
+
+    * ``score`` (float) — confidence score
+    * ``is_tp`` (bool) — whether this detection is a true positive
+
+    Plus per-image metadata either inline or via ``n_gts`` column.
+    """
+
+    def match(
+        self,
+        data: pl.LazyFrame | pl.DataFrame,
+        *,
+        pred_col: str = "score",
+        gt_col: str = "is_tp",
+        score_col: str | None = None,
+        class_col: str | None = None,
+        image_id_col: str | None = None,
+        weight_col: str | None = None,
+        group_col: str | None = None,
+        n_gts_col: str | None = None,
+        gt_label_col: str | None = None,
+        iou_col: str | None = None,
+        det_idx_col: str | None = None,
+    ) -> DetectionTable:
+        """Wrap pre-matched data into a ``DetectionTable``.
+
+        Args:
+            data: Input frame with one row per detection.
+            pred_col: Column with confidence scores (aliased to ``score``).
+            gt_col: Column with TP flag (aliased to ``is_tp``).
+            score_col: Alias for ``pred_col`` (takes precedence if both set).
+            class_col: Optional class label column.
+            image_id_col: Image identifier column (required, or row index used).
+            weight_col: Optional sample weight column.
+            group_col: Optional grouping column.
+            n_gts_col: Column with per-image GT count.
+            gt_label_col: Column with per-image positive/negative label.
+            iou_col: Optional column with per-detection IoU values.
+            det_idx_col: Optional column with detection index within image.
+
+        Returns:
+            Validated ``DetectionTable``.
+        """
+        lf = to_lazy(data)
+        schema_names = list(lf.collect_schema().names())
+
+        resolved_score = score_col or pred_col
+        resolved_tp = gt_col
+        ensure_columns_exist(schema_names, [resolved_score, resolved_tp])
+
+        # Image ID
+        if image_id_col is not None:
+            ensure_columns_exist(schema_names, [image_id_col])
+            lf = lf.with_columns(
+                pl.col(image_id_col).cast(pl.String).alias(COL_IMAGE_ID)
+            )
+        else:
+            lf = lf.with_row_index(name="_row_idx").with_columns(
+                pl.col("_row_idx").cast(pl.String).alias(COL_IMAGE_ID)
+            )
+
+        # Build detection columns
+        det_exprs: list[pl.Expr] = [
+            pl.col(COL_IMAGE_ID),
+            (
+                pl.col(class_col).cast(pl.String).alias(COL_CLASS_ID)
+                if class_col is not None
+                else pl.lit(DEFAULT_CLASS).alias(COL_CLASS_ID)
+            ),
+            pl.col(resolved_score).cast(pl.Float64).alias(COL_SCORE),
+            pl.col(resolved_tp).cast(pl.Boolean).alias(COL_IS_TP),
+            (
+                pl.col(iou_col).cast(pl.Float64).alias(COL_IOU)
+                if iou_col is not None and iou_col in schema_names
+                else pl.lit(0.0, dtype=pl.Float64).alias(COL_IOU)
+            ),
+        ]
+
+        if det_idx_col is not None and det_idx_col in schema_names:
+            det_exprs.append(pl.col(det_idx_col).cast(pl.UInt32).alias(COL_DET_IDX))
+        else:
+            # Auto-assign det_idx as row ordinal within each image
+            det_exprs.append(pl.lit(0, dtype=pl.UInt32).alias(COL_DET_IDX))
+
+        # GT index: not available for pre-matched data
+        det_exprs.append(
+            pl.when(pl.col(resolved_tp).cast(pl.Boolean))
+            .then(pl.lit(0, dtype=pl.UInt32))
+            .otherwise(pl.lit(None, dtype=pl.UInt32))
+            .alias(COL_GT_IDX)
+        )
+
+        detections_lf = lf.select(det_exprs)
+
+        # If we used a placeholder det_idx, assign proper ordinals
+        if det_idx_col is None or det_idx_col not in schema_names:
+            detections_lf = detections_lf.with_columns(
+                pl.int_range(0, pl.len(), dtype=pl.UInt32)
+                .over(COL_IMAGE_ID, COL_CLASS_ID)
+                .alias(COL_DET_IDX)
+            )
+
+        # Build image metadata from the enriched input (lf), which retains
+        # all original columns alongside the canonical ones we added.
+        enriched_lf = lf.with_columns(
+            pl.col(resolved_tp).cast(pl.Boolean).alias(COL_IS_TP),
+            *(
+                [pl.col(class_col).cast(pl.String).alias(COL_CLASS_ID)]
+                if class_col is not None
+                else [pl.lit(DEFAULT_CLASS).alias(COL_CLASS_ID)]
+            ),
+        )
+
+        meta_agg: list[pl.Expr] = []
+
+        if n_gts_col is not None and n_gts_col in schema_names:
+            meta_agg.append(pl.col(n_gts_col).first().cast(pl.Int64).alias(COL_N_GTS))
+        else:
+            meta_agg.append(pl.col(COL_IS_TP).sum().cast(pl.Int64).alias(COL_N_GTS))
+
+        if weight_col is not None and weight_col in schema_names:
+            meta_agg.append(
+                pl.col(weight_col).first().cast(pl.Float64).alias(COL_WEIGHT)
+            )
+        else:
+            meta_agg.append(pl.lit(1.0, dtype=pl.Float64).alias(COL_WEIGHT))
+
+        if gt_label_col is not None and gt_label_col in schema_names:
+            meta_agg.append(
+                pl.col(gt_label_col).first().cast(pl.Boolean).alias(COL_GT_LABEL)
+            )
+        else:
+            meta_agg.append((pl.col(COL_IS_TP).any()).alias(COL_GT_LABEL))
+
+        meta_lf = enriched_lf.group_by(COL_IMAGE_ID, COL_CLASS_ID).agg(meta_agg)
+
+        if group_col is not None and group_col in list(lf.collect_schema().names()):
+            group_map = lf.select(
+                pl.col(image_id_col or COL_IMAGE_ID)
+                .cast(pl.String)
+                .alias(COL_IMAGE_ID),
+                pl.col(group_col).cast(pl.String).alias(COL_GROUP_ID),
+            ).unique()
+            meta_lf = meta_lf.join(group_map, on=COL_IMAGE_ID, how="left")
+
+        return DetectionTable.from_matched(detections_lf, meta_lf)

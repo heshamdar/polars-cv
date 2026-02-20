@@ -84,6 +84,7 @@ nav:
       - Geometry: user-guide/operations/geometry.md
       - Hashing: user-guide/operations/hashing.md
       - Reductions: user-guide/operations/reductions.md
+      - Detection Metrics: user-guide/operations/metrics.md
     - Composition:
       - Chaining: user-guide/composition/chaining.md
       - Multi-Output: user-guide/composition/multi-output.md
@@ -92,4 +93,5 @@ nav:
     - Pipeline: api/pipeline.md
     - LazyPipelineExpr: api/lazy.md
     - Geometry: api/geometry.md
+    - Metrics: api/metrics.md
     - Functions: api/functions.md

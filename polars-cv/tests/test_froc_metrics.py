@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
-from polars_cv.metrics import FROCAnalyzer, LROCAnalyzer
+from polars_cv.metrics import ContourMatcher, froc_curve, lroc_curve
+from polars_cv.metrics._metrics._lroc import _build_lroc_curve
 
 from tests.conftest import plugin_required
 
@@ -83,19 +84,19 @@ def _dataset() -> pl.DataFrame:
 
 @plugin_required
 class TestFrocMetrics:
-    """Integration tests for FROC metric analyzer."""
+    """Integration tests for FROC metric computation."""
 
     def test_froc_compute_returns_expected_columns(self) -> None:
         """FROC compute returns dense curve columns and valid ranges."""
-        result = FROCAnalyzer(iou_threshold=0.5).compute(
+        matcher = ContourMatcher(iou_threshold=0.5)
+        table = matcher.match(
             _dataset().lazy(),
             pred_col="pred_heatmap",
-            gt_mask_col="gt_mask",
-            gt_label_col="gt_label",
+            gt_col="gt_mask",
             image_id_col="image_id",
             weight_col="sample_weight",
-            stratify_col="gt_label",
         )
+        result = froc_curve(table)
         assert set(result.curve.columns) == {
             "threshold",
             "tp",
@@ -116,13 +117,12 @@ class TestFrocMetrics:
             .then(pl.lit([[0.0 for _ in range(8)] for _ in range(8)]))
             .otherwise(pl.col("pred_heatmap"))
         )
-        analyzer = FROCAnalyzer(auto_resize=False)
+        matcher = ContourMatcher(auto_resize=False)
         with pytest.raises(ValueError, match="shapes differ"):
-            analyzer.compute(
+            matcher.match(
                 df.lazy(),
                 pred_col="pred_heatmap",
-                gt_mask_col="gt_mask",
-                gt_label_col="gt_label",
+                gt_col="gt_mask",
                 image_id_col="image_id",
             )
 
@@ -133,25 +133,26 @@ class TestFrocMetrics:
             .then(pl.lit([[0.0 for _ in range(8)] for _ in range(8)]))
             .otherwise(pl.col("pred_heatmap"))
         )
-        result = FROCAnalyzer(auto_resize=True).compute(
+        matcher = ContourMatcher(auto_resize=True)
+        table = matcher.match(
             df.lazy(),
             pred_col="pred_heatmap",
-            gt_mask_col="gt_mask",
-            gt_label_col="gt_label",
+            gt_col="gt_mask",
             image_id_col="image_id",
         )
+        result = froc_curve(table)
         assert result.curve.height >= 1
 
     def test_froc_bootstrap_ci_runs(self) -> None:
         """Bootstrap CI returns bounded interval and expected sample count."""
-        result = FROCAnalyzer().compute(
+        matcher = ContourMatcher()
+        table = matcher.match(
             _dataset(),
             pred_col="pred_heatmap",
-            gt_mask_col="gt_mask",
-            gt_label_col="gt_label",
+            gt_col="gt_mask",
             image_id_col="image_id",
-            stratify_col="gt_label",
         )
+        result = froc_curve(table)
         ci = result.bootstrap_ci(n_bootstrap=20, seed=42)
         assert len(ci.distribution) == 20
         assert ci.ci_lower <= ci.ci_upper
@@ -159,19 +160,19 @@ class TestFrocMetrics:
 
 @plugin_required
 class TestLrocMetrics:
-    """Integration tests for LROC metric analyzer."""
+    """Integration tests for LROC metric computation."""
 
     def test_lroc_compute_returns_expected_columns(self) -> None:
         """LROC compute returns FPF/sensitivity points."""
-        result = LROCAnalyzer().compute(
+        matcher = ContourMatcher(gt_min_contour_area=1.0)
+        table = matcher.match(
             _dataset().lazy(),
             pred_col="pred_heatmap",
-            gt_mask_col="gt_mask",
-            gt_label_col="gt_label",
+            gt_col="gt_mask",
             image_id_col="image_id",
             weight_col="sample_weight",
-            stratify_col="gt_label",
         )
+        result = lroc_curve(table)
         assert set(result.curve.columns) == {"threshold", "fpf", "sensitivity"}
         assert result.curve.height >= 1
         assert 0.0 <= result.auc() <= 1.0
@@ -188,11 +189,58 @@ class TestLrocMetrics:
             .then(pl.lit(multi_mask))
             .otherwise(pl.col("gt_mask"))
         )
+        matcher = ContourMatcher()
+        table = matcher.match(
+            df.lazy(),
+            pred_col="pred_heatmap",
+            gt_col="gt_mask",
+            image_id_col="image_id",
+        )
         with pytest.raises(ValueError, match="expects <= 1 target contour"):
-            LROCAnalyzer().compute(
-                df.lazy(),
-                pred_col="pred_heatmap",
-                gt_mask_col="gt_mask",
-                gt_label_col="gt_label",
-                image_id_col="image_id",
-            )
+            lroc_curve(table)
+
+
+def test_lroc_curve_builder_expected_points() -> None:
+    """LROC curve builder computes expected sensitivity and FPF values."""
+    per_image = pl.DataFrame(
+        {
+            "image_id": ["p_tp", "p_fn", "n_fp", "n_none"],
+            "gt_label": [True, True, False, False],
+            "stratify": ["1", "1", "0", "0"],
+            "weight": [1.0, 1.0, 1.0, 1.0],
+            "max_score": [0.9, 0.6, 0.8, None],
+            "top_is_tp": [True, False, False, False],
+        }
+    )
+    curve = _build_lroc_curve(per_image).sort("threshold")
+
+    by_threshold = {
+        float(row["threshold"]): (float(row["fpf"]), float(row["sensitivity"]))
+        for row in curve.iter_rows(named=True)
+    }
+    assert by_threshold[0.6] == (0.5, 0.5)
+    assert by_threshold[0.8] == (0.5, 0.5)
+    assert by_threshold[0.9] == (0.0, 0.5)
+    assert by_threshold[float("inf")] == (0.0, 0.0)
+
+
+def test_lroc_curve_builder_weighted_points() -> None:
+    """Weighted LROC curve uses weighted positive/negative totals."""
+    per_image = pl.DataFrame(
+        {
+            "image_id": ["p_tp", "p_fn", "n_fp", "n_none"],
+            "gt_label": [True, True, False, False],
+            "stratify": ["1", "1", "0", "0"],
+            "weight": [2.0, 1.0, 1.0, 3.0],
+            "max_score": [0.9, 0.6, 0.8, None],
+            "top_is_tp": [True, False, False, False],
+        }
+    )
+    curve = _build_lroc_curve(per_image).sort("threshold")
+    row_06 = curve.filter(pl.col("threshold") == 0.6).to_dicts()[0]
+    row_09 = curve.filter(pl.col("threshold") == 0.9).to_dicts()[0]
+
+    assert row_06["sensitivity"] == pytest.approx(2.0 / 3.0)
+    assert row_06["fpf"] == pytest.approx(1.0 / 4.0)
+    assert row_09["sensitivity"] == pytest.approx(2.0 / 3.0)
+    assert row_09["fpf"] == pytest.approx(0.0)

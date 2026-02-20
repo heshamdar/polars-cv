@@ -98,5 +98,32 @@ result = df.with_columns(
 - **Points**: `normalize`, `translate`, `scale`, `rotate`, `distance`, `manhattan_distance`, `distance_to_contour`, `signed_distance_to_contour`, `nearest_point_on_contour`, `angle_to`, `midpoint`, `interpolate`, `within_bbox`.
 - **Analysis**: `histogram`, `perceptual_hash`, `extract_shape`.
 - **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_percentile`.
+- **Detection Metrics**: Precision-Recall, AP, mAP, FROC, LROC, F1, confusion matrix, bootstrap confidence intervals.
+
+## Detection Metrics
+
+Evaluate object detectors with industry-standard metrics:
+
+```python
+from polars_cv.metrics import PreMatchedAdapter, precision_recall_curve, average_precision
+
+# Wrap pre-matched detection data
+adapter = PreMatchedAdapter()
+table = adapter.match(df, pred_col="confidence", gt_col="is_tp", image_id_col="slide_id")
+
+# Compute metrics
+pr = precision_recall_curve(table)
+ap = average_precision(table)
+
+print(f"AP: {ap:.3f}")
+print(pr.summary_table())
+```
+
+Available matchers: `ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding boxes),
+`PreMatchedAdapter` (pre-computed TP/FP).
+
+Available metrics: `precision_recall_curve`, `average_precision`,
+`mean_average_precision`, `froc_curve`, `lroc_curve`, `confusion_at_threshold`,
+`precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold`.
 
 For full details, see the [Documentation](https://heshamdar.github.io/polars-cv/)

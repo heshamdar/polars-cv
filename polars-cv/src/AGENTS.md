@@ -130,6 +130,13 @@ Recent additions for detection workflows in `contour.rs`:
 - `contour_pairwise_iou` (`List[Contour] x List[Contour] -> List[List[f64]]`)
 - `contour_match_detections` (greedy one-to-one matching with deterministic ties)
 - `contour_label_reduce` (per-contour scoring from image/array values)
+- `bbox_pairwise_iou` (`List[BBOX_SCHEMA] x List[BBOX_SCHEMA] -> List[List[f64]]`)
+- `bbox_match_detections` (greedy matching for axis-aligned bounding boxes)
+
+The bbox functions convert bounding boxes to rectangular contours internally and
+delegate to the existing contour IoU/matching logic. A `TODO` exists in
+`view-buffer/src/geometry/pairwise.rs` for a future direct axis-aligned
+optimization.
 
 Recent graph-side primitive additions:
 - `label_reduce` in `resolve_op` / graph execution (`buffer -> vector`)
