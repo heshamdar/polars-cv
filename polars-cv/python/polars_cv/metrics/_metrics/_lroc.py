@@ -8,7 +8,14 @@ from typing import Any
 import polars as pl
 
 from .._result import MetricResult
-from .._types import COL_GT_LABEL, COL_IMAGE_ID, COL_N_GTS, COL_WEIGHT, DetectionTable
+from .._types import (
+    COL_GT_LABEL,
+    COL_IMAGE_ID,
+    COL_IS_TP,
+    COL_SCORE,
+    COL_WEIGHT,
+    DetectionTable,
+)
 
 
 @dataclass(frozen=True)
@@ -129,16 +136,17 @@ def lroc_curve(
 
     LROC requires:
     - ``gt_label`` in image metadata (positive/negative per image).
-    - At most 1 GT target per positive image.
+    - Per-image top-detection reduction from ``DetectionTable.to_per_image()``.
+
+    Positive images may contain multiple GT targets. LROC is computed at the
+    image level: an image is counted as localized if its top detection is a TP,
+    i.e. it matches at least one GT.
 
     Args:
         table: Canonical detection table produced by a matcher.
 
     Returns:
         ``LROCResult`` with curve, per-image summary, and metadata.
-
-    Raises:
-        ValueError: If positive images have more than one GT target.
     """
     meta_df = table.image_metadata.collect(engine="streaming")
 
@@ -156,20 +164,31 @@ def lroc_curve(
             f"handles empty results correctly."
         )
 
-    # Validate: positive images must have <= 1 GT target
-    invalid = (
-        meta_df.filter(pl.col(COL_GT_LABEL) & (pl.col(COL_N_GTS) > 1))
-        .select(COL_IMAGE_ID, COL_N_GTS)
-        .head(5)
-    )
-    if invalid.height > 0:
-        raise ValueError(
-            "LROC expects <= 1 target contour for positive samples. "
-            f"Examples with multiple targets: {invalid.to_dicts()}"
-        )
-
-    # Get per-image top detection
+    # Get per-image aggregation and choose the best localized detection.
+    # For positive images, the effective score is the highest score among TP
+    # detections (if any). For negative images, the effective score is the
+    # highest score among all detections.
     per_image_lf = table.to_per_image()
+    if "detections" in per_image_lf.collect_schema().names():
+        per_image_lf = per_image_lf.with_columns(
+            _best_tp_score=pl.col("detections")
+            .list.eval(
+                pl.when(pl.element().struct.field(COL_IS_TP))
+                .then(pl.element().struct.field(COL_SCORE))
+                .otherwise(None)
+            )
+            .list.max(),
+            _max_det_score=pl.col("detections")
+            .list.eval(pl.element().struct.field(COL_SCORE))
+            .list.max(),
+        ).with_columns(
+            max_score=pl.when(pl.col(COL_GT_LABEL))
+            .then(pl.col("_best_tp_score"))
+            .otherwise(pl.col("_max_det_score")),
+            top_is_tp=pl.when(pl.col(COL_GT_LABEL))
+            .then(pl.col("_best_tp_score").is_not_null())
+            .otherwise(pl.lit(False)),
+        )
     per_image = per_image_lf.collect(engine="streaming")
 
     curve = _build_lroc_curve(per_image)

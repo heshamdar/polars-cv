@@ -118,6 +118,10 @@ metrics/
   `group_by().agg()` context to guarantee the highest-scoring detection is
   selected. Never rely on a `.sort()` before `.group_by()` — Polars does
   not guarantee order preservation across `group_by`.
+- **LROC image-level summarization**: `DetectionTable.to_per_image()` now
+  carries a score-sorted `detections` list per image. LROC derives the
+  effective image score from the best localized detection (highest-scoring TP)
+  on positive images, and from the top score on negative images.
 - **IoU re-thresholding direction**: `at_iou_threshold()` only works
   reliably when *raising* the threshold above the original matching IoU.
   Lowering it has no effect because unmatched detections have no stored

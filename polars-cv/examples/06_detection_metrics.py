@@ -1,16 +1,17 @@
-"""Detection metrics with ContourMatcher, BBoxMatcher, and PreMatchedAdapter.
+"""Detection metrics demo on one parameterized synthetic dataset.
 
 Run:
-    uv run python polars-cv/examples/06_detection_metrics.py
+    uv run python polars-cv/examples/06_detection_metrics.py --help
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 import polars as pl
+from detection_data import SyntheticDetectionConfig, generate_detection_dataset
 from polars_cv import (
     BBoxMatcher,
     ContourMatcher,
@@ -26,21 +27,9 @@ from polars_cv import (
     recall_at_threshold,
 )
 from polars_cv.metrics import bootstrap_pr_auc
+from polars_cv.metrics._types import COL_CLASS_ID, COL_IMAGE_ID
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
-
-
-def gaussian_heatmap(size: int, cx: float, cy: float, sigma: float) -> np.ndarray:
-    """Create a smooth heatmap with one Gaussian peak."""
-    y, x = np.indices((size, size))
-    return np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2)).astype(np.float32)
-
-
-def make_gt_mask(size: int, x0: int, y0: int, w: int, h: int) -> np.ndarray:
-    """Create a binary mask rectangle."""
-    arr = np.zeros((size, size), dtype=np.uint8)
-    arr[y0 : y0 + h, x0 : x0 + w] = 255
-    return arr
 
 
 def plot_curve(
@@ -60,30 +49,36 @@ def plot_curve(
     print("Saved:", out)
 
 
-def contour_matcher_section() -> None:
-    """Evaluate contour-based heatmap detections."""
-    rows = []
-    for idx, (cx, cy, gt_rect) in enumerate(
-        [
-            (24, 30, (15, 18, 18, 18)),
-            (52, 44, (44, 38, 18, 18)),
-            (66, 26, (58, 20, 16, 16)),
-            (20, 66, (12, 58, 18, 18)),
-        ]
-    ):
-        heat = gaussian_heatmap(96, cx, cy, sigma=8.5)
-        gt_mask = make_gt_mask(96, *gt_rect)
-        rows.append(
-            {
-                "image_id": f"img-{idx}",
-                "class_id": "lesion",
-                "pred_heatmap": heat.tolist(),
-                "gt_mask": gt_mask.tolist(),
-            }
-        )
-    df = pl.DataFrame(rows)
+def build_prematched_input_from_table(table: object) -> pl.DataFrame:
+    """Build adapter input from a matched DetectionTable.
 
-    contour_table = ContourMatcher(iou_threshold=0.4, extraction_threshold=0.2).match(
+    This demonstrates the intended use of ``PreMatchedAdapter``: when TP/FP
+    assignments are already available from an upstream system, you can still
+    reuse the metric API.
+    """
+    detections_df, meta_df = table.collect()  # type: ignore[call-arg]
+    return detections_df.join(
+        meta_df.select([COL_IMAGE_ID, COL_CLASS_ID, "n_gts", "gt_label"]),
+        on=[COL_IMAGE_ID, COL_CLASS_ID],
+        how="left",
+    ).select(
+        image_id=pl.col(COL_IMAGE_ID),
+        class_id=pl.col(COL_CLASS_ID),
+        score=pl.col("score"),
+        is_tp=pl.col("is_tp"),
+        n_gts=pl.col("n_gts"),
+        gt_label=pl.col("gt_label"),
+    )
+
+
+def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> object:
+    """Evaluate contour-based metrics on shared synthetic data."""
+    contour_table = ContourMatcher(
+        iou_threshold=args.contour_iou_threshold,
+        extraction_threshold=args.extraction_threshold,
+        min_contour_area=args.min_contour_area,
+        gt_min_contour_area=args.gt_min_contour_area,
+    ).match(
         df,
         pred_col="pred_heatmap",
         gt_col="gt_mask",
@@ -93,6 +88,7 @@ def contour_matcher_section() -> None:
 
     pr = precision_recall_curve(contour_table, class_id="lesion")
     froc = froc_curve(contour_table)
+    lroc = lroc_curve(contour_table)
     print("\nContourMatcher metrics:")
     print("AP:", round(pr.ap(), 4))
     print(
@@ -102,27 +98,41 @@ def contour_matcher_section() -> None:
         round(froc.sensitivity_at_fp(1.0), 4),
     )
     print(
-        "Threshold metrics @0.4:",
-        "P=",
-        round(precision_at_threshold(contour_table, 0.4), 4),
-        "R=",
-        round(recall_at_threshold(contour_table, 0.4), 4),
-        "F1=",
-        round(f1_at_threshold(contour_table, 0.4), 4),
+        "LROC AUC:",
+        round(lroc.auc(), 4),
+        "Sens@0.5FPF:",
+        round(lroc.sensitivity_at_fpf(0.5), 4),
     )
-    print("Confusion @0.4:", confusion_at_threshold(contour_table, 0.4))
     print(
-        "mAP (COCO-style thresholds):", round(mean_average_precision(contour_table), 4)
+        f"Threshold metrics @{args.score_threshold}:",
+        "P=",
+        round(precision_at_threshold(contour_table, args.score_threshold), 4),
+        "R=",
+        round(recall_at_threshold(contour_table, args.score_threshold), 4),
+        "F1=",
+        round(f1_at_threshold(contour_table, args.score_threshold), 4),
+    )
+    print(
+        f"Confusion @{args.score_threshold}:",
+        confusion_at_threshold(contour_table, args.score_threshold),
+    )
+    print(
+        "mAP (COCO-style thresholds):",
+        round(mean_average_precision(contour_table), 4),
     )
 
-    # IoU re-thresholding without re-matching.
-    strict_table = contour_table.at_iou_threshold(0.6)
+    strict_table = contour_table.at_iou_threshold(args.strict_iou_threshold)
     print(
-        "AP at stricter IoU 0.6:",
+        f"AP at stricter IoU {args.strict_iou_threshold}:",
         round(average_precision(strict_table, class_id="lesion"), 4),
     )
 
-    boot = bootstrap_pr_auc(contour_table, n_bootstrap=128, seed=7, class_id="lesion")
+    boot = bootstrap_pr_auc(
+        contour_table,
+        n_bootstrap=args.bootstrap_samples,
+        seed=args.seed + 101,
+        class_id="lesion",
+    )
     print(
         "Bootstrap AP 95% CI:",
         f"[{boot.ci_lower:.4f}, {boot.ci_upper:.4f}]",
@@ -139,29 +149,13 @@ def contour_matcher_section() -> None:
     plot_curve(
         froc.curve, "fp_per_image", "sensitivity", "FROC Curve", "06_froc_contour.png"
     )
+    plot_curve(lroc.curve, "fpf", "sensitivity", "LROC Curve", "06_lroc_contour.png")
+    return contour_table
 
 
-def bbox_matcher_section() -> None:
-    """Evaluate bbox matching and metrics."""
-    df = pl.DataFrame(
-        {
-            "image_id": ["b0", "b1", "b2"],
-            "class_id": ["lesion", "lesion", "lesion"],
-            "pred_bboxes": [
-                [{"x": 12.0, "y": 12.0, "width": 20.0, "height": 20.0}],
-                [{"x": 44.0, "y": 40.0, "width": 18.0, "height": 20.0}],
-                [{"x": 60.0, "y": 16.0, "width": 18.0, "height": 16.0}],
-            ],
-            "pred_scores": [[0.92], [0.71], [0.52]],
-            "gt_bboxes": [
-                [{"x": 14.0, "y": 14.0, "width": 20.0, "height": 20.0}],
-                [{"x": 45.0, "y": 42.0, "width": 18.0, "height": 18.0}],
-                [{"x": 10.0, "y": 12.0, "width": 18.0, "height": 16.0}],
-            ],
-        }
-    )
-
-    table = BBoxMatcher(iou_threshold=0.5).match(
+def bbox_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> object:
+    """Evaluate bbox matching and metrics on the same dataset."""
+    table = BBoxMatcher(iou_threshold=args.bbox_iou_threshold).match(
         df,
         pred_col="pred_bboxes",
         gt_col="gt_bboxes",
@@ -171,20 +165,12 @@ def bbox_matcher_section() -> None:
     )
     pr = precision_recall_curve(table, class_id="lesion")
     print("\nBBoxMatcher AP:", round(pr.ap(), 4))
+    return table
 
 
-def prematched_section() -> None:
-    """Evaluate pre-matched detections using the adapter."""
-    pre = pl.DataFrame(
-        {
-            "image_id": ["p0", "p0", "p1", "p2", "p2"],
-            "class_id": ["lesion"] * 5,
-            "score": [0.95, 0.42, 0.84, 0.67, 0.33],
-            "is_tp": [True, False, True, False, False],
-            "n_gts": [1, 1, 1, 0, 0],
-            "gt_label": [True, True, True, False, False],
-        }
-    )
+def prematched_section(bbox_table: object) -> None:
+    """Run metrics through PreMatchedAdapter from already matched detections."""
+    pre = build_prematched_input_from_table(bbox_table)
     table = PreMatchedAdapter().match(
         pre,
         pred_col="score",
@@ -196,7 +182,8 @@ def prematched_section() -> None:
     )
     pr = precision_recall_curve(table, class_id="lesion")
     lroc = lroc_curve(table)
-    print("\nPreMatchedAdapter AP:", round(pr.ap(interpolation="11_point"), 4))
+    print("\nPreMatchedAdapter metrics (rebuilt from BBoxMatcher TP/FP assignments):")
+    print("PreMatchedAdapter AP:", round(pr.ap(interpolation="11_point"), 4))
     print("PreMatchedAdapter LROC AUC:", round(lroc.auc(), 4))
     plot_curve(
         lroc.curve,
@@ -207,12 +194,86 @@ def prematched_section() -> None:
     )
 
 
+def parse_args() -> argparse.Namespace:
+    """Parse CLI options for data generation and matcher behavior."""
+    parser = argparse.ArgumentParser(
+        description="Run detection metric demos on one parameterized synthetic dataset."
+    )
+    parser.add_argument("--n-images", type=int, default=60)
+    parser.add_argument("--image-size", type=int, default=96)
+    parser.add_argument("--positive-rate", type=float, default=0.7)
+    parser.add_argument("--max-gts-per-image", type=int, default=3)
+    parser.add_argument(
+        "--miss-rate",
+        type=float,
+        default=0.12,
+        help="Probability a GT has no corresponding prediction.",
+    )
+    parser.add_argument(
+        "--fp-box-rate",
+        type=float,
+        default=0.55,
+        help="Poisson lambda for false-positive predicted boxes per image.",
+    )
+    parser.add_argument("--localization-jitter", type=float, default=2.0)
+    parser.add_argument("--heatmap-sigma", type=float, default=6.0)
+    parser.add_argument("--heatmap-noise-std", type=float, default=0.015)
+    parser.add_argument("--seed", type=int, default=7)
+
+    parser.add_argument("--contour-iou-threshold", type=float, default=0.4)
+    parser.add_argument("--bbox-iou-threshold", type=float, default=0.5)
+    parser.add_argument("--extraction-threshold", type=float, default=0.25)
+    parser.add_argument(
+        "--min-contour-area",
+        type=float,
+        default=5.0,
+        help="Prediction contour area filter; >0 suppresses tiny noise contours.",
+    )
+    parser.add_argument(
+        "--gt-min-contour-area",
+        type=float,
+        default=5.0,
+        help="GT contour area filter to avoid fragmented GT over-counting.",
+    )
+    parser.add_argument("--score-threshold", type=float, default=0.4)
+    parser.add_argument("--strict-iou-threshold", type=float, default=0.6)
+    parser.add_argument("--bootstrap-samples", type=int, default=128)
+    return parser.parse_args()
+
+
 def main() -> None:
     """Run all detection metric sections."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    contour_matcher_section()
-    bbox_matcher_section()
-    prematched_section()
+    args = parse_args()
+    dataset_config = SyntheticDetectionConfig(
+        n_images=args.n_images,
+        image_size=args.image_size,
+        positive_rate=args.positive_rate,
+        max_gt_per_image=args.max_gts_per_image,
+        miss_rate=args.miss_rate,
+        fp_box_rate=args.fp_box_rate,
+        localization_jitter=args.localization_jitter,
+        heatmap_sigma=args.heatmap_sigma,
+        heatmap_noise_std=args.heatmap_noise_std,
+        seed=args.seed,
+    )
+    df = generate_detection_dataset(dataset_config)
+    print("Synthetic dataset configuration:")
+    print(" ", dataset_config)
+    print(
+        "Matcher configuration:",
+        {
+            "contour_iou_threshold": args.contour_iou_threshold,
+            "bbox_iou_threshold": args.bbox_iou_threshold,
+            "extraction_threshold": args.extraction_threshold,
+            "min_contour_area": args.min_contour_area,
+            "gt_min_contour_area": args.gt_min_contour_area,
+        },
+    )
+
+    contour_matcher_section(df, args)
+    bbox_table = bbox_matcher_section(df, args)
+    prematched_section(bbox_table)
 
 
 if __name__ == "__main__":
