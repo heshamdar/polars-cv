@@ -33,6 +33,7 @@ Example:
 ```
 """
 
+from .bbox import BBoxNamespace  # noqa: F401 — namespace auto-registers
 from .schemas import (
     ANNOTATED_POINT_SCHEMA,
     BBOX_SCHEMA,

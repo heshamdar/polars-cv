@@ -33,10 +33,30 @@ from .geometry import (
     POINT_SET_SCHEMA,
     RING_SCHEMA,
 )
+from .geometry.bbox import BBoxNamespace
 from .geometry.contours import ContourNamespace
 from .geometry.points import PointNamespace
 from .lazy import LazyPipelineExpr
-from .metrics import FROCAnalyzer, FROCResult, LROCAnalyzer, LROCResult
+from .metrics import (
+    BBoxMatcher,
+    BootstrapResult,
+    ContourMatcher,
+    DetectionTable,
+    FROCResult,
+    LROCResult,
+    MetricResult,
+    PrecisionRecallResult,
+    PreMatchedAdapter,
+    average_precision,
+    confusion_at_threshold,
+    f1_at_threshold,
+    froc_curve,
+    lroc_curve,
+    mean_average_precision,
+    precision_at_threshold,
+    precision_recall_curve,
+    recall_at_threshold,
+)
 from .pipeline import Pipeline
 
 # Schema for numpy/torch sink output struct
@@ -421,12 +441,30 @@ __all__ = [
     # Hash comparison functions
     "hamming_distance",
     "hash_similarity",
-    # Detection metrics
-    "FROCAnalyzer",
+    # Detection metrics — core types
+    "DetectionTable",
+    "MetricResult",
+    "BootstrapResult",
+    # Detection metrics — matchers
+    "ContourMatcher",
+    "BBoxMatcher",
+    "PreMatchedAdapter",
+    # Detection metrics — functions
+    "froc_curve",
+    "lroc_curve",
+    "precision_recall_curve",
+    "average_precision",
+    "mean_average_precision",
+    "precision_at_threshold",
+    "recall_at_threshold",
+    "f1_at_threshold",
+    "confusion_at_threshold",
+    # Detection metrics — result types
     "FROCResult",
-    "LROCAnalyzer",
     "LROCResult",
+    "PrecisionRecallResult",
     # Geometry namespaces (registered automatically via decorators)
+    "BBoxNamespace",
     "ContourNamespace",
     "PointNamespace",
     # Schemas

@@ -2,7 +2,7 @@
 //!
 //! Implements IoU, Dice coefficient, and Hausdorff distance.
 
-use super::contour::{Contour, Point};
+use super::contour::{BoundingBox, Contour, Point};
 use super::measures::area;
 
 /// Pairwise matching result for a set of predictions and ground truths.
@@ -175,6 +175,48 @@ pub fn match_detections(
         n_fp,
         n_fn,
     }
+}
+
+/// Convert an axis-aligned bounding box to a 4-point rectangular contour.
+///
+/// This enables reuse of the contour-based IoU and matching infrastructure for
+/// bounding-box inputs.
+///
+/// # TODO
+/// A dedicated axis-aligned bbox IoU path using `BoundingBox::intersection().area()`
+/// would avoid the polygon clipping overhead and should be implemented when
+/// bbox-heavy workloads are profiled.
+pub fn bbox_to_contour(bbox: &BoundingBox) -> Contour {
+    Contour::from_tuples(&[
+        (bbox.x, bbox.y),
+        (bbox.x + bbox.width, bbox.y),
+        (bbox.x + bbox.width, bbox.y + bbox.height),
+        (bbox.x, bbox.y + bbox.height),
+    ])
+}
+
+/// IoU between two axis-aligned bounding boxes (via contour conversion).
+pub fn bbox_iou(a: &BoundingBox, b: &BoundingBox) -> f64 {
+    iou(&bbox_to_contour(a), &bbox_to_contour(b))
+}
+
+/// Pairwise IoU matrix between two sets of bounding boxes.
+pub fn bbox_iou_matrix(a: &[BoundingBox], b: &[BoundingBox]) -> Vec<Vec<f64>> {
+    let a_contours: Vec<Contour> = a.iter().map(bbox_to_contour).collect();
+    let b_contours: Vec<Contour> = b.iter().map(bbox_to_contour).collect();
+    iou_matrix(&a_contours, &b_contours)
+}
+
+/// Greedy one-to-one detection matching on bounding boxes.
+pub fn bbox_match_detections(
+    preds: &[BoundingBox],
+    gts: &[BoundingBox],
+    threshold: f64,
+    pred_order: Option<&[usize]>,
+) -> DetectionMatchResult {
+    let pred_contours: Vec<Contour> = preds.iter().map(bbox_to_contour).collect();
+    let gt_contours: Vec<Contour> = gts.iter().map(bbox_to_contour).collect();
+    match_detections(&pred_contours, &gt_contours, threshold, pred_order)
 }
 
 /// Computes the Dice coefficient between two contours.

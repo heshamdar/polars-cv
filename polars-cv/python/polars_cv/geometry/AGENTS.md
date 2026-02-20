@@ -13,7 +13,8 @@ Geometry data is represented as Polars Struct columns with well-defined schemas.
 
 | File | Responsibility |
 |------|---------------|
-| `__init__.py` | Re-exports schemas and validation errors |
+| `__init__.py` | Re-exports schemas, validation errors, and `BBoxNamespace` |
+| `bbox.py` | `BBoxNamespace` (`.bbox`) — pairwise IoU, match detections for bounding boxes |
 | `schemas.py` | Schema constants (`POINT_SCHEMA`, `CONTOUR_SCHEMA`, `CONTOUR_SET_SCHEMA`, `MATCH_RESULT_SCHEMA`, `BBOX_SCHEMA`, etc.), validation helpers, factory functions |
 | `contours.py` | `ContourNamespace` (`.contour`) — area, perimeter, centroid, bounding_box, IoU/Dice/Hausdorff, set-level matching (`pairwise_iou`, `match_detections`), and heatmap scoring (`label_reduce`) |
 | `points.py` | `PointNamespace` (`.point`) — normalize, to_absolute, translate, scale, rotate, distance, angle_to, etc. |
@@ -59,6 +60,16 @@ Set-level detection helpers also live here and operate on `CONTOUR_SET_SCHEMA`:
 - `pairwise_iou(other)` -> `List[List[Float64]]`
 - `match_detections(other, threshold, scores, strategy)` -> `MATCH_RESULT_SCHEMA`
 - `label_reduce(heatmap, reduction, region_mode)` -> `List[Float64]`
+
+### `.bbox` (BBoxNamespace)
+
+Registered on `pl.Expr` for columns containing `List[BBOX_SCHEMA]`. Methods:
+- `pairwise_iou(other)` -> `List[List[Float64]]`
+- `match_detections(other, threshold, scores, strategy)` -> `MATCH_RESULT_SCHEMA`
+
+These delegate to Rust functions `bbox_pairwise_iou` and `bbox_match_detections`
+which internally convert bounding boxes to rectangular contours and reuse the
+existing contour matching logic. Used by `BBoxMatcher` in the metrics subsystem.
 
 ### `.point` (PointNamespace)
 

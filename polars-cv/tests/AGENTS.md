@@ -74,6 +74,11 @@ Test end-to-end execution through the Rust plugin.
 | `test_statistical_reductions.py` | reduce_sum, reduce_mean, etc. |
 | `test_typed_nodes.py` | Typed list/array node outputs |
 | `test_numpy_helpers.py` | `numpy_from_struct` utility |
+| `test_detection_table.py` | DetectionTable construction, schema validation, accessors |
+| `test_matchers.py` | PreMatchedAdapter protocol compliance, class/n_gts support |
+| `test_precision_recall.py` | PR curve, AP, mAP, precision/recall/f1 at threshold, confusion |
+| `test_bbox_matching.py` | Rust bbox_pairwise_iou and bbox_match_detections |
+| `test_bootstrap_vectorized.py` | Sequential and vectorized bootstrap, BootstrapResult |
 
 ### Reference Tests (`tests/reference/`)
 

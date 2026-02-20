@@ -23,7 +23,7 @@ This is the **user-facing Python layer**. It is responsible for:
 | `__init__.py` | Public API surface, `numpy_from_struct`, mask/hash comparison helpers, tiling config re-export | ~430 |
 | `pipeline.py` | `Pipeline` builder — source, operations, sink, domain tracking, dtype tracking, shape inference | ~2600 |
 | `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops | ~900 |
-| `metrics/` | Detection metrics API (`FROCAnalyzer`, `LROCAnalyzer`), bootstrap CI, AUC helpers | ~500 |
+| `metrics/` | Detection metrics — matchers, DetectionTable, metric functions, bootstrap CI, AUC helpers — see [`metrics/AGENTS.md`](metrics/AGENTS.md) | ~1500 |
 | `expressions.py` | `CvNamespace` (`.cv.pipe()`, ~~`.cv.pipeline()`~~), `apply_pipeline()` | ~150 |
 | `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `SourceFormat`, `SinkFormat`, `DType`, `OPERATION_CONTRACTS` | ~850 |
 | `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE optimization, `register_plugin_function` call | ~680 |
@@ -98,21 +98,22 @@ pipe.resize(height=224, width=pl.col("target_w"))
 
 `ParamValue` wraps this distinction. Expression params are tracked in `_expr_columns` and passed to Rust as additional input columns.
 
-### Metrics Helpers (`metrics/`)
+### Metrics Subsystem (`metrics/`)
 
-The `metrics/` subpackage provides high-level detection metrics that compose
-existing primitives rather than introducing new Rust kernels:
+The `metrics/` subpackage provides a three-layer detection metrics pipeline:
 
-- shared lazy preparation table for FROC/LROC (`prepare_detection_table`)
-- shape alignment (`auto_resize`) for heatmap/mask inputs
-- contour extraction (`threshold` + `extract_contours`)
-- contour scoring (`label_reduce`) via either:
-  - buffer-space pipeline op: `Pipeline().label_reduce(contours=...)`
-  - contour namespace op: `.contour.label_reduce(image=...)`
-- detection matching (`match_detections`)
-- strict alignment checks on match payloads (`pred_idx`/`gt_idx`) before expansion
-- detection expansion via Polars `explode`/`group_by` (no Python `iter_rows` loops)
-- curve aggregation, AUC, and bootstrap confidence intervals in Polars/Python
+1. **Matchers** (`_matching/`) — convert raw data into a canonical `DetectionTable`:
+   - `ContourMatcher` — heatmap + binary mask → contour extraction/matching
+   - `BBoxMatcher` — bounding box lists → Rust `bbox_match_detections` plugin
+   - `PreMatchedAdapter` — pre-computed TP/FP per detection
+2. **Metric functions** (`_metrics/`) — operate on `DetectionTable`:
+   - `precision_recall_curve`, `average_precision`, `mean_average_precision`
+   - `froc_curve`, `lroc_curve`
+   - `confusion_at_threshold`, `precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold`
+3. **Result objects** — `MetricResult` base with `auc()`, `partial_auc()`, `interpolate()`, `summary_table()`
+
+All curve aggregation uses Polars expressions — no Python loops over rows.
+See [`metrics/AGENTS.md`](metrics/AGENTS.md) for full details.
 
 ## What the Canonical API Path Looks Like
 

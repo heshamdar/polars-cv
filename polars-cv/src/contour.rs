@@ -12,7 +12,7 @@ use std::cmp::Ordering;
 
 // Import geometry operations from view-buffer
 use view_buffer::geometry::{
-    contour::{Contour, Point, Winding},
+    contour::{BoundingBox, Contour, Point, Winding},
     measures, pairwise, predicates, transforms,
 };
 
@@ -1529,4 +1529,224 @@ fn contour_ensure_winding(inputs: &[Series], kwargs: ContourKwargs) -> PolarsRes
     }
 
     build_contour_series(series.name().clone(), results, series.dtype())
+}
+
+// ============================================================================
+// BBox Matching Plugin Functions
+// ============================================================================
+
+/// Parse a single bbox struct AnyValue into a `BoundingBox`.
+fn parse_bbox(value: &AnyValue) -> PolarsResult<BoundingBox> {
+    match value {
+        AnyValue::StructOwned(boxed) => {
+            let (values, fields) = boxed.as_ref();
+            let mut x = 0.0_f64;
+            let mut y = 0.0_f64;
+            let mut width = 0.0_f64;
+            let mut height = 0.0_f64;
+            for (i, field) in fields.iter().enumerate() {
+                let f = values
+                    .get(i)
+                    .and_then(|v| v.try_extract::<f64>().ok())
+                    .unwrap_or(0.0);
+                match field.name().as_str() {
+                    "x" => x = f,
+                    "y" => y = f,
+                    "width" => width = f,
+                    "height" => height = f,
+                    _ => {}
+                }
+            }
+            Ok(BoundingBox::new(x, y, width, height))
+        }
+        _ => Err(polars_err!(ComputeError: "Expected bbox struct, got {:?}", value)),
+    }
+}
+
+/// Parse a List[BBOX_SCHEMA] AnyValue into a Vec<BoundingBox>.
+fn parse_bbox_list(value: &AnyValue) -> PolarsResult<Vec<BoundingBox>> {
+    match value {
+        AnyValue::List(series) => {
+            if let Ok(struct_ca) = series.struct_() {
+                let x_col = struct_ca
+                    .field_by_name("x")
+                    .map_err(|_| polars_err!(ComputeError: "Bbox struct missing 'x' field"))?;
+                let y_col = struct_ca
+                    .field_by_name("y")
+                    .map_err(|_| polars_err!(ComputeError: "Bbox struct missing 'y' field"))?;
+                let w_col = struct_ca
+                    .field_by_name("width")
+                    .map_err(|_| polars_err!(ComputeError: "Bbox struct missing 'width' field"))?;
+                let h_col = struct_ca
+                    .field_by_name("height")
+                    .map_err(|_| polars_err!(ComputeError: "Bbox struct missing 'height' field"))?;
+
+                let x_ca = x_col
+                    .f64()
+                    .map_err(|_| polars_err!(ComputeError: "x must be f64"))?;
+                let y_ca = y_col
+                    .f64()
+                    .map_err(|_| polars_err!(ComputeError: "y must be f64"))?;
+                let w_ca = w_col
+                    .f64()
+                    .map_err(|_| polars_err!(ComputeError: "width must be f64"))?;
+                let h_ca = h_col
+                    .f64()
+                    .map_err(|_| polars_err!(ComputeError: "height must be f64"))?;
+
+                let mut bboxes = Vec::with_capacity(series.len());
+                for i in 0..series.len() {
+                    bboxes.push(BoundingBox::new(
+                        x_ca.get(i).unwrap_or(0.0),
+                        y_ca.get(i).unwrap_or(0.0),
+                        w_ca.get(i).unwrap_or(0.0),
+                        h_ca.get(i).unwrap_or(0.0),
+                    ));
+                }
+                Ok(bboxes)
+            } else {
+                let mut bboxes = Vec::with_capacity(series.len());
+                for i in 0..series.len() {
+                    let item = series.get(i)?;
+                    bboxes.push(parse_bbox(&item)?);
+                }
+                Ok(bboxes)
+            }
+        }
+        _ => Err(polars_err!(ComputeError: "Expected List of bbox structs, got {:?}", value)),
+    }
+}
+
+/// Pairwise IoU matrix between two sets of bounding boxes.
+#[polars_expr(output_type_func=pairwise_iou_output_type)]
+fn bbox_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
+    let pred_series = &inputs[0];
+    let gt_series = &inputs[1];
+    let len = pred_series.len();
+    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let preds_value = pred_series.get(i)?;
+        let gts_value = gt_series.get(i)?;
+        if preds_value.is_null() || gts_value.is_null() {
+            rows.push(AnyValue::Null);
+            continue;
+        }
+
+        let preds = parse_bbox_list(&preds_value)?;
+        let gts = parse_bbox_list(&gts_value)?;
+        let matrix = pairwise::bbox_iou_matrix(&preds, &gts);
+        rows.push(matrix_anyvalue(&matrix)?);
+    }
+
+    build_pairwise_matrix_series(pred_series.name().clone(), rows)
+}
+
+/// Match detection bbox sets with greedy one-to-one IoU assignment.
+#[polars_expr(output_type_func=match_detections_output_type)]
+fn bbox_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
+    let pred_series = &inputs[0];
+    let gt_series = &inputs[1];
+    let score_series = inputs.get(2);
+    let len = pred_series.len();
+    let threshold = kwargs.threshold.unwrap_or(0.5);
+
+    if !(0.0..=1.0).contains(&threshold) {
+        return Err(polars_err!(ComputeError: "threshold must be in [0, 1], got {}", threshold));
+    }
+
+    let match_dtype = DataType::Struct(vec![
+        Field::new(
+            PlSmallStr::from_static("pred_idx"),
+            DataType::List(Box::new(DataType::UInt32)),
+        ),
+        Field::new(
+            PlSmallStr::from_static("gt_idx"),
+            DataType::List(Box::new(DataType::UInt32)),
+        ),
+        Field::new(
+            PlSmallStr::from_static("iou"),
+            DataType::List(Box::new(DataType::Float64)),
+        ),
+        Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
+        Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
+    ]);
+
+    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
+    for i in 0..len {
+        let preds_value = pred_series.get(i)?;
+        let gts_value = gt_series.get(i)?;
+        if preds_value.is_null() || gts_value.is_null() {
+            rows.push(AnyValue::Null);
+            continue;
+        }
+
+        let preds = parse_bbox_list(&preds_value)?;
+        let gts = parse_bbox_list(&gts_value)?;
+
+        let pred_order = if let Some(scores_col) = score_series {
+            let score_value = scores_col.get(i)?;
+            if score_value.is_null() {
+                None
+            } else {
+                let scores = parse_score_list(&score_value)?;
+                if scores.len() != preds.len() {
+                    return Err(polars_err!(
+                        ComputeError:
+                        "scores length ({}) must match prediction count ({}) in row {}",
+                        scores.len(),
+                        preds.len(),
+                        i
+                    ));
+                }
+                Some(score_order(&scores))
+            }
+        } else {
+            None
+        };
+
+        let result =
+            pairwise::bbox_match_detections(&preds, &gts, threshold, pred_order.as_deref());
+
+        let pred_idx_u32: Vec<u32> = result.pred_idx.iter().map(|v| *v as u32).collect();
+        let gt_idx_u32: Vec<Option<u32>> =
+            result.gt_idx.iter().map(|v| v.map(|x| x as u32)).collect();
+
+        rows.push(AnyValue::StructOwned(Box::new((
+            vec![
+                u32_list_anyvalue(&pred_idx_u32, PlSmallStr::from_static("pred_idx")),
+                optional_u32_list_anyvalue(&gt_idx_u32, PlSmallStr::from_static("gt_idx")),
+                float_list_anyvalue(&result.iou, PlSmallStr::from_static("iou")),
+                AnyValue::UInt32(result.n_preds as u32),
+                AnyValue::UInt32(result.n_gts as u32),
+                AnyValue::UInt32(result.n_tp as u32),
+                AnyValue::UInt32(result.n_fp as u32),
+                AnyValue::UInt32(result.n_fn as u32),
+            ],
+            vec![
+                Field::new(
+                    PlSmallStr::from_static("pred_idx"),
+                    DataType::List(Box::new(DataType::UInt32)),
+                ),
+                Field::new(
+                    PlSmallStr::from_static("gt_idx"),
+                    DataType::List(Box::new(DataType::UInt32)),
+                ),
+                Field::new(
+                    PlSmallStr::from_static("iou"),
+                    DataType::List(Box::new(DataType::Float64)),
+                ),
+                Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
+                Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
+                Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
+                Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
+                Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
+            ],
+        ))));
+    }
+
+    Series::from_any_values_and_dtype(pred_series.name().clone(), &rows, &match_dtype, true)
 }

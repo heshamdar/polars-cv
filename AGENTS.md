@@ -89,6 +89,22 @@ Pipelines track data domain through operations:
 | `.cv` | `CvNamespace` | Image/array pipelines via `.pipe()` → `.sink()` (includes buffer-space `label_reduce(contours=...)`) |
 | `.point` | `PointNamespace` | Point geometry ops (normalize, distance, etc.) |
 | `.contour` | `ContourNamespace` | Contour geometry ops (area, perimeter, IoU, etc.) |
+| `.bbox` | `BBoxNamespace` | Bounding box ops (pairwise IoU, match detections) |
+
+### Metrics Subsystem
+
+The `metrics/` subpackage provides detection evaluation built from polars-cv
+primitives and Polars lazy expressions:
+
+```
+Input Data → Matcher → DetectionTable → Metric Function → MetricResult
+```
+
+- **Matchers**: `ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding boxes), `PreMatchedAdapter` (pre-computed TP/FP)
+- **Metrics**: `precision_recall_curve`, `average_precision`, `mean_average_precision`, `froc_curve`, `lroc_curve`, `confusion_at_threshold`, `precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold`
+- **Bootstrap**: `bootstrap_metric_sequential` (general), `bootstrap_pr_auc` (vectorized)
+
+See `polars-cv/python/polars_cv/metrics/AGENTS.md` for full architecture details.
 
 ## Directory Structure
 
@@ -126,7 +142,7 @@ polars-cv/                          # Workspace root (this file)
 |---|---|
 | Adding a new image operation | Root → `polars-cv/python/polars_cv/AGENTS.md` → `polars-cv/src/AGENTS.md` → `view-buffer/AGENTS.md` → `.cursor/polars-cv-contribution-guide.md` |
 | Working on pipeline builder or lazy composition | Root → `polars-cv/python/polars_cv/AGENTS.md` |
-| Working on FROC/LROC metrics | Root → `polars-cv/python/polars_cv/AGENTS.md` → `polars-cv/python/polars_cv/metrics/AGENTS.md` |
+| Working on detection metrics (FROC, LROC, mAP, PR, matchers) | Root → `polars-cv/python/polars_cv/AGENTS.md` → `polars-cv/python/polars_cv/metrics/AGENTS.md` |
 | Working on geometry (points, contours) | Root → `polars-cv/python/polars_cv/geometry/AGENTS.md` |
 | Working on graph execution or sources/sinks | Root → `polars-cv/src/AGENTS.md` |
 | Working on view-buffer ops or ViewExpr | Root → `view-buffer/AGENTS.md` |
