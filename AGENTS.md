@@ -129,7 +129,8 @@ polars-cv/                          # Workspace root (this file)
 │   │   └── AGENTS.md               # Agent guide for tests
 │   ├── benchmarks/                 # Benchmark suite
 │   │   └── AGENTS.md               # Agent guide for benchmarks
-│   ├── notebooks/                  # Demo scripts/notebooks (includes parameterized FROC detection + visualization demo)
+│   ├── examples/                   # Runnable Python demos (focused feature examples, each <500 lines)
+│   ├── notebooks/                  # Legacy notebook area (examples now live in `examples/`)
 │   ├── docs/                       # MkDocs user-guide documentation
 │   └── scripts/                    # Utility scripts (multi-Python testing)
 └── .cursor/
@@ -199,6 +200,22 @@ Many test files redefine their own `_plugin_available()`, `plugin_required` mark
 - `notebooks/delete_this.ipynb` and `notebooks/delete_this_too.ipynb` should be removed.
 - `docs/` at the workspace root (not inside `polars-cv/`) appears to be a remnant and can be removed.
 - `tmp_metrics/` directory at workspace root.
+
+### Examples Folder Organization
+
+The canonical runnable demos are now the numbered scripts under
+`polars-cv/examples/`:
+
+- `01_getting_started.py`
+- `02_image_transforms.py`
+- `03_pipeline_composition.py`
+- `04_geometry.py`
+- `05_reductions_and_features.py`
+- `06_detection_metrics.py`
+- `07_perceptual_hashing.py`
+- `08_ml_integration.py`
+
+Keep these scripts focused (single topic), independent, and under ~500 lines.
 
 ### Test File Naming
 
