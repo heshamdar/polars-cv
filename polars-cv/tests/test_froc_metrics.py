@@ -178,8 +178,8 @@ class TestLrocMetrics:
         assert 0.0 <= result.auc() <= 1.0
         assert 0.0 <= result.sensitivity_at_fpf(0.25) <= 1.0
 
-    def test_lroc_requires_single_target_per_positive(self) -> None:
-        """LROC raises when positive samples have multiple extracted targets."""
+    def test_lroc_allows_multiple_targets_per_positive(self) -> None:
+        """LROC computes image-level localization when positives have multiple GTs."""
         multi_mask = _mask(16, 16, 2, 2, 6, 6)
         for y in range(10, 14):
             for x in range(10, 14):
@@ -196,8 +196,10 @@ class TestLrocMetrics:
             gt_col="gt_mask",
             image_id_col="image_id",
         )
-        with pytest.raises(ValueError, match="expects <= 1 target contour"):
-            lroc_curve(table)
+        result = lroc_curve(table)
+        assert set(result.curve.columns) == {"threshold", "fpf", "sensitivity"}
+        assert result.curve.height >= 1
+        assert 0.0 <= result.auc() <= 1.0
 
 
 def test_lroc_curve_builder_expected_points() -> None:

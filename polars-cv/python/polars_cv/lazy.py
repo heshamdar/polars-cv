@@ -122,9 +122,22 @@ class LazyPipelineExpr:
             # Only the NEW operations (not self's ops)
             new_pipeline._ops = pipeline._ops.copy()
             new_pipeline._expr_refs = pipeline._expr_refs.copy()
-            # Copy both domain and dtype for proper static type inference
-            new_pipeline._current_domain = pipeline._current_domain
-            new_pipeline._output_dtype = pipeline._output_dtype
+            # Compute continuation node type state from upstream state + new ops.
+            # Using the op-only pipeline state here is incorrect because it loses
+            # the upstream dtype/domain context and can cause contract drift.
+            upstream_domain = self._pipeline._current_domain
+            upstream_dtype = self._pipeline._output_dtype
+            upstream_ndim = self._pipeline._expected_ndim
+            (
+                new_pipeline._current_domain,
+                new_pipeline._output_dtype,
+                new_pipeline._expected_ndim,
+            ) = PipelineClass._compute_output_domain_dtype_ndim(
+                new_pipeline._ops,
+                initial_domain=upstream_domain,
+                initial_dtype=upstream_dtype,
+                initial_ndim=upstream_ndim,
+            )
 
             return LazyPipelineExpr(
                 column=None,  # No column - receives from upstream, not from DataFrame

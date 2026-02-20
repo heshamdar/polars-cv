@@ -6,11 +6,13 @@ Run:
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
+from PIL import Image
 from polars_cv import CONTOUR_SCHEMA, Pipeline, mask_dice, mask_iou, numpy_from_struct
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
@@ -48,6 +50,15 @@ def save_heatmap_image(arr: np.ndarray, output: Path) -> None:
     fig.savefig(output, dpi=140)
     plt.close(fig)
     print("Saved:", output)
+
+
+def heatmap_to_png_bytes(arr: np.ndarray) -> bytes:
+    """Convert float heatmap [0, +inf) to displayable grayscale PNG bytes."""
+    normalized = arr / max(float(arr.max()), 1e-6)
+    u8 = np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
+    buf = BytesIO()
+    Image.fromarray(u8, mode="L").save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def main() -> None:
@@ -105,36 +116,58 @@ def main() -> None:
     print("\nReduction summary struct:")
     print(reduced.select("summary"))
 
-    # TODO: consolidate these into one with_columns when sink contract mismatches are resolved.
-    for name, expr in [
-        ("shape_vec", heat_expr.pipe(Pipeline().extract_shape()).sink("native")),
-        (
-            "histogram",
-            heat_expr.pipe(Pipeline().histogram(bins=8, output="normalized")).sink(
-                "native"
-            ),
-        ),
-        ("row_max", heat_expr.pipe(Pipeline().reduce_max(axis=1)).sink("numpy")),
-        ("row_min", heat_expr.pipe(Pipeline().reduce_min(axis=1)).sink("numpy")),
-        ("argmax_col", heat_expr.pipe(Pipeline().reduce_argmax(axis=1)).sink("numpy")),
-        ("argmin_col", heat_expr.pipe(Pipeline().reduce_argmin(axis=1)).sink("numpy")),
-    ]:
-        try:
-            op_df = df.with_columns(**{name: expr})
-            print(f"{name} computed; dtype={op_df.schema[name]}")
-        except Exception as exc:  # noqa: BLE001
-            print(f"{name} unavailable in this build:", exc)
-
-    try:
-        percentile_df = df.with_columns(
-            percentile_95=heat_expr.pipe(Pipeline().reduce_percentile(q=95.0)).sink(
-                "native"
+    hist_input_df = pl.DataFrame({"image_bytes": [heatmap_to_png_bytes(heatmap)]})
+    hist_expr = pl.col("image_bytes").cv.pipe(
+        Pipeline().source("image_bytes").grayscale()
+    )
+    histogram_df = hist_input_df.with_columns(
+        hist_buckets=hist_expr.pipe(
+            Pipeline().histogram(
+                bins=[0.0, 32.0, 64.0, 128.0, 192.0, 256.0],
+                closed="right",
+                output="buckets",
             )
+        ).sink("native"),
+    ).with_columns(
+        hist_counts=pl.col("hist_buckets").list.eval(
+            pl.element().struct.field("count")
+        ),
+        hist_normalized=pl.col("hist_buckets").list.eval(
+            pl.element().struct.field("normalized")
+        ),
+        hist_lower_edges=pl.col("hist_buckets").list.eval(
+            pl.element().struct.field("lower_edge")
+        ),
+        hist_upper_edges=pl.col("hist_buckets").list.eval(
+            pl.element().struct.field("upper_edge")
+        ),
+    )
+    print("\nHistogram examples:")
+    print(
+        histogram_df.select(
+            "hist_counts",
+            "hist_normalized",
+            "hist_lower_edges",
+            "hist_upper_edges",
         )
-        print("Percentile(95):", percentile_df["percentile_95"][0])
-    except Exception as exc:  # noqa: BLE001
-        # TODO: remove this fallback once reduce_percentile dtype contract mismatch is fixed.
-        print("Percentile(95) unavailable in this build:", exc)
+    )
+    print("First two histogram buckets:", histogram_df["hist_buckets"][0][:2])
+
+    axis_reductions_df = df.with_columns(
+        row_max=heat_expr.pipe(Pipeline().reduce_max(axis=1)).sink("numpy"),
+        row_min=heat_expr.pipe(Pipeline().reduce_min(axis=1)).sink("numpy"),
+        argmax_col=heat_expr.pipe(Pipeline().reduce_argmax(axis=1)).sink("numpy"),
+        argmin_col=heat_expr.pipe(Pipeline().reduce_argmin(axis=1)).sink("numpy"),
+    )
+    print("\nAxis reductions:")
+    print(axis_reductions_df.select("row_max", "row_min", "argmax_col", "argmin_col"))
+
+    percentile_df = df.with_columns(
+        percentile_95=heat_expr.pipe(Pipeline().reduce_percentile(q=95.0)).sink(
+            "native"
+        )
+    )
+    print("Percentile(95):", percentile_df["percentile_95"][0])
 
     # Contour-region scoring from the heatmap.
     label_scored = df.with_columns(

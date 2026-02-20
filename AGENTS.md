@@ -218,6 +218,11 @@ The canonical runnable demos are now the numbered scripts under
 
 Keep these scripts focused (single topic), independent, and under ~500 lines.
 
+The examples directory also includes `detection_data.py`, a shared synthetic
+dataset generator used by `06_detection_metrics.py`. It creates one coherent
+dataset consumed by contour, bbox, and pre-matched metric paths, with CLI
+controls for both data-generation difficulty and matcher thresholds.
+
 ### Test File Naming
 
 Several test files have `_gaps` in their name (e.g., `test_binary_ops_gaps.py`, `test_resize_gaps.py`). These were named when they covered gaps in functionality. The gaps have since been filled, making the naming misleading. Consider renaming.

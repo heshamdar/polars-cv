@@ -197,11 +197,21 @@ class DetectionTable:
     def to_per_image(self) -> pl.LazyFrame:
         """Aggregate detections to one row per image with top-scoring detection.
 
-        Produces columns: ``image_id``, ``class_id``, ``max_score``,
-        ``top_is_tp``, ``gt_label``, ``weight``, ``n_gts``.
-        Used by LROC and similar per-image metrics.
+        Produces one row per ``(image_id, class_id)`` with:
+
+        - ``detections``: list of detection structs sorted by score descending
+        - compatibility columns ``max_score`` and ``top_is_tp`` from the
+          highest-scoring detection
+        - metadata columns ``gt_label``, ``weight``, ``n_gts``
+
+        LROC consumes ``detections`` for image-level summarization (best
+        localized detection), rather than relying only on the top-scoring
+        detection.
         """
         top_det = self._detections.group_by(COL_IMAGE_ID, COL_CLASS_ID).agg(
+            detections=pl.struct(
+                [COL_SCORE, COL_IS_TP, COL_GT_IDX, COL_IOU, COL_DET_IDX]
+            ).sort_by(COL_SCORE, descending=True),
             max_score=pl.col(COL_SCORE).max(),
             top_is_tp=pl.col(COL_IS_TP).sort_by(COL_SCORE, descending=True).first(),
         )
