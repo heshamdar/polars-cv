@@ -133,16 +133,18 @@ class HistogramOutput(str, Enum):
     Histogram output mode selection.
 
     Controls what the histogram operation returns:
-    - COUNTS: Bin counts as a 1D array (default)
+    - COUNTS: Bin counts as a 1D array
     - NORMALIZED: Histogram normalized to sum to 1.0
     - QUANTIZED: Input array with pixels replaced by bin indices
     - EDGES: Bin edge values
+    - BUCKETS: List of bucket structs (lower_edge, upper_edge, count, normalized)
     """
 
     COUNTS = "counts"
     NORMALIZED = "normalized"
     QUANTIZED = "quantized"
     EDGES = "edges"
+    BUCKETS = "buckets"
 
 
 class PadMode(str, Enum):
@@ -189,6 +191,7 @@ class Domain(str, Enum):
     CONTOUR = "contour"  # Extracted geometry
     SCALAR = "scalar"  # Single numeric value
     VECTOR = "vector"  # Fixed-length numeric array
+    HISTOGRAM = "histogram"  # Histogram buckets
 
 
 class ExpectedDType(str, Enum):

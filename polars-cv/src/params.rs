@@ -218,6 +218,17 @@ impl ParamValue {
             ParamValue::Expr { .. } => None,
         }
     }
+
+    /// Get literal value as a Vec<f64> (for histogram bins).
+    pub fn as_f64_vec(&self) -> Option<Vec<f64>> {
+        match self {
+            ParamValue::Literal { value } => {
+                let arr = value.as_array()?;
+                arr.iter().map(|v| v.as_f64()).collect::<Option<Vec<f64>>>()
+            }
+            ParamValue::Expr { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]

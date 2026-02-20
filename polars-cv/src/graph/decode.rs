@@ -11,7 +11,8 @@ use view_buffer::{BinaryOp, ViewBuffer};
 
 use super::encode::{
     build_typed_array_series_from_rows_with_dtype, build_typed_list_series_from_rows_with_dtype,
-    contour_struct_dtype, contours_to_polars_value, TypedListRow,
+    contour_struct_dtype, contours_to_polars_value, histogram_buckets_to_polars_value,
+    histogram_struct_dtype, TypedListRow,
 };
 use super::types::{OutputSpec, RowResult, TypedBufferData};
 
@@ -652,6 +653,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             }
         }
         ("contour", "native") => Ok(DataType::List(Box::new(contour_struct_dtype()))),
+        ("histogram", "native") => Ok(DataType::List(Box::new(histogram_struct_dtype()))),
         _ => Ok(DataType::Binary),
     }
 }
@@ -669,6 +671,7 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> RowResult {
         ("buffer", "array") => RowResult::TypedArray(None),
         ("scalar", "native") => RowResult::Scalar(None),
         ("contour", "native") => RowResult::Contours(None),
+        ("histogram", "native") => RowResult::HistogramBuckets(None),
         _ => RowResult::Binary(None),
     }
 }
@@ -808,6 +811,20 @@ pub(crate) fn build_series_from_spec(
             let values = values?;
             let contour_dtype = DataType::List(Box::new(contour_struct_dtype()));
             Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
+        }
+        ("histogram", "native") => {
+            let values: PolarsResult<Vec<AnyValue<'static>>> = data
+                .iter()
+                .map(|r| match r {
+                    RowResult::HistogramBuckets(Some(buckets)) => {
+                        histogram_buckets_to_polars_value(buckets)
+                    }
+                    _ => Ok(AnyValue::Null),
+                })
+                .collect();
+            let values = values?;
+            let histogram_dtype = DataType::List(Box::new(histogram_struct_dtype()));
+            Series::from_any_values_and_dtype(name, &values, &histogram_dtype, true)
         }
         _ => {
             let binary_data: Vec<Option<Vec<u8>>> = data

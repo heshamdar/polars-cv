@@ -1140,29 +1140,48 @@ class TestPerceptualHashCorrectness:
 class TestHistogramCorrectness:
     """Verify histogram computation with known inputs."""
 
-    def test_histogram_uniform_image_auto_range_bug(self, encode_png: Callable) -> None:
-        """BUG: Auto-range histogram with uniform image puts all pixels in bin 0.
+    def test_histogram_uniform_image_auto_range_fixed(
+        self, encode_png: Callable
+    ) -> None:
+        """Auto-range histogram with uniform image correctly centers the range.
 
         When all pixels have the same value (e.g. 128), auto-range detection
-        collapses to [128, 128], causing all 256 bins to map the single value
-        to bin 0 instead of bin 128. This is a bug in the auto-range logic.
-
-        Workaround: use explicit range=(0, 256) for correct behavior.
+        adjusts the range to [127.5, 128.5]. With 256 bins, bin_width is 1/256,
+        and value 128.0 falls exactly into bin 128.
         """
         arr = _make_solid(10, 10, (128, 128, 128))
         png = encode_png(arr)
         df = pl.DataFrame({"img": [png]})
 
-        # Auto-range puts all in bin 0 (bug)
-        pipe = Pipeline().source("image_bytes").grayscale().histogram(bins=256)
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=256, output="counts")
+        )
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))
         hist = result["out"][0].to_list()
+
         assert len(hist) == 256
         assert sum(hist) == 100  # Total count is correct
-        # BUG: hist[128] should be 100 but is 0; hist[0] is incorrectly 100
-        assert hist[0] == 100  # Documents current (buggy) behavior
-        # When this bug is fixed, uncomment the following:
-        # assert hist[128] == 100
+        assert hist[128] == 100  # Value 128 is correctly mapped to bin 128
+
+        # Test new buckets output
+        pipe_buckets = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=256, output="buckets")
+        )
+        result_buckets = df.select(
+            out=pl.col("img").cv.pipe(pipe_buckets).sink("native")
+        )
+        buckets = result_buckets["out"][0]
+
+        assert len(buckets) == 256
+        assert buckets[128]["lower_edge"] == 128.0
+        assert buckets[128]["count"] == 100
+        assert buckets[128]["normalized"] == 1.0
 
     def test_histogram_uniform_image_explicit_range(self, encode_png: Callable) -> None:
         """With explicit range, histogram correctly maps uniform pixels."""
@@ -1175,7 +1194,7 @@ class TestHistogramCorrectness:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .histogram(bins=256, range=(0, 256))
+            .histogram(bins=256, range=(0, 256), output="counts")
         )
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))
         hist = result["out"][0].to_list()
@@ -1197,7 +1216,7 @@ class TestHistogramCorrectness:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .histogram(bins=256, range=(0, 256))
+            .histogram(bins=256, range=(0, 256), output="counts")
         )
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))
         hist = result["out"][0].to_list()

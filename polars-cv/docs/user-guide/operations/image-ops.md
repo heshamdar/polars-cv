@@ -73,6 +73,30 @@ Pipeline().source("image_bytes").flip_h()
 Pipeline().source("image_bytes").flip_v()
 ```
 
+## Histogram
+
+Compute the pixel value histogram. The histogram can return counts, normalized frequencies, bin edges, quantized images, or detailed "buckets" combining counts and edges. The default output is `"buckets"`.
+
+```python
+# Detailed buckets output (returns List[Struct] with lower_edge, upper_edge, count, normalized)
+Pipeline().source("image_bytes").grayscale().histogram(bins=256)
+
+# Return raw bin counts
+Pipeline().source("image_bytes").grayscale().histogram(bins=64, output="counts")
+
+# Return normalized frequencies
+Pipeline().source("image_bytes").grayscale().histogram(bins=64, output="normalized")
+
+# Explicit bin edges (custom intervals)
+Pipeline().source("image_bytes").grayscale().histogram(bins=[0, 50, 100, 200, 255])
+
+# Left or right closed intervals
+Pipeline().source("image_bytes").grayscale().histogram(bins=10, closed="right")
+```
+
+**Outputs:** `"buckets"` (default), `"counts"`, `"normalized"`, `"quantized"`, `"edges"`.
+**Closed Intervals:** `"left"` (default), `"right"`.
+
 ## Next Steps
 
 - [Geometry Operations](geometry.md)

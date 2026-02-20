@@ -64,6 +64,8 @@ pub(crate) enum RowResult {
     TypedArray(Option<(TypedBufferData, Vec<usize>)>),
     /// Numpy/Torch struct output (zero-copy ViewBuffer ownership transfer).
     NumpyStruct(Option<ViewBuffer>),
+    /// Histogram buckets data [lower_edge, upper_edge, count, normalized] flattened
+    HistogramBuckets(Option<Vec<f64>>),
 }
 
 #[derive(Clone, Copy)]
@@ -1122,7 +1124,7 @@ impl UnifiedGraph {
                                 }
                             }
                         }
-                        match encode_node_output(output, &spec.sink) {
+                        match encode_node_output(output, spec) {
                             Ok(encoded) => {
                                 let row_result = match encoded {
                                     OutputValue::Binary(bytes) => RowResult::Binary(Some(bytes)),
@@ -1141,6 +1143,9 @@ impl UnifiedGraph {
                                     }
                                     OutputValue::NumpyStruct(buf) => {
                                         RowResult::NumpyStruct(Some(buf))
+                                    }
+                                    OutputValue::HistogramBuckets(buckets) => {
+                                        RowResult::HistogramBuckets(Some(buckets))
                                     }
                                 };
                                 results.get_mut(alias).unwrap().push(row_result);
@@ -1306,6 +1311,8 @@ pub(crate) enum OutputValue {
     },
     /// Numpy/Torch struct output (zero-copy ViewBuffer for struct encoding).
     NumpyStruct(ViewBuffer),
+    /// Histogram buckets data [lower_edge, upper_edge, count, normalized] flattened
+    HistogramBuckets(Vec<f64>),
 }
 /// A node in the pipeline graph.
 #[derive(Debug, Deserialize)]
