@@ -24,6 +24,19 @@ pub enum HistogramOutput {
     Quantized,
     /// Return bin edge values.
     Edges,
+    /// Return bucket boundaries and statistics as a flattened array (to be parsed into structs).
+    Buckets,
+}
+
+/// Interval closedness for histogram bins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum HistogramClosed {
+    /// Intervals are left-closed [a, b). (Last bin is [a, b]).
+    #[default]
+    Left,
+    /// Intervals are right-closed (a, b]. (First bin is [a, b]).
+    Right,
 }
 
 /// Histogram and quantization operations.
@@ -34,6 +47,10 @@ pub struct HistogramOp {
     pub bins: usize,
     /// Value range (min, max). None = auto from data.
     pub range: Option<(f64, f64)>,
+    /// Explicit bin edges. If provided, overrides `bins` and `range`.
+    pub edges: Option<Vec<f64>>,
+    /// Interval closedness.
+    pub closed: HistogramClosed,
     /// Output mode.
     pub output: HistogramOutput,
 }
@@ -44,6 +61,8 @@ impl HistogramOp {
         Self {
             bins,
             range: None,
+            edges: None,
+            closed: HistogramClosed::Left,
             output: HistogramOutput::Counts,
         }
     }
@@ -51,6 +70,18 @@ impl HistogramOp {
     /// Set the value range.
     pub fn with_range(mut self, min: f64, max: f64) -> Self {
         self.range = Some((min, max));
+        self
+    }
+
+    /// Set explicit edges.
+    pub fn with_edges(mut self, edges: Vec<f64>) -> Self {
+        self.edges = Some(edges);
+        self
+    }
+
+    /// Set interval closedness.
+    pub fn with_closed(mut self, closed: HistogramClosed) -> Self {
+        self.closed = closed;
         self
     }
 
@@ -85,64 +116,171 @@ impl HistogramOp {
         let data = buffer.as_slice::<T>();
         let shape = buffer.shape();
 
-        // Determine range
-        let (min_val, max_val) = match self.range {
-            Some((min, max)) => (min, max),
-            None => {
-                // Auto-detect from data
-                let (dmin, dmax) = data.iter().fold((f64::MAX, f64::MIN), |(min, max), &x| {
-                    let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
-                    (min.min(xf), max.max(xf))
-                });
-                (dmin, dmax)
+        // Determine edges
+        let edges = if let Some(ref e) = self.edges {
+            e.clone()
+        } else {
+            let (mut min_val, mut max_val) = match self.range {
+                Some((min, max)) => (min, max),
+                None => {
+                    // Auto-detect from data
+                    let (dmin, dmax) = data.iter().fold((f64::MAX, f64::MIN), |(min, max), &x| {
+                        let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
+                        (min.min(xf), max.max(xf))
+                    });
+                    (dmin, dmax)
+                }
+            };
+
+            // Fix uniform range bug by extending it similarly to numpy
+            if (max_val - min_val).abs() < f64::EPSILON {
+                min_val -= 0.5;
+                max_val += 0.5;
             }
+
+            let bin_width = (max_val - min_val) / self.bins as f64;
+            let mut e = Vec::with_capacity(self.bins + 1);
+            for i in 0..=self.bins {
+                e.push(min_val + i as f64 * bin_width);
+            }
+            e
         };
 
-        // Guard against division by zero when all values are identical
-        let bin_width = if (max_val - min_val).abs() < f64::EPSILON {
-            1.0 // All values are the same; they'll all fall into bin 0
+        let num_bins = edges.len().saturating_sub(1);
+        if num_bins == 0 {
+            // Edge case: no bins
+            return match self.output {
+                HistogramOutput::Counts => {
+                    ViewBuffer::from_vec_with_shape(Vec::<u64>::new(), vec![0])
+                }
+                HistogramOutput::Normalized => {
+                    ViewBuffer::from_vec_with_shape(Vec::<f64>::new(), vec![0])
+                }
+                HistogramOutput::Quantized => {
+                    ViewBuffer::from_vec_with_shape(vec![0u32; data.len()], shape.to_vec())
+                }
+                HistogramOutput::Edges => {
+                    let len = edges.len();
+                    ViewBuffer::from_vec_with_shape(edges, vec![len])
+                }
+                HistogramOutput::Buckets => {
+                    ViewBuffer::from_vec_with_shape(Vec::<f64>::new(), vec![0, 4])
+                }
+            };
+        }
+
+        let mut counts = vec![0u64; num_bins];
+        let mut quantized = if self.output == HistogramOutput::Quantized {
+            Some(Vec::with_capacity(data.len()))
         } else {
-            (max_val - min_val) / self.bins as f64
+            None
         };
+
+        let is_uniform = self.edges.is_none();
+
+        for &x in data {
+            let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
+
+            // Find bin
+            let bin_idx = if is_uniform {
+                let bin_width = (edges.last().unwrap() - edges[0]) / num_bins as f64;
+                if bin_width == 0.0 {
+                    0
+                } else {
+                    let mut b = ((xf - edges[0]) / bin_width).floor() as isize;
+
+                    // Handle bounds based on closed strategy
+                    match self.closed {
+                        HistogramClosed::Left => {
+                            // [a, b) except last bin is [a, b]
+                            if xf == *edges.last().unwrap() {
+                                b = (num_bins - 1) as isize;
+                            }
+                        }
+                        HistogramClosed::Right => {
+                            // (a, b] except first bin is [a, b]
+                            if xf == edges[0] {
+                                b = 0;
+                            } else if ((xf - edges[0]) % bin_width).abs() < f64::EPSILON
+                                && xf != edges[0]
+                            {
+                                b -= 1;
+                            }
+                        }
+                    }
+                    b.clamp(0, (num_bins - 1) as isize) as usize
+                }
+            } else {
+                match edges.binary_search_by(|e| e.partial_cmp(&xf).unwrap()) {
+                    Ok(i) => {
+                        // exact match on edge
+                        match self.closed {
+                            HistogramClosed::Left => {
+                                if i == num_bins {
+                                    num_bins - 1
+                                } else {
+                                    i
+                                }
+                            }
+                            HistogramClosed::Right => {
+                                if i == 0 {
+                                    0
+                                } else {
+                                    i - 1
+                                }
+                            }
+                        }
+                    }
+                    Err(i) => {
+                        // i is the insertion point
+                        if i == 0 {
+                            0 // out of bounds left
+                        } else if i > num_bins {
+                            num_bins - 1 // out of bounds right
+                        } else {
+                            i - 1
+                        }
+                    }
+                }
+            };
+
+            counts[bin_idx] += 1;
+            if let Some(ref mut q) = quantized {
+                q.push(bin_idx as u32);
+            }
+        }
 
         match self.output {
-            HistogramOutput::Counts => {
-                let mut counts = vec![0u64; self.bins];
-                for &x in data {
-                    let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
-                    let bin = ((xf - min_val) / bin_width) as usize;
-                    let bin = bin.min(self.bins - 1); // Clamp to last bin
-                    counts[bin] += 1;
-                }
-                ViewBuffer::from_vec_with_shape(counts, vec![self.bins])
-            }
+            HistogramOutput::Counts => ViewBuffer::from_vec_with_shape(counts, vec![num_bins]),
             HistogramOutput::Normalized => {
-                let mut counts = vec![0u64; self.bins];
-                for &x in data {
-                    let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
-                    let bin = ((xf - min_val) / bin_width) as usize;
-                    let bin = bin.min(self.bins - 1);
-                    counts[bin] += 1;
-                }
                 let total = data.len() as f64;
-                let normalized: Vec<f64> = counts.iter().map(|&c| c as f64 / total).collect();
-                ViewBuffer::from_vec_with_shape(normalized, vec![self.bins])
+                let normalized: Vec<f64> = counts
+                    .iter()
+                    .map(|&c| if total > 0.0 { c as f64 / total } else { 0.0 })
+                    .collect();
+                ViewBuffer::from_vec_with_shape(normalized, vec![num_bins])
             }
             HistogramOutput::Quantized => {
-                let mut quantized = Vec::with_capacity(data.len());
-                for &x in data {
-                    let xf: f64 = num_traits::NumCast::from(x).unwrap_or(0.0);
-                    let bin = ((xf - min_val) / bin_width) as u32;
-                    let bin = bin.min(self.bins as u32 - 1);
-                    quantized.push(bin);
-                }
-                ViewBuffer::from_vec_with_shape(quantized, shape.to_vec())
+                ViewBuffer::from_vec_with_shape(quantized.unwrap(), shape.to_vec())
             }
             HistogramOutput::Edges => {
-                let edges: Vec<f64> = (0..=self.bins)
-                    .map(|i| min_val + i as f64 * bin_width)
-                    .collect();
-                ViewBuffer::from_vec_with_shape(edges, vec![self.bins + 1])
+                let len = edges.len();
+                ViewBuffer::from_vec_with_shape(edges, vec![len])
+            }
+            HistogramOutput::Buckets => {
+                let mut buckets = Vec::with_capacity(num_bins * 4);
+                let total = data.len() as f64;
+                for i in 0..num_bins {
+                    buckets.push(edges[i]);
+                    buckets.push(edges[i + 1]);
+                    buckets.push(counts[i] as f64);
+                    buckets.push(if total > 0.0 {
+                        counts[i] as f64 / total
+                    } else {
+                        0.0
+                    });
+                }
+                ViewBuffer::from_vec_with_shape(buckets, vec![num_bins, 4])
             }
         }
     }
@@ -154,10 +292,16 @@ impl Op for HistogramOp {
     }
 
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
+        let num_bins = if let Some(ref edges) = self.edges {
+            edges.len().saturating_sub(1)
+        } else {
+            self.bins
+        };
         match self.output {
-            HistogramOutput::Counts | HistogramOutput::Normalized => vec![self.bins],
+            HistogramOutput::Counts | HistogramOutput::Normalized => vec![num_bins],
             HistogramOutput::Quantized => inputs[0].to_vec(),
-            HistogramOutput::Edges => vec![self.bins + 1],
+            HistogramOutput::Edges => vec![num_bins + 1],
+            HistogramOutput::Buckets => vec![num_bins, 4],
         }
     }
 
@@ -167,6 +311,7 @@ impl Op for HistogramOp {
             HistogramOutput::Normalized => DType::F64,
             HistogramOutput::Quantized => DType::U32,
             HistogramOutput::Edges => DType::F64,
+            HistogramOutput::Buckets => DType::F64,
         }
     }
 
@@ -191,7 +336,14 @@ impl Op for HistogramOp {
         _input_shapes: &[&[usize]],
         _input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
-        if self.bins == 0 {
+        if let Some(ref edges) = self.edges {
+            if edges.len() < 2 {
+                return Err(ValidationError::InvalidParameter {
+                    param: "edges".to_string(),
+                    reason: "edges must contain at least 2 values".to_string(),
+                });
+            }
+        } else if self.bins == 0 {
             return Err(ValidationError::InvalidParameter {
                 param: "bins".to_string(),
                 reason: "bins must be > 0".to_string(),
@@ -211,7 +363,9 @@ impl Op for HistogramOp {
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self.output {
             HistogramOutput::Counts => OutputDTypeRule::ForceU64,
-            HistogramOutput::Normalized | HistogramOutput::Edges => OutputDTypeRule::ForceF64,
+            HistogramOutput::Normalized | HistogramOutput::Edges | HistogramOutput::Buckets => {
+                OutputDTypeRule::ForceF64
+            }
             HistogramOutput::Quantized => OutputDTypeRule::ForceU32,
         }
     }

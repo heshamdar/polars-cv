@@ -109,7 +109,7 @@ match op_spec.op.as_str() {
 | `blob` | Binary | VIEW protocol serialization |
 | `list` | List(...) | Typed nested list preserving dtype |
 | `array` | Array(..., shape) | Fixed-size array preserving dtype |
-| `native` | Varies | Domain-dependent: scalar → Float64, vector → List(Float64), contour → List[Struct] |
+| `native` | Varies | Domain-dependent: scalar → Float64, vector → List(Float64), contour → List[Struct], histogram → List[Struct] (buckets) |
 
 ### Planning-Time Type Inference (`unified_output_dtype`)
 

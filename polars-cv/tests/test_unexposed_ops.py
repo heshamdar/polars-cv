@@ -393,7 +393,12 @@ class TestHistogramPolarsCV:
         df = pl.DataFrame({"img": [encode_png(gray_rgb)]})
 
         # Histogram should transition to vector domain and return counts
-        pipe = Pipeline().source("image_bytes").grayscale().histogram(bins=256)
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=256, output="counts")
+        )
 
         result = df.select(output=pl.col("img").cv.pipe(pipe).sink("list"))
 
@@ -456,7 +461,7 @@ class TestHistogramPolarsCV:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .histogram(bins=bins, range=(0, 256))
+            .histogram(bins=bins, range=(0, 256), output="counts")
         )
 
         result = df.select(output=pl.col("img").cv.pipe(pipe).sink("list"))
@@ -490,7 +495,7 @@ class TestHistogramPolarsCV:
             Pipeline()
             .source("image_bytes")
             .grayscale()
-            .histogram(bins=bins, range=value_range)
+            .histogram(bins=bins, range=value_range, output="counts")
         )
 
         result = df.select(output=pl.col("img").cv.pipe(pipe).sink("list"))
@@ -570,3 +575,107 @@ class TestHistogramPolarsCV:
         assert actual.max() < bins
         # Values should match reference quantization
         np.testing.assert_array_equal(actual, bin_indices)
+
+    def test_histogram_custom_edges(
+        self,
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """Histogram with explicit list of bin edges."""
+        from polars_cv import Pipeline
+
+        # Image with values 10, 20, 30, 40
+        arr = np.array([[10, 20], [30, 40]], dtype=np.uint8)
+        arr = np.stack([arr] * 3, axis=-1)
+        df = pl.DataFrame({"img": [encode_png(arr)]})
+
+        # Edges: [0, 15, 25, 50]
+        # Bins: [0, 15), [15, 25), [25, 50]
+        # 10 -> bin 0
+        # 20 -> bin 1
+        # 30, 40 -> bin 2
+        edges = [0.0, 15.0, 25.0, 50.0]
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=edges, output="counts")
+        )
+
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("list"))
+        counts = result["out"][0].to_list()
+
+        assert len(counts) == 3
+        assert counts == [1, 1, 2]
+
+    def test_histogram_closed_interval(
+        self,
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """Histogram closed interval parameter."""
+        from polars_cv import Pipeline
+
+        arr = np.array([[10, 20], [30, 40]], dtype=np.uint8)
+        arr = np.stack([arr] * 3, axis=-1)
+        df = pl.DataFrame({"img": [encode_png(arr)]})
+
+        edges = [10.0, 20.0, 30.0, 40.0]
+
+        # Left closed: [10, 20), [20, 30), [30, 40]
+        # 10 -> bin 0
+        # 20 -> bin 1
+        # 30, 40 -> bin 2
+        pipe_left = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=edges, closed="left", output="counts")
+        )
+        result_left = df.select(out=pl.col("img").cv.pipe(pipe_left).sink("list"))
+        assert result_left["out"][0].to_list() == [1, 1, 2]
+
+        # Right closed: [10, 20], (20, 30], (30, 40]
+        # 10, 20 -> bin 0
+        # 30 -> bin 1
+        # 40 -> bin 2
+        pipe_right = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=edges, closed="right", output="counts")
+        )
+        result_right = df.select(out=pl.col("img").cv.pipe(pipe_right).sink("list"))
+        assert result_right["out"][0].to_list() == [2, 1, 1]
+
+    def test_histogram_buckets_output(
+        self,
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """Histogram buckets output format."""
+        from polars_cv import Pipeline
+
+        arr = np.array([[10, 20], [30, 40]], dtype=np.uint8)
+        arr = np.stack([arr] * 3, axis=-1)
+        df = pl.DataFrame({"img": [encode_png(arr)]})
+
+        edges = [0.0, 25.0, 50.0]
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=edges, output="buckets")
+        )
+
+        result = df.select(out=pl.col("img").cv.pipe(pipe).sink("native"))
+        buckets = result["out"][0]
+
+        assert len(buckets) == 2
+
+        assert buckets[0]["lower_edge"] == 0.0
+        assert buckets[0]["upper_edge"] == 25.0
+        assert buckets[0]["count"] == 2
+        assert buckets[0]["normalized"] == 0.5
+
+        assert buckets[1]["lower_edge"] == 25.0
+        assert buckets[1]["upper_edge"] == 50.0
+        assert buckets[1]["count"] == 2
+        assert buckets[1]["normalized"] == 0.5

@@ -96,7 +96,7 @@ result = df.with_columns(
 - **Compute**: `normalize`, `scale`, `clamp`, `relu`, `cast`.
 - **Geometry**: `extract_contours`, `rasterize`, `area`, `perimeter`, `centroid`, `bounding_box`.
 - **Points**: `normalize`, `translate`, `scale`, `rotate`, `distance`, `manhattan_distance`, `distance_to_contour`, `signed_distance_to_contour`, `nearest_point_on_contour`, `angle_to`, `midpoint`, `interpolate`, `within_bbox`.
-- **Analysis**: `histogram`, `perceptual_hash`, `extract_shape`.
+- **Analysis**: `histogram` (computes buckets with edges, counts, and normalized frequencies), `perceptual_hash`, `extract_shape`.
 - **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_percentile`.
 - **Detection Metrics**: Precision-Recall, AP, mAP, FROC, LROC, F1, confusion matrix, bootstrap confidence intervals.
 

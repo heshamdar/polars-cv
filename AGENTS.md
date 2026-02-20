@@ -80,7 +80,8 @@ Pipelines track data domain through operations:
 | `buffer` | Multi-dimensional arrays (images) | After `source("image_bytes")` |
 | `contour` | Geometry (vectors of points) | After `extract_contours()` |
 | `scalar` | Single numeric values | After `reduce_sum()` |
-| `vector` | Multiple numeric values | After `perceptual_hash()`, `bounding_box()` |
+| `vector` | Multiple numeric values | After `perceptual_hash()`, `bounding_box()`, `histogram(output="counts")` |
+| `histogram` | Histogram buckets (extents and counts) | After `histogram(output="buckets")` |
 
 ### Expression Namespaces
 

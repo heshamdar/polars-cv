@@ -74,11 +74,3 @@ all_interops = [
 
 # Serialization support
 serde = ["dep:serde", "dep:serde_json", "dep:bytemuck"]
-
-[[example]]
-name = "demo"
-required-features = ["image_interop"]
-
-[[example]]
-name = "comprehensive_demo"
-required-features = ["image_interop"]

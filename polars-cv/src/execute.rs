@@ -1170,9 +1170,27 @@ pub fn resolve_op(
 
         // Histogram operation
         "histogram" => {
-            use view_buffer::ops::histogram::{HistogramOp, HistogramOutput};
+            use view_buffer::ops::histogram::{HistogramClosed, HistogramOp, HistogramOutput};
 
-            let bins = get_param(&op_spec.params, "bins")?.resolve_usize(row_idx, expr_columns)?;
+            let bins_param = get_param(&op_spec.params, "bins")?;
+            let (bins_count, edges) = if let Some(edges) = bins_param.as_f64_vec() {
+                // If it's a vector, those are the edges
+                (edges.len().saturating_sub(1), Some(edges))
+            } else {
+                (bins_param.resolve_usize(row_idx, expr_columns)?, None)
+            };
+
+            // Parse closed mode
+            let closed_str = get_param(&op_spec.params, "closed")?.resolve_string()?;
+            let closed = match closed_str.as_str() {
+                "left" => HistogramClosed::Left,
+                "right" => HistogramClosed::Right,
+                other => {
+                    return Err(
+                        polars_err!(ComputeError: "Unknown histogram closed mode: {}", other),
+                    )
+                }
+            };
 
             // Parse output mode
             let output_str = get_param(&op_spec.params, "output")?.resolve_string()?;
@@ -1181,6 +1199,7 @@ pub fn resolve_op(
                 "normalized" => HistogramOutput::Normalized,
                 "quantized" => HistogramOutput::Quantized,
                 "edges" => HistogramOutput::Edges,
+                "buckets" => HistogramOutput::Buckets,
                 other => {
                     return Err(
                         polars_err!(ComputeError: "Unknown histogram output mode: {}", other),
@@ -1189,7 +1208,9 @@ pub fn resolve_op(
             };
 
             // Parse optional range
-            let range = if op_spec.params.contains_key("range_min") {
+            let range = if op_spec.params.contains_key("range_min")
+                && op_spec.params.contains_key("range_max")
+            {
                 let range_min =
                     get_param(&op_spec.params, "range_min")?.resolve_f64(row_idx, expr_columns)?;
                 let range_max =
@@ -1199,7 +1220,12 @@ pub fn resolve_op(
                 None
             };
 
-            let mut op = HistogramOp::new(bins).with_output(output);
+            let mut op = HistogramOp::new(bins_count)
+                .with_output(output)
+                .with_closed(closed);
+            if let Some(e) = edges {
+                op = op.with_edges(e);
+            }
             if let Some((min, max)) = range {
                 op = op.with_range(min, max);
             }

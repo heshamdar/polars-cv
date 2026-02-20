@@ -85,6 +85,7 @@ class Pipeline:
     DOMAIN_CONTOUR = "contour"
     DOMAIN_SCALAR = "scalar"
     DOMAIN_VECTOR = "vector"
+    DOMAIN_HISTOGRAM = "histogram"
 
     # Mapping of operations to the domain they produce
     # Operations not listed here preserve the current domain
@@ -175,22 +176,30 @@ class Pipeline:
 
             # Param-dependent override: histogram mode determines dtype & ndim
             if op_name == "histogram":
-                mode_param = op_spec.params.get("output_mode")
+                mode_param = op_spec.params.get("output")
                 if mode_param and not mode_param.is_expr:
                     mode = mode_param.value
-                    if mode == 3:  # QUANTIZED enum value
+                    if mode == "quantized":
                         domain = Pipeline.DOMAIN_BUFFER
                         dtype = "u32"
                         # ndim remains same – skip generic ndim logic below
                         continue
-                    elif mode == 0:  # COUNTS
+                    elif mode == "buckets":
+                        domain = Pipeline.DOMAIN_HISTOGRAM
+                        # dtype is structurally defined by the native encoder
+                        dtype = "auto"
+                        ndim = 1
+                        continue
+                    elif mode == "counts":
                         dtype = "u64"
                         ndim = 1
                     else:  # NORMALIZED or EDGES
                         dtype = "f64"
                         ndim = 1
                 else:
-                    # Default mode is counts -> ndim=1
+                    # Default mode is buckets -> ndim=1
+                    domain = Pipeline.DOMAIN_HISTOGRAM
+                    dtype = "auto"
                     ndim = 1
                 continue  # ndim already set; skip generic ndim logic
 
@@ -2158,18 +2167,21 @@ class Pipeline:
 
     def histogram(
         self,
-        bins: int = 256,
+        bins: int | list[float] = 256,
         range: tuple[float, float] | None = None,
-        output: str = "counts",
+        closed: str = "left",
+        output: str = "buckets",
     ) -> "Pipeline":
         """
         Compute pixel value histogram.
 
         Args:
-            bins: Number of bins (default 256).
+            bins: Number of bins (default 256) or explicit list of bin edges.
             range: (min, max) tuple. Auto-detected if None.
-            output: "counts" (bin counts), "normalized" (sum to 1.0),
-                    "quantized" (pixel indices), "edges" (bin edges).
+            closed: "left" or "right" interval inclusiveness (default "left").
+            output: "buckets" (list of structs), "counts" (bin counts),
+                    "normalized" (sum to 1.0), "quantized" (pixel indices),
+                    "edges" (bin edges).
 
         Example:
             >>> Pipeline().source("image_bytes").grayscale().histogram(bins=8)
@@ -2184,10 +2196,15 @@ class Pipeline:
             msg = f"Invalid histogram output mode '{output}'. Valid: {valid}"
             raise ValueError(msg) from e
 
+        if closed not in ("left", "right"):
+            msg = f"Invalid closed mode '{closed}'. Valid: ['left', 'right']"
+            raise ValueError(msg)
+
         new = self._clone()
 
         params: dict[str, ParamValue] = {
             "bins": ParamValue(is_expr=False, value=bins),
+            "closed": ParamValue(is_expr=False, value=closed),
             "output": ParamValue(is_expr=False, value=output_mode.value),
         }
 
@@ -2202,6 +2219,9 @@ class Pipeline:
             # Quantized preserves the buffer domain
             new._current_domain = self.DOMAIN_BUFFER
             new._output_dtype = "u32"
+        elif output_mode == HistogramOutput.BUCKETS:
+            new._current_domain = self.DOMAIN_HISTOGRAM
+            new._output_dtype = "auto"
         else:
             # All other modes return a vector
             new._current_domain = self.DOMAIN_VECTOR

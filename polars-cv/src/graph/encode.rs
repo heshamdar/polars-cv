@@ -13,10 +13,10 @@ use view_buffer::ops::NodeOutput;
 use view_buffer::{GeometryOp, Op, ViewBuffer};
 
 use crate::contour::contour_to_anyvalue;
-use crate::pipeline::{PipelineSpec, SinkSpec, SourceSpec};
+use crate::pipeline::{PipelineSpec, SourceSpec};
 
 use super::decode::dtype_str_to_polars;
-use super::types::{OutputValue, TypedBufferData};
+use super::types::{OutputSpec, OutputValue, TypedBufferData};
 
 /// Execute a geometry operation with typed domain dispatch.
 ///
@@ -596,12 +596,17 @@ fn slice_typed_data(data: &TypedBufferData, start: usize, end: usize) -> TypedBu
 /// Dispatches to the appropriate encoding based on the output domain.
 pub(crate) fn encode_node_output(
     output: &NodeOutput,
-    sink: &SinkSpec,
+    spec: &OutputSpec,
 ) -> Result<OutputValue, String> {
+    let sink = &spec.sink;
     let format = sink.format.as_str();
     match (output, format) {
         (NodeOutput::Buffer(buf), "numpy" | "torch") => {
             Ok(OutputValue::NumpyStruct((**buf).clone()))
+        }
+        (NodeOutput::Buffer(buf), "native") if spec.expected_domain == "histogram" => {
+            let contig = buf.to_contiguous();
+            Ok(OutputValue::HistogramBuckets(contig.as_slice::<f64>().to_vec()))
         }
         (NodeOutput::Buffer(buf), "png" | "jpeg" | "webp" | "tiff" | "blob") => {
             let pipeline = PipelineSpec {
@@ -711,6 +716,52 @@ pub(super) fn contour_struct_dtype() -> DataType {
         Field::new("is_closed".into(), DataType::Boolean),
     ])
 }
+
+/// Convert flat f64 histogram buckets [lower_edge, upper_edge, count, normalized] to Polars List(Struct).
+pub(super) fn histogram_buckets_to_polars_value(
+    buckets: &[f64],
+) -> PolarsResult<AnyValue<'static>> {
+    if buckets.is_empty() {
+        return Ok(AnyValue::Null);
+    }
+    let num_bins = buckets.len() / 4;
+    let mut lowers = Vec::with_capacity(num_bins);
+    let mut uppers = Vec::with_capacity(num_bins);
+    let mut counts = Vec::with_capacity(num_bins);
+    let mut norms = Vec::with_capacity(num_bins);
+
+    for i in 0..num_bins {
+        lowers.push(buckets[i * 4]);
+        uppers.push(buckets[i * 4 + 1]);
+        counts.push(buckets[i * 4 + 2] as u64);
+        norms.push(buckets[i * 4 + 3]);
+    }
+
+    let lowers_s = Series::new("lower_edge".into(), lowers);
+    let uppers_s = Series::new("upper_edge".into(), uppers);
+    let counts_s = Series::new("count".into(), counts);
+    let norms_s = Series::new("normalized".into(), norms);
+
+    let struct_chunked = StructChunked::from_series(
+        "".into(),
+        num_bins,
+        [&lowers_s, &uppers_s, &counts_s, &norms_s].iter().copied(),
+    )?;
+
+    let series = struct_chunked.into_series();
+    Ok(AnyValue::List(series))
+}
+
+/// Shared histogram bucket struct dtype.
+pub(super) fn histogram_struct_dtype() -> DataType {
+    DataType::Struct(vec![
+        Field::new("lower_edge".into(), DataType::Float64),
+        Field::new("upper_edge".into(), DataType::Float64),
+        Field::new("count".into(), DataType::UInt64),
+        Field::new("normalized".into(), DataType::Float64),
+    ])
+}
+
 pub(crate) fn default_domain() -> String {
     "buffer".to_string()
 }
