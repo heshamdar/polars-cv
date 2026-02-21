@@ -175,14 +175,13 @@ cargo clippy --workspace
 
 These are known problems. When you encounter them, fix them if in scope, or note them here if not.
 
-### Legacy Pipeline Path (Should Be Removed)
+### Legacy Pipeline Path (Partially Removed)
 
-The old `.cv.pipeline(pipe)` method in `expressions.py` and the entire `execute.rs` / `pipeline.rs` path in Rust represent the **pre-graph execution model**. This has been superseded by the **unified graph approach** (`.cv.pipe(pipe).sink(format)` → `PipelineGraph` → `vb_graph`).
+`CvNamespace.pipeline()`, `apply_pipeline()`, and `Pipeline.sink()` have been removed from Python.
+The legacy Rust row-by-row executor in `execute.rs` was also removed; the module now only exposes shared graph helpers (`resolve_op`, decode helpers, sink encoding).
 
-**What needs removal:**
-- `CvNamespace.pipeline()` method in `expressions.py`
-- `execute.rs` — marked `#![allow(dead_code)]`, used only by the old path. The `resolve_op` function within it is still used by `graph/encode.rs`, so that function (or its logic) needs to be preserved/migrated before the file can be removed.
-- `pipeline.rs` — the Rust `PipelineSpec` / `SourceSpec` / `SinkSpec` types. The graph system has its own types in `graph/types.rs`.
+Remaining cleanup:
+- Consolidate `pipeline.rs` serde types (`PipelineSpec`, `SourceSpec`, `SinkSpec`, `OpSpec`) into graph-owned types if desired.
 
 ### Tiling (Currently No-Op)
 
@@ -190,7 +189,7 @@ Tiling was implemented to improve cache efficiency for large images but didn't d
 
 ### `vb_graph_multi` Ghost Reference
 
-`expressions.py` docstring mentions `vb_graph_multi` which no longer exists. `vb_graph` handles both single and multi-output. Update the docstring.
+Fixed: Python expression docs now reference only `vb_graph`.
 
 ### Inconsistent Test Fixtures
 

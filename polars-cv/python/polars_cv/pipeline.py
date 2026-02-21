@@ -30,8 +30,6 @@ from polars_cv._types import (
     PadPosition,
     ParamValue,
     ShapeHints,
-    SinkFormat,
-    SinkSpec,
     SourceFormat,
     SourceSpec,
 )
@@ -115,7 +113,6 @@ class Pipeline:
         self._source: SourceSpec | None = None
         self._shape_hints: ShapeHints = ShapeHints()
         self._ops: list[OpSpec] = []
-        self._sink: SinkSpec | None = None
         self._expr_refs: list[pl.Expr] = []
         # Domain tracking for typed pipelines
         self._current_domain: str = self.DOMAIN_BUFFER
@@ -287,7 +284,6 @@ class Pipeline:
         new._source = self._source
         new._shape_hints = copy.deepcopy(self._shape_hints)
         new._ops = self._ops.copy()
-        new._sink = self._sink
         new._expr_refs = self._expr_refs.copy()
         new._current_domain = self._current_domain
         new._output_dtype = self._output_dtype
@@ -1075,7 +1071,7 @@ class Pipeline:
 
         Example:
             ```python
-            >>> pipe = Pipeline().source("image_bytes").relu().sink("numpy")
+            >>> pipe = Pipeline().source("image_bytes").relu()
             ```
         """
         self._validate_domain(self.DOMAIN_BUFFER, "relu")
@@ -1662,13 +1658,13 @@ class Pipeline:
         Example:
             ```python
             >>> # Zero-copy 90-degree rotation
-            >>> pipe = Pipeline().source("image_bytes").rotate(90).sink("numpy")
+            >>> pipe = Pipeline().source("image_bytes").rotate(90)
             >>>
             >>> # Arbitrary angle with expansion
-            >>> pipe = Pipeline().source("image_bytes").rotate(45, expand=True).sink("numpy")
+            >>> pipe = Pipeline().source("image_bytes").rotate(45, expand=True)
             >>>
             >>> # Dynamic angle from column
-            >>> pipe = Pipeline().source("image_bytes").rotate(pl.col("angle")).sink("numpy")
+            >>> pipe = Pipeline().source("image_bytes").rotate(pl.col("angle"))
             ```
         """
         self._validate_domain(self.DOMAIN_BUFFER, "rotate")
@@ -2425,91 +2421,18 @@ class Pipeline:
         new._ops.append(OpSpec(op="contour_convex_hull", params={}))
         return new
 
-    # --- Sink (required, ends the chain) ---
-
-    def sink(
-        self,
-        format: str,
-        *,
-        quality: int = 85,
-        shape: list[int] | None = None,
-    ) -> "Pipeline":
-        """
-        Define output format.
-
-        Args:
-            format: "numpy", "png", "jpeg", "blob", "array", "list", "native".
-            quality: JPEG quality (1-100).
-            shape: Required for "array" format.
-        """
-        new = self._clone()
-
-        try:
-            fmt = SinkFormat(format)
-        except ValueError as e:
-            valid = [f.value for f in SinkFormat]
-            msg = f"Invalid sink format '{format}'. Valid: {valid}"
-            raise ValueError(msg) from e
-
-        if fmt == SinkFormat.ARRAY and shape is None:
-            # Check if shape is deterministic in the pipeline
-            if not new._shape_hints.has_all_dims():
-                msg = (
-                    "shape is required for 'array' sink format when output shape is not deterministic. "
-                    "Provide 'shape' in .sink() or use .resize()/.assert_shape() earlier."
-                )
-                raise ValueError(msg)
-
-        # Enforce known dtype for list/array sinks — Polars requires the
-        # inner dtype and nesting depth at planning time.
-        # Exception: list/array *sources* with "auto" are fine because Rust
-        # resolves the dtype from the Polars column type at planning time.
-        if fmt in (SinkFormat.LIST, SinkFormat.ARRAY):
-            if new._output_dtype == "auto":
-                source_can_resolve = new._source is not None and new._source.format in (
-                    SourceFormat.LIST,
-                    SourceFormat.ARRAY,
-                )
-                if not source_can_resolve:
-                    msg = (
-                        f"Cannot determine output dtype for '{format}' sink. "
-                        f"Image sources have variable dtypes (u8, u16, f32, f64). "
-                        f"Either:\n"
-                        f"  1. Add .cast('f32') or .cast('u8') before the sink\n"
-                        f"  2. Specify dtype in .source(..., dtype='f32')\n"
-                        f"  3. Use an operation that determines dtype "
-                        f"(e.g., .normalize(), .threshold())"
-                    )
-                    raise ValueError(msg)
-
-        new._sink = SinkSpec(format=fmt, quality=quality, shape=shape)
-
-        return new
-
     # --- Validation ---
 
     def validate(self) -> None:
         """
-        Validate that the pipeline is complete and well-formed.
+        Validate that the pipeline is well-formed.
 
         Raises:
-            ValueError: If pipeline is incomplete or invalid.
+            ValueError: If pipeline is invalid.
         """
         if self._source is None:
             msg = "Pipeline must have a source. Call .source() first."
             raise ValueError(msg)
-        if self._sink is None:
-            msg = "Pipeline must have a sink. Call .sink() at the end."
-            raise ValueError(msg)
-
-    def has_sink(self) -> bool:
-        """
-        Check if the pipeline has a sink defined.
-
-        Returns:
-            True if the pipeline has a sink defined.
-        """
-        return self._sink is not None
 
     def has_source(self) -> bool:
         """
@@ -2541,7 +2464,7 @@ class Pipeline:
 
         Example:
             ```python
-            >>> pipe = Pipeline().source("image_bytes").resize(100, 200).sink("numpy")
+            >>> pipe = Pipeline().source("image_bytes").resize(100, 200)
             >>> graph = pipe.to_graph(pl.col("image"))
             >>> expr = graph.to_expr()
             ```
@@ -2660,7 +2583,7 @@ class Pipeline:
 
     def _to_json(self) -> str:
         """
-        Serialize pipeline to JSON for the Rust plugin.
+        Serialize a linear pipeline spec to JSON for compatibility tests.
 
         Returns:
             JSON string representation of the pipeline.
@@ -2674,9 +2597,6 @@ class Pipeline:
             "source": self._source.to_dict() if self._source else None,
             "ops": [op.to_dict() for op in self._ops],
         }
-
-        if self._sink is not None:
-            spec["sink"] = self._sink.to_dict()
 
         if self._shape_hints.has_any():
             spec["shape_hints"] = self._shape_hints.to_dict()
@@ -2711,7 +2631,5 @@ class Pipeline:
         for op in self._ops:
             params_str = ", ".join(f"{k}={v.value}" for k, v in op.params.items())
             parts.append(f"{op.op}({params_str})")
-        if self._sink:
-            parts.append(f"sink({self._sink.format.value!r})")
 
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"

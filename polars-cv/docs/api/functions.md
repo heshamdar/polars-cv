@@ -111,7 +111,7 @@ options = CloudOptions(
     aws_secret_access_key="...",
 )
 
-pipe = Pipeline().source("file_path", cloud_options=options).sink("numpy")
+pipe = Pipeline().source("file_path", cloud_options=options)
 ```
 
 ### HashAlgorithm

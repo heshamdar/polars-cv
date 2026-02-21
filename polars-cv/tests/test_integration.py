@@ -131,14 +131,12 @@ class TestPipelineBuilderIntegration:
 
     def test_simple_pipeline_to_json(self) -> None:
         """Test simple pipeline serializes to valid JSON."""
-        pipe = (
-            Pipeline().source("image_bytes").resize(height=224, width=224).sink("numpy")
-        )
+        pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
 
         json_str = pipe._to_json()
         assert '"source"' in json_str
         assert '"ops"' in json_str
-        assert '"sink"' in json_str
+        assert '"sink"' not in json_str
 
     def test_complex_pipeline_to_json(self) -> None:
         """Test complex pipeline serializes correctly."""
@@ -153,7 +151,6 @@ class TestPipelineBuilderIntegration:
             .cast("f32")
             .scale(1.0 / 255.0)
             .normalize(method="minmax")
-            .sink("numpy")
         )
 
         json_str = pipe._to_json()
@@ -169,7 +166,6 @@ class TestPipelineBuilderIntegration:
             Pipeline()
             .source("image_bytes")
             .resize(height=pl.col("h"), width=pl.col("w"))
-            .sink("numpy")
         )
 
         json_str = pipe._to_json()
@@ -191,12 +187,13 @@ class TestPolarsNamespace:
         expr = pl.col("images")
         assert hasattr(expr, "cv")
 
-    def test_cv_pipeline_method_exists(self) -> None:
-        """Test that pipeline method exists on namespace."""
+    def test_cv_pipeline_method_removed(self) -> None:
+        """Test that legacy pipeline method is removed from namespace."""
         import polars_cv.expressions  # noqa: F401
 
         expr = pl.col("images")
-        assert hasattr(expr.cv, "pipeline")
+        assert not hasattr(expr.cv, "pipeline")
+        assert hasattr(expr.cv, "pipe")
 
 
 # Check if plugin is available by checking if the .so file exists
@@ -277,22 +274,20 @@ class TestPipelineValidation:
     """Test pipeline validation."""
 
     def test_incomplete_pipeline_raises(self) -> None:
-        """Test that incomplete pipeline raises on validation."""
+        """Test source-only pipeline is considered valid."""
         pipe = Pipeline().source()
-
-        with pytest.raises(ValueError, match="must have a sink"):
-            pipe.validate()
+        pipe.validate()  # Should not raise
 
     def test_pipeline_without_source_raises(self) -> None:
         """Test that pipeline without source raises on to_json."""
-        pipe = Pipeline().resize(height=100, width=100).sink("numpy")
+        pipe = Pipeline().resize(height=100, width=100)
 
         with pytest.raises(ValueError, match="must have a source"):
             pipe._to_json()
 
     def test_valid_pipeline_passes_validation(self) -> None:
         """Test that valid pipeline passes validation."""
-        pipe = Pipeline().source().resize(height=100, width=100).sink("numpy")
+        pipe = Pipeline().source().resize(height=100, width=100)
 
         pipe.validate()  # Should not raise
 
@@ -302,13 +297,13 @@ class TestExpressionTracking:
 
     def test_no_expressions(self) -> None:
         """Test pipeline with no expressions has empty expr list."""
-        pipe = Pipeline().source().resize(height=100, width=100).sink("numpy")
+        pipe = Pipeline().source().resize(height=100, width=100)
 
         assert len(pipe._get_expr_columns()) == 0
 
     def test_single_expression(self) -> None:
         """Test single expression is tracked."""
-        pipe = Pipeline().source().resize(height=pl.col("h"), width=100).sink("numpy")
+        pipe = Pipeline().source().resize(height=pl.col("h"), width=100)
 
         exprs = pipe._get_expr_columns()
         assert len(exprs) == 1
@@ -320,7 +315,6 @@ class TestExpressionTracking:
             .source()
             .resize(height=pl.col("h"), width=pl.col("w"))
             .crop(top=pl.col("t"), left=pl.col("l"))
-            .sink("numpy")
         )
 
         exprs = pipe._get_expr_columns()
@@ -329,7 +323,7 @@ class TestExpressionTracking:
     def test_duplicate_expressions_not_tracked_twice(self) -> None:
         """Test same expression object is not duplicated."""
         h_expr = pl.col("h")
-        pipe = Pipeline().source().resize(height=h_expr, width=h_expr).sink("numpy")
+        pipe = Pipeline().source().resize(height=h_expr, width=h_expr)
 
         exprs = pipe._get_expr_columns()
         # Same expression object used twice should only be tracked once

@@ -65,8 +65,8 @@ def create_blob_data(n_rows: int, shape: tuple[int, int] = (256, 256)) -> list[b
     images = create_test_images(n_rows, shape)
     df = pl.DataFrame({"img": images})
 
-    pipeline = Pipeline().source("image_bytes").sink("blob")
-    result = df.select(pl.col("img").cv.pipeline(pipeline))
+    pipeline = Pipeline().source("image_bytes")
+    result = df.select(pl.col("img").cv.pipe(pipeline).sink("blob"))
 
     return result["img"].to_list()
 
@@ -90,14 +90,14 @@ def benchmark_image_bytes_source(
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
 
-    pipeline = Pipeline().source("image_bytes").sink("numpy")
+    pipeline = Pipeline().source("image_bytes")
 
     # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipeline(pipeline))
+    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("img").cv.pipeline(pipeline))
+    result = df.select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
     _ = result["img"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -121,14 +121,14 @@ def benchmark_blob_source(
     blobs = create_blob_data(n_rows, size)
     df = pl.DataFrame({"blob": blobs})
 
-    pipeline = Pipeline().source("blob").sink("numpy")
+    pipeline = Pipeline().source("blob")
 
     # Warmup
-    _ = df.head(5).select(pl.col("blob").cv.pipeline(pipeline))
+    _ = df.head(5).select(pl.col("blob").cv.pipe(pipeline).sink("numpy"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("blob").cv.pipeline(pipeline))
+    result = df.select(pl.col("blob").cv.pipe(pipeline).sink("numpy"))
     _ = result["blob"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -151,14 +151,14 @@ def benchmark_list_source_explicit_dtype(
     """Benchmark list source with explicit dtype."""
     df = create_list_data(n_rows, size)
 
-    pipeline = Pipeline().source("list", dtype="u8").sink("numpy")
+    pipeline = Pipeline().source("list", dtype="u8")
 
     # Warmup
-    _ = df.head(5).select(pl.col("arr").cv.pipeline(pipeline))
+    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("arr").cv.pipeline(pipeline))
+    result = df.select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
     _ = result["arr"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -182,14 +182,14 @@ def benchmark_list_source_auto_dtype(
     df = create_list_data(n_rows, size)
 
     # No explicit dtype - will be inferred
-    pipeline = Pipeline().source("list").sink("numpy")
+    pipeline = Pipeline().source("list")
 
     # Warmup
-    _ = df.head(5).select(pl.col("arr").cv.pipeline(pipeline))
+    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(pl.col("arr").cv.pipeline(pipeline))
+    result = df.select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
     _ = result["arr"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -213,14 +213,14 @@ def benchmark_numpy_output(
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
 
-    pipeline = Pipeline().source("image_bytes").sink("numpy")
+    pipeline = Pipeline().source("image_bytes")
 
     # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipeline(pipeline))
+    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(output=pl.col("img").cv.pipeline(pipeline))
+    result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("numpy"))
     # Access all struct values to force evaluation
     _ = result["output"].to_list()
     elapsed = time.perf_counter() - start
@@ -245,14 +245,14 @@ def benchmark_png_output(
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
 
-    pipeline = Pipeline().source("image_bytes").sink("png")
+    pipeline = Pipeline().source("image_bytes")
 
     # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipeline(pipeline))
+    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("png"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(output=pl.col("img").cv.pipeline(pipeline))
+    result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("png"))
     _ = result["output"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 
@@ -276,14 +276,14 @@ def benchmark_blob_output(
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
 
-    pipeline = Pipeline().source("image_bytes").sink("blob")
+    pipeline = Pipeline().source("image_bytes")
 
     # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipeline(pipeline))
+    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("blob"))
 
     # Benchmark
     start = time.perf_counter()
-    result = df.select(output=pl.col("img").cv.pipeline(pipeline))
+    result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("blob"))
     _ = result["output"].to_list()  # Force evaluation
     elapsed = time.perf_counter() - start
 

@@ -40,7 +40,7 @@ import polars as pl
 from polars_cv import Pipeline
 
 # Create a simple test pipeline
-pipe = Pipeline().source("image_bytes").grayscale().sink("png")
+pipe = Pipeline().source("image_bytes").grayscale()
 print("polars-cv installed successfully!")
 ```
 
@@ -85,7 +85,7 @@ import torch
 from polars_cv import Pipeline, numpy_from_struct
 
 # Pipeline with torch-compatible output
-pipe = Pipeline().source("image_bytes").normalize().sink("torch")
+pipe = Pipeline().source("image_bytes").normalize()
 
 # Convert to PyTorch tensor (result is a struct with data, dtype, shape fields)
 tensor = torch.from_numpy(numpy_from_struct(result))

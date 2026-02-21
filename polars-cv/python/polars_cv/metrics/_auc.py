@@ -6,7 +6,7 @@ import numpy as np
 import polars as pl
 
 
-def trapz_auc(x: np.ndarray, y: np.ndarray) -> float:
+def trapz_auc(x: np.ndarray, y: np.ndarray, normalize: bool = False) -> float:
     """Integrate y(x) with the trapezoidal rule.
 
     Args:
@@ -20,10 +20,15 @@ def trapz_auc(x: np.ndarray, y: np.ndarray) -> float:
         return 0.0
     if x.size == 1:
         return 0.0
+
+    if normalize:
+        return float(np.trapezoid(y, x)) / (x[-1] - x[0])
     return float(np.trapezoid(y, x))
 
 
-def partial_auc(x: np.ndarray, y: np.ndarray, lo: float, hi: float) -> float:
+def partial_auc(
+    x: np.ndarray, y: np.ndarray, lo: float, hi: float, normalize: bool = False
+) -> float:
     """Compute partial AUC over ``[lo, hi]`` with linear interpolation.
 
     Args:
@@ -57,7 +62,7 @@ def partial_auc(x: np.ndarray, y: np.ndarray, lo: float, hi: float) -> float:
     if not clipped_x:
         y_lo = _interp(x, y, lo)
         y_hi = _interp(x, y, hi)
-        return trapz_auc(np.array([lo, hi]), np.array([y_lo, y_hi]))
+        return trapz_auc(np.array([lo, hi]), np.array([y_lo, y_hi]), normalize)
 
     if clipped_x[0] > lo:
         clipped_x.insert(0, lo)
@@ -66,7 +71,7 @@ def partial_auc(x: np.ndarray, y: np.ndarray, lo: float, hi: float) -> float:
         clipped_x.append(hi)
         clipped_y.append(_interp(x, y, hi))
 
-    return trapz_auc(np.array(clipped_x), np.array(clipped_y))
+    return trapz_auc(np.array(clipped_x), np.array(clipped_y), normalize)
 
 
 def weighted_curve(

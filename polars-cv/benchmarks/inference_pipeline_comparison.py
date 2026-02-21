@@ -282,14 +282,12 @@ def benchmark_polars_cv_pipeline(
         log("  Using streaming engine...")
         processed_df = (
             df.lazy()
-            .with_columns(tensor=pl.col("path").cv.pipeline(preprocess_pipe))
+            .with_columns(tensor=pl.col("path").cv.pipe(preprocess_pipe))
             .collect(engine="streaming")
         )
     else:
         log("  Using eager engine...")
-        processed_df = df.with_columns(
-            tensor=pl.col("path").cv.pipeline(preprocess_pipe)
-        )
+        processed_df = df.with_columns(tensor=pl.col("path").cv.pipe(preprocess_pipe))
 
     preprocessing_time = time.perf_counter() - preprocess_start
     log_timing("Batch preprocessing", preprocessing_time)
@@ -436,7 +434,7 @@ def verify_output_equivalence(
 
         # polars-cv output
         sample_df = pv_df.slice(i, 1)
-        processed = sample_df.with_columns(tensor=pl.col("path").cv.pipeline(pv_pipe))
+        processed = sample_df.with_columns(tensor=pl.col("path").cv.pipe(pv_pipe))
         pv_arr = numpy_from_struct(processed["tensor"][0])
         pv_tensor = torch.from_numpy(pv_arr.copy()).permute(2, 0, 1)
 
@@ -594,7 +592,7 @@ def run_inference_serving(
     log("Loading and preprocessing with polars-cv...")
     preprocess_start = time.perf_counter()
     df = pl.read_parquet(metadata_path)
-    processed_df = df.with_columns(tensor=pl.col("path").cv.pipeline(pv_pipe))
+    processed_df = df.with_columns(tensor=pl.col("path").cv.pipe(pv_pipe))
     pv_preprocess_time = time.perf_counter() - preprocess_start
     log_timing("Batch preprocessing", pv_preprocess_time)
     log(f"  Preprocessed {len(processed_df)} images")

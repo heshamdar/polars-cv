@@ -380,7 +380,9 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipe(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"][0]
 
@@ -403,11 +405,13 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
         if self.streaming:
             result = (
                 df.lazy()
-                .with_columns(processed=pl.col("images").cv.pipe(pipe))
+                .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
                 .collect(engine="streaming")
             )
         else:
-            result = df.with_columns(processed=pl.col("images").cv.pipe(pipe))
+            result = df.with_columns(
+                processed=pl.col("images").cv.pipe(pipe).sink("blob")
+            )
 
         return result["processed"][0]
 
