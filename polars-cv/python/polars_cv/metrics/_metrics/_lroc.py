@@ -41,16 +41,19 @@ class LROCResult(MetricResult):
         self,
         *,
         fpf_range: tuple[float, float] | None = None,
+        normalize: bool = False,
     ) -> float:
         """Compute (partial) AUC under the LROC curve.
 
         Args:
             fpf_range: Optional ``(lo, hi)`` false-positive fraction range.
-
+            normalize: Whether to normalize the AUC by the range of the x-values.
         Returns:
             Area under the LROC curve.
         """
-        return super().auc(x_col="fpf", y_col="sensitivity", x_range=fpf_range)
+        return super().auc(
+            x_col="fpf", y_col="sensitivity", x_range=fpf_range, normalize=normalize
+        )
 
     def sensitivity_at_fpf(self, fpf: float) -> float:
         """Interpolate sensitivity at a requested false-positive fraction.

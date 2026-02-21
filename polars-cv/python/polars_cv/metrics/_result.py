@@ -36,6 +36,7 @@ class MetricResult:
         x_col: str,
         y_col: str,
         x_range: tuple[float, float] | None = None,
+        normalize: bool = False,
     ) -> float:
         """Compute (partial) AUC under the curve.
 
@@ -43,6 +44,7 @@ class MetricResult:
             x_col: Column name for the x-axis values.
             y_col: Column name for the y-axis values.
             x_range: Optional ``(lo, hi)`` bounds for partial AUC.
+            normalize: Whether to normalize the AUC by the range of the x-values.
 
         Returns:
             Area under the curve (or partial area).
@@ -53,8 +55,8 @@ class MetricResult:
         if x.size == 0:
             return 0.0
         if x_range is None:
-            return trapz_auc(x, y)
-        return partial_auc(x, y, x_range[0], x_range[1])
+            return trapz_auc(x, y, normalize)
+        return partial_auc(x, y, x_range[0], x_range[1], normalize)
 
     # ------------------------------------------------------------------
     # Interpolation

@@ -94,13 +94,25 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
     print(
         "FROC AUC:",
         round(froc.auc(), 4),
-        "Sens@1FP:",
+        "\nFROC AUC normalized:",
+        round(froc.auc(normalize=True), 4),
+        "\nFROC AUC (0, 0.5):",
+        round(froc.auc(fp_range=(0, 0.5)), 4),
+        "\nFROC AUC (0, 0.5) normalized:",
+        round(froc.auc(fp_range=(0, 0.5), normalize=True), 4),
+        "\nSens@1FP:",
         round(froc.sensitivity_at_fp(1.0), 4),
     )
     print(
         "LROC AUC:",
         round(lroc.auc(), 4),
-        "Sens@0.5FPF:",
+        "\nLROC AUC normalized:",
+        round(lroc.auc(normalize=True), 4),
+        "\nLROC AUC (0, 0.5):",
+        round(lroc.auc(fpf_range=(0, 0.5)), 4),
+        "\nLROC AUC (0, 0.5) normalized:",
+        round(lroc.auc(fpf_range=(0, 0.5), normalize=True), 4),
+        "\nSens@0.5FPF:",
         round(lroc.sensitivity_at_fpf(0.5), 4),
     )
     print(

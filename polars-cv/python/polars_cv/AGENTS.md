@@ -21,10 +21,10 @@ This is the **user-facing Python layer**. It is responsible for:
 | File | Responsibility | Lines |
 |------|---------------|-------|
 | `__init__.py` | Public API surface, `numpy_from_struct`, mask/hash comparison helpers, tiling config re-export | ~430 |
-| `pipeline.py` | `Pipeline` builder — source, operations, sink, domain tracking, dtype tracking, shape inference | ~2600 |
+| `pipeline.py` | `Pipeline` builder — source + operations, domain tracking, dtype tracking, shape inference | ~2500 |
 | `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops | ~900 |
 | `metrics/` | Detection metrics — matchers, DetectionTable, metric functions, bootstrap CI, AUC helpers — see [`metrics/AGENTS.md`](metrics/AGENTS.md) | ~1500 |
-| `expressions.py` | `CvNamespace` (`.cv.pipe()`, ~~`.cv.pipeline()`~~), `apply_pipeline()` | ~150 |
+| `expressions.py` | `CvNamespace` (`.cv.pipe()` only) | ~80 |
 | `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `SourceFormat`, `SinkFormat`, `DType`, `OPERATION_CONTRACTS` | ~850 |
 | `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE optimization, `register_plugin_function` call | ~680 |
 | `_graph_viz.py` | Graph visualization (networkx/graphviz) | ~200 |
@@ -44,7 +44,6 @@ pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale(
 Key internal state tracked on each Pipeline:
 - `_source: SourceSpec | None` — how to decode input data
 - `_ops: list[OpSpec]` — ordered list of operations
-- `_sink: SinkSpec | None` — how to encode output (only set via `.sink()`)
 - `_domain: str` — current domain (buffer/contour/scalar/vector)
 - `_output_dtype: str` — current dtype tracking (u8/f32/auto/etc.)
 - `_ndim: int | None` — current dimensionality
@@ -127,17 +126,16 @@ result = df.with_columns(
 )
 ```
 
-The flow is: `Pipeline()` → `.cv.pipe()` → `LazyPipelineExpr` → `.sink()` → `PipelineGraph` → `vb_graph` Polars expression.
+The flow is: `Pipeline()` → `.cv.pipe()` → `LazyPipelineExpr.sink()` → `PipelineGraph` → `vb_graph` Polars expression.
 
-## Legacy Code (To Be Removed)
+## Legacy API Removal Status
 
-### `CvNamespace.pipeline()` in `expressions.py`
+Removed API surface:
+- `CvNamespace.pipeline()` / `apply_pipeline()`
+- `Pipeline.sink()` (sink is now only on `LazyPipelineExpr`)
 
-This is the **old API path**. It takes a fully-formed Pipeline (with sink already attached) and executes it directly. It should be removed in favor of `.cv.pipe(pipe).sink(format)`.
-
-### `apply_pipeline()` in `expressions.py`
-
-This function is used by the old `CvNamespace.pipeline()`. It constructs a graph from a finalized pipeline. It can be removed once `CvNamespace.pipeline()` is removed, as `.sink()` on `LazyPipelineExpr` handles this directly.
+All expression execution goes through:
+`Pipeline()` → `.cv.pipe()` → `LazyPipelineExpr.sink()` → `PipelineGraph` → `vb_graph`
 
 ## Adding a New Operation (Python Side)
 

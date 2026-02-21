@@ -3,136 +3,17 @@
 //! This module handles the execution of vision pipelines on Polars Series,
 //! including parameter resolution and view-buffer integration.
 
-// Some functions are currently unused (graph.rs handles execution) but kept for potential future use
-#![allow(dead_code)]
-
 use polars::prelude::*;
 use std::collections::HashMap;
-use std::panic::{self, AssertUnwindSafe};
 
 use view_buffer::{
     geometry::{rasterize::rasterize, Contour, Point},
     BinaryOp, ComputeOp, DType, FilterType, GeometryOp, ImageAdapter, ImageOp, ImageOpKind,
-    NormalizeMethod, ViewBuffer, ViewDto, ViewExpr, ViewOp,
+    NormalizeMethod, ViewBuffer, ViewDto, ViewOp,
 };
 
 use crate::params::ParamValue;
 use crate::pipeline::{OpSpec, PipelineSpec};
-
-/// Execute a pipeline on a Series, returning a new Series with results.
-pub fn execute_pipeline(
-    data_series: &Series,
-    pipeline: &PipelineSpec,
-    expr_columns: &HashMap<String, &Series>,
-) -> PolarsResult<Series> {
-    // Validate pipeline configuration first
-    pipeline.validate()?;
-
-    // Check if this is a contour source
-    if pipeline.source_format() == "contour" {
-        return execute_contour_pipeline(data_series, pipeline, expr_columns);
-    }
-
-    // Get the binary data for non-contour sources
-    let data_ca = data_series
-        .binary()
-        .map_err(|_| polars_err!(ComputeError: "Expected Binary column for pipeline input"))?;
-
-    let len = data_ca.len();
-    let mut results: Vec<Option<Vec<u8>>> = Vec::with_capacity(len);
-
-    // Process each row
-    for row_idx in 0..len {
-        match data_ca.get(row_idx) {
-            Some(bytes) => {
-                let result = execute_row(bytes, row_idx, pipeline, expr_columns)?;
-                results.push(Some(result));
-            }
-            None => {
-                results.push(None);
-            }
-        }
-    }
-
-    // Build the output series
-    let output_ca =
-        BinaryChunked::from_iter_options(data_series.name().clone(), results.into_iter());
-    Ok(output_ca.into_series())
-}
-
-/// Execute a contour pipeline on a Struct Series.
-fn execute_contour_pipeline(
-    data_series: &Series,
-    pipeline: &PipelineSpec,
-    expr_columns: &HashMap<String, &Series>,
-) -> PolarsResult<Series> {
-    let len = data_series.len();
-    let mut results: Vec<Option<Vec<u8>>> = Vec::with_capacity(len);
-
-    // Process each row
-    for row_idx in 0..len {
-        let value = data_series.get(row_idx)?;
-        match value {
-            AnyValue::Null => {
-                results.push(None);
-            }
-            _ => {
-                let result = execute_contour_row(&value, row_idx, pipeline, expr_columns)?;
-                results.push(Some(result));
-            }
-        }
-    }
-
-    // Build the output series
-    let output_ca =
-        BinaryChunked::from_iter_options(data_series.name().clone(), results.into_iter());
-    Ok(output_ca.into_series())
-}
-
-/// Execute the contour pipeline on a single row.
-fn execute_contour_row(
-    value: &AnyValue,
-    row_idx: usize,
-    pipeline: &PipelineSpec,
-    expr_columns: &HashMap<String, &Series>,
-) -> PolarsResult<Vec<u8>> {
-    // 1. Decode the contour source (parse struct and rasterize)
-    let buffer = decode_contour_source(value, row_idx, pipeline, expr_columns)?;
-
-    // 2. Resolve all operations first
-    let mut view_dtos = Vec::with_capacity(pipeline.ops.len());
-    for op_spec in &pipeline.ops {
-        let view_dto = resolve_op(op_spec, row_idx, expr_columns)?;
-        view_dtos.push(view_dto);
-    }
-
-    // 3. Build expression and execute with panic catching
-    let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        let mut expr = ViewExpr::new_source(buffer);
-        for view_dto in view_dtos {
-            expr = expr.apply_op(view_dto);
-        }
-        let plan = expr.plan();
-        plan.execute()
-    }));
-
-    let result_buffer = match result {
-        Ok(buf) => buf,
-        Err(panic_payload) => {
-            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "Unknown panic during pipeline execution".to_string()
-            };
-            return Err(polars_err!(ComputeError: "Pipeline execution failed: {}", panic_msg));
-        }
-    };
-
-    // 4. Encode the sink
-    encode_sink(&result_buffer, pipeline)
-}
 
 /// Decode a contour source by parsing the struct and rasterizing to ViewBuffer.
 pub fn decode_contour_source(
@@ -351,53 +232,6 @@ fn resolve_contour_dimensions(
         .resolve_usize(row_idx, expr_columns)? as u32;
 
     Ok((width, height))
-}
-
-/// Execute the pipeline on a single row.
-fn execute_row(
-    bytes: &[u8],
-    row_idx: usize,
-    pipeline: &PipelineSpec,
-    expr_columns: &HashMap<String, &Series>,
-) -> PolarsResult<Vec<u8>> {
-    // 1. Decode the source
-    let buffer = decode_source(bytes, pipeline)?;
-
-    // 2. Resolve all operations first (outside of catch_unwind for better error messages)
-    let mut view_dtos = Vec::with_capacity(pipeline.ops.len());
-    for op_spec in &pipeline.ops {
-        let view_dto = resolve_op(op_spec, row_idx, expr_columns)?;
-        view_dtos.push(view_dto);
-    }
-
-    // 3. Build expression and execute with panic catching
-    //    This catches panics from view-buffer operations that use panic!() for errors
-    let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        let mut expr = ViewExpr::new_source(buffer);
-        for view_dto in view_dtos {
-            expr = expr.apply_op(view_dto);
-        }
-        let plan = expr.plan();
-        plan.execute()
-    }));
-
-    let result_buffer = match result {
-        Ok(buf) => buf,
-        Err(panic_payload) => {
-            // Extract panic message if possible
-            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "Unknown panic during pipeline execution".to_string()
-            };
-            return Err(polars_err!(ComputeError: "Pipeline execution failed: {}", panic_msg));
-        }
-    };
-
-    // 4. Encode the sink (also wrap in catch_unwind for safety)
-    encode_sink(&result_buffer, pipeline)
 }
 
 /// Decode the source bytes into a ViewBuffer.

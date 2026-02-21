@@ -34,7 +34,7 @@ The crate produces a `cdylib` (`_lib.abi3.so` / `_lib.pyd`) that Polars loads as
 | `graph/types.rs` | `UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowResult` — the main graph execution engine with topological sort and per-row processing |
 | `graph/decode.rs` | Source decoding — binary, blob, list/array (zero-copy), raw bytes, contour; also `dtype_for_output` for schema inference |
 | `graph/encode.rs` | Output encoding — binary, scalar, vector, contour, typed list/array, numpy struct; also geometry op execution |
-| `execute.rs` | **Legacy** pipeline execution + `resolve_op` function (maps op names → `ViewDto`). See note below. |
+| `execute.rs` | Shared execution utilities: op resolver (`resolve_op`) + source/sink decode/encode helpers used by graph execution |
 | `pipeline.rs` | **Legacy** `PipelineSpec`, `SourceSpec`, `SinkSpec` serde types. Still used by graph system. See note below. |
 | `params.rs` | `ParamValue` — literal vs expression parameter resolution |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
@@ -87,7 +87,7 @@ match op_spec.op.as_str() {
 }
 ```
 
-**This is currently the only function from `execute.rs` that the graph system uses.** The rest of `execute.rs` is legacy code from the old pipeline execution path.
+The legacy row-by-row pipeline executor was removed; `execute.rs` now only contains shared helpers used by the unified graph path.
 
 ### Source Decoding (`graph/decode.rs`)
 
@@ -149,15 +149,13 @@ When updating these, keep null propagation and nested list/struct parsing behavi
 
 ### `execute.rs`
 
-This file is marked `#![allow(dead_code)]` because most of it is unused by the graph path. However:
-- `resolve_op()` IS still used by `graph/types.rs` and `graph/encode.rs`
-- `decode_source()`, `decode_contour_source()`, `decode_contour_source_with_dims()` ARE still used by `graph/types.rs`
-- `execute_pipeline()`, `execute_row()`, `execute_contour_pipeline()` and the old per-row pipeline execution are NOT used
+This module no longer contains the old row-by-row pipeline executor.
+Current responsibilities:
+- `resolve_op()` (op-spec → `ViewDto`)
+- `decode_source()`, `decode_contour_source()`, `decode_contour_source_with_dims()`
+- `encode_sink()` for image/blob sink byte encoding
 
-**To properly remove the legacy path:**
-1. Extract `resolve_op` and the needed decode functions into the graph module (or a shared utilities module)
-2. Remove `execute_pipeline`, `execute_row`, `execute_contour_pipeline`, and related functions
-3. Remove or consolidate `pipeline.rs` types that are only used by the old path (but note `PipelineSpec`, `SourceSpec`, `SinkSpec` are also used by graph deserialization)
+These are shared by `graph/types.rs` and `graph/encode.rs`.
 
 ### `pipeline.rs`
 

@@ -43,11 +43,13 @@ class FROCResult(MetricResult):
         self,
         *,
         fp_range: tuple[float, float] | None = None,
+        normalize: bool = False,
     ) -> float:
         """Compute (partial) AUC under the FROC curve.
 
         Args:
             fp_range: Optional ``(lo, hi)`` false-positive-per-image range.
+            normalize: Whether to normalize the AUC by the range of the x-values.
 
         Returns:
             Area under the FROC curve.
@@ -56,6 +58,7 @@ class FROCResult(MetricResult):
             x_col="fp_per_image",
             y_col="sensitivity",
             x_range=fp_range,
+            normalize=normalize,
         )
 
     def sensitivity_at_fp(self, fp_per_image: float) -> float:
