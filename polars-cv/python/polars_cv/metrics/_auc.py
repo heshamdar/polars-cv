@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import polars as pl
 
@@ -49,6 +51,18 @@ def partial_auc(
     clipped_y: list[float] = []
 
     if lo < x[0]:
+        gap = float(x[0]) - lo
+        span = hi - lo
+        if span > 0 and gap / span > 0.1:
+            warnings.warn(
+                f"partial_auc: requested lower bound {lo} is below the "
+                f"curve's minimum x ({float(x[0]):.4g}). The gap covers "
+                f"{gap / span:.0%} of the integration range and will be "
+                f"filled by clamping y to {float(y[0]):.4g}. This may "
+                f"overstate the partial AUC.",
+                UserWarning,
+                stacklevel=2,
+            )
         clipped_x.append(lo)
         clipped_y.append(float(y[0]))
 
@@ -114,6 +128,56 @@ def weighted_curve(
         .then(pl.col("weighted_tp") / pl.col("weighted_total_gts"))
         .otherwise(pl.lit(None, dtype=pl.Float64)),
     ).sort(threshold_col)
+
+
+def mann_whitney_u_auc(
+    positive_scores: np.ndarray,
+    negative_scores: np.ndarray,
+) -> float:
+    """Compute Mann-Whitney U statistic as a non-parametric AUC estimate.
+
+    Returns P(random positive score > random negative score), which is
+    equivalent to the AUC of the ROC curve.  Uses the O(n log n) rank-sum
+    algorithm to avoid O(n*m) cross-join.
+
+    Args:
+        positive_scores: Scores for positive instances.
+        negative_scores: Scores for negative instances.
+
+    Returns:
+        Mann-Whitney U AUC in [0, 1].  Returns 0.5 if either group is empty.
+    """
+    n_pos = len(positive_scores)
+    n_neg = len(negative_scores)
+    if n_pos == 0 or n_neg == 0:
+        return 0.5
+
+    # Combine and sort; use label to distinguish groups.
+    combined = np.concatenate([positive_scores, negative_scores])
+    labels = np.concatenate([np.ones(n_pos), np.zeros(n_neg)])
+
+    # Sort by score; use label as tiebreaker (positive first for
+    # mid-rank calculation to be symmetric).
+    order = np.lexsort((labels, combined))
+    labels_sorted = labels[order]
+
+    # Compute average ranks (handle ties via cumulative count).
+    n = len(combined)
+    ranks = np.empty(n, dtype=np.float64)
+    i = 0
+    while i < n:
+        j = i
+        while j < n and combined[order[j]] == combined[order[i]]:
+            j += 1
+        avg_rank = (i + j + 1) / 2.0  # 1-based average rank for tie group
+        for k in range(i, j):
+            ranks[k] = avg_rank
+        i = j
+
+    # U = rank_sum_positive - n_pos*(n_pos+1)/2
+    rank_sum_pos = ranks[labels_sorted == 1.0].sum()
+    u = rank_sum_pos - n_pos * (n_pos + 1) / 2
+    return float(u / (n_pos * n_neg))
 
 
 def _interp(x: np.ndarray, y: np.ndarray, xq: float) -> float:

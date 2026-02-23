@@ -61,9 +61,8 @@ impl Op for ImageOp {
                 let mut s = input_shape.to_vec();
                 if s.len() == 3 {
                     s[2] = 1;
-                } else if s.len() == 2 {
-                    s.push(1);
                 }
+                // 2D input stays 2D (already single-channel by definition)
                 s
             }
             ImageOpKind::Resize { width, height, .. } => {

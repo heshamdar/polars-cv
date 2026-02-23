@@ -180,6 +180,24 @@ See `.cursor/polars-cv-contribution-guide.md` for a full walkthrough with the `r
 
 Tiling was implemented to improve cache efficiency for large images by processing them in 256x256 tiles. It did not deliver expected performance gains. The `TileConfig` / `TilePolicy` infrastructure exists in `execution/tiling.rs` and is wired up, but the actual tiling path is disabled. This may be revisited for SIMD optimization.
 
+## Rank Preservation Contracts
+
+- **resize**: Preserves input rank. 2D `[H, W]` input → 2D `[H_new, W_new]`
+  output; 3D stays 3D. The typed resize functions always produce 3D
+  internally, but `resize_strided` squeezes the trailing dimension when
+  the input was 2D. `infer_shape` correctly preserves rank at planning time.
+- **grayscale**: Preserves input rank. 2D inputs pass through unchanged
+  (already single-channel). 3D inputs get their channel dimension set to 1.
+  `infer_shape` no longer promotes 2D to 3D.
+
+## Label Reduce Centroid Fallback
+
+When `label_reduce` with `region_mode="interior"` finds no interior pixels
+for a contour (common with sub-pixel contours from the Moore-Neighbor
+tracer), it falls back to sampling the grid at the contour's centroid
+(via `measures::centroid`). This ensures single-pixel detections receive
+their actual pixel value as the score rather than 0.0.
+
 ## Performance Notes
 
 - **View operations are O(1)** — they only change metadata

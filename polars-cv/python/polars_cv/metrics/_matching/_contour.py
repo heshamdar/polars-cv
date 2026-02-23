@@ -48,14 +48,14 @@ _EXTRACTED_CONTOUR_SET_SCHEMA = pl.List(_EXTRACTED_CONTOUR_SCHEMA)
 # ---------------------------------------------------------------------------
 
 
-def _validate_or_resize_shapes(
+def _check_shape_mismatch(
     lf: pl.LazyFrame,
     *,
     pred_col: str,
     gt_mask_col: str,
     auto_resize: bool,
-) -> tuple[pl.LazyFrame, str]:
-    """Validate heatmap/mask shape match or resize prediction heatmaps.
+) -> tuple[pl.LazyFrame, bool]:
+    """Check for heatmap/mask shape mismatch and add dimension columns.
 
     Args:
         lf: Input lazy frame.
@@ -64,7 +64,10 @@ def _validate_or_resize_shapes(
         auto_resize: Whether to auto-resize prediction heatmaps to GT mask shape.
 
     Returns:
-        Tuple of ``(updated_lf, aligned_pred_heatmap_col_name)``.
+        Tuple of ``(lf_with_dims, needs_resize)``.
+
+    Raises:
+        ValueError: If shapes differ and ``auto_resize`` is False.
     """
     with_dims = lf.with_columns(
         _pred_h=pl.col(pred_col).list.len().cast(pl.Int64),
@@ -84,42 +87,72 @@ def _validate_or_resize_shapes(
     )
     has_mismatch = mismatch_preview_df.height > 0
 
-    if not auto_resize:
-        if has_mismatch:
-            msg = (
-                "Prediction heatmap and GT mask shapes differ. "
-                "Enable `auto_resize=True` or pre-align shapes before metric computation. "
-                f"Examples: {mismatch_preview_df.to_dicts()}"
-            )
-            raise ValueError(msg)
-        return (
-            with_dims.with_columns(pl.col(pred_col).alias("_pred_heatmap_aligned")),
-            "_pred_heatmap_aligned",
+    if not auto_resize and has_mismatch:
+        msg = (
+            "Prediction heatmap and GT mask shapes differ. "
+            "Enable `auto_resize=True` or pre-align shapes before metric computation. "
+            f"Examples: {mismatch_preview_df.to_dicts()}"
         )
+        raise ValueError(msg)
 
-    if not has_mismatch:
-        return (
-            with_dims.with_columns(pl.col(pred_col).alias("_pred_heatmap_aligned")),
-            "_pred_heatmap_aligned",
-        )
+    return with_dims, has_mismatch
 
+
+def _extract_with_fused_resize(
+    lf: pl.LazyFrame,
+    *,
+    pred_col: str,
+    threshold: float,
+    min_area: float,
+) -> pl.LazyFrame:
+    """Fuse resize + extract into a single pipeline with multi-output sink.
+
+    Produces both ``_pred_contours`` (extracted contours) and
+    ``_pred_heatmap_aligned`` (resized heatmap as blob) in one
+    ``vb_graph`` execution, eliminating the intermediate list-sink
+    round-trip.
+
+    Args:
+        lf: LazyFrame with ``_gt_h``, ``_gt_w`` dimension columns.
+        pred_col: Prediction heatmap column.
+        threshold: Binary threshold for contour extraction.
+        min_area: Minimum contour area filter.
+
+    Returns:
+        LazyFrame with ``_pred_contours`` and ``_pred_heatmap_aligned``.
+    """
     resize_pipe = (
         Pipeline()
         .source("list", dtype="f32")
         .resize(height=pl.col("_gt_h"), width=pl.col("_gt_w"))
     )
+    lazy_resized = pl.col(pred_col).cv.pipe(resize_pipe).alias("resized_heatmap")
+
+    extract_builder = Pipeline().threshold(value=threshold)
+    if min_area > 0.0:
+        extract_pipe = extract_builder.extract_contours(
+            mode="external", method="simple", min_area=min_area
+        )
+    else:
+        extract_pipe = extract_builder.extract_contours(
+            mode="external", method="simple"
+        )
+
+    fused = lazy_resized.pipe(extract_pipe).alias("extracted_contours")
+    multi_out = fused.sink({"extracted_contours": "native", "resized_heatmap": "blob"})
+
+    # Multi-output sink returns a Struct column; unnest to get
+    # individual columns, then rename to internal names.
     return (
-        with_dims.with_columns(
-            _pred_heatmap_resized=pl.col(pred_col).cv.pipe(resize_pipe).sink("list")
-        )
+        lf.with_columns(_fused_out=multi_out)
+        .unnest("_fused_out")
         .with_columns(
-            # TODO: remove flattening once list resize preserves scalar channels for 2D input.
-            _pred_heatmap_aligned=pl.col("_pred_heatmap_resized").list.eval(
-                pl.element().list.eval(pl.element().list.first())
-            )
+            _pred_contours=pl.col("extracted_contours").cast(
+                _EXTRACTED_CONTOUR_SET_SCHEMA
+            ),
+            _pred_heatmap_aligned=pl.col("resized_heatmap"),
         )
-        .drop("_pred_heatmap_resized"),
-        "_pred_heatmap_aligned",
+        .drop("resized_heatmap", "extracted_contours")
     )
 
 
@@ -166,6 +199,7 @@ def _score_contours_from_heatmap(
     contour_col: str,
     heatmap_col: str,
     output_col: str = "_pred_scores",
+    source_format: str = "list",
 ) -> pl.LazyFrame:
     """Score contour sets from heatmaps using max interior value.
 
@@ -174,19 +208,52 @@ def _score_contours_from_heatmap(
         contour_col: Contour-set column.
         heatmap_col: Heatmap column.
         output_col: Output score list column.
+        source_format: Source format for the heatmap column
+            (``"list"`` for nested-list, ``"blob"`` for VIEW protocol).
 
     Returns:
         LazyFrame with score column added.
     """
+    source_kwargs: dict[str, str] = {"dtype": "f32"} if source_format == "list" else {}
     score_pipe = (
         Pipeline()
-        .source("list", dtype="f32")
+        .source(source_format, **source_kwargs)
         .label_reduce(
             contours=pl.col(contour_col), reduction="max", region_mode="interior"
         )
     )
     return lf.with_columns(
         pl.col(heatmap_col).cv.pipe(score_pipe).sink("native").alias(output_col)
+    )
+
+
+def _filter_zero_score_detections(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Remove zero-score contours *before* matching.
+
+    Contours that score 0.0 against the heatmap have no meaningful interior
+    pixels (sub-pixel boundary artifacts).  Filtering them before matching
+    prevents them from claiming GT objects during greedy IoU assignment.
+
+    Computes the indices of positive scores, then gathers from both the
+    score and contour lists to keep them aligned.
+
+    Args:
+        lf: LazyFrame with ``_pred_scores_raw`` and ``_pred_contours``.
+
+    Returns:
+        LazyFrame with filtered ``_pred_scores`` and ``_pred_contours``.
+    """
+    return (
+        lf.with_columns(
+            _keep_idx=pl.col("_pred_scores_raw").list.eval(
+                pl.arg_where(pl.element() > 0.0).cast(pl.UInt32)
+            ),
+        )
+        .with_columns(
+            _pred_scores=pl.col("_pred_scores_raw").list.gather(pl.col("_keep_idx")),
+            _pred_contours=pl.col("_pred_contours").list.gather(pl.col("_keep_idx")),
+        )
+        .drop("_keep_idx", "_pred_scores_raw")
     )
 
 
@@ -305,7 +372,7 @@ class ContourMatcher:
         self,
         iou_threshold: float = 0.5,
         extraction_threshold: float = 0.1,
-        min_contour_area: float = 0.0,
+        min_contour_area: float = 1.0,
         auto_resize: bool = True,
         gt_min_contour_area: float | None = None,
     ) -> None:
@@ -376,22 +443,33 @@ class ContourMatcher:
             ).alias(COL_WEIGHT)
         )
 
-        # Shape validation / resize
-        prepared, aligned_pred_col = _validate_or_resize_shapes(
+        # Shape validation / resize + contour extraction
+        prepared, needs_resize = _check_shape_mismatch(
             prepared,
             pred_col=pred_col,
             gt_mask_col=gt_col,
             auto_resize=self._auto_resize,
         )
 
-        # Extract contours from predictions and GT
-        prepared = _extract_contours_from_col(
-            prepared,
-            source_col=aligned_pred_col,
-            threshold=self._extraction_threshold,
-            min_area=self._min_contour_area,
-            output_col="_pred_contours",
-        )
+        if needs_resize:
+            # Fused pipeline: resize + extract in one vb_graph pass,
+            # also outputs the resized heatmap for scoring.
+            prepared = _extract_with_fused_resize(
+                prepared,
+                pred_col=pred_col,
+                threshold=self._extraction_threshold,
+                min_area=self._min_contour_area,
+            )
+            aligned_pred_col = "_pred_heatmap_aligned"
+        else:
+            aligned_pred_col = pred_col
+            prepared = _extract_contours_from_col(
+                prepared,
+                source_col=pred_col,
+                threshold=self._extraction_threshold,
+                min_area=self._min_contour_area,
+                output_col="_pred_contours",
+            )
         gt_area = (
             self._gt_min_contour_area
             if self._gt_min_contour_area is not None
@@ -405,13 +483,22 @@ class ContourMatcher:
             output_col="_gt_contours",
         )
 
-        # Score predictions
+        # Score predictions.  When the heatmap was resized via the fused
+        # pipeline, it is stored as blob (VIEW protocol binary); otherwise
+        # it remains in list (nested-list) format.
+        heatmap_source_fmt = "blob" if needs_resize else "list"
         prepared = _score_contours_from_heatmap(
             prepared,
             contour_col="_pred_contours",
             heatmap_col=aligned_pred_col,
-            output_col="_pred_scores",
+            output_col="_pred_scores_raw",
+            source_format=heatmap_source_fmt,
         )
+
+        # Filter out spurious zero-score detections: contours extracted from
+        # a region above extraction_threshold that score 0.0 have an empty
+        # rasterized interior and are provably artifacts of the boundary tracer.
+        prepared = _filter_zero_score_detections(prepared)
 
         # Run matching
         prepared = prepared.with_columns(
@@ -457,9 +544,9 @@ class ContourMatcher:
             image_id_col=COL_IMAGE_ID,
         )
 
-        # Explode into per-detection rows and drop spurious null-score
-        # rows that arise when contour extraction returns null for images
-        # with no predictions.
+        # Explode into per-detection rows and drop null-score rows (images
+        # with no predictions).  Zero-score artifacts are already removed
+        # upstream by _filter_zero_score_detections.
         detections_lf = _explode_match_to_detections(
             image_level_df.lazy(),
             image_id_col=COL_IMAGE_ID,

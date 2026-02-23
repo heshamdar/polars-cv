@@ -237,3 +237,17 @@ Several test files have `_gaps` in their name (e.g., `test_binary_ops_gaps.py`, 
 ### `ANNOTATED_POINT_SCHEMA` Not Re-exported
 
 Defined in `geometry/schemas.py` and exported by `geometry/__init__.py`, but not included in the main `polars_cv/__init__.py` `__all__`.
+
+### Resize Rank Preservation (Fixed)
+
+The `resize` operation now preserves input rank: 2D `[H, W]` input produces 2D `[H_new, W_new]` output, and 3D input stays 3D. The Rust runner (`runner.rs`) conditionally reshapes after resize based on the input rank. The `grayscale` planning-time `infer_shape` also no longer promotes 2D inputs to 3D.
+
+### Detection Metric Fixes (Applied)
+
+Several correctness fixes have been applied to the detection metrics:
+- **FROC**: `iou_threshold` expression fixed, unweighted `total_gts` overcounting fixed, bootstrap now recomputes `total_targets` from sampled images.
+- **LROC**: Lower-right endpoint `(fpf=1, sens=max)` added to the curve for complete AUC. Two variants supported: `"best_tp"` (any TP above threshold) and `"top_scoring"` (classical single-commitment).
+- **PR AUC**: `auc()` now uses monotone-envelope precision interpolation (standard AP). Raw trapezoidal integration available via `raw_auc()`. The old `ap()` method was removed.
+- **ContourMatcher**: Default `min_contour_area` changed from 0.0 to 1.0. Zero-score detections are now filtered *before* matching (prevents false GT claims). `label_reduce` has centroid fallback for sub-pixel contours and a new `"boundary"` region mode that includes boundary pixels.
+- **Pipeline efficiency**: ContourMatcher resize path fuses resize + contour extraction into a single `vb_graph` pass using multi-output dict sink. Intermediate format uses `"blob"` (VIEW protocol) instead of `"list"`.
+- **Mann-Whitney U**: `mann_whitney_auc(level="detection"|"image")` added to `FROCResult` and `LROCResult`.

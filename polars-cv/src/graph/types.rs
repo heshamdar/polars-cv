@@ -7,8 +7,8 @@ use polars::prelude::*;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use view_buffer::geometry::predicates;
 use view_buffer::geometry::Contour;
+use view_buffer::geometry::{measures, predicates};
 use view_buffer::ops::NodeOutput;
 use view_buffer::{ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr};
 
@@ -78,6 +78,7 @@ enum LabelReduction {
 #[derive(Clone, Copy)]
 enum LabelRegionMode {
     Interior,
+    Boundary,
     Bbox,
 }
 
@@ -95,9 +96,10 @@ fn parse_label_reduction(value: &str) -> Result<LabelReduction, String> {
 fn parse_label_region_mode(value: &str) -> Result<LabelRegionMode, String> {
     match value {
         "interior" => Ok(LabelRegionMode::Interior),
+        "boundary" => Ok(LabelRegionMode::Boundary),
         "bbox" => Ok(LabelRegionMode::Bbox),
         other => Err(format!(
-            "Unsupported region_mode '{other}'. Expected one of: interior, bbox"
+            "Unsupported region_mode '{other}'. Expected one of: interior, boundary, bbox"
         )),
     }
 }
@@ -241,6 +243,12 @@ fn contour_score_on_grid(
                 LabelRegionMode::Interior => {
                     predicates::contains_point(contour, x as f64 + 0.5, y as f64 + 0.5)
                 }
+                LabelRegionMode::Boundary => {
+                    predicates::point_in_contour(
+                        &view_buffer::geometry::Point::new(x as f64 + 0.5, y as f64 + 0.5),
+                        contour,
+                    ) >= 0
+                }
             };
             if include {
                 let val = *value;
@@ -251,6 +259,15 @@ fn contour_score_on_grid(
         }
     }
     if count == 0 {
+        // Centroid fallback: sub-pixel contours have an empty rasterized
+        // interior.  Sample the grid at the contour centroid instead so
+        // that single-pixel detections receive their actual pixel value.
+        let c = measures::centroid(contour);
+        let cx = c.x.floor() as usize;
+        let cy = c.y.floor() as usize;
+        if cy < height && cx < width {
+            return grid[cy][cx];
+        }
         return 0.0;
     }
     match reduction {

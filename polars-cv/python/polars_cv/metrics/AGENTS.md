@@ -14,7 +14,7 @@ and Polars lazy expressions:
 - **FROC** (Free-response ROC): `froc_curve`
 - **LROC** (Localization ROC): `lroc_curve`
 - **Bootstrap**: `bootstrap_metric_sequential` (general), `bootstrap_pr_auc` (vectorized)
-- **AUC utilities**: `trapz_auc`, `partial_auc`
+- **AUC utilities**: `trapz_auc`, `partial_auc`, `mann_whitney_u_auc`
 
 ## Architecture
 
@@ -119,20 +119,60 @@ metrics/
   selected. Never rely on a `.sort()` before `.group_by()` — Polars does
   not guarantee order preservation across `group_by`.
 - **LROC image-level summarization**: `DetectionTable.to_per_image()` now
-  carries a score-sorted `detections` list per image. LROC derives the
-  effective image score from the best localized detection (highest-scoring TP)
-  on positive images, and from the top score on negative images.
+  carries a score-sorted `detections` list per image. LROC supports two
+  variants via `lroc_curve(variant=...)`:
+  - `"best_tp"`: effective image score = highest-scoring TP detection
+    (any TP above threshold → correctly localized).
+  - `"top_scoring"`: effective image score = top detection regardless of
+    TP/FP status; correctly localized only if that top detection is TP
+    (classical single-commitment LROC).
 - **IoU re-thresholding direction**: `at_iou_threshold()` only works
   reliably when *raising* the threshold above the original matching IoU.
   Lowering it has no effect because unmatched detections have no stored
   `gt_idx`/`iou` to re-evaluate. A `UserWarning` is emitted when this
   is attempted. The `_matching_iou_threshold` field on `DetectionTable`
   tracks the matcher's original threshold.
+- **ContourMatcher default `min_contour_area`**: Changed from 0.0 to 1.0.
+  Sub-pixel contours from the boundary tracer are now excluded by default.
+- **Pre-match zero-score filtering**: Zero-score contours (empty rasterized
+  interior) are now filtered *before* matching via `_filter_zero_score_detections`,
+  using `list.gather` with indices of positive scores. This prevents them
+  from claiming GT objects during greedy IoU assignment — the previous
+  post-explode approach could cause false negatives.
+- **Centroid fallback scoring**: The Rust `label_reduce` with
+  `region_mode="interior"` falls back to sampling the heatmap at the
+  contour centroid when no interior pixels are found. This prevents
+  sub-pixel contours from receiving a score of 0.
+- **`label_reduce` region modes**: Three modes are available:
+  `"interior"` (strict interior, default), `"boundary"` (interior +
+  boundary pixels — avoids zero-score artifacts for small contours),
+  `"bbox"` (all pixels in bounding box).
+- **ContourMatcher pipeline fusion**: When `auto_resize=True` and shapes
+  differ, the resize and contour extraction steps are fused into a single
+  `vb_graph` pass using multi-output dict sink. The resized heatmap is
+  output as `"blob"` (VIEW protocol) for scoring, avoiding the confusing
+  nested-list format that the old `"list"` sink produced.
+- **PR curve `auc()` vs `raw_auc()`**: `auc()` applies the monotonically
+  decreasing precision envelope before integration (standard COCO/scikit-learn
+  AP definition). `raw_auc()` returns raw trapezoidal integration without
+  the envelope. The old `ap()` method was removed; `auc()` is now the
+  standard path.
+- **LROC variants**: `lroc_curve(table, variant=...)` supports two
+  scoring modes: `"best_tp"` (default — effective score is the best TP
+  detection for positive images) and `"top_scoring"` (effective score is
+  the single highest-scoring detection, localized only if that top
+  detection is a TP — classical Swensson 1996 formulation).
+- **Mann-Whitney U AUC**: Both `FROCResult` and `LROCResult` expose
+  `mann_whitney_auc(level="detection"|"image")` — a non-parametric,
+  curve-independent AUC estimate using O(n log n) rank-sum.
 
 ## Known Issues
 
-- `ContourMatcher` is the most complex matcher and carries legacy coupling
-  to the heatmap+mask input format. It should be further decoupled.
 - Bbox matching in Rust converts to contours as an intermediate step. This
   works correctly but is suboptimal for axis-aligned boxes where intersection
   can be computed directly.
+- **Score + extract cannot be merged today**: The scoring step
+  (`label_reduce`) takes contours as an expression parameter, requiring
+  them to exist as a DataFrame column before the scoring pipeline runs.
+  Merging extract + score into one graph would require the graph executor
+  to support binding a node's output as another node's parameter.

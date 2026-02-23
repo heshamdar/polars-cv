@@ -7,9 +7,10 @@ from typing import Any
 
 import polars as pl
 
-from .._auc import weighted_curve
+from .._auc import mann_whitney_u_auc, weighted_curve
 from .._result import MetricResult
 from .._types import (
+    COL_GT_LABEL,
     COL_IMAGE_ID,
     COL_IS_TP,
     COL_N_GTS,
@@ -93,6 +94,99 @@ class FROCResult(MetricResult):
             operating_points=rates,
         )
 
+    def mann_whitney_auc(
+        self,
+        *,
+        level: str = "detection",
+    ) -> float:
+        """Compute Mann-Whitney U statistic as a non-parametric AUC estimate.
+
+        Args:
+            level: Granularity of the comparison.
+                ``"detection"`` — P(random TP score > random FP score).
+                ``"image"`` — P(positive-image effective score > negative-image
+                effective score).  For positive images the effective score is
+                the max TP detection score (0 if no TPs); for negative images
+                it is the max detection score (0 if none).
+
+        Returns:
+            Mann-Whitney U AUC in [0, 1].  Returns 0.5 when one group is
+            empty.
+
+        Raises:
+            ValueError: If ``level`` is not ``"detection"`` or ``"image"``,
+                or if ``"image"`` level is requested but ``detection_table``
+                is not available.
+        """
+        if level == "detection":
+            return self._mann_whitney_detection()
+        if level == "image":
+            return self._mann_whitney_image()
+        raise ValueError(
+            f"Unsupported level {level!r}. Expected 'detection' or 'image'."
+        )
+
+    def _mann_whitney_detection(self) -> float:
+        """Detection-level MW-U: P(TP score > FP score)."""
+        if self.detection_table is None:
+            raise ValueError(
+                "mann_whitney_auc(level='detection') requires detection_table."
+            )
+        det_df = self.detection_table.detections.collect(engine="streaming")
+        tp_scores = (
+            det_df.filter(pl.col(COL_IS_TP)).select(COL_SCORE).to_numpy().flatten()
+        )
+        fp_scores = (
+            det_df.filter(~pl.col(COL_IS_TP)).select(COL_SCORE).to_numpy().flatten()
+        )
+        return mann_whitney_u_auc(tp_scores, fp_scores)
+
+    def _mann_whitney_image(self) -> float:
+        """Image-level MW-U: P(positive-image score > negative-image score)."""
+        if self.detection_table is None:
+            raise ValueError(
+                "mann_whitney_auc(level='image') requires detection_table."
+            )
+        det_df = self.detection_table.detections.collect(engine="streaming")
+        meta_df = self.detection_table.image_metadata.collect(engine="streaming")
+
+        if COL_GT_LABEL not in meta_df.columns:
+            raise ValueError(
+                "mann_whitney_auc(level='image') requires gt_label in metadata."
+            )
+
+        # Positive images: max TP score (0 if no TPs)
+        pos_ids = meta_df.filter(pl.col(COL_GT_LABEL)).select(COL_IMAGE_ID)
+        pos_scores = (
+            pos_ids.join(
+                det_df.filter(pl.col(COL_IS_TP))
+                .group_by(COL_IMAGE_ID)
+                .agg(pl.col(COL_SCORE).max()),
+                on=COL_IMAGE_ID,
+                how="left",
+            )
+            .with_columns(pl.col(COL_SCORE).fill_null(0.0))
+            .select(COL_SCORE)
+            .to_numpy()
+            .flatten()
+        )
+
+        # Negative images: max detection score (0 if none)
+        neg_ids = meta_df.filter(~pl.col(COL_GT_LABEL)).select(COL_IMAGE_ID)
+        neg_scores = (
+            neg_ids.join(
+                det_df.group_by(COL_IMAGE_ID).agg(pl.col(COL_SCORE).max()),
+                on=COL_IMAGE_ID,
+                how="left",
+            )
+            .with_columns(pl.col(COL_SCORE).fill_null(0.0))
+            .select(COL_SCORE)
+            .to_numpy()
+            .flatten()
+        )
+
+        return mann_whitney_u_auc(pos_scores, neg_scores)
+
     def bootstrap_ci(
         self,
         n_bootstrap: int = 1000,
@@ -129,11 +223,17 @@ class FROCResult(MetricResult):
                 self.per_image_threshold, on=COL_IMAGE_ID, how="left"
             )
             curve = _curve_from_dense(sampled, weighted=True)
+            sampled_total_targets = int(
+                sampled.select(COL_IMAGE_ID, COL_N_GTS)
+                .unique(subset=[COL_IMAGE_ID])
+                .select(pl.col(COL_N_GTS).sum())
+                .item()
+            )
             temp = FROCResult(
                 curve=curve,
                 per_image_threshold=self.per_image_threshold,
                 n_images=len(sampled_ids),
-                total_targets=self.total_targets,
+                total_targets=sampled_total_targets,
                 iou_threshold=self.iou_threshold,
             )
             if metric == "auc":
@@ -224,8 +324,7 @@ def froc_curve(
         per_image_threshold=dense,
         n_images=meta_df.height,
         total_targets=total_targets,
-        iou_threshold=table.image_metadata.collect_schema().names()[0]
-        and 0.5,  # stored in metadata if needed
+        iou_threshold=table._matching_iou_threshold or 0.5,
         detection_table=table,
     )
 
@@ -268,7 +367,15 @@ def _curve_from_dense(
         )
 
     n_images = max(dense_counts.select(pl.col(COL_IMAGE_ID).n_unique()).item(), 1)
-    total_gts = int(dense_counts.select(pl.col(COL_N_GTS).sum()).item())
+    # De-duplicate before summing: each image appears once per threshold in
+    # the dense grid, so summing n_gts over the whole grid would overcount
+    # by a factor of len(thresholds).
+    total_gts = int(
+        dense_counts.select(COL_IMAGE_ID, COL_N_GTS)
+        .unique(subset=[COL_IMAGE_ID])
+        .select(pl.col(COL_N_GTS).sum())
+        .item()
+    )
     return (
         dense_counts.group_by("threshold")
         .agg(

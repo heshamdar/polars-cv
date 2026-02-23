@@ -35,26 +35,24 @@ class PrecisionRecallResult(MetricResult):
     class_id: str = DEFAULT_CLASS
     detection_table: DetectionTable | None = None
 
-    def auc(self, **kwargs: Any) -> float:  # type: ignore[override]
-        """Compute AUC under the precision-recall curve.
-
-        This is equivalent to Average Precision (all-points interpolation).
-
-        Returns:
-            Area under the PR curve.
-        """
-        return super().auc(x_col="recall", y_col="precision")
-
-    def ap(
+    def auc(  # type: ignore[override]
         self,
         *,
         interpolation: Literal["all_points", "11_point"] = "all_points",
     ) -> float:
-        """Compute Average Precision.
+        """Compute Average Precision (AUC with monotone-envelope interpolation).
+
+        Applies the standard **monotonically decreasing precision envelope**
+        (right-to-left cumulative maximum) before trapezoidal integration,
+        matching COCO / scikit-learn AP definitions.
+
+        For the raw trapezoidal area without the envelope, use
+        :meth:`raw_auc`.
 
         Args:
             interpolation: Interpolation method.
-                ``"all_points"`` uses trapezoidal integration.
+                ``"all_points"`` (default) uses the monotone-envelope
+                precision before trapezoidal integration.
                 ``"11_point"`` uses the Pascal VOC 11-point method.
 
         Returns:
@@ -62,7 +60,19 @@ class PrecisionRecallResult(MetricResult):
         """
         if interpolation == "11_point":
             return _eleven_point_ap(self.curve)
-        return self.auc()
+        return _all_points_ap(self.curve)
+
+    def raw_auc(self) -> float:
+        """Compute raw trapezoidal AUC under the precision-recall curve.
+
+        This does **not** apply the monotonically decreasing precision
+        envelope.  For the standard AP that matches COCO / scikit-learn
+        definitions, use :meth:`auc` instead.
+
+        Returns:
+            Raw area under the PR curve (without envelope interpolation).
+        """
+        return super().auc(x_col="recall", y_col="precision")
 
     def precision_at(self, threshold: float) -> float:
         """Precision at a given score threshold.
@@ -98,7 +108,7 @@ class PrecisionRecallResult(MetricResult):
         confidence: float = 0.95,
         seed: int | None = None,
         *,
-        metric: str = "ap",
+        metric: str = "auc",
         metric_kwargs: dict[str, Any] | None = None,
     ) -> Any:
         """Estimate CI via image-level bootstrap.
@@ -107,7 +117,7 @@ class PrecisionRecallResult(MetricResult):
             n_bootstrap: Number of bootstrap iterations.
             confidence: Confidence level in (0, 1).
             seed: Optional RNG seed.
-            metric: ``"ap"``.
+            metric: ``"auc"`` (standard AP with envelope).
             metric_kwargs: Extra kwargs for the metric method.
 
         Returns:
@@ -142,9 +152,9 @@ class PrecisionRecallResult(MetricResult):
             )
             sampled_table = DetectionTable.from_matched(sampled_det, sampled_meta)
             result = precision_recall_curve(sampled_table, class_id=self.class_id)
-            return result.ap(**metric_kwargs)
+            return result.auc(**metric_kwargs)
 
-        point = self.ap(**metric_kwargs)
+        point = self.auc(**metric_kwargs)
         return bootstrap_metric_sequential(
             image_ids=image_ids,
             metric_fn=_metric,
@@ -250,7 +260,7 @@ def average_precision(
         AP value in [0, 1].
     """
     pr = precision_recall_curve(table, class_id=class_id)
-    return pr.ap(interpolation=interpolation)
+    return pr.auc(interpolation=interpolation)
 
 
 def mean_average_precision(
@@ -386,6 +396,31 @@ def f1_at_threshold(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _all_points_ap(curve: pl.DataFrame) -> float:
+    """Compute AP using monotone-envelope interpolation.
+
+    Applies the standard monotonically decreasing precision envelope
+    (right-to-left cumulative maximum) before trapezoidal integration.
+    This matches the COCO and scikit-learn AP definitions.
+
+    Args:
+        curve: PR curve DataFrame with ``recall`` and ``precision``.
+
+    Returns:
+        All-points interpolated AP with monotone envelope.
+    """
+    if curve.height == 0:
+        return 0.0
+
+    recall = curve["recall"].cast(pl.Float64).to_numpy()
+    precision = curve["precision"].cast(pl.Float64).to_numpy()
+
+    # Monotone decreasing envelope: at each recall level, precision is the
+    # maximum precision at any recall >= current recall.
+    precision_envelope = np.maximum.accumulate(precision[::-1])[::-1]
+    return float(np.trapezoid(precision_envelope, recall))
 
 
 def _eleven_point_ap(curve: pl.DataFrame) -> float:

@@ -2124,7 +2124,11 @@ class Pipeline:
         Args:
             contours: Contour-set expression (`List[Contour]`) to score.
             reduction: Reduction over contour region values (`"max"`, `"mean"`, `"sum"`).
-            region_mode: Region selection mode (`"interior"` or `"bbox"`).
+            region_mode: Region selection mode.
+                ``"interior"`` — only pixels strictly inside the contour polygon.
+                ``"boundary"`` — interior pixels *plus* pixels on the contour boundary
+                (avoids zero-score artifacts for sub-pixel contours).
+                ``"bbox"`` — all pixels within the bounding box.
 
         Returns:
             New pipeline with label reduction appended.
@@ -2140,10 +2144,8 @@ class Pipeline:
         if reduction not in {"max", "mean", "sum"}:
             msg = f"Invalid reduction '{reduction}'. Expected one of: max, mean, sum"
             raise ValueError(msg)
-        if region_mode not in {"interior", "bbox"}:
-            msg = (
-                f"Invalid region_mode '{region_mode}'. Expected one of: interior, bbox"
-            )
+        if region_mode not in {"interior", "boundary", "bbox"}:
+            msg = f"Invalid region_mode '{region_mode}'. Expected one of: interior, boundary, bbox"
             raise ValueError(msg)
 
         new = self._clone()
