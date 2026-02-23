@@ -434,20 +434,30 @@ fn resize_strided(
 
     let dtype = contig_buf.dtype();
     let shape = contig_buf.shape();
+    let input_rank = shape.len();
     let (h, w) = (shape[0], shape[1]);
     let c = shape.get(2).copied().unwrap_or(1);
 
     // Dtypes natively supported by fast_image_resize
-    match dtype {
+    let resized = match dtype {
         DType::U8 => resize_typed_u8(&contig_buf, h, w, c, target_height, target_width, &filter),
         DType::U16 => resize_typed_u16(&contig_buf, h, w, c, target_height, target_width, &filter),
         DType::F32 => resize_typed_f32(&contig_buf, h, w, c, target_height, target_width, &filter),
         // Unsupported by fast_image_resize: cast to F32, resize, cast back.
         other => {
             let f32_buf = contig_buf.cast(DType::F32);
-            let resized = resize_typed_f32(&f32_buf, h, w, c, target_height, target_width, &filter);
-            resized.cast(other)
+            let r = resize_typed_f32(&f32_buf, h, w, c, target_height, target_width, &filter);
+            r.cast(other)
         }
+    };
+
+    // Preserve input rank: 2D input must produce 2D output.  The typed
+    // resize functions always produce [H, W, C]; squeeze the trailing
+    // dimension when the input was 2D.
+    if input_rank == 2 {
+        resized.reshape(vec![target_height as usize, target_width as usize])
+    } else {
+        resized
     }
 }
 

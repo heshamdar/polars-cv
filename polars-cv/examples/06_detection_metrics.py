@@ -90,7 +90,7 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
     froc = froc_curve(contour_table)
     lroc = lroc_curve(contour_table)
     print("\nContourMatcher metrics:")
-    print("AP:", round(pr.ap(), 4))
+    print("AP:", round(pr.auc(), 4))
     print(
         "FROC AUC:",
         round(froc.auc(), 4),
@@ -176,7 +176,7 @@ def bbox_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> object:
         image_id_col="image_id",
     )
     pr = precision_recall_curve(table, class_id="lesion")
-    print("\nBBoxMatcher AP:", round(pr.ap(), 4))
+    print("\nBBoxMatcher AP:", round(pr.auc(), 4))
     return table
 
 
@@ -195,7 +195,7 @@ def prematched_section(bbox_table: object) -> None:
     pr = precision_recall_curve(table, class_id="lesion")
     lroc = lroc_curve(table)
     print("\nPreMatchedAdapter metrics (rebuilt from BBoxMatcher TP/FP assignments):")
-    print("PreMatchedAdapter AP:", round(pr.ap(interpolation="11_point"), 4))
+    print("PreMatchedAdapter AP:", round(pr.auc(interpolation="11_point"), 4))
     print("PreMatchedAdapter LROC AUC:", round(lroc.auc(), 4))
     plot_curve(
         lroc.curve,

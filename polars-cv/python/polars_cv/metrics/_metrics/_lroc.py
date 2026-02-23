@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import polars as pl
 
+from .._auc import mann_whitney_u_auc
 from .._result import MetricResult
 from .._types import (
     COL_GT_LABEL,
@@ -22,12 +23,25 @@ from .._types import (
 class LROCResult(MetricResult):
     """LROC-specific result with sensitivity-at-FPF helpers.
 
+    Two scoring variants are supported (controlled by ``variant``):
+
+    - ``"best_tp"`` (default): For each positive image, the effective
+      score is the highest-scoring true-positive (TP) detection.  A
+      positive image counts as "correctly localized" if it has at least
+      one TP above the current threshold.
+    - ``"top_scoring"``: For each positive image, the single
+      highest-scoring detection (regardless of TP/FP status) is the
+      commitment.  It counts as "correctly localized" only if *that*
+      top detection is a TP.  This is closer to the classical
+      single-location-commitment LROC formulation (Swensson 1996).
+
     Attributes:
         curve: DataFrame with ``threshold``, ``fpf``, ``sensitivity``.
         per_image: Per-image top-detection table.
         n_positive: Number of positive images.
         n_negative: Number of negative images.
         iou_threshold: IoU threshold used for matching.
+        variant: ``"best_tp"`` or ``"top_scoring"``.
         detection_table: The underlying ``DetectionTable`` for bootstrap.
     """
 
@@ -35,6 +49,7 @@ class LROCResult(MetricResult):
     n_positive: int = 0
     n_negative: int = 0
     iou_threshold: float = 0.5
+    variant: Literal["best_tp", "top_scoring"] = "best_tp"
     detection_table: DetectionTable | None = None
 
     def auc(  # type: ignore[override]
@@ -65,6 +80,78 @@ class LROCResult(MetricResult):
             Interpolated sensitivity value.
         """
         return self.interpolate(x_col="fpf", y_col="sensitivity", at=fpf)
+
+    def mann_whitney_auc(
+        self,
+        *,
+        level: str = "image",
+    ) -> float:
+        """Compute Mann-Whitney U statistic as a non-parametric AUC estimate.
+
+        Args:
+            level: Granularity of the comparison.
+                ``"detection"`` — P(random TP score > random FP score).
+                ``"image"`` — P(positive-image effective score >
+                negative-image effective score).  For LROC, the positive-image
+                score is ``max_score`` where ``top_is_tp`` is true (else 0);
+                the negative-image score is ``max_score`` (else 0).
+
+        Returns:
+            Mann-Whitney U AUC in [0, 1].  Returns 0.5 when one group is
+            empty.
+
+        Raises:
+            ValueError: If ``level`` is not ``"detection"`` or ``"image"``.
+        """
+        if level == "detection":
+            return self._mann_whitney_detection()
+        if level == "image":
+            return self._mann_whitney_image()
+        raise ValueError(
+            f"Unsupported level {level!r}. Expected 'detection' or 'image'."
+        )
+
+    def _mann_whitney_detection(self) -> float:
+        """Detection-level MW-U: P(TP score > FP score)."""
+        if self.detection_table is None:
+            raise ValueError(
+                "mann_whitney_auc(level='detection') requires detection_table."
+            )
+        det_df = self.detection_table.detections.collect(engine="streaming")
+        tp_scores = (
+            det_df.filter(pl.col(COL_IS_TP)).select(COL_SCORE).to_numpy().flatten()
+        )
+        fp_scores = (
+            det_df.filter(~pl.col(COL_IS_TP)).select(COL_SCORE).to_numpy().flatten()
+        )
+        return mann_whitney_u_auc(tp_scores, fp_scores)
+
+    def _mann_whitney_image(self) -> float:
+        """Image-level MW-U: P(pos-image score > neg-image score)."""
+        if self.per_image is None:
+            raise ValueError("mann_whitney_auc(level='image') requires per_image data.")
+        pos = self.per_image.filter(pl.col(COL_GT_LABEL))
+        neg = self.per_image.filter(~pl.col(COL_GT_LABEL))
+
+        # Positive: score from best TP (0 if no TP)
+        pos_scores = (
+            pos.select(
+                pl.when(pl.col("top_is_tp"))
+                .then(pl.col("max_score"))
+                .otherwise(0.0)
+                .fill_null(0.0)
+                .alias("s")
+            )
+            .to_numpy()
+            .flatten()
+        )
+        # Negative: max detection score (0 if no detections)
+        neg_scores = (
+            neg.select(pl.col("max_score").fill_null(0.0).alias("s"))
+            .to_numpy()
+            .flatten()
+        )
+        return mann_whitney_u_auc(pos_scores, neg_scores)
 
     def bootstrap_ci(
         self,
@@ -106,6 +193,7 @@ class LROCResult(MetricResult):
                 n_positive=int(sampled.filter(pl.col(COL_GT_LABEL)).height),
                 n_negative=int(sampled.filter(~pl.col(COL_GT_LABEL)).height),
                 iou_threshold=self.iou_threshold,
+                variant=self.variant,
             )
             if metric == "auc":
                 return temp.auc(**metric_kwargs)
@@ -134,6 +222,8 @@ class LROCResult(MetricResult):
 
 def lroc_curve(
     table: DetectionTable,
+    *,
+    variant: Literal["best_tp", "top_scoring"] = "best_tp",
 ) -> LROCResult:
     """Compute LROC operating points from a DetectionTable.
 
@@ -141,16 +231,30 @@ def lroc_curve(
     - ``gt_label`` in image metadata (positive/negative per image).
     - Per-image top-detection reduction from ``DetectionTable.to_per_image()``.
 
-    Positive images may contain multiple GT targets. LROC is computed at the
-    image level: an image is counted as localized if its top detection is a TP,
-    i.e. it matches at least one GT.
+    Two scoring variants are supported:
+
+    - ``"best_tp"`` (default): For each positive image, the effective
+      score is the highest-scoring TP detection.  An image counts as
+      localized if it has *any* TP above the threshold.
+    - ``"top_scoring"``: For each positive image, take the single
+      highest-scoring detection (regardless of TP/FP).  The image
+      counts as localized only if that top detection is a TP.  This
+      matches the classical single-commitment LROC (Swensson 1996).
+
+    For negative images both variants use the maximum detection score.
 
     Args:
         table: Canonical detection table produced by a matcher.
+        variant: ``"best_tp"`` or ``"top_scoring"``.
 
     Returns:
         ``LROCResult`` with curve, per-image summary, and metadata.
     """
+    if variant not in ("best_tp", "top_scoring"):
+        raise ValueError(
+            f"Invalid variant {variant!r}. Expected 'best_tp' or 'top_scoring'."
+        )
+
     meta_df = table.image_metadata.collect(engine="streaming")
 
     # Validate: LROC requires gt_label
@@ -167,10 +271,6 @@ def lroc_curve(
             f"handles empty results correctly."
         )
 
-    # Get per-image aggregation and choose the best localized detection.
-    # For positive images, the effective score is the highest score among TP
-    # detections (if any). For negative images, the effective score is the
-    # highest score among all detections.
     per_image_lf = table.to_per_image()
     if "detections" in per_image_lf.collect_schema().names():
         per_image_lf = per_image_lf.with_columns(
@@ -184,14 +284,29 @@ def lroc_curve(
             _max_det_score=pl.col("detections")
             .list.eval(pl.element().struct.field(COL_SCORE))
             .list.max(),
-        ).with_columns(
-            max_score=pl.when(pl.col(COL_GT_LABEL))
-            .then(pl.col("_best_tp_score"))
-            .otherwise(pl.col("_max_det_score")),
-            top_is_tp=pl.when(pl.col(COL_GT_LABEL))
-            .then(pl.col("_best_tp_score").is_not_null())
-            .otherwise(pl.lit(False)),
+            _top_det_is_tp=pl.col("detections")
+            .list.eval(pl.element().struct.field(COL_IS_TP))
+            .list.first(),
         )
+
+        if variant == "best_tp":
+            per_image_lf = per_image_lf.with_columns(
+                max_score=pl.when(pl.col(COL_GT_LABEL))
+                .then(pl.col("_best_tp_score"))
+                .otherwise(pl.col("_max_det_score")),
+                top_is_tp=pl.when(pl.col(COL_GT_LABEL))
+                .then(pl.col("_best_tp_score").is_not_null())
+                .otherwise(pl.lit(False)),
+            )
+        else:
+            # top_scoring: commit to the highest-scoring detection
+            per_image_lf = per_image_lf.with_columns(
+                max_score=pl.col("_max_det_score"),
+                top_is_tp=pl.when(pl.col(COL_GT_LABEL))
+                .then(pl.col("_top_det_is_tp").fill_null(False))
+                .otherwise(pl.lit(False)),
+            )
+
     per_image = per_image_lf.collect(engine="streaming")
 
     curve = _build_lroc_curve(per_image)
@@ -201,6 +316,7 @@ def lroc_curve(
         per_image=per_image,
         n_positive=int(per_image.filter(pl.col(COL_GT_LABEL)).height),
         n_negative=int(per_image.filter(~pl.col(COL_GT_LABEL)).height),
+        variant=variant,
         detection_table=table,
     )
 
@@ -270,7 +386,15 @@ def _build_lroc_curve(per_image: pl.DataFrame) -> pl.DataFrame:
         )
         .select("threshold", "fpf", "sensitivity")
     )
+    # Origin (threshold=inf, fpf=0, sensitivity=0)
     inf_row = pl.DataFrame(
         {"threshold": [float("inf")], "fpf": [0.0], "sensitivity": [0.0]}
     )
-    return pl.concat([bucketed, inf_row], how="vertical").sort("threshold")
+    # Lower-right endpoint (threshold=-inf, fpf=1.0, sensitivity=max achievable).
+    # Max achievable sensitivity is the fraction of positive images that have
+    # at least one TP detection at *any* score.
+    max_sens = float(bucketed["sensitivity"].max()) if bucketed.height > 0 else 0.0
+    lower_right = pl.DataFrame(
+        {"threshold": [float("-inf")], "fpf": [1.0], "sensitivity": [max_sens]}
+    )
+    return pl.concat([bucketed, inf_row, lower_right], how="vertical").sort("threshold")

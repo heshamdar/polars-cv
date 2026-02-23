@@ -155,7 +155,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             elif op.operation == OperationType.SCALE:
                 pipe = pipe.scale(factor=op.scale_factor)
 
-        return pipe.sink(sink_format)
+        return pipe
 
     def _build_pipeline_blob_source(
         self, operations: list[OperationParams], sink_format: str = "numpy"
@@ -203,7 +203,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             elif op.operation == OperationType.SCALE:
                 pipe = pipe.scale(factor=op.scale_factor)
 
-        return pipe.sink(sink_format)
+        return pipe
 
     def prepare_blob_images(self, png_bytes_list: list[bytes]) -> list[bytes]:
         """
