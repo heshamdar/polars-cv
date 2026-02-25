@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
-import numpy as np
 import polars as pl
 
+from .._auc import trapz_auc
 from .._result import MetricResult
 from .._types import (
     COL_IMAGE_ID,
@@ -38,41 +38,32 @@ class PrecisionRecallResult(MetricResult):
     def auc(  # type: ignore[override]
         self,
         *,
-        interpolation: Literal["all_points", "11_point"] = "all_points",
+        method: Literal["all_points", "11_point", "trapezoidal"] = "all_points",
     ) -> float:
-        """Compute Average Precision (AUC with monotone-envelope interpolation).
-
-        Applies the standard **monotonically decreasing precision envelope**
-        (right-to-left cumulative maximum) before trapezoidal integration,
-        matching COCO / scikit-learn AP definitions.
-
-        For the raw trapezoidal area without the envelope, use
-        :meth:`raw_auc`.
+        """Compute Average Precision (AUC of the PR curve).
 
         Args:
-            interpolation: Interpolation method.
-                ``"all_points"`` (default) uses the monotone-envelope
-                precision before trapezoidal integration.
+            method: Computation method.
+                ``"all_points"`` (default) applies the standard monotonically
+                decreasing precision envelope before trapezoidal integration
+                (matches COCO / scikit-learn AP).
                 ``"11_point"`` uses the Pascal VOC 11-point method.
+                ``"trapezoidal"`` computes raw trapezoidal AUC without the
+                monotone-envelope correction.
 
         Returns:
             Average Precision value.
         """
-        if interpolation == "11_point":
+        if method == "all_points":
+            return _all_points_ap(self.curve)
+        if method == "11_point":
             return _eleven_point_ap(self.curve)
-        return _all_points_ap(self.curve)
-
-    def raw_auc(self) -> float:
-        """Compute raw trapezoidal AUC under the precision-recall curve.
-
-        This does **not** apply the monotonically decreasing precision
-        envelope.  For the standard AP that matches COCO / scikit-learn
-        definitions, use :meth:`auc` instead.
-
-        Returns:
-            Raw area under the PR curve (without envelope interpolation).
-        """
-        return super().auc(x_col="recall", y_col="precision")
+        if method == "trapezoidal":
+            return super().auc(x_col="recall", y_col="precision")
+        raise ValueError(
+            f"Unknown method {method!r}. Expected 'all_points', "
+            f"'11_point', or 'trapezoidal'."
+        )
 
     def precision_at(self, threshold: float) -> float:
         """Precision at a given score threshold.
@@ -102,68 +93,27 @@ class PrecisionRecallResult(MetricResult):
             return 0.0
         return float(filtered.select(pl.col("recall").last()).item())
 
-    def bootstrap_ci(
-        self,
-        n_bootstrap: int = 1000,
-        confidence: float = 0.95,
-        seed: int | None = None,
-        *,
-        metric: str = "auc",
-        metric_kwargs: dict[str, Any] | None = None,
-    ) -> Any:
-        """Estimate CI via image-level bootstrap.
+    # ------------------------------------------------------------------
+    # Bootstrap hooks
+    # ------------------------------------------------------------------
 
-        Args:
-            n_bootstrap: Number of bootstrap iterations.
-            confidence: Confidence level in (0, 1).
-            seed: Optional RNG seed.
-            metric: ``"auc"`` (standard AP with envelope).
-            metric_kwargs: Extra kwargs for the metric method.
-
-        Returns:
-            ``BootstrapResult`` with percentile confidence interval.
-        """
-        from .._bootstrap import bootstrap_metric_sequential
-
-        metric_kwargs = metric_kwargs or {}
+    def _get_detection_table(self) -> DetectionTable:
+        """Return the underlying DetectionTable."""
         if self.detection_table is None:
             raise ValueError("bootstrap_ci requires detection_table to be set.")
+        return self.detection_table
 
-        image_ids, strata = self.detection_table.image_ids_and_strata()
+    def _reconstruct(self, sampled_ids: list[str]) -> PrecisionRecallResult:
+        """Rebuild a PrecisionRecallResult from bootstrap-sampled image IDs."""
+        table = self._get_detection_table()
 
-        def _metric(sampled_ids: list[str]) -> float:
-            sampled_det = (
-                pl.DataFrame({COL_IMAGE_ID: sampled_ids})
-                .lazy()
-                .join(
-                    self.detection_table.detections,  # type: ignore[union-attr]
-                    on=COL_IMAGE_ID,
-                    how="left",
-                )
-            )
-            sampled_meta = (
-                pl.DataFrame({COL_IMAGE_ID: sampled_ids})
-                .lazy()
-                .join(
-                    self.detection_table.image_metadata,  # type: ignore[union-attr]
-                    on=COL_IMAGE_ID,
-                    how="left",
-                )
-            )
-            sampled_table = DetectionTable.from_matched(sampled_det, sampled_meta)
-            result = precision_recall_curve(sampled_table, class_id=self.class_id)
-            return result.auc(**metric_kwargs)
-
-        point = self.auc(**metric_kwargs)
-        return bootstrap_metric_sequential(
-            image_ids=image_ids,
-            metric_fn=_metric,
-            point_estimate=point,
-            n_bootstrap=n_bootstrap,
-            confidence=confidence,
-            seed=seed,
-            strata=strata,
+        sampled_ids_lf = pl.DataFrame({COL_IMAGE_ID: sampled_ids}).lazy()
+        sampled_det = sampled_ids_lf.join(table.detections, on=COL_IMAGE_ID, how="left")
+        sampled_meta = sampled_ids_lf.join(
+            table.image_metadata, on=COL_IMAGE_ID, how="left"
         )
+        sampled_table = DetectionTable.from_matched(sampled_det, sampled_meta)
+        return precision_recall_curve(sampled_table, class_id=self.class_id)
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +143,7 @@ def precision_recall_curve(
         table = table.filter_class(class_id)
     resolved_class = class_id or DEFAULT_CLASS
 
-    det_df, meta_df = table.collect()
+    det_df, meta_df = table.collect(engine="streaming")
 
     total_gts = int(meta_df.select(pl.col(COL_N_GTS).sum()).item())
 
@@ -260,7 +210,7 @@ def average_precision(
         AP value in [0, 1].
     """
     pr = precision_recall_curve(table, class_id=class_id)
-    return pr.auc(interpolation=interpolation)
+    return pr.auc(method=interpolation)
 
 
 def mean_average_precision(
@@ -272,7 +222,7 @@ def mean_average_precision(
     """Compute Mean Average Precision across classes and IoU thresholds.
 
     If ``iou_thresholds`` is provided, the stored ``iou`` column is re-thresholded
-    at each level to recompute ``is_tp`` — **no re-matching is needed**.
+    at each level to recompute ``is_tp`` -- **no re-matching is needed**.
 
     Args:
         table: Canonical detection table.
@@ -298,7 +248,7 @@ def mean_average_precision(
 
     if not ap_values:
         return 0.0
-    return float(np.mean(ap_values))
+    return float(pl.Series("ap", ap_values).mean())  # type: ignore[arg-type]
 
 
 def precision_at_threshold(
@@ -414,17 +364,20 @@ def _all_points_ap(curve: pl.DataFrame) -> float:
     if curve.height == 0:
         return 0.0
 
-    recall = curve["recall"].cast(pl.Float64).to_numpy()
-    precision = curve["precision"].cast(pl.Float64).to_numpy()
+    recall = curve["recall"].cast(pl.Float64)
+    precision = curve["precision"].cast(pl.Float64)
 
-    # Monotone decreasing envelope: at each recall level, precision is the
-    # maximum precision at any recall >= current recall.
-    precision_envelope = np.maximum.accumulate(precision[::-1])[::-1]
-    return float(np.trapezoid(precision_envelope, recall))
+    # Monotone decreasing envelope: reverse, cum_max, reverse back
+    envelope = precision.reverse().cum_max().reverse()
+    return float(trapz_auc(recall, envelope))
 
 
 def _eleven_point_ap(curve: pl.DataFrame) -> float:
     """Compute AP using Pascal VOC 11-point interpolation.
+
+    Cross-joins the 11 recall thresholds with the PR curve, filters to
+    recall >= threshold, and takes max precision per threshold -- all as
+    a single Polars lazy plan.
 
     Args:
         curve: PR curve DataFrame with ``recall`` and ``precision``.
@@ -435,12 +388,20 @@ def _eleven_point_ap(curve: pl.DataFrame) -> float:
     if curve.height == 0:
         return 0.0
 
-    recall = curve["recall"].cast(pl.Float64).to_numpy()
-    precision = curve["precision"].cast(pl.Float64).to_numpy()
-
-    ap = 0.0
-    for t in np.linspace(0.0, 1.0, 11):
-        mask = recall >= t
-        if mask.any():
-            ap += float(precision[mask].max())
-    return ap / 11.0
+    thresholds = pl.DataFrame({"t": [i / 10.0 for i in range(11)]})
+    result = (
+        thresholds.lazy()
+        .join(
+            curve.lazy().select(
+                pl.col("recall").cast(pl.Float64),
+                pl.col("precision").cast(pl.Float64),
+            ),
+            how="cross",
+        )
+        .filter(pl.col("recall") >= pl.col("t"))
+        .group_by("t")
+        .agg(max_p=pl.col("precision").max())
+        .select(pl.col("max_p").mean())
+        .collect(engine="streaming")
+    )
+    return float(result.item())

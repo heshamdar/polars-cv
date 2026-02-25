@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
-import numpy as np
 import polars as pl
 
 from ._types import COL_IMAGE_ID, COL_IS_TP, COL_N_GTS, COL_SCORE
@@ -67,27 +66,34 @@ def bootstrap_metric_sequential(
         ``BootstrapResult`` with percentile confidence interval.
     """
     _validate_bootstrap_params(n_bootstrap, confidence, image_ids)
-    rng = np.random.default_rng(seed)
     distribution: list[float] = []
 
     if strata is None:
-        ids_np = np.asarray(image_ids, dtype=object)
-        for _ in range(n_bootstrap):
-            sampled = rng.choice(ids_np, size=ids_np.size, replace=True)
-            distribution.append(float(metric_fn([str(v) for v in sampled])))
+        ids_series = pl.Series(COL_IMAGE_ID, image_ids)
+        for i in range(n_bootstrap):
+            iter_seed = (seed + i) if seed is not None else None
+            sampled = ids_series.sample(
+                n=ids_series.len(), with_replacement=True, seed=iter_seed
+            )
+            distribution.append(float(metric_fn(sampled.to_list())))
     else:
         grouped: dict[str, list[str]] = {}
         for image_id in image_ids:
             key = strata.get(image_id, "__missing__")
             grouped.setdefault(key, []).append(image_id)
-        grouped_arrays = {k: np.asarray(v, dtype=object) for k, v in grouped.items()}
-        grouped_sizes = {k: len(v) for k, v in grouped.items()}
+        grouped_series = {k: pl.Series(k, v) for k, v in grouped.items()}
 
-        for _ in range(n_bootstrap):
+        for i in range(n_bootstrap):
+            iter_seed = (seed + i) if seed is not None else None
             sampled_ids: list[str] = []
-            for key, arr in grouped_arrays.items():
-                sampled = rng.choice(arr, size=grouped_sizes[key], replace=True)
-                sampled_ids.extend(str(v) for v in sampled)
+            for j, (key, s) in enumerate(grouped_series.items()):
+                stratum_seed = (
+                    (iter_seed * len(grouped_series) + j)
+                    if iter_seed is not None
+                    else None
+                )
+                sampled = s.sample(n=s.len(), with_replacement=True, seed=stratum_seed)
+                sampled_ids.extend(sampled.to_list())
             distribution.append(float(metric_fn(sampled_ids)))
 
     return _finalize(distribution, point_estimate, confidence)
@@ -110,7 +116,7 @@ def bootstrap_pr_auc(
 
     Generates all bootstrap samples as a single DataFrame, joins with the
     detection table, and computes AP per bootstrap iteration using Polars
-    window functions — all in one lazy plan.
+    window functions -- all in one lazy plan.
 
     Args:
         table: Canonical detection table.
@@ -128,43 +134,15 @@ def bootstrap_pr_auc(
     if class_id is not None:
         table = table.filter_class(class_id)
 
-    # Compute point estimate first
     from ._metrics._precision_recall import average_precision
 
     point = average_precision(table, class_id=class_id)
 
-    # Generate all bootstrap samples: (bootstrap_id, image_id)
-    rng = np.random.default_rng(seed)
-    samples_data: dict[str, list[int | str]] = {
-        "bootstrap_id": [],
-        COL_IMAGE_ID: [],
-    }
-
-    if strata is None:
-        ids_np = np.asarray(image_ids, dtype=object)
-        for b in range(n_bootstrap):
-            sampled = rng.choice(ids_np, size=ids_np.size, replace=True)
-            samples_data["bootstrap_id"].extend([b] * len(sampled))
-            samples_data[COL_IMAGE_ID].extend(str(v) for v in sampled)
-    else:
-        grouped: dict[str, list[str]] = {}
-        for iid in image_ids:
-            key = strata.get(iid, "__missing__")
-            grouped.setdefault(key, []).append(iid)
-        grouped_arrays = {k: np.asarray(v, dtype=object) for k, v in grouped.items()}
-        grouped_sizes = {k: len(v) for k, v in grouped.items()}
-
-        for b in range(n_bootstrap):
-            for key, arr in grouped_arrays.items():
-                sampled = rng.choice(arr, size=grouped_sizes[key], replace=True)
-                samples_data["bootstrap_id"].extend([b] * len(sampled))
-                samples_data[COL_IMAGE_ID].extend(str(v) for v in sampled)
-
-    samples_df = pl.DataFrame(
-        {
-            "bootstrap_id": pl.Series(samples_data["bootstrap_id"], dtype=pl.Int32),
-            COL_IMAGE_ID: pl.Series(samples_data[COL_IMAGE_ID], dtype=pl.String),
-        }
+    samples_df = _generate_bootstrap_samples(
+        image_ids=image_ids,
+        strata=strata,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
     )
 
     # Get total GTs per bootstrap by joining with metadata
@@ -172,7 +150,9 @@ def bootstrap_pr_auc(
     boot_gts = (
         samples_df.lazy()
         .join(
-            meta_df.lazy().select(COL_IMAGE_ID, COL_N_GTS), on=COL_IMAGE_ID, how="left"
+            meta_df.lazy().select(COL_IMAGE_ID, COL_N_GTS),
+            on=COL_IMAGE_ID,
+            how="left",
         )
         .group_by("bootstrap_id")
         .agg(total_gts=pl.col(COL_N_GTS).sum().cast(pl.Float64))
@@ -238,6 +218,68 @@ def bootstrap_pr_auc(
 # ---------------------------------------------------------------------------
 
 
+def _generate_bootstrap_samples(
+    *,
+    image_ids: list[str],
+    strata: dict[str, str] | None,
+    n_bootstrap: int,
+    seed: int | None,
+) -> pl.DataFrame:
+    """Generate all bootstrap sample rows as a single DataFrame.
+
+    Returns a DataFrame with columns ``bootstrap_id`` (Int32) and
+    ``image_id`` (String), with ``n_bootstrap * len(image_ids)`` rows.
+
+    Uses ``pl.Series.sample()`` for Polars-native resampling.
+
+    Args:
+        image_ids: Base image IDs.
+        strata: Optional image->stratum mapping for stratified sampling.
+        n_bootstrap: Number of bootstrap iterations.
+        seed: Optional RNG seed.
+
+    Returns:
+        DataFrame with ``bootstrap_id`` and ``image_id`` columns.
+    """
+    boot_ids: list[int] = []
+    img_ids: list[str] = []
+
+    if strata is None:
+        ids_series = pl.Series(COL_IMAGE_ID, image_ids)
+        for b in range(n_bootstrap):
+            iter_seed = (seed + b) if seed is not None else None
+            sampled = ids_series.sample(
+                n=ids_series.len(), with_replacement=True, seed=iter_seed
+            )
+            boot_ids.extend([b] * sampled.len())
+            img_ids.extend(sampled.to_list())
+    else:
+        grouped: dict[str, list[str]] = {}
+        for iid in image_ids:
+            key = strata.get(iid, "__missing__")
+            grouped.setdefault(key, []).append(iid)
+        grouped_series = {k: pl.Series(k, v) for k, v in grouped.items()}
+
+        for b in range(n_bootstrap):
+            iter_seed = (seed + b) if seed is not None else None
+            for j, (key, s) in enumerate(grouped_series.items()):
+                stratum_seed = (
+                    (iter_seed * len(grouped_series) + j)
+                    if iter_seed is not None
+                    else None
+                )
+                sampled = s.sample(n=s.len(), with_replacement=True, seed=stratum_seed)
+                boot_ids.extend([b] * sampled.len())
+                img_ids.extend(sampled.to_list())
+
+    return pl.DataFrame(
+        {
+            "bootstrap_id": pl.Series("bootstrap_id", boot_ids, dtype=pl.Int32),
+            COL_IMAGE_ID: pl.Series(COL_IMAGE_ID, img_ids, dtype=pl.String),
+        }
+    )
+
+
 def _validate_bootstrap_params(
     n_bootstrap: int,
     confidence: float,
@@ -259,8 +301,9 @@ def _finalize(
 ) -> BootstrapResult:
     """Build a ``BootstrapResult`` from a distribution."""
     alpha = (1.0 - confidence) / 2.0
-    lower = float(np.quantile(distribution, alpha))
-    upper = float(np.quantile(distribution, 1.0 - alpha))
+    dist = pl.Series("v", distribution)
+    lower = float(dist.quantile(alpha, interpolation="linear"))
+    upper = float(dist.quantile(1.0 - alpha, interpolation="linear"))
     return BootstrapResult(
         point_estimate=float(point_estimate),
         ci_lower=lower,

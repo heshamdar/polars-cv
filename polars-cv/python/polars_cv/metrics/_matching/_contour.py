@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -44,58 +45,146 @@ _EXTRACTED_CONTOUR_SET_SCHEMA = pl.List(_EXTRACTED_CONTOUR_SCHEMA)
 
 
 # ---------------------------------------------------------------------------
-# Shared pipeline helpers
+# Source format detection
 # ---------------------------------------------------------------------------
 
+_POLARS_TO_CV_DTYPE: dict[pl.DataType, str] = {
+    pl.Float32: "f32",
+    pl.Float64: "f64",
+    pl.UInt8: "u8",
+    pl.UInt16: "u16",
+    pl.UInt32: "u32",
+    pl.UInt64: "u64",
+    pl.Int8: "i8",
+    pl.Int16: "i16",
+    pl.Int32: "i32",
+    pl.Int64: "i64",
+}
 
-def _check_shape_mismatch(
+
+@dataclass
+class _SourceInfo:
+    """Auto-detected source format and kwargs for a column."""
+
+    format: str
+    kwargs: dict[str, Any]
+
+    def build_source(self) -> Pipeline:
+        """Create a ``Pipeline().source(...)`` with this format."""
+        return Pipeline().source(self.format, **self.kwargs)
+
+
+def _leaf_dtype(dtype: pl.DataType) -> pl.DataType:
+    """Unwrap nested List/Array to reach the leaf element type."""
+    while isinstance(dtype, (pl.List, pl.Array)):
+        dtype = dtype.inner  # type: ignore[union-attr]
+    return dtype
+
+
+def _polars_dtype_to_cv(dtype: pl.DataType) -> str:
+    """Map a Polars leaf dtype to a polars-cv dtype string.
+
+    Uses equality comparison to match Polars DataTypeClass objects
+    which are metaclass singletons.  Falls back to ``"f32"`` for
+    unrecognised types.
+    """
+    return _POLARS_TO_CV_DTYPE.get(dtype, "f32")
+
+
+def _detect_source_info(schema: dict[str, pl.DataType], col: str) -> _SourceInfo:
+    """Detect the pipeline source format from a column's Polars dtype.
+
+    This is a **planning-time** operation — it inspects the Polars schema
+    (available via ``collect_schema()``) and does not touch data.
+
+    Args:
+        schema: Polars schema mapping column names to dtypes.
+        col: Column name to inspect.
+
+    Returns:
+        ``_SourceInfo`` with format string and kwargs.
+
+    Raises:
+        ValueError: If the column type is not supported as a pipeline source.
+    """
+    dtype = schema[col]
+
+    if dtype == pl.Binary:
+        return _SourceInfo(format="blob", kwargs={})
+
+    if isinstance(dtype, pl.List):
+        leaf = _leaf_dtype(dtype)
+        cv_dtype = _polars_dtype_to_cv(leaf)
+        return _SourceInfo(format="list", kwargs={"dtype": cv_dtype})
+
+    if isinstance(dtype, pl.Array):
+        leaf = _leaf_dtype(dtype)
+        cv_dtype = _polars_dtype_to_cv(leaf)
+        return _SourceInfo(format="array", kwargs={"dtype": cv_dtype})
+
+    raise ValueError(
+        f"Column '{col}' has unsupported dtype {dtype} for ContourMatcher. "
+        f"Expected Binary (blob), List[List[...]] (nested list), or "
+        f"Array[...] (fixed-size array)."
+    )
+
+
+def _add_gt_shape_columns(
     lf: pl.LazyFrame,
-    *,
-    pred_col: str,
-    gt_mask_col: str,
-    auto_resize: bool,
-) -> tuple[pl.LazyFrame, bool]:
-    """Check for heatmap/mask shape mismatch and add dimension columns.
+    gt_col: str,
+    gt_source: _SourceInfo,
+) -> pl.LazyFrame:
+    """Add ``_gt_h`` and ``_gt_w`` columns from the GT mask column.
+
+    These are used as the dynamic resize target when ``auto_resize``
+    is enabled.  The extraction strategy depends on the source format:
+
+    - **list**: native ``.list.len()`` expressions.
+    - **blob**: ``Pipeline().source("blob").extract_shape()`` via Rust.
+    - **array**: literal values from the Polars type metadata.
 
     Args:
         lf: Input lazy frame.
-        pred_col: Prediction heatmap column.
-        gt_mask_col: Ground-truth mask column.
-        auto_resize: Whether to auto-resize prediction heatmaps to GT mask shape.
+        gt_col: Ground-truth mask column name.
+        gt_source: Detected source format for the GT column.
 
     Returns:
-        Tuple of ``(lf_with_dims, needs_resize)``.
-
-    Raises:
-        ValueError: If shapes differ and ``auto_resize`` is False.
+        LazyFrame with ``_gt_h`` and ``_gt_w`` columns added.
     """
-    with_dims = lf.with_columns(
-        _pred_h=pl.col(pred_col).list.len().cast(pl.Int64),
-        _pred_w=pl.col(pred_col).list.first().list.len().cast(pl.Int64),
-        _gt_h=pl.col(gt_mask_col).list.len().cast(pl.Int64),
-        _gt_w=pl.col(gt_mask_col).list.first().list.len().cast(pl.Int64),
-    ).with_columns(
-        _shape_mismatch=(pl.col("_pred_h") != pl.col("_gt_h"))
-        | (pl.col("_pred_w") != pl.col("_gt_w"))
-    )
-
-    mismatch_preview_df = (
-        with_dims.filter(pl.col("_shape_mismatch"))
-        .select("_pred_h", "_pred_w", "_gt_h", "_gt_w")
-        .limit(5)
-        .collect(engine="streaming")
-    )
-    has_mismatch = mismatch_preview_df.height > 0
-
-    if not auto_resize and has_mismatch:
-        msg = (
-            "Prediction heatmap and GT mask shapes differ. "
-            "Enable `auto_resize=True` or pre-align shapes before metric computation. "
-            f"Examples: {mismatch_preview_df.to_dicts()}"
+    if gt_source.format == "list":
+        return lf.with_columns(
+            _gt_h=pl.col(gt_col).list.len().cast(pl.Int64),
+            _gt_w=pl.col(gt_col).list.first().list.len().cast(pl.Int64),
         )
-        raise ValueError(msg)
 
-    return with_dims, has_mismatch
+    if gt_source.format == "blob":
+        shape_pipe = gt_source.build_source().extract_shape()
+        return (
+            lf.with_columns(_gt_shape=pl.col(gt_col).cv.pipe(shape_pipe).sink("native"))
+            .with_columns(
+                _gt_h=pl.col("_gt_shape").list.get(0).cast(pl.Int64),
+                _gt_w=pl.col("_gt_shape").list.get(1).cast(pl.Int64),
+            )
+            .drop("_gt_shape")
+        )
+
+    if gt_source.format == "array":
+        schema_dict = dict(lf.collect_schema())
+        dtype = schema_dict[gt_col]
+        h = dtype.size if isinstance(dtype, pl.Array) else 1
+        inner = dtype.inner if isinstance(dtype, pl.Array) else None
+        w = inner.size if isinstance(inner, pl.Array) else 1
+        return lf.with_columns(
+            _gt_h=pl.lit(h, dtype=pl.Int64),
+            _gt_w=pl.lit(w, dtype=pl.Int64),
+        )
+
+    raise ValueError(f"Unsupported GT source format: {gt_source.format}")
+
+
+# ---------------------------------------------------------------------------
+# Shared pipeline helpers
+# ---------------------------------------------------------------------------
 
 
 def _extract_with_fused_resize(
@@ -104,6 +193,7 @@ def _extract_with_fused_resize(
     pred_col: str,
     threshold: float,
     min_area: float,
+    source_info: _SourceInfo,
 ) -> pl.LazyFrame:
     """Fuse resize + extract into a single pipeline with multi-output sink.
 
@@ -117,14 +207,13 @@ def _extract_with_fused_resize(
         pred_col: Prediction heatmap column.
         threshold: Binary threshold for contour extraction.
         min_area: Minimum contour area filter.
+        source_info: Auto-detected source format for the prediction column.
 
     Returns:
         LazyFrame with ``_pred_contours`` and ``_pred_heatmap_aligned``.
     """
-    resize_pipe = (
-        Pipeline()
-        .source("list", dtype="f32")
-        .resize(height=pl.col("_gt_h"), width=pl.col("_gt_w"))
+    resize_pipe = source_info.build_source().resize(
+        height=pl.col("_gt_h"), width=pl.col("_gt_w")
     )
     lazy_resized = pl.col(pred_col).cv.pipe(resize_pipe).alias("resized_heatmap")
 
@@ -163,20 +252,22 @@ def _extract_contours_from_col(
     threshold: float,
     min_area: float,
     output_col: str,
+    source_info: _SourceInfo,
 ) -> pl.LazyFrame:
-    """Extract contours from a buffer-like list column.
+    """Extract contours from a buffer column of any supported format.
 
     Args:
         lf: Input lazy frame.
-        source_col: Buffer column (nested list image-like).
+        source_col: Buffer column (blob, nested list, or array).
         threshold: Binary threshold used prior to extraction.
         min_area: Minimum contour area.
         output_col: Name of output contour-set column.
+        source_info: Auto-detected source format for the column.
 
     Returns:
         LazyFrame with ``output_col`` as a list of contours.
     """
-    pipe_builder = Pipeline().source("list", dtype="f32").threshold(value=threshold)
+    pipe_builder = source_info.build_source().threshold(value=threshold)
     if min_area > 0.0:
         extract_pipe = pipe_builder.extract_contours(
             mode="external", method="simple", min_area=min_area
@@ -199,7 +290,7 @@ def _score_contours_from_heatmap(
     contour_col: str,
     heatmap_col: str,
     output_col: str = "_pred_scores",
-    source_format: str = "list",
+    source_info: _SourceInfo,
 ) -> pl.LazyFrame:
     """Score contour sets from heatmaps using max interior value.
 
@@ -208,19 +299,13 @@ def _score_contours_from_heatmap(
         contour_col: Contour-set column.
         heatmap_col: Heatmap column.
         output_col: Output score list column.
-        source_format: Source format for the heatmap column
-            (``"list"`` for nested-list, ``"blob"`` for VIEW protocol).
+        source_info: Auto-detected source format for the heatmap column.
 
     Returns:
         LazyFrame with score column added.
     """
-    source_kwargs: dict[str, str] = {"dtype": "f32"} if source_format == "list" else {}
-    score_pipe = (
-        Pipeline()
-        .source(source_format, **source_kwargs)
-        .label_reduce(
-            contours=pl.col(contour_col), reduction="max", region_mode="interior"
-        )
+    score_pipe = source_info.build_source().label_reduce(
+        contours=pl.col(contour_col), reduction="max", region_mode="interior"
     )
     return lf.with_columns(
         pl.col(heatmap_col).cv.pipe(score_pipe).sink("native").alias(output_col)
@@ -398,10 +483,15 @@ class ContourMatcher:
     ) -> DetectionTable:
         """Produce a ``DetectionTable`` from heatmap + binary mask data.
 
+        Accepts any column format supported by polars-cv sources: nested
+        ``List[List[...]]``, VIEW protocol ``Binary`` (blob), or fixed-size
+        ``Array[...]``.  The source format is auto-detected from the column
+        dtype.
+
         Args:
             data: Input frame with one image/sample per row.
-            pred_col: Prediction heatmap column (nested ``List[List[Float64]]``).
-            gt_col: Ground-truth binary mask column (same nesting).
+            pred_col: Prediction heatmap column (any supported format).
+            gt_col: Ground-truth binary mask column (any supported format).
             score_col: Unused for contour matching (scores are derived from
                 heatmap peaks).
             class_col: Optional class label column for multi-class metrics.
@@ -413,7 +503,8 @@ class ContourMatcher:
             Validated ``DetectionTable``.
         """
         lf = to_lazy(data)
-        schema_names = list(lf.collect_schema().names())
+        schema = lf.collect_schema()
+        schema_names = list(schema.names())
         ensure_columns_exist(schema_names, [pred_col, gt_col])
         if class_col is not None:
             ensure_columns_exist(schema_names, [class_col])
@@ -423,6 +514,11 @@ class ContourMatcher:
             ensure_columns_exist(schema_names, [weight_col])
         if group_col is not None:
             ensure_columns_exist(schema_names, [group_col])
+
+        # Auto-detect source format from column dtypes (planning-time only)
+        schema_dict = dict(schema)
+        pred_source = _detect_source_info(schema_dict, pred_col)
+        gt_source = _detect_source_info(schema_dict, gt_col)
 
         # Assign image_id
         if image_id_col is None:
@@ -443,33 +539,33 @@ class ContourMatcher:
             ).alias(COL_WEIGHT)
         )
 
-        # Shape validation / resize + contour extraction
-        prepared, needs_resize = _check_shape_mismatch(
-            prepared,
-            pred_col=pred_col,
-            gt_mask_col=gt_col,
-            auto_resize=self._auto_resize,
-        )
-
-        if needs_resize:
-            # Fused pipeline: resize + extract in one vb_graph pass,
-            # also outputs the resized heatmap for scoring.
+        # Contour extraction and scoring
+        if self._auto_resize:
+            # Resize prediction heatmaps to GT mask dimensions via a fused
+            # pipeline.  If shapes already match the resize is a no-op.
+            prepared = _add_gt_shape_columns(prepared, gt_col, gt_source)
             prepared = _extract_with_fused_resize(
                 prepared,
                 pred_col=pred_col,
                 threshold=self._extraction_threshold,
                 min_area=self._min_contour_area,
+                source_info=pred_source,
             )
             aligned_pred_col = "_pred_heatmap_aligned"
+            aligned_source = _SourceInfo(format="blob", kwargs={})
         else:
-            aligned_pred_col = pred_col
+            # Trust the user: shapes are assumed to match.
             prepared = _extract_contours_from_col(
                 prepared,
                 source_col=pred_col,
                 threshold=self._extraction_threshold,
                 min_area=self._min_contour_area,
                 output_col="_pred_contours",
+                source_info=pred_source,
             )
+            aligned_pred_col = pred_col
+            aligned_source = pred_source
+
         gt_area = (
             self._gt_min_contour_area
             if self._gt_min_contour_area is not None
@@ -481,18 +577,16 @@ class ContourMatcher:
             threshold=0.5,
             min_area=gt_area,
             output_col="_gt_contours",
+            source_info=gt_source,
         )
 
-        # Score predictions.  When the heatmap was resized via the fused
-        # pipeline, it is stored as blob (VIEW protocol binary); otherwise
-        # it remains in list (nested-list) format.
-        heatmap_source_fmt = "blob" if needs_resize else "list"
+        # Score predictions against the (possibly resized) heatmap
         prepared = _score_contours_from_heatmap(
             prepared,
             contour_col="_pred_contours",
             heatmap_col=aligned_pred_col,
             output_col="_pred_scores_raw",
-            source_format=heatmap_source_fmt,
+            source_info=aligned_source,
         )
 
         # Filter out spurious zero-score detections: contours extracted from

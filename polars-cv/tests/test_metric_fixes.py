@@ -7,9 +7,12 @@ Covers:
 - LROC lower-right endpoint addition
 - PR monotone-envelope AP vs raw trapezoidal AUC
 - partial_auc extrapolation warning
-- Mann-Whitney U AUC for FROCResult and LROCResult
+- McClish correction for partial AUC
+- Mann-Whitney U AUC for FROCResult and LROCResult (via unified auc(method=...))
+- Mann-Whitney AUC bootstrap support
 - ContourMatcher min_contour_area default change
 - Zero-score detection filtering
+- Source format auto-detection for ContourMatcher
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING
 
-import numpy as np
 import polars as pl
 import pytest
 from polars_cv.metrics import (
@@ -26,9 +28,9 @@ from polars_cv.metrics import (
     lroc_curve,
     precision_recall_curve,
 )
-from polars_cv.metrics._auc import mann_whitney_u_auc, partial_auc
-from polars_cv.metrics._matching._contour import ContourMatcher
-from polars_cv.metrics._metrics._froc import _curve_from_dense
+from polars_cv.metrics._auc import mann_whitney_u_auc, mcclish_correction, partial_auc
+from polars_cv.metrics._matching._contour import ContourMatcher, _detect_source_info
+from polars_cv.metrics._metrics._froc import _curve_from_detections
 from polars_cv.metrics._metrics._lroc import LROCResult, _build_lroc_curve
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
@@ -101,48 +103,78 @@ def simple_detection_table() -> DetectionTable:
 # ---------------------------------------------------------------------------
 
 
-class TestFrocTotalGtsFix:
-    """Verify FROC total_gts is not overcounted across thresholds."""
+class TestFrocCurveFromDetections:
+    """Verify cumulative-sum FROC curve construction."""
 
-    def test_unweighted_total_gts_not_overcounted(self) -> None:
-        """Unweighted path computes total_gts from unique images, not dense grid.
+    def test_total_gts_correct(self) -> None:
+        """Curve total_gts reflects the provided total, not double-counted.
 
-        With 3 images (n_gts = [1, 1, 0]) and 3 thresholds, the dense grid
-        has 9 rows.  Summing n_gts naively gives 6; correct answer is 2.
+        3 images: a (n_gts=1), b (n_gts=1), c (n_gts=0) → total=2.
         """
-        dense = pl.DataFrame(
+        det_df = pl.DataFrame(
             {
-                COL_IMAGE_ID: ["a", "a", "a", "b", "b", "b", "c", "c", "c"],
-                "threshold": [0.5, 0.7, 0.9] * 3,
-                "tp": [1, 1, 0, 0, 0, 0, 0, 0, 0],
-                "fp": [0, 0, 0, 1, 0, 0, 1, 0, 0],
-                COL_N_GTS: [1, 1, 1, 1, 1, 1, 0, 0, 0],
-                COL_WEIGHT: [1.0] * 9,
+                COL_IMAGE_ID: ["a", "b", "c"],
+                COL_SCORE: [0.9, 0.7, 0.5],
+                COL_IS_TP: [True, False, False],
             }
         )
-        curve = _curve_from_dense(dense, weighted=False)
-        # total_gts in the curve should reflect unique images (1+1+0=2)
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c"],
+                COL_N_GTS: [1, 1, 0],
+                COL_WEIGHT: [1.0, 1.0, 1.0],
+            }
+        )
+        curve = _curve_from_detections(det_df, meta_df, n_images=3, total_targets=2)
         total_gts_values = curve["total_gts"].unique().to_list()
         for v in total_gts_values:
-            assert v <= 2, f"total_gts overcounted: {v}"
+            assert v == 2, f"total_gts wrong: {v}"
 
-    def test_weighted_path_not_overcounted(self) -> None:
-        """Weighted path (via weighted_curve) also produces correct total_gts."""
-        dense = pl.DataFrame(
+    def test_weighted_sensitivity_bounded(self) -> None:
+        """Weighted curve sensitivity stays in [0, 1]."""
+        det_df = pl.DataFrame(
             {
-                COL_IMAGE_ID: ["a", "a", "b", "b"],
-                "threshold": [0.5, 0.9, 0.5, 0.9],
-                "tp": [1, 0, 0, 0],
-                "fp": [0, 0, 1, 0],
-                COL_N_GTS: [1, 1, 1, 1],
-                COL_WEIGHT: [1.0, 1.0, 1.0, 1.0],
+                COL_IMAGE_ID: ["a", "b"],
+                COL_SCORE: [0.9, 0.5],
+                COL_IS_TP: [True, False],
             }
         )
-        curve = _curve_from_dense(dense, weighted=True)
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b"],
+                COL_N_GTS: [1, 1],
+                COL_WEIGHT: [1.0, 1.0],
+            }
+        )
+        curve = _curve_from_detections(det_df, meta_df, n_images=2, total_targets=2)
         assert curve.height > 0
-        sens_vals = curve["sensitivity"].to_list()
-        for s in sens_vals:
-            assert s is None or s <= 1.0, f"sensitivity > 1.0: {s}"
+        for s in curve["sensitivity"].to_list():
+            assert s is None or 0.0 <= s <= 1.0, f"sensitivity out of range: {s}"
+
+    def test_cumulative_tp_fp_monotonic(self) -> None:
+        """Cumulative TP and FP are non-decreasing as threshold decreases."""
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "a", "b", "c"],
+                COL_SCORE: [0.9, 0.7, 0.5, 0.3],
+                COL_IS_TP: [True, False, True, False],
+            }
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c"],
+                COL_N_GTS: [1, 1, 0],
+                COL_WEIGHT: [1.0, 1.0, 1.0],
+            }
+        )
+        curve = _curve_from_detections(det_df, meta_df, n_images=3, total_targets=2)
+        # Sort descending so we traverse from high → low threshold
+        sorted_curve = curve.sort("threshold", descending=True)
+        tp_vals = sorted_curve["tp"].to_list()
+        fp_vals = sorted_curve["fp"].to_list()
+        for i in range(1, len(tp_vals)):
+            assert tp_vals[i] >= tp_vals[i - 1], "TP not monotonic"
+            assert fp_vals[i] >= fp_vals[i - 1], "FP not monotonic"
 
 
 class TestFrocIouThresholdPropagation:
@@ -245,13 +277,14 @@ class TestLrocEndpoint:
 
 
 class TestPrApEnvelope:
-    """Verify auc() uses monotone-envelope and raw_auc() does not."""
+    """Verify auc() uses monotone-envelope and auc(method='trapezoidal') does not."""
 
     def test_auc_ge_raw_auc(self) -> None:
-        """Monotone-envelope auc() >= raw_auc() for typical curves.
+        """Monotone-envelope auc() >= auc(method='trapezoidal') for typical curves.
 
-        The envelope can only increase precision, so auc() should be >= raw_auc()
-        (unless the curve is already monotone decreasing).
+        The envelope can only increase precision, so auc() should be >=
+        auc(method='trapezoidal') (unless the curve is already monotone
+        decreasing).
         """
         det_df = pl.DataFrame(
             {
@@ -284,7 +317,7 @@ class TestPrApEnvelope:
         )
         table = DetectionTable.from_matched(det_df, meta_df)
         result = precision_recall_curve(table)
-        raw = result.raw_auc()
+        raw = result.auc(method="trapezoidal")
         envelope = result.auc()
         assert envelope >= raw - 1e-10
 
@@ -339,8 +372,8 @@ class TestPartialAucWarning:
 
     def test_warns_on_large_gap(self) -> None:
         """Warning emitted when lo is far below curve minimum x."""
-        x = np.array([0.5, 0.6, 0.7, 0.8, 1.0])
-        y = np.array([0.2, 0.4, 0.6, 0.8, 1.0])
+        x = pl.Series("x", [0.5, 0.6, 0.7, 0.8, 1.0])
+        y = pl.Series("y", [0.2, 0.4, 0.6, 0.8, 1.0])
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             partial_auc(x, y, lo=0.0, hi=1.0)
@@ -348,8 +381,8 @@ class TestPartialAucWarning:
 
     def test_no_warning_on_small_gap(self) -> None:
         """No warning when lo is close to curve minimum x."""
-        x = np.array([0.0, 0.5, 1.0])
-        y = np.array([0.0, 0.5, 1.0])
+        x = pl.Series("x", [0.0, 0.5, 1.0])
+        y = pl.Series("y", [0.0, 0.5, 1.0])
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             partial_auc(x, y, lo=0.0, hi=1.0)
@@ -366,64 +399,281 @@ class TestMannWhitneyUAuc:
 
     def test_perfect_separation(self) -> None:
         """All positives above all negatives → AUC = 1.0."""
-        pos = np.array([0.9, 0.8, 0.7])
-        neg = np.array([0.3, 0.2, 0.1])
+        pos = pl.Series("pos", [0.9, 0.8, 0.7])
+        neg = pl.Series("neg", [0.3, 0.2, 0.1])
         assert mann_whitney_u_auc(pos, neg) == pytest.approx(1.0)
 
     def test_reversed_separation(self) -> None:
         """All positives below all negatives → AUC = 0.0."""
-        pos = np.array([0.1, 0.2, 0.3])
-        neg = np.array([0.7, 0.8, 0.9])
+        pos = pl.Series("pos", [0.1, 0.2, 0.3])
+        neg = pl.Series("neg", [0.7, 0.8, 0.9])
         assert mann_whitney_u_auc(pos, neg) == pytest.approx(0.0)
 
     def test_equal_scores(self) -> None:
         """Identical distributions → AUC = 0.5."""
-        pos = np.array([0.5, 0.5, 0.5])
-        neg = np.array([0.5, 0.5, 0.5])
+        pos = pl.Series("pos", [0.5, 0.5, 0.5])
+        neg = pl.Series("neg", [0.5, 0.5, 0.5])
         assert mann_whitney_u_auc(pos, neg) == pytest.approx(0.5)
 
     def test_empty_groups(self) -> None:
         """Empty group returns 0.5 sentinel."""
-        assert mann_whitney_u_auc(np.array([0.9]), np.array([])) == pytest.approx(0.5)
-        assert mann_whitney_u_auc(np.array([]), np.array([0.1])) == pytest.approx(0.5)
+        assert mann_whitney_u_auc(
+            pl.Series("pos", [0.9]), pl.Series("neg", [], dtype=pl.Float64)
+        ) == pytest.approx(0.5)
+        assert mann_whitney_u_auc(
+            pl.Series("pos", [], dtype=pl.Float64), pl.Series("neg", [0.1])
+        ) == pytest.approx(0.5)
 
 
 class TestFrocMannWhitneyAuc:
-    """Tests for mann_whitney_auc on FROCResult."""
+    """Tests for auc(method='mann_whitney') on FROCResult."""
 
     def test_detection_level(self, simple_detection_table: DetectionTable) -> None:
         """Detection-level MW-U should return a value in [0, 1]."""
         result = froc_curve(simple_detection_table)
-        mw_auc = result.mann_whitney_auc(level="detection")
+        mw_auc = result.auc(method="mann_whitney", level="detection")
         assert 0.0 <= mw_auc <= 1.0
 
     def test_image_level(self, simple_detection_table: DetectionTable) -> None:
         """Image-level MW-U should return a value in [0, 1]."""
         result = froc_curve(simple_detection_table)
-        mw_auc = result.mann_whitney_auc(level="image")
+        mw_auc = result.auc(method="mann_whitney", level="image")
         assert 0.0 <= mw_auc <= 1.0
 
     def test_invalid_level_raises(self, simple_detection_table: DetectionTable) -> None:
         """Invalid level raises ValueError."""
         result = froc_curve(simple_detection_table)
         with pytest.raises(ValueError, match="Unsupported level"):
-            result.mann_whitney_auc(level="invalid")
+            result.auc(method="mann_whitney", level="invalid")
+
+    def test_mw_rejects_fp_range(self, simple_detection_table: DetectionTable) -> None:
+        """Mann-Whitney with fp_range raises ValueError."""
+        result = froc_curve(simple_detection_table)
+        with pytest.raises(ValueError, match="not supported"):
+            result.auc(method="mann_whitney", fp_range=(0, 1))
 
 
 class TestLrocMannWhitneyAuc:
-    """Tests for mann_whitney_auc on LROCResult."""
+    """Tests for auc(method='mann_whitney') on LROCResult."""
 
     def test_detection_level(self, simple_detection_table: DetectionTable) -> None:
         """Detection-level MW-U should return a value in [0, 1]."""
         result = lroc_curve(simple_detection_table)
-        mw_auc = result.mann_whitney_auc(level="detection")
+        mw_auc = result.auc(method="mann_whitney", level="detection")
         assert 0.0 <= mw_auc <= 1.0
 
     def test_image_level(self, simple_detection_table: DetectionTable) -> None:
         """Image-level MW-U should return a value in [0, 1]."""
         result = lroc_curve(simple_detection_table)
-        mw_auc = result.mann_whitney_auc(level="image")
+        mw_auc = result.auc(method="mann_whitney", level="image")
         assert 0.0 <= mw_auc <= 1.0
+
+
+class TestMannWhitneyBootstrap:
+    """Tests for bootstrapping Mann-Whitney AUC."""
+
+    def test_froc_mw_bootstrap(self, simple_detection_table: DetectionTable) -> None:
+        """Bootstrap CI for FROC MW-U detection-level should run and produce valid CI."""
+        result = froc_curve(simple_detection_table)
+        ci = result.bootstrap_ci(
+            n_bootstrap=10,
+            seed=42,
+            metric="auc",
+            metric_kwargs={"method": "mann_whitney", "level": "detection"},
+        )
+        assert len(ci.distribution) == 10
+        assert ci.ci_lower <= ci.ci_upper
+        assert 0.0 <= ci.point_estimate <= 1.0
+
+    def test_lroc_mw_bootstrap(self, simple_detection_table: DetectionTable) -> None:
+        """Bootstrap CI for LROC MW-U image-level should run and produce valid CI."""
+        result = lroc_curve(simple_detection_table)
+        ci = result.bootstrap_ci(
+            n_bootstrap=10,
+            seed=42,
+            metric="auc",
+            metric_kwargs={"method": "mann_whitney", "level": "image"},
+        )
+        assert len(ci.distribution) == 10
+        assert ci.ci_lower <= ci.ci_upper
+        assert 0.0 <= ci.point_estimate <= 1.0
+
+
+class TestMultiMetricBootstrap:
+    """Tests for multi-metric bootstrap_ci."""
+
+    def test_single_metric_returns_bootstrap_result(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """Single metric string returns a BootstrapResult (backward compat)."""
+        from polars_cv.metrics._bootstrap import BootstrapResult
+
+        result = froc_curve(simple_detection_table)
+        ci = result.bootstrap_ci(n_bootstrap=5, seed=42, metric="auc")
+        assert isinstance(ci, BootstrapResult)
+        assert len(ci.distribution) == 5
+
+    def test_multi_metric_returns_dict(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """Dict metric spec returns dict[str, BootstrapResult]."""
+        result = froc_curve(simple_detection_table)
+        cis = result.bootstrap_ci(
+            n_bootstrap=5,
+            seed=42,
+            metric={
+                "trap_auc": {"metric": "auc"},
+                "mw_auc": {"metric": "auc", "method": "mann_whitney"},
+            },
+        )
+        assert isinstance(cis, dict)
+        assert set(cis.keys()) == {"trap_auc", "mw_auc"}
+        for name, ci in cis.items():
+            assert len(ci.distribution) == 5
+            assert ci.ci_lower <= ci.ci_upper
+
+    def test_multi_metric_shared_reconstruction(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """Multi-metric bootstrap shares reconstruction — point estimates match single calls."""
+        result = froc_curve(simple_detection_table)
+        trap_single = result.auc()
+        mw_single = result.auc(method="mann_whitney", level="detection")
+
+        cis = result.bootstrap_ci(
+            n_bootstrap=5,
+            seed=42,
+            metric={
+                "trap": {"metric": "auc"},
+                "mw": {"metric": "auc", "method": "mann_whitney", "level": "detection"},
+            },
+        )
+        assert cis["trap"].point_estimate == pytest.approx(trap_single)
+        assert cis["mw"].point_estimate == pytest.approx(mw_single)
+
+
+class TestEntityLevelBootstrap:
+    """Tests for entity-level (sample_col) bootstrap sampling."""
+
+    @pytest.fixture()
+    def entity_detection_table(self) -> DetectionTable:
+        """Create a detection table with a case_id column for entity-level sampling."""
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a1", "a2", "b1", "b2"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 4,
+                COL_SCORE: [0.9, 0.8, 0.7, 0.6],
+                COL_IS_TP: [True, False, True, False],
+                COL_GT_IDX: [0, None, 0, None],
+                COL_IOU: [0.85, 0.0, 0.7, 0.0],
+                COL_DET_IDX: [0, 0, 0, 0],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a1", "a2", "b1", "b2"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 4,
+                COL_N_GTS: [1, 0, 1, 0],
+                COL_WEIGHT: [1.0, 1.0, 1.0, 1.0],
+                COL_GT_LABEL: [True, False, True, False],
+                "case_id": ["case_A", "case_A", "case_B", "case_B"],
+            }
+        )
+        return DetectionTable.from_matched(det_df, meta_df, matching_iou_threshold=0.5)
+
+    def test_entity_bootstrap_runs(
+        self, entity_detection_table: DetectionTable
+    ) -> None:
+        """Entity-level bootstrap with sample_col produces valid CI."""
+        result = froc_curve(entity_detection_table)
+        ci = result.bootstrap_ci(
+            n_bootstrap=10,
+            seed=42,
+            sample_col="case_id",
+        )
+        assert len(ci.distribution) == 10
+        assert ci.ci_lower <= ci.ci_upper
+
+    def test_entity_bootstrap_samples_at_entity_level(
+        self, entity_detection_table: DetectionTable
+    ) -> None:
+        """Entity-level bootstrap should sample entities, not individual images.
+
+        With 2 entities (case_A, case_B), each with 2 images, the bootstrap
+        should sample 2 entities (with replacement) and expand to their images.
+        """
+        from polars_cv.metrics._result import _resolve_sampling_entities
+
+        entities, entity_map = _resolve_sampling_entities(
+            entity_detection_table, "case_id"
+        )
+        assert len(entities) == 2
+        assert entity_map is not None
+        assert set(entity_map.keys()) == {"case_A", "case_B"}
+        assert set(entity_map["case_A"]) == {"a1", "a2"}
+        assert set(entity_map["case_B"]) == {"b1", "b2"}
+
+    def test_no_sample_col_returns_image_level(
+        self, entity_detection_table: DetectionTable
+    ) -> None:
+        """Without sample_col, sampling is at image level (entity_map is None)."""
+        from polars_cv.metrics._result import _resolve_sampling_entities
+
+        entities, entity_map = _resolve_sampling_entities(entity_detection_table, None)
+        assert entity_map is None
+        assert len(entities) == 4
+
+
+class TestMcClishCorrection:
+    """Tests for the McClish standardized partial AUC correction."""
+
+    def test_perfect_classifier_gives_one(self) -> None:
+        """Perfect classifier in [0, 1] range gives corrected pAUC = 1.0."""
+        corrected = mcclish_correction(raw_pauc=1.0, lo=0.0, hi=1.0)
+        assert corrected == pytest.approx(1.0)
+
+    def test_chance_classifier_gives_half(self) -> None:
+        """Diagonal (chance) classifier gives corrected pAUC = 0.5."""
+        corrected = mcclish_correction(raw_pauc=0.5, lo=0.0, hi=1.0)
+        assert corrected == pytest.approx(0.5)
+
+    def test_partial_range(self) -> None:
+        """McClish correction works for a partial range."""
+        lo, hi = 0.0, 0.5
+        min_pauc = (lo + hi) * (hi - lo) / 2  # 0.125
+        max_pauc = hi - lo  # 0.5
+        raw = (min_pauc + max_pauc) / 2  # midpoint
+        corrected = mcclish_correction(raw, lo, hi)
+        assert corrected == pytest.approx(0.75)
+
+    def test_zero_span_gives_half(self) -> None:
+        """Zero-width interval returns 0.5 sentinel."""
+        assert mcclish_correction(0.0, 0.5, 0.5) == pytest.approx(0.5)
+
+    def test_froc_auc_with_mcclish(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """FROC auc with correction='mcclish' returns a value in [0, 1]."""
+        result = froc_curve(simple_detection_table)
+        corrected = result.auc(fp_range=(0.0, 1.0), correction="mcclish")
+        assert 0.0 <= corrected <= 1.0
+
+    def test_froc_auc_with_normalize(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """FROC auc with correction='normalize' returns average sensitivity."""
+        result = froc_curve(simple_detection_table)
+        normalized = result.auc(fp_range=(0.0, 1.0), correction="normalize")
+        assert 0.0 <= normalized <= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -455,3 +705,53 @@ class TestContourMatcherDefaults:
         """Explicit min_contour_area=0.0 is still allowed."""
         matcher = ContourMatcher(min_contour_area=0.0)
         assert matcher._min_contour_area == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Source format detection
+# ---------------------------------------------------------------------------
+
+
+class TestSourceFormatDetection:
+    """Verify _detect_source_info correctly identifies column formats."""
+
+    def test_binary_detected_as_blob(self) -> None:
+        """Binary column maps to blob source format."""
+        schema = {"col": pl.Binary}
+        info = _detect_source_info(schema, "col")
+        assert info.format == "blob"
+        assert info.kwargs == {}
+
+    def test_nested_list_float64_detected(self) -> None:
+        """List[List[Float64]] maps to list source with dtype f64."""
+        schema = {"col": pl.List(pl.List(pl.Float64))}
+        info = _detect_source_info(schema, "col")
+        assert info.format == "list"
+        assert info.kwargs == {"dtype": "f64"}
+
+    def test_nested_list_float32_detected(self) -> None:
+        """List[List[Float32]] maps to list source with dtype f32."""
+        schema = {"col": pl.List(pl.List(pl.Float32))}
+        info = _detect_source_info(schema, "col")
+        assert info.format == "list"
+        assert info.kwargs == {"dtype": "f32"}
+
+    def test_nested_list_uint8_detected(self) -> None:
+        """List[List[UInt8]] maps to list source with dtype u8."""
+        schema = {"col": pl.List(pl.List(pl.UInt8))}
+        info = _detect_source_info(schema, "col")
+        assert info.format == "list"
+        assert info.kwargs == {"dtype": "u8"}
+
+    def test_array_detected(self) -> None:
+        """Array column maps to array source format."""
+        schema = {"col": pl.Array(pl.Float32, 3)}
+        info = _detect_source_info(schema, "col")
+        assert info.format == "array"
+        assert info.kwargs == {"dtype": "f32"}
+
+    def test_unsupported_dtype_raises(self) -> None:
+        """Non-image dtype raises ValueError."""
+        schema = {"col": pl.String}
+        with pytest.raises(ValueError, match="unsupported dtype"):
+            _detect_source_info(schema, "col")

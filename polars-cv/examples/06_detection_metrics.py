@@ -56,7 +56,7 @@ def build_prematched_input_from_table(table: object) -> pl.DataFrame:
     assignments are already available from an upstream system, you can still
     reuse the metric API.
     """
-    detections_df, meta_df = table.collect()  # type: ignore[call-arg]
+    detections_df, meta_df = table.collect(engine="streaming")  # type: ignore[call-arg]
     return detections_df.join(
         meta_df.select([COL_IMAGE_ID, COL_CLASS_ID, "n_gts", "gt_label"]),
         on=[COL_IMAGE_ID, COL_CLASS_ID],
@@ -95,11 +95,13 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
         "FROC AUC:",
         round(froc.auc(), 4),
         "\nFROC AUC normalized:",
-        round(froc.auc(normalize=True), 4),
+        round(froc.auc(fp_range=(0, 8), correction="normalize"), 4),
         "\nFROC AUC (0, 0.5):",
         round(froc.auc(fp_range=(0, 0.5)), 4),
-        "\nFROC AUC (0, 0.5) normalized:",
-        round(froc.auc(fp_range=(0, 0.5), normalize=True), 4),
+        "\nFROC AUC (0, 0.5) McClish:",
+        round(froc.auc(fp_range=(0, 0.5), correction="mcclish"), 4),
+        "\nFROC MW-U (detection):",
+        round(froc.auc(method="mann_whitney", level="detection"), 4),
         "\nSens@1FP:",
         round(froc.sensitivity_at_fp(1.0), 4),
     )
@@ -107,11 +109,13 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
         "LROC AUC:",
         round(lroc.auc(), 4),
         "\nLROC AUC normalized:",
-        round(lroc.auc(normalize=True), 4),
+        round(lroc.auc(fpf_range=(0, 1), correction="normalize"), 4),
         "\nLROC AUC (0, 0.5):",
         round(lroc.auc(fpf_range=(0, 0.5)), 4),
-        "\nLROC AUC (0, 0.5) normalized:",
-        round(lroc.auc(fpf_range=(0, 0.5), normalize=True), 4),
+        "\nLROC AUC (0, 0.5) McClish:",
+        round(lroc.auc(fpf_range=(0, 0.5), correction="mcclish"), 4),
+        "\nLROC MW-U (image):",
+        round(lroc.auc(method="mann_whitney", level="image"), 4),
         "\nSens@0.5FPF:",
         round(lroc.sensitivity_at_fpf(0.5), 4),
     )
@@ -195,7 +199,7 @@ def prematched_section(bbox_table: object) -> None:
     pr = precision_recall_curve(table, class_id="lesion")
     lroc = lroc_curve(table)
     print("\nPreMatchedAdapter metrics (rebuilt from BBoxMatcher TP/FP assignments):")
-    print("PreMatchedAdapter AP:", round(pr.auc(interpolation="11_point"), 4))
+    print("PreMatchedAdapter AP:", round(pr.auc(method="11_point"), 4))
     print("PreMatchedAdapter LROC AUC:", round(lroc.auc(), 4))
     plot_curve(
         lroc.curve,
