@@ -189,7 +189,7 @@ class DetectionTable:
         """
         return (
             self._image_meta.select(pl.col(COL_CLASS_ID).unique())
-            .collect()
+            .collect(engine="streaming")
             .get_column(COL_CLASS_ID)
             .to_list()
         )
@@ -277,15 +277,15 @@ class DetectionTable:
     # Collect helper
     # ------------------------------------------------------------------
 
-    def collect(self) -> tuple[pl.DataFrame, pl.DataFrame]:
+    def collect(self, engine: str = "streaming") -> tuple[pl.DataFrame, pl.DataFrame]:
         """Materialize both frames.
 
         Returns:
             Tuple of ``(detections_df, image_meta_df)``.
         """
         return (
-            self._detections.collect(engine="streaming"),
-            self._image_meta.collect(engine="streaming"),
+            self._detections.collect(engine=engine),
+            self._image_meta.collect(engine=engine),
         )
 
     # ------------------------------------------------------------------

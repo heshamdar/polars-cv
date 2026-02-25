@@ -133,7 +133,7 @@ class TestDetectionTableConstruction:
             sample_detections.lazy(),
             sample_metadata.lazy(),
         )
-        det_df, meta_df = table.collect()
+        det_df, meta_df = table.collect(engine="streaming")
         assert det_df.height == sample_detections.height
         assert meta_df.height == sample_metadata.height
 
@@ -149,13 +149,13 @@ class TestDetectionTableViews:
     def test_filter_class(self, detection_table: DetectionTable) -> None:
         """filter_class retains only the specified class."""
         filtered = detection_table.filter_class(DEFAULT_CLASS)
-        det_df, _ = filtered.collect()
+        det_df, _ = filtered.collect(engine="streaming")
         assert det_df.height > 0
 
     def test_filter_class_empty(self, detection_table: DetectionTable) -> None:
         """filter_class on a nonexistent class yields empty frames."""
         filtered = detection_table.filter_class("nonexistent_class")
-        det_df, _ = filtered.collect()
+        det_df, _ = filtered.collect(engine="streaming")
         assert det_df.height == 0
 
     def test_to_per_image(self, detection_table: DetectionTable) -> None:
@@ -168,14 +168,14 @@ class TestDetectionTableViews:
     def test_at_iou_threshold(self, detection_table: DetectionTable) -> None:
         """at_iou_threshold recomputes is_tp without re-matching."""
         high_thresh = detection_table.at_iou_threshold(0.99)
-        det_df, _ = high_thresh.collect()
+        det_df, _ = high_thresh.collect(engine="streaming")
         # At 0.99 threshold, some TPs should become FPs
         tp_count = det_df.filter(pl.col(COL_IS_TP)).height
         assert tp_count <= 5
 
     def test_collect_returns_dataframes(self, detection_table: DetectionTable) -> None:
         """collect returns eager DataFrames."""
-        det_df, meta_df = detection_table.collect()
+        det_df, meta_df = detection_table.collect(engine="streaming")
         assert isinstance(det_df, pl.DataFrame)
         assert isinstance(meta_df, pl.DataFrame)
 

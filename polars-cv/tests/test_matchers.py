@@ -38,7 +38,7 @@ class TestPreMatchedAdapter:
         )
 
         assert isinstance(table, DetectionTable)
-        det_df, meta_df = table.collect()
+        det_df, meta_df = table.collect(engine="streaming")
         assert det_df.height == 5
         assert meta_df.height == 2
 
@@ -60,7 +60,7 @@ class TestPreMatchedAdapter:
             image_id_col="image",
             n_gts_col="num_gts",
         )
-        _, meta_df = table.collect()
+        _, meta_df = table.collect(engine="streaming")
         n_gts_val = meta_df.filter(pl.col(COL_IMAGE_ID) == "img1")[COL_N_GTS].item()
         assert n_gts_val == 5
 
@@ -82,7 +82,7 @@ class TestPreMatchedAdapter:
             image_id_col="image",
             class_col="cls",
         )
-        det_df, _ = table.collect()
+        det_df, _ = table.collect(engine="streaming")
         classes = det_df[COL_CLASS_ID].unique().to_list()
         assert "cat" in classes
         assert "dog" in classes
@@ -116,5 +116,5 @@ class TestPreMatchedAdapter:
         )
         adapter = PreMatchedAdapter()
         table = adapter.match(data, pred_col="conf", gt_col="tp")
-        det_df, _ = table.collect()
+        det_df, _ = table.collect(engine="streaming")
         assert det_df.height == 2

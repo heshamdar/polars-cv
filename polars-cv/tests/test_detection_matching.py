@@ -149,7 +149,7 @@ class TestMatchDetectionsPrimitive:
                 match=pl.col("preds").contour.match_detections(
                     pl.col("gts"), scores=pl.col("scores")
                 )
-            ).collect()
+            ).collect(engine="streaming")
 
 
 @plugin_required

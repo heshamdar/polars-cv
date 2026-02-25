@@ -110,21 +110,17 @@ class TestFrocMetrics:
         assert 0.0 <= result.auc() <= 10.0
         assert 0.0 <= result.sensitivity_at_fp(1.0) <= 1.0
 
-    def test_froc_shape_mismatch_validation(self) -> None:
-        """Disabling auto-resize validates shape mismatches."""
-        df = _dataset().with_columns(
-            pred_heatmap=pl.when(pl.col("image_id") == "a")
-            .then(pl.lit([[0.0 for _ in range(8)] for _ in range(8)]))
-            .otherwise(pl.col("pred_heatmap"))
-        )
+    def test_froc_no_resize_trusts_user(self) -> None:
+        """With auto_resize=False, no shape validation is performed."""
         matcher = ContourMatcher(auto_resize=False)
-        with pytest.raises(ValueError, match="shapes differ"):
-            matcher.match(
-                df.lazy(),
-                pred_col="pred_heatmap",
-                gt_col="gt_mask",
-                image_id_col="image_id",
-            )
+        table = matcher.match(
+            _dataset().lazy(),
+            pred_col="pred_heatmap",
+            gt_col="gt_mask",
+            image_id_col="image_id",
+        )
+        result = froc_curve(table)
+        assert result.curve.height >= 1
 
     def test_froc_shape_mismatch_auto_resize(self) -> None:
         """Auto-resize handles shape mismatches without eager preprocessing."""

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 import polars as pl
 
-from .._auc import mann_whitney_u_auc
+from .._auc import CorrectionMethod, detection_level_mann_whitney, mann_whitney_u_auc
 from .._result import MetricResult
 from .._types import (
     COL_GT_LABEL,
@@ -55,19 +55,53 @@ class LROCResult(MetricResult):
     def auc(  # type: ignore[override]
         self,
         *,
+        method: Literal["trapezoidal", "mann_whitney"] = "trapezoidal",
         fpf_range: tuple[float, float] | None = None,
-        normalize: bool = False,
+        correction: CorrectionMethod = None,
+        level: Literal["detection", "image"] = "image",
     ) -> float:
-        """Compute (partial) AUC under the LROC curve.
+        """Compute AUC for the LROC curve.
 
         Args:
-            fpf_range: Optional ``(lo, hi)`` false-positive fraction range.
-            normalize: Whether to normalize the AUC by the range of the x-values.
+            method: AUC computation method.
+                ``"trapezoidal"`` (default) integrates the LROC curve.
+                ``"mann_whitney"`` computes a non-parametric AUC via the
+                Mann-Whitney U statistic.
+            fpf_range: Optional ``(lo, hi)`` false-positive fraction range
+                for partial AUC (trapezoidal only).
+            correction: Partial-AUC correction (trapezoidal only).
+                ``None`` returns the raw area.
+                ``"normalize"`` divides by the range width.
+                ``"mcclish"`` applies McClish's standardized correction.
+            level: Granularity for Mann-Whitney (ignored for trapezoidal).
+                ``"detection"`` -- P(random TP score > random FP score).
+                ``"image"`` (default) -- P(positive-image score >
+                negative-image score).
+
         Returns:
-            Area under the LROC curve.
+            AUC value.
+
+        Raises:
+            ValueError: On invalid ``method``/``level`` or unsupported
+                parameter combinations.
         """
-        return super().auc(
-            x_col="fpf", y_col="sensitivity", x_range=fpf_range, normalize=normalize
+        if method == "mann_whitney":
+            if fpf_range is not None or correction is not None:
+                raise ValueError(
+                    "fpf_range and correction are not supported with "
+                    "method='mann_whitney'. Mann-Whitney computes a global "
+                    "rank statistic, not a curve integral."
+                )
+            return self._mann_whitney(level)
+        if method == "trapezoidal":
+            return super().auc(
+                x_col="fpf",
+                y_col="sensitivity",
+                x_range=fpf_range,
+                correction=correction,
+            )
+        raise ValueError(
+            f"Unknown method {method!r}. Expected 'trapezoidal' or 'mann_whitney'."
         )
 
     def sensitivity_at_fpf(self, fpf: float) -> float:
@@ -81,138 +115,85 @@ class LROCResult(MetricResult):
         """
         return self.interpolate(x_col="fpf", y_col="sensitivity", at=fpf)
 
-    def mann_whitney_auc(
-        self,
-        *,
-        level: str = "image",
-    ) -> float:
-        """Compute Mann-Whitney U statistic as a non-parametric AUC estimate.
+    # ------------------------------------------------------------------
+    # Bootstrap hooks
+    # ------------------------------------------------------------------
 
-        Args:
-            level: Granularity of the comparison.
-                ``"detection"`` — P(random TP score > random FP score).
-                ``"image"`` — P(positive-image effective score >
-                negative-image effective score).  For LROC, the positive-image
-                score is ``max_score`` where ``top_is_tp`` is true (else 0);
-                the negative-image score is ``max_score`` (else 0).
+    def _get_detection_table(self) -> DetectionTable:
+        """Return the underlying DetectionTable."""
+        if self.detection_table is None:
+            raise ValueError("bootstrap_ci / Mann-Whitney requires detection_table.")
+        return self.detection_table
 
-        Returns:
-            Mann-Whitney U AUC in [0, 1].  Returns 0.5 when one group is
-            empty.
+    def _reconstruct(self, sampled_ids: list[str]) -> LROCResult:
+        """Rebuild an LROCResult from bootstrap-sampled image IDs.
 
-        Raises:
-            ValueError: If ``level`` is not ``"detection"`` or ``"image"``.
+        Uses the pre-computed per-image table for fast curve reconstruction
+        and also builds a sampled DetectionTable for MW and other
+        detection-level metrics.
         """
+        table = self._get_detection_table()
+
+        # Fast curve rebuild from per-image table
+        sampled = pl.DataFrame({COL_IMAGE_ID: sampled_ids}).join(
+            self.per_image, on=COL_IMAGE_ID, how="left"
+        )
+        curve = _build_lroc_curve(sampled)
+
+        # Build sampled DetectionTable for MW / detection-level metrics
+        sampled_ids_lf = pl.DataFrame({COL_IMAGE_ID: sampled_ids}).lazy()
+        sampled_det = sampled_ids_lf.join(table.detections, on=COL_IMAGE_ID, how="left")
+        sampled_meta = sampled_ids_lf.join(
+            table.image_metadata, on=COL_IMAGE_ID, how="left"
+        )
+        sampled_table = DetectionTable.from_matched(sampled_det, sampled_meta)
+
+        return LROCResult(
+            curve=curve,
+            per_image=sampled,
+            n_positive=int(sampled.filter(pl.col(COL_GT_LABEL)).height),
+            n_negative=int(sampled.filter(~pl.col(COL_GT_LABEL)).height),
+            iou_threshold=self.iou_threshold,
+            variant=self.variant,
+            detection_table=sampled_table,
+        )
+
+    # ------------------------------------------------------------------
+    # Mann-Whitney internals
+    # ------------------------------------------------------------------
+
+    def _mann_whitney(self, level: str) -> float:
+        """Dispatch Mann-Whitney computation by level."""
         if level == "detection":
-            return self._mann_whitney_detection()
+            table = self._get_detection_table()
+            det_df = table.detections.collect(engine="streaming")
+            return detection_level_mann_whitney(det_df, COL_SCORE, COL_IS_TP)
         if level == "image":
             return self._mann_whitney_image()
         raise ValueError(
             f"Unsupported level {level!r}. Expected 'detection' or 'image'."
         )
 
-    def _mann_whitney_detection(self) -> float:
-        """Detection-level MW-U: P(TP score > FP score)."""
-        if self.detection_table is None:
-            raise ValueError(
-                "mann_whitney_auc(level='detection') requires detection_table."
-            )
-        det_df = self.detection_table.detections.collect(engine="streaming")
-        tp_scores = (
-            det_df.filter(pl.col(COL_IS_TP)).select(COL_SCORE).to_numpy().flatten()
-        )
-        fp_scores = (
-            det_df.filter(~pl.col(COL_IS_TP)).select(COL_SCORE).to_numpy().flatten()
-        )
-        return mann_whitney_u_auc(tp_scores, fp_scores)
-
     def _mann_whitney_image(self) -> float:
         """Image-level MW-U: P(pos-image score > neg-image score)."""
         if self.per_image is None:
-            raise ValueError("mann_whitney_auc(level='image') requires per_image data.")
+            raise ValueError(
+                "auc(method='mann_whitney', level='image') requires per_image data."
+            )
         pos = self.per_image.filter(pl.col(COL_GT_LABEL))
         neg = self.per_image.filter(~pl.col(COL_GT_LABEL))
 
         # Positive: score from best TP (0 if no TP)
-        pos_scores = (
-            pos.select(
-                pl.when(pl.col("top_is_tp"))
-                .then(pl.col("max_score"))
-                .otherwise(0.0)
-                .fill_null(0.0)
-                .alias("s")
-            )
-            .to_numpy()
-            .flatten()
-        )
+        pos_scores = pos.select(
+            pl.when(pl.col("top_is_tp"))
+            .then(pl.col("max_score"))
+            .otherwise(0.0)
+            .fill_null(0.0)
+            .alias("s")
+        )["s"]
         # Negative: max detection score (0 if no detections)
-        neg_scores = (
-            neg.select(pl.col("max_score").fill_null(0.0).alias("s"))
-            .to_numpy()
-            .flatten()
-        )
+        neg_scores = neg.select(pl.col("max_score").fill_null(0.0).alias("s"))["s"]
         return mann_whitney_u_auc(pos_scores, neg_scores)
-
-    def bootstrap_ci(
-        self,
-        n_bootstrap: int = 1000,
-        confidence: float = 0.95,
-        seed: int | None = None,
-        *,
-        metric: str = "auc",
-        metric_kwargs: dict[str, Any] | None = None,
-    ) -> Any:
-        """Estimate CI via image-level bootstrap.
-
-        Args:
-            n_bootstrap: Number of bootstrap iterations.
-            confidence: Confidence level in (0, 1).
-            seed: Optional RNG seed.
-            metric: ``"auc"`` or ``"sensitivity_at_fpf"``.
-            metric_kwargs: Extra kwargs passed to the metric method.
-
-        Returns:
-            ``BootstrapResult`` with percentile confidence interval.
-        """
-        from .._bootstrap import bootstrap_metric_sequential
-
-        metric_kwargs = metric_kwargs or {}
-        image_ids = [str(v) for v in self.per_image[COL_IMAGE_ID].to_list()]
-        strata: dict[str, str] | None = None
-        if self.detection_table is not None:
-            image_ids, strata = self.detection_table.image_ids_and_strata()
-
-        def _metric(sampled_ids: list[str]) -> float:
-            sampled = pl.DataFrame({COL_IMAGE_ID: sampled_ids}).join(
-                self.per_image, on=COL_IMAGE_ID, how="left"
-            )
-            curve = _build_lroc_curve(sampled)
-            temp = LROCResult(
-                curve=curve,
-                per_image=self.per_image,
-                n_positive=int(sampled.filter(pl.col(COL_GT_LABEL)).height),
-                n_negative=int(sampled.filter(~pl.col(COL_GT_LABEL)).height),
-                iou_threshold=self.iou_threshold,
-                variant=self.variant,
-            )
-            if metric == "auc":
-                return temp.auc(**metric_kwargs)
-            return temp.sensitivity_at_fpf(**metric_kwargs)
-
-        point = (
-            self.auc(**metric_kwargs)
-            if metric == "auc"
-            else self.sensitivity_at_fpf(**metric_kwargs)
-        )
-        return bootstrap_metric_sequential(
-            image_ids=image_ids,
-            metric_fn=_metric,
-            point_estimate=point,
-            n_bootstrap=n_bootstrap,
-            confidence=confidence,
-            seed=seed,
-            strata=strata,
-        )
 
 
 # ---------------------------------------------------------------------------
