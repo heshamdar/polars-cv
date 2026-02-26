@@ -436,6 +436,14 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
     ),  # ndim param-dependent
     "flip": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
     "transpose": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # --- Channel operations ---
+    "channel_select": OpContract(DTypeEffect.PRESERVE, NdimEffect.REDUCE_ONE),
+    "channel_swap": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "channel_merge": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # --- Intensity adjustments ---
+    "adjust_contrast": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    "adjust_gamma": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    "invert": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
 }
 
 

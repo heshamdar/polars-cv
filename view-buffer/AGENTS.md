@@ -108,10 +108,12 @@ Serializable enum representing operations. This is the bridge between the JSON g
 ```rust
 pub enum ViewDto {
     Image(ImageOp),           // resize, blur, grayscale, threshold, rotate
-    Compute(ComputeOp),       // cast, scale, normalize, clamp, relu
-    View(ViewOp),             // transpose, reshape, flip, crop
+    Compute(ComputeOp),       // cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert
+    View(ViewOp),             // transpose, reshape, flip, crop, channel_select
     Binary(BinaryOp),         // add, subtract, multiply, blend, bitwise
     Geometry(GeometryOp),     // extract_contours, rasterize, measures
+    ChannelSwap { order },    // reorder channels (allocating)
+    ChannelMerge { .. },      // merge single-channel buffers into multi-channel (allocating, graph-level)
     // ... other variants
 }
 ```
@@ -122,8 +124,8 @@ The `resolve_op` function in `polars-cv/src/execute.rs` maps operation names fro
 
 | Category | Zero-Copy? | Description |
 |----------|-----------|-------------|
-| **View** | Yes | Transpose, reshape, flip, crop — only modify metadata |
-| **Compute** | No | Cast, scale, normalize, clamp, relu — element-wise, can be fused |
+| **View** | Yes | Transpose, reshape, flip, crop, channel_select — only modify metadata |
+| **Compute** | No | Cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert — element-wise, can be fused |
 | **Image** | No | Resize, blur, grayscale, threshold — require materialization |
 | **Binary** | No | Pixel-wise operations between two buffers |
 | **Geometry** | N/A | Contour extraction, rasterization, measures, pairwise matching primitives |
@@ -189,6 +191,9 @@ Tiling was implemented to improve cache efficiency for large images by processin
 - **grayscale**: Preserves input rank. 2D inputs pass through unchanged
   (already single-channel). 3D inputs get their channel dimension set to 1.
   `infer_shape` no longer promotes 2D to 3D.
+- **channel_select**: Reduces rank from 3D `[H, W, C]` to 2D `[H, W]`.
+  Uses slice + `to_contiguous()` + reshape because the slice is non-contiguous
+  in HWC layout (channel stride != element size).
 
 ## Label Reduce Centroid Fallback
 

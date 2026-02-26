@@ -1067,6 +1067,46 @@ pub fn resolve_op(
             Ok(ViewDto::Histogram(op))
         }
 
+        // Channel operations
+        "channel_select" => {
+            let index =
+                get_param(&op_spec.params, "index")?.resolve_usize(row_idx, expr_columns)?;
+            Ok(ViewDto::View(ViewOp::ChannelSelect { index }))
+        }
+        "channel_swap" => {
+            let order = get_param(&op_spec.params, "order")?.as_int_list()?;
+            Ok(ViewDto::ChannelSwap { order })
+        }
+        "channel_merge" => {
+            let other_nodes_param = get_param(&op_spec.params, "other_nodes")?;
+            let other_node_ids = match other_nodes_param {
+                ParamValue::Literal {
+                    value: serde_json::Value::Array(arr),
+                } => arr
+                    .iter()
+                    .map(|v| v.as_str().unwrap_or("").to_string())
+                    .collect(),
+                _ => {
+                    return Err(
+                        polars_err!(ComputeError: "channel_merge other_nodes must be an array of node IDs"),
+                    )
+                }
+            };
+            Ok(ViewDto::ChannelMerge { other_node_ids })
+        }
+
+        // Intensity operations
+        "adjust_contrast" => {
+            let factor =
+                get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, expr_columns)?;
+            Ok(ViewDto::Compute(ComputeOp::AdjustContrast(factor)))
+        }
+        "adjust_gamma" => {
+            let gamma = get_param(&op_spec.params, "gamma")?.resolve_f32(row_idx, expr_columns)?;
+            Ok(ViewDto::Compute(ComputeOp::AdjustGamma(gamma)))
+        }
+        "invert" => Ok(ViewDto::Compute(ComputeOp::Invert)),
+
         // Mask operation
         "apply_mask" => {
             let mask_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;

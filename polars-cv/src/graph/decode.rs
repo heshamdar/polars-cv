@@ -868,15 +868,8 @@ pub(crate) fn pad_buffer(
     match mode {
         PadMode::Constant => pad_constant(buffer, top, bottom, left, right, value),
         PadMode::Edge => pad_edge(buffer, top, bottom, left, right),
-        PadMode::Reflect | PadMode::Symmetric => {
-            // TODO: implement proper reflect/symmetric padding
-            // For now, log a warning and fall back to edge padding which is
-            // a better approximation than constant padding
-            eprintln!(
-                "Warning: {mode:?} pad mode not yet implemented, falling back to edge padding"
-            );
-            pad_edge(buffer, top, bottom, left, right)
-        }
+        PadMode::Reflect => pad_reflect(buffer, top, bottom, left, right, false),
+        PadMode::Symmetric => pad_reflect(buffer, top, bottom, left, right, true),
     }
 }
 /// Pad with constant value.
@@ -1052,12 +1045,109 @@ fn pad_edge(buffer: &ViewBuffer, top: u32, bottom: u32, left: u32, right: u32) -
             ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
         }
         _ => {
-            // For other dtypes, cast to F32, pad, then the execution layer handles output dtype
             let cast_buf = buffer.cast_to(DType::F32);
             pad_edge(&cast_buf, top, bottom, left, right)
         }
     }
 }
+
+/// Compute the reflected source index for a given output coordinate.
+///
+/// `symmetric=false` (reflect): mirror without edge repetition.
+///   Input `[a, b, c, d]` → `[d, c, b, | a, b, c, d | c, b, a]`
+///
+/// `symmetric=true` (symmetric): mirror with edge repetition.
+///   Input `[a, b, c, d]` → `[c, b, a, | a, b, c, d | d, c, b]`
+#[inline]
+fn reflect_index(idx: isize, len: usize, symmetric: bool) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+    let n = len as isize;
+    // Map idx into the input domain via periodic reflection
+    let period = if symmetric { 2 * n } else { 2 * (n - 1) };
+    let mut i = idx;
+    if !symmetric {
+        // reflect mode: period = 2*(n-1)
+        i = ((i % period) + period) % period;
+        if i >= n {
+            i = period - i;
+        }
+    } else {
+        // symmetric mode: period = 2*n
+        i = ((i % period) + period) % period;
+        if i >= n {
+            i = 2 * n - 1 - i;
+        }
+    }
+    i.clamp(0, n - 1) as usize
+}
+
+/// Pad with reflect or symmetric mode.
+///
+/// `symmetric=false` → NumPy `np.pad(mode="reflect")`
+/// `symmetric=true`  → NumPy `np.pad(mode="symmetric")`
+fn pad_reflect(
+    buffer: &ViewBuffer,
+    top: u32,
+    bottom: u32,
+    left: u32,
+    right: u32,
+    symmetric: bool,
+) -> ViewBuffer {
+    use view_buffer::DType;
+
+    let shape = buffer.shape();
+    let input_h = shape[0];
+    let input_w = shape[1];
+    let channels = if shape.len() > 2 { shape[2] } else { 1 };
+    let output_h = input_h + top as usize + bottom as usize;
+    let output_w = input_w + left as usize + right as usize;
+    let top_usize = top as usize;
+    let left_usize = left as usize;
+
+    match buffer.dtype() {
+        DType::U8 => {
+            let contig = buffer.to_contiguous();
+            let input = contig.as_slice::<u8>();
+            let mut output = vec![0u8; output_h * output_w * channels];
+            for dst_y in 0..output_h {
+                let src_y = reflect_index(dst_y as isize - top_usize as isize, input_h, symmetric);
+                for dst_x in 0..output_w {
+                    let src_x =
+                        reflect_index(dst_x as isize - left_usize as isize, input_w, symmetric);
+                    let src_idx = (src_y * input_w + src_x) * channels;
+                    let dst_idx = (dst_y * output_w + dst_x) * channels;
+                    output[dst_idx..dst_idx + channels]
+                        .copy_from_slice(&input[src_idx..src_idx + channels]);
+                }
+            }
+            ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
+        }
+        DType::F32 => {
+            let contig = buffer.to_contiguous();
+            let input = contig.as_slice::<f32>();
+            let mut output = vec![0.0f32; output_h * output_w * channels];
+            for dst_y in 0..output_h {
+                let src_y = reflect_index(dst_y as isize - top_usize as isize, input_h, symmetric);
+                for dst_x in 0..output_w {
+                    let src_x =
+                        reflect_index(dst_x as isize - left_usize as isize, input_w, symmetric);
+                    let src_idx = (src_y * input_w + src_x) * channels;
+                    let dst_idx = (dst_y * output_w + dst_x) * channels;
+                    output[dst_idx..dst_idx + channels]
+                        .copy_from_slice(&input[src_idx..src_idx + channels]);
+                }
+            }
+            ViewBuffer::from_vec_with_shape(output, vec![output_h, output_w, channels])
+        }
+        _ => {
+            let cast_buf = buffer.cast_to(DType::F32);
+            pad_reflect(&cast_buf, top, bottom, left, right, symmetric)
+        }
+    }
+}
+
 /// - 255 values zero out the pixel
 ///
 /// Uses normalized blending: pixel * (mask / 255)

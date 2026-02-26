@@ -242,6 +242,26 @@ Defined in `geometry/schemas.py` and exported by `geometry/__init__.py`, but not
 
 The `resize` operation now preserves input rank: 2D `[H, W]` input produces 2D `[H_new, W_new]` output, and 3D input stays 3D. The Rust runner (`runner.rs`) conditionally reshapes after resize based on the input rank. The `grayscale` planning-time `infer_shape` also no longer promotes 2D inputs to 3D.
 
+### Phase 1: Channel Ops, Padding Fixes, Intensity Adjustments (Implemented)
+
+New operations added across all layers (view-buffer, polars-cv Rust plugin, Python API):
+
+**Channel operations:**
+- `channel_select(index)` — extracts a single channel from `[H, W, C]` → `[H, W]`. Uses `ViewOp::ChannelSelect` (slice + `to_contiguous()` + reshape; non-contiguous in HWC layout so requires materialization).
+- `channel_swap(order)` — reorders channels (e.g., RGB→BGR). Allocating via `ViewDto::ChannelSwap`.
+- `channel_merge` — merges multiple `[H, W]` buffers into `[H, W, C]`. Graph-level multi-input via `ViewDto::ChannelMerge`.
+
+**Intensity adjustments:**
+- `adjust_contrast(factor)` — `(pixel - mean) * factor + mean`. Promotes to f32.
+- `adjust_gamma(gamma)` — power-law `(pixel/max)^gamma * max`. Promotes to f32.
+- `invert()` — `max_val - pixel`. Preserves dtype.
+- `adjust_brightness(factor)` — convenience method chaining `scale(factor)` + `clamp(0, 255)`.
+
+**Padding fix:**
+- `reflect` and `symmetric` padding modes in `pad_buffer` (`polars-cv/src/graph/decode.rs`) now correctly implement mirrored index calculation instead of falling back to `edge` mode.
+
+Reference tests in `tests/reference/test_phase1_ref.py` validate all operations against NumPy/PIL ground truth.
+
 ### Detection Metric Fixes (Applied)
 
 Several correctness fixes have been applied to the detection metrics:

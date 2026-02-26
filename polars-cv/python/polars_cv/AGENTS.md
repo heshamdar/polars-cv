@@ -39,6 +39,16 @@ This is the **user-facing Python layer**. It is responsible for:
 ```python
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale()
 # Each method call clones the pipeline and appends an OpSpec
+
+# Channel operations
+pipe = Pipeline().source("image_bytes").channel_select(index=0)       # extract single channel -> 2D
+pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0]) # RGB -> BGR
+
+# Intensity adjustments
+pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.5)   # promotes to f32
+pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)       # promotes to f32
+pipe = Pipeline().source("image_bytes").invert()                      # 255-pixel, preserves dtype
+pipe = Pipeline().source("image_bytes").adjust_brightness(factor=1.2) # convenience: scale + clamp
 ```
 
 Key internal state tracked on each Pipeline:

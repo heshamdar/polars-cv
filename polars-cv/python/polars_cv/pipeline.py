@@ -1080,6 +1080,171 @@ class Pipeline:
         new._update_output_dtype("relu")
         return new
 
+    # --- Channel Operations ---
+
+    def channel_select(self, *, index: int) -> "Pipeline":
+        """
+        Extract a single channel from a multi-channel image.
+
+        Produces a 2D [H, W] buffer from a [H, W, C] input.
+
+        Domain: buffer → buffer
+
+        Args:
+            index: Channel index to extract (0-based).
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").channel_select(index=0)  # Red channel
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "channel_select")
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="channel_select",
+                params={"index": ParamValue(is_expr=False, value=index)},
+            )
+        )
+        new._update_output_dtype("channel_select")
+        return new
+
+    def channel_swap(self, *, order: list[int]) -> "Pipeline":
+        """
+        Reorder channels in a multi-channel image.
+
+        Domain: buffer → buffer
+
+        Args:
+            order: New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR.
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "channel_swap")
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="channel_swap",
+                params={"order": ParamValue(is_expr=False, value=order)},
+            )
+        )
+        new._update_output_dtype("channel_swap")
+        return new
+
+    # --- Intensity Adjustments ---
+
+    def adjust_contrast(self, *, factor: FloatOrExpr) -> "Pipeline":
+        """
+        Adjust image contrast.
+
+        Scales pixel deviation from the mean: ``(pixel - mean) * factor + mean``.
+
+        Domain: buffer → buffer
+
+        Args:
+            factor: Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.5)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "adjust_contrast")
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="adjust_contrast",
+                params={"factor": new._track_expr(factor)},
+            )
+        )
+        new._update_output_dtype("adjust_contrast")
+        return new
+
+    def adjust_gamma(self, *, gamma: FloatOrExpr) -> "Pipeline":
+        """
+        Apply gamma (power-law) correction.
+
+        Normalizes to [0,1], applies ``pixel^gamma``, then denormalizes.
+
+        Domain: buffer → buffer
+
+        Args:
+            gamma: Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "adjust_gamma")
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="adjust_gamma",
+                params={"gamma": new._track_expr(gamma)},
+            )
+        )
+        new._update_output_dtype("adjust_gamma")
+        return new
+
+    def adjust_brightness(self, *, factor: FloatOrExpr) -> "Pipeline":
+        """
+        Adjust image brightness by scaling pixel values.
+
+        Convenience method equivalent to ``.scale(factor).clamp(min_val=0, max_val=255)``.
+
+        Domain: buffer → buffer
+
+        Args:
+            factor: Brightness factor. 1.0 = no change, >1 = brighter, <1 = darker.
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").adjust_brightness(factor=1.2)
+            ```
+        """
+        return self.scale(factor=factor).clamp(min_val=0.0, max_val=255.0)
+
+    def invert(self) -> "Pipeline":
+        """
+        Invert pixel values.
+
+        For u8: ``255 - pixel``. For float [0,1]: ``1.0 - pixel``.
+
+        Domain: buffer → buffer
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").invert()
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "invert")
+        new = self._clone()
+        new._ops.append(OpSpec(op="invert", params={}))
+        new._update_output_dtype("invert")
+        return new
+
     # --- Image Operations ---
 
     def resize(
