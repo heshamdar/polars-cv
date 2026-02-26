@@ -15,6 +15,7 @@ import polars as pl
 
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
+    from polars_cv._types import FloatOrExpr
     from polars_cv.pipeline import Pipeline
 
 
@@ -829,6 +830,91 @@ class LazyPipelineExpr:
             return stat_nodes[0]
         else:
             return stat_nodes[0].merge_pipe(*stat_nodes[1:])
+
+    # --- Channel Operations ---
+
+    def channel_select(self, *, index: int) -> "LazyPipelineExpr":
+        """
+        Extract a single channel from a multi-channel image.
+
+        Args:
+            index: Channel index to extract (0-based).
+
+        Returns:
+            New LazyPipelineExpr with the selected channel.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().channel_select(index=index))
+
+    def channel_swap(self, *, order: list[int]) -> "LazyPipelineExpr":
+        """
+        Reorder channels in a multi-channel image.
+
+        Args:
+            order: New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR.
+
+        Returns:
+            New LazyPipelineExpr with reordered channels.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().channel_swap(order=order))
+
+    # --- Intensity Adjustments ---
+
+    def adjust_contrast(self, *, factor: "FloatOrExpr") -> "LazyPipelineExpr":
+        """
+        Adjust image contrast.
+
+        Args:
+            factor: Contrast factor. 1.0 = no change, >1 = more contrast.
+
+        Returns:
+            New LazyPipelineExpr with adjusted contrast.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().adjust_contrast(factor=factor))
+
+    def adjust_gamma(self, *, gamma: "FloatOrExpr") -> "LazyPipelineExpr":
+        """
+        Apply gamma (power-law) correction.
+
+        Args:
+            gamma: Gamma value. <1 = brighter, >1 = darker.
+
+        Returns:
+            New LazyPipelineExpr with gamma correction applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().adjust_gamma(gamma=gamma))
+
+    def adjust_brightness(self, *, factor: "FloatOrExpr") -> "LazyPipelineExpr":
+        """
+        Adjust image brightness by scaling pixel values.
+
+        Args:
+            factor: Brightness factor. 1.0 = no change, >1 = brighter.
+
+        Returns:
+            New LazyPipelineExpr with adjusted brightness.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().adjust_brightness(factor=factor))
+
+    def invert(self) -> "LazyPipelineExpr":
+        """
+        Invert pixel values.
+
+        Returns:
+            New LazyPipelineExpr with inverted pixels.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().invert())
 
     # --- Internal Helpers ---
 

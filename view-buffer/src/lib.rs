@@ -27,7 +27,9 @@ pub use core::dtype::DType;
 pub use core::layout::{ExternalLayout, LayoutFacts, LayoutReport};
 
 // Re-exports - Execution
-pub use execution::{execute_plan, ExecutionPlan, PlanStep};
+pub use execution::{
+    apply_channel_merge, apply_channel_swap, execute_plan, ExecutionPlan, PlanStep,
+};
 
 // Re-exports - Tiling
 pub use execution::{

@@ -1106,8 +1106,48 @@ impl UnifiedGraph {
                                         .collect();
                                     current_output = NodeOutput::from_vector(scores);
                                 }
+                                ViewDto::ChannelSwap { order } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "ChannelSwap requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    let result =
+                                        view_buffer::apply_channel_swap(current_buf, order);
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
+                                ViewDto::ChannelMerge { other_node_ids } => {
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "ChannelMerge requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    let mut all_bufs: Vec<&ViewBuffer> = vec![current_buf];
+                                    for other_id in other_node_ids {
+                                        let other_output =
+                                            node_outputs.get(other_id).ok_or_else(|| {
+                                                format!("ChannelMerge: node '{other_id}' not found")
+                                            })?;
+                                        let other_buf =
+                                            other_output.as_buffer().ok_or_else(|| {
+                                                format!(
+                                                    "ChannelMerge: node '{other_id}' is not a Buffer"
+                                                )
+                                            })?;
+                                        all_bufs.push(other_buf);
+                                    }
+                                    let result = view_buffer::apply_channel_merge(&all_bufs);
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
                                 ViewDto::Materialize => {
-                                    // Force materialization of pending ops
                                     current_output =
                                         flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 }

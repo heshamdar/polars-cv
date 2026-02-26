@@ -55,6 +55,13 @@ pub enum ComputeOp {
     Normalize(NormalizeMethod),
     /// Clamp values to [min, max] range.
     Clamp { min: f32, max: f32 },
+    /// Adjust contrast: `(pixel - mean) * factor + mean`.
+    /// Requires full buffer scan to compute the mean.
+    AdjustContrast(f32),
+    /// Adjust gamma (power-law): normalize to [0,1], apply `pixel^gamma`, denormalize.
+    AdjustGamma(f32),
+    /// Invert pixel values: `max_val - pixel` (255 for u8, 1.0 for float).
+    Invert,
 }
 
 impl Op for ComputeOp {
@@ -67,6 +74,9 @@ impl Op for ComputeOp {
             ComputeOp::Fused(_) => "Fused",
             ComputeOp::Normalize(_) => "Normalize",
             ComputeOp::Clamp { .. } => "Clamp",
+            ComputeOp::AdjustContrast(_) => "AdjustContrast",
+            ComputeOp::AdjustGamma(_) => "AdjustGamma",
+            ComputeOp::Invert => "Invert",
         }
     }
 
@@ -77,12 +87,13 @@ impl Op for ComputeOp {
     fn infer_dtype(&self, inputs: &[DType]) -> DType {
         match self {
             ComputeOp::Cast(target) => *target,
-            // Use the new output dtype rules for operations that need promotion
             ComputeOp::Normalize(_) => self.output_dtype_rule().resolve(inputs[0], None),
             ComputeOp::Scale(_) => self.output_dtype_rule().resolve(inputs[0], None),
             ComputeOp::Relu => self.output_dtype_rule().resolve(inputs[0], None),
             ComputeOp::Clamp { .. } => self.output_dtype_rule().resolve(inputs[0], None),
-            // Other ops preserve dtype
+            ComputeOp::AdjustContrast(_) => self.output_dtype_rule().resolve(inputs[0], None),
+            ComputeOp::AdjustGamma(_) => self.output_dtype_rule().resolve(inputs[0], None),
+            ComputeOp::Invert => inputs[0],
             ComputeOp::Affine(_) => inputs[0],
             ComputeOp::Fused(_) => inputs[0],
         }
@@ -95,13 +106,15 @@ impl Op for ComputeOp {
             ComputeOp::Relu => MemoryEffect::StridePreserving,
             ComputeOp::Fused(_) => MemoryEffect::StridePreserving,
             ComputeOp::Clamp { .. } => MemoryEffect::StridePreserving,
+            ComputeOp::AdjustGamma(_) => MemoryEffect::StridePreserving,
+            ComputeOp::Invert => MemoryEffect::StridePreserving,
             ComputeOp::Affine(_) => MemoryEffect::RequiresContiguous,
             ComputeOp::Normalize(_) => MemoryEffect::RequiresContiguous,
+            ComputeOp::AdjustContrast(_) => MemoryEffect::RequiresContiguous,
         }
     }
 
     fn intrinsic_cost(&self) -> OpCost {
-        // All compute ops allocate new buffers
         OpCost::Allocating
     }
 
@@ -122,10 +135,8 @@ impl Op for ComputeOp {
             ComputeOp::Normalize(method) => {
                 let shape = input_shapes[0];
 
-                // Validate shape requirements based on method
                 match method {
                     NormalizeMethod::MinMax | NormalizeMethod::ZScore => {
-                        // Per-image normalization: only supports 2D-like shapes (HW or HW1)
                         if !is_2d_like(shape) {
                             return Err(ValidationError::ShapeRequirement {
                                 requirement: "2D (HW) or single-channel (HW1)",
@@ -134,14 +145,12 @@ impl Op for ComputeOp {
                         }
                     }
                     NormalizeMethod::Preset { mean, std } => {
-                        // Channel-wise normalization: requires HWC with matching channel count
                         if shape.len() < 2 || shape.len() > 3 {
                             return Err(ValidationError::ShapeRequirement {
                                 requirement: "2D (HW) or 3D (HWC)",
                                 got: shape.to_vec(),
                             });
                         }
-                        // Get number of channels (1 for HW, C for HWC)
                         let channels = if shape.len() == 3 { shape[2] } else { 1 };
                         if mean.len() != channels || std.len() != channels {
                             return Err(ValidationError::ShapeRequirement {
@@ -152,10 +161,9 @@ impl Op for ComputeOp {
                     }
                 }
 
-                // Validate that input dtype is accepted
                 if !self.accepted_input_dtypes().accepts(input_dtypes[0]) {
                     return Err(ValidationError::DTypeRequirement {
-                        expected: vec![DType::F32, DType::F64], // Indicate numeric types accepted
+                        expected: vec![DType::F32, DType::F64],
                         got: input_dtypes[0],
                     });
                 }
@@ -165,18 +173,16 @@ impl Op for ComputeOp {
         }
     }
 
-    // --- Dtype Contract Methods ---
-
     fn accepted_input_dtypes(&self) -> DTypeCategory {
         match self {
-            // These operations accept all numeric types and handle casting internally
-            ComputeOp::Normalize(_) => DTypeCategory::Numeric,
-            ComputeOp::Scale(_) => DTypeCategory::Numeric,
-            ComputeOp::Clamp { .. } => DTypeCategory::Numeric,
-            ComputeOp::Relu => DTypeCategory::Numeric,
-            // Cast accepts anything
+            ComputeOp::Normalize(_)
+            | ComputeOp::Scale(_)
+            | ComputeOp::Clamp { .. }
+            | ComputeOp::Relu
+            | ComputeOp::AdjustContrast(_)
+            | ComputeOp::AdjustGamma(_)
+            | ComputeOp::Invert => DTypeCategory::Numeric,
             ComputeOp::Cast(_) => DTypeCategory::Any,
-            // Others default to any
             ComputeOp::Affine(_) => DTypeCategory::Any,
             ComputeOp::Fused(_) => DTypeCategory::Any,
         }
@@ -184,31 +190,27 @@ impl Op for ComputeOp {
 
     fn working_dtype(&self) -> Option<DType> {
         match self {
-            // Normalize needs f32 for numerical stability (accumulator)
             ComputeOp::Normalize(_) => Some(DType::F32),
-            // Scale uses f32 for the multiplication
             ComputeOp::Scale(_) => Some(DType::F32),
-            // Clamp and Relu work in f32 for safety
             ComputeOp::Clamp { .. } => Some(DType::F32),
             ComputeOp::Relu => Some(DType::F32),
-            // Others work with whatever dtype they receive
+            ComputeOp::AdjustContrast(_) => Some(DType::F32),
+            ComputeOp::AdjustGamma(_) => Some(DType::F32),
+            ComputeOp::Invert => None,
             _ => None,
         }
     }
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self {
-            // Normalize: default to f32, but can be configured
             ComputeOp::Normalize(_) => OutputDTypeRule::Configurable(DType::F32),
-            // Scale: promote integers to float, preserve floats
             ComputeOp::Scale(_) => OutputDTypeRule::PromoteToFloat,
-            // Clamp: promote to float for proper clamping of fractional bounds
             ComputeOp::Clamp { .. } => OutputDTypeRule::PromoteToFloat,
-            // Relu: promote to float for proper negative handling
             ComputeOp::Relu => OutputDTypeRule::PromoteToFloat,
-            // Cast: always outputs the target dtype
+            ComputeOp::AdjustContrast(_) => OutputDTypeRule::PromoteToFloat,
+            ComputeOp::AdjustGamma(_) => OutputDTypeRule::PromoteToFloat,
+            ComputeOp::Invert => OutputDTypeRule::PreserveInput,
             ComputeOp::Cast(target) => OutputDTypeRule::Fixed(*target),
-            // Others preserve input
             ComputeOp::Affine(_) => OutputDTypeRule::PreserveInput,
             ComputeOp::Fused(_) => OutputDTypeRule::PreserveInput,
         }
@@ -217,21 +219,17 @@ impl Op for ComputeOp {
     #[inline]
     fn tile_policy(&self) -> TilePolicy {
         match self {
-            // Point-wise operations - no pixel dependencies
             ComputeOp::Scale(_) => TilePolicy::PointWise,
             ComputeOp::Relu => TilePolicy::PointWise,
             ComputeOp::Clamp { .. } => TilePolicy::PointWise,
             ComputeOp::Cast(_) => TilePolicy::PointWise,
             ComputeOp::Fused(_) => TilePolicy::PointWise,
-
-            // Normalize with preset values is point-wise (fixed per-channel params)
+            ComputeOp::AdjustGamma(_) => TilePolicy::PointWise,
+            ComputeOp::Invert => TilePolicy::PointWise,
             ComputeOp::Normalize(NormalizeMethod::Preset { .. }) => TilePolicy::PointWise,
-
-            // Normalize with minmax/zscore needs global statistics
             ComputeOp::Normalize(NormalizeMethod::MinMax) => TilePolicy::Global,
             ComputeOp::Normalize(NormalizeMethod::ZScore) => TilePolicy::Global,
-
-            // Affine transformation needs global context
+            ComputeOp::AdjustContrast(_) => TilePolicy::Global,
             ComputeOp::Affine(_) => TilePolicy::Global,
         }
     }

@@ -32,7 +32,7 @@ The crate produces a `cdylib` (`_lib.abi3.so` / `_lib.pyd`) that Polars loads as
 | `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, tiling config, dtype helpers |
 | `graph/mod.rs` | Module re-exports for the graph system |
 | `graph/types.rs` | `UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowResult` — the main graph execution engine with topological sort and per-row processing |
-| `graph/decode.rs` | Source decoding — binary, blob, list/array (zero-copy), raw bytes, contour; also `dtype_for_output` for schema inference |
+| `graph/decode.rs` | Source decoding — binary, blob, list/array (zero-copy), raw bytes, contour; also `dtype_for_output` for schema inference; reflect/symmetric padding implementation |
 | `graph/encode.rs` | Output encoding — binary, scalar, vector, contour, typed list/array, numpy struct; also geometry op execution |
 | `execute.rs` | Shared execution utilities: op resolver (`resolve_op`) + source/sink decode/encode helpers used by graph execution |
 | `pipeline.rs` | **Legacy** `PipelineSpec`, `SourceSpec`, `SinkSpec` serde types. Still used by graph system. See note below. |
@@ -83,6 +83,12 @@ match op_spec.op.as_str() {
     "resize" => { /* extract params, build ViewDto::Image(ImageOp { ... }) */ }
     "grayscale" => { /* ... */ }
     "normalize" => { /* ... */ }
+    "channel_select" => { /* index -> ViewDto::View(ViewOp::ChannelSelect { index }) */ }
+    "channel_swap" => { /* order -> ViewDto::ChannelSwap { order } */ }
+    "channel_merge" => { /* other_node_ids -> ViewDto::ChannelMerge { other_node_ids } */ }
+    "adjust_contrast" => { /* factor -> ViewDto::Compute(ComputeOp::AdjustContrast(factor)) */ }
+    "adjust_gamma" => { /* gamma -> ViewDto::Compute(ComputeOp::AdjustGamma(gamma)) */ }
+    "invert" => { /* -> ViewDto::Compute(ComputeOp::Invert) */ }
     // ... all supported operations
 }
 ```

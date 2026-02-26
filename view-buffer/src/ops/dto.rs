@@ -92,6 +92,15 @@ pub enum ViewDto {
     /// Extract the shape of the buffer as a vector [height, width, channels].
     /// Returns a Vector domain output with dimension values.
     ExtractShape,
+    /// Reorder channels in a [H, W, C] buffer. Allocating (copies data).
+    ChannelSwap {
+        order: Vec<usize>,
+    },
+    /// Merge multiple single-channel [H, W] buffers into a [H, W, C] buffer.
+    /// Other buffers are referenced by node IDs for graph execution.
+    ChannelMerge {
+        other_node_ids: Vec<String>,
+    },
     /// Reduce an image/array buffer over contour regions.
     /// Contours are provided via an expression column key resolved per-row.
     LabelReduce {
@@ -162,6 +171,8 @@ impl ViewDto {
             // ExtractShape works on buffers
             ViewDto::ExtractShape => Domain::Buffer,
             ViewDto::LabelReduce { .. } => Domain::Buffer,
+            // Channel operations work on buffers
+            ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => Domain::Buffer,
         }
     }
 
@@ -214,6 +225,8 @@ impl ViewDto {
             // ExtractShape produces a vector of dimension values
             ViewDto::ExtractShape => Domain::Vector,
             ViewDto::LabelReduce { .. } => Domain::Vector,
+            // Channel operations produce buffers
+            ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => Domain::Buffer,
         }
     }
 
@@ -240,6 +253,8 @@ impl ViewDto {
             ViewDto::Materialize => "Materialize",
             ViewDto::ExtractShape => "ExtractShape",
             ViewDto::LabelReduce { .. } => "LabelReduce",
+            ViewDto::ChannelSwap { .. } => "ChannelSwap",
+            ViewDto::ChannelMerge { .. } => "ChannelMerge",
         }
     }
 

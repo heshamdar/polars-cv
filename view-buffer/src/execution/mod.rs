@@ -12,7 +12,7 @@ mod runner;
 pub mod tiling;
 
 pub use plan::{ExecutionPlan, PlanStep};
-pub use runner::execute_plan;
+pub use runner::{apply_channel_merge, apply_channel_swap, execute_plan};
 pub use tiling::{
     configure_tiling, get_tile_config, is_tiling_enabled, set_tile_config, with_tile_config,
     TileConfig, TilePolicy,

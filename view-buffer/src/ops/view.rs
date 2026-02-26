@@ -25,6 +25,9 @@ pub enum ViewOp {
     Rotate180,
     /// Rotates 270 degrees clockwise / 90 degrees counter-clockwise (zero-copy via transpose + flip).
     Rotate270,
+    /// Extracts a single channel from a multi-channel [H, W, C] buffer,
+    /// producing a 2D [H, W] result. Zero-copy via offset + dimension drop.
+    ChannelSelect { index: usize },
 }
 
 impl Op for ViewOp {
@@ -37,6 +40,7 @@ impl Op for ViewOp {
             ViewOp::Rotate90 => "Rotate90",
             ViewOp::Rotate180 => "Rotate180",
             ViewOp::Rotate270 => "Rotate270",
+            ViewOp::ChannelSelect { .. } => "ChannelSelect",
         }
     }
 
@@ -60,6 +64,14 @@ impl Op for ViewOp {
                 }
             }
             ViewOp::Rotate180 => input_shape.to_vec(),
+            ViewOp::ChannelSelect { .. } => {
+                // [H, W, C] → [H, W]
+                if input_shape.len() == 3 {
+                    vec![input_shape[0], input_shape[1]]
+                } else {
+                    input_shape.to_vec()
+                }
+            }
         }
     }
 
@@ -93,8 +105,6 @@ impl Op for ViewOp {
             }
             ViewOp::Crop { .. } => Some(input_strides.to_vec()),
             ViewOp::Rotate90 => {
-                // Rotate90: transpose [0,1] then flip axis 1
-                // Stride calculation: swap strides[0] and strides[1], then negate strides[1]
                 if input_strides.len() >= 2 {
                     let mut new_strides = input_strides.to_vec();
                     new_strides.swap(0, 1);
@@ -105,7 +115,6 @@ impl Op for ViewOp {
                 }
             }
             ViewOp::Rotate180 => {
-                // Rotate180: flip both axes 0 and 1
                 if input_strides.len() >= 2 {
                     let mut new_strides = input_strides.to_vec();
                     new_strides[0] = -new_strides[0];
@@ -116,13 +125,19 @@ impl Op for ViewOp {
                 }
             }
             ViewOp::Rotate270 => {
-                // Rotate270: transpose [0,1] then flip axis 0
-                // Stride calculation: swap strides[0] and strides[1], then negate strides[0]
                 if input_strides.len() >= 2 {
                     let mut new_strides = input_strides.to_vec();
                     new_strides.swap(0, 1);
                     new_strides[0] = -new_strides[0];
                     Some(new_strides)
+                } else {
+                    Some(input_strides.to_vec())
+                }
+            }
+            ViewOp::ChannelSelect { .. } => {
+                // Drop the last stride dimension (channel axis)
+                if input_strides.len() >= 3 {
+                    Some(input_strides[..2].to_vec())
                 } else {
                     Some(input_strides.to_vec())
                 }

@@ -85,6 +85,17 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
             let transposed = buf.permute(&perm);
             transposed.flip(&[0]) // Flip height axis
         }
+        ViewOp::ChannelSelect { index } => {
+            let shape = buf.shape();
+            if shape.len() != 3 {
+                return buf;
+            }
+            let h = shape[0];
+            let w = shape[1];
+            // Slice to [H, W, 1] then materialize (slice is non-contiguous in HWC)
+            let sliced = buf.slice(&[0, 0, index], &[h, w, index + 1]);
+            sliced.to_contiguous().reshape(vec![h, w])
+        }
     }
 }
 
@@ -126,6 +137,9 @@ fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
         ComputeOp::Fused(ref kernel) => buf.apply_fused_kernel(kernel),
         ComputeOp::Normalize(ref method) => apply_normalize(&buf, method),
         ComputeOp::Clamp { min, max } => apply_scalar_op(&buf, move |x: f32| x.clamp(min, max)),
+        ComputeOp::AdjustContrast(factor) => apply_adjust_contrast(&buf, factor),
+        ComputeOp::AdjustGamma(gamma) => apply_adjust_gamma(&buf, gamma),
+        ComputeOp::Invert => apply_invert(&buf),
     }
 }
 
@@ -265,6 +279,217 @@ fn apply_normalize(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> Vi
     };
 
     ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
+}
+
+/// Adjust contrast: `(pixel - mean) * factor + mean`.
+///
+/// Computes the global mean, then scales each pixel's deviation from it.
+/// Input is cast to f32; output is f32.
+fn apply_adjust_contrast(buf: &ViewBuffer, factor: f32) -> ViewBuffer {
+    let work_buf = if buf.dtype() != DType::F32 {
+        buf.cast(DType::F32)
+    } else {
+        buf.clone()
+    };
+    let contig = work_buf.to_contiguous();
+    let count = contig.layout.num_elements();
+    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+
+    let mean: f32 = if count > 0 {
+        src.iter().map(|&x| x as f64).sum::<f64>() as f32 / count as f32
+    } else {
+        0.0
+    };
+    let new_data: Vec<f32> = src.iter().map(|&x| (x - mean) * factor + mean).collect();
+    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
+}
+
+/// Adjust gamma (power-law): normalize to [0,1], apply `pixel^gamma`, denormalize.
+///
+/// For u8 input the [0,255] range is used; for float [0,1] is assumed.
+/// Output is always f32.
+fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f32) -> ViewBuffer {
+    let input_dtype = buf.dtype();
+    let work_buf = if input_dtype != DType::F32 {
+        buf.cast(DType::F32)
+    } else {
+        buf.clone()
+    };
+    let contig = work_buf.to_contiguous();
+    let count = contig.layout.num_elements();
+    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+
+    let is_integer = matches!(
+        input_dtype,
+        DType::U8
+            | DType::U16
+            | DType::I8
+            | DType::I16
+            | DType::U32
+            | DType::I32
+            | DType::U64
+            | DType::I64
+    );
+    let max_val: f32 = if is_integer { 255.0 } else { 1.0 };
+
+    let new_data: Vec<f32> = src
+        .iter()
+        .map(|&x| {
+            let normalized = (x / max_val).clamp(0.0, 1.0);
+            normalized.powf(gamma) * max_val
+        })
+        .collect();
+    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
+}
+
+/// Invert pixel values: `max_val - pixel`.
+///
+/// For u8: `255 - pixel`. For float: `1.0 - pixel`. Preserves input dtype.
+fn apply_invert(buf: &ViewBuffer) -> ViewBuffer {
+    let contig = buf.to_contiguous();
+    let count = contig.layout.num_elements();
+    let shape = contig.shape().to_vec();
+
+    match buf.dtype() {
+        DType::U8 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), count) };
+            let new_data: Vec<u8> = src.iter().map(|&x| 255u8 - x).collect();
+            ViewBuffer::from_vec_with_shape(new_data, shape)
+        }
+        DType::U16 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u16>(), count) };
+            let new_data: Vec<u16> = src.iter().map(|&x| 65535u16 - x).collect();
+            ViewBuffer::from_vec_with_shape(new_data, shape)
+        }
+        DType::F32 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+            let new_data: Vec<f32> = src.iter().map(|&x| 1.0f32 - x).collect();
+            ViewBuffer::from_vec_with_shape(new_data, shape)
+        }
+        DType::F64 => {
+            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+            let new_data: Vec<f64> = src.iter().map(|&x| 1.0f64 - x).collect();
+            ViewBuffer::from_vec_with_shape(new_data, shape)
+        }
+        _ => {
+            // For other dtypes, cast to f32, invert as 1.0 - x, return f32
+            let f32_buf = buf.cast(DType::F32);
+            apply_invert(&f32_buf)
+        }
+    }
+}
+
+/// Execute a channel swap operation: reorder channels in a [H, W, C] buffer.
+pub fn apply_channel_swap(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
+    let shape = buf.shape();
+    assert!(shape.len() == 3, "ChannelSwap requires 3D [H, W, C] input");
+    let h = shape[0];
+    let w = shape[1];
+    let c = shape[2];
+    assert!(
+        order.len() == c,
+        "ChannelSwap order length {} must match channel count {}",
+        order.len(),
+        c
+    );
+
+    let contig = buf.to_contiguous();
+    match buf.dtype() {
+        DType::U8 => {
+            let src = contig.as_slice::<u8>();
+            let mut output = vec![0u8; h * w * c];
+            for y in 0..h {
+                for x in 0..w {
+                    let base_src = (y * w + x) * c;
+                    let base_dst = (y * w + x) * c;
+                    for (dst_c, &src_c) in order.iter().enumerate() {
+                        output[base_dst + dst_c] = src[base_src + src_c];
+                    }
+                }
+            }
+            ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
+        }
+        DType::F32 => {
+            let src = contig.as_slice::<f32>();
+            let mut output = vec![0.0f32; h * w * c];
+            for y in 0..h {
+                for x in 0..w {
+                    let base_src = (y * w + x) * c;
+                    let base_dst = (y * w + x) * c;
+                    for (dst_c, &src_c) in order.iter().enumerate() {
+                        output[base_dst + dst_c] = src[base_src + src_c];
+                    }
+                }
+            }
+            ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
+        }
+        _ => {
+            let f32_buf = buf.cast(DType::F32);
+            apply_channel_swap(&f32_buf, order)
+        }
+    }
+}
+
+/// Merge multiple single-channel [H, W] buffers into a [H, W, C] buffer.
+pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
+    assert!(
+        !buffers.is_empty(),
+        "ChannelMerge requires at least one input"
+    );
+    let h = buffers[0].shape()[0];
+    let w = buffers[0].shape()[1];
+    let c = buffers.len();
+
+    // All buffers must be 2D [H, W] with matching dimensions
+    for (i, buf) in buffers.iter().enumerate() {
+        let s = buf.shape();
+        assert!(
+            s.len() == 2 && s[0] == h && s[1] == w,
+            "ChannelMerge input {} has shape {:?}, expected [{}, {}]",
+            i,
+            s,
+            h,
+            w
+        );
+    }
+
+    match buffers[0].dtype() {
+        DType::U8 => {
+            let mut output = vec![0u8; h * w * c];
+            let contigs: Vec<_> = buffers.iter().map(|b| b.to_contiguous()).collect();
+            let slices: Vec<&[u8]> = contigs.iter().map(|b| b.as_slice::<u8>()).collect();
+            for y in 0..h {
+                for x in 0..w {
+                    let pixel_idx = y * w + x;
+                    let base_dst = pixel_idx * c;
+                    for (ch, slice) in slices.iter().enumerate() {
+                        output[base_dst + ch] = slice[pixel_idx];
+                    }
+                }
+            }
+            ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
+        }
+        DType::F32 => {
+            let mut output = vec![0.0f32; h * w * c];
+            let contigs: Vec<_> = buffers.iter().map(|b| b.to_contiguous()).collect();
+            let slices: Vec<&[f32]> = contigs.iter().map(|b| b.as_slice::<f32>()).collect();
+            for y in 0..h {
+                for x in 0..w {
+                    let pixel_idx = y * w + x;
+                    let base_dst = pixel_idx * c;
+                    for (ch, slice) in slices.iter().enumerate() {
+                        output[base_dst + ch] = slice[pixel_idx];
+                    }
+                }
+            }
+            ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
+        }
+        _ => {
+            let f32_bufs: Vec<_> = buffers.iter().map(|b| b.cast(DType::F32)).collect();
+            let refs: Vec<&ViewBuffer> = f32_bufs.iter().collect();
+            apply_channel_merge(&refs)
+        }
+    }
 }
 
 /// Apply a scalar operation element-wise, accepting any numeric input type.

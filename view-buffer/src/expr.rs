@@ -139,6 +139,7 @@ impl ViewExpr {
                     };
                     self.transpose(perm).flip(vec![0])
                 }
+                ViewOp::ChannelSelect { index } => self.channel_select(index),
             },
             ViewDto::Compute(compute) => match compute {
                 ComputeOp::Cast(dtype) => self.cast(dtype),
@@ -148,6 +149,9 @@ impl ViewExpr {
                 ComputeOp::Fused(kernel) => self.fused(kernel),
                 ComputeOp::Normalize(method) => self.normalize(method),
                 ComputeOp::Clamp { min, max } => self.clamp(min, max),
+                ComputeOp::AdjustContrast(factor) => self.adjust_contrast(factor),
+                ComputeOp::AdjustGamma(gamma) => self.adjust_gamma(gamma),
+                ComputeOp::Invert => self.invert(),
             },
             ViewDto::Image(img) => match img.kind {
                 ImageOpKind::Threshold(val) => self.threshold(val),
@@ -237,11 +241,15 @@ impl ViewExpr {
                 )
             }
             ViewDto::LabelReduce { .. } => {
-                // LabelReduce changes domain from Buffer to Vector and depends
-                // on contour expression inputs. It is handled by graph execution.
                 panic!(
                     "LabelReduce cannot be applied via ViewExpr. \
                      Use graph-level execution to handle contour expression inputs."
+                )
+            }
+            ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => {
+                panic!(
+                    "Channel merge/swap operations cannot be applied via ViewExpr. \
+                     Use graph-level execution."
                 )
             }
         }
@@ -467,6 +475,53 @@ impl ViewExpr {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
             strides: self.strides.clone(),
+            dtype: self.dtype,
+        })
+    }
+
+    /// Adjust contrast: `(pixel - mean) * factor + mean`.
+    pub fn adjust_contrast(self: &Arc<Self>, factor: f32) -> Arc<Self> {
+        let op = ComputeOp::AdjustContrast(factor);
+        let new_strides = self.calc_strides(&op, &self.shape);
+        Arc::new(Self {
+            node: ExprNode::Compute(op, vec![self.clone()]),
+            shape: self.shape.clone(),
+            strides: new_strides,
+            dtype: self.dtype,
+        })
+    }
+
+    /// Adjust gamma (power-law transformation).
+    pub fn adjust_gamma(self: &Arc<Self>, gamma: f32) -> Arc<Self> {
+        let op = ComputeOp::AdjustGamma(gamma);
+        Arc::new(Self {
+            node: ExprNode::Compute(op, vec![self.clone()]),
+            shape: self.shape.clone(),
+            strides: self.strides.clone(),
+            dtype: self.dtype,
+        })
+    }
+
+    /// Invert pixel values: `max_val - pixel`.
+    pub fn invert(self: &Arc<Self>) -> Arc<Self> {
+        let op = ComputeOp::Invert;
+        Arc::new(Self {
+            node: ExprNode::Compute(op, vec![self.clone()]),
+            shape: self.shape.clone(),
+            strides: self.strides.clone(),
+            dtype: self.dtype,
+        })
+    }
+
+    /// Select a single channel from a [H, W, C] buffer, producing [H, W].
+    pub fn channel_select(self: &Arc<Self>, index: usize) -> Arc<Self> {
+        let op = ViewOp::ChannelSelect { index };
+        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_strides = self.calc_strides(&op, &new_shape);
+        Arc::new(Self {
+            node: ExprNode::View(op, self.clone()),
+            shape: new_shape,
+            strides: new_strides,
             dtype: self.dtype,
         })
     }
