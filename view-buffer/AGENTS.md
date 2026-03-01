@@ -7,24 +7,25 @@
 
 `view-buffer` is a **zero-copy, stride-aware tensor framework** for Rust. It is the computational engine that powers polars-cv. All actual image/array processing happens here.
 
-While originally designed as an independent crate (published to crates.io), it is currently **tightly coupled** to polars-cv in practice. Agents working on either layer typically need context from both.
+While originally designed as an independent crate, it is currently **tightly coupled** to polars-cv in practice. Agents working on either layer typically need context from both.
 
 ### What This Crate Does
 
-- Provides `ViewBuffer` — a strided multi-dimensional array that can represent images, masks, feature maps, etc.
-- Implements zero-copy view operations (transpose, flip, crop, reshape) that only modify metadata
-- Implements compute operations (scale, normalize, cast, clamp, relu)
-- Implements image operations (resize, blur, grayscale, threshold, rotate)
-- Implements geometry operations (contour extraction, rasterization, measures)
-- Provides `ViewExpr` — a lazy expression graph for building pipelines before execution
-- Provides `ExecutionPlan` — optimized execution with kernel fusion
-- Provides interop with Arrow, ndarray, image, and Polars-arrow
+- `ViewBuffer` — strided multi-dimensional array for images, masks, feature maps
+- Zero-copy view operations (transpose, flip, crop, reshape) via metadata changes only
+- Compute operations (scale, normalize, cast, clamp, relu, contrast, gamma, invert)
+- Image operations (resize, blur, grayscale, threshold, rotate, canny, histogram equalize)
+- Color space conversions (RGB, BGR, HSV, LAB, YCbCr, Gray)
+- Spatial filtering (2D convolution with configurable border modes)
+- Geometry operations (contour extraction, rasterization, measures, pairwise matching)
+- `ViewExpr` — lazy expression graph builder
+- `ExecutionPlan` — optimized execution with kernel fusion
+- Interop with Arrow, ndarray, image, and Polars-arrow
 
 ### What This Crate Does NOT Do
 
 - No Python bindings (those are in `polars-cv`)
-- No Polars expression registration
-- No JSON graph parsing (that's in `polars-cv/src/graph/`)
+- No Polars expression registration or JSON graph parsing
 - No cloud I/O
 
 ## Module Structure
@@ -32,145 +33,113 @@ While originally designed as an independent crate (published to crates.io), it i
 ```
 src/
 ├── lib.rs              # Crate root, re-exports
-├── core/               # Fundamental types
-│   ├── buffer.rs       # ViewBuffer struct — the core data type
-│   ├── dtype.rs        # DType enum (U8, I8, U16, ..., F64)
-│   ├── layout.rs       # Layout (shape, strides, offset, dtype)
-│   └── mod.rs
+├── core/               # ViewBuffer, DType, Layout
 ├── ops/                # Operations
-│   ├── mod.rs          # ViewOp, ComputeOp, BinaryOp, ViewDto
 │   ├── dto.rs          # ViewDto — serializable operation enum
-│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, grayscale, canny, histogram_equalize, etc.)
-│   ├── color.rs        # ColorConvertOp, ColorSpace — color space conversions (RGB↔HSV, RGB↔LAB, etc.)
-│   ├── filter.rs       # ConvolveOp, BorderMode — 2D spatial filtering / convolution
-│   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu)
+│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, etc.)
+│   ├── color.rs        # ColorConvertOp, ColorSpace
+│   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
+│   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert)
 │   ├── binary.rs       # BinaryOp (add, subtract, multiply, blend, bitwise)
 │   ├── histogram.rs    # Histogram computation
-│   ├── affine.rs       # Affine transform parameters
-│   ├── io.rs           # SourceFormat, SinkFormat
-│   ├── cost.rs         # OpCost, OpCostReport for allocation analysis
-│   └── mod.rs          # Op trait, ViewOp enum, trait impls
-├── expr.rs             # ViewExpr — lazy expression graph builder (~42K)
-├── execution/          # Execution engine
-│   ├── mod.rs          # Re-exports
-│   ├── plan.rs         # ExecutionPlan, PlanStep — compiled execution plan
-│   ├── runner.rs       # Execute plans against ViewBuffers
-│   └── tiling.rs       # Tiling configuration (currently no-op, see notes)
-├── geometry/           # Geometry operations
-│   ├── mod.rs          # Contour, Point, BoundingBox types
-│   ├── contour.rs      # Contour struct and basic operations
-│   ├── extract.rs      # Contour extraction from binary masks
-│   ├── rasterize.rs    # Rasterize contours to binary masks
-│   ├── measures.rs     # Area, perimeter, centroid
-│   ├── transforms.rs   # Translate, scale, rotate contours
-│   ├── ops.rs          # GeometryOp enum
-│   ├── pairwise.rs     # Pairwise ops (IoU/Dice/Hausdorff, IoU matrix, greedy matching, bbox variants)
-│   └── predicates.rs   # Spatial predicates (contains, intersects)
+│   └── mod.rs          # Op trait, ViewOp enum (transpose, reshape, flip, crop, channel_select)
+├── expr.rs             # ViewExpr — lazy expression graph builder
+├── execution/          # ExecutionPlan, runner, tiling (no-op)
+├── geometry/           # Contour, Point, BoundingBox, extraction, rasterization, measures, pairwise
 ├── protocol.rs         # VIEW binary protocol (header + data serialization)
-└── interop/            # External library integration
-    ├── mod.rs          # ExternalView, validate_layout
-    ├── arrow.rs        # Arrow buffer interop (FromArrow, ToArrow)
-    ├── arrow_ffi.rs    # Arrow FFI support
-    ├── image.rs        # image crate interop (ImageAdapter, decode/encode)
-    ├── ndarray.rs      # ndarray interop (AsNdarray, FromNdarray)
-    └── polars.rs       # Polars-arrow interop
+└── interop/            # Arrow, ndarray, image crate, Polars-arrow integration
 ```
 
 ## Core Concepts
 
 ### ViewBuffer
 
-The fundamental data type. A strided multi-dimensional array backed by either a Rust `Vec` or an Arrow buffer.
+Strided multi-dimensional array backed by a Rust `Vec` or Arrow buffer.
 
-Key properties:
 - **Shape:** `[height, width, channels]` for images, arbitrary for other data
 - **Strides:** Byte strides per dimension — enables zero-copy transpose, flip, crop
-- **DType:** Element type (U8, F32, etc.)
+- **DType:** Element type (U8, I8, U16, ..., F64)
 - **Offset:** Byte offset into the backing buffer
 
 ### ViewExpr (Lazy Expression Graph)
 
-A builder for constructing operation pipelines lazily:
-
 ```rust
-let expr = ViewExpr::new_source(buffer)
+let result = ViewExpr::new_source(buffer)
     .resize(224, 224, FilterType::Lanczos3)
     .normalize(NormalizeMethod::MinMax, None, None)
-    .cast(DType::F32);
-
-let result = expr.plan().execute();
+    .cast(DType::F32)
+    .plan().execute();
 ```
 
-Methods on `ViewExpr` correspond to operations. Each method appends a node to the expression graph. `plan()` compiles it into an `ExecutionPlan`, and `execute()` runs it.
+Each method appends a node. `plan()` compiles into `ExecutionPlan`, `execute()` runs it.
 
 ### ViewDto (Data Transfer Object)
 
-Serializable enum representing operations. This is the bridge between the JSON graph (from Python) and the actual operation execution:
+Serializable enum bridging JSON graph (from Python) to operation execution:
 
 ```rust
 pub enum ViewDto {
-    Image(ImageOp),           // resize, blur, grayscale, threshold, rotate, canny, histogram_equalize
-    Compute(ComputeOp),       // cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert
-    View(ViewOp),             // transpose, reshape, flip, crop, channel_select
-    Binary(BinaryOp),         // add, subtract, multiply, blend, bitwise
-    Geometry(GeometryOp),     // extract_contours, rasterize, measures
-    ChannelSwap { order },    // reorder channels (allocating)
-    ChannelMerge { .. },      // merge single-channel buffers into multi-channel (allocating, graph-level)
-    Color(ColorConvertOp),    // color space conversion (RGB↔HSV, RGB↔LAB, RGB↔YCbCr, RGB↔BGR, RGB↔Gray)
-    Filter(ConvolveOp),       // 2D spatial convolution with border handling
-    // ... other variants
+    Image(ImageOp),         // resize, blur, grayscale, threshold, canny, histogram_equalize
+    Compute(ComputeOp),     // cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert
+    View(ViewOp),           // transpose, reshape, flip, crop, channel_select
+    Binary(BinaryOp),       // add, subtract, multiply, blend, bitwise
+    Geometry(GeometryOp),   // extract_contours, rasterize, measures
+    ChannelSwap { order },  // reorder channels (allocating)
+    ChannelMerge { .. },    // merge single-channel buffers (allocating, graph-level)
+    Color(ColorConvertOp),  // RGB↔HSV, RGB↔LAB, RGB↔YCbCr, RGB↔BGR, RGB↔Gray
+    Filter(ConvolveOp),     // 2D spatial convolution with border handling
 }
 ```
-
-The `resolve_op` function in `polars-cv/src/execute.rs` maps operation names from JSON to `ViewDto` variants.
 
 ### Operation Categories
 
 | Category | Zero-Copy? | Description |
 |----------|-----------|-------------|
-| **View** | Yes | Transpose, reshape, flip, crop, channel_select — only modify metadata |
-| **Compute** | No | Cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert — element-wise, can be fused |
+| **View** | Yes | Transpose, reshape, flip, crop, channel_select — metadata only |
+| **Compute** | No | Element-wise ops (cast, scale, normalize, clamp, contrast, gamma, invert) — can be fused |
 | **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize — require materialization |
-| **Filter** | No | 2D convolution with configurable border modes — produces contiguous output |
+| **Filter** | No | 2D convolution with `Replicate`/`Zero`/`Reflect` border modes — contiguous output, promotes to f32 |
+| **Color** | No | Color space conversions — route through f32 RGB internally. LAB uses D65/sRGB. HSV follows OpenCV (H=[0,180] for U8) |
 | **Binary** | No | Pixel-wise operations between two buffers |
-| **Geometry** | N/A | Contour extraction, rasterization, measures, pairwise matching primitives |
+| **Geometry** | N/A | Contour extraction, rasterization, measures, pairwise matching |
 | **Reduction** | No | Sum, mean, std, min, max, percentile → scalar/vector |
 
 ### Kernel Fusion
 
-Consecutive compute operations (scalar element-wise ops like scale, relu, clamp, cast) can be fused into a single pass over the data. The `ExecutionPlan` handles this optimization.
+Consecutive compute operations (scalar element-wise: scale, relu, clamp, cast) are fused into a single pass over the data by `ExecutionPlan`.
 
 ### Op Trait
 
-Operations implement the `Op` trait:
 ```rust
 pub trait Op {
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize>;
-    fn memory_effect(&self) -> MemoryEffect;
-    // ... other methods
+    fn memory_effect(&self) -> MemoryEffect; // ViewOnly, RequiresContiguous, or Allocating
 }
 ```
 
-`infer_shape` is used for shape tracking at planning time. `memory_effect` indicates whether the op is zero-copy (`ViewOnly`), requires contiguous input (`RequiresContiguous`), or allocates (`Allocating`).
+## Rank Preservation Contracts
+
+- **resize**: Preserves input rank. 2D `[H, W]` → 2D `[H_new, W_new]`; 3D stays 3D.
+- **grayscale**: Preserves input rank. 2D passes through; 3D sets channel dim to 1.
+- **channel_select**: Reduces rank from 3D `[H, W, C]` to 2D `[H, W]`. Requires `to_contiguous()` + reshape (non-contiguous in HWC layout).
+
+## Implementation Notes
+
+- **Filter** (`ops/filter.rs`): `ConvolveOp` dispatched directly in graph executor (not via ViewExpr/ExecutionPlan), similar to Color.
+- **Canny** (`execution/runner.rs`): Fused pipeline (5x5 Gaussian → Sobel gradients → NMS → hysteresis). Outputs U8 binary mask (0/255). `TilePolicy::Global`.
+- **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `TilePolicy::Global`.
+- **label_reduce centroid fallback**: When `region_mode="interior"` finds no interior pixels for a contour, falls back to sampling at centroid. Prevents sub-pixel contours from scoring 0.
 
 ## Adding a New Operation
 
-1. **Define the op** in the appropriate `ops/` file (or create a new one):
-   - For image ops: `ops/image.rs` — add variant to `ImageOpKind`
-   - For compute ops: `ops/compute.rs` — add variant to `ComputeOp`
-   - For geometry ops: `geometry/ops.rs` — add variant to `GeometryOp`
+1. Define the op in the appropriate `ops/` file (add variant to `ImageOpKind`, `ComputeOp`, `GeometryOp`, etc.)
+2. Implement the `Op` trait with `infer_shape` and `memory_effect`
+3. Add to `ViewDto` in `ops/dto.rs`
+4. Add builder method to `ViewExpr` in `expr.rs`
+5. Add execution logic in `execution/runner.rs`
+6. Wire into polars-cv: add to `resolve_op` in `polars-cv/src/execute.rs`
 
-2. **Implement the `Op` trait** (if applicable) with `infer_shape` and `memory_effect`
-
-3. **Add to `ViewDto`** in `ops/dto.rs` — this makes it serializable
-
-4. **Add builder method to `ViewExpr`** in `expr.rs` — this exposes it in the lazy API
-
-5. **Add execution logic** in `execution/runner.rs` — the actual compute
-
-6. **Wire into polars-cv**: Add to `resolve_op` in `polars-cv/src/execute.rs`
-
-See `.cursor/polars-cv-contribution-guide.md` for a full walkthrough with the `resize` op as an example.
+See `.cursor/polars-cv-contribution-guide.md` for a full walkthrough.
 
 ## Feature Flags
 
@@ -185,55 +154,11 @@ See `.cursor/polars-cv-contribution-guide.md` for a full walkthrough with the `r
 
 ## Tiling (Currently No-Op)
 
-Tiling was implemented to improve cache efficiency for large images by processing them in 256x256 tiles. It did not deliver expected performance gains. The `TileConfig` / `TilePolicy` infrastructure exists in `execution/tiling.rs` and is wired up, but the actual tiling path is disabled. This may be revisited for SIMD optimization.
-
-## Rank Preservation Contracts
-
-- **resize**: Preserves input rank. 2D `[H, W]` input → 2D `[H_new, W_new]`
-  output; 3D stays 3D. The typed resize functions always produce 3D
-  internally, but `resize_strided` squeezes the trailing dimension when
-  the input was 2D. `infer_shape` correctly preserves rank at planning time.
-- **grayscale**: Preserves input rank. 2D inputs pass through unchanged
-  (already single-channel). 3D inputs get their channel dimension set to 1.
-  `infer_shape` no longer promotes 2D to 3D.
-- **channel_select**: Reduces rank from 3D `[H, W, C]` to 2D `[H, W]`.
-  Uses slice + `to_contiguous()` + reshape because the slice is non-contiguous
-  in HWC layout (channel stride != element size).
-
-## Spatial Filtering (`ops/filter.rs`)
-
-`ConvolveOp` provides generic 2D convolution with arbitrary kernels. `BorderMode` enum
-controls pixel sampling at image borders: `Replicate` (clamp coords), `Zero` (zero-pad),
-`Reflect` (mirror). The operation promotes input to f32, applies the kernel channel-wise,
-and optionally normalizes by the absolute kernel sum. `ViewDto::Filter` is handled directly
-in the graph executor (not via `ViewExpr`/`ExecutionPlan`), similar to `ViewDto::Color`.
-
-## Canny Edge Detection and Histogram Equalization (`execution/runner.rs`)
-
-`ImageOpKind::Canny` is a fused pipeline: 5×5 Gaussian blur → Sobel gradients → non-maximum
-suppression → double-threshold hysteresis. Outputs U8 binary mask (0/255). Uses `TilePolicy::Global`.
-
-`ImageOpKind::HistogramEqualize` computes a 256-bin histogram, derives CDF, and remaps pixels.
-Operates on U8 input; non-U8 is clamped to [0, 255]. Also `TilePolicy::Global`.
-
-## Color Space Conversions (`ops/color.rs`)
-
-`ColorConvertOp` and `ColorSpace` enum provide conversions between RGB, BGR, HSV,
-LAB, YCbCr, and Gray. All conversions route through f32 RGB internally. LAB
-uses D65 illuminant with sRGB gamma. HSV follows OpenCV convention (H=[0,180]
-for U8). The graph executor dispatches `ViewDto::Color` to `apply_color_convert`.
-
-## Label Reduce Centroid Fallback
-
-When `label_reduce` with `region_mode="interior"` finds no interior pixels
-for a contour (common with sub-pixel contours from the Moore-Neighbor
-tracer), it falls back to sampling the grid at the contour's centroid
-(via `measures::centroid`). This ensures single-pixel detections receive
-their actual pixel value as the score rather than 0.0.
+`TileConfig` / `TilePolicy` infrastructure exists in `execution/tiling.rs` but the tiling path is disabled — it did not deliver expected performance gains. May be revisited for SIMD optimization. The Python API still exposes `configure_tiling` / `get_tiling_config` but they are non-functional.
 
 ## Performance Notes
 
-- **View operations are O(1)** — they only change metadata
-- **Kernel fusion** reduces memory traffic for consecutive scalar ops
-- **Zero-copy interop** avoids unnecessary allocations when moving data between Arrow, ndarray, and image
-- **Contiguous buffers** enable SIMD-friendly iteration patterns
+- View operations are O(1) — metadata only
+- Kernel fusion reduces memory traffic for consecutive scalar ops
+- Zero-copy interop avoids unnecessary allocations between Arrow, ndarray, and image
+- Contiguous buffers enable SIMD-friendly iteration patterns
