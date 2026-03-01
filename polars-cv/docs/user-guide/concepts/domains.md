@@ -10,14 +10,17 @@ polars-cv supports **multi-domain pipelines** that seamlessly transition between
 | `contour` | Polygon geometry | Extracted shapes |
 | `scalar` | Single number | Area, perimeter |
 | `vector` | Multiple numbers | Centroid (x, y), BBox |
+| `histogram` | Histogram buckets | Bin edges and counts |
 
 ## Domain Transitions
 
 ```mermaid
 flowchart LR
     Buffer["buffer"] <-->|"extract/rasterize"| Contour["contour"]
+    Buffer -->|"histogram()"| Histogram["histogram"]
+    Buffer -->|"label_reduce()"| Vector["vector"]
     Contour -->|"area(), perimeter()"| Scalar["scalar"]
-    Contour -->|"centroid(), bbox()"| Vector["vector"]
+    Contour -->|"centroid(), bbox()"| Vector
 ```
 
 ### Buffer → Contour

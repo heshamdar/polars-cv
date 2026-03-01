@@ -7,6 +7,7 @@ Learn how to chain and compose pipelines for reusable, modular image processing.
 Chain operations within a single pipeline:
 
 ```python
+import polars as pl
 from polars_cv import Pipeline
 
 pipe = (
@@ -15,7 +16,10 @@ pipe = (
     .resize(height=224, width=224)
     .grayscale()
     .normalize(method="minmax")
-    .sink("numpy")
+)
+
+result = df.with_columns(
+    output=pl.col("image").cv.pipe(pipe).sink("numpy")
 )
 ```
 
@@ -141,7 +145,7 @@ Create branches from a common base:
 # Common preprocessing
 base = (
     pl.col("image")
-    .cv.pipe(Pipeline().source("image_bytes").resize(128, 128))
+    .cv.pipe(Pipeline().source("image_bytes").resize(height=128, width=128))
     .alias("resized")
 )
 

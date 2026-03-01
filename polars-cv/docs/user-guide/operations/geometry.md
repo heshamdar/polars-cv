@@ -57,7 +57,7 @@ result = df.with_columns(
 Infer dimensions from an existing image:
 
 ```python
-img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(200, 200))
+img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=200, width=200))
 mask = pl.col("contour").cv.pipe(Pipeline().source("contour", shape=img))
 ```
 
@@ -99,6 +99,36 @@ df.with_columns(
     interp=pl.col("p1").point.interpolate(pl.col("p2"), t=0.25),
     nearest=pl.col("point").point.nearest_point_on_contour(pl.col("contour")),
     inside=pl.col("point").point.within_bbox(pl.col("bbox")),
+)
+```
+
+---
+
+## Bounding Boxes
+
+The `.bbox` namespace operates on `List[BBOX_SCHEMA]` columns for detection tasks.
+
+### Pairwise IoU
+
+Compute IoU between two sets of bounding boxes:
+
+```python
+df.with_columns(
+    iou_matrix=pl.col("pred_bboxes").bbox.pairwise_iou(pl.col("gt_bboxes")),
+)
+```
+
+### Detection Matching
+
+Greedy one-to-one matching between predicted and ground-truth bounding boxes:
+
+```python
+df.with_columns(
+    match_result=pl.col("pred_bboxes").bbox.match_detections(
+        pl.col("gt_bboxes"),
+        threshold=0.5,
+        scores=pl.col("pred_scores"),
+    ),
 )
 ```
 

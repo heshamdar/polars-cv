@@ -8,7 +8,7 @@ Example:
     >>> from polars_cv import Pipeline
     >>> import polars as pl
     >>>
-    >>> pipe = Pipeline().source("image_bytes").resize(224, 224)
+    >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
     >>> df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
 """
 

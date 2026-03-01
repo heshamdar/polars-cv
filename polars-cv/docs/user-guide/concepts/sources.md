@@ -19,6 +19,15 @@ bytes_pipe = Pipeline().source("image_bytes")
 path_pipe = Pipeline().source("file_path")
 ```
 
+### Error Handling with `on_error`
+
+By default, decode failures raise an error and abort the query. Set `on_error="null"` to emit a null value for rows that fail to decode, allowing the rest of the DataFrame to process successfully.
+
+```python
+# Skip corrupt images instead of aborting
+pipe = Pipeline().source("image_bytes", on_error="null").resize(height=224, width=224)
+```
+
 ## Auto DType Behavior
 
 For `image_bytes` and `file_path`, dtype is runtime-dependent, so the pipeline starts with dtype `auto`.
@@ -30,7 +39,7 @@ You can resolve dtype by:
 
 ```python
 # Assert and enforce dtype at source
-pipe = Pipeline().source("image_bytes", dtype="f32").resize(224, 224)
+pipe = Pipeline().source("image_bytes", dtype="f32").resize(height=224, width=224)
 ```
 
 ## Planning-Time Requirement for `list`/`array` Sinks
@@ -41,10 +50,10 @@ For image sources, resolve dtype before these sinks:
 
 ```python
 # Option 1: source dtype
-pipe = Pipeline().source("file_path", dtype="u8").resize(224, 224)
+pipe = Pipeline().source("file_path", dtype="u8").resize(height=224, width=224)
 
 # Option 2: cast in pipeline
-pipe = Pipeline().source("image_bytes").resize(224, 224).cast("f32")
+pipe = Pipeline().source("image_bytes").resize(height=224, width=224).cast("f32")
 ```
 
 ## `file_path` and Cloud Access
@@ -64,9 +73,26 @@ options = CloudOptions(
 pipe = Pipeline().source("file_path", cloud_options=options)
 ```
 
+## Contour Source and Shape Inference
+
+The `contour` source rasterizes contour structs to binary mask buffers. You can specify dimensions explicitly or infer them from another pipeline expression.
+
+```python
+from polars_cv import Pipeline
+
+# Explicit dimensions
+mask_pipe = Pipeline().source("contour", width=200, height=200)
+
+# Infer dimensions from an image pipeline
+img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=200, width=200))
+mask_pipe = Pipeline().source("contour", shape=img)
+```
+
+When using `shape=`, the contour mask dimensions automatically match the referenced pipeline's output size.
+
 ## Other Sources
 
 - `raw`: raw bytes, requires explicit `dtype`
 - `blob`: self-describing binary VIEW protocol
 - `list`/`array`: infer from Polars column type (or override with `dtype`)
-- `contour`: rasterizes contour structs to mask buffers
+- `contour`: rasterizes contour structs to mask buffers (see above)

@@ -96,7 +96,49 @@ result = df.with_columns(
 )
 ```
 
+## Display
+
+### show_images
+
+Display images from a binary column in Jupyter notebooks. Falls back to a text summary outside notebook environments.
+
+```python
+from polars_cv import show_images
+
+show_images(df, "image_column", max_rows=10, max_width=200)
+```
+
+Supports PNG, JPEG, WebP, TIFF, BMP, GIF, VIEW protocol blobs, and numpy-sink struct columns. Format is auto-detected.
+
 ## Types
+
+### AlphaMode
+
+Declares how an operation handles alpha channels.
+
+```python
+from polars_cv import AlphaMode
+
+AlphaMode.PASSTHROUGH           # All channels processed uniformly
+AlphaMode.STRIP_PROCESS_RESTORE # Alpha separated, restored after op
+AlphaMode.DROP                  # Alpha discarded, output channels fixed
+AlphaMode.NOT_APPLICABLE        # Non-image ops
+```
+
+### ColorSpace
+
+Color space identifiers for `cvt_color`.
+
+```python
+from polars_cv import ColorSpace
+
+ColorSpace.RGB
+ColorSpace.BGR
+ColorSpace.HSV
+ColorSpace.LAB
+ColorSpace.YCBCR
+ColorSpace.GRAY
+```
 
 ### CloudOptions
 
