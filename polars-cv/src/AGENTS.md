@@ -73,6 +73,7 @@ match op_spec.op.as_str() {
     "cvt_color" => ViewDto::Color(ColorConvertOp { ... }),
     "convolve2d" => ViewDto::Filter(ConvolveOp { ... }),
     "canny" | "equalize_histogram" => /* ... */,
+    "erode" | "dilate" | "morphology_gradient" => /* ... */,
     // ... all supported operations
 }
 ```

@@ -24,6 +24,7 @@ import polars as pl
 from polars_cv import Pipeline
 
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale()
+pipe = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3).dilate(ksize=3)
 df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
 ```
 

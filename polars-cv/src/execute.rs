@@ -1163,6 +1163,37 @@ pub fn resolve_op(
                 border,
             }))
         }
+        "erode" => {
+            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, expr_columns)?;
+            let iterations = op_spec
+                .params
+                .get("iterations")
+                .map(|p| p.resolve_u32(row_idx, expr_columns))
+                .transpose()?
+                .unwrap_or(1);
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::Erode { ksize, iterations },
+            }))
+        }
+        "dilate" => {
+            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, expr_columns)?;
+            let iterations = op_spec
+                .params
+                .get("iterations")
+                .map(|p| p.resolve_u32(row_idx, expr_columns))
+                .transpose()?
+                .unwrap_or(1);
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::Dilate { ksize, iterations },
+            }))
+        }
+        "morphology_gradient" => {
+            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, expr_columns)?;
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::MorphGradient { ksize },
+            }))
+        }
+
         "canny" => {
             let low_threshold =
                 get_param(&op_spec.params, "low_threshold")?.resolve_f32(row_idx, expr_columns)?;

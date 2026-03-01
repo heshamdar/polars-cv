@@ -1404,6 +1404,9 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             high_threshold,
         } => apply_canny(work_buf, low_threshold, high_threshold),
         ImageOpKind::HistogramEqualize => apply_histogram_equalize(work_buf),
+        ImageOpKind::Erode { ksize, iterations } => apply_erode(work_buf, ksize, iterations),
+        ImageOpKind::Dilate { ksize, iterations } => apply_dilate(work_buf, ksize, iterations),
+        ImageOpKind::MorphGradient { ksize } => apply_morph_gradient(work_buf, ksize),
         ImageOpKind::Blur { sigma } => {
             let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
                 && work_buf.layout.is_contiguous()
@@ -1460,6 +1463,231 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 #[cfg(not(feature = "image_interop"))]
 pub fn apply_image(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
     panic!("Image operations require the 'image_interop' feature");
+}
+
+// ============================================================
+// Morphological Operations (Erode / Dilate / Gradient)
+// ============================================================
+
+/// Morphological erosion: output = local minimum over ksize×ksize neighborhood.
+///
+/// Uses replicate border handling (edge pixels are replicated).
+/// Operates on single-channel data only; panics for multi-channel input.
+/// Dtype-generic: dispatches per element type.
+#[cfg(feature = "image_interop")]
+fn apply_erode(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
+    let shape = buf.shape();
+    if !is_single_channel(shape) {
+        let channels = get_channel_count(shape);
+        panic!(
+            "Erode requires single-channel input, but got {channels} channels (shape: {shape:?}). \
+             Consider using .grayscale() or .threshold() first."
+        );
+    }
+    let mut result = buf;
+    for _ in 0..iterations {
+        result = morph_minmax_pass(&result, ksize, MorphKind::Min);
+    }
+    result
+}
+
+/// Morphological dilation: output = local maximum over ksize×ksize neighborhood.
+///
+/// Uses replicate border handling (edge pixels are replicated).
+/// Operates on single-channel data only; panics for multi-channel input.
+/// Dtype-generic: dispatches per element type.
+#[cfg(feature = "image_interop")]
+fn apply_dilate(buf: ViewBuffer, ksize: u32, iterations: u32) -> ViewBuffer {
+    let shape = buf.shape();
+    if !is_single_channel(shape) {
+        let channels = get_channel_count(shape);
+        panic!(
+            "Dilate requires single-channel input, but got {channels} channels (shape: {shape:?}). \
+             Consider using .grayscale() or .threshold() first."
+        );
+    }
+    let mut result = buf;
+    for _ in 0..iterations {
+        result = morph_minmax_pass(&result, ksize, MorphKind::Max);
+    }
+    result
+}
+
+/// Morphological gradient: dilate(input) − erode(input), clamped to valid range.
+///
+/// Produces an edge outline by computing the difference between dilation and
+/// erosion. Output dtype matches input.
+#[cfg(feature = "image_interop")]
+fn apply_morph_gradient(buf: ViewBuffer, ksize: u32) -> ViewBuffer {
+    let shape = buf.shape();
+    if !is_single_channel(shape) {
+        let channels = get_channel_count(shape);
+        panic!(
+            "MorphGradient requires single-channel input, but got {channels} channels (shape: {shape:?}). \
+             Consider using .grayscale() or .threshold() first."
+        );
+    }
+    let dilated = morph_minmax_pass(&buf, ksize, MorphKind::Max);
+    let eroded = morph_minmax_pass(&buf, ksize, MorphKind::Min);
+
+    morph_subtract(&dilated, &eroded)
+}
+
+#[cfg(feature = "image_interop")]
+#[derive(Clone, Copy)]
+enum MorphKind {
+    Min,
+    Max,
+}
+
+/// Single-pass min or max filter over a ksize×ksize rectangular structuring element.
+///
+/// Uses a separable approach (row pass then column pass) for efficiency.
+/// Border handling: replicate edge pixels.
+#[cfg(feature = "image_interop")]
+fn morph_minmax_pass(buf: &ViewBuffer, ksize: u32, kind: MorphKind) -> ViewBuffer {
+    if ksize <= 1 {
+        return buf.clone();
+    }
+    let dtype = buf.dtype();
+    match dtype {
+        DType::U8 => morph_minmax_typed::<u8>(buf, ksize, kind),
+        DType::I8 => morph_minmax_typed::<i8>(buf, ksize, kind),
+        DType::U16 => morph_minmax_typed::<u16>(buf, ksize, kind),
+        DType::I16 => morph_minmax_typed::<i16>(buf, ksize, kind),
+        DType::U32 => morph_minmax_typed::<u32>(buf, ksize, kind),
+        DType::I32 => morph_minmax_typed::<i32>(buf, ksize, kind),
+        DType::F32 => morph_minmax_typed::<f32>(buf, ksize, kind),
+        DType::F64 => morph_minmax_typed::<f64>(buf, ksize, kind),
+        DType::U64 => morph_minmax_typed::<u64>(buf, ksize, kind),
+        DType::I64 => morph_minmax_typed::<i64>(buf, ksize, kind),
+    }
+}
+
+/// Typed separable min/max filter: row pass then column pass.
+#[cfg(feature = "image_interop")]
+fn morph_minmax_typed<T>(buf: &ViewBuffer, ksize: u32, kind: MorphKind) -> ViewBuffer
+where
+    T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
+{
+    let contig = buf.to_contiguous();
+    let shape = contig.shape();
+    let h = shape[0];
+    let w = shape[1];
+    let radius = (ksize / 2) as i64;
+    let src: &[T] = contig.as_slice::<T>();
+
+    // Row pass
+    let mut row_out: Vec<T> = vec![T::default(); h * w];
+    for y in 0..h {
+        for x in 0..w {
+            let mut val = src[y * w + x];
+            for kx in -radius..=radius {
+                let sx = (x as i64 + kx).clamp(0, w as i64 - 1) as usize;
+                let candidate = src[y * w + sx];
+                val = match kind {
+                    MorphKind::Min => {
+                        if candidate < val {
+                            candidate
+                        } else {
+                            val
+                        }
+                    }
+                    MorphKind::Max => {
+                        if candidate > val {
+                            candidate
+                        } else {
+                            val
+                        }
+                    }
+                };
+            }
+            row_out[y * w + x] = val;
+        }
+    }
+
+    // Column pass
+    let mut col_out: Vec<T> = vec![T::default(); h * w];
+    for y in 0..h {
+        for x in 0..w {
+            let mut val = row_out[y * w + x];
+            for ky in -radius..=radius {
+                let sy = (y as i64 + ky).clamp(0, h as i64 - 1) as usize;
+                let candidate = row_out[sy * w + x];
+                val = match kind {
+                    MorphKind::Min => {
+                        if candidate < val {
+                            candidate
+                        } else {
+                            val
+                        }
+                    }
+                    MorphKind::Max => {
+                        if candidate > val {
+                            candidate
+                        } else {
+                            val
+                        }
+                    }
+                };
+            }
+            col_out[y * w + x] = val;
+        }
+    }
+
+    ViewBuffer::from_vec_with_shape(col_out, shape.to_vec())
+}
+
+/// Element-wise saturating subtraction: result = a − b, clamped to valid range.
+#[cfg(feature = "image_interop")]
+fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
+    let dtype = a.dtype();
+    let ca = a.to_contiguous();
+    let cb = b.to_contiguous();
+    let shape = ca.shape().to_vec();
+    let count = ca.layout.num_elements();
+
+    match dtype {
+        DType::U8 => {
+            let sa = unsafe { std::slice::from_raw_parts(ca.as_ptr::<u8>(), count) };
+            let sb = unsafe { std::slice::from_raw_parts(cb.as_ptr::<u8>(), count) };
+            let out: Vec<u8> = sa
+                .iter()
+                .zip(sb)
+                .map(|(&a, &b)| a.saturating_sub(b))
+                .collect();
+            ViewBuffer::from_vec_with_shape(out, shape)
+        }
+        DType::U16 => {
+            let sa = unsafe { std::slice::from_raw_parts(ca.as_ptr::<u16>(), count) };
+            let sb = unsafe { std::slice::from_raw_parts(cb.as_ptr::<u16>(), count) };
+            let out: Vec<u16> = sa
+                .iter()
+                .zip(sb)
+                .map(|(&a, &b)| a.saturating_sub(b))
+                .collect();
+            ViewBuffer::from_vec_with_shape(out, shape)
+        }
+        DType::F32 => {
+            let sa = unsafe { std::slice::from_raw_parts(ca.as_ptr::<f32>(), count) };
+            let sb = unsafe { std::slice::from_raw_parts(cb.as_ptr::<f32>(), count) };
+            let out: Vec<f32> = sa.iter().zip(sb).map(|(&a, &b)| (a - b).max(0.0)).collect();
+            ViewBuffer::from_vec_with_shape(out, shape)
+        }
+        DType::F64 => {
+            let sa = unsafe { std::slice::from_raw_parts(ca.as_ptr::<f64>(), count) };
+            let sb = unsafe { std::slice::from_raw_parts(cb.as_ptr::<f64>(), count) };
+            let out: Vec<f64> = sa.iter().zip(sb).map(|(&a, &b)| (a - b).max(0.0)).collect();
+            ViewBuffer::from_vec_with_shape(out, shape)
+        }
+        _ => {
+            // For other integer types, cast to f32, subtract, cast back
+            let fa = a.cast(DType::F32);
+            let fb = b.cast(DType::F32);
+            let result = morph_subtract(&fa, &fb);
+            result.cast(dtype)
+        }
+    }
 }
 
 // ============================================================

@@ -30,6 +30,23 @@ pub enum ImageOpKind {
     },
     /// Histogram equalization for contrast enhancement.
     HistogramEqualize,
+    /// Morphological erosion: output = local minimum over ksize×ksize neighborhood.
+    /// Requires single-channel input.
+    Erode {
+        ksize: u32,
+        iterations: u32,
+    },
+    /// Morphological dilation: output = local maximum over ksize×ksize neighborhood.
+    /// Requires single-channel input.
+    Dilate {
+        ksize: u32,
+        iterations: u32,
+    },
+    /// Morphological gradient: dilate − erode (edge outline).
+    /// Requires single-channel input.
+    MorphGradient {
+        ksize: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +75,9 @@ impl Op for ImageOp {
             ImageOpKind::Rotate { .. } => "Rotate",
             ImageOpKind::Canny { .. } => "Canny",
             ImageOpKind::HistogramEqualize => "HistogramEqualize",
+            ImageOpKind::Erode { .. } => "Erode",
+            ImageOpKind::Dilate { .. } => "Dilate",
+            ImageOpKind::MorphGradient { .. } => "MorphGradient",
         }
     }
 
@@ -114,6 +134,9 @@ impl Op for ImageOp {
                 }
             }
             ImageOpKind::HistogramEqualize => input_shape.to_vec(),
+            ImageOpKind::Erode { .. } => input_shape.to_vec(),
+            ImageOpKind::Dilate { .. } => input_shape.to_vec(),
+            ImageOpKind::MorphGradient { .. } => input_shape.to_vec(),
         }
     }
 
@@ -134,6 +157,9 @@ impl Op for ImageOp {
             ImageOpKind::Rotate { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::HistogramEqualize => MemoryEffect::RequiresContiguous,
+            ImageOpKind::Erode { .. } => MemoryEffect::RequiresContiguous,
+            ImageOpKind::Dilate { .. } => MemoryEffect::RequiresContiguous,
+            ImageOpKind::MorphGradient { .. } => MemoryEffect::RequiresContiguous,
         }
     }
 
@@ -157,6 +183,9 @@ impl Op for ImageOp {
             ImageOpKind::Rotate { .. } => None,
             ImageOpKind::Canny { .. } => None,
             ImageOpKind::HistogramEqualize => None,
+            ImageOpKind::Erode { .. } => None,
+            ImageOpKind::Dilate { .. } => None,
+            ImageOpKind::MorphGradient { .. } => None,
         }
     }
 
@@ -184,6 +213,10 @@ impl Op for ImageOp {
             ImageOpKind::Canny { .. } => None,
             // Histogram equalize works on U8 data
             ImageOpKind::HistogramEqualize => Some(DType::U8),
+            // Morphological ops work on native dtype (typically U8 binary masks)
+            ImageOpKind::Erode { .. } => None,
+            ImageOpKind::Dilate { .. } => None,
+            ImageOpKind::MorphGradient { .. } => None,
         }
     }
 
@@ -202,6 +235,10 @@ impl Op for ImageOp {
             ImageOpKind::Canny { .. } => OutputDTypeRule::Fixed(DType::U8),
             // Histogram equalize produces U8 output.
             ImageOpKind::HistogramEqualize => OutputDTypeRule::Fixed(DType::U8),
+            // Morphological ops preserve the input dtype.
+            ImageOpKind::Erode { .. } => OutputDTypeRule::PreserveInput,
+            ImageOpKind::Dilate { .. } => OutputDTypeRule::PreserveInput,
+            ImageOpKind::MorphGradient { .. } => OutputDTypeRule::PreserveInput,
         }
     }
 
@@ -228,6 +265,17 @@ impl Op for ImageOp {
 
             // Histogram equalize needs full histogram (CDF)
             ImageOpKind::HistogramEqualize => TilePolicy::Global,
+
+            // Morphological ops need local neighborhood
+            ImageOpKind::Erode { ksize, .. } => TilePolicy::LocalNeighborhood {
+                halo: (*ksize as usize) / 2,
+            },
+            ImageOpKind::Dilate { ksize, .. } => TilePolicy::LocalNeighborhood {
+                halo: (*ksize as usize) / 2,
+            },
+            ImageOpKind::MorphGradient { ksize } => TilePolicy::LocalNeighborhood {
+                halo: (*ksize as usize) / 2,
+            },
         }
     }
 }

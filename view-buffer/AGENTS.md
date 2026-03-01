@@ -14,7 +14,7 @@ While originally designed as an independent crate, it is currently **tightly cou
 - `ViewBuffer` — strided multi-dimensional array for images, masks, feature maps
 - Zero-copy view operations (transpose, flip, crop, reshape) via metadata changes only
 - Compute operations (scale, normalize, cast, clamp, relu, contrast, gamma, invert)
-- Image operations (resize, blur, grayscale, threshold, rotate, canny, histogram equalize)
+- Image operations (resize, blur, grayscale, threshold, rotate, canny, histogram equalize, erode, dilate, morphological gradient)
 - Color space conversions (RGB, BGR, HSV, LAB, YCbCr, Gray)
 - Spatial filtering (2D convolution with configurable border modes)
 - Geometry operations (contour extraction, rasterization, measures, pairwise matching)
@@ -36,7 +36,7 @@ src/
 ├── core/               # ViewBuffer, DType, Layout
 ├── ops/                # Operations
 │   ├── dto.rs          # ViewDto — serializable operation enum
-│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, etc.)
+│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, etc.)
 │   ├── color.rs        # ColorConvertOp, ColorSpace
 │   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
 │   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert)
@@ -97,7 +97,7 @@ pub enum ViewDto {
 |----------|-----------|-------------|
 | **View** | Yes | Transpose, reshape, flip, crop, channel_select — metadata only |
 | **Compute** | No | Element-wise ops (cast, scale, normalize, clamp, contrast, gamma, invert) — can be fused |
-| **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize — require materialization |
+| **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morph gradient — require materialization |
 | **Filter** | No | 2D convolution with `Replicate`/`Zero`/`Reflect` border modes — contiguous output, promotes to f32 |
 | **Color** | No | Color space conversions — route through f32 RGB internally. LAB uses D65/sRGB. HSV follows OpenCV (H=[0,180] for U8) |
 | **Binary** | No | Pixel-wise operations between two buffers |
@@ -129,7 +129,7 @@ Operations handle alpha via three strategies (aligned with the Python `AlphaMode
 |----------|-----------|----------|
 | **Passthrough** | resize, normalize, crop, flip, pad, etc. | All channels processed uniformly |
 | **Strip-Process-Restore** | blur, cvt_color, sobel, laplacian, sharpen | Alpha split off, op on color channels, alpha re-attached |
-| **Drop** | grayscale, canny, threshold | Alpha discarded, fixed output channels |
+| **Drop** | grayscale, canny, threshold, erode, dilate, morph_gradient | Alpha discarded, fixed output channels |
 
 Key implementation points:
 - `ops/color.rs` provides `split_alpha()` / `merge_alpha()` helpers used by `apply_color_convert()`
@@ -148,6 +148,8 @@ Key implementation points:
 - **Filter** (`ops/filter.rs`): `ConvolveOp` dispatched directly in graph executor (not via ViewExpr/ExecutionPlan), similar to Color.
 - **Canny** (`execution/runner.rs`): Fused pipeline (5x5 Gaussian → Sobel gradients → NMS → hysteresis). Outputs U8 binary mask (0/255). `TilePolicy::Global`.
 - **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `TilePolicy::Global`.
+- **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. Supports multiple iterations. `TilePolicy::LocalNeighborhood`.
+- **MorphGradient** (`execution/runner.rs`): Dilate − Erode (saturating subtract). Single-channel only. `TilePolicy::LocalNeighborhood`.
 - **label_reduce centroid fallback**: When `region_mode="interior"` finds no interior pixels for a contour, falls back to sampling at centroid. Prevents sub-pixel contours from scoring 0.
 
 ## Adding a New Operation

@@ -184,6 +184,18 @@ impl ViewExpr {
                     dtype: DType::U8,
                     node: ExprNode::Image(img, self.clone()),
                 }),
+                ImageOpKind::Erode { .. }
+                | ImageOpKind::Dilate { .. }
+                | ImageOpKind::MorphGradient { .. } => {
+                    let new_shape = img.infer_shape(&[&self.shape]);
+                    let new_strides = self.calc_strides(&img, &new_shape);
+                    Arc::new(Self {
+                        shape: new_shape,
+                        strides: new_strides,
+                        dtype: self.dtype,
+                        node: ExprNode::Image(img, self.clone()),
+                    })
+                }
             },
             ViewDto::PerceptualHash(op) => self.perceptual_hash(op),
             ViewDto::Materialize => {
@@ -634,6 +646,51 @@ impl ViewExpr {
             shape: new_shape,
             strides: new_strides,
             dtype: DType::U8,
+        })
+    }
+
+    /// Morphological erosion: local minimum over `ksize×ksize` neighborhood.
+    pub fn erode(self: &Arc<Self>, ksize: u32, iterations: u32) -> Arc<Self> {
+        let op = ImageOp {
+            kind: ImageOpKind::Erode { ksize, iterations },
+        };
+        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_strides = self.calc_strides(&op, &new_shape);
+        Arc::new(Self {
+            node: ExprNode::Image(op, self.clone()),
+            shape: new_shape,
+            strides: new_strides,
+            dtype: self.dtype,
+        })
+    }
+
+    /// Morphological dilation: local maximum over `ksize×ksize` neighborhood.
+    pub fn dilate(self: &Arc<Self>, ksize: u32, iterations: u32) -> Arc<Self> {
+        let op = ImageOp {
+            kind: ImageOpKind::Dilate { ksize, iterations },
+        };
+        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_strides = self.calc_strides(&op, &new_shape);
+        Arc::new(Self {
+            node: ExprNode::Image(op, self.clone()),
+            shape: new_shape,
+            strides: new_strides,
+            dtype: self.dtype,
+        })
+    }
+
+    /// Morphological gradient: dilate − erode (edge outline).
+    pub fn morph_gradient(self: &Arc<Self>, ksize: u32) -> Arc<Self> {
+        let op = ImageOp {
+            kind: ImageOpKind::MorphGradient { ksize },
+        };
+        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_strides = self.calc_strides(&op, &new_shape);
+        Arc::new(Self {
+            node: ExprNode::Image(op, self.clone()),
+            shape: new_shape,
+            strides: new_strides,
+            dtype: self.dtype,
         })
     }
 

@@ -42,6 +42,7 @@ pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale(
 pipe = Pipeline().source("image_bytes").channel_select(index=0)
 pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
 pipe = Pipeline().source("image_bytes").sobel(axis="x")
+pipe = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
 pipe = Pipeline().source("image_bytes", on_error="null")  # graceful error handling
 ```
 
@@ -100,7 +101,7 @@ The `AlphaMode` enum in `_types.py` declares each operation's alpha behavior:
 |------|------------------|------------|
 | `PASSTHROUGH` | Output = Input channels | resize, normalize, flip, crop, etc. |
 | `STRIP_PROCESS_RESTORE` | Output = op_color_ch + (1 if alpha) | blur, cvt_color, sobel, sharpen |
-| `DROP` | Output = op-specific fixed count | grayscale → 1, canny → 1 |
+| `DROP` | Output = op-specific fixed count | grayscale → 1, canny → 1, erode/dilate/morph_gradient (single-ch only) |
 | `NOT_APPLICABLE` | No channel change | reductions, geometry |
 
 Channel inference is implemented in `Pipeline._update_channels_from_contract()`, called at the end of `_update_shape_hints()`.

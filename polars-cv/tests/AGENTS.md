@@ -86,6 +86,7 @@ Compare polars-cv output against NumPy/OpenCV ground truth — these are the **c
 | `test_reductions_ref.py` | Reductions vs NumPy |
 | `test_phase1_ref.py` | Channel, intensity, padding ops vs NumPy/PIL |
 | `test_color_ref.py` | Color space conversions vs OpenCV/NumPy |
+| `test_morphology_ref.py` | Morphological ops (erode, dilate, open, close, gradient) vs OpenCV |
 
 Files with `_gaps` in the name (e.g., `test_binary_ops_gaps.py`) are regular tests despite the name — the gaps they tested have been filled.
 
