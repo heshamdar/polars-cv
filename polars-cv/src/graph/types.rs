@@ -427,32 +427,35 @@ impl UnifiedGraph {
                     };
                     let has_column_binding = self.column_bindings.contains_key(node_id);
                     let node_input: Option<NodeOutput> = if has_column_binding {
-                        let col_idx = self.column_bindings.get(node_id).copied().unwrap_or(0);
-                        if col_idx >= inputs.len() {
-                            return Err(format!(
-                                "Column index {col_idx} out of bounds for node '{node_id}'"
-                            ));
-                        }
-                        let input_series = &inputs[col_idx];
-                        let source_format = node.source.format.as_str();
-                        if source_format == "contour" {
-                            match input_series.get(row_idx) {
-                                Ok(value) if !value.is_null() => {
-                                    if let Some(ref shape_pipeline) = node.source.shape_pipeline {
-                                        let shape_node_id = shape_pipeline
-                                            .get("node_id")
-                                            .and_then(|v| v.as_str())
-                                            .ok_or_else(|| {
-                                                "shape_pipeline missing 'node_id'".to_string()
-                                            })?;
-                                        let shape_output = node_outputs
+                        let on_error_null = node.source.on_error == "null";
+                        let decode_result: Result<Option<NodeOutput>, String> = (|| {
+                            let col_idx = self.column_bindings.get(node_id).copied().unwrap_or(0);
+                            if col_idx >= inputs.len() {
+                                return Err(format!(
+                                    "Column index {col_idx} out of bounds for node '{node_id}'"
+                                ));
+                            }
+                            let input_series = &inputs[col_idx];
+                            let source_format = node.source.format.as_str();
+                            if source_format == "contour" {
+                                match input_series.get(row_idx) {
+                                    Ok(value) if !value.is_null() => {
+                                        if let Some(ref shape_pipeline) = node.source.shape_pipeline
+                                        {
+                                            let shape_node_id = shape_pipeline
+                                                .get("node_id")
+                                                .and_then(|v| v.as_str())
+                                                .ok_or_else(|| {
+                                                    "shape_pipeline missing 'node_id'".to_string()
+                                                })?;
+                                            let shape_output = node_outputs
                                                 .get(shape_node_id)
                                                 .ok_or_else(|| {
                                                     format!(
                                                         "Shape reference '{shape_node_id}' not found. Ensure the shape source is defined before this contour pipeline."
                                                     )
                                                 })?;
-                                        let shape_buffer = shape_output
+                                            let shape_buffer = shape_output
                                                 .as_buffer()
                                                 .ok_or_else(|| {
                                                     format!(
@@ -460,181 +463,183 @@ impl UnifiedGraph {
                                                         shape_output.domain()
                                                     )
                                                 })?;
-                                        let shape = shape_buffer.shape();
-                                        if shape.len() < 2 {
-                                            return Err(
+                                            let shape = shape_buffer.shape();
+                                            if shape.len() < 2 {
+                                                return Err(
                                                     format!(
                                                         "Shape buffer has invalid dimensions: expected at least 2D, got {}D",
                                                         shape.len()
                                                     ),
                                                 );
-                                        }
-                                        let height = shape[0] as u32;
-                                        let width = shape[1] as u32;
-                                        let fill_value = node.source.fill_value;
-                                        let background = node.source.background;
-                                        match decode_contour_source_with_dims(
-                                            &value, width, height, fill_value, background,
-                                        ) {
-                                            Ok(buf) => Some(NodeOutput::from_buffer(buf)),
-                                            Err(e) => {
-                                                return Err(format!("Contour decode error: {e}"))
                                             }
-                                        }
-                                    } else {
-                                        let first_output = self.outputs.values().next().unwrap();
-                                        let temp_spec = PipelineSpec {
-                                            source: node.source.clone(),
-                                            shape_hints: None,
-                                            ops: vec![],
-                                            sink: first_output.sink.clone(),
-                                        };
-                                        match decode_contour_source(
-                                            &value,
-                                            row_idx,
-                                            &temp_spec,
-                                            expr_columns,
-                                        ) {
-                                            Ok(buf) => Some(NodeOutput::from_buffer(buf)),
-                                            Err(e) => {
-                                                return Err(format!("Contour decode error: {e}"))
+                                            let height = shape[0] as u32;
+                                            let width = shape[1] as u32;
+                                            let fill_value = node.source.fill_value;
+                                            let background = node.source.background;
+                                            match decode_contour_source_with_dims(
+                                                &value, width, height, fill_value, background,
+                                            ) {
+                                                Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                                Err(e) => Err(format!("Contour decode error: {e}")),
+                                            }
+                                        } else {
+                                            let first_output =
+                                                self.outputs.values().next().unwrap();
+                                            let temp_spec = PipelineSpec {
+                                                source: node.source.clone(),
+                                                shape_hints: None,
+                                                ops: vec![],
+                                                sink: first_output.sink.clone(),
+                                            };
+                                            match decode_contour_source(
+                                                &value,
+                                                row_idx,
+                                                &temp_spec,
+                                                expr_columns,
+                                            ) {
+                                                Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                                Err(e) => Err(format!("Contour decode error: {e}")),
                                             }
                                         }
                                     }
+                                    _ => Ok(None),
                                 }
-                                _ => None,
-                            }
-                        // TODO: Add path allowlisting/sandboxing for file_path source.
-                        // Currently reads arbitrary local files without sanitization.
-                        // This is safe when data comes from trusted input only.
-                        } else if source_format == "file_path" {
-                            if input_series.dtype() == &DataType::Null {
-                                None
-                            } else {
-                                let input_ca = match input_series.str() {
-                                    Ok(ca) => ca,
-                                    Err(_) => {
-                                        return Err(
+                            // TODO: Add path allowlisting/sandboxing for file_path source.
+                            // Currently reads arbitrary local files without sanitization.
+                            // This is safe when data comes from trusted input only.
+                            } else if source_format == "file_path" {
+                                if input_series.dtype() == &DataType::Null {
+                                    Ok(None)
+                                } else {
+                                    let input_ca = match input_series.str() {
+                                        Ok(ca) => ca,
+                                        Err(_) => {
+                                            return Err(
                                                 format!(
                                                     "Expected String column for file_path source '{node_id}', got {:?}",
                                                     input_series.dtype()
                                                 ),
                                             );
-                                    }
-                                };
-                                match input_ca.get(row_idx) {
-                                    Some(path) => {
-                                        let bytes = if path.starts_with("s3://")
-                                            || path.starts_with("gs://")
-                                            || path.starts_with("az://")
-                                            || path.starts_with("abfs://")
-                                            || path.starts_with("abfss://")
-                                            || path.starts_with("http://")
-                                            || path.starts_with("https://")
-                                        {
-                                            match crate::cloud::read_file(path, None) {
-                                                Ok(b) => b,
-                                                Err(e) => {
-                                                    return Err(format!(
+                                        }
+                                    };
+                                    match input_ca.get(row_idx) {
+                                        Some(path) => {
+                                            let bytes =
+                                                if path.starts_with("s3://")
+                                                    || path.starts_with("gs://")
+                                                    || path.starts_with("az://")
+                                                    || path.starts_with("abfs://")
+                                                    || path.starts_with("abfss://")
+                                                    || path.starts_with("http://")
+                                                    || path.starts_with("https://")
+                                                {
+                                                    match crate::cloud::read_file(path, None) {
+                                                        Ok(b) => b,
+                                                        Err(e) => {
+                                                            return Err(format!(
                                                         "Failed to read remote file '{path}': {e}"
                                                     ));
-                                                }
-                                            }
-                                        } else {
-                                            std::fs::read(path).map_err(|e| {
+                                                        }
+                                                    }
+                                                } else {
+                                                    std::fs::read(path).map_err(|e| {
                                                 format!("Failed to read local file '{path}': {e}")
                                             })?
-                                        };
-                                        let first_output = self.outputs.values().next().unwrap();
-                                        let mut source_spec = node.source.clone();
-                                        source_spec.format = "image_bytes".to_string();
-                                        let temp_spec = PipelineSpec {
-                                            source: source_spec,
-                                            shape_hints: None,
-                                            ops: vec![],
-                                            sink: first_output.sink.clone(),
-                                        };
-                                        match decode_source(&bytes, &temp_spec) {
-                                            Ok(buf) => Some(NodeOutput::from_buffer(buf)),
-                                            Err(e) => {
-                                                return Err(format!(
+                                                };
+                                            let first_output =
+                                                self.outputs.values().next().unwrap();
+                                            let mut source_spec = node.source.clone();
+                                            source_spec.format = "image_bytes".to_string();
+                                            let temp_spec = PipelineSpec {
+                                                source: source_spec,
+                                                shape_hints: None,
+                                                ops: vec![],
+                                                sink: first_output.sink.clone(),
+                                            };
+                                            match decode_source(&bytes, &temp_spec) {
+                                                Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                                Err(e) => Err(format!(
                                                     "Decode error for file '{path}': {e}"
-                                                ));
+                                                )),
                                             }
                                         }
-                                    }
-                                    None => None,
-                                }
-                            }
-                        } else if node.source.format == "list" || node.source.format == "array" {
-                            if input_series.dtype() == &DataType::Null {
-                                None
-                            } else {
-                                let dtype_opt = node.source.dtype.as_deref();
-                                let require_contiguous = node.source.require_contiguous;
-                                match decode_list_or_array_source(
-                                    input_series,
-                                    row_idx,
-                                    dtype_opt,
-                                    require_contiguous,
-                                ) {
-                                    Ok(Some(buf)) => Some(NodeOutput::from_buffer(buf)),
-                                    Ok(None) => None,
-                                    Err(e) => {
-                                        return Err(format!("List/Array decode error: {e}"));
+                                        None => Ok(None),
                                     }
                                 }
-                            }
-                        } else if input_series.dtype() == &DataType::Null {
-                            None
-                        } else {
-                            let input_ca = match input_series.binary() {
-                                Ok(ca) => ca,
-                                Err(_) => {
-                                    return Err(format!(
-                                        "Expected Binary column for node '{node_id}', got {:?}",
-                                        input_series.dtype()
-                                    ));
-                                }
-                            };
-                            let source_format = node.source.format.as_str();
-                            if source_format == "blob" || source_format == "raw" {
-                                if let Some((buffer, offset, len)) =
-                                    get_binary_row_buffer(input_ca, row_idx)
-                                {
-                                    match decode_binary_zero_copy(
-                                        buffer,
-                                        offset,
-                                        len,
-                                        source_format,
-                                        node.source.dtype.as_deref(),
+                            } else if node.source.format == "list" || node.source.format == "array"
+                            {
+                                if input_series.dtype() == &DataType::Null {
+                                    Ok(None)
+                                } else {
+                                    let dtype_opt = node.source.dtype.as_deref();
+                                    let require_contiguous = node.source.require_contiguous;
+                                    match decode_list_or_array_source(
+                                        input_series,
+                                        row_idx,
+                                        dtype_opt,
+                                        require_contiguous,
                                     ) {
-                                        Ok(buf) => Some(NodeOutput::from_buffer(buf)),
-                                        Err(e) => {
-                                            return Err(format!("Zero-copy decode error: {e}"))
+                                        Ok(Some(buf)) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                        Ok(None) => Ok(None),
+                                        Err(e) => Err(format!("List/Array decode error: {e}")),
+                                    }
+                                }
+                            } else if input_series.dtype() == &DataType::Null {
+                                Ok(None)
+                            } else {
+                                let input_ca = match input_series.binary() {
+                                    Ok(ca) => ca,
+                                    Err(_) => {
+                                        return Err(format!(
+                                            "Expected Binary column for node '{node_id}', got {:?}",
+                                            input_series.dtype()
+                                        ));
+                                    }
+                                };
+                                let source_format = node.source.format.as_str();
+                                if source_format == "blob" || source_format == "raw" {
+                                    if let Some((buffer, offset, len)) =
+                                        get_binary_row_buffer(input_ca, row_idx)
+                                    {
+                                        match decode_binary_zero_copy(
+                                            buffer,
+                                            offset,
+                                            len,
+                                            source_format,
+                                            node.source.dtype.as_deref(),
+                                        ) {
+                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                            Err(e) => Err(format!("Zero-copy decode error: {e}")),
                                         }
+                                    } else {
+                                        Ok(None)
                                     }
                                 } else {
-                                    None
-                                }
-                            } else {
-                                match input_ca.get(row_idx) {
-                                    Some(bytes) => {
-                                        let first_output = self.outputs.values().next().unwrap();
-                                        let temp_spec = PipelineSpec {
-                                            source: node.source.clone(),
-                                            shape_hints: None,
-                                            ops: vec![],
-                                            sink: first_output.sink.clone(),
-                                        };
-                                        match decode_source(bytes, &temp_spec) {
-                                            Ok(buf) => Some(NodeOutput::from_buffer(buf)),
-                                            Err(e) => return Err(format!("Decode error: {e}")),
+                                    match input_ca.get(row_idx) {
+                                        Some(bytes) => {
+                                            let first_output =
+                                                self.outputs.values().next().unwrap();
+                                            let temp_spec = PipelineSpec {
+                                                source: node.source.clone(),
+                                                shape_hints: None,
+                                                ops: vec![],
+                                                sink: first_output.sink.clone(),
+                                            };
+                                            match decode_source(bytes, &temp_spec) {
+                                                Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                                Err(e) => Err(format!("Decode error: {e}")),
+                                            }
                                         }
+                                        None => Ok(None),
                                     }
-                                    None => None,
                                 }
                             }
+                        })(
+                        );
+                        match decode_result {
+                            Ok(output) => output,
+                            Err(e) if on_error_null => None,
+                            Err(e) => return Err(e),
                         }
                     } else {
                         let upstream_id = &node.upstream[0];
@@ -1159,6 +1164,20 @@ impl UnifiedGraph {
                                             )
                                         })?;
                                     let result = apply_color_convert(current_buf, color_op);
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
+                                ViewDto::Filter(ref convolve_op) => {
+                                    use view_buffer::ops::filter::apply_convolve2d;
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "Convolve2D requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    let result = apply_convolve2d(current_buf, convolve_op);
                                     current_output = NodeOutput::from_buffer(result);
                                 }
                                 ViewDto::Materialize => {

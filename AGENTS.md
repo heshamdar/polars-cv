@@ -222,9 +222,6 @@ dataset generator used by `06_detection_metrics.py`. It creates one coherent
 dataset consumed by contour, bbox, and pre-matched metric paths, with CLI
 controls for both data-generation difficulty and matcher thresholds.
 
-### Test File Naming
-
-Several test files have `_gaps` in their name (e.g., `test_binary_ops_gaps.py`, `test_resize_gaps.py`). These were named when they covered gaps in functionality. The gaps have since been filled, making the naming misleading. Consider renaming.
 
 ### Outer tests/ Directory
 
@@ -282,6 +279,37 @@ Color space conversion operations added across all layers (view-buffer, polars-c
 
 Reference tests in `tests/reference/test_color_ref.py` validate all conversions against OpenCV, NumPy, and known formulas (round-trip, edge cases, cross-conversion chains).
 
+### Phase 3: Convolution, Edge Detection, Histogram Equalization (Implemented)
+
+Spatial filtering and edge detection operations added across all layers (view-buffer, polars-cv Rust plugin, Python API):
+
+**Convolution:**
+- `convolve2d(kernel, ksize, normalize, border)` — generic 2D convolution with arbitrary kernels. Supports `BorderMode::Replicate`, `Zero`, and `Reflect`. When `normalize=True`, output is divided by the sum of absolute kernel values.
+- `ViewDto::Filter(ConvolveOp)` in view-buffer; executed directly in the graph executor (similar to `ViewDto::Color`), not via `ViewExpr`.
+
+**Convenience filters (Python-only, delegate to `convolve2d`):**
+- `sobel(axis, ksize)` — Sobel edge detection (x or y axis, 3×3 or 5×5).
+- `laplacian(ksize)` — 4-neighbor Laplacian (`[0,1,0,1,-4,1,0,1,0]` for ksize=3).
+- `sharpen(strength)` — unsharp mask kernel `[-s, -s, -s, -s, 1+8s, -s, -s, -s, -s]`. Uses `normalize=False` since the kernel already sums to 1.
+
+**Edge detection:**
+- `canny(low_threshold, high_threshold)` — fused Canny edge detector (Gaussian blur → Sobel gradients → non-maximum suppression → hysteresis thresholding). Implemented as `ImageOpKind::Canny` in view-buffer, executed in `apply_image_inner`. Outputs U8 binary mask (0/255).
+
+**Histogram equalization:**
+- `equalize_histogram()` — classic histogram equalization via CDF mapping. Implemented as `ImageOpKind::HistogramEqualize`. Outputs U8.
+
+**Implementation details:**
+- `ConvolveOp` implements the `Op` trait with `MemoryEffect::RequiresContiguous`, `OutputDTypeRule::PromoteToFloat`, `TilePolicy::LocalNeighborhood { halo }`.
+- Canny and HistogramEqualize use `TilePolicy::Global` and `OutputDTypeRule::Fixed(U8)`.
+- `view-buffer/src/ops/filter.rs` contains the convolution engine (`apply_convolve2d`, `sample_pixel`, `reflect_index`).
+- `view-buffer/src/execution/runner.rs` contains `apply_canny` (with `gaussian_blur_5x5`, `sobel_gradients` helpers) and `apply_histogram_equalize`.
+- `polars-cv/src/execute.rs` maps `"convolve2d"`, `"canny"`, `"equalize_histogram"` op names to their respective `ViewDto` variants.
+- `polars-cv/src/graph/types.rs` handles `ViewDto::Filter` directly in the graph execution loop.
+- Python `OPERATION_CONTRACTS`: convolution ops use `PROMOTE_TO_FLOAT`/`PRESERVE`; canny and equalize_histogram use `FIXED_U8`/`PRESERVE`.
+- `_update_shape_hints` sets channels to 1 for `canny` (similar to `grayscale`).
+
+Reference tests in `tests/reference/test_phase3_ref.py` validate all operations against OpenCV and NumPy ground truth.
+
 ### Detection Metric Fixes (Applied)
 
 Several correctness fixes have been applied to the detection metrics:
@@ -297,3 +325,31 @@ Several correctness fixes have been applied to the detection metrics:
 - **Entity-level bootstrap**: `bootstrap_ci(sample_col="case_id")` samples at entity level instead of image level, expanding back to image IDs.
 - **FROC cumulative-sum curve**: `froc_curve()` replaced the O(images × thresholds) dense cross-join grid with a cumulative-sum approach (matching LROC). Memory reduced from ~8 GB to ~10 MB, curve construction from ~15s to <1s, and bootstrap reconstruction from ~12s/iter to <0.1s/iter. `_curve_from_dense()`, `_derive_thresholds()`, `weighted_curve()`, and the `per_image_threshold` field were removed. `FROCResult._reconstruct()` now re-derives curves via `_curve_from_detections()`.
 - **NumPy removal**: The metrics module is now fully Polars-native with zero NumPy dependency. AUC uses `pl.Series.diff()`/`shift()`, interpolation uses `search_sorted()`, Mann-Whitney uses `over("score")` for rank averaging, bootstrap uses `pl.Series.sample()` and `pl.Series.quantile()`, and monotone-envelope AP uses `reverse().cum_max().reverse()`.
+
+### Daft-Inspired Features (Implemented)
+
+Three features inspired by Daft's image API, filling gaps in polars-cv's expression-level capabilities and production resilience.
+
+**Expression-level image metadata (header-only):**
+- `pl.col("img").cv.width()` → UInt32 — image width from header, no full decode
+- `pl.col("img").cv.height()` → UInt32 — image height from header
+- `pl.col("img").cv.channels()` → UInt32 — channel count from header
+- `pl.col("img").cv.image_dtype()` → String — element dtype name (e.g. `"uint8"`, `"float32"`)
+- Supports encoded images (PNG, JPEG, WebP, TIFF, BMP, GIF) via the `image` crate's `ImageDecoder` trait, and VIEW protocol blobs via direct header parsing. Null/unrecognised inputs produce null output.
+- Implemented in `polars-cv/src/image_metadata.rs` as four `#[polars_expr]` functions, registered in `lib.rs`. Python methods added to `CvNamespace` in `expressions.py`.
+- Tests in `polars-cv/tests/test_image_metadata.py`.
+
+**Graceful error handling (`on_error`):**
+- `Pipeline().source("image_bytes", on_error="null")` — corrupt/undecodable images produce null output rows instead of crashing the entire batch.
+- Default `on_error="raise"` preserves existing behaviour (backwards compatible).
+- `on_error` field added to both Python `SourceSpec` (`_types.py`) and Rust `SourceSpec` (`pipeline.rs`). Serialized to JSON only when non-default.
+- Rust graph execution loop (`graph/types.rs`) wraps the source decode block in an inner closure; when `on_error=="null"`, decode errors produce `None` (null row) instead of propagating. Downstream null propagation handles the rest.
+- Tests in `polars-cv/tests/test_on_error.py`.
+
+**Notebook image display (`show_images`):**
+- `show_images(df, "img")` — renders images from Binary columns directly in Jupyter notebooks using `IPython.display.HTML` with base64-encoded `<img>` tags.
+- Auto-detects format (PNG, JPEG, WebP, GIF, TIFF, BMP magic bytes, VIEW protocol header). VIEW blobs and numpy-sink structs are converted to PNG before display.
+- Outside notebooks, prints a text summary (format, byte size).
+- Handles null rows (grey placeholder), unknown formats (red placeholder), and `max_rows`/`max_width` parameters.
+- Implemented in `polars-cv/python/polars_cv/display.py`, exported from `__init__.py`.
+- Tests in `polars-cv/tests/test_display.py`.

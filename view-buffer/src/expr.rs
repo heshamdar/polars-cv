@@ -172,6 +172,18 @@ impl ViewExpr {
                         node: ExprNode::Image(img, self.clone()),
                     })
                 }
+                ImageOpKind::Canny { .. } => Arc::new(Self {
+                    shape: img.infer_shape(&[&self.shape]),
+                    strides: None,
+                    dtype: DType::U8,
+                    node: ExprNode::Image(img, self.clone()),
+                }),
+                ImageOpKind::HistogramEqualize => Arc::new(Self {
+                    shape: img.infer_shape(&[&self.shape]),
+                    strides: None,
+                    dtype: DType::U8,
+                    node: ExprNode::Image(img, self.clone()),
+                }),
             },
             ViewDto::PerceptualHash(op) => self.perceptual_hash(op),
             ViewDto::Materialize => {
@@ -249,6 +261,12 @@ impl ViewExpr {
             ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => {
                 panic!(
                     "Channel merge/swap operations cannot be applied via ViewExpr. \
+                     Use graph-level execution."
+                )
+            }
+            ViewDto::Filter(_) => {
+                panic!(
+                    "Filter (convolution) operations cannot be applied via ViewExpr. \
                      Use graph-level execution."
                 )
             }

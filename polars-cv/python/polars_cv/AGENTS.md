@@ -20,12 +20,13 @@ This is the **user-facing Python layer**. It is responsible for:
 
 | File | Responsibility | Lines |
 |------|---------------|-------|
-| `__init__.py` | Public API surface, `numpy_from_struct`, mask/hash comparison helpers, tiling config re-export | ~430 |
+| `__init__.py` | Public API surface, `numpy_from_struct`, `show_images`, mask/hash comparison helpers, tiling config re-export | ~480 |
 | `pipeline.py` | `Pipeline` builder — source + operations, domain tracking, dtype tracking, shape inference | ~2500 |
 | `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops | ~900 |
 | `metrics/` | Detection metrics — matchers, DetectionTable, metric functions, bootstrap CI, AUC helpers — see [`metrics/AGENTS.md`](metrics/AGENTS.md) | ~1500 |
-| `expressions.py` | `CvNamespace` (`.cv.pipe()` only) | ~80 |
-| `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `SourceFormat`, `SinkFormat`, `DType`, `ColorSpace`, `OPERATION_CONTRACTS` | ~850 |
+| `display.py` | `show_images()` — notebook image rendering, format detection, VIEW/numpy→PNG conversion | ~300 |
+| `expressions.py` | `CvNamespace` — `.cv.pipe()`, `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()` | ~140 |
+| `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec` (with `on_error`), `SinkSpec`, `SourceFormat`, `SinkFormat`, `DType`, `ColorSpace`, `OPERATION_CONTRACTS` | ~880 |
 | `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE optimization, `register_plugin_function` call | ~680 |
 | `_graph_viz.py` | Graph visualization (networkx/graphviz) | ~200 |
 | `geometry/` | Point and contour namespaces, schemas, validation — see [`geometry/AGENTS.md`](geometry/AGENTS.md) |
@@ -56,6 +57,14 @@ pipe = Pipeline().source("image_bytes").to_hsv()                       # conveni
 pipe = Pipeline().source("image_bytes").to_lab()                      # convenience: RGB -> LAB (promotes to f32)
 pipe = Pipeline().source("image_bytes").to_bgr()                      # convenience: RGB -> BGR
 pipe = Pipeline().source("image_bytes").to_ycbcr()                    # convenience: RGB -> YCbCr
+
+# Convolution and edge detection (Phase 3)
+pipe = Pipeline().source("image_bytes").convolve2d(kernel=[...], ksize=3) # generic 2D convolution
+pipe = Pipeline().source("image_bytes").sobel(axis="x")                # Sobel edge detection
+pipe = Pipeline().source("image_bytes").laplacian()                    # 4-neighbor Laplacian
+pipe = Pipeline().source("image_bytes").sharpen(strength=1.0)          # unsharp-mask sharpening
+pipe = Pipeline().source("image_bytes").grayscale().canny(50.0, 150.0) # Canny edge detection -> U8
+pipe = Pipeline().source("image_bytes").grayscale().equalize_histogram() # histogram equalization -> U8
 ```
 
 Key internal state tracked on each Pipeline:

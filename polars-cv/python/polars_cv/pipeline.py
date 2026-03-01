@@ -405,7 +405,7 @@ class Pipeline:
             # Both dimensions are computed at runtime.
             self._shape_hints.height = None
             self._shape_hints.width = None
-        elif op_name == "grayscale":
+        elif op_name in ("grayscale", "canny"):
             self._shape_hints.channels = ParamValue(is_expr=False, value=1)
         elif op_name == "cvt_color":
             to_space = params.get("to_space")
@@ -516,6 +516,8 @@ class Pipeline:
         cloud_options: "CloudOptions | dict[str, Any] | None" = None,
         # Contiguity option for list/array sources
         require_contiguous: bool = False,
+        # Error handling for source decoding
+        on_error: str = "raise",
     ) -> "Pipeline":
         """
         Define the input source format.
@@ -555,6 +557,11 @@ class Pipeline:
             background: Value for pixels outside contour (default 0).
             cloud_options: Credentials for cloud storage (S3, GCS, Azure).
             require_contiguous: For "list"/"array", whether to require rectangular data.
+            on_error: Error handling strategy for source decoding.
+                - ``"raise"`` (default): propagate decode errors (fails the
+                  entire batch).
+                - ``"null"``: treat decode errors as null output for that row,
+                  allowing the rest of the batch to succeed.
 
         Example:
             ```python
@@ -569,6 +576,10 @@ class Pipeline:
             >>> # Assert dtype for list sink (cast if needed at runtime)
             >>> pipe = Pipeline().source("image_bytes", dtype="f32").resize(224, 224)
             >>> expr = pl.col("img").cv.pipe(pipe).sink("list")
+            >>>
+            >>> # Gracefully handle corrupt images as null
+            >>> pipe = Pipeline().source("image_bytes", on_error="null").resize(224, 224)
+            >>> expr = pl.col("img").cv.pipe(pipe).sink("png")
             ```
         """
         from polars_cv.lazy import LazyPipelineExpr
@@ -580,6 +591,10 @@ class Pipeline:
             valid = [f.value for f in SourceFormat]
             msg = f"Invalid source format '{format}'. Valid: {valid}"
             raise ValueError(msg) from e
+
+        if on_error not in ("raise", "null"):
+            msg = f"on_error must be 'raise' or 'null', got '{on_error}'"
+            raise ValueError(msg)
 
         dtype_enum = None
         if dtype is not None:
@@ -646,6 +661,7 @@ class Pipeline:
                 fill_value=fill_value,
                 background=background,
                 shape_pipeline=shape_pipeline_dict,
+                on_error=on_error,
             )
         else:
             # Handle cloud_options for file_path format
@@ -676,6 +692,7 @@ class Pipeline:
                 dtype=dtype_enum,
                 cloud_options=cloud_opts,
                 require_contiguous=require_contiguous,
+                on_error=on_error,
             )
             # Set dtype and ndim based on source format
             if fmt == SourceFormat.RAW:
@@ -1328,6 +1345,216 @@ class Pipeline:
             Self for chaining.
         """
         return self.cvt_color("rgb", "ycbcr")
+
+    # --- Convolution / Filtering ---
+
+    def convolve2d(
+        self,
+        kernel: list[float],
+        ksize: int,
+        *,
+        normalize: bool = False,
+        border: str = "replicate",
+    ) -> "Pipeline":
+        """
+        Apply generic 2D convolution with an arbitrary kernel.
+
+        Domain: buffer → buffer
+
+        Args:
+            kernel: Flattened kernel values (row-major, ``ksize × ksize``).
+            ksize: Kernel dimension (must be odd; kernel is ``ksize × ksize``).
+            normalize: If True, divide output by the sum of absolute kernel values.
+            border: Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> edge = Pipeline().source("image_bytes").convolve2d(
+            ...     kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],
+            ...     ksize=3,
+            ... )
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "convolve2d")
+        if ksize % 2 == 0:
+            msg = f"convolve2d ksize must be odd, got {ksize}"
+            raise ValueError(msg)
+        if len(kernel) != ksize * ksize:
+            msg = f"kernel length {len(kernel)} doesn't match ksize²={ksize * ksize}"
+            raise ValueError(msg)
+        if border not in ("replicate", "zero", "reflect"):
+            msg = f"Unknown border mode: {border!r}. Use 'replicate', 'zero', or 'reflect'."
+            raise ValueError(msg)
+
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="convolve2d",
+                params={
+                    "kernel": ParamValue(is_expr=False, value=kernel),
+                    "ksize": ParamValue(is_expr=False, value=ksize),
+                    "normalize": ParamValue(is_expr=False, value=normalize),
+                    "border": ParamValue(is_expr=False, value=border),
+                },
+            )
+        )
+        new._update_output_dtype("convolve2d")
+        return new
+
+    def sobel(self, *, axis: str = "x", ksize: int = 3) -> "Pipeline":
+        """
+        Sobel gradient operator.
+
+        Convenience method that delegates to :meth:`convolve2d` with standard
+        Sobel kernels.
+
+        Domain: buffer → buffer
+
+        Args:
+            axis: Gradient direction — ``"x"`` (horizontal) or ``"y"`` (vertical).
+            ksize: Kernel size (currently only 3 is supported).
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> gx = Pipeline().source("image_bytes").grayscale().sobel(axis="x")
+            ```
+        """
+        if ksize != 3:
+            msg = f"Only ksize=3 is currently supported for Sobel, got {ksize}"
+            raise ValueError(msg)
+
+        sobel_x_3 = [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0]
+        sobel_y_3 = [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0]
+        kernel = sobel_x_3 if axis == "x" else sobel_y_3
+        return self.convolve2d(kernel, ksize, normalize=False)
+
+    def laplacian(self, *, ksize: int = 3) -> "Pipeline":
+        """
+        Laplacian second-derivative operator.
+
+        Convenience method that delegates to :meth:`convolve2d` with a standard
+        Laplacian kernel.
+
+        Domain: buffer → buffer
+
+        Args:
+            ksize: Kernel size (currently only 3 is supported).
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> lap = Pipeline().source("image_bytes").grayscale().laplacian()
+            ```
+        """
+        if ksize != 3:
+            msg = f"Only ksize=3 is currently supported for Laplacian, got {ksize}"
+            raise ValueError(msg)
+
+        laplacian_3 = [0.0, 1.0, 0.0, 1.0, -4.0, 1.0, 0.0, 1.0, 0.0]
+        return self.convolve2d(laplacian_3, ksize, normalize=False)
+
+    def sharpen(self, *, strength: float = 1.0) -> "Pipeline":
+        """
+        Sharpen using an unsharp-mask-style kernel.
+
+        The kernel sum is 1 (brightness-preserving) with ``strength`` controlling
+        how aggressively edges are enhanced. ``strength=0`` produces the
+        identity; higher values increase edge emphasis.
+
+        Domain: buffer → buffer
+
+        Args:
+            strength: Sharpening strength (default 1.0).
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> sharp = Pipeline().source("image_bytes").sharpen(strength=1.5)
+            ```
+        """
+        s = strength
+        k = [-s, -s, -s, -s, 1.0 + 8.0 * s, -s, -s, -s, -s]
+        return self.convolve2d(k, 3, normalize=False)
+
+    # --- Edge Detection ---
+
+    def canny(
+        self,
+        *,
+        low_threshold: FloatOrExpr = 50.0,
+        high_threshold: FloatOrExpr = 150.0,
+    ) -> "Pipeline":
+        """
+        Canny edge detection.
+
+        Applies Gaussian blur, computes Sobel gradients, performs non-maximum
+        suppression, and applies double-threshold hysteresis. Output is a U8
+        binary edge map (0 or 255).
+
+        Domain: buffer → buffer
+
+        Args:
+            low_threshold: Lower hysteresis threshold.
+            high_threshold: Upper hysteresis threshold.
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> edges = Pipeline().source("image_bytes").canny(low_threshold=50, high_threshold=150)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "canny")
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="canny",
+                params={
+                    "low_threshold": new._track_expr(low_threshold),
+                    "high_threshold": new._track_expr(high_threshold),
+                },
+            )
+        )
+        new._update_output_dtype("canny")
+        new._update_shape_hints("canny", {})
+        return new
+
+    # --- Histogram Equalization ---
+
+    def equalize_histogram(self) -> "Pipeline":
+        """
+        Apply histogram equalization for contrast enhancement.
+
+        Computes the cumulative histogram and maps each pixel through the
+        normalized CDF. Operates per-channel on multi-channel images.
+        Output is U8.
+
+        Domain: buffer → buffer
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> eq = Pipeline().source("image_bytes").grayscale().equalize_histogram()
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "equalize_histogram")
+        new = self._clone()
+        new._ops.append(OpSpec(op="equalize_histogram", params={}))
+        new._update_output_dtype("equalize_histogram")
+        return new
 
     # --- Image Operations ---
 

@@ -458,6 +458,15 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
     # --- Color space conversion ---
     # Most conversions preserve dtype; LAB promotes to f32 (overridden by param inspection).
     "cvt_color": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # --- Convolution / filtering ---
+    "convolve2d": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    "sobel": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    "laplacian": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    "sharpen": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    # --- Edge detection ---
+    "canny": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE),
+    # --- Histogram equalization ---
+    "equalize_histogram": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE),
 }
 
 
@@ -661,6 +670,10 @@ class SourceSpec:
     # When True, requires data to be contiguous for zero-copy; errors on jagged data
     # When False (default), allows jagged data with copy-based flattening
     require_contiguous: bool = False
+    # Error handling for source decoding:
+    #   "raise" (default): propagate decode errors (fails the entire batch)
+    #   "null": treat decode errors as null output for that row
+    on_error: str = "raise"
 
     def __eq__(self, other: object) -> bool:
         """Compare two SourceSpecs for equality."""
@@ -676,6 +689,7 @@ class SourceSpec:
             and self.shape_pipeline == other.shape_pipeline
             and self.cloud_options == other.cloud_options
             and self.require_contiguous == other.require_contiguous
+            and self.on_error == other.on_error
         )
 
     def __hash__(self) -> int:
@@ -691,6 +705,7 @@ class SourceSpec:
                 str(self.shape_pipeline) if self.shape_pipeline else None,
                 str(self.cloud_options) if self.cloud_options else None,
                 self.require_contiguous,
+                self.on_error,
             )
         )
 
@@ -712,6 +727,8 @@ class SourceSpec:
         # Include require_contiguous for list/array sources
         if self.format in (SourceFormat.LIST, SourceFormat.ARRAY):
             result["require_contiguous"] = self.require_contiguous
+        if self.on_error != "raise":
+            result["on_error"] = self.on_error
         return result
 
 

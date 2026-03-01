@@ -79,6 +79,9 @@ Test end-to-end execution through the Rust plugin.
 | `test_precision_recall.py` | PR curve, AP, mAP, precision/recall/f1 at threshold, confusion |
 | `test_bbox_matching.py` | Rust bbox_pairwise_iou and bbox_match_detections |
 | `test_bootstrap_vectorized.py` | Sequential and vectorized bootstrap, BootstrapResult |
+| `test_image_metadata.py` | Header-only metadata extraction (width, height, channels, dtype) for PNG/JPEG/WebP, VIEW blobs, nulls, mixed formats |
+| `test_on_error.py` | `on_error="null"` graceful error handling for source decoding (corrupt bytes, bad paths, mixed rows) |
+| `test_display.py` | `show_images()` display utility — format detection, conversion, text fallback, null handling |
 
 ### Reference Tests (`tests/reference/`)
 

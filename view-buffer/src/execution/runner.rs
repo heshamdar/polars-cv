@@ -1375,6 +1375,11 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             filter,
         } => resize_strided(work_buf, width, height, filter),
         ImageOpKind::Rotate { angle, expand } => rotate_arbitrary(work_buf, angle, expand),
+        ImageOpKind::Canny {
+            low_threshold,
+            high_threshold,
+        } => apply_canny(work_buf, low_threshold, high_threshold),
+        ImageOpKind::HistogramEqualize => apply_histogram_equalize(work_buf),
         ImageOpKind::Blur { sigma } => {
             let contig_buf = if work_buf.is_compatible_with(ExternalLayout::ImageCrate)
                 && work_buf.layout.is_contiguous()
@@ -1412,6 +1417,247 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
 #[cfg(not(feature = "image_interop"))]
 pub fn apply_image(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
     panic!("Image operations require the 'image_interop' feature");
+}
+
+// ============================================================
+// Canny Edge Detection
+// ============================================================
+
+/// Canny edge detection: Gaussian blur → Sobel gradients → NMS → double-threshold hysteresis.
+///
+/// Operates on a single-channel image. For multi-channel input, converts to
+/// grayscale first. Output is always U8 (0 or 255).
+#[cfg(feature = "image_interop")]
+fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> ViewBuffer {
+    let shape = buf.shape();
+    let channels = shape.get(2).copied().unwrap_or(1);
+
+    // Convert to single-channel grayscale f32
+    let gray = if channels > 1 {
+        let gs = grayscale_strided(buf);
+        if gs.dtype() != DType::F32 {
+            gs.cast(DType::F32)
+        } else {
+            gs
+        }
+    } else if buf.dtype() != DType::F32 {
+        buf.cast(DType::F32)
+    } else {
+        buf.clone()
+    };
+    let contig = gray.to_contiguous();
+    let gray_shape = contig.shape();
+    let gh = gray_shape[0];
+    let gw = gray_shape[1];
+    let count = gh * gw;
+    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+
+    // Step 1: Gaussian blur (5×5, sigma ≈ 1.4)
+    let blurred = gaussian_blur_5x5(src, gh, gw);
+
+    // Step 2: Sobel gradients
+    let (gx, gy) = sobel_gradients(&blurred, gh, gw);
+
+    // Step 3: Magnitude and direction
+    let mut magnitude = vec![0.0f32; count];
+    let mut direction = vec![0u8; count]; // quantized to 4 directions (0,1,2,3)
+    for i in 0..count {
+        magnitude[i] = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt();
+        let angle = gy[i].atan2(gx[i]).to_degrees();
+        let angle = if angle < 0.0 { angle + 180.0 } else { angle };
+        direction[i] = if !(22.5..157.5).contains(&angle) {
+            0 // horizontal
+        } else if angle < 67.5 {
+            1 // 45°
+        } else if angle < 112.5 {
+            2 // vertical
+        } else {
+            3 // 135°
+        };
+    }
+
+    // Step 4: Non-maximum suppression
+    let mut nms = vec![0.0f32; count];
+    for y in 1..gh - 1 {
+        for x in 1..gw - 1 {
+            let idx = y * gw + x;
+            let mag = magnitude[idx];
+            let (n1, n2) = match direction[idx] {
+                0 => (magnitude[idx - 1], magnitude[idx + 1]), // horizontal: left, right
+                1 => (
+                    magnitude[(y - 1) * gw + x + 1],
+                    magnitude[(y + 1) * gw + x - 1],
+                ), // 45°
+                2 => (magnitude[(y - 1) * gw + x], magnitude[(y + 1) * gw + x]), // vertical
+                _ => (
+                    magnitude[(y - 1) * gw + x - 1],
+                    magnitude[(y + 1) * gw + x + 1],
+                ), // 135°
+            };
+            if mag >= n1 && mag >= n2 {
+                nms[idx] = mag;
+            }
+        }
+    }
+
+    // Step 5: Double threshold
+    let mut edges = vec![0u8; count];
+    const STRONG: u8 = 255;
+    const WEAK: u8 = 128;
+    for i in 0..count {
+        if nms[i] >= high_threshold {
+            edges[i] = STRONG;
+        } else if nms[i] >= low_threshold {
+            edges[i] = WEAK;
+        }
+    }
+
+    // Step 6: Hysteresis — keep weak edges connected to strong edges
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for y in 1..gh - 1 {
+            for x in 1..gw - 1 {
+                let idx = y * gw + x;
+                if edges[idx] == WEAK {
+                    let has_strong_neighbor = edges[(y - 1) * gw + x - 1] == STRONG
+                        || edges[(y - 1) * gw + x] == STRONG
+                        || edges[(y - 1) * gw + x + 1] == STRONG
+                        || edges[y * gw + x - 1] == STRONG
+                        || edges[y * gw + x + 1] == STRONG
+                        || edges[(y + 1) * gw + x - 1] == STRONG
+                        || edges[(y + 1) * gw + x] == STRONG
+                        || edges[(y + 1) * gw + x + 1] == STRONG;
+                    if has_strong_neighbor {
+                        edges[idx] = STRONG;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    // Suppress remaining weak edges
+    for e in &mut edges {
+        if *e == WEAK {
+            *e = 0;
+        }
+    }
+
+    ViewBuffer::from_vec_with_shape(edges, vec![gh, gw, 1])
+}
+
+/// 5×5 Gaussian blur with sigma ≈ 1.4 (used by Canny).
+#[cfg(feature = "image_interop")]
+fn gaussian_blur_5x5(src: &[f32], h: usize, w: usize) -> Vec<f32> {
+    #[rustfmt::skip]
+    let kernel: [f32; 25] = [
+        2.0/159.0,  4.0/159.0,  5.0/159.0,  4.0/159.0,  2.0/159.0,
+        4.0/159.0,  9.0/159.0, 12.0/159.0,  9.0/159.0,  4.0/159.0,
+        5.0/159.0, 12.0/159.0, 15.0/159.0, 12.0/159.0,  5.0/159.0,
+        4.0/159.0,  9.0/159.0, 12.0/159.0,  9.0/159.0,  4.0/159.0,
+        2.0/159.0,  4.0/159.0,  5.0/159.0,  4.0/159.0,  2.0/159.0,
+    ];
+    let mut out = vec![0.0f32; h * w];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 0.0f32;
+            for ky in 0..5i64 {
+                for kx in 0..5i64 {
+                    let sy = (y as i64 + ky - 2).clamp(0, h as i64 - 1) as usize;
+                    let sx = (x as i64 + kx - 2).clamp(0, w as i64 - 1) as usize;
+                    sum += kernel[(ky * 5 + kx) as usize] * src[sy * w + sx];
+                }
+            }
+            out[y * w + x] = sum;
+        }
+    }
+    out
+}
+
+/// Compute Sobel gradients (Gx, Gy) for single-channel image.
+#[cfg(feature = "image_interop")]
+fn sobel_gradients(src: &[f32], h: usize, w: usize) -> (Vec<f32>, Vec<f32>) {
+    let mut gx = vec![0.0f32; h * w];
+    let mut gy = vec![0.0f32; h * w];
+
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let tl = src[(y - 1) * w + x - 1];
+            let tc = src[(y - 1) * w + x];
+            let tr = src[(y - 1) * w + x + 1];
+            let ml = src[y * w + x - 1];
+            let mr = src[y * w + x + 1];
+            let bl = src[(y + 1) * w + x - 1];
+            let bc = src[(y + 1) * w + x];
+            let br = src[(y + 1) * w + x + 1];
+
+            gx[y * w + x] = -tl + tr - 2.0 * ml + 2.0 * mr - bl + br;
+            gy[y * w + x] = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
+        }
+    }
+    (gx, gy)
+}
+
+// ============================================================
+// Histogram Equalization
+// ============================================================
+
+/// Histogram equalization for contrast enhancement.
+///
+/// Computes the histogram, cumulative distribution, then maps each pixel
+/// through the normalized CDF. Operates per-channel for multi-channel images.
+/// Input must be U8 (enforced by `working_dtype`). Output is U8.
+#[cfg(feature = "image_interop")]
+fn apply_histogram_equalize(buf: ViewBuffer) -> ViewBuffer {
+    let contig = buf.to_contiguous();
+    let shape = contig.shape();
+    let h = shape[0];
+    let w = shape[1];
+    let c = shape.get(2).copied().unwrap_or(1);
+    let count = contig.layout.num_elements();
+    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), count) };
+
+    let total_pixels = h * w;
+    let mut output = vec![0u8; count];
+
+    for ch in 0..c {
+        // Compute histogram for this channel
+        let mut hist = [0u32; 256];
+        for y in 0..h {
+            for x in 0..w {
+                let idx = (y * w + x) * c + ch;
+                hist[src[idx] as usize] += 1;
+            }
+        }
+
+        // Compute CDF
+        let mut cdf = [0u32; 256];
+        cdf[0] = hist[0];
+        for i in 1..256 {
+            cdf[i] = cdf[i - 1] + hist[i];
+        }
+
+        // Find minimum non-zero CDF value
+        let cdf_min = cdf.iter().copied().find(|&v| v > 0).unwrap_or(0);
+
+        // Map pixels through equalized CDF
+        let denominator = (total_pixels as f64 - cdf_min as f64).max(1.0);
+        for y in 0..h {
+            for x in 0..w {
+                let idx = (y * w + x) * c + ch;
+                let val = src[idx] as usize;
+                let equalized =
+                    ((cdf[val] as f64 - cdf_min as f64) / denominator * 255.0).round() as u8;
+                output[idx] = equalized;
+            }
+        }
+    }
+
+    if c == 1 && shape.len() == 2 {
+        ViewBuffer::from_vec_with_shape(output, vec![h, w])
+    } else {
+        ViewBuffer::from_vec_with_shape(output, vec![h, w, c])
+    }
 }
 
 // ============================================================

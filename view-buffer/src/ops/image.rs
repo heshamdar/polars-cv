@@ -23,6 +23,13 @@ pub enum ImageOpKind {
         angle: f32,
         expand: bool,
     },
+    /// Canny edge detection (fused Gaussian + Sobel + NMS + hysteresis).
+    Canny {
+        low_threshold: f32,
+        high_threshold: f32,
+    },
+    /// Histogram equalization for contrast enhancement.
+    HistogramEqualize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +56,8 @@ impl Op for ImageOp {
             ImageOpKind::Blur { .. } => "Blur",
             ImageOpKind::Grayscale => "Grayscale",
             ImageOpKind::Rotate { .. } => "Rotate",
+            ImageOpKind::Canny { .. } => "Canny",
+            ImageOpKind::HistogramEqualize => "HistogramEqualize",
         }
     }
 
@@ -96,6 +105,15 @@ impl Op for ImageOp {
                     input_shape.to_vec()
                 }
             }
+            ImageOpKind::Canny { .. } => {
+                // Output is single-channel binary edge map
+                if input_shape.len() == 3 {
+                    vec![input_shape[0], input_shape[1], 1]
+                } else {
+                    input_shape.to_vec()
+                }
+            }
+            ImageOpKind::HistogramEqualize => input_shape.to_vec(),
         }
     }
 
@@ -114,6 +132,8 @@ impl Op for ImageOp {
             ImageOpKind::Grayscale => MemoryEffect::RequiresContiguous,
             // Rotation requires allocation for output
             ImageOpKind::Rotate { .. } => MemoryEffect::RequiresContiguous,
+            ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
+            ImageOpKind::HistogramEqualize => MemoryEffect::RequiresContiguous,
         }
     }
 
@@ -135,6 +155,8 @@ impl Op for ImageOp {
             ImageOpKind::Blur { .. } => None,
             // Rotation produces contiguous output
             ImageOpKind::Rotate { .. } => None,
+            ImageOpKind::Canny { .. } => None,
+            ImageOpKind::HistogramEqualize => None,
         }
     }
 
@@ -158,6 +180,10 @@ impl Op for ImageOp {
             ImageOpKind::Threshold(_) => None,
             // Blur uses the `image` crate which requires U8 data internally.
             ImageOpKind::Blur { .. } => Some(DType::U8),
+            // Canny converts internally to grayscale f32
+            ImageOpKind::Canny { .. } => None,
+            // Histogram equalize works on U8 data
+            ImageOpKind::HistogramEqualize => Some(DType::U8),
         }
     }
 
@@ -172,6 +198,10 @@ impl Op for ImageOp {
             ImageOpKind::Threshold(_) => OutputDTypeRule::Fixed(DType::U8),
             // Blur uses the `image` crate which produces U8 output.
             ImageOpKind::Blur { .. } => OutputDTypeRule::Fixed(DType::U8),
+            // Canny produces a U8 binary edge map (0 or 255).
+            ImageOpKind::Canny { .. } => OutputDTypeRule::Fixed(DType::U8),
+            // Histogram equalize produces U8 output.
+            ImageOpKind::HistogramEqualize => OutputDTypeRule::Fixed(DType::U8),
         }
     }
 
@@ -192,6 +222,12 @@ impl Op for ImageOp {
 
             // Rotation uses global resampling - cannot be tiled
             ImageOpKind::Rotate { .. } => TilePolicy::Global,
+
+            // Canny needs full image for NMS and hysteresis
+            ImageOpKind::Canny { .. } => TilePolicy::Global,
+
+            // Histogram equalize needs full histogram (CDF)
+            ImageOpKind::HistogramEqualize => TilePolicy::Global,
         }
     }
 }

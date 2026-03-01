@@ -1120,6 +1120,65 @@ pub fn resolve_op(
             Ok(ViewDto::Color(ColorConvertOp { from, to }))
         }
 
+        // Convolution / filter operations
+        "convolve2d" => {
+            use view_buffer::ops::filter::{BorderMode, ConvolveOp};
+
+            let kernel = get_param(&op_spec.params, "kernel")?
+                .as_f32_vec()
+                .ok_or_else(
+                    || polars_err!(ComputeError: "convolve2d requires 'kernel' as array of floats"),
+                )?;
+            let ksize =
+                get_param(&op_spec.params, "ksize")?.resolve_usize(row_idx, expr_columns)?;
+            let normalize = op_spec
+                .params
+                .get("normalize")
+                .map(|p| {
+                    matches!(
+                        p,
+                        ParamValue::Literal {
+                            value: serde_json::Value::Bool(true)
+                        }
+                    )
+                })
+                .unwrap_or(false);
+            let border_str = op_spec
+                .params
+                .get("border")
+                .map(|p| p.resolve_string())
+                .transpose()?
+                .unwrap_or_else(|| "replicate".to_string());
+            let border = match border_str.as_str() {
+                "replicate" => BorderMode::Replicate,
+                "zero" => BorderMode::Zero,
+                "reflect" => BorderMode::Reflect,
+                other => return Err(polars_err!(ComputeError: "Unknown border mode: {}", other)),
+            };
+
+            Ok(ViewDto::Filter(ConvolveOp {
+                kernel,
+                ksize,
+                normalize,
+                border,
+            }))
+        }
+        "canny" => {
+            let low_threshold =
+                get_param(&op_spec.params, "low_threshold")?.resolve_f32(row_idx, expr_columns)?;
+            let high_threshold =
+                get_param(&op_spec.params, "high_threshold")?.resolve_f32(row_idx, expr_columns)?;
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::Canny {
+                    low_threshold,
+                    high_threshold,
+                },
+            }))
+        }
+        "equalize_histogram" => Ok(ViewDto::Image(ImageOp {
+            kind: ImageOpKind::HistogramEqualize,
+        })),
+
         // Mask operation
         "apply_mask" => {
             let mask_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
