@@ -36,6 +36,13 @@ pub struct SourceSpec {
     /// If true and data is jagged, an error is raised.
     #[serde(default)]
     pub require_contiguous: bool,
+    /// Error handling for source decoding: "raise" (default) or "null".
+    #[serde(default = "default_on_error")]
+    pub on_error: String,
+}
+
+fn default_on_error() -> String {
+    "raise".to_string()
 }
 
 fn default_fill_value() -> u8 {

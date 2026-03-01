@@ -973,6 +973,114 @@ class LazyPipelineExpr:
 
         return self.pipe(Pipeline().to_ycbcr())
 
+    # --- Convolution / Filtering ---
+
+    def convolve2d(
+        self,
+        kernel: list[float],
+        ksize: int,
+        *,
+        normalize: bool = False,
+        border: str = "replicate",
+    ) -> "LazyPipelineExpr":
+        """
+        Apply generic 2D convolution with an arbitrary kernel.
+
+        Args:
+            kernel: Flattened kernel values (row-major, ``ksize × ksize``).
+            ksize: Kernel dimension (must be odd).
+            normalize: If True, divide output by the sum of absolute kernel values.
+            border: Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
+
+        Returns:
+            New LazyPipelineExpr with convolution applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(
+            Pipeline().convolve2d(kernel, ksize, normalize=normalize, border=border)
+        )
+
+    def sobel(self, *, axis: str = "x", ksize: int = 3) -> "LazyPipelineExpr":
+        """
+        Sobel gradient operator.
+
+        Args:
+            axis: Gradient direction — ``"x"`` or ``"y"``.
+            ksize: Kernel size (currently only 3).
+
+        Returns:
+            New LazyPipelineExpr with Sobel gradient applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().sobel(axis=axis, ksize=ksize))
+
+    def laplacian(self, *, ksize: int = 3) -> "LazyPipelineExpr":
+        """
+        Laplacian second-derivative operator.
+
+        Args:
+            ksize: Kernel size (currently only 3).
+
+        Returns:
+            New LazyPipelineExpr with Laplacian applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().laplacian(ksize=ksize))
+
+    def sharpen(self, *, strength: float = 1.0) -> "LazyPipelineExpr":
+        """
+        Sharpen using an unsharp-mask-style kernel.
+
+        Args:
+            strength: Sharpening strength (default 1.0).
+
+        Returns:
+            New LazyPipelineExpr with sharpening applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().sharpen(strength=strength))
+
+    # --- Edge Detection ---
+
+    def canny(
+        self,
+        *,
+        low_threshold: "FloatOrExpr" = 50.0,
+        high_threshold: "FloatOrExpr" = 150.0,
+    ) -> "LazyPipelineExpr":
+        """
+        Canny edge detection.
+
+        Args:
+            low_threshold: Lower hysteresis threshold.
+            high_threshold: Upper hysteresis threshold.
+
+        Returns:
+            New LazyPipelineExpr with edge detection applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(
+            Pipeline().canny(low_threshold=low_threshold, high_threshold=high_threshold)
+        )
+
+    # --- Histogram Equalization ---
+
+    def equalize_histogram(self) -> "LazyPipelineExpr":
+        """
+        Apply histogram equalization for contrast enhancement.
+
+        Returns:
+            New LazyPipelineExpr with equalized histogram.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().equalize_histogram())
+
     # --- Internal Helpers ---
 
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":

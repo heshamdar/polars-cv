@@ -7,6 +7,7 @@ mod cloud;
 mod contour;
 mod execute;
 mod graph;
+mod image_metadata;
 mod output;
 mod params;
 mod pipeline;

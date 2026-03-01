@@ -619,6 +619,7 @@ pub(crate) fn encode_node_output(
                     background: 0,
                     shape_pipeline: None,
                     require_contiguous: false,
+                    on_error: "raise".to_string(),
                 },
                 shape_hints: None,
                 ops: vec![],

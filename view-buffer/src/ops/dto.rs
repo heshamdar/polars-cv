@@ -5,6 +5,7 @@ use crate::geometry::ops::GeometryOp;
 use crate::ops::binary::BinaryOp;
 use crate::ops::color::ColorConvertOp;
 use crate::ops::compute::ComputeOp;
+use crate::ops::filter::ConvolveOp;
 use crate::ops::histogram::HistogramOp;
 use crate::ops::image::ImageOp;
 use crate::ops::phash::PerceptualHashOp;
@@ -111,6 +112,8 @@ pub enum ViewDto {
     },
     /// Color space conversion (RGB ↔ HSV, LAB, YCbCr, BGR, Gray).
     Color(ColorConvertOp),
+    /// Generic 2D convolution with arbitrary kernel.
+    Filter(ConvolveOp),
 }
 
 /// Padding mode for Pad operation.
@@ -178,6 +181,8 @@ impl ViewDto {
             ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => Domain::Buffer,
             // Color conversion works on buffers
             ViewDto::Color(_) => Domain::Buffer,
+            // Convolution works on buffers
+            ViewDto::Filter(_) => Domain::Buffer,
         }
     }
 
@@ -234,6 +239,8 @@ impl ViewDto {
             ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => Domain::Buffer,
             // Color conversion produces buffers
             ViewDto::Color(_) => Domain::Buffer,
+            // Convolution produces buffers
+            ViewDto::Filter(_) => Domain::Buffer,
         }
     }
 
@@ -263,6 +270,7 @@ impl ViewDto {
             ViewDto::ChannelSwap { .. } => "ChannelSwap",
             ViewDto::ChannelMerge { .. } => "ChannelMerge",
             ViewDto::Color(_) => "ColorConvert",
+            ViewDto::Filter(_) => "Convolve2D",
         }
     }
 

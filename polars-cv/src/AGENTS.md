@@ -30,12 +30,13 @@ The crate produces a `cdylib` (`_lib.abi3.so` / `_lib.pyd`) that Polars loads as
 | File | Responsibility |
 |------|---------------|
 | `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, tiling config, dtype helpers |
+| `image_metadata.rs` | Header-only image metadata plugin functions (`image_width`, `image_height`, `image_channels`, `image_dtype`) — uses `image` crate `ImageDecoder` trait and VIEW protocol header parsing |
 | `graph/mod.rs` | Module re-exports for the graph system |
-| `graph/types.rs` | `UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowResult` — the main graph execution engine with topological sort and per-row processing |
+| `graph/types.rs` | `UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowResult` — the main graph execution engine with topological sort and per-row processing; `on_error` handling via inner closure around source decode |
 | `graph/decode.rs` | Source decoding — binary, blob, list/array (zero-copy), raw bytes, contour; also `dtype_for_output` for schema inference; reflect/symmetric padding implementation |
 | `graph/encode.rs` | Output encoding — binary, scalar, vector, contour, typed list/array, numpy struct; also geometry op execution |
 | `execute.rs` | Shared execution utilities: op resolver (`resolve_op`) + source/sink decode/encode helpers used by graph execution |
-| `pipeline.rs` | **Legacy** `PipelineSpec`, `SourceSpec`, `SinkSpec` serde types. Still used by graph system. See note below. |
+| `pipeline.rs` | `PipelineSpec`, `SourceSpec` (with `on_error` field), `SinkSpec` serde types. Used by graph system. |
 | `params.rs` | `ParamValue` — literal vs expression parameter resolution |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `cloud.rs` | Cloud storage (S3, GCS, Azure) and HTTP file reads via `object_store` + `reqwest` |
@@ -90,6 +91,9 @@ match op_spec.op.as_str() {
     "adjust_gamma" => { /* gamma -> ViewDto::Compute(ComputeOp::AdjustGamma(gamma)) */ }
     "invert" => { /* -> ViewDto::Compute(ComputeOp::Invert) */ }
     "cvt_color" => { /* from_space, to_space -> ViewDto::Color(ColorConvertOp { from, to }) */ }
+    "convolve2d" => { /* kernel, ksize, normalize, border -> ViewDto::Filter(ConvolveOp { ... }) */ }
+    "canny" => { /* low_threshold, high_threshold -> ViewDto::Image(ImageOp { kind: Canny { ... } }) */ }
+    "equalize_histogram" => { /* -> ViewDto::Image(ImageOp { kind: HistogramEqualize }) */ }
     // ... all supported operations
 }
 ```

@@ -40,8 +40,9 @@ src/
 ├── ops/                # Operations
 │   ├── mod.rs          # ViewOp, ComputeOp, BinaryOp, ViewDto
 │   ├── dto.rs          # ViewDto — serializable operation enum
-│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, grayscale, etc.)
+│   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, grayscale, canny, histogram_equalize, etc.)
 │   ├── color.rs        # ColorConvertOp, ColorSpace — color space conversions (RGB↔HSV, RGB↔LAB, etc.)
+│   ├── filter.rs       # ConvolveOp, BorderMode — 2D spatial filtering / convolution
 │   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu)
 │   ├── binary.rs       # BinaryOp (add, subtract, multiply, blend, bitwise)
 │   ├── histogram.rs    # Histogram computation
@@ -108,7 +109,7 @@ Serializable enum representing operations. This is the bridge between the JSON g
 
 ```rust
 pub enum ViewDto {
-    Image(ImageOp),           // resize, blur, grayscale, threshold, rotate
+    Image(ImageOp),           // resize, blur, grayscale, threshold, rotate, canny, histogram_equalize
     Compute(ComputeOp),       // cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert
     View(ViewOp),             // transpose, reshape, flip, crop, channel_select
     Binary(BinaryOp),         // add, subtract, multiply, blend, bitwise
@@ -116,6 +117,7 @@ pub enum ViewDto {
     ChannelSwap { order },    // reorder channels (allocating)
     ChannelMerge { .. },      // merge single-channel buffers into multi-channel (allocating, graph-level)
     Color(ColorConvertOp),    // color space conversion (RGB↔HSV, RGB↔LAB, RGB↔YCbCr, RGB↔BGR, RGB↔Gray)
+    Filter(ConvolveOp),       // 2D spatial convolution with border handling
     // ... other variants
 }
 ```
@@ -128,7 +130,8 @@ The `resolve_op` function in `polars-cv/src/execute.rs` maps operation names fro
 |----------|-----------|-------------|
 | **View** | Yes | Transpose, reshape, flip, crop, channel_select — only modify metadata |
 | **Compute** | No | Cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert — element-wise, can be fused |
-| **Image** | No | Resize, blur, grayscale, threshold — require materialization |
+| **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize — require materialization |
+| **Filter** | No | 2D convolution with configurable border modes — produces contiguous output |
 | **Binary** | No | Pixel-wise operations between two buffers |
 | **Geometry** | N/A | Contour extraction, rasterization, measures, pairwise matching primitives |
 | **Reduction** | No | Sum, mean, std, min, max, percentile → scalar/vector |
@@ -196,6 +199,22 @@ Tiling was implemented to improve cache efficiency for large images by processin
 - **channel_select**: Reduces rank from 3D `[H, W, C]` to 2D `[H, W]`.
   Uses slice + `to_contiguous()` + reshape because the slice is non-contiguous
   in HWC layout (channel stride != element size).
+
+## Spatial Filtering (`ops/filter.rs`)
+
+`ConvolveOp` provides generic 2D convolution with arbitrary kernels. `BorderMode` enum
+controls pixel sampling at image borders: `Replicate` (clamp coords), `Zero` (zero-pad),
+`Reflect` (mirror). The operation promotes input to f32, applies the kernel channel-wise,
+and optionally normalizes by the absolute kernel sum. `ViewDto::Filter` is handled directly
+in the graph executor (not via `ViewExpr`/`ExecutionPlan`), similar to `ViewDto::Color`.
+
+## Canny Edge Detection and Histogram Equalization (`execution/runner.rs`)
+
+`ImageOpKind::Canny` is a fused pipeline: 5×5 Gaussian blur → Sobel gradients → non-maximum
+suppression → double-threshold hysteresis. Outputs U8 binary mask (0/255). Uses `TilePolicy::Global`.
+
+`ImageOpKind::HistogramEqualize` computes a 256-bin histogram, derives CDF, and remaps pixels.
+Operates on U8 input; non-U8 is clamped to [0, 255]. Also `TilePolicy::Global`.
 
 ## Color Space Conversions (`ops/color.rs`)
 
