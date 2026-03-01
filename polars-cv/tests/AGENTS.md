@@ -5,36 +5,23 @@
 
 ## Purpose
 
-All Python tests for polars-cv live here. Tests use **pytest** exclusively (no unittest). Tests cover the Python API, pipeline builder, schema inference, plugin execution, and reference correctness against NumPy/OpenCV.
+All Python tests for polars-cv. Tests use **pytest** exclusively. Coverage includes the Python API, pipeline builder, schema inference, plugin execution, and reference correctness against NumPy/OpenCV.
 
 ## Running Tests
 
 ```bash
 cd polars-cv
-
-# Run all tests (requires compiled plugin for @plugin_required tests)
-uv run pytest tests/
-
-# Run without plugin (builder/schema tests only)
-uv run pytest tests/ -k "not plugin_required"
-
-# Run specific test file
-uv run pytest tests/test_pipeline_builder.py -v
-
-# Run reference tests
-uv run pytest tests/reference/ -v
-
-# Multi-Python testing (3.10-3.13)
-python scripts/test_multiple_python.py --all
+uv run pytest tests/                              # all tests (plugin must be built)
+uv run pytest tests/ -k "not plugin_required"      # builder/schema tests only
+uv run pytest tests/reference/ -v                  # reference tests
+python scripts/test_multiple_python.py --all       # multi-Python (3.10-3.13)
 ```
 
-The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so` for plugin tests. Build with `maturin develop --release`.
+The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`. Build with `maturin develop --release`.
 
 ## Test Categories
 
 ### Unit Tests (no plugin required)
-
-Test the Python layer in isolation — pipeline building, type tracking, schema inference, validation.
 
 | File | What it tests |
 |------|--------------|
@@ -45,8 +32,6 @@ Test the Python layer in isolation — pipeline building, type tracking, schema 
 | `test_geometry_schemas.py` | Geometry schema definitions and validation |
 
 ### Integration Tests (plugin required)
-
-Test end-to-end execution through the Rust plugin.
 
 | File | What it tests |
 |------|--------------|
@@ -79,17 +64,18 @@ Test end-to-end execution through the Rust plugin.
 | `test_precision_recall.py` | PR curve, AP, mAP, precision/recall/f1 at threshold, confusion |
 | `test_bbox_matching.py` | Rust bbox_pairwise_iou and bbox_match_detections |
 | `test_bootstrap_vectorized.py` | Sequential and vectorized bootstrap, BootstrapResult |
-| `test_image_metadata.py` | Header-only metadata extraction (width, height, channels, dtype) for PNG/JPEG/WebP, VIEW blobs, nulls, mixed formats |
-| `test_on_error.py` | `on_error="null"` graceful error handling for source decoding (corrupt bytes, bad paths, mixed rows) |
-| `test_display.py` | `show_images()` display utility — format detection, conversion, text fallback, null handling |
+| `test_image_metadata.py` | Header-only metadata extraction |
+| `test_on_error.py` | `on_error="null"` graceful error handling |
+| `test_display.py` | `show_images()` display utility |
+| `test_tiff_integration.py` | TIFF format integration |
 
 ### Reference Tests (`tests/reference/`)
 
-Compare polars-cv output against NumPy/OpenCV ground truth. These are the **correctness guarantees**.
+Compare polars-cv output against NumPy/OpenCV ground truth — these are the **correctness guarantees**.
 
 | File | What it tests |
 |------|--------------|
-| `test_binary_ops_ref.py` | Binary ops (add, blend, bitwise) vs NumPy |
+| `test_binary_ops_ref.py` | Binary ops vs NumPy |
 | `test_contour_ops_ref.py` | Contour operations vs OpenCV/Shapely |
 | `test_extract_ref.py` | Contour extraction vs OpenCV |
 | `test_histogram_ref.py` | Histogram computation vs NumPy |
@@ -97,22 +83,19 @@ Compare polars-cv output against NumPy/OpenCV ground truth. These are the **corr
 | `test_perceptual_hash_ref.py` | Perceptual hashing vs imagehash |
 | `test_rasterize_ref.py` | Rasterization vs OpenCV/PIL |
 | `test_reductions_ref.py` | Reductions vs NumPy |
-| `test_phase1_ref.py` | Phase 1 ops (channel, intensity, padding) vs NumPy/PIL |
-| `test_color_ref.py` | Color space conversions vs OpenCV/NumPy (round-trip, edge cases) |
+| `test_phase1_ref.py` | Channel, intensity, padding ops vs NumPy/PIL |
+| `test_color_ref.py` | Color space conversions vs OpenCV/NumPy |
 
-### Gap Tests (Naming Artifact)
-
-Files with `_gaps` in the name (e.g., `test_binary_ops_gaps.py`, `test_resize_gaps.py`) were created to test missing functionality. **The gaps have been filled** — the naming is now misleading. These are regular tests despite their names. Consider renaming them when touching these files.
+Files with `_gaps` in the name (e.g., `test_binary_ops_gaps.py`) are regular tests despite the name — the gaps they tested have been filled.
 
 ## Conventions
 
 ### Test Structure
 
-- **Class-based**: Most tests use `class TestSomething:` with methods
+- **Class-based**: `class TestSomething:` with methods
 - **Docstrings**: All test classes and methods should have docstrings
 - **Type annotations**: All fixtures and test methods should have return type annotations
-- **Section comments**: Files use `# ==== Section Name ====` separators
-- **Contour native sink shape**: `extract_contours().sink("native")` returns `List[Struct]` (a list of contours), not a single struct. Assertions should access contour members via list operations (for example, `.list.get(0).struct.field("exterior")`).
+- **Contour native sink**: `extract_contours().sink("native")` returns `List[Struct]`, not a single struct. Access via `.list.get(0).struct.field("exterior")`.
 
 ### Plugin Requirement
 
@@ -125,83 +108,35 @@ class TestMyFeature:
     ...
 ```
 
-Tests that only exercise the Python layer (pipeline building, schema inference) do NOT need `@plugin_required`.
+Tests that only exercise the Python layer do NOT need `@plugin_required`.
 
-### Fixtures
+### Shared Fixtures (`conftest.py`)
 
-#### Shared Fixtures (`conftest.py`)
+| Fixture | Purpose |
+|---------|---------|
+| `create_test_png` | Factory: create PNG bytes for given width, height, color |
+| `encode_png` | Encode a numpy array as PNG bytes |
+| `sample_image_bytes` | Minimal 1x1 red PNG (no PIL dependency) |
+| `plugin_required` | Skip if compiled plugin not available |
 
-| Fixture | Type | Purpose |
-|---------|------|---------|
-| `create_test_png` | `Callable` | Factory: create PNG bytes for given width, height, color |
-| `encode_png` | `Callable` | Encode a numpy array as PNG bytes |
-| `sample_image_bytes` | `bytes` | Minimal 1x1 red PNG (no PIL dependency) |
-| `plugin_required` | marker | Skip if compiled plugin not available |
+Reference tests have additional fixtures in `reference/conftest.py` (session-scoped images, contour data).
 
-#### Reference Fixtures (`reference/conftest.py`)
-
-| Fixture | Scope | Purpose |
-|---------|-------|---------|
-| `test_image_rgb` | session | 256x256x3 RGB numpy array |
-| `test_image_gray` | session | 256x256 grayscale numpy array |
-| `sample_images` | function | Two 100x100 RGB images for binary ops |
-| `binary_mask` | function | 100x100 mask with center square |
-| `standard_contours` | function | Square, triangle, circle contours |
-| `simple_contour` | function | Single square contour |
-| Various mask/contour fixtures | function | Specialized test data |
-
-### Known Inconsistencies (Fix When Touching)
-
-1. **Duplicate `_plugin_available()` / `plugin_required`**: Some test files (e.g., `test_error_handling.py`, `reference/test_binary_ops_ref.py`) redefine these instead of importing from `conftest.py`. Use the shared one.
-
-2. **Duplicate fixture patterns**: Many files define their own PNG creation fixtures (`simple_rgb_bytes`, `rgb_image_bytes`, inline PNG byte arrays) instead of using `create_test_png` / `encode_png` from conftest. Consolidate when touching these files.
-
-3. **Inconsistent PIL/no-PIL approaches**: Some tests use PIL to create test images, others use hand-crafted minimal PNG bytes. The conftest approach (PIL with graceful skip) is preferred.
-
-## Writing New Tests
-
-### For a new Python-only feature:
-
-```python
-"""Tests for my new feature."""
-from __future__ import annotations
-from typing import TYPE_CHECKING
-import pytest
-from polars_cv import Pipeline
-
-if TYPE_CHECKING:
-    from _pytest.capture import CaptureFixture
-    from _pytest.fixtures import FixtureRequest
-    from _pytest.logging import LogCaptureFixture
-    from _pytest.monkeypatch import MonkeyPatch
-    from pytest_mock.plugin import MockerFixture
-
-class TestMyFeature:
-    """Tests for my feature."""
-
-    def test_basic_behavior(self) -> None:
-        """Verify basic behavior."""
-        pipe = Pipeline().source("image_bytes").my_op(param=42)
-        assert pipe.current_domain() == "buffer"
-```
-
-### For a new plugin feature:
+### Writing a New Test
 
 ```python
 """Tests for my plugin feature."""
 from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
-import numpy as np
 import polars as pl
 import pytest
 from polars_cv import Pipeline
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
-    pass
+    from _pytest.fixtures import FixtureRequest
 
 @plugin_required
-class TestMyPluginFeature:
+class TestMyFeature:
     """Tests that execute through the Rust plugin."""
 
     def test_end_to_end(self, create_test_png: Callable) -> None:
@@ -215,13 +150,8 @@ class TestMyPluginFeature:
         assert result["output"].dtype == pl.Struct(...)
 ```
 
-### For a reference test:
+### Known Inconsistencies (Fix When Touching)
 
-```python
-"""Reference tests for my_op against NumPy/OpenCV."""
-# Place in tests/reference/test_my_op_ref.py
-```
-
-## Outer tests/ Directory
-
-There is also a `tests/` directory at the **workspace root** (outside `polars-cv/`) containing `test_tiff_integration.py`. This is an inconsistency — it should ideally be consolidated into `polars-cv/tests/`. Be aware of its existence when running tests from different working directories.
+1. **Duplicate `_plugin_available()` / `plugin_required`**: Some test files redefine these instead of importing from `conftest.py`. Use the shared one.
+2. **Duplicate fixture patterns**: Many files define their own PNG creation fixtures instead of using `create_test_png` / `encode_png` from conftest.
+3. **Inconsistent PIL/no-PIL approaches**: The conftest approach (PIL with graceful skip) is preferred.

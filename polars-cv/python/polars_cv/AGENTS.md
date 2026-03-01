@@ -5,31 +5,31 @@
 
 ## Purpose
 
-This is the **user-facing Python layer**. It is responsible for:
+The **user-facing Python layer**. Responsible for:
 
 - **Pipeline specification** — building operation sequences with `Pipeline`
 - **Lazy composition** — composing pipelines via `LazyPipelineExpr` (`.cv.pipe()`)
 - **Graph construction** — serializing pipelines into JSON graphs for Rust execution via `PipelineGraph`
 - **Schema inference** — determining output Polars dtypes at planning time
 - **Validation** — enforcing domain, dtype, and operation contracts before execution
-- **Expression namespaces** — registering `.cv`, `.point`, `.contour` on `pl.Expr`
+- **Expression namespaces** — registering `.cv`, `.point`, `.contour`, `.bbox` on `pl.Expr`
 
-**No computation happens here.** This layer only builds specs and validates contracts. All execution is in Rust.
+**No computation happens here.** This layer builds specs and validates contracts. All execution is in Rust.
 
 ## Key Files
 
-| File | Responsibility | Lines |
-|------|---------------|-------|
-| `__init__.py` | Public API surface, `numpy_from_struct`, `show_images`, mask/hash comparison helpers, tiling config re-export | ~480 |
-| `pipeline.py` | `Pipeline` builder — source + operations, domain tracking, dtype tracking, shape inference | ~2500 |
-| `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops | ~900 |
-| `metrics/` | Detection metrics — matchers, DetectionTable, metric functions, bootstrap CI, AUC helpers — see [`metrics/AGENTS.md`](metrics/AGENTS.md) | ~1500 |
-| `display.py` | `show_images()` — notebook image rendering, format detection, VIEW/numpy→PNG conversion | ~300 |
-| `expressions.py` | `CvNamespace` — `.cv.pipe()`, `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()` | ~140 |
-| `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec` (with `on_error`), `SinkSpec`, `SourceFormat`, `SinkFormat`, `DType`, `ColorSpace`, `OPERATION_CONTRACTS` | ~880 |
-| `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE optimization, `register_plugin_function` call | ~680 |
-| `_graph_viz.py` | Graph visualization (networkx/graphviz) | ~200 |
-| `geometry/` | Point and contour namespaces, schemas, validation — see [`geometry/AGENTS.md`](geometry/AGENTS.md) |
+| File | Responsibility |
+|------|---------------|
+| `__init__.py` | Public API surface, `numpy_from_struct`, `show_images`, mask/hash helpers, tiling config |
+| `pipeline.py` | `Pipeline` builder — source, operations, domain/dtype/shape tracking |
+| `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops |
+| `expressions.py` | `CvNamespace` — `.cv.pipe()`, `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()` |
+| `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `DType`, `ColorSpace`, `OPERATION_CONTRACTS` |
+| `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
+| `_graph_viz.py` | Graph visualization (networkx/graphviz) |
+| `display.py` | `show_images()` — notebook image rendering, format detection, VIEW/numpy to PNG |
+| `metrics/` | Detection metrics — see [`metrics/AGENTS.md`](metrics/AGENTS.md) |
+| `geometry/` | Point/contour namespaces, schemas — see [`geometry/AGENTS.md`](geometry/AGENTS.md) |
 
 ## Core Concepts
 
@@ -39,32 +39,10 @@ This is the **user-facing Python layer**. It is responsible for:
 
 ```python
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale()
-# Each method call clones the pipeline and appends an OpSpec
-
-# Channel operations
-pipe = Pipeline().source("image_bytes").channel_select(index=0)       # extract single channel -> 2D
-pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0]) # RGB -> BGR
-
-# Intensity adjustments
-pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.5)   # promotes to f32
-pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)       # promotes to f32
-pipe = Pipeline().source("image_bytes").invert()                      # 255-pixel, preserves dtype
-pipe = Pipeline().source("image_bytes").adjust_brightness(factor=1.2) # convenience: scale + clamp
-
-# Color space conversions (Phase 2)
-pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")       # unified conversion
-pipe = Pipeline().source("image_bytes").to_hsv()                       # convenience: RGB -> HSV
-pipe = Pipeline().source("image_bytes").to_lab()                      # convenience: RGB -> LAB (promotes to f32)
-pipe = Pipeline().source("image_bytes").to_bgr()                      # convenience: RGB -> BGR
-pipe = Pipeline().source("image_bytes").to_ycbcr()                    # convenience: RGB -> YCbCr
-
-# Convolution and edge detection (Phase 3)
-pipe = Pipeline().source("image_bytes").convolve2d(kernel=[...], ksize=3) # generic 2D convolution
-pipe = Pipeline().source("image_bytes").sobel(axis="x")                # Sobel edge detection
-pipe = Pipeline().source("image_bytes").laplacian()                    # 4-neighbor Laplacian
-pipe = Pipeline().source("image_bytes").sharpen(strength=1.0)          # unsharp-mask sharpening
-pipe = Pipeline().source("image_bytes").grayscale().canny(50.0, 150.0) # Canny edge detection -> U8
-pipe = Pipeline().source("image_bytes").grayscale().equalize_histogram() # histogram equalization -> U8
+pipe = Pipeline().source("image_bytes").channel_select(index=0)
+pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+pipe = Pipeline().source("image_bytes").sobel(axis="x")
+pipe = Pipeline().source("image_bytes", on_error="null")  # graceful error handling
 ```
 
 Key internal state tracked on each Pipeline:
@@ -77,12 +55,12 @@ Key internal state tracked on each Pipeline:
 
 ### LazyPipelineExpr Composition
 
-This is the **primary API path** (replacing the old `CvNamespace.pipeline()` method):
+The **primary API path**: `Pipeline()` -> `.cv.pipe()` -> `LazyPipelineExpr.sink()` -> `PipelineGraph` -> `vb_graph`.
 
 ```python
 img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(224, 224))
-expr = img.sink("numpy")            # Single output
-expr = img.alias("resized").sink({"resized": "numpy"})  # Multi-output
+expr = img.sink("numpy")                                    # single output
+expr = img.alias("resized").sink({"resized": "numpy"})      # multi-output
 ```
 
 `LazyPipelineExpr` enables:
@@ -94,14 +72,14 @@ expr = img.alias("resized").sink({"resized": "numpy"})  # Multi-output
 
 ### Graph Serialization
 
-When `.sink()` is called on a `LazyPipelineExpr`, a `PipelineGraph` is built:
+When `.sink()` is called, a `PipelineGraph` is built:
 
 1. All `LazyPipelineExpr` nodes are traversed
 2. Each becomes a `GraphNode` with its pipeline spec, upstream dependencies, and optional alias
 3. Output specs are attached to terminal nodes
 4. Common subexpression elimination (CSE) shares common prefixes
 5. The graph is serialized to JSON
-6. `register_plugin_function(function_name="vb_graph", kwargs={"graph_json": ..., "expr_column_names": ...})` is called
+6. `register_plugin_function(function_name="vb_graph", ...)` is called
 
 ### Operation Contracts (`OPERATION_CONTRACTS` in `_types.py`)
 
@@ -122,46 +100,6 @@ pipe.resize(height=224, width=pl.col("target_w"))
 ```
 
 `ParamValue` wraps this distinction. Expression params are tracked in `_expr_columns` and passed to Rust as additional input columns.
-
-### Metrics Subsystem (`metrics/`)
-
-The `metrics/` subpackage provides a three-layer detection metrics pipeline:
-
-1. **Matchers** (`_matching/`) — convert raw data into a canonical `DetectionTable`:
-   - `ContourMatcher` — heatmap + binary mask → contour extraction/matching
-   - `BBoxMatcher` — bounding box lists → Rust `bbox_match_detections` plugin
-   - `PreMatchedAdapter` — pre-computed TP/FP per detection
-2. **Metric functions** (`_metrics/`) — operate on `DetectionTable`:
-   - `precision_recall_curve`, `average_precision`, `mean_average_precision`
-   - `froc_curve`, `lroc_curve`
-   - `confusion_at_threshold`, `precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold`
-3. **Result objects** — `MetricResult` base with `auc()`, `partial_auc()`, `interpolate()`, `summary_table()`
-
-All curve aggregation uses Polars expressions — no Python loops over rows.
-See [`metrics/AGENTS.md`](metrics/AGENTS.md) for full details.
-
-## What the Canonical API Path Looks Like
-
-```python
-# Build pipeline (no source or sink yet)
-preprocess = Pipeline().source("image_bytes").resize(height=224, width=224).normalize()
-
-# Apply to column and sink
-result = df.with_columns(
-    processed=pl.col("image").cv.pipe(preprocess).sink("numpy")
-)
-```
-
-The flow is: `Pipeline()` → `.cv.pipe()` → `LazyPipelineExpr.sink()` → `PipelineGraph` → `vb_graph` Polars expression.
-
-## Legacy API Removal Status
-
-Removed API surface:
-- `CvNamespace.pipeline()` / `apply_pipeline()`
-- `Pipeline.sink()` (sink is now only on `LazyPipelineExpr`)
-
-All expression execution goes through:
-`Pipeline()` → `.cv.pipe()` → `LazyPipelineExpr.sink()` → `PipelineGraph` → `vb_graph`
 
 ## Adding a New Operation (Python Side)
 
