@@ -94,6 +94,8 @@ Compare polars-cv output against NumPy/OpenCV ground truth. These are the **corr
 | `test_perceptual_hash_ref.py` | Perceptual hashing vs imagehash |
 | `test_rasterize_ref.py` | Rasterization vs OpenCV/PIL |
 | `test_reductions_ref.py` | Reductions vs NumPy |
+| `test_phase1_ref.py` | Phase 1 ops (channel, intensity, padding) vs NumPy/PIL |
+| `test_color_ref.py` | Color space conversions vs OpenCV/NumPy (round-trip, edge cases) |
 
 ### Gap Tests (Naming Artifact)
 

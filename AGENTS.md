@@ -262,6 +262,26 @@ New operations added across all layers (view-buffer, polars-cv Rust plugin, Pyth
 
 Reference tests in `tests/reference/test_phase1_ref.py` validate all operations against NumPy/PIL ground truth.
 
+### Phase 2: Color Space Conversions (Implemented)
+
+Color space conversion operations added across all layers (view-buffer, polars-cv Rust plugin, Python API):
+
+**Operations:**
+- `cvt_color(from_space, to_space)` — unified conversion between color spaces. Supported spaces: RGB, BGR, HSV, LAB, YCBCR, GRAY.
+- Convenience methods: `to_hsv()`, `to_lab()`, `to_bgr()`, `to_ycbcr()` — shorthand for common conversions.
+
+**Design pattern:** Single `cvt_color` op with `from_space`/`to_space` params, plus convenience methods that delegate to it.
+
+**Implementation details:**
+- All conversions route through f32 RGB internally.
+- LAB uses D65 illuminant with sRGB gamma.
+- HSV follows OpenCV convention (H=[0,180] for U8).
+- `ViewDto::Color(ColorConvertOp)` in view-buffer; `ColorSpace` enum (Rgb, Bgr, Hsv, Lab, YCbCr, Gray).
+- LAB conversion promotes dtype to f32 (param inspection in Python; OPERATION_CONTRACTS override).
+- `_update_shape_hints` handles channel dimension changes (e.g., RGB→Gray reduces channels).
+
+Reference tests in `tests/reference/test_color_ref.py` validate all conversions against OpenCV, NumPy, and known formulas (round-trip, edge cases, cross-conversion chains).
+
 ### Detection Metric Fixes (Applied)
 
 Several correctness fixes have been applied to the detection metrics:

@@ -16,6 +16,7 @@ import polars as pl
 from polars_cv._types import (
     OPERATION_CONTRACTS,
     CloudOptions,
+    ColorSpace,
     DType,
     FilterType,
     FloatOrExpr,
@@ -406,6 +407,13 @@ class Pipeline:
             self._shape_hints.width = None
         elif op_name == "grayscale":
             self._shape_hints.channels = ParamValue(is_expr=False, value=1)
+        elif op_name == "cvt_color":
+            to_space = params.get("to_space")
+            if to_space and not to_space.is_expr:
+                if to_space.value == "gray":
+                    self._shape_hints.channels = ParamValue(is_expr=False, value=1)
+                else:
+                    self._shape_hints.channels = ParamValue(is_expr=False, value=3)
         elif op_name == "pad":
             # If we have current hints and literal padding, we can update
             if (
@@ -1244,6 +1252,82 @@ class Pipeline:
         new._ops.append(OpSpec(op="invert", params={}))
         new._update_output_dtype("invert")
         return new
+
+    # --- Color Space Conversion ---
+
+    def cvt_color(self, from_space: str, to_space: str) -> "Pipeline":
+        """
+        Convert between color spaces.
+
+        Domain: buffer → buffer
+
+        Args:
+            from_space: Source color space (rgb, bgr, hsv, lab, ycbcr, gray).
+            to_space: Target color space (rgb, bgr, hsv, lab, ycbcr, gray).
+
+        Returns:
+            Self for chaining.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "cvt_color")
+        # Validate enum values
+        ColorSpace(from_space)
+        ColorSpace(to_space)
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="cvt_color",
+                params={
+                    "from_space": ParamValue(is_expr=False, value=from_space),
+                    "to_space": ParamValue(is_expr=False, value=to_space),
+                },
+            )
+        )
+        # LAB conversions promote to f32; others preserve dtype
+        if from_space == "lab" or to_space == "lab":
+            new._output_dtype = "f32"
+        else:
+            new._update_output_dtype("cvt_color")
+        new._update_shape_hints("cvt_color", new._ops[-1].params)
+        return new
+
+    def to_hsv(self) -> "Pipeline":
+        """Convert from RGB to HSV color space.
+
+        Returns:
+            Self for chaining.
+        """
+        return self.cvt_color("rgb", "hsv")
+
+    def to_lab(self) -> "Pipeline":
+        """Convert from RGB to CIE LAB color space.
+
+        Output dtype is promoted to f32 (L=[0,100], a/b~[-128,127]).
+
+        Returns:
+            Self for chaining.
+        """
+        return self.cvt_color("rgb", "lab")
+
+    def to_bgr(self) -> "Pipeline":
+        """Convert from RGB to BGR channel order.
+
+        Returns:
+            Self for chaining.
+        """
+        return self.cvt_color("rgb", "bgr")
+
+    def to_ycbcr(self) -> "Pipeline":
+        """Convert from RGB to YCbCr color space.
+
+        Returns:
+            Self for chaining.
+        """
+        return self.cvt_color("rgb", "ycbcr")
 
     # --- Image Operations ---
 

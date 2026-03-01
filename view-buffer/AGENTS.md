@@ -41,6 +41,7 @@ src/
 │   ├── mod.rs          # ViewOp, ComputeOp, BinaryOp, ViewDto
 │   ├── dto.rs          # ViewDto — serializable operation enum
 │   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, grayscale, etc.)
+│   ├── color.rs        # ColorConvertOp, ColorSpace — color space conversions (RGB↔HSV, RGB↔LAB, etc.)
 │   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu)
 │   ├── binary.rs       # BinaryOp (add, subtract, multiply, blend, bitwise)
 │   ├── histogram.rs    # Histogram computation
@@ -114,6 +115,7 @@ pub enum ViewDto {
     Geometry(GeometryOp),     // extract_contours, rasterize, measures
     ChannelSwap { order },    // reorder channels (allocating)
     ChannelMerge { .. },      // merge single-channel buffers into multi-channel (allocating, graph-level)
+    Color(ColorConvertOp),    // color space conversion (RGB↔HSV, RGB↔LAB, RGB↔YCbCr, RGB↔BGR, RGB↔Gray)
     // ... other variants
 }
 ```
@@ -194,6 +196,13 @@ Tiling was implemented to improve cache efficiency for large images by processin
 - **channel_select**: Reduces rank from 3D `[H, W, C]` to 2D `[H, W]`.
   Uses slice + `to_contiguous()` + reshape because the slice is non-contiguous
   in HWC layout (channel stride != element size).
+
+## Color Space Conversions (`ops/color.rs`)
+
+`ColorConvertOp` and `ColorSpace` enum provide conversions between RGB, BGR, HSV,
+LAB, YCbCr, and Gray. All conversions route through f32 RGB internally. LAB
+uses D65 illuminant with sRGB gamma. HSV follows OpenCV convention (H=[0,180]
+for U8). The graph executor dispatches `ViewDto::Color` to `apply_color_convert`.
 
 ## Label Reduce Centroid Fallback
 

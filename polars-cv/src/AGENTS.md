@@ -89,6 +89,7 @@ match op_spec.op.as_str() {
     "adjust_contrast" => { /* factor -> ViewDto::Compute(ComputeOp::AdjustContrast(factor)) */ }
     "adjust_gamma" => { /* gamma -> ViewDto::Compute(ComputeOp::AdjustGamma(gamma)) */ }
     "invert" => { /* -> ViewDto::Compute(ComputeOp::Invert) */ }
+    "cvt_color" => { /* from_space, to_space -> ViewDto::Color(ColorConvertOp { from, to }) */ }
     // ... all supported operations
 }
 ```
