@@ -58,7 +58,7 @@ Key internal state tracked on each Pipeline:
 The **primary API path**: `Pipeline()` -> `.cv.pipe()` -> `LazyPipelineExpr.sink()` -> `PipelineGraph` -> `vb_graph`.
 
 ```python
-img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(224, 224))
+img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=224, width=224))
 expr = img.sink("numpy")                                    # single output
 expr = img.alias("resized").sink({"resized": "numpy"})      # multi-output
 ```

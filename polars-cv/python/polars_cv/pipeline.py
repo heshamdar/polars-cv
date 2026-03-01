@@ -624,7 +624,7 @@ class Pipeline:
         Example:
             ```python
             >>> # Decode PNG/JPEG bytes from a column
-            >>> pipe = Pipeline().source("image_bytes").resize(224, 224)
+            >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
             >>>
             >>> # Read from file paths or URLs
             >>> df = pl.DataFrame({"url": ["https://example.com/image.png"]})
@@ -632,11 +632,11 @@ class Pipeline:
             >>> expr = pl.col("url").cv.pipe(pipe).sink("numpy")
             >>>
             >>> # Assert dtype for list sink (cast if needed at runtime)
-            >>> pipe = Pipeline().source("image_bytes", dtype="f32").resize(224, 224)
+            >>> pipe = Pipeline().source("image_bytes", dtype="f32").resize(height=224, width=224)
             >>> expr = pl.col("img").cv.pipe(pipe).sink("list")
             >>>
             >>> # Gracefully handle corrupt images as null
-            >>> pipe = Pipeline().source("image_bytes", on_error="null").resize(224, 224)
+            >>> pipe = Pipeline().source("image_bytes", on_error="null").resize(height=224, width=224)
             >>> expr = pl.col("img").cv.pipe(pipe).sink("png")
             ```
         """
@@ -3000,7 +3000,7 @@ class Pipeline:
 
         Example:
             ```python
-            >>> pipe = Pipeline().source("image_bytes").resize(100, 200)
+            >>> pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
             >>> graph = pipe.to_graph(pl.col("image"))
             >>> expr = graph.to_expr()
             ```

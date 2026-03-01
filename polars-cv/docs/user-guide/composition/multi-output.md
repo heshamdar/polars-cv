@@ -22,7 +22,7 @@ from polars_cv import Pipeline
 # Build pipeline with named checkpoints
 base = (
     pl.col("image")
-    .cv.pipe(Pipeline().source("image_bytes").resize(128, 128))
+    .cv.pipe(Pipeline().source("image_bytes").resize(height=128, width=128))
     .alias("resized")
 )
 
@@ -82,7 +82,7 @@ flowchart LR
 ```python
 # Both branches share: resize → grayscale
 base = pl.col("image").cv.pipe(
-    Pipeline().source("image_bytes").resize(100, 100)
+    Pipeline().source("image_bytes").resize(height=100, width=100)
 )
 gray = base.pipe(Pipeline().grayscale()).alias("gray")
 
@@ -146,7 +146,7 @@ Combine multiple input columns with multiple outputs:
 
 ```python
 # Two different input columns
-img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(128, 128))
+img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=128, width=128))
 mask = pl.col("mask_contour").cv.pipe(Pipeline().source("contour", shape=img))
 
 # Apply mask

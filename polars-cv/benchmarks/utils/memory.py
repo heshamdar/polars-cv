@@ -65,7 +65,7 @@ def force_gc() -> None:
     Runs multiple GC passes to ensure all garbage is collected.
     """
     for _ in range(3):
-        gc.collect(engine="streaming")
+        gc.collect()
 
 
 class MemoryTracker:

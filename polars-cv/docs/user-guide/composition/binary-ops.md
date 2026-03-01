@@ -31,10 +31,10 @@ from polars_cv import Pipeline
 
 # Two pipelines processing the same image differently
 img1 = pl.col("image").cv.pipe(
-    Pipeline().source("image_bytes").resize(128, 128)
+    Pipeline().source("image_bytes").resize(height=128, width=128)
 )
 img2 = pl.col("image").cv.pipe(
-    Pipeline().source("image_bytes").resize(128, 128).blur(5.0)
+    Pipeline().source("image_bytes").resize(height=128, width=128).blur(5.0)
 )
 
 # Binary operations
@@ -54,7 +54,7 @@ Apply a binary mask to an image:
 ```python
 # Image pipeline
 img = pl.col("image").cv.pipe(
-    Pipeline().source("image_bytes").resize(128, 128)
+    Pipeline().source("image_bytes").resize(height=128, width=128)
 )
 
 # Mask pipeline (from contour)
@@ -74,7 +74,7 @@ Automatically match mask dimensions to image:
 ```python
 # Define image pipeline
 img = pl.col("image").cv.pipe(
-    Pipeline().source("image_bytes").resize(150, 100)  # Non-square
+    Pipeline().source("image_bytes").resize(height=150, width=100)  # Non-square
 )
 
 # Contour source with shape inference
@@ -92,7 +92,7 @@ Use `apply_contour_mask()` for the common case:
 
 ```python
 img = pl.col("image").cv.pipe(
-    Pipeline().source("image_bytes").resize(128, 128)
+    Pipeline().source("image_bytes").resize(height=128, width=128)
 )
 contour = pl.col("contour").cv.pipe(
     Pipeline().source("contour", shape=img)
@@ -109,12 +109,12 @@ Combine data from different DataFrame columns:
 ```python
 # Base image
 base = pl.col("base_image").cv.pipe(
-    Pipeline().source("image_bytes").resize(128, 128)
+    Pipeline().source("image_bytes").resize(height=128, width=128)
 )
 
 # Overlay image (different column)
 overlay = pl.col("overlay_image").cv.pipe(
-    Pipeline().source("image_bytes").resize(128, 128).flip_h()
+    Pipeline().source("image_bytes").resize(height=128, width=128).flip_h()
 )
 
 # Blend two different images

@@ -85,6 +85,7 @@ nav:
       - Hashing: user-guide/operations/hashing.md
       - Reductions: user-guide/operations/reductions.md
       - Detection Metrics: user-guide/operations/metrics.md
+      - Metadata & Display: user-guide/operations/metadata.md
     - Composition:
       - Chaining: user-guide/composition/chaining.md
       - Multi-Output: user-guide/composition/multi-output.md

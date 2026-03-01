@@ -87,8 +87,11 @@ result = df.with_columns(
 | Format | Description | Use Case |
 |--------|-------------|----------|
 | `numpy` | NumPy-compatible bytes | NumPy, OpenCV, Scikit-image |
+| `torch` | PyTorch-compatible bytes | PyTorch DataLoaders |
 | `png` | Re-encode as PNG bytes | Storage, display |
 | `jpeg` | Re-encode as JPEG bytes | Web usage |
+| `webp` | Re-encode as WebP bytes | Web usage (smaller files) |
+| `tiff` | Re-encode as TIFF bytes | Scientific imaging |
 | `list` | Polars nested List | Internal Polars analysis |
 | `native` | Python primitive | Scalars (Area, Mean) |
 
@@ -97,7 +100,7 @@ result = df.with_columns(
 ```python
 # Read from local paths or URLs
 df = pl.DataFrame({"path": ["/path/to/image.png", "https://example.com/img.jpg"]})
-pipe = Pipeline().source("file_path").resize(224, 224)
+pipe = Pipeline().source("file_path").resize(height=224, width=224)
 
 result = df.with_columns(
     processed=pl.col("path").cv.pipe(pipe).sink("numpy")
@@ -116,10 +119,10 @@ For `sink("list")` or `sink("array")`, dtype must be known during planning.
 
 ```python
 # Option 1: pin dtype at source
-pipe = Pipeline().source("image_bytes", dtype="f32").resize(224, 224)
+pipe = Pipeline().source("image_bytes", dtype="f32").resize(height=224, width=224)
 
 # Option 2: resolve dtype in the pipeline
-pipe = Pipeline().source("file_path").resize(224, 224).cast("f32")
+pipe = Pipeline().source("file_path").resize(height=224, width=224).cast("f32")
 
 result = df.with_columns(values=pl.col("image").cv.pipe(pipe).sink("list"))
 ```

@@ -33,7 +33,7 @@ class LazyPipelineExpr:
     is called.
 
     Example:
-        >>> preprocess = Pipeline().source("image_bytes").resize(100, 200)
+        >>> preprocess = Pipeline().source("image_bytes").resize(height=100, width=200)
         >>> img = pl.col("image").cv.pipe(preprocess)
         >>> expr = img.sink("numpy")
     """

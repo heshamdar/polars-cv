@@ -34,7 +34,7 @@ class CvNamespace:
     Namespace for computer vision operations on Polars expressions.
 
     Example:
-        >>> pipe = Pipeline().source("image_bytes").resize(100, 200)
+        >>> pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
         >>> expr = pl.col("image").cv.pipe(pipe).sink("numpy")
         >>> df.with_columns(processed=expr)
 

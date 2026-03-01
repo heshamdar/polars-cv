@@ -77,3 +77,6 @@ polars-cv/notebooks/*.ipynb_checkpoints
 polars-cv/notebooks/*.pq
 polars-cv/notebooks/*.parquet
 polars-cv/notebooks/wiki/*
+polars-cv/examples/outputs/*
+polars-cv/.cache/*
+.vscode/*

@@ -44,10 +44,10 @@ This means the pipeline dtype starts as `auto` for these sources unless you pin 
 
 ```python
 # Runtime decode with automatic dtype
-auto_pipe = Pipeline().source("image_bytes").resize(224, 224)
+auto_pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
 
 # Pin expected dtype at source (runtime cast when needed)
-typed_pipe = Pipeline().source("image_bytes", dtype="f32").resize(224, 224)
+typed_pipe = Pipeline().source("image_bytes", dtype="f32").resize(height=224, width=224)
 ```
 
 When using `sink("list")` or `sink("array")`, dtype must be known at planning time. For `image_bytes` / `file_path`, choose one of:
@@ -57,12 +57,9 @@ When using `sink("list")` or `sink("array")`, dtype must be known at planning ti
 - use a dtype-fixing operation before the sink
 
 ```python
-safe_for_list = (
-    Pipeline()
-    .source("file_path", dtype="f32")
-    .resize(224, 224)
-    .sink("list")
-)
+pipe = Pipeline().source("file_path", dtype="f32").resize(height=224, width=224)
+
+result = df.with_columns(values=pl.col("path").cv.pipe(pipe).sink("list"))
 ```
 
 ## Dynamic Pipelines
@@ -92,12 +89,21 @@ result = df.with_columns(
 
 ## Operations
 
-- **Image**: `resize`, `grayscale`, `blur`, `threshold`, `crop`, `rotate`, `pad`, `flip`.
+- **Image**: `resize`, `resize_scale`, `resize_to_height`, `resize_to_width`, `resize_max`, `resize_min`, `grayscale`, `blur`, `threshold`, `crop`, `rotate`, `pad`, `letterbox`, `flip_h`, `flip_v`.
+- **Color**: `cvt_color`, `to_hsv`, `to_lab`, `to_bgr`, `to_ycbcr`.
+- **Channels**: `channel_select`, `channel_swap`.
+- **Intensity**: `adjust_contrast`, `adjust_gamma`, `adjust_brightness`, `invert`.
+- **Convolution & Edge Detection**: `convolve2d`, `sobel`, `laplacian`, `sharpen`, `canny`.
+- **Enhancement**: `equalize_histogram`.
 - **Compute**: `normalize`, `scale`, `clamp`, `relu`, `cast`.
+- **Layout**: `transpose`, `reshape`.
 - **Geometry**: `extract_contours`, `rasterize`, `area`, `perimeter`, `centroid`, `bounding_box`.
 - **Points**: `normalize`, `translate`, `scale`, `rotate`, `distance`, `manhattan_distance`, `distance_to_contour`, `signed_distance_to_contour`, `nearest_point_on_contour`, `angle_to`, `midpoint`, `interpolate`, `within_bbox`.
-- **Analysis**: `histogram` (computes buckets with edges, counts, and normalized frequencies), `perceptual_hash`, `extract_shape`.
-- **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_percentile`.
+- **Bounding Boxes**: `pairwise_iou`, `match_detections` (via `.bbox` namespace).
+- **Analysis**: `histogram`, `perceptual_hash`, `extract_shape`, `label_reduce`.
+- **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_argmax`, `reduce_argmin`, `reduce_percentile`, `reduce_popcount`.
+- **Metadata**: `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()`.
+- **Display**: `show_images()` for Jupyter notebook visualization.
 - **Detection Metrics**: Precision-Recall, AP, mAP, FROC, LROC, F1, confusion matrix, bootstrap confidence intervals.
 
 ## Detection Metrics

@@ -33,6 +33,9 @@ Find the index of the maximum or minimum value along an axis.
 ```python
 # Find the column index with the highest intensity per row
 Pipeline().source("image_bytes").grayscale().reduce_argmax(axis=1)
+
+# Find the column index with the lowest intensity per row
+Pipeline().source("image_bytes").grayscale().reduce_argmin(axis=1)
 ```
 
 ## Percentile
@@ -54,6 +57,28 @@ Count the number of set bits (1s) in the buffer. Useful for binary masks or Hamm
 ```python
 Pipeline().source("image_bytes").threshold(128).reduce_popcount()
 ```
+
+## Label Reduce
+
+Score contour regions against a buffer (e.g., extract detection scores from a heatmap). Returns a vector of scores, one per contour.
+
+```python
+import polars as pl
+from polars_cv import Pipeline
+
+# Score each contour region against a heatmap
+pipe = Pipeline().source("image_bytes").grayscale().normalize()
+result = df.with_columns(
+    scores=pl.col("heatmap").cv.pipe(pipe).label_reduce(
+        contours=pl.col("contours"),
+        reduction="max",
+        region_mode="interior",
+    ).sink("list")
+)
+```
+
+**Reductions:** `"max"`, `"mean"`, `"sum"`.
+**Region modes:** `"interior"` (filled area), `"boundary"` (contour edge), `"bbox"` (bounding rectangle).
 
 ## Convenience Methods
 
