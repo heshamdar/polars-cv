@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::ops::GeometryOp;
 use crate::ops::binary::BinaryOp;
+use crate::ops::color::ColorConvertOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::histogram::HistogramOp;
 use crate::ops::image::ImageOp;
@@ -108,6 +109,8 @@ pub enum ViewDto {
         reduction: String,
         region_mode: String,
     },
+    /// Color space conversion (RGB ↔ HSV, LAB, YCbCr, BGR, Gray).
+    Color(ColorConvertOp),
 }
 
 /// Padding mode for Pad operation.
@@ -173,6 +176,8 @@ impl ViewDto {
             ViewDto::LabelReduce { .. } => Domain::Buffer,
             // Channel operations work on buffers
             ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => Domain::Buffer,
+            // Color conversion works on buffers
+            ViewDto::Color(_) => Domain::Buffer,
         }
     }
 
@@ -227,6 +232,8 @@ impl ViewDto {
             ViewDto::LabelReduce { .. } => Domain::Vector,
             // Channel operations produce buffers
             ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => Domain::Buffer,
+            // Color conversion produces buffers
+            ViewDto::Color(_) => Domain::Buffer,
         }
     }
 
@@ -255,6 +262,7 @@ impl ViewDto {
             ViewDto::LabelReduce { .. } => "LabelReduce",
             ViewDto::ChannelSwap { .. } => "ChannelSwap",
             ViewDto::ChannelMerge { .. } => "ChannelMerge",
+            ViewDto::Color(_) => "ColorConvert",
         }
     }
 

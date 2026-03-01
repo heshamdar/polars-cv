@@ -27,6 +27,7 @@ use crate::ViewBuffer;
 
 pub mod affine;
 pub mod binary;
+pub mod color;
 pub mod compute;
 pub mod cost;
 pub mod dto;
@@ -42,6 +43,7 @@ pub mod validation;
 pub mod view;
 
 pub use binary::BinaryOp;
+pub use color::{ColorConvertOp, ColorSpace};
 pub use compute::{ComputeOp, NormalizeMethod};
 pub use cost::{OpCost, OpCostReport};
 pub use dto::ViewDto;

@@ -1147,6 +1147,20 @@ impl UnifiedGraph {
                                     let result = view_buffer::apply_channel_merge(&all_bufs);
                                     current_output = NodeOutput::from_buffer(result);
                                 }
+                                ViewDto::Color(ref color_op) => {
+                                    use view_buffer::ops::color::apply_color_convert;
+                                    current_output =
+                                        flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                    let current_buf =
+                                        current_output.as_buffer().ok_or_else(|| {
+                                            format!(
+                                                "ColorConvert requires Buffer, got {:?}",
+                                                current_output.domain()
+                                            )
+                                        })?;
+                                    let result = apply_color_convert(current_buf, color_op);
+                                    current_output = NodeOutput::from_buffer(result);
+                                }
                                 ViewDto::Materialize => {
                                     current_output =
                                         flush_buffer_ops(current_output, &mut pending_buffer_ops)?;

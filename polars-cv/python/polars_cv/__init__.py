@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 from ._lib import configure_tiling as _configure_tiling
 from ._lib import get_tiling_config as _get_tiling_config
-from ._types import IMAGENET_MEAN, IMAGENET_STD, CloudOptions, HashAlgorithm
+from ._types import IMAGENET_MEAN, IMAGENET_STD, CloudOptions, ColorSpace, HashAlgorithm
 from .expressions import CvNamespace
 from .geometry import (
     BBOX_SCHEMA,
@@ -428,6 +428,7 @@ __all__ = [
     "get_tiling_config",
     # Types
     "CloudOptions",
+    "ColorSpace",
     "HashAlgorithm",
     # ImageNet normalization constants
     "IMAGENET_MEAN",

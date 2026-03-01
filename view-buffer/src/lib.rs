@@ -42,8 +42,9 @@ pub use expr::{PipelineCostReport, ViewExpr};
 
 // Re-exports - Ops
 pub use ops::{
-    BinaryOp, ComputeOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op, OpCost,
-    OpCostReport, PlaceholderMeta, SinkFormat, SourceFormat, ValidationError, ViewDto, ViewOp,
+    BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType, ImageOp, ImageOpKind,
+    NormalizeMethod, Op, OpCost, OpCostReport, PlaceholderMeta, SinkFormat, SourceFormat,
+    ValidationError, ViewDto, ViewOp,
 };
 
 // Re-exports - Protocol

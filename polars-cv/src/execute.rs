@@ -1107,6 +1107,19 @@ pub fn resolve_op(
         }
         "invert" => Ok(ViewDto::Compute(ComputeOp::Invert)),
 
+        // Color space conversion
+        "cvt_color" => {
+            use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
+
+            let from_str = get_param(&op_spec.params, "from_space")?.resolve_string()?;
+            let to_str = get_param(&op_spec.params, "to_space")?.resolve_string()?;
+            let from = ColorSpace::from_str_name(&from_str)
+                .ok_or_else(|| polars_err!(ComputeError: "Unknown color space: {}", from_str))?;
+            let to = ColorSpace::from_str_name(&to_str)
+                .ok_or_else(|| polars_err!(ComputeError: "Unknown color space: {}", to_str))?;
+            Ok(ViewDto::Color(ColorConvertOp { from, to }))
+        }
+
         // Mask operation
         "apply_mask" => {
             let mask_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;

@@ -86,6 +86,17 @@ IMAGENET_MEAN: list[float] = [0.485, 0.456, 0.406]
 IMAGENET_STD: list[float] = [0.229, 0.224, 0.225]
 
 
+class ColorSpace(str, Enum):
+    """Supported color spaces for ``cvt_color``."""
+
+    RGB = "rgb"
+    BGR = "bgr"
+    HSV = "hsv"
+    LAB = "lab"
+    YCBCR = "ycbcr"
+    GRAY = "gray"
+
+
 class OutputDType(str, Enum):
     """
     Output dtype specification for operations that support dtype configuration.
@@ -444,6 +455,9 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
     "adjust_contrast": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
     "adjust_gamma": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
     "invert": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # --- Color space conversion ---
+    # Most conversions preserve dtype; LAB promotes to f32 (overridden by param inspection).
+    "cvt_color": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
 }
 
 

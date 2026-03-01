@@ -252,6 +252,25 @@ impl ViewExpr {
                      Use graph-level execution."
                 )
             }
+            ViewDto::Color(ref op) => {
+                let new_shape = op.infer_shape(&self.shape);
+                let new_dtype = if op.promotes_to_float() {
+                    DType::F32
+                } else {
+                    self.dtype
+                };
+                Arc::new(Self {
+                    shape: new_shape,
+                    strides: None, // Color conversion always allocates
+                    dtype: new_dtype,
+                    node: ExprNode::Image(
+                        ImageOp {
+                            kind: ImageOpKind::Grayscale, // placeholder for planning
+                        },
+                        self.clone(),
+                    ),
+                })
+            }
         }
     }
 

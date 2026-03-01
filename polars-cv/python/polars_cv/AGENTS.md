@@ -25,7 +25,7 @@ This is the **user-facing Python layer**. It is responsible for:
 | `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops | ~900 |
 | `metrics/` | Detection metrics — matchers, DetectionTable, metric functions, bootstrap CI, AUC helpers — see [`metrics/AGENTS.md`](metrics/AGENTS.md) | ~1500 |
 | `expressions.py` | `CvNamespace` (`.cv.pipe()` only) | ~80 |
-| `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `SourceFormat`, `SinkFormat`, `DType`, `OPERATION_CONTRACTS` | ~850 |
+| `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `SourceFormat`, `SinkFormat`, `DType`, `ColorSpace`, `OPERATION_CONTRACTS` | ~850 |
 | `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE optimization, `register_plugin_function` call | ~680 |
 | `_graph_viz.py` | Graph visualization (networkx/graphviz) | ~200 |
 | `geometry/` | Point and contour namespaces, schemas, validation — see [`geometry/AGENTS.md`](geometry/AGENTS.md) |
@@ -49,6 +49,13 @@ pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.5)   # promotes
 pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)       # promotes to f32
 pipe = Pipeline().source("image_bytes").invert()                      # 255-pixel, preserves dtype
 pipe = Pipeline().source("image_bytes").adjust_brightness(factor=1.2) # convenience: scale + clamp
+
+# Color space conversions (Phase 2)
+pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")       # unified conversion
+pipe = Pipeline().source("image_bytes").to_hsv()                       # convenience: RGB -> HSV
+pipe = Pipeline().source("image_bytes").to_lab()                      # convenience: RGB -> LAB (promotes to f32)
+pipe = Pipeline().source("image_bytes").to_bgr()                      # convenience: RGB -> BGR
+pipe = Pipeline().source("image_bytes").to_ycbcr()                    # convenience: RGB -> YCbCr
 ```
 
 Key internal state tracked on each Pipeline:

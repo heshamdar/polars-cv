@@ -916,6 +916,63 @@ class LazyPipelineExpr:
 
         return self.pipe(Pipeline().invert())
 
+    # --- Color Space Conversion ---
+
+    def cvt_color(self, from_space: str, to_space: str) -> "LazyPipelineExpr":
+        """
+        Convert between color spaces.
+
+        Args:
+            from_space: Source color space (rgb, bgr, hsv, lab, ycbcr, gray).
+            to_space: Target color space (rgb, bgr, hsv, lab, ycbcr, gray).
+
+        Returns:
+            New LazyPipelineExpr with converted color space.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().cvt_color(from_space, to_space))
+
+    def to_hsv(self) -> "LazyPipelineExpr":
+        """Convert from RGB to HSV color space.
+
+        Returns:
+            New LazyPipelineExpr in HSV color space.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().to_hsv())
+
+    def to_lab(self) -> "LazyPipelineExpr":
+        """Convert from RGB to CIE LAB color space.
+
+        Returns:
+            New LazyPipelineExpr in LAB color space (f32).
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().to_lab())
+
+    def to_bgr(self) -> "LazyPipelineExpr":
+        """Convert from RGB to BGR channel order.
+
+        Returns:
+            New LazyPipelineExpr in BGR order.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().to_bgr())
+
+    def to_ycbcr(self) -> "LazyPipelineExpr":
+        """Convert from RGB to YCbCr color space.
+
+        Returns:
+            New LazyPipelineExpr in YCbCr color space.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().to_ycbcr())
+
     # --- Internal Helpers ---
 
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
