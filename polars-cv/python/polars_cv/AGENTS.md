@@ -86,8 +86,24 @@ When `.sink()` is called, a `PipelineGraph` is built:
 Every operation has a contract defining:
 - `DTypeEffect` — how it changes the dtype (preserve, promote to f32, explicit, etc.)
 - `NdimEffect` — how it changes dimensionality (preserve, set to 0, set to 1, etc.)
+- `AlphaMode` — how it handles an alpha channel (passthrough, strip-process-restore, drop, not applicable)
 
 These contracts drive schema inference at planning time. **Planning-time schema must match execution-time schema.** If an operation's effect on dtype cannot be determined at planning time (e.g., `auto` from image_bytes source), it must be flagged.
+
+### Alpha Channel Handling
+
+Alpha channels are **always preserved** during image decoding. Image sources (`image_bytes`, `file_path`) produce unknown channel count at planning time (`_shape_hints.channels = None`). Users can assert known channels via `.assert_shape(channels=4)`.
+
+The `AlphaMode` enum in `_types.py` declares each operation's alpha behavior:
+
+| Mode | Channel Inference | Operations |
+|------|------------------|------------|
+| `PASSTHROUGH` | Output = Input channels | resize, normalize, flip, crop, etc. |
+| `STRIP_PROCESS_RESTORE` | Output = op_color_ch + (1 if alpha) | blur, cvt_color, sobel, sharpen |
+| `DROP` | Output = op-specific fixed count | grayscale → 1, canny → 1 |
+| `NOT_APPLICABLE` | No channel change | reductions, geometry |
+
+Channel inference is implemented in `Pipeline._update_channels_from_contract()`, called at the end of `_update_shape_hints()`.
 
 ### ParamValue — Literal vs Expression Parameters
 

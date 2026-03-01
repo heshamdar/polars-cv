@@ -97,6 +97,45 @@ class ColorSpace(str, Enum):
     GRAY = "gray"
 
 
+class AlphaMode(str, Enum):
+    """
+    How an operation handles an alpha channel.
+
+    Each operation declares exactly one ``AlphaMode`` in its ``OpContract``.
+    The mode drives planning-time channel inference and documents the
+    Rust execution strategy.
+    """
+
+    PASSTHROUGH = "passthrough"
+    """All channels (including alpha) processed uniformly.
+
+    Alpha is treated as just another channel.
+    Planning: output channels = input channels.
+    Examples: resize, normalize, cast, flip, crop, convolve2d.
+    """
+
+    STRIP_PROCESS_RESTORE = "strip_process_restore"
+    """Alpha separated, operation applied to color channels only, alpha restored.
+
+    Planning: output channels = op_color_channels + (1 if input has alpha else 0).
+    Examples: blur, cvt_color, sobel, laplacian, sharpen.
+    """
+
+    DROP = "drop"
+    """Alpha discarded. Output channel count is fixed by the operation.
+
+    Planning: output channels = op-specific fixed count.
+    Examples: grayscale (-> 1ch), canny (-> 1ch).
+    """
+
+    NOT_APPLICABLE = "not_applicable"
+    """Non-image operation. Alpha handling is irrelevant.
+
+    Planning: no channel update.
+    Examples: reductions, geometry ops, histogram.
+    """
+
+
 class OutputDType(str, Enum):
     """
     Output dtype specification for operations that support dtype configuration.
@@ -334,16 +373,17 @@ class NdimEffect(str, Enum):
 @dataclass(frozen=True)
 class OpContract:
     """
-    Plan-time declaration of an operation's effects on dtype and ndim.
+    Plan-time declaration of an operation's effects on dtype, ndim, and alpha.
 
     Every operation must have an ``OpContract`` entry in
     :data:`OPERATION_CONTRACTS`.  The contract is the **single source of truth**
-    on the Python side for dtype and ndim inference; it mirrors the Rust
-    ``OutputDTypeRule`` and is validated at execution time.
+    on the Python side for dtype, ndim, and channel inference; it mirrors the
+    Rust ``OutputDTypeRule`` and is validated at execution time.
     """
 
     dtype_effect: DTypeEffect
     ndim_effect: NdimEffect
+    alpha_mode: AlphaMode = AlphaMode.NOT_APPLICABLE
 
     def resolve_dtype(
         self,
@@ -390,33 +430,61 @@ class OpContract:
 #     stores sensible defaults that are overridden by param inspection.
 # ---------------------------------------------------------------------------
 OPERATION_CONTRACTS: dict[str, OpContract] = {
-    # --- Image (spatial) operations – preserve input dtype ---
-    "resize": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    "resize_scale": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    "resize_to_height": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    "resize_to_width": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    "resize_max": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    "resize_min": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # --- Image (spatial) operations — PASSTHROUGH: all channels processed uniformly ---
+    "resize": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "resize_scale": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "resize_to_height": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "resize_to_width": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "resize_max": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "resize_min": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
     # --- Image operations ---
-    # Grayscale is a channel reduction that preserves element dtype.
-    "grayscale": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    # Threshold always produces a U8 binary mask (0 or 255) regardless of input dtype.
-    "threshold": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE),
-    # Blur uses the image crate internally — requires and produces U8.
-    "blur": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE),
-    # Rotate is a dtype-preserving spatial transformation.
-    "rotate": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    # --- Perceptual hash ---
-    "perceptual_hash": OpContract(DTypeEffect.FIXED_U8, NdimEffect.TO_ONE),
-    # --- Compute operations ---
-    "normalize": OpContract(DTypeEffect.CONFIGURABLE_F32, NdimEffect.PRESERVE),
-    "scale": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
-    "clamp": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
-    "relu": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
+    # Grayscale: DROP — always produces 1 channel, alpha discarded.
+    "grayscale": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.DROP),
+    # Threshold: DROP — requires single-channel input.
+    "threshold": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE, AlphaMode.DROP),
+    # Blur: STRIP_PROCESS_RESTORE — alpha separated, blur on color, alpha restored.
+    "blur": OpContract(
+        DTypeEffect.FIXED_U8, NdimEffect.PRESERVE, AlphaMode.STRIP_PROCESS_RESTORE
+    ),
+    # Rotate: PASSTHROUGH — all channels rotated uniformly.
+    "rotate": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    # --- Perceptual hash — DROP: produces hash vector, not image ---
+    "perceptual_hash": OpContract(
+        DTypeEffect.FIXED_U8, NdimEffect.TO_ONE, AlphaMode.DROP
+    ),
+    # --- Compute operations — PASSTHROUGH: element-wise on all channels ---
+    "normalize": OpContract(
+        DTypeEffect.CONFIGURABLE_F32, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "scale": OpContract(
+        DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "clamp": OpContract(
+        DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "relu": OpContract(
+        DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
     "cast": OpContract(
-        DTypeEffect.FIXED_U8, NdimEffect.PRESERVE
-    ),  # overridden by params
-    # --- Reductions (global defaults – axis variants overridden in code) ---
+        DTypeEffect.FIXED_U8,
+        NdimEffect.PRESERVE,
+        AlphaMode.PASSTHROUGH,
+    ),  # dtype overridden by params
+    # --- Reductions — NOT_APPLICABLE ---
     "reduce_sum": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
     "reduce_mean": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
     "reduce_std": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
@@ -426,47 +494,91 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
     "reduce_percentile": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
     "reduce_argmax": OpContract(DTypeEffect.FIXED_I64, NdimEffect.TO_ZERO),
     "reduce_argmin": OpContract(DTypeEffect.FIXED_I64, NdimEffect.TO_ZERO),
-    # --- Shape / domain transitions ---
+    # --- Shape / domain transitions — NOT_APPLICABLE ---
     "extract_shape": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
     "rasterize": OpContract(DTypeEffect.FIXED_U8, NdimEffect.TO_THREE),
-    # --- Geometry scalars / vectors ---
+    # --- Geometry scalars / vectors — NOT_APPLICABLE ---
     "contour_area": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
     "contour_perimeter": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ZERO),
     "contour_centroid": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
     "contour_bounding_box": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
     "label_reduce": OpContract(DTypeEffect.FIXED_F64, NdimEffect.TO_ONE),
-    # --- Histogram (default is counts mode – overridden by params) ---
+    # --- Histogram — NOT_APPLICABLE ---
     "histogram": OpContract(DTypeEffect.FIXED_U64, NdimEffect.TO_ONE),
-    # --- Padding / spatial view operations – preserve dtype ---
-    "pad": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    "pad_to_size": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    "letterbox": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    "crop": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # --- Padding / spatial view operations — PASSTHROUGH ---
+    "pad": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "pad_to_size": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "letterbox": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "crop": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
     "reshape": OpContract(
-        DTypeEffect.PRESERVE, NdimEffect.PRESERVE
+        DTypeEffect.PRESERVE,
+        NdimEffect.PRESERVE,
+        AlphaMode.PASSTHROUGH,
     ),  # ndim param-dependent
-    "flip": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    "transpose": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    "flip": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "transpose": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
     # --- Channel operations ---
-    "channel_select": OpContract(DTypeEffect.PRESERVE, NdimEffect.REDUCE_ONE),
-    "channel_swap": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # channel_select: DROP — extracts one channel.
+    "channel_select": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.REDUCE_ONE, AlphaMode.DROP
+    ),
+    # channel_swap: PASSTHROUGH — reorders all channels uniformly.
+    "channel_swap": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    # channel_merge: NOT_APPLICABLE — explicitly constructs channels.
     "channel_merge": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    # --- Intensity adjustments ---
-    "adjust_contrast": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
-    "adjust_gamma": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
-    "invert": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
-    # --- Color space conversion ---
-    # Most conversions preserve dtype; LAB promotes to f32 (overridden by param inspection).
-    "cvt_color": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE),
+    # --- Intensity adjustments — PASSTHROUGH ---
+    "adjust_contrast": OpContract(
+        DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "adjust_gamma": OpContract(
+        DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    "invert": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    # --- Color space conversion — STRIP_PROCESS_RESTORE ---
+    "cvt_color": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.STRIP_PROCESS_RESTORE
+    ),
     # --- Convolution / filtering ---
-    "convolve2d": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
-    "sobel": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
-    "laplacian": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
-    "sharpen": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE),
-    # --- Edge detection ---
-    "canny": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE),
-    # --- Histogram equalization ---
-    "equalize_histogram": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE),
+    # convolve2d: PASSTHROUGH — generic user-defined kernel applied to all channels.
+    "convolve2d": OpContract(
+        DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
+    # sobel/laplacian/sharpen: STRIP_PROCESS_RESTORE — edge/frequency filters on color channels.
+    "sobel": OpContract(
+        DTypeEffect.PROMOTE_TO_FLOAT,
+        NdimEffect.PRESERVE,
+        AlphaMode.STRIP_PROCESS_RESTORE,
+    ),
+    "laplacian": OpContract(
+        DTypeEffect.PROMOTE_TO_FLOAT,
+        NdimEffect.PRESERVE,
+        AlphaMode.STRIP_PROCESS_RESTORE,
+    ),
+    "sharpen": OpContract(
+        DTypeEffect.PROMOTE_TO_FLOAT,
+        NdimEffect.PRESERVE,
+        AlphaMode.STRIP_PROCESS_RESTORE,
+    ),
+    # --- Edge detection — DROP: always produces 1-channel binary mask ---
+    "canny": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE, AlphaMode.DROP),
+    # --- Histogram equalization — PASSTHROUGH: per-channel equalization ---
+    "equalize_histogram": OpContract(
+        DTypeEffect.FIXED_U8, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
 }
 
 

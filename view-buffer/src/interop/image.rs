@@ -8,7 +8,7 @@ use crate::core::buffer::{BufferError, ViewBuffer};
 use crate::core::dtype::{DType, ViewType};
 use crate::core::layout::ExternalLayout;
 use crate::interop::{validate_layout, ExternalView};
-use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, Pixel, Rgb};
+use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, LumaA, Pixel, Rgb, Rgba};
 use std::marker::PhantomData;
 use std::path::Path;
 
@@ -136,25 +136,43 @@ impl ImageAdapter {
     /// Converts a loaded DynamicImage into a ViewBuffer.
     ///
     /// Preserves native dtype (u8, u16, f32) and always produces 3D `[H, W, C]`.
-    /// Alpha channels are stripped for now (RGBA -> RGB, LumaA -> Luma).
+    /// Alpha channels are preserved: RGBA produces `[H, W, 4]`, LumaA produces `[H, W, 2]`.
     pub fn from_dynamic_image(img: DynamicImage) -> ViewBuffer {
         let (w, h) = img.dimensions();
 
         match &img {
-            // 16-bit RGB (strip alpha if present)
-            DynamicImage::ImageRgb16(_) | DynamicImage::ImageRgba16(_) => {
+            // 16-bit RGBA
+            DynamicImage::ImageRgba16(_) => {
+                let rgba16 = img.to_rgba16();
+                let shape = vec![h as usize, w as usize, 4];
+                ViewBuffer::from_vec(rgba16.into_raw()).reshape(shape)
+            }
+            // 16-bit RGB
+            DynamicImage::ImageRgb16(_) => {
                 let rgb16 = img.to_rgb16();
                 let shape = vec![h as usize, w as usize, 3];
                 ViewBuffer::from_vec(rgb16.into_raw()).reshape(shape)
             }
-            // 16-bit grayscale (strip alpha if present)
-            DynamicImage::ImageLuma16(_) | DynamicImage::ImageLumaA16(_) => {
+            // 16-bit grayscale+alpha
+            DynamicImage::ImageLumaA16(_) => {
+                let lumaa16 = img.to_luma_alpha16();
+                let shape = vec![h as usize, w as usize, 2];
+                ViewBuffer::from_vec(lumaa16.into_raw()).reshape(shape)
+            }
+            // 16-bit grayscale
+            DynamicImage::ImageLuma16(_) => {
                 let luma16 = img.to_luma16();
                 let shape = vec![h as usize, w as usize, 1];
                 ViewBuffer::from_vec(luma16.into_raw()).reshape(shape)
             }
-            // 8-bit grayscale (strip alpha if present)
-            DynamicImage::ImageLuma8(_) | DynamicImage::ImageLumaA8(_) => {
+            // 8-bit grayscale+alpha
+            DynamicImage::ImageLumaA8(_) => {
+                let lumaa8 = img.to_luma_alpha8();
+                let shape = vec![h as usize, w as usize, 2];
+                ViewBuffer::from_vec(lumaa8.into_raw()).reshape(shape)
+            }
+            // 8-bit grayscale
+            DynamicImage::ImageLuma8(_) => {
                 let luma8 = img.to_luma8();
                 let shape = vec![h as usize, w as usize, 1];
                 ViewBuffer::from_vec(luma8.into_raw()).reshape(shape)
@@ -165,7 +183,19 @@ impl ImageAdapter {
                 let shape = vec![h as usize, w as usize, 3];
                 ViewBuffer::from_vec(rgb32f.into_raw()).reshape(shape)
             }
-            // Everything else: default to u8 RGB (common case: RGB8, RGBA8)
+            // 32-bit float RGBA
+            DynamicImage::ImageRgba32F(_) => {
+                let rgba32f = img.to_rgba32f();
+                let shape = vec![h as usize, w as usize, 4];
+                ViewBuffer::from_vec(rgba32f.into_raw()).reshape(shape)
+            }
+            // 8-bit RGBA
+            DynamicImage::ImageRgba8(_) => {
+                let rgba8 = img.to_rgba8();
+                let shape = vec![h as usize, w as usize, 4];
+                ViewBuffer::from_vec(rgba8.into_raw()).reshape(shape)
+            }
+            // 8-bit RGB (common case)
             _ => {
                 let rgb_img = img.to_rgb8();
                 let shape = vec![h as usize, w as usize, 3];
@@ -214,29 +244,14 @@ impl ImageAdapter {
         let contiguous = buffer.to_contiguous();
         let shape = contiguous.shape();
 
-        // Validate shape - support [H, W] or [H, W, 1] for grayscale
         let (h, w, channels) = match shape.len() {
             2 => (shape[0] as u32, shape[1] as u32, 1),
-            3 => {
-                if shape[2] == 1 {
-                    (shape[0] as u32, shape[1] as u32, 1)
-                } else if shape[2] == 3 {
-                    (shape[0] as u32, shape[1] as u32, 3)
-                } else {
-                    return Err(image::ImageError::Parameter(
-                        image::error::ParameterError::from_kind(
-                            image::error::ParameterErrorKind::Generic(
-                                "TIFF encoder supports grayscale [H, W] or [H, W, 1] and RGB [H, W, 3] formats".to_string(),
-                            ),
-                        ),
-                    ));
-                }
-            }
+            3 if matches!(shape[2], 1..=4) => (shape[0] as u32, shape[1] as u32, shape[2]),
             _ => {
                 return Err(image::ImageError::Parameter(
                     image::error::ParameterError::from_kind(
                         image::error::ParameterErrorKind::Generic(
-                            "TIFF encoder supports grayscale [H, W] or [H, W, 1] and RGB [H, W, 3] formats".to_string(),
+                            "TIFF encoder supports [H, W], [H, W, 1], [H, W, 2], [H, W, 3], or [H, W, 4]".to_string(),
                         ),
                     ),
                 ));
@@ -265,11 +280,21 @@ impl ImageAdapter {
             image::ImageError::IoError(std::io::Error::other(format!("TIFF encoding failed: {e}")))
         };
 
-        // Encode based on data type and channels
         match (contiguous.dtype(), channels) {
             (crate::core::dtype::DType::U8, 1) => {
                 encoder
                     .write_image::<colortype::Gray8>(w, h, contiguous.as_slice::<u8>())
+                    .map_err(tiff_err)?;
+            }
+            (crate::core::dtype::DType::U8, 2) => {
+                // tiff crate has no GrayA encoder; expand to RGBA for encoding
+                let src = contiguous.as_slice::<u8>();
+                let mut rgba = Vec::with_capacity(src.len() * 2);
+                for pixel in src.chunks_exact(2) {
+                    rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
+                }
+                encoder
+                    .write_image::<colortype::RGBA8>(w, h, &rgba)
                     .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::U8, 3) => {
@@ -277,14 +302,35 @@ impl ImageAdapter {
                     .write_image::<colortype::RGB8>(w, h, contiguous.as_slice::<u8>())
                     .map_err(tiff_err)?;
             }
+            (crate::core::dtype::DType::U8, 4) => {
+                encoder
+                    .write_image::<colortype::RGBA8>(w, h, contiguous.as_slice::<u8>())
+                    .map_err(tiff_err)?;
+            }
             (crate::core::dtype::DType::U16, 1) => {
                 encoder
                     .write_image::<colortype::Gray16>(w, h, contiguous.as_slice::<u16>())
                     .map_err(tiff_err)?;
             }
+            (crate::core::dtype::DType::U16, 2) => {
+                // tiff crate has no GrayA encoder; expand to RGBA for encoding
+                let src = contiguous.as_slice::<u16>();
+                let mut rgba = Vec::with_capacity(src.len() * 2);
+                for pixel in src.chunks_exact(2) {
+                    rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
+                }
+                encoder
+                    .write_image::<colortype::RGBA16>(w, h, &rgba)
+                    .map_err(tiff_err)?;
+            }
             (crate::core::dtype::DType::U16, 3) => {
                 encoder
                     .write_image::<colortype::RGB16>(w, h, contiguous.as_slice::<u16>())
+                    .map_err(tiff_err)?;
+            }
+            (crate::core::dtype::DType::U16, 4) => {
+                encoder
+                    .write_image::<colortype::RGBA16>(w, h, contiguous.as_slice::<u16>())
                     .map_err(tiff_err)?;
             }
             (crate::core::dtype::DType::F32, 1) => {
@@ -406,9 +452,9 @@ impl ImageAdapter {
     /// Convert ViewBuffer -> DynamicImage.
     ///
     /// This is useful for interoperating with the image crate's APIs.
-    /// The buffer must have U8 dtype and be in [H, W, 3] (RGB) or [H, W] / [H, W, 1] (Luma) format.
+    /// The buffer must have U8 dtype and be in `[H, W, C]` where C is 1, 2, 3, or 4,
+    /// or `[H, W]` (treated as single-channel).
     pub fn to_dynamic_image(buffer: &ViewBuffer) -> Result<DynamicImage, image::ImageError> {
-        // 1. Validation
         if buffer.dtype() != DType::U8 {
             return Err(image::ImageError::Parameter(
                 image::error::ParameterError::from_kind(image::error::ParameterErrorKind::Generic(
@@ -418,7 +464,6 @@ impl ImageAdapter {
         }
 
         let shape = buffer.shape();
-        // Support [H, W, 3] (RGB) or [H, W, 1] / [H, W] (Luma)
         let channels = if shape.len() == 3 {
             shape[2]
         } else if shape.len() == 2 {
@@ -427,7 +472,7 @@ impl ImageAdapter {
             0
         };
 
-        if channels != 1 && channels != 3 {
+        if !matches!(channels, 1..=4) {
             return Err(image::ImageError::Parameter(
                 image::error::ParameterError::from_kind(
                     image::error::ParameterErrorKind::DimensionMismatch,
@@ -436,38 +481,40 @@ impl ImageAdapter {
         }
 
         let (h, w) = (shape[0] as u32, shape[1] as u32);
-
-        // 2. Ensure Contiguous
-        // We need a standard contiguous buffer for the image crate to consume
         let contiguous = buffer.to_contiguous();
-
-        // 3. Construct ImageBuffer
         let slice = unsafe {
             std::slice::from_raw_parts(contiguous.as_ptr::<u8>(), contiguous.layout.num_elements())
         };
 
-        if channels == 3 {
-            // RGB
-            let img_buf = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
-                .ok_or_else(|| {
-                    image::ImageError::Parameter(image::error::ParameterError::from_kind(
-                        image::error::ParameterErrorKind::Generic(
-                            "Failed to create RGB ImageBuffer".to_string(),
-                        ),
-                    ))
-                })?;
-            Ok(DynamicImage::ImageRgb8(img_buf))
-        } else {
-            // Grayscale (Luma)
-            let img_buf = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
-                .ok_or_else(|| {
-                    image::ImageError::Parameter(image::error::ParameterError::from_kind(
-                        image::error::ParameterErrorKind::Generic(
-                            "Failed to create Luma ImageBuffer".to_string(),
-                        ),
-                    ))
-                })?;
-            Ok(DynamicImage::ImageLuma8(img_buf))
+        let make_err = |label: &str| {
+            image::ImageError::Parameter(image::error::ParameterError::from_kind(
+                image::error::ParameterErrorKind::Generic(format!(
+                    "Failed to create {label} ImageBuffer"
+                )),
+            ))
+        };
+
+        match channels {
+            4 => {
+                let img_buf = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
+                    .ok_or_else(|| make_err("RGBA"))?;
+                Ok(DynamicImage::ImageRgba8(img_buf))
+            }
+            3 => {
+                let img_buf = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
+                    .ok_or_else(|| make_err("RGB"))?;
+                Ok(DynamicImage::ImageRgb8(img_buf))
+            }
+            2 => {
+                let img_buf = ImageBuffer::<LumaA<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
+                    .ok_or_else(|| make_err("LumaA"))?;
+                Ok(DynamicImage::ImageLumaA8(img_buf))
+            }
+            _ => {
+                let img_buf = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
+                    .ok_or_else(|| make_err("Luma"))?;
+                Ok(DynamicImage::ImageLuma8(img_buf))
+            }
         }
     }
 }

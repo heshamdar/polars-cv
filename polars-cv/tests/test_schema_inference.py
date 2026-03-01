@@ -101,10 +101,12 @@ class TestListSinkInference:
         assert result_dtype == pl.List(pl.List(pl.Float32))
 
     def test_float64_with_crop(self):
-        """Float64 input → crop (provides shape [4,4,3]) → list sink → List(List(List(Float64))).
+        """Float64 input → crop (provides shape [4,4]) → list sink → List(List(Float64)).
 
-        crop sets deterministic shape hints (H=4, W=4, C=3 default),
-        which gives expected_shape=[4,4,3] → 3 nesting levels.
+        crop sets deterministic height/width hints (H=4, W=4), but channels
+        are unknown for list sources unless asserted. Without a channel
+        dimension, expected_shape is None and the schema uses the 2D nesting
+        inferred from the column type.
         """
         data = np.random.rand(2, 8, 8).astype(np.float64)
         col = _make_list_column(data)
@@ -115,7 +117,7 @@ class TestListSinkInference:
             df.lazy().select(pl.col("data").cv.pipe(pipe).sink("list")).collect_schema()
         )
         result_dtype = schema["data"]
-        assert result_dtype == pl.List(pl.List(pl.List(pl.Float64)))
+        assert result_dtype == pl.List(pl.List(pl.Float64))
 
 
 # ============================================================

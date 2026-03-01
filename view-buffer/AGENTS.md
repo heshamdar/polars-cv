@@ -117,6 +117,26 @@ pub trait Op {
 }
 ```
 
+## Alpha Channel Support
+
+Alpha channels are **always preserved** during image decoding. `from_dynamic_image()` produces:
+- RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`
+- RGB → `[H, W, 3]`, Gray → `[H, W, 1]`
+
+Operations handle alpha via three strategies (aligned with the Python `AlphaMode` contract):
+
+| Strategy | Operations | Behavior |
+|----------|-----------|----------|
+| **Passthrough** | resize, normalize, crop, flip, pad, etc. | All channels processed uniformly |
+| **Strip-Process-Restore** | blur, cvt_color, sobel, laplacian, sharpen | Alpha split off, op on color channels, alpha re-attached |
+| **Drop** | grayscale, canny, threshold | Alpha discarded, fixed output channels |
+
+Key implementation points:
+- `ops/color.rs` provides `split_alpha()` / `merge_alpha()` helpers used by `apply_color_convert()`
+- `execution/runner.rs`: `grayscale_u8()` handles 4ch (BT.601 on RGB, ignore alpha) and 2ch (take intensity)
+- `execution/runner.rs`: blur dispatches via `ImageBuffer<Rgba<u8>>` and `ImageBuffer<LumaA<u8>>` for 4ch/2ch
+- `interop/image.rs`: `to_dynamic_image()` accepts 1–4 channels; `encode_tiff()` supports RGBA/GrayA
+
 ## Rank Preservation Contracts
 
 - **resize**: Preserves input rank. 2D `[H, W]` → 2D `[H_new, W_new]`; 3D stays 3D.

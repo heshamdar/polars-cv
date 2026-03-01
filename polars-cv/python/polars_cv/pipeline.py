@@ -15,6 +15,7 @@ import polars as pl
 
 from polars_cv._types import (
     OPERATION_CONTRACTS,
+    AlphaMode,
     CloudOptions,
     ColorSpace,
     DType,
@@ -370,10 +371,15 @@ class Pipeline:
         """
         Update shape hints based on the operation being added.
 
+        Height/width updates are handled per-op. Channel updates are driven
+        by the operation's ``AlphaMode`` contract via
+        :meth:`_update_channels_from_contract`.
+
         Args:
             op_name: Name of the operation.
             params: Parameters of the operation.
         """
+        # --- Height / Width updates ---
         if op_name == "resize":
             h = params.get("height")
             w = params.get("width")
@@ -386,36 +392,23 @@ class Pipeline:
             else:
                 self._shape_hints.width = None
         elif op_name == "resize_to_height":
-            # Height is known; width is computed at runtime (aspect ratio).
             h = params.get("height")
             if h and not h.is_expr:
                 self._shape_hints.height = h
             else:
                 self._shape_hints.height = None
-            self._shape_hints.width = None  # unknown (runtime)
+            self._shape_hints.width = None
         elif op_name == "resize_to_width":
-            # Width is known; height is computed at runtime (aspect ratio).
             w = params.get("width")
             if w and not w.is_expr:
                 self._shape_hints.width = w
             else:
                 self._shape_hints.width = None
-            self._shape_hints.height = None  # unknown (runtime)
+            self._shape_hints.height = None
         elif op_name in ("resize_scale", "resize_max", "resize_min"):
-            # Both dimensions are computed at runtime.
             self._shape_hints.height = None
             self._shape_hints.width = None
-        elif op_name in ("grayscale", "canny"):
-            self._shape_hints.channels = ParamValue(is_expr=False, value=1)
-        elif op_name == "cvt_color":
-            to_space = params.get("to_space")
-            if to_space and not to_space.is_expr:
-                if to_space.value == "gray":
-                    self._shape_hints.channels = ParamValue(is_expr=False, value=1)
-                else:
-                    self._shape_hints.channels = ParamValue(is_expr=False, value=3)
         elif op_name == "pad":
-            # If we have current hints and literal padding, we can update
             if (
                 self._shape_hints.height
                 and not self._shape_hints.height.is_expr
@@ -445,7 +438,7 @@ class Pipeline:
                         is_expr=False,
                         value=self._shape_hints.width.value + left.value + right.value,
                     )
-        elif op_name == "pad_to_size" or op_name == "letterbox":
+        elif op_name in ("pad_to_size", "letterbox"):
             h = params.get("height")
             w = params.get("width")
             if h and not h.is_expr:
@@ -460,7 +453,6 @@ class Pipeline:
             if w and not w.is_expr:
                 self._shape_hints.width = w
         elif op_name == "reshape":
-            # shape param is a ParamValue(is_expr=False, value=[dict, dict, ...])
             shape_val = params.get("shape")
             if shape_val and not shape_val.is_expr:
                 shape_list = shape_val.value
@@ -491,13 +483,79 @@ class Pipeline:
                 and not expand.is_expr
                 and not expand.value
             ):
-                # Non-expanding rotation
                 if angle.value in (90, 270, -90, -270):
-                    # Swap height and width
                     h = self._shape_hints.height
                     w = self._shape_hints.width
                     self._shape_hints.height = w
                     self._shape_hints.width = h
+
+        # --- Channel updates driven by AlphaMode contract ---
+        self._update_channels_from_contract(op_name, params)
+
+    def _update_channels_from_contract(
+        self, op_name: str, params: dict[str, ParamValue]
+    ) -> None:
+        """Update channel hints based on the operation's ``AlphaMode`` contract.
+
+        Args:
+            op_name: Name of the operation.
+            params: Parameters of the operation.
+        """
+        contract = OPERATION_CONTRACTS.get(op_name)
+        if contract is None:
+            return
+
+        if contract.alpha_mode is AlphaMode.PASSTHROUGH:
+            return
+
+        if contract.alpha_mode is AlphaMode.NOT_APPLICABLE:
+            return
+
+        if contract.alpha_mode is AlphaMode.DROP:
+            if op_name in ("grayscale", "canny"):
+                self._shape_hints.channels = ParamValue(is_expr=False, value=1)
+            return
+
+        if contract.alpha_mode is AlphaMode.STRIP_PROCESS_RESTORE:
+            op_color_channels = self._get_op_color_channels(op_name, params)
+            if op_color_channels is None:
+                self._shape_hints.channels = None
+                return
+
+            input_c = self._shape_hints.channels
+            if input_c is not None and not input_c.is_expr:
+                has_alpha = input_c.value in (2, 4)
+                output_c = op_color_channels + (1 if has_alpha else 0)
+                self._shape_hints.channels = ParamValue(is_expr=False, value=output_c)
+            else:
+                self._shape_hints.channels = None
+
+    def _get_op_color_channels(
+        self, op_name: str, params: dict[str, ParamValue]
+    ) -> int | None:
+        """Return the number of color channels an operation produces.
+
+        Used by STRIP_PROCESS_RESTORE ops to compute total output channels
+        (color channels + 1 if alpha is present).
+
+        Args:
+            op_name: Name of the operation.
+            params: Parameters of the operation.
+
+        Returns:
+            Number of output color channels, or ``None`` if unknown.
+        """
+        if op_name == "cvt_color":
+            to_space = params.get("to_space")
+            if to_space and not to_space.is_expr:
+                return 1 if to_space.value == "gray" else 3
+            return None
+        # blur, sobel, laplacian, sharpen preserve input color channel count
+        input_c = self._shape_hints.channels
+        if input_c is not None and not input_c.is_expr:
+            has_alpha = input_c.value in (2, 4)
+            return input_c.value - (1 if has_alpha else 0)
+        return None
 
     # --- Source (required, starts the chain) ---
 

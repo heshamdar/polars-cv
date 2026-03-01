@@ -239,7 +239,7 @@ class TestTiffSinkSupport:
         numpy_result = df_decoded["reconstructed"][0]
         assert isinstance(numpy_result, dict)
         assert numpy_result["dtype"] == "float32"
-        assert numpy_result["shape"] == [3, 3]
+        assert numpy_result["shape"] == [3, 3, 1]
 
         # Extract and verify the actual data
         decoded_bytes = numpy_result["data"]
@@ -263,13 +263,15 @@ class TestTiffSinkSupport:
                 "dtype": "f32",
                 "data": [1.0, 0.5, 0.25, 0.125],
                 "pack_format": "<4f",
-                "shape": [2, 2],
+                "encode_shape": [2, 2],
+                "decoded_shape": [2, 2, 1],
             },
             {
                 "dtype": "u8",
                 "data": [255, 128, 64, 32],
                 "pack_format": "4B",
-                "shape": [2, 2],
+                "encode_shape": [2, 2],
+                "decoded_shape": [2, 2, 1],
             },
         ]
 
@@ -284,7 +286,9 @@ class TestTiffSinkSupport:
 
             # Encode to TIFF
             encode_pipe = (
-                Pipeline().source("raw", dtype=case["dtype"]).reshape(case["shape"])
+                Pipeline()
+                .source("raw", dtype=case["dtype"])
+                .reshape(case["encode_shape"])
             )
             df_tiff = df.with_columns(
                 tiff=pl.col("data").cv.pipe(encode_pipe).sink("tiff")
@@ -305,8 +309,8 @@ class TestTiffSinkSupport:
             assert result["dtype"] == expected_dtype, (
                 f"Expected {expected_dtype}, got {result['dtype']}"
             )
-            assert result["shape"] == case["shape"], (
-                f"Expected {case['shape']}, got {result['shape']}"
+            assert result["shape"] == case["decoded_shape"], (
+                f"Expected {case['decoded_shape']}, got {result['shape']}"
             )
 
 
