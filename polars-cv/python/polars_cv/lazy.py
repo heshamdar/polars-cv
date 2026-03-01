@@ -1068,6 +1068,80 @@ class LazyPipelineExpr:
             Pipeline().canny(low_threshold=low_threshold, high_threshold=high_threshold)
         )
 
+    # --- Morphological Operations ---
+
+    def erode(self, *, ksize: int = 3, iterations: int = 1) -> "LazyPipelineExpr":
+        """
+        Morphological erosion (local minimum filter).
+
+        Args:
+            ksize: Size of the square structuring element.
+            iterations: Number of times the erosion is applied.
+
+        Returns:
+            New LazyPipelineExpr with erosion applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().erode(ksize=ksize, iterations=iterations))
+
+    def dilate(self, *, ksize: int = 3, iterations: int = 1) -> "LazyPipelineExpr":
+        """
+        Morphological dilation (local maximum filter).
+
+        Args:
+            ksize: Size of the square structuring element.
+            iterations: Number of times the dilation is applied.
+
+        Returns:
+            New LazyPipelineExpr with dilation applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().dilate(ksize=ksize, iterations=iterations))
+
+    def morphology_open(self, *, ksize: int = 3) -> "LazyPipelineExpr":
+        """
+        Morphological opening (erode then dilate).
+
+        Args:
+            ksize: Size of the square structuring element.
+
+        Returns:
+            New LazyPipelineExpr with opening applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().morphology_open(ksize=ksize))
+
+    def morphology_close(self, *, ksize: int = 3) -> "LazyPipelineExpr":
+        """
+        Morphological closing (dilate then erode).
+
+        Args:
+            ksize: Size of the square structuring element.
+
+        Returns:
+            New LazyPipelineExpr with closing applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().morphology_close(ksize=ksize))
+
+    def morphology_gradient(self, *, ksize: int = 3) -> "LazyPipelineExpr":
+        """
+        Morphological gradient (dilate − erode).
+
+        Args:
+            ksize: Size of the square structuring element.
+
+        Returns:
+            New LazyPipelineExpr with morphological gradient applied.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().morphology_gradient(ksize=ksize))
+
     # --- Histogram Equalization ---
 
     def equalize_histogram(self) -> "LazyPipelineExpr":

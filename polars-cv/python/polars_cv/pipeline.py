@@ -1588,6 +1588,160 @@ class Pipeline:
         new._update_shape_hints("canny", {})
         return new
 
+    # --- Morphological Operations ---
+
+    def erode(self, *, ksize: int = 3, iterations: int = 1) -> "Pipeline":
+        """
+        Morphological erosion (local minimum filter).
+
+        Shrinks bright regions / grows dark regions by computing the minimum
+        value in a ``ksize × ksize`` rectangular neighborhood.  Requires
+        single-channel input (e.g., after ``.grayscale()`` or ``.threshold()``).
+
+        Domain: buffer → buffer
+
+        Args:
+            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+            iterations: Number of times the erosion is applied.
+
+        Returns:
+            New Pipeline with erosion applied.
+
+        Example:
+            ```python
+            >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "erode")
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="erode",
+                params={
+                    "ksize": ParamValue(is_expr=False, value=ksize),
+                    "iterations": ParamValue(is_expr=False, value=iterations),
+                },
+            )
+        )
+        new._update_output_dtype("erode")
+        new._update_shape_hints("erode", {})
+        return new
+
+    def dilate(self, *, ksize: int = 3, iterations: int = 1) -> "Pipeline":
+        """
+        Morphological dilation (local maximum filter).
+
+        Grows bright regions / shrinks dark regions by computing the maximum
+        value in a ``ksize × ksize`` rectangular neighborhood.  Requires
+        single-channel input (e.g., after ``.grayscale()`` or ``.threshold()``).
+
+        Domain: buffer → buffer
+
+        Args:
+            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+            iterations: Number of times the dilation is applied.
+
+        Returns:
+            New Pipeline with dilation applied.
+
+        Example:
+            ```python
+            >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "dilate")
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="dilate",
+                params={
+                    "ksize": ParamValue(is_expr=False, value=ksize),
+                    "iterations": ParamValue(is_expr=False, value=iterations),
+                },
+            )
+        )
+        new._update_output_dtype("dilate")
+        new._update_shape_hints("dilate", {})
+        return new
+
+    def morphology_open(self, *, ksize: int = 3) -> "Pipeline":
+        """
+        Morphological opening (erode then dilate).
+
+        Removes small bright spots while preserving larger structures.
+        Equivalent to ``.erode(ksize=ksize).dilate(ksize=ksize)``.
+
+        Domain: buffer → buffer
+
+        Args:
+            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+
+        Returns:
+            New Pipeline with opening applied.
+
+        Example:
+            ```python
+            >>> cleaned = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_open(ksize=3)
+            ```
+        """
+        return self.erode(ksize=ksize).dilate(ksize=ksize)
+
+    def morphology_close(self, *, ksize: int = 3) -> "Pipeline":
+        """
+        Morphological closing (dilate then erode).
+
+        Fills small dark holes while preserving larger structures.
+        Equivalent to ``.dilate(ksize=ksize).erode(ksize=ksize)``.
+
+        Domain: buffer → buffer
+
+        Args:
+            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+
+        Returns:
+            New Pipeline with closing applied.
+
+        Example:
+            ```python
+            >>> filled = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_close(ksize=3)
+            ```
+        """
+        return self.dilate(ksize=ksize).erode(ksize=ksize)
+
+    def morphology_gradient(self, *, ksize: int = 3) -> "Pipeline":
+        """
+        Morphological gradient (dilate − erode).
+
+        Produces an edge outline by computing the difference between dilation
+        and erosion on the same input.  Requires single-channel input.
+
+        Domain: buffer → buffer
+
+        Args:
+            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+
+        Returns:
+            New Pipeline with morphological gradient applied.
+
+        Example:
+            ```python
+            >>> edges = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
+            ```
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "morphology_gradient")
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="morphology_gradient",
+                params={
+                    "ksize": ParamValue(is_expr=False, value=ksize),
+                },
+            )
+        )
+        new._update_output_dtype("morphology_gradient")
+        new._update_shape_hints("morphology_gradient", {})
+        return new
+
     # --- Histogram Equalization ---
 
     def equalize_histogram(self) -> "Pipeline":

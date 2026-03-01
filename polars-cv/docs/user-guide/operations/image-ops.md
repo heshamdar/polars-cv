@@ -231,6 +231,58 @@ Contrast enhancement via cumulative histogram remapping. Operates per-channel on
 Pipeline().source("image_bytes").equalize_histogram()
 ```
 
+## Morphological Operations
+
+Morphological operations for binary mask and segmentation post-processing. All require **single-channel** input (use `.grayscale()` or `.threshold()` first).
+
+### Erode
+
+Shrink bright regions by computing the local minimum over a rectangular neighborhood.
+
+```python
+Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
+Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=5, iterations=2)
+```
+
+### Dilate
+
+Grow bright regions by computing the local maximum over a rectangular neighborhood.
+
+```python
+Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
+Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=5, iterations=2)
+```
+
+### Opening
+
+Erode then dilate — removes small bright noise spots while preserving larger structures.
+
+```python
+Pipeline().source("image_bytes").grayscale().threshold(128).morphology_open(ksize=3)
+```
+
+This is a Python-side composite equivalent to `.erode(ksize=ksize).dilate(ksize=ksize)`.
+
+### Closing
+
+Dilate then erode — fills small dark holes while preserving larger structures.
+
+```python
+Pipeline().source("image_bytes").grayscale().threshold(128).morphology_close(ksize=3)
+```
+
+This is a Python-side composite equivalent to `.dilate(ksize=ksize).erode(ksize=ksize)`.
+
+### Morphological Gradient
+
+Dilate minus erode — produces an edge outline.
+
+```python
+Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
+```
+
+**Common workflow:** `threshold() → erode() → dilate() → extract_contours()`.
+
 ## Layout
 
 ### Transpose

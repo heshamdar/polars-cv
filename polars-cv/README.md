@@ -94,6 +94,8 @@ result = df.with_columns(
 - **Channels**: `channel_select`, `channel_swap`.
 - **Intensity**: `adjust_contrast`, `adjust_gamma`, `adjust_brightness`, `invert`.
 - **Convolution & Edge Detection**: `convolve2d`, `sobel`, `laplacian`, `sharpen`, `canny`.
+- **Morphology**: `erode`, `dilate`, `morphology_open`, `morphology_close`, `morphology_gradient`.
+- **Morphology**: `erode`, `dilate`, `morphology_open`, `morphology_close`, `morphology_gradient`.
 - **Enhancement**: `equalize_histogram`.
 - **Compute**: `normalize`, `scale`, `clamp`, `relu`, `cast`.
 - **Layout**: `transpose`, `reshape`.

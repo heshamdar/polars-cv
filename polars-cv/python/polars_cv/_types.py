@@ -573,6 +573,12 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
         NdimEffect.PRESERVE,
         AlphaMode.STRIP_PROCESS_RESTORE,
     ),
+    # --- Morphological operations — DROP: single-channel only, alpha discarded ---
+    "erode": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.DROP),
+    "dilate": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.DROP),
+    "morphology_gradient": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.DROP
+    ),
     # --- Edge detection — DROP: always produces 1-channel binary mask ---
     "canny": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE, AlphaMode.DROP),
     # --- Histogram equalization — PASSTHROUGH: per-channel equalization ---
