@@ -22,7 +22,7 @@ use crate::interop::ndarray::{AsNdarray, FromNdarray};
 #[cfg(feature = "image_interop")]
 use image::imageops;
 #[cfg(feature = "image_interop")]
-use image::{ImageBuffer, Luma, Rgb};
+use image::{ImageBuffer, Luma, LumaA, Rgb, Rgba};
 
 #[cfg(feature = "image_interop")]
 use fast_image_resize as fir;
@@ -860,18 +860,29 @@ fn grayscale_u8(buf: ViewBuffer) -> ViewBuffer {
     let channels = shape.get(2).copied().unwrap_or(1);
     let strides = buf.strides_bytes();
 
-    // Fast path: contiguous RGB buffer with standard layout
-    if buf.layout.is_contiguous() && channels == 3 {
-        let data = unsafe { std::slice::from_raw_parts(buf.as_ptr::<u8>(), h * w * 3) };
+    // Fast path: contiguous 3-channel or 4-channel (RGBA) buffer
+    if buf.layout.is_contiguous() && (channels == 3 || channels == 4) {
+        let data = unsafe { std::slice::from_raw_parts(buf.as_ptr::<u8>(), h * w * channels) };
         let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
 
-        for pixel in data.chunks_exact(3) {
+        for pixel in data.chunks_exact(channels) {
             let r = pixel[0] as u32;
             let g = pixel[1] as u32;
             let b = pixel[2] as u32;
-            // BT.601 fixed-point
             let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
             gray_data.push(gray);
+        }
+
+        return ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1]);
+    }
+
+    // Fast path: contiguous 2-channel (GrayA) — take the intensity channel
+    if buf.layout.is_contiguous() && channels == 2 {
+        let data = unsafe { std::slice::from_raw_parts(buf.as_ptr::<u8>(), h * w * 2) };
+        let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
+
+        for pixel in data.chunks_exact(2) {
+            gray_data.push(pixel[0]);
         }
 
         return ViewBuffer::from_vec(gray_data).reshape(vec![h, w, 1]);
@@ -884,17 +895,30 @@ fn grayscale_u8(buf: ViewBuffer) -> ViewBuffer {
 
     let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
 
-    for y in 0..h {
-        for x in 0..w {
-            let pixel_offset = y as isize * stride_h + x as isize * stride_w;
-            unsafe {
-                let pixel_ptr = base_ptr.offset(pixel_offset);
-                let r = *pixel_ptr as u32;
-                let g = *pixel_ptr.offset(stride_c) as u32;
-                let b = *pixel_ptr.offset(2 * stride_c) as u32;
-                // BT.601 fixed-point
-                let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
-                gray_data.push(gray);
+    if channels == 2 {
+        // GrayA: take the intensity channel only
+        for y in 0..h {
+            for x in 0..w {
+                let pixel_offset = y as isize * stride_h + x as isize * stride_w;
+                unsafe {
+                    let pixel_ptr = base_ptr.offset(pixel_offset);
+                    gray_data.push(*pixel_ptr);
+                }
+            }
+        }
+    } else {
+        // RGB or RGBA: BT.601 on first 3 channels, alpha ignored
+        for y in 0..h {
+            for x in 0..w {
+                let pixel_offset = y as isize * stride_h + x as isize * stride_w;
+                unsafe {
+                    let pixel_ptr = base_ptr.offset(pixel_offset);
+                    let r = *pixel_ptr as u32;
+                    let g = *pixel_ptr.offset(stride_c) as u32;
+                    let b = *pixel_ptr.offset(2 * stride_c) as u32;
+                    let gray = ((77 * r + 150 * g + 29 * b + 128) >> 8).min(255) as u8;
+                    gray_data.push(gray);
+                }
             }
         }
     }
@@ -1399,16 +1423,35 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             let raw_vec =
                 unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count).to_vec() };
 
-            if c == 3 {
-                let img_buf: ImageBuffer<Rgb<u8>, Vec<u8>> =
-                    ImageBuffer::from_raw(w, h, raw_vec).unwrap();
-                let blurred = imageops::blur(&img_buf, sigma);
-                ViewBuffer::from_vec(blurred.into_raw()).reshape(vec![h as usize, w as usize, 3])
-            } else {
-                let img_buf: ImageBuffer<Luma<u8>, Vec<u8>> =
-                    ImageBuffer::from_raw(w, h, raw_vec).unwrap();
-                let blurred = imageops::blur(&img_buf, sigma);
-                ViewBuffer::from_vec(blurred.into_raw()).reshape(vec![h as usize, w as usize, 1])
+            match c {
+                4 => {
+                    let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+                        ImageBuffer::from_raw(w, h, raw_vec).unwrap();
+                    let blurred = imageops::blur(&img_buf, sigma);
+                    ViewBuffer::from_vec(blurred.into_raw())
+                        .reshape(vec![h as usize, w as usize, 4])
+                }
+                3 => {
+                    let img_buf: ImageBuffer<Rgb<u8>, Vec<u8>> =
+                        ImageBuffer::from_raw(w, h, raw_vec).unwrap();
+                    let blurred = imageops::blur(&img_buf, sigma);
+                    ViewBuffer::from_vec(blurred.into_raw())
+                        .reshape(vec![h as usize, w as usize, 3])
+                }
+                2 => {
+                    let img_buf: ImageBuffer<LumaA<u8>, Vec<u8>> =
+                        ImageBuffer::from_raw(w, h, raw_vec).unwrap();
+                    let blurred = imageops::blur(&img_buf, sigma);
+                    ViewBuffer::from_vec(blurred.into_raw())
+                        .reshape(vec![h as usize, w as usize, 2])
+                }
+                _ => {
+                    let img_buf: ImageBuffer<Luma<u8>, Vec<u8>> =
+                        ImageBuffer::from_raw(w, h, raw_vec).unwrap();
+                    let blurred = imageops::blur(&img_buf, sigma);
+                    ViewBuffer::from_vec(blurred.into_raw())
+                        .reshape(vec![h as usize, w as usize, 1])
+                }
             }
         }
     }

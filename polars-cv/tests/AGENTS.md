@@ -68,6 +68,7 @@ The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`
 | `test_on_error.py` | `on_error="null"` graceful error handling |
 | `test_display.py` | `show_images()` display utility |
 | `test_tiff_integration.py` | TIFF format integration |
+| `test_alpha_channel.py` | Alpha channel decode/encode, AlphaMode contracts, planning-time inference |
 
 ### Reference Tests (`tests/reference/`)
 

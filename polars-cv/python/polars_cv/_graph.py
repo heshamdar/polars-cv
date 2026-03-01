@@ -71,11 +71,9 @@ class GraphNode:
             and hints.width
             and not hints.width.is_expr
         ):
-            # Default to 3 channels if not specified for image sources
-            channels = 3
-            if hints.channels and not hints.channels.is_expr:
-                channels = hints.channels.value
-            return [hints.height.value, hints.width.value, channels]
+            if not hints.channels or hints.channels.is_expr:
+                return None
+            return [hints.height.value, hints.width.value, hints.channels.value]
         return None
 
 

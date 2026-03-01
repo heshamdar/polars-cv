@@ -81,12 +81,14 @@ match op_spec.op.as_str() {
 
 | Source Format | Decoding |
 |---------------|----------|
-| `image_bytes` | Decode PNG/JPEG/TIFF via `ImageAdapter` → `ViewBuffer` |
+| `image_bytes` | Decode PNG/JPEG/TIFF via `ImageAdapter` → `ViewBuffer` (alpha channels preserved) |
 | `blob` | VIEW protocol binary (header + data) → `ViewBuffer` |
 | `raw` | Raw bytes with explicit dtype → `ViewBuffer` |
-| `file_path` | Read from local/cloud/HTTP, then decode as image |
+| `file_path` | Read from local/cloud/HTTP, then decode as image (alpha channels preserved) |
 | `contour` | Parse Struct column into `Contour`, optionally rasterize to mask |
 | `list` / `array` | Zero-copy (when contiguous) or copy from Polars nested types |
+
+Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`. The `AlphaMode` contract in Python documents how each operation handles alpha; Rust implements the corresponding behavior based on the buffer's actual channel count.
 
 ### Sink Encoding (`graph/encode.rs`)
 

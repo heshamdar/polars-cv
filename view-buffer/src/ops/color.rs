@@ -54,13 +54,20 @@ pub struct ColorConvertOp {
 
 impl ColorConvertOp {
     /// Infer the output shape given an input shape.
+    ///
+    /// Alpha channels are preserved: RGBA (4ch) through a non-gray conversion
+    /// stays 4ch; RGBA through gray conversion becomes GrayA (2ch).
     pub fn infer_shape(&self, input: &[usize]) -> Vec<usize> {
-        let out_c = self.to.channels();
+        let out_color_c = self.to.channels();
         match input.len() {
             2 if self.to == ColorSpace::Gray => input.to_vec(),
-            2 => vec![input[0], input[1], out_c],
-            3 if self.to == ColorSpace::Gray => vec![input[0], input[1], 1],
-            3 => vec![input[0], input[1], out_c],
+            2 => vec![input[0], input[1], out_color_c],
+            3 => {
+                let in_c = input[2];
+                let has_alpha = matches!(in_c, 2 | 4);
+                let out_c = out_color_c + if has_alpha { 1 } else { 0 };
+                vec![input[0], input[1], out_c]
+            }
             _ => input.to_vec(),
         }
     }
@@ -74,10 +81,116 @@ impl ColorConvertOp {
     }
 }
 
+/// Split alpha channel from a buffer.
+///
+/// `[H, W, 4]` -> `([H, W, 3], [H, W, 1])` (color, alpha)
+/// `[H, W, 2]` -> `([H, W, 1], [H, W, 1])` (gray, alpha)
+pub fn split_alpha(buf: &ViewBuffer) -> (ViewBuffer, ViewBuffer) {
+    let contig = buf.to_contiguous();
+    let shape = contig.shape();
+    let (h, w, c) = (shape[0], shape[1], shape[2]);
+    let color_c = c - 1;
+
+    match buf.dtype() {
+        DType::U8 => split_alpha_typed::<u8>(&contig, h, w, c, color_c),
+        DType::U16 => split_alpha_typed::<u16>(&contig, h, w, c, color_c),
+        DType::F32 => split_alpha_typed::<f32>(&contig, h, w, c, color_c),
+        _ => {
+            let f32_buf = contig.cast(DType::F32);
+            split_alpha_typed::<f32>(&f32_buf, h, w, c, color_c)
+        }
+    }
+}
+
+fn split_alpha_typed<T: crate::core::dtype::ViewType + Default + Copy>(
+    buf: &ViewBuffer,
+    h: usize,
+    w: usize,
+    total_c: usize,
+    color_c: usize,
+) -> (ViewBuffer, ViewBuffer) {
+    let src = buf.as_slice::<T>();
+    let mut color_data: Vec<T> = Vec::with_capacity(h * w * color_c);
+    let mut alpha_data: Vec<T> = Vec::with_capacity(h * w);
+
+    for pixel in src.chunks_exact(total_c) {
+        color_data.extend_from_slice(&pixel[..color_c]);
+        alpha_data.push(pixel[color_c]);
+    }
+
+    let color = ViewBuffer::from_vec(color_data).reshape(vec![h, w, color_c]);
+    let alpha = ViewBuffer::from_vec(alpha_data).reshape(vec![h, w, 1]);
+    (color, alpha)
+}
+
+/// Merge an alpha channel back onto a color buffer.
+///
+/// `([H, W, C], [H, W, 1])` -> `[H, W, C+1]`
+pub fn merge_alpha(color: &ViewBuffer, alpha: &ViewBuffer) -> ViewBuffer {
+    let contig_color = color.to_contiguous();
+    let contig_alpha = alpha.to_contiguous();
+    let shape = contig_color.shape();
+    let (h, w) = (shape[0], shape[1]);
+    let color_c = if shape.len() == 3 { shape[2] } else { 1 };
+
+    match color.dtype() {
+        DType::U8 => merge_alpha_typed::<u8>(&contig_color, &contig_alpha, h, w, color_c),
+        DType::U16 => merge_alpha_typed::<u16>(&contig_color, &contig_alpha, h, w, color_c),
+        DType::F32 => merge_alpha_typed::<f32>(&contig_color, &contig_alpha, h, w, color_c),
+        _ => {
+            let f32_color = contig_color.cast(DType::F32);
+            let f32_alpha = contig_alpha.cast(DType::F32);
+            merge_alpha_typed::<f32>(&f32_color, &f32_alpha, h, w, color_c)
+        }
+    }
+}
+
+fn merge_alpha_typed<T: crate::core::dtype::ViewType + Default + Copy>(
+    color: &ViewBuffer,
+    alpha: &ViewBuffer,
+    h: usize,
+    w: usize,
+    color_c: usize,
+) -> ViewBuffer {
+    let color_src = color.as_slice::<T>();
+    let alpha_src = alpha.as_slice::<T>();
+    let out_c = color_c + 1;
+    let mut out: Vec<T> = Vec::with_capacity(h * w * out_c);
+
+    for (color_pixel, &a) in color_src.chunks_exact(color_c).zip(alpha_src.iter()) {
+        out.extend_from_slice(color_pixel);
+        out.push(a);
+    }
+
+    ViewBuffer::from_vec(out).reshape(vec![h, w, out_c])
+}
+
 /// Apply color conversion to a ViewBuffer.
 ///
-/// The buffer must be contiguous [H, W, C] or [H, W] for grayscale input.
+/// The buffer must be contiguous `[H, W, C]` or `[H, W]` for grayscale input.
+/// Alpha channels (C=2 for GrayA, C=4 for RGBA) are handled via
+/// strip-process-restore: the alpha is separated, the conversion is applied
+/// to the color channels, and then the alpha is re-attached.
 pub fn apply_color_convert(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer {
+    if op.from == op.to {
+        return buf.clone();
+    }
+
+    let shape = buf.shape();
+    let channels = if shape.len() == 3 { shape[2] } else { 1 };
+    let has_alpha = matches!(channels, 2 | 4);
+
+    if has_alpha {
+        let (color_buf, alpha_buf) = split_alpha(buf);
+        let converted = apply_color_convert_core(&color_buf, op);
+        merge_alpha(&converted, &alpha_buf)
+    } else {
+        apply_color_convert_core(buf, op)
+    }
+}
+
+/// Core color conversion logic operating on color channels only (no alpha).
+fn apply_color_convert_core(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer {
     if op.from == op.to {
         return buf.clone();
     }
@@ -90,7 +203,7 @@ pub fn apply_color_convert(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer 
         return channel_reorder(buf, &[2, 1, 0]);
     }
 
-    // Grayscale from RGB (delegate to existing grayscale if available, but inline BT.601 here)
+    // Grayscale from RGB
     if op.from == ColorSpace::Rgb && op.to == ColorSpace::Gray {
         return rgb_to_gray(buf);
     }
