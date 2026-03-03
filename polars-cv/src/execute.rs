@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use view_buffer::{
     geometry::{rasterize::rasterize, Contour, Point},
-    BinaryOp, ComputeOp, DType, FilterType, GeometryOp, ImageAdapter, ImageOp, ImageOpKind,
-    NormalizeMethod, ViewBuffer, ViewDto, ViewOp,
+    AffineParams, BinaryOp, ComputeOp, DType, FilterType, GeometryOp, ImageAdapter, ImageOp,
+    ImageOpKind, InterpolationType, NormalizeMethod, ViewBuffer, ViewDto, ViewOp,
 };
 
 use crate::params::ParamValue;
@@ -601,7 +601,6 @@ pub fn resolve_op(
                 })
                 .unwrap_or(false);
 
-            // Normalize angle to [0, 360)
             let normalized_angle = angle % 360.0;
             let normalized_angle = if normalized_angle < 0.0 {
                 normalized_angle + 360.0
@@ -609,8 +608,6 @@ pub fn resolve_op(
                 normalized_angle
             };
 
-            // Check for zero-copy rotations (90, 180, 270)
-            // Use a small epsilon for floating point comparison
             const EPSILON: f32 = 0.001;
             if (normalized_angle - 90.0).abs() < EPSILON {
                 Ok(ViewDto::View(ViewOp::Rotate90))
@@ -620,24 +617,126 @@ pub fn resolve_op(
                 Ok(ViewDto::View(ViewOp::Rotate270))
             } else if normalized_angle.abs() < EPSILON || (normalized_angle - 360.0).abs() < EPSILON
             {
-                // 0 or 360 degrees - no-op, but we'll use ViewOp for consistency
-                // Actually, we can just return the identity, but for simplicity use Rotate180 twice
-                // Or better: use a no-op view. But since we don't have that, we'll use ImageOp with 0 angle
-                Ok(ViewDto::Image(ImageOp {
-                    kind: ImageOpKind::Rotate {
-                        angle: normalized_angle,
-                        expand,
-                    },
+                Ok(ViewDto::Compute(ComputeOp::RotateAffine {
+                    angle_deg: 0.0,
+                    expand: false,
+                    interpolation: InterpolationType::Bilinear,
+                    border_value: 0.0,
                 }))
             } else {
-                // Arbitrary angle - use ImageOp
-                Ok(ViewDto::Image(ImageOp {
-                    kind: ImageOpKind::Rotate {
-                        angle: normalized_angle,
-                        expand,
-                    },
+                // Route arbitrary angles through AffineParams for unified code path.
+                // The affine matrix is built at execution time from the current
+                // buffer dimensions (handled by RotateToAffine).
+                let interp_str = op_spec
+                    .params
+                    .get("interpolation")
+                    .and_then(|p| match p {
+                        ParamValue::Literal { value } => value.as_str(),
+                        _ => None,
+                    })
+                    .unwrap_or("bilinear");
+                let interpolation = match interp_str {
+                    "nearest" => InterpolationType::Nearest,
+                    "bilinear" => InterpolationType::Bilinear,
+                    other => {
+                        return Err(polars_err!(
+                            ComputeError: "rotate: unknown interpolation '{}', expected 'nearest' or 'bilinear'",
+                            other
+                        ));
+                    }
+                };
+                let border_value = op_spec
+                    .params
+                    .get("border_value")
+                    .and_then(|p| match p {
+                        ParamValue::Literal { value } => value.as_f64(),
+                        _ => None,
+                    })
+                    .unwrap_or(0.0);
+
+                Ok(ViewDto::Compute(ComputeOp::RotateAffine {
+                    angle_deg: normalized_angle,
+                    expand,
+                    interpolation,
+                    border_value,
                 }))
             }
+        }
+
+        // Affine warp operation
+        "warp_affine" => {
+            let matrix_val = get_param(&op_spec.params, "matrix")?;
+            let matrix_vec: Vec<f64> = match matrix_val {
+                ParamValue::Literal { value } => {
+                    value
+                        .as_array()
+                        .ok_or_else(|| {
+                            polars_err!(ComputeError: "warp_affine: matrix must be an array")
+                        })?
+                        .iter()
+                        .map(|v| {
+                            v.as_f64().ok_or_else(|| {
+                                polars_err!(ComputeError: "warp_affine: matrix elements must be numbers")
+                            })
+                        })
+                        .collect::<PolarsResult<Vec<f64>>>()?
+                }
+                _ => {
+                    return Err(polars_err!(
+                        ComputeError: "warp_affine: matrix must be a literal array"
+                    ));
+                }
+            };
+            if matrix_vec.len() != 6 {
+                return Err(polars_err!(
+                    ComputeError: "warp_affine: matrix must have exactly 6 elements, got {}",
+                    matrix_vec.len()
+                ));
+            }
+            let matrix: [f64; 6] = matrix_vec
+                .try_into()
+                .map_err(|_| polars_err!(ComputeError: "warp_affine: matrix conversion failed"))?;
+
+            let output_height =
+                get_param(&op_spec.params, "output_height")?.resolve_u32(row_idx, expr_columns)?;
+            let output_width =
+                get_param(&op_spec.params, "output_width")?.resolve_u32(row_idx, expr_columns)?;
+
+            let interp_str = op_spec
+                .params
+                .get("interpolation")
+                .and_then(|p| match p {
+                    ParamValue::Literal { value } => value.as_str(),
+                    _ => None,
+                })
+                .unwrap_or("bilinear");
+            let interpolation = match interp_str {
+                "nearest" => InterpolationType::Nearest,
+                "bilinear" => InterpolationType::Bilinear,
+                other => {
+                    return Err(polars_err!(
+                        ComputeError: "warp_affine: unknown interpolation '{}', expected 'nearest' or 'bilinear'",
+                        other
+                    ));
+                }
+            };
+
+            let border_value = op_spec
+                .params
+                .get("border_value")
+                .and_then(|p| match p {
+                    ParamValue::Literal { value } => value.as_f64(),
+                    _ => None,
+                })
+                .unwrap_or(0.0);
+
+            Ok(ViewDto::Compute(ComputeOp::Affine(AffineParams {
+                matrix,
+                output_height,
+                output_width,
+                interpolation,
+                border_value,
+            })))
         }
 
         // Perceptual hash operation

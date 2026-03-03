@@ -19,10 +19,6 @@ pub enum ImageOpKind {
         sigma: f32,
     },
     Grayscale,
-    Rotate {
-        angle: f32,
-        expand: bool,
-    },
     /// Canny edge detection (fused Gaussian + Sobel + NMS + hysteresis).
     Canny {
         low_threshold: f32,
@@ -72,7 +68,6 @@ impl Op for ImageOp {
             ImageOpKind::Resize { .. } => "Resize",
             ImageOpKind::Blur { .. } => "Blur",
             ImageOpKind::Grayscale => "Grayscale",
-            ImageOpKind::Rotate { .. } => "Rotate",
             ImageOpKind::Canny { .. } => "Canny",
             ImageOpKind::HistogramEqualize => "HistogramEqualize",
             ImageOpKind::Erode { .. } => "Erode",
@@ -102,29 +97,6 @@ impl Op for ImageOp {
                 }
                 s
             }
-            ImageOpKind::Rotate { angle, expand } => {
-                if input_shape.len() < 2 {
-                    return input_shape.to_vec();
-                }
-                let h = input_shape[0] as f32;
-                let w = input_shape[1] as f32;
-                let angle_rad = angle.to_radians();
-                let cos_a = angle_rad.cos().abs();
-                let sin_a = angle_rad.sin().abs();
-
-                if *expand {
-                    // Calculate bounding box dimensions
-                    let new_h = (h * cos_a + w * sin_a).ceil() as usize;
-                    let new_w = (h * sin_a + w * cos_a).ceil() as usize;
-                    let mut s = input_shape.to_vec();
-                    s[0] = new_h;
-                    s[1] = new_w;
-                    s
-                } else {
-                    // Keep original dimensions
-                    input_shape.to_vec()
-                }
-            }
             ImageOpKind::Canny { .. } => {
                 // Output is single-channel binary edge map
                 if input_shape.len() == 3 {
@@ -153,8 +125,6 @@ impl Op for ImageOp {
             ImageOpKind::Blur { .. } => MemoryEffect::RequiresContiguous,
             // Grayscale changes shape (removes channel dim) so needs allocation
             ImageOpKind::Grayscale => MemoryEffect::RequiresContiguous,
-            // Rotation requires allocation for output
-            ImageOpKind::Rotate { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::Canny { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::HistogramEqualize => MemoryEffect::RequiresContiguous,
             ImageOpKind::Erode { .. } => MemoryEffect::RequiresContiguous,
@@ -179,8 +149,6 @@ impl Op for ImageOp {
             ImageOpKind::Resize { .. } => None,
             // Blur preserves shape but produces contiguous output
             ImageOpKind::Blur { .. } => None,
-            // Rotation produces contiguous output
-            ImageOpKind::Rotate { .. } => None,
             ImageOpKind::Canny { .. } => None,
             ImageOpKind::HistogramEqualize => None,
             ImageOpKind::Erode { .. } => None,
@@ -201,8 +169,6 @@ impl Op for ImageOp {
         match &self.kind {
             // Resize operates on the input's native dtype via fast_image_resize.
             ImageOpKind::Resize { .. } => None,
-            // Rotate uses custom bilinear interpolation that works on any dtype.
-            ImageOpKind::Rotate { .. } => None,
             // Grayscale uses BT.601 channel reduction — generic over dtype.
             ImageOpKind::Grayscale => None,
             // Threshold compares each element against a float threshold — generic.
@@ -224,7 +190,6 @@ impl Op for ImageOp {
         match &self.kind {
             // Spatial transformations preserve the input dtype.
             ImageOpKind::Resize { .. } => OutputDTypeRule::PreserveInput,
-            ImageOpKind::Rotate { .. } => OutputDTypeRule::PreserveInput,
             // Grayscale is a channel reduction that preserves element dtype.
             ImageOpKind::Grayscale => OutputDTypeRule::PreserveInput,
             // Threshold always produces a U8 binary mask (0 or 255).
@@ -256,9 +221,6 @@ impl Op for ImageOp {
 
             // Resize uses global resampling - cannot be tiled
             ImageOpKind::Resize { .. } => TilePolicy::Global,
-
-            // Rotation uses global resampling - cannot be tiled
-            ImageOpKind::Rotate { .. } => TilePolicy::Global,
 
             // Canny needs full image for NMS and hysteresis
             ImageOpKind::Canny { .. } => TilePolicy::Global,

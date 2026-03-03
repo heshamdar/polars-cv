@@ -74,9 +74,13 @@ match op_spec.op.as_str() {
     "convolve2d" => ViewDto::Filter(ConvolveOp { ... }),
     "canny" | "equalize_histogram" => /* ... */,
     "erode" | "dilate" | "morphology_gradient" => /* ... */,
+    "rotate" => /* 90/180/270 → ViewOp::Rotate{N}, arbitrary → ComputeOp::RotateAffine */,
+    "warp_affine" => ViewDto::Compute(ComputeOp::Affine(AffineParams { ... })),
     // ... all supported operations
 }
 ```
+
+**Rotation dispatch:** `rotate` uses zero-copy `ViewOp::Rotate90/180/270` for exact multiples of 90 degrees. All other angles (including 0/360) are routed through `ComputeOp::RotateAffine`, which constructs `AffineParams` at execution time via `AffineParams::from_rotation()` and delegates to `apply_affine_warp()`. The separate `ImageOpKind::Rotate` variant has been removed.
 
 ### Source Decoding (`graph/decode.rs`)
 

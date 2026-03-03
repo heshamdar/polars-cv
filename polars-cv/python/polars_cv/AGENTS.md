@@ -101,10 +101,10 @@ The `AlphaMode` enum in `_types.py` declares each operation's alpha behavior:
 |------|------------------|------------|
 | `PASSTHROUGH` | Output = Input channels | resize, normalize, flip, crop, etc. |
 | `STRIP_PROCESS_RESTORE` | Output = op_color_ch + (1 if alpha) | blur, cvt_color, sobel, sharpen |
-| `DROP` | Output = op-specific fixed count | grayscale → 1, canny → 1, erode/dilate/morph_gradient (single-ch only) |
+| `DROP` | Output = op-specific fixed count | grayscale → 1, canny → 1, threshold → 1, erode/dilate/morph_gradient → 1 (single-ch only) |
 | `NOT_APPLICABLE` | No channel change | reductions, geometry |
 
-Channel inference is implemented in `Pipeline._update_channels_from_contract()`, called at the end of `_update_shape_hints()`.
+Channel inference is implemented in `Pipeline._update_channels_from_contract()`, called at the end of `_update_shape_hints()`. For `DROP` ops that preserve ndim (`NdimEffect.PRESERVE`), channels are set to 1. For `DROP` ops that reduce ndim (like `grayscale` on 2D input or `canny`), channels are also set to 1.
 
 ### ParamValue — Literal vs Expression Parameters
 
@@ -117,6 +117,8 @@ pipe.resize(height=224, width=pl.col("target_w"))
 ```
 
 `ParamValue` wraps this distinction. Expression params are tracked in `_expr_columns` and passed to Rust as additional input columns.
+
+**Dynamic parameter coverage:** Most numeric parameters accept `IntOrExpr` / `FloatOrExpr`. This includes: resize dimensions, crop offsets, pad values, rotate angle, blur sigma, threshold value, canny thresholds, contrast/gamma/brightness factors, morphology ksize/iterations, channel_select index, convolve2d ksize, warp_affine output_size, rasterize fill_value/background, reduce_percentile q, reduce_std ddof. Structural parameters (matrix, kernel, axes, enum values) remain static only.
 
 ## Adding a New Operation (Python Side)
 
@@ -136,6 +138,24 @@ pipe.resize(height=224, width=pl.col("target_w"))
 3. **`_types.py`**: Add the operation's contract to `OPERATION_CONTRACTS`
 
 4. **Rust side**: Map the operation name in `resolve_op` — see [`polars-cv/src/AGENTS.md`](../../src/AGENTS.md)
+
+### Affine Pipeline Fusion
+
+Consecutive affine-family operations are fused at serialization time via `_fuse_affine_ops()` (called in `_to_spec_dict()`). Matrix composition uses `_compose_affine_ops()` which performs standard 2×3 matrix multiplication. The fused operation uses the output dimensions from the **last** affine in the chain.
+
+Fusible operations:
+- `warp_affine()` — always fusible
+- `shear()` and `rotate_and_scale()` — construct matrices and delegate to `warp_affine()`, so they fuse automatically
+- `rotate()` with a **static, non-fast-path angle** (not 90/180/270) and **known input dimensions** — converted to `warp_affine` via `_try_convert_rotate_to_affine()` at planning time
+
+**Not fusible:** `rotate()` with an expression-based angle, or with a fast-path angle (90/180/270 use zero-copy `ViewOp` and cannot be represented as an affine matrix).
+
+### Shape Hints for Rotation
+
+`_update_shape_hints()` handles rotation dimensions:
+- **Static 90/270 with expand=False:** H and W are swapped
+- **Static angle with expand=True:** Output dimensions computed by `_compute_rotate_expand_shape()` using the rotated bounding box formula
+- **Expression-based angle:** Shape hints set to `None` (unknown at planning time)
 
 ## Common Pitfalls
 

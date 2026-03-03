@@ -2,7 +2,7 @@
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::execution::tiling::TilePolicy;
-use crate::ops::affine::AffineParams;
+use crate::ops::affine::{AffineParams, InterpolationType};
 use crate::ops::cost::OpCost;
 use crate::ops::scalar::FusedKernel;
 use crate::ops::traits::{MemoryEffect, Op};
@@ -62,6 +62,15 @@ pub enum ComputeOp {
     AdjustGamma(f32),
     /// Invert pixel values: `max_val - pixel` (255 for u8, 1.0 for float).
     Invert,
+    /// Deferred rotation via affine transform. The affine matrix is built at
+    /// execution time from the actual buffer dimensions so that the image
+    /// center is computed correctly.
+    RotateAffine {
+        angle_deg: f32,
+        expand: bool,
+        interpolation: InterpolationType,
+        border_value: f64,
+    },
 }
 
 impl Op for ComputeOp {
@@ -77,11 +86,42 @@ impl Op for ComputeOp {
             ComputeOp::AdjustContrast(_) => "AdjustContrast",
             ComputeOp::AdjustGamma(_) => "AdjustGamma",
             ComputeOp::Invert => "Invert",
+            ComputeOp::RotateAffine { .. } => "RotateAffine",
         }
     }
 
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
-        inputs[0].to_vec()
+        match self {
+            ComputeOp::Affine(params) => {
+                let input_shape = inputs[0];
+                let mut s = input_shape.to_vec();
+                if s.len() >= 2 {
+                    s[0] = params.output_height as usize;
+                    s[1] = params.output_width as usize;
+                }
+                s
+            }
+            ComputeOp::RotateAffine {
+                angle_deg, expand, ..
+            } => {
+                let input_shape = inputs[0];
+                if !expand || input_shape.len() < 2 {
+                    return input_shape.to_vec();
+                }
+                let ih = input_shape[0] as f64;
+                let iw = input_shape[1] as f64;
+                let rad = (*angle_deg as f64) * std::f64::consts::PI / 180.0;
+                let abs_cos = rad.cos().abs();
+                let abs_sin = rad.sin().abs();
+                let new_w = (iw * abs_cos + ih * abs_sin).round() as usize;
+                let new_h = (ih * abs_cos + iw * abs_sin).round() as usize;
+                let mut s = input_shape.to_vec();
+                s[0] = new_h;
+                s[1] = new_w;
+                s
+            }
+            _ => inputs[0].to_vec(),
+        }
     }
 
     fn infer_dtype(&self, inputs: &[DType]) -> DType {
@@ -95,6 +135,7 @@ impl Op for ComputeOp {
             ComputeOp::AdjustGamma(_) => self.output_dtype_rule().resolve(inputs[0], None),
             ComputeOp::Invert => inputs[0],
             ComputeOp::Affine(_) => inputs[0],
+            ComputeOp::RotateAffine { .. } => inputs[0],
             ComputeOp::Fused(_) => inputs[0],
         }
     }
@@ -109,6 +150,7 @@ impl Op for ComputeOp {
             ComputeOp::AdjustGamma(_) => MemoryEffect::StridePreserving,
             ComputeOp::Invert => MemoryEffect::StridePreserving,
             ComputeOp::Affine(_) => MemoryEffect::RequiresContiguous,
+            ComputeOp::RotateAffine { .. } => MemoryEffect::RequiresContiguous,
             ComputeOp::Normalize(_) => MemoryEffect::RequiresContiguous,
             ComputeOp::AdjustContrast(_) => MemoryEffect::RequiresContiguous,
         }
@@ -184,6 +226,7 @@ impl Op for ComputeOp {
             | ComputeOp::Invert => DTypeCategory::Numeric,
             ComputeOp::Cast(_) => DTypeCategory::Any,
             ComputeOp::Affine(_) => DTypeCategory::Any,
+            ComputeOp::RotateAffine { .. } => DTypeCategory::Any,
             ComputeOp::Fused(_) => DTypeCategory::Any,
         }
     }
@@ -212,6 +255,7 @@ impl Op for ComputeOp {
             ComputeOp::Invert => OutputDTypeRule::PreserveInput,
             ComputeOp::Cast(target) => OutputDTypeRule::Fixed(*target),
             ComputeOp::Affine(_) => OutputDTypeRule::PreserveInput,
+            ComputeOp::RotateAffine { .. } => OutputDTypeRule::PreserveInput,
             ComputeOp::Fused(_) => OutputDTypeRule::PreserveInput,
         }
     }
@@ -231,6 +275,7 @@ impl Op for ComputeOp {
             ComputeOp::Normalize(NormalizeMethod::ZScore) => TilePolicy::Global,
             ComputeOp::AdjustContrast(_) => TilePolicy::Global,
             ComputeOp::Affine(_) => TilePolicy::Global,
+            ComputeOp::RotateAffine { .. } => TilePolicy::Global,
         }
     }
 }

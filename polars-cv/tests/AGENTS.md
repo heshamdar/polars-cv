@@ -30,6 +30,7 @@ The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`
 | `test_dtype_contracts.py` | Operation dtype/ndim contracts in `OPERATION_CONTRACTS` |
 | `test_serialization.py` | Pipeline JSON serialization |
 | `test_geometry_schemas.py` | Geometry schema definitions and validation |
+| `test_affine_builder.py` | Affine pipeline builder (warp_affine, shear, rotate_and_scale), contracts, fusion |
 
 ### Integration Tests (plugin required)
 
@@ -68,7 +69,7 @@ The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`
 | `test_on_error.py` | `on_error="null"` graceful error handling |
 | `test_display.py` | `show_images()` display utility |
 | `test_tiff_integration.py` | TIFF format integration |
-| `test_alpha_channel.py` | Alpha channel decode/encode, AlphaMode contracts, planning-time inference |
+| `test_alpha_channel.py` | Alpha channel decode/encode, AlphaMode contracts (including DROP for threshold/erode/dilate/morph_gradient), planning-time channel inference, rotate expand shape hints |
 
 ### Reference Tests (`tests/reference/`)
 
@@ -87,6 +88,7 @@ Compare polars-cv output against NumPy/OpenCV ground truth — these are the **c
 | `test_phase1_ref.py` | Channel, intensity, padding ops vs NumPy/PIL |
 | `test_color_ref.py` | Color space conversions vs OpenCV/NumPy |
 | `test_morphology_ref.py` | Morphological ops (erode, dilate, open, close, gradient) vs OpenCV |
+| `test_affine_ref.py` | Affine transforms (identity, translate, rotate, scale, shear, interpolation, border, multi-channel) vs OpenCV |
 
 Files with `_gaps` in the name (e.g., `test_binary_ops_gaps.py`) are regular tests despite the name — the gaps they tested have been filled.
 

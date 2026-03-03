@@ -227,6 +227,67 @@ class PillowAdapter(BaseFrameworkAdapter):
         # Apply threshold using point function
         return img.point(lambda p: 255 if p > value else 0)
 
+    def rotate(self, img: Any, angle: float, *, expand: bool = False) -> Any:
+        """Rotate image by angle degrees."""
+        return img.rotate(-angle, expand=expand)
+
+    def invert(self, img: Any) -> Any:
+        """Invert pixel values."""
+        from PIL import ImageOps
+
+        return ImageOps.invert(img)
+
+    def adjust_contrast(self, img: Any, factor: float) -> Any:
+        """Adjust contrast."""
+        from PIL import ImageEnhance
+
+        return ImageEnhance.Contrast(img).enhance(factor)
+
+    def adjust_brightness(self, img: Any, factor: float) -> Any:
+        """Adjust brightness."""
+        from PIL import ImageEnhance
+
+        return ImageEnhance.Brightness(img).enhance(factor)
+
+    def sharpen(self, img: Any, strength: float = 1.0) -> Any:
+        """Apply sharpening filter."""
+        _, ImageFilter = self._get_modules()
+        return img.filter(ImageFilter.SHARPEN)
+
+    def pad(
+        self, img: Any, top: int, bottom: int, left: int, right: int, value: int = 0
+    ) -> Any:
+        """Add constant padding to image edges."""
+        from PIL import ImageOps
+
+        return ImageOps.expand(img, border=(left, top, right, bottom), fill=value)
+
+    def histogram_equalize(self, img: Any) -> Any:
+        """Apply histogram equalization."""
+        from PIL import ImageOps
+
+        if img.mode != "L":
+            img = img.convert("L")
+        return ImageOps.equalize(img)
+
+    def erode(self, img: Any, ksize: int, iterations: int = 1) -> Any:
+        """Apply morphological erosion via MinFilter."""
+        _, ImageFilter = self._get_modules()
+        if img.mode != "L":
+            img = img.convert("L")
+        for _ in range(iterations):
+            img = img.filter(ImageFilter.MinFilter(size=ksize))
+        return img
+
+    def dilate(self, img: Any, ksize: int, iterations: int = 1) -> Any:
+        """Apply morphological dilation via MaxFilter."""
+        _, ImageFilter = self._get_modules()
+        if img.mode != "L":
+            img = img.convert("L")
+        for _ in range(iterations):
+            img = img.filter(ImageFilter.MaxFilter(size=ksize))
+        return img
+
     def to_numpy(
         self, img: "PILImageModule.Image | npt.NDArray[np.float32]"
     ) -> "npt.NDArray[np.uint8] | npt.NDArray[np.float32]":

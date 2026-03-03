@@ -233,6 +233,93 @@ class OpenCVAdapter(BaseFrameworkAdapter):
         _, result = cv2.threshold(img, value, 255, cv2.THRESH_BINARY)
         return result
 
+    def rotate(
+        self, img: "npt.NDArray[np.uint8]", angle: float, *, expand: bool = False
+    ) -> "npt.NDArray[np.uint8]":
+        """Rotate image by angle degrees using OpenCV warpAffine."""
+        cv2 = self._get_cv2()
+        h, w = img.shape[:2]
+        center = (w / 2, h / 2)
+        mat = cv2.getRotationMatrix2D(center, -angle, 1.0)
+        if expand:
+            rad = np.radians(angle)
+            cos_a, sin_a = abs(np.cos(rad)), abs(np.sin(rad))
+            new_w = int(w * cos_a + h * sin_a)
+            new_h = int(h * cos_a + w * sin_a)
+            mat[0, 2] += (new_w - w) / 2
+            mat[1, 2] += (new_h - h) / 2
+            return cv2.warpAffine(img, mat, (new_w, new_h))
+        return cv2.warpAffine(img, mat, (w, h))
+
+    def erode(self, img: Any, ksize: int, iterations: int = 1) -> Any:
+        """Apply morphological erosion."""
+        cv2 = self._get_cv2()
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        kernel = np.ones((ksize, ksize), dtype=np.uint8)
+        return cv2.erode(img, kernel, iterations=iterations)
+
+    def dilate(self, img: Any, ksize: int, iterations: int = 1) -> Any:
+        """Apply morphological dilation."""
+        cv2 = self._get_cv2()
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        kernel = np.ones((ksize, ksize), dtype=np.uint8)
+        return cv2.dilate(img, kernel, iterations=iterations)
+
+    def invert(self, img: Any) -> Any:
+        """Invert pixel values."""
+        cv2 = self._get_cv2()
+        return cv2.bitwise_not(img)
+
+    def adjust_contrast(self, img: Any, factor: float) -> Any:
+        """Adjust contrast: (pixel - mean) * factor + mean."""
+        mean = img.mean()
+        result = np.clip((img.astype(np.float32) - mean) * factor + mean, 0, 255)
+        return result.astype(np.uint8)
+
+    def adjust_brightness(self, img: Any, factor: float) -> Any:
+        """Adjust brightness by scaling pixel values."""
+        result = np.clip(img.astype(np.float32) * factor, 0, 255)
+        return result.astype(np.uint8)
+
+    def sharpen(self, img: Any, strength: float = 1.0) -> Any:
+        """Apply unsharp mask sharpening."""
+        cv2 = self._get_cv2()
+        blurred = cv2.GaussianBlur(img, (0, 0), 3)
+        return cv2.addWeighted(img, 1.0 + strength, blurred, -strength, 0)
+
+    def pad(
+        self, img: Any, top: int, bottom: int, left: int, right: int, value: int = 0
+    ) -> Any:
+        """Add constant padding to image edges."""
+        cv2 = self._get_cv2()
+        return cv2.copyMakeBorder(
+            img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=value
+        )
+
+    def histogram_equalize(self, img: Any) -> Any:
+        """Apply histogram equalization."""
+        cv2 = self._get_cv2()
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        return cv2.equalizeHist(img)
+
+    def canny(self, img: Any, low_threshold: float, high_threshold: float) -> Any:
+        """Apply Canny edge detection."""
+        cv2 = self._get_cv2()
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        return cv2.Canny(img, low_threshold, high_threshold)
+
+    def sobel(self, img: Any, axis: str = "x") -> Any:
+        """Apply Sobel gradient operator."""
+        cv2 = self._get_cv2()
+        if img.ndim == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        dx, dy = (1, 0) if axis == "x" else (0, 1)
+        return cv2.Sobel(img, cv2.CV_64F, dx, dy, ksize=3)
+
     def to_numpy(
         self, img: "npt.NDArray[np.uint8] | npt.NDArray[np.float32]"
     ) -> "npt.NDArray[np.uint8] | npt.NDArray[np.float32]":

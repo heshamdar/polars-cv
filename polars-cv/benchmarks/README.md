@@ -164,14 +164,31 @@ uv run python -m benchmarks.run_benchmarks --warmup 5 --iterations 20
 ### Single Operations
 
 Individual operation benchmarks:
-- `resize`: Resize from source size to 224x224
-- `grayscale`: Convert RGB to grayscale
-- `normalize`: Min-max normalization to [0, 1]
-- `flip_horizontal`: Horizontal flip
-- `flip_vertical`: Vertical flip
-- `crop_center`: Center crop to 128x128
-- `blur`: Gaussian blur with sigma=2.0
-- `threshold`: Binary threshold at 128
+
+| Benchmark | Description | Framework Support |
+|-----------|-------------|-------------------|
+| `resize` | Resize to 224x224 | All |
+| `grayscale` | RGB to grayscale | All |
+| `normalize` | Min-max to [0,1] | All |
+| `flip_horizontal` | Horizontal flip | All |
+| `flip_vertical` | Vertical flip | All |
+| `crop_center` | Center crop to 128x128 | All |
+| `blur` | Gaussian blur (sigma=2.0) | All |
+| `threshold` | Binary threshold at 127 | All |
+| `rotate_90` | 90-degree rotation (zero-copy in polars-cv) | All |
+| `rotate_45` | 45-degree rotation with expansion | All |
+| `invert` | Pixel inversion (255 - pixel) | OpenCV, Pillow, Torchvision |
+| `adjust_contrast` | Contrast adjustment (factor=1.5) | OpenCV, Pillow, Torchvision |
+| `adjust_brightness` | Brightness adjustment (factor=1.3) | OpenCV, Pillow, Torchvision |
+| `sharpen` | Unsharp-mask sharpening (strength=1.5) | OpenCV, Pillow, Torchvision |
+| `pad` | 20px constant padding on all edges | All |
+| `erode` | Morphological erosion (3x3) | OpenCV, Pillow |
+| `dilate` | Morphological dilation (3x3) | OpenCV, Pillow |
+| `histogram_equalize` | Histogram equalization | OpenCV, Pillow, Torchvision |
+| `canny` | Canny edge detection (50/150) | OpenCV |
+| `sobel_x` | Sobel gradient (X axis) | OpenCV |
+
+**Note:** All polars-cv operations are supported. Operations listed with limited framework support will be skipped for unsupported frameworks.
 
 ### Pipelines
 

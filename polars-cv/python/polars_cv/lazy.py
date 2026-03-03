@@ -15,7 +15,7 @@ import polars as pl
 
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
-    from polars_cv._types import FloatOrExpr
+    from polars_cv._types import FloatOrExpr, IntOrExpr
     from polars_cv.pipeline import Pipeline
 
 
@@ -833,12 +833,13 @@ class LazyPipelineExpr:
 
     # --- Channel Operations ---
 
-    def channel_select(self, *, index: int) -> "LazyPipelineExpr":
+    def channel_select(self, *, index: "IntOrExpr") -> "LazyPipelineExpr":
         """
         Extract a single channel from a multi-channel image.
 
         Args:
-            index: Channel index to extract (0-based).
+            index: Channel index to extract (0-based). Accepts a Polars
+                expression for per-row dynamic selection.
 
         Returns:
             New LazyPipelineExpr with the selected channel.
@@ -978,7 +979,7 @@ class LazyPipelineExpr:
     def convolve2d(
         self,
         kernel: list[float],
-        ksize: int,
+        ksize: "IntOrExpr",
         *,
         normalize: bool = False,
         border: str = "replicate",
@@ -987,8 +988,9 @@ class LazyPipelineExpr:
         Apply generic 2D convolution with an arbitrary kernel.
 
         Args:
-            kernel: Flattened kernel values (row-major, ``ksize × ksize``).
-            ksize: Kernel dimension (must be odd).
+            kernel: Flattened kernel values (row-major, ``ksize x ksize``).
+            ksize: Kernel dimension (must be odd). Accepts a Polars expression
+                for per-row dynamic values.
             normalize: If True, divide output by the sum of absolute kernel values.
             border: Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
 
@@ -1070,13 +1072,17 @@ class LazyPipelineExpr:
 
     # --- Morphological Operations ---
 
-    def erode(self, *, ksize: int = 3, iterations: int = 1) -> "LazyPipelineExpr":
+    def erode(
+        self, *, ksize: "IntOrExpr" = 3, iterations: "IntOrExpr" = 1
+    ) -> "LazyPipelineExpr":
         """
         Morphological erosion (local minimum filter).
 
         Args:
-            ksize: Size of the square structuring element.
-            iterations: Number of times the erosion is applied.
+            ksize: Size of the square structuring element. Accepts a Polars
+                expression for per-row dynamic values.
+            iterations: Number of times the erosion is applied. Accepts a
+                Polars expression for per-row dynamic values.
 
         Returns:
             New LazyPipelineExpr with erosion applied.
@@ -1085,13 +1091,17 @@ class LazyPipelineExpr:
 
         return self.pipe(Pipeline().erode(ksize=ksize, iterations=iterations))
 
-    def dilate(self, *, ksize: int = 3, iterations: int = 1) -> "LazyPipelineExpr":
+    def dilate(
+        self, *, ksize: "IntOrExpr" = 3, iterations: "IntOrExpr" = 1
+    ) -> "LazyPipelineExpr":
         """
         Morphological dilation (local maximum filter).
 
         Args:
-            ksize: Size of the square structuring element.
-            iterations: Number of times the dilation is applied.
+            ksize: Size of the square structuring element. Accepts a Polars
+                expression for per-row dynamic values.
+            iterations: Number of times the dilation is applied. Accepts a
+                Polars expression for per-row dynamic values.
 
         Returns:
             New LazyPipelineExpr with dilation applied.
@@ -1100,12 +1110,13 @@ class LazyPipelineExpr:
 
         return self.pipe(Pipeline().dilate(ksize=ksize, iterations=iterations))
 
-    def morphology_open(self, *, ksize: int = 3) -> "LazyPipelineExpr":
+    def morphology_open(self, *, ksize: "IntOrExpr" = 3) -> "LazyPipelineExpr":
         """
         Morphological opening (erode then dilate).
 
         Args:
-            ksize: Size of the square structuring element.
+            ksize: Size of the square structuring element. Accepts a Polars
+                expression for per-row dynamic values.
 
         Returns:
             New LazyPipelineExpr with opening applied.
@@ -1114,12 +1125,13 @@ class LazyPipelineExpr:
 
         return self.pipe(Pipeline().morphology_open(ksize=ksize))
 
-    def morphology_close(self, *, ksize: int = 3) -> "LazyPipelineExpr":
+    def morphology_close(self, *, ksize: "IntOrExpr" = 3) -> "LazyPipelineExpr":
         """
         Morphological closing (dilate then erode).
 
         Args:
-            ksize: Size of the square structuring element.
+            ksize: Size of the square structuring element. Accepts a Polars
+                expression for per-row dynamic values.
 
         Returns:
             New LazyPipelineExpr with closing applied.
@@ -1128,12 +1140,13 @@ class LazyPipelineExpr:
 
         return self.pipe(Pipeline().morphology_close(ksize=ksize))
 
-    def morphology_gradient(self, *, ksize: int = 3) -> "LazyPipelineExpr":
+    def morphology_gradient(self, *, ksize: "IntOrExpr" = 3) -> "LazyPipelineExpr":
         """
-        Morphological gradient (dilate − erode).
+        Morphological gradient (dilate - erode).
 
         Args:
-            ksize: Size of the square structuring element.
+            ksize: Size of the square structuring element. Accepts a Polars
+                expression for per-row dynamic values.
 
         Returns:
             New LazyPipelineExpr with morphological gradient applied.

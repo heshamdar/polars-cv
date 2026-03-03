@@ -117,6 +117,117 @@ def get_single_op_benchmarks(
             ),
             description="Binary threshold at 128",
         ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.ROTATE,
+            name="rotate_90",
+            params=OperationParams(
+                operation=OperationType.ROTATE,
+                angle=90.0,
+                expand=False,
+            ),
+            description="Rotate 90 degrees (zero-copy fast path in polars-cv)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.ROTATE,
+            name="rotate_45",
+            params=OperationParams(
+                operation=OperationType.ROTATE,
+                angle=45.0,
+                expand=True,
+            ),
+            description="Rotate 45 degrees with canvas expansion",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.INVERT,
+            name="invert",
+            params=OperationParams(operation=OperationType.INVERT),
+            description="Invert pixel values (255 - pixel)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.ADJUST_CONTRAST,
+            name="adjust_contrast",
+            params=OperationParams(
+                operation=OperationType.ADJUST_CONTRAST,
+                contrast_factor=1.5,
+            ),
+            description="Adjust contrast (factor=1.5)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.ADJUST_BRIGHTNESS,
+            name="adjust_brightness",
+            params=OperationParams(
+                operation=OperationType.ADJUST_BRIGHTNESS,
+                brightness_factor=1.3,
+            ),
+            description="Adjust brightness (factor=1.3)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.SHARPEN,
+            name="sharpen",
+            params=OperationParams(
+                operation=OperationType.SHARPEN,
+                sharpen_strength=1.5,
+            ),
+            description="Sharpen image (strength=1.5)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.PAD,
+            name="pad",
+            params=OperationParams(
+                operation=OperationType.PAD,
+                pad_top=20,
+                pad_bottom=20,
+                pad_left=20,
+                pad_right=20,
+                pad_value=0,
+            ),
+            description="Pad 20px on all edges",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.ERODE,
+            name="erode",
+            params=OperationParams(
+                operation=OperationType.ERODE,
+                ksize=3,
+                iterations=1,
+            ),
+            description="Morphological erosion (3x3 kernel)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.DILATE,
+            name="dilate",
+            params=OperationParams(
+                operation=OperationType.DILATE,
+                ksize=3,
+                iterations=1,
+            ),
+            description="Morphological dilation (3x3 kernel)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.HISTOGRAM_EQUALIZE,
+            name="histogram_equalize",
+            params=OperationParams(operation=OperationType.HISTOGRAM_EQUALIZE),
+            description="Histogram equalization for contrast enhancement",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.CANNY,
+            name="canny",
+            params=OperationParams(
+                operation=OperationType.CANNY,
+                low_threshold=50.0,
+                high_threshold=150.0,
+            ),
+            description="Canny edge detection (low=50, high=150)",
+        ),
+        SingleOpBenchmarkConfig(
+            operation=OperationType.SOBEL,
+            name="sobel_x",
+            params=OperationParams(
+                operation=OperationType.SOBEL,
+                sobel_axis="x",
+            ),
+            description="Sobel gradient (X axis)",
+        ),
     ]
 
 
@@ -330,7 +441,10 @@ def run_all_single_ops(
     """
     results: list[BenchmarkResult] = []
 
-    total_combinations = len(image_sizes) * len(image_counts) * 8 * len(adapters)
+    sample_benchmarks = get_single_op_benchmarks()
+    total_combinations = (
+        len(image_sizes) * len(image_counts) * len(sample_benchmarks) * len(adapters)
+    )
     current = 0
 
     for size_idx, size in enumerate(image_sizes):

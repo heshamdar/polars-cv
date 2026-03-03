@@ -585,6 +585,10 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
     "equalize_histogram": OpContract(
         DTypeEffect.FIXED_U8, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
     ),
+    # --- Affine transforms — PASSTHROUGH: all channels warped uniformly ---
+    "warp_affine": OpContract(
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
+    ),
 }
 
 

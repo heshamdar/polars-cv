@@ -54,7 +54,7 @@ pub use protocol::{dtype_to_u8, u8_to_dtype, ViewHeader};
 pub use interop::{validate_layout, ExternalView};
 
 // Re-exports - Affine
-pub use ops::affine::AffineParams;
+pub use ops::affine::{AffineParams, InterpolationType};
 
 // Re-exports - Geometry
 pub use geometry::{BoundingBox, Contour, GeometryOp, Point, Winding};

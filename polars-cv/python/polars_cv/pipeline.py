@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -39,6 +40,33 @@ from polars_cv._types import (
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
     from polars_cv.lazy import LazyPipelineExpr
+
+
+def _rotation_matrix(
+    angle_deg: float, center: tuple[float, float], scale: float
+) -> list[float]:
+    """Build a 2x3 forward-mapping rotation+scale matrix around *center*.
+
+    Matches OpenCV's ``getRotationMatrix2D(center, -angle_deg, scale)``
+    convention where positive *angle_deg* = clockwise in image coordinates.
+
+    Args:
+        angle_deg: Rotation angle in degrees (positive = clockwise).
+        center: ``(cx, cy)`` center of rotation.
+        scale: Scale factor.
+
+    Returns:
+        Six-element list ``[a, b, tx, c, d, ty]`` (forward mapping).
+    """
+    import math
+
+    rad = math.radians(angle_deg)
+    cos_a = math.cos(rad) * scale
+    sin_a = math.sin(rad) * scale
+    cx, cy = center
+    tx = (1 - cos_a) * cx + sin_a * cy
+    ty = -sin_a * cx + (1 - cos_a) * cy
+    return [cos_a, -sin_a, tx, sin_a, cos_a, ty]
 
 
 class Pipeline:
@@ -476,18 +504,28 @@ class Pipeline:
         elif op_name == "rotate":
             angle = params.get("angle")
             expand = params.get("expand")
-            if (
-                angle
-                and not angle.is_expr
-                and expand
-                and not expand.is_expr
-                and not expand.value
-            ):
-                if angle.value in (90, 270, -90, -270):
-                    h = self._shape_hints.height
-                    w = self._shape_hints.width
-                    self._shape_hints.height = w
-                    self._shape_hints.width = h
+            if angle and not angle.is_expr:
+                norm_angle = angle.value % 360
+                is_expand = expand and not expand.is_expr and expand.value
+                if is_expand:
+                    self._compute_rotate_expand_shape(norm_angle)
+                else:
+                    if norm_angle in (90, 270):
+                        h = self._shape_hints.height
+                        w = self._shape_hints.width
+                        self._shape_hints.height = w
+                        self._shape_hints.width = h
+        elif op_name == "warp_affine":
+            h = params.get("output_height")
+            w = params.get("output_width")
+            if h and not h.is_expr:
+                self._shape_hints.height = h
+            else:
+                self._shape_hints.height = None
+            if w and not w.is_expr:
+                self._shape_hints.width = w
+            else:
+                self._shape_hints.width = None
 
         # --- Channel updates driven by AlphaMode contract ---
         self._update_channels_from_contract(op_name, params)
@@ -512,7 +550,7 @@ class Pipeline:
             return
 
         if contract.alpha_mode is AlphaMode.DROP:
-            if op_name in ("grayscale", "canny"):
+            if contract.ndim_effect is NdimEffect.PRESERVE:
                 self._shape_hints.channels = ParamValue(is_expr=False, value=1)
             return
 
@@ -556,6 +594,31 @@ class Pipeline:
             has_alpha = input_c.value in (2, 4)
             return input_c.value - (1 if has_alpha else 0)
         return None
+
+    def _compute_rotate_expand_shape(self, norm_angle: float) -> None:
+        """Compute output dimensions for ``rotate(expand=True)``.
+
+        When the angle is known at planning time, the bounding box of the
+        rotated rectangle can be computed exactly.
+
+        Args:
+            norm_angle: Rotation angle in degrees, normalised to ``[0, 360)``.
+        """
+        h = self._shape_hints.height
+        w = self._shape_hints.width
+        if h is None or w is None or h.is_expr or w.is_expr:
+            self._shape_hints.height = None
+            self._shape_hints.width = None
+            return
+
+        ih, iw = int(h.value), int(w.value)
+        rad = math.radians(norm_angle)
+        cos_a = abs(math.cos(rad))
+        sin_a = abs(math.sin(rad))
+        new_w = round(iw * cos_a + ih * sin_a)
+        new_h = round(ih * cos_a + iw * sin_a)
+        self._shape_hints.height = ParamValue(is_expr=False, value=new_h)
+        self._shape_hints.width = ParamValue(is_expr=False, value=new_w)
 
     # --- Source (required, starts the chain) ---
 
@@ -1165,7 +1228,7 @@ class Pipeline:
 
     # --- Channel Operations ---
 
-    def channel_select(self, *, index: int) -> "Pipeline":
+    def channel_select(self, *, index: IntOrExpr) -> "Pipeline":
         """
         Extract a single channel from a multi-channel image.
 
@@ -1174,7 +1237,8 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            index: Channel index to extract (0-based).
+            index: Channel index to extract (0-based). Accepts a Polars
+                expression for per-row dynamic selection.
 
         Returns:
             Self for chaining.
@@ -1189,7 +1253,7 @@ class Pipeline:
         new._ops.append(
             OpSpec(
                 op="channel_select",
-                params={"index": ParamValue(is_expr=False, value=index)},
+                params={"index": new._track_expr(index)},
             )
         )
         new._update_output_dtype("channel_select")
@@ -1409,7 +1473,7 @@ class Pipeline:
     def convolve2d(
         self,
         kernel: list[float],
-        ksize: int,
+        ksize: IntOrExpr,
         *,
         normalize: bool = False,
         border: str = "replicate",
@@ -1422,6 +1486,7 @@ class Pipeline:
         Args:
             kernel: Flattened kernel values (row-major, ``ksize × ksize``).
             ksize: Kernel dimension (must be odd; kernel is ``ksize × ksize``).
+                Accepts a Polars expression for per-row dynamic values.
             normalize: If True, divide output by the sum of absolute kernel values.
             border: Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
 
@@ -1437,12 +1502,15 @@ class Pipeline:
             ```
         """
         self._validate_domain(self.DOMAIN_BUFFER, "convolve2d")
-        if ksize % 2 == 0:
-            msg = f"convolve2d ksize must be odd, got {ksize}"
-            raise ValueError(msg)
-        if len(kernel) != ksize * ksize:
-            msg = f"kernel length {len(kernel)} doesn't match ksize²={ksize * ksize}"
-            raise ValueError(msg)
+        if not isinstance(ksize, pl.Expr):
+            if ksize % 2 == 0:
+                msg = f"convolve2d ksize must be odd, got {ksize}"
+                raise ValueError(msg)
+            if len(kernel) != ksize * ksize:
+                msg = (
+                    f"kernel length {len(kernel)} doesn't match ksize²={ksize * ksize}"
+                )
+                raise ValueError(msg)
         if border not in ("replicate", "zero", "reflect"):
             msg = f"Unknown border mode: {border!r}. Use 'replicate', 'zero', or 'reflect'."
             raise ValueError(msg)
@@ -1453,7 +1521,7 @@ class Pipeline:
                 op="convolve2d",
                 params={
                     "kernel": ParamValue(is_expr=False, value=kernel),
-                    "ksize": ParamValue(is_expr=False, value=ksize),
+                    "ksize": new._track_expr(ksize),
                     "normalize": ParamValue(is_expr=False, value=normalize),
                     "border": ParamValue(is_expr=False, value=border),
                 },
@@ -1590,7 +1658,7 @@ class Pipeline:
 
     # --- Morphological Operations ---
 
-    def erode(self, *, ksize: int = 3, iterations: int = 1) -> "Pipeline":
+    def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> "Pipeline":
         """
         Morphological erosion (local minimum filter).
 
@@ -1601,8 +1669,10 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+            ksize: Size of the square structuring element. Must be odd and >= 1.
+                Accepts a Polars expression for per-row dynamic values.
             iterations: Number of times the erosion is applied.
+                Accepts a Polars expression for per-row dynamic values.
 
         Returns:
             New Pipeline with erosion applied.
@@ -1618,8 +1688,8 @@ class Pipeline:
             OpSpec(
                 op="erode",
                 params={
-                    "ksize": ParamValue(is_expr=False, value=ksize),
-                    "iterations": ParamValue(is_expr=False, value=iterations),
+                    "ksize": new._track_expr(ksize),
+                    "iterations": new._track_expr(iterations),
                 },
             )
         )
@@ -1627,7 +1697,7 @@ class Pipeline:
         new._update_shape_hints("erode", {})
         return new
 
-    def dilate(self, *, ksize: int = 3, iterations: int = 1) -> "Pipeline":
+    def dilate(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> "Pipeline":
         """
         Morphological dilation (local maximum filter).
 
@@ -1638,8 +1708,10 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+            ksize: Size of the square structuring element. Must be odd and >= 1.
+                Accepts a Polars expression for per-row dynamic values.
             iterations: Number of times the dilation is applied.
+                Accepts a Polars expression for per-row dynamic values.
 
         Returns:
             New Pipeline with dilation applied.
@@ -1655,8 +1727,8 @@ class Pipeline:
             OpSpec(
                 op="dilate",
                 params={
-                    "ksize": ParamValue(is_expr=False, value=ksize),
-                    "iterations": ParamValue(is_expr=False, value=iterations),
+                    "ksize": new._track_expr(ksize),
+                    "iterations": new._track_expr(iterations),
                 },
             )
         )
@@ -1664,7 +1736,7 @@ class Pipeline:
         new._update_shape_hints("dilate", {})
         return new
 
-    def morphology_open(self, *, ksize: int = 3) -> "Pipeline":
+    def morphology_open(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
         """
         Morphological opening (erode then dilate).
 
@@ -1674,7 +1746,8 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+            ksize: Size of the square structuring element. Must be odd and >= 1.
+                Accepts a Polars expression for per-row dynamic values.
 
         Returns:
             New Pipeline with opening applied.
@@ -1686,7 +1759,7 @@ class Pipeline:
         """
         return self.erode(ksize=ksize).dilate(ksize=ksize)
 
-    def morphology_close(self, *, ksize: int = 3) -> "Pipeline":
+    def morphology_close(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
         """
         Morphological closing (dilate then erode).
 
@@ -1696,7 +1769,8 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+            ksize: Size of the square structuring element. Must be odd and >= 1.
+                Accepts a Polars expression for per-row dynamic values.
 
         Returns:
             New Pipeline with closing applied.
@@ -1708,9 +1782,9 @@ class Pipeline:
         """
         return self.dilate(ksize=ksize).erode(ksize=ksize)
 
-    def morphology_gradient(self, *, ksize: int = 3) -> "Pipeline":
+    def morphology_gradient(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
         """
-        Morphological gradient (dilate − erode).
+        Morphological gradient (dilate - erode).
 
         Produces an edge outline by computing the difference between dilation
         and erosion on the same input.  Requires single-channel input.
@@ -1718,7 +1792,8 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            ksize: Size of the square structuring element. Must be odd and ≥ 1.
+            ksize: Size of the square structuring element. Must be odd and >= 1.
+                Accepts a Polars expression for per-row dynamic values.
 
         Returns:
             New Pipeline with morphological gradient applied.
@@ -1734,7 +1809,7 @@ class Pipeline:
             OpSpec(
                 op="morphology_gradient",
                 params={
-                    "ksize": ParamValue(is_expr=False, value=ksize),
+                    "ksize": new._track_expr(ksize),
                 },
             )
         )
@@ -2100,7 +2175,7 @@ class Pipeline:
         bottom: IntOrExpr = 0,
         left: IntOrExpr = 0,
         right: IntOrExpr = 0,
-        value: float = 0.0,
+        value: FloatOrExpr = 0.0,
         mode: str = "constant",
     ) -> "Pipeline":
         """
@@ -2113,7 +2188,8 @@ class Pipeline:
             bottom: Padding on bottom edge.
             left: Padding on left edge.
             right: Padding on right edge.
-            value: Fill value for "constant" mode (default 0).
+            value: Fill value for "constant" mode (default 0). Accepts a
+                Polars expression for per-row dynamic values.
             mode: Padding mode - "constant", "edge", "reflect", "symmetric".
 
         Returns:
@@ -2146,7 +2222,7 @@ class Pipeline:
                     "bottom": new._track_expr(bottom),
                     "left": new._track_expr(left),
                     "right": new._track_expr(right),
-                    "value": ParamValue(is_expr=False, value=value),
+                    "value": new._track_expr(value),
                     "mode": ParamValue(is_expr=False, value=mode_enum.value),
                 },
             )
@@ -2160,7 +2236,7 @@ class Pipeline:
         height: IntOrExpr,
         width: IntOrExpr,
         position: str = "center",
-        value: float = 0.0,
+        value: FloatOrExpr = 0.0,
     ) -> "Pipeline":
         """
         Pad image to exact target size.
@@ -2177,7 +2253,8 @@ class Pipeline:
                 - "center": Center content in padded area (default)
                 - "top-left": Place at top-left corner
                 - "bottom-right": Place at bottom-right corner
-            value: Fill value for padding (default 0).
+            value: Fill value for padding (default 0). Accepts a Polars
+                expression for per-row dynamic values.
 
         Returns:
             Self for chaining.
@@ -2208,7 +2285,7 @@ class Pipeline:
                     "height": new._track_expr(height),
                     "width": new._track_expr(width),
                     "position": ParamValue(is_expr=False, value=pos_enum.value),
-                    "value": ParamValue(is_expr=False, value=value),
+                    "value": new._track_expr(value),
                 },
             )
         )
@@ -2220,7 +2297,7 @@ class Pipeline:
         *,
         height: IntOrExpr,
         width: IntOrExpr,
-        value: float = 0.0,
+        value: FloatOrExpr = 0.0,
     ) -> "Pipeline":
         """
         Resize image maintaining aspect ratio and pad to exact target size.
@@ -2234,7 +2311,8 @@ class Pipeline:
         Args:
             height: Target height.
             width: Target width.
-            value: Fill value for padding (default 0, typically black).
+            value: Fill value for padding (default 0, typically black). Accepts a
+                Polars expression for per-row dynamic values.
 
         Returns:
             Self for chaining.
@@ -2254,7 +2332,7 @@ class Pipeline:
                 params={
                     "height": new._track_expr(height),
                     "width": new._track_expr(width),
-                    "value": ParamValue(is_expr=False, value=value),
+                    "value": new._track_expr(value),
                 },
             )
         )
@@ -2322,20 +2400,34 @@ class Pipeline:
         angle: FloatOrExpr,
         *,
         expand: bool = False,
+        interpolation: str = "bilinear",
+        border_value: float = 0.0,
     ) -> "Pipeline":
         """
         Rotate image by specified angle.
 
-        For angles of 90, 180, or 270 degrees, this uses zero-copy view operations.
-        For arbitrary angles, uses bilinear interpolation with allocation.
+        For angles of 90, 180, or 270 degrees, this uses zero-copy view
+        operations (``interpolation`` and ``border_value`` are ignored).
+        For arbitrary angles, the rotation is performed via an affine
+        transformation using the specified interpolation and border value.
 
-        Domain: buffer → buffer
+        This is a convenience wrapper around the affine transform family.
+        For more control (e.g., combined rotation + scale, or explicit
+        output sizing), use :meth:`rotate_and_scale` or :meth:`warp_affine`.
+
+        Domain: buffer -> buffer
 
         Args:
             angle: Rotation angle in degrees (positive = clockwise).
                 Can be a literal float or Polars expression.
             expand: If True, expand output dimensions to fit rotated image.
-                If False (default), keep original dimensions (corners may be cropped).
+                If False (default), keep original dimensions (corners may
+                be cropped).
+            interpolation: Interpolation method for arbitrary angles --
+                ``"bilinear"`` (default) or ``"nearest"``. Ignored for
+                90/180/270 degree rotations.
+            border_value: Fill value for out-of-bounds pixels (default 0).
+                Ignored for 90/180/270 degree rotations.
 
         Returns:
             Self for chaining.
@@ -2353,6 +2445,9 @@ class Pipeline:
             >>>
             >>> # Dynamic angle from column
             >>> pipe = Pipeline().source("image_bytes").rotate(pl.col("angle"))
+            >>>
+            >>> # Nearest-neighbor interpolation for pixel-art
+            >>> pipe = Pipeline().source("image_bytes").rotate(30, interpolation="nearest")
             ```
         """
         self._validate_domain(self.DOMAIN_BUFFER, "rotate")
@@ -2360,11 +2455,168 @@ class Pipeline:
         params: dict[str, ParamValue] = {
             "angle": new._track_expr(angle),
             "expand": ParamValue(is_expr=False, value=expand),
+            "interpolation": ParamValue(is_expr=False, value=interpolation),
+            "border_value": ParamValue(is_expr=False, value=border_value),
         }
         new._ops.append(OpSpec(op="rotate", params=params))
         new._update_output_dtype("rotate")
         new._update_shape_hints("rotate", new._ops[-1].params)
         return new
+
+    # --- Affine Transform Operations ---
+
+    def warp_affine(
+        self,
+        matrix: list[float],
+        output_size: tuple[IntOrExpr, IntOrExpr],
+        *,
+        interpolation: str = "bilinear",
+        border_value: float = 0.0,
+    ) -> "Pipeline":
+        """
+        Apply a 2x3 affine transformation matrix.
+
+        The matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from
+        source to destination (same convention as OpenCV ``warpAffine``)::
+
+            x_dst = a * x_src + b * y_src + tx
+            y_dst = c * x_src + d * y_src + ty
+
+        The kernel inverts this matrix internally for interpolation.
+
+        Domain: buffer → buffer
+
+        Args:
+            matrix: Six-element list representing the 2x3 affine matrix
+                ``[a, b, tx, c, d, ty]`` (forward mapping).
+            output_size: ``(height, width)`` of the output image. Each element
+                accepts a Polars expression for per-row dynamic values.
+            interpolation: Interpolation method -- ``"bilinear"`` (default)
+                or ``"nearest"``.
+            border_value: Pixel value for out-of-bounds regions (default 0).
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If *matrix* does not have 6 elements or domain is wrong.
+
+        Example:
+            ```python
+            >>> # Translate image by (50, 30)
+            >>> pipe = Pipeline().source("image_bytes").warp_affine(
+            ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],
+            ...     output_size=(224, 224),
+            ... )
+            ```
+        """
+        if len(matrix) != 6:
+            msg = f"Affine matrix must have 6 elements, got {len(matrix)}"
+            raise ValueError(msg)
+        self._validate_domain(self.DOMAIN_BUFFER, "warp_affine")
+        new = self._clone()
+        h, w = output_size
+        new._ops.append(
+            OpSpec(
+                op="warp_affine",
+                params={
+                    "matrix": ParamValue(is_expr=False, value=matrix),
+                    "output_height": new._track_expr(h),
+                    "output_width": new._track_expr(w),
+                    "interpolation": ParamValue(is_expr=False, value=interpolation),
+                    "border_value": ParamValue(is_expr=False, value=border_value),
+                },
+            )
+        )
+        new._update_output_dtype("warp_affine")
+        new._update_shape_hints("warp_affine", new._ops[-1].params)
+        return new
+
+    def shear(
+        self,
+        *,
+        sx: float = 0.0,
+        sy: float = 0.0,
+        output_size: tuple[int, int] | None = None,
+    ) -> "Pipeline":
+        """
+        Apply a shear transformation.
+
+        Convenience wrapper that builds a shear matrix and delegates to
+        :meth:`warp_affine`.
+
+        Domain: buffer → buffer
+
+        Args:
+            sx: Horizontal shear factor.
+            sy: Vertical shear factor.
+            output_size: ``(height, width)`` of the output. Required
+                (auto-sizing not yet implemented).
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If *output_size* is not provided.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").shear(sx=0.2, output_size=(100, 100))
+            ```
+        """
+        # TODO: auto-compute output_size from input shape + shear if not provided
+        if output_size is None:
+            msg = "output_size is required for shear (auto-size not yet implemented)"
+            raise ValueError(msg)
+        matrix = [1.0, sx, 0.0, sy, 1.0, 0.0]
+        return self.warp_affine(matrix, output_size)
+
+    def rotate_and_scale(
+        self,
+        *,
+        angle: float,
+        scale: float = 1.0,
+        center: tuple[float, float] | None = None,
+        output_size: tuple[int, int] | None = None,
+    ) -> "Pipeline":
+        """
+        Combined rotation and scaling around a center point.
+
+        Convenience wrapper that builds a rotation+scale matrix and delegates
+        to :meth:`warp_affine`.
+
+        Domain: buffer → buffer
+
+        Args:
+            angle: Rotation angle in degrees (positive = clockwise).
+            scale: Scale factor (default 1.0).
+            center: ``(cx, cy)`` center of rotation. Required
+                (auto-compute not yet implemented).
+            output_size: ``(height, width)`` of the output. Required
+                (auto-sizing not yet implemented).
+
+        Returns:
+            Self for chaining.
+
+        Raises:
+            ValueError: If *center* or *output_size* is not provided.
+
+        Example:
+            ```python
+            >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+            ...     angle=45.0, scale=1.2, center=(112, 112), output_size=(224, 224)
+            ... )
+            ```
+        """
+        # TODO: auto-compute center from input shape if not provided
+        if center is None:
+            msg = "center is required for rotate_and_scale (auto-compute not yet implemented)"
+            raise ValueError(msg)
+        if output_size is None:
+            msg = "output_size is required for rotate_and_scale (auto-size not yet implemented)"
+            raise ValueError(msg)
+        matrix = _rotation_matrix(angle, center, scale)
+        return self.warp_affine(matrix, output_size)
 
     def perceptual_hash(
         self,
@@ -2419,8 +2671,8 @@ class Pipeline:
         width: IntOrExpr | None = None,
         height: IntOrExpr | None = None,
         shape: "LazyPipelineExpr | None" = None,
-        fill_value: int = 255,
-        background: int = 0,
+        fill_value: IntOrExpr = 255,
+        background: IntOrExpr = 0,
         anti_alias: bool = False,
     ) -> "Pipeline":
         """
@@ -2430,8 +2682,10 @@ class Pipeline:
             width: Mask width.
             height: Mask height.
             shape: Match dimensions from another pipeline.
-            fill_value: Inside value (default 255).
-            background: Outside value (default 0).
+            fill_value: Inside value (default 255). Accepts a Polars expression
+                for per-row dynamic values.
+            background: Outside value (default 0). Accepts a Polars expression
+                for per-row dynamic values.
 
         Domain transition: contour → buffer
         """
@@ -2449,8 +2703,8 @@ class Pipeline:
             raise ValueError(msg)
 
         params: dict[str, ParamValue] = {
-            "fill_value": ParamValue(is_expr=False, value=fill_value),
-            "background": ParamValue(is_expr=False, value=background),
+            "fill_value": new._track_expr(fill_value),
+            "background": new._track_expr(background),
             "anti_alias": ParamValue(is_expr=False, value=anti_alias),
         }
 
@@ -2523,22 +2777,24 @@ class Pipeline:
         new._update_output_dtype("reduce_sum")
         return new
 
-    def reduce_percentile(self, q: float) -> "Pipeline":
+    def reduce_percentile(self, q: FloatOrExpr) -> "Pipeline":
         """
         Compute the q-th percentile of all values.
 
         Uses linear interpolation matching numpy.percentile default behavior.
 
         Args:
-            q: Percentile to compute, in [0, 100].
+            q: Percentile to compute, in [0, 100]. Accepts a Polars expression
+                for per-row dynamic values.
 
-        Domain transition: buffer → scalar
+        Domain transition: buffer -> scalar
         """
         self._validate_domain(self.DOMAIN_BUFFER, "reduce_percentile")
         new = self._clone()
         new._ops.append(
             OpSpec(
-                op="reduce_percentile", params={"q": ParamValue(is_expr=False, value=q)}
+                op="reduce_percentile",
+                params={"q": new._track_expr(q)},
             )
         )
         new._current_domain = self.DOMAIN_SCALAR
@@ -2665,7 +2921,7 @@ class Pipeline:
         new._update_output_dtype("reduce_mean")
         return new
 
-    def reduce_std(self, axis: int | None = None, ddof: int = 0) -> "Pipeline":
+    def reduce_std(self, axis: int | None = None, ddof: IntOrExpr = 0) -> "Pipeline":
         """
         Reduce buffer by computing the standard deviation.
 
@@ -2674,13 +2930,14 @@ class Pipeline:
         along that axis, returning a buffer with one fewer dimension.
 
         Domain transition:
-            - axis=None: buffer → scalar
-            - axis=N: buffer → buffer (reduced shape)
+            - axis=None: buffer -> scalar
+            - axis=N: buffer -> buffer (reduced shape)
 
         Args:
             axis: Axis to reduce along. None for global reduction.
             ddof: Delta degrees of freedom. 0 for population std (default),
-                1 for sample std.
+                1 for sample std. Accepts a Polars expression for per-row
+                dynamic values.
 
         Returns:
             Self for chaining.
@@ -2701,7 +2958,7 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_BUFFER, "reduce_std")
         new = self._clone()
         params: dict[str, ParamValue] = {
-            "ddof": ParamValue(is_expr=False, value=ddof),
+            "ddof": new._track_expr(ddof),
         }
         if axis is not None:
             params["axis"] = ParamValue(is_expr=False, value=axis)
@@ -2853,7 +3110,7 @@ class Pipeline:
 
     def histogram(
         self,
-        bins: int | list[float] = 256,
+        bins: IntOrExpr | list[float] = 256,
         range: tuple[float, float] | None = None,
         closed: str = "left",
         output: str = "buckets",
@@ -2862,7 +3119,8 @@ class Pipeline:
         Compute pixel value histogram.
 
         Args:
-            bins: Number of bins (default 256) or explicit list of bin edges.
+            bins: Number of bins (default 256), a Polars expression for
+                per-row dynamic bin count, or an explicit list of bin edges.
             range: (min, max) tuple. Auto-detected if None.
             closed: "left" or "right" interval inclusiveness (default "left").
             output: "buckets" (list of structs), "counts" (bin counts),
@@ -2888,8 +3146,14 @@ class Pipeline:
 
         new = self._clone()
 
+        bins_param: ParamValue
+        if isinstance(bins, list):
+            bins_param = ParamValue(is_expr=False, value=bins)
+        else:
+            bins_param = new._track_expr(bins)
+
         params: dict[str, ParamValue] = {
-            "bins": ParamValue(is_expr=False, value=bins),
+            "bins": bins_param,
             "closed": ParamValue(is_expr=False, value=closed),
             "output": ParamValue(is_expr=False, value=output_mode.value),
         }
@@ -3248,18 +3512,174 @@ class Pipeline:
 
         self._ops.append(OpSpec(op=op, params=params))
 
+    def _fuse_affine_ops(self, ops: list[OpSpec]) -> list[OpSpec]:
+        """Compose consecutive affine-compatible ops into a single ``warp_affine``.
+
+        Both ``warp_affine`` and ``rotate`` (with static, non-90/180/270
+        angles) participate in fusion.  Matrix composition uses 3x3
+        homogeneous multiplication so that ``rotate → translate → shear``
+        becomes one affine warp at execution time, avoiding redundant
+        interpolation passes.
+
+        ``rotate`` ops with expression-based angles or zero-copy angles
+        (90/180/270) are left as-is and break a fusion run.
+
+        Args:
+            ops: The list of pipeline operations.
+
+        Returns:
+            Optimized list where runs of affine ops are collapsed.
+        """
+        if len(ops) < 2:
+            return ops
+
+        result: list[OpSpec] = []
+        i = 0
+        while i < len(ops):
+            converted = self._try_convert_rotate_to_affine(ops[i])
+            if converted is None:
+                result.append(ops[i])
+                i += 1
+                continue
+
+            acc = converted
+            j = i + 1
+            while j < len(ops):
+                next_converted = self._try_convert_rotate_to_affine(ops[j])
+                if next_converted is None:
+                    break
+                acc = self._compose_affine_ops(acc, next_converted)
+                j += 1
+            result.append(acc)
+            i = j
+
+        return result
+
+    def _try_convert_rotate_to_affine(self, op: OpSpec) -> OpSpec | None:
+        """Convert an op to a ``warp_affine`` ``OpSpec`` if it is fusible.
+
+        Returns the op unchanged if it is already ``warp_affine``, converts
+        ``rotate`` with a static arbitrary angle to ``warp_affine``, or
+        returns ``None`` if the op is not affine-compatible.
+        """
+        if op.op == "warp_affine":
+            return op
+
+        if op.op != "rotate":
+            return None
+
+        angle_pv = op.params.get("angle")
+        if angle_pv is None or angle_pv.is_expr:
+            return None
+
+        angle = float(angle_pv.value)
+        norm = angle % 360
+        if norm < 0:
+            norm += 360
+
+        eps = 0.001
+        if (
+            abs(norm - 90) < eps
+            or abs(norm - 180) < eps
+            or abs(norm - 270) < eps
+            or abs(norm) < eps
+            or abs(norm - 360) < eps
+        ):
+            return None
+
+        expand_pv = op.params.get("expand")
+        expand = bool(expand_pv and not expand_pv.is_expr and expand_pv.value)
+
+        h_pv = self._shape_hints.height
+        w_pv = self._shape_hints.width
+        if h_pv is None or w_pv is None or h_pv.is_expr or w_pv.is_expr:
+            return None
+
+        ih, iw = int(h_pv.value), int(w_pv.value)
+        rad = math.radians(norm)
+        cos_a = math.cos(rad)
+        sin_a = math.sin(rad)
+        cx, cy = iw / 2.0, ih / 2.0
+
+        if expand:
+            new_w = round(iw * abs(cos_a) + ih * abs(sin_a))
+            new_h = round(ih * abs(cos_a) + iw * abs(sin_a))
+        else:
+            new_w, new_h = iw, ih
+
+        new_cx, new_cy = new_w / 2.0, new_h / 2.0
+        tx = -cx * cos_a - cy * (-sin_a) + new_cx
+        ty = -cx * sin_a - cy * cos_a + new_cy
+        matrix = [cos_a, -sin_a, tx, sin_a, cos_a, ty]
+
+        interpolation = op.params.get("interpolation")
+        border_value = op.params.get("border_value")
+
+        return OpSpec(
+            op="warp_affine",
+            params={
+                "matrix": ParamValue(is_expr=False, value=matrix),
+                "output_height": ParamValue(is_expr=False, value=new_h),
+                "output_width": ParamValue(is_expr=False, value=new_w),
+                "interpolation": interpolation
+                or ParamValue(is_expr=False, value="bilinear"),
+                "border_value": border_value or ParamValue(is_expr=False, value=0.0),
+            },
+        )
+
+    @staticmethod
+    def _compose_affine_ops(first: OpSpec, second: OpSpec) -> OpSpec:
+        """Compose two ``warp_affine`` ``OpSpec`` by matrix multiplication.
+
+        The composed matrix is ``second.matrix @ first.matrix`` (in
+        homogeneous 3x3 form).  Output dimensions, interpolation, and
+        border value are taken from *second*.
+
+        Args:
+            first: The earlier warp_affine op.
+            second: The later warp_affine op.
+
+        Returns:
+            A single fused ``OpSpec``.
+        """
+        m1 = first.params["matrix"].value
+        m2 = second.params["matrix"].value
+        a1, b1, tx1, c1, d1, ty1 = m1
+        a2, b2, tx2, c2, d2, ty2 = m2
+
+        fused_matrix = [
+            a2 * a1 + b2 * c1,
+            a2 * b1 + b2 * d1,
+            a2 * tx1 + b2 * ty1 + tx2,
+            c2 * a1 + d2 * c1,
+            c2 * b1 + d2 * d1,
+            c2 * tx1 + d2 * ty1 + ty2,
+        ]
+        return OpSpec(
+            op="warp_affine",
+            params={
+                "matrix": ParamValue(is_expr=False, value=fused_matrix),
+                "output_height": second.params["output_height"],
+                "output_width": second.params["output_width"],
+                "interpolation": second.params["interpolation"],
+                "border_value": second.params["border_value"],
+            },
+        )
+
     def _to_spec_dict(self) -> dict:
         """
         Convert pipeline to specification dictionary (without sink).
 
         Used for graph serialization where sink is handled separately.
+        Applies affine fusion optimization before serialization.
 
         Returns:
             Dictionary with source, shape_hints, ops, domain, and output_dtype.
         """
+        optimized_ops = self._fuse_affine_ops(self._ops)
         spec: dict = {
             "source": self._source.to_dict() if self._source else None,
-            "ops": [op.to_dict() for op in self._ops],
+            "ops": [op.to_dict() for op in optimized_ops],
             "domain": self._current_domain,
             "output_dtype": self._output_dtype,
         }

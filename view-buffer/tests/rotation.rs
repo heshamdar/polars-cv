@@ -131,17 +131,17 @@ fn test_rotate_double_180() {
 
 #[test]
 fn test_rotate_arbitrary_angle() {
-    use view_buffer::ops::{ImageOp, ImageOpKind};
+    use view_buffer::ops::affine::InterpolationType;
+    use view_buffer::ops::ComputeOp;
 
     let buf = make_test_image(10, 10);
 
-    // Test arbitrary angle rotation (45 degrees)
     let rotated = ViewExpr::new_source(buf)
-        .apply_op(view_buffer::ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Rotate {
-                angle: 45.0,
-                expand: true,
-            },
+        .apply_op(view_buffer::ViewDto::Compute(ComputeOp::RotateAffine {
+            angle_deg: 45.0,
+            expand: true,
+            interpolation: InterpolationType::Bilinear,
+            border_value: 0.0,
         }))
         .plan()
         .execute();
@@ -153,18 +153,18 @@ fn test_rotate_arbitrary_angle() {
 
 #[test]
 fn test_rotate_arbitrary_no_expand() {
-    use view_buffer::ops::{ImageOp, ImageOpKind};
+    use view_buffer::ops::affine::InterpolationType;
+    use view_buffer::ops::ComputeOp;
 
     let buf = make_test_image(10, 10);
     let original_shape = buf.shape().to_vec();
 
-    // Test arbitrary angle rotation without expansion
     let rotated = ViewExpr::new_source(buf)
-        .apply_op(view_buffer::ViewDto::Image(ImageOp {
-            kind: ImageOpKind::Rotate {
-                angle: 30.0,
-                expand: false,
-            },
+        .apply_op(view_buffer::ViewDto::Compute(ComputeOp::RotateAffine {
+            angle_deg: 30.0,
+            expand: false,
+            interpolation: InterpolationType::Bilinear,
+            border_value: 0.0,
         }))
         .plan()
         .execute();

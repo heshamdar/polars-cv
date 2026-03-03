@@ -323,6 +323,46 @@ class TorchvisionAdapter(BaseFrameworkAdapter):
         threshold_val = value / 255.0
         return (img > threshold_val).float()
 
+    def rotate(self, img: Any, angle: float, *, expand: bool = False) -> Any:
+        """Rotate image by angle degrees."""
+        _, _, F = self._get_modules()
+        return F.rotate(img, -angle, expand=expand)
+
+    def invert(self, img: Any) -> Any:
+        """Invert pixel values."""
+        _, _, F = self._get_modules()
+        return F.invert(img)
+
+    def adjust_contrast(self, img: Any, factor: float) -> Any:
+        """Adjust contrast."""
+        _, _, F = self._get_modules()
+        return F.adjust_contrast(img, factor)
+
+    def adjust_brightness(self, img: Any, factor: float) -> Any:
+        """Adjust brightness."""
+        _, _, F = self._get_modules()
+        return F.adjust_brightness(img, factor)
+
+    def sharpen(self, img: Any, strength: float = 1.0) -> Any:
+        """Apply sharpening."""
+        _, _, F = self._get_modules()
+        return F.adjust_sharpness(img, strength)
+
+    def pad(
+        self, img: Any, top: int, bottom: int, left: int, right: int, value: int = 0
+    ) -> Any:
+        """Add constant padding."""
+        _, _, F = self._get_modules()
+        return F.pad(img, [left, top, right, bottom], fill=value)
+
+    def histogram_equalize(self, img: Any) -> Any:
+        """Apply histogram equalization."""
+        torch, _, F = self._get_modules()
+        uint8_img = (img * 255).clamp(0, 255).to(torch.uint8)
+        if uint8_img.shape[0] == 3:
+            uint8_img = F.rgb_to_grayscale(uint8_img)
+        return F.equalize(uint8_img).float() / 255.0
+
     def to_numpy(self, img: "torch.Tensor") -> "npt.NDArray[np.float32]":
         """
         Convert tensor to NumPy array.

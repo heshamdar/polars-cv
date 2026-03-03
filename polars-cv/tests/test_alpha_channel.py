@@ -125,6 +125,9 @@ class TestAlphaModeContracts:
             "threshold",
             "channel_select",
             "perceptual_hash",
+            "erode",
+            "dilate",
+            "morphology_gradient",
         ]
         for op in drop_ops:
             contract = OPERATION_CONTRACTS[op]
@@ -247,6 +250,107 @@ class TestChannelInferencePlanning:
         )
         assert pipe._shape_hints.channels is not None
         assert pipe._shape_hints.channels.value == 3
+
+    def test_threshold_drops_to_1(self) -> None:
+        """Threshold (DROP + PRESERVE ndim) should set channels to 1."""
+        pipe = Pipeline().source("image_bytes").grayscale().threshold(128)
+        assert pipe._shape_hints.channels is not None
+        assert pipe._shape_hints.channels.value == 1
+
+    def test_erode_drops_to_1(self) -> None:
+        """Erode (DROP + PRESERVE ndim) should set channels to 1."""
+        pipe = (
+            Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
+        )
+        assert pipe._shape_hints.channels is not None
+        assert pipe._shape_hints.channels.value == 1
+
+    def test_dilate_drops_to_1(self) -> None:
+        """Dilate (DROP + PRESERVE ndim) should set channels to 1."""
+        pipe = (
+            Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
+        )
+        assert pipe._shape_hints.channels is not None
+        assert pipe._shape_hints.channels.value == 1
+
+    def test_morphology_gradient_drops_to_1(self) -> None:
+        """Morphology gradient (DROP + PRESERVE ndim) should set channels to 1."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .morphology_gradient(ksize=3)
+        )
+        assert pipe._shape_hints.channels is not None
+        assert pipe._shape_hints.channels.value == 1
+
+    def test_threshold_erode_dilate_chain_channels(self) -> None:
+        """Chained DROP ops should all report channels=1."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .erode(ksize=3)
+            .dilate(ksize=3)
+        )
+        assert pipe._shape_hints.channels is not None
+        assert pipe._shape_hints.channels.value == 1
+
+    def test_rotate_expand_true_shape_hints(self) -> None:
+        """rotate(expand=True) should compute correct output dimensions."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .assert_shape(height=100, width=200)
+            .rotate(45, expand=True)
+        )
+        h = pipe._shape_hints.height
+        w = pipe._shape_hints.width
+        assert h is not None
+        assert w is not None
+        assert h.value > 100
+        assert w.value > 200
+
+    def test_rotate_expand_true_90_swaps(self) -> None:
+        """rotate(90, expand=True) should swap height and width."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .assert_shape(height=100, width=200)
+            .rotate(90, expand=True)
+        )
+        assert pipe._shape_hints.height is not None
+        assert pipe._shape_hints.width is not None
+        assert pipe._shape_hints.height.value == 200
+        assert pipe._shape_hints.width.value == 100
+
+    def test_rotate_expand_false_90_swaps(self) -> None:
+        """rotate(90, expand=False) should swap height and width."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .assert_shape(height=100, width=200)
+            .rotate(90)
+        )
+        assert pipe._shape_hints.height is not None
+        assert pipe._shape_hints.width is not None
+        assert pipe._shape_hints.height.value == 200
+        assert pipe._shape_hints.width.value == 100
+
+    def test_rotate_expand_false_arbitrary_preserves_size(self) -> None:
+        """rotate(45, expand=False) should keep original dimensions."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .assert_shape(height=100, width=200)
+            .rotate(45)
+        )
+        assert pipe._shape_hints.height is not None
+        assert pipe._shape_hints.width is not None
+        assert pipe._shape_hints.height.value == 100
+        assert pipe._shape_hints.width.value == 200
 
     def test_expected_shape_none_when_channels_unknown(self) -> None:
         """expected_shape returns None when channels are unknown."""

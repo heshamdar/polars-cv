@@ -11,7 +11,7 @@ This directory contains a comprehensive benchmarking suite for comparing polars-
 
 ### What the benchmarks test:
 - Batch image decoding and preprocessing
-- Single operations (resize, crop, normalize, etc.)
+- Single operations (21 benchmarks: resize, grayscale, normalize, flip, crop, blur, threshold, rotate_90, rotate_45, invert, adjust_contrast, adjust_brightness, sharpen, pad, erode, dilate, histogram_equalize, canny, sobel_x)
 - Multi-operation pipelines (light, medium, heavy)
 - End-to-end file-to-memory workflows
 - Zero-copy ingestion performance
@@ -86,10 +86,12 @@ uv run python benchmarks/run_benchmarks.py --counts 100 500 --sizes 256 512 1024
 
 ### Adapter Pattern
 
-Each framework implements `AbstractFrameworkAdapter` (in `frameworks/base.py`) which provides a consistent interface for:
-- Single operations (resize, grayscale, normalize, etc.)
+Each framework implements `BaseFrameworkAdapter` (in `frameworks/base.py`) which provides a consistent interface for:
+- Single operations (21 benchmarks covering spatial, intensity, morphological, and edge detection operations)
 - Pipeline execution (chained operations)
 - End-to-end workflows (decode → process → encode)
+
+New operations (rotate, erode, dilate, invert, contrast, brightness, sharpen, pad, histogram_equalize, canny, sobel) have default implementations that raise `NotImplementedError`. Adapters implement what their underlying framework supports; the benchmark runner catches errors for unsupported operations.
 
 ### BenchmarkConfig
 

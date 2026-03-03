@@ -167,3 +167,10 @@ cargo clippy --workspace           # Lint Rust
 - **`ANNOTATED_POINT_SCHEMA` not re-exported:** Defined in `geometry/schemas.py`, exported by `geometry/__init__.py`, but missing from `polars_cv/__init__.py` `__all__`.
 - **`PipelineSpec` consolidation:** `pipeline.rs` serde types (`PipelineSpec`, `SourceSpec`, `SinkSpec`, `OpSpec`) could be consolidated into graph-owned types. `PipelineSpec` wrapper itself may be removable.
 - **Inconsistent test fixtures:** Many test files redefine `_plugin_available()`, `plugin_required`, and PNG creation fixtures instead of using shared ones from `conftest.py`.
+
+## Recent Changes
+
+- **Rotation/affine unification:** `rotate()` with arbitrary angles now routes through `ComputeOp::RotateAffine` → `AffineParams::from_rotation()` → `apply_affine_warp()`, sharing the affine transform code path. `ImageOpKind::Rotate` has been removed. Zero-copy fast paths (90/180/270) are preserved via `ViewOp`. `rotate()` now accepts `interpolation` and `border_value` parameters. Affine fusion supports `rotate` → `warp_affine` chains.
+- **Contract system fixes:** `_update_channels_from_contract()` now correctly sets `channels=1` for all `AlphaMode.DROP` ops with `NdimEffect.PRESERVE` (threshold, erode, dilate, morphology_gradient). `rotate(expand=True)` computes output dimensions at planning time for static angles.
+- **Dynamic parameter support:** Extended to cover morphology ksize/iterations, channel_select index, convolve2d ksize, pad value, warp_affine output_size, rasterize fill_value/background, reduce_percentile q, reduce_std ddof.
+- **Benchmarks expanded:** 21 single-op benchmarks (up from 8), covering rotation, morphology, intensity adjustments, edge detection, padding, sharpening, and histogram equalization.
