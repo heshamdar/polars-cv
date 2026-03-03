@@ -13,8 +13,8 @@ While originally designed as an independent crate, it is currently **tightly cou
 
 - `ViewBuffer` — strided multi-dimensional array for images, masks, feature maps
 - Zero-copy view operations (transpose, flip, crop, reshape) via metadata changes only
-- Compute operations (scale, normalize, cast, clamp, relu, contrast, gamma, invert)
-- Image operations (resize, blur, grayscale, threshold, rotate, canny, histogram equalize, erode, dilate, morphological gradient)
+- Compute operations (scale, normalize, cast, clamp, relu, contrast, gamma, invert, affine warp, rotate-via-affine)
+- Image operations (resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morphological gradient)
 - Color space conversions (RGB, BGR, HSV, LAB, YCbCr, Gray)
 - Spatial filtering (2D convolution with configurable border modes)
 - Geometry operations (contour extraction, rasterization, measures, pairwise matching)
@@ -39,7 +39,8 @@ src/
 │   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, etc.)
 │   ├── color.rs        # ColorConvertOp, ColorSpace
 │   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
-│   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert)
+│   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert, affine, rotate_affine)
+│   ├── affine.rs       # AffineParams, InterpolationType, from_rotation() — affine transform parameters
 │   ├── binary.rs       # BinaryOp (add, subtract, multiply, blend, bitwise)
 │   ├── histogram.rs    # Histogram computation
 │   └── mod.rs          # Op trait, ViewOp enum (transpose, reshape, flip, crop, channel_select)
@@ -80,7 +81,7 @@ Serializable enum bridging JSON graph (from Python) to operation execution:
 ```rust
 pub enum ViewDto {
     Image(ImageOp),         // resize, blur, grayscale, threshold, canny, histogram_equalize
-    Compute(ComputeOp),     // cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert
+    Compute(ComputeOp),     // cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert, affine, rotate_affine
     View(ViewOp),           // transpose, reshape, flip, crop, channel_select
     Binary(BinaryOp),       // add, subtract, multiply, blend, bitwise
     Geometry(GeometryOp),   // extract_contours, rasterize, measures
@@ -96,7 +97,7 @@ pub enum ViewDto {
 | Category | Zero-Copy? | Description |
 |----------|-----------|-------------|
 | **View** | Yes | Transpose, reshape, flip, crop, channel_select — metadata only |
-| **Compute** | No | Element-wise ops (cast, scale, normalize, clamp, contrast, gamma, invert) — can be fused |
+| **Compute** | No | Element-wise ops (cast, scale, normalize, clamp, contrast, gamma, invert) — can be fused. Includes `ComputeOp::Affine` and `ComputeOp::RotateAffine` (not fused with scalar ops). |
 | **Image** | No | Resize, blur, grayscale, threshold, canny, histogram equalize, erode, dilate, morph gradient — require materialization |
 | **Filter** | No | 2D convolution with `Replicate`/`Zero`/`Reflect` border modes — contiguous output, promotes to f32 |
 | **Color** | No | Color space conversions — route through f32 RGB internally. LAB uses D65/sRGB. HSV follows OpenCV (H=[0,180] for U8) |
@@ -148,6 +149,7 @@ Key implementation points:
 - **Filter** (`ops/filter.rs`): `ConvolveOp` dispatched directly in graph executor (not via ViewExpr/ExecutionPlan), similar to Color.
 - **Canny** (`execution/runner.rs`): Fused pipeline (5x5 Gaussian → Sobel gradients → NMS → hysteresis). Outputs U8 binary mask (0/255). `TilePolicy::Global`.
 - **HistogramEqualize** (`execution/runner.rs`): 256-bin histogram → CDF remap. U8 output. `TilePolicy::Global`.
+- **Affine** (`execution/runner.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix) and `ComputeOp::RotateAffine` (deferred rotation, constructs `AffineParams` via `AffineParams::from_rotation()` at execution time). Both use `apply_affine_warp()`. `MemoryEffect::RequiresContiguous`.
 - **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. Supports multiple iterations. `TilePolicy::LocalNeighborhood`.
 - **MorphGradient** (`execution/runner.rs`): Dilate − Erode (saturating subtract). Single-channel only. `TilePolicy::LocalNeighborhood`.
 - **label_reduce centroid fallback**: When `region_mode="interior"` finds no interior pixels for a contour, falls back to sampling at centroid. Prevents sub-pixel contours from scoring 0.

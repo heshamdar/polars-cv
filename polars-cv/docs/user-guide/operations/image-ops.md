@@ -47,14 +47,17 @@ Pipeline().source("image_bytes").crop(top=10, left=10, height=100, width=100)
 
 ## Rotate
 
-Rotate by an angle in degrees.
+Rotate by an angle in degrees. Part of the [affine transform family](#affine-transforms).
 
 ```python
 Pipeline().source("image_bytes").rotate(angle=90)
 Pipeline().source("image_bytes").rotate(angle=45, expand=True)
+Pipeline().source("image_bytes").rotate(angle=30, interpolation="nearest", border_value=128)
 ```
 
-**Note:** 90, 180, and 270 degree rotations are zero-copy.
+**Fast path:** 90, 180, and 270 degree rotations use zero-copy view operations (metadata-only, no allocation). The `interpolation` and `border_value` parameters are ignored for these angles.
+
+**Arbitrary angles** are executed via the same affine transform code path as `warp_affine`. When a `rotate` is followed by a `warp_affine` (or vice versa), they are [fused automatically](#pipeline-fusion).
 
 ## Pad
 
@@ -283,6 +286,92 @@ Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(
 
 **Common workflow:** `threshold() → erode() → dilate() → extract_contours()`.
 
+## Affine Transforms
+
+Apply arbitrary 2x3 affine transformations. All methods in this family share the same Rust execution code path and can be [fused together](#pipeline-fusion). The matrix uses the **forward-mapping** convention (same as OpenCV `warpAffine`): the kernel inverts it internally for interpolation.
+
+The affine family includes:
+
+- `rotate()` -- simple angle-based rotation ([see above](#rotate))
+- `warp_affine()` -- raw 2x3 matrix
+- `shear()` -- shear convenience method
+- `rotate_and_scale()` -- rotation + uniform scaling around a center
+
+### Warp Affine
+
+```python
+# Translate by (tx=30, ty=20), output same size as input
+Pipeline().source("image_bytes").warp_affine(
+    matrix=[1, 0, 30, 0, 1, 20],
+    output_size=(224, 224),
+)
+
+# Nearest-neighbor interpolation, white border fill
+Pipeline().source("image_bytes").warp_affine(
+    matrix=[1, 0, 30, 0, 1, 20],
+    output_size=(224, 224),
+    interpolation="nearest",
+    border_value=255.0,
+)
+```
+
+**Parameters:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `matrix` | Six-element `[a, b, tx, c, d, ty]` forward-mapping matrix | — |
+| `output_size` | `(height, width)` of the output | — |
+| `interpolation` | `"bilinear"` or `"nearest"` | `"bilinear"` |
+| `border_value` | Fill value for out-of-bounds pixels | `0.0` |
+
+### Shear
+
+Convenience wrapper that builds a shear matrix and delegates to `warp_affine`.
+
+```python
+Pipeline().source("image_bytes").shear(sx=0.3, output_size=(224, 224))
+Pipeline().source("image_bytes").shear(sy=0.2, output_size=(224, 224))
+Pipeline().source("image_bytes").shear(sx=0.1, sy=0.15, output_size=(224, 224))
+```
+
+### Rotate and Scale
+
+Combined rotation and uniform scaling around a center point.
+
+```python
+Pipeline().source("image_bytes").rotate_and_scale(
+    angle=45,           # degrees, positive = clockwise
+    scale=0.8,
+    center=(112, 112),  # (cx, cy) rotation center
+    output_size=(224, 224),
+)
+```
+
+### Pipeline Fusion
+
+Consecutive affine operations (`warp_affine`, `rotate` with static arbitrary angle, `shear`, `rotate_and_scale`) are **automatically fused** into a single matrix multiplication at planning time, eliminating redundant interpolation passes:
+
+```python
+pipe = (
+    Pipeline()
+    .source("image_bytes")
+    .warp_affine(matrix=[1, 0, 50, 0, 1, 0], output_size=(224, 224))   # translate X
+    .warp_affine(matrix=[1, 0, 0, 0, 1, 30], output_size=(224, 224))   # translate Y
+)
+# Serializes as a single warp_affine with matrix [1, 0, 50, 0, 1, 30]
+
+pipe = (
+    Pipeline()
+    .source("image_bytes")
+    .assert_shape(height=224, width=224)
+    .rotate(45)
+    .warp_affine(matrix=[1, 0, 10, 0, 1, 10], output_size=(224, 224))  # translate after rotate
+)
+# Fused into a single warp_affine
+```
+
+**Fusion limitations:** `rotate` with an expression-based angle, or with a zero-copy angle (90/180/270), does not participate in fusion. Non-affine ops between two affine ops break the fusion run.
+
 ## Layout
 
 ### Transpose
@@ -337,6 +426,53 @@ Pipeline().source("image_bytes").assert_shape(channels=4)
 # Assert full shape
 Pipeline().source("image_bytes").assert_shape(height=512, width=512, channels=3)
 ```
+
+## Dynamic Parameters
+
+Most numeric parameters across polars-cv operations accept **Polars expressions** in addition to literal values. When a parameter is an expression, its value is resolved per-row at execution time from the DataFrame.
+
+```python
+# Static value (same for all rows)
+pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
+
+# Dynamic value (per-row from another column)
+pipe = Pipeline().source("image_bytes").resize(
+    height=pl.col("target_h"), width=pl.col("target_w")
+)
+
+# Expression with aggregation (same value for all rows)
+pipe = Pipeline().source("image_bytes").crop(
+    top=0, left=0,
+    height=pl.col("crop_h").min(),
+    width=pl.col("crop_w").min(),
+)
+```
+
+**Parameters that accept expressions:**
+
+| Category | Parameters |
+|----------|-----------|
+| Resize | `height`, `width`, `scale`, `scale_x`, `scale_y`, `max_size`, `min_size` |
+| Crop | `top`, `left`, `height`, `width` |
+| Pad | `top`, `bottom`, `left`, `right`, `value` |
+| Pad to size / Letterbox | `height`, `width`, `value` |
+| Rotate | `angle` |
+| Warp affine | `output_size` (height and width) |
+| Scale / Clamp | `factor`, `min_val`, `max_val` |
+| Threshold | `value` |
+| Blur | `sigma` |
+| Canny | `low_threshold`, `high_threshold` |
+| Contrast / Gamma / Brightness | `factor`, `gamma` |
+| Morphology | `ksize`, `iterations` |
+| Channel select | `index` |
+| Convolution | `ksize` |
+| Reductions | `q` (percentile), `ddof` (std) |
+| Histogram | `bins` (integer form) |
+| Rasterize | `fill_value`, `background` |
+
+**Planning-time implications:** When a shape-affecting parameter is an expression (e.g., `resize(height=pl.col("h"))`), the pipeline planner cannot determine the output dimensions at planning time. Shape hints will be `None` for those dimensions.
+
+**Structural parameters** like `matrix` (affine), `kernel` (convolution), `axes` (transpose/flip), and enum values like `interpolation`, `mode`, `border` remain static only.
 
 ## Next Steps
 

@@ -152,6 +152,16 @@ impl ViewExpr {
                 ComputeOp::AdjustContrast(factor) => self.adjust_contrast(factor),
                 ComputeOp::AdjustGamma(gamma) => self.adjust_gamma(gamma),
                 ComputeOp::Invert => self.invert(),
+                r @ ComputeOp::RotateAffine { .. } => {
+                    let new_shape = r.infer_shape(&[&self.shape]);
+                    let new_strides = self.calc_strides(&r, &new_shape);
+                    Arc::new(Self {
+                        node: ExprNode::Compute(r, vec![self.clone()]),
+                        shape: new_shape,
+                        strides: new_strides,
+                        dtype: self.dtype,
+                    })
+                }
             },
             ViewDto::Image(img) => match img.kind {
                 ImageOpKind::Threshold(val) => self.threshold(val),
@@ -162,16 +172,6 @@ impl ViewExpr {
                 } => self.resize(width, height, filter),
                 ImageOpKind::Blur { sigma } => self.blur(sigma),
                 ImageOpKind::Grayscale => self.grayscale(),
-                ImageOpKind::Rotate { .. } => {
-                    // Arbitrary rotation is handled in the execution layer
-                    // Here we just create the expression node
-                    Arc::new(Self {
-                        shape: img.infer_shape(&[&self.shape]),
-                        strides: None, // Rotation produces contiguous output
-                        dtype: self.dtype,
-                        node: ExprNode::Image(img, self.clone()),
-                    })
-                }
                 ImageOpKind::Canny { .. } => Arc::new(Self {
                     shape: img.infer_shape(&[&self.shape]),
                     strides: None,

@@ -154,6 +154,45 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
                 pipe = pipe.cast(dtype=op.dtype)
             elif op.operation == OperationType.SCALE:
                 pipe = pipe.scale(factor=op.scale_factor)
+            elif op.operation == OperationType.ROTATE:
+                pipe = pipe.rotate(angle=op.angle, expand=op.expand)
+            elif op.operation == OperationType.ERODE:
+                pipe = (
+                    pipe.grayscale()
+                    .threshold(128)
+                    .erode(ksize=op.ksize, iterations=op.iterations or 1)
+                )
+            elif op.operation == OperationType.DILATE:
+                pipe = (
+                    pipe.grayscale()
+                    .threshold(128)
+                    .dilate(ksize=op.ksize, iterations=op.iterations or 1)
+                )
+            elif op.operation == OperationType.INVERT:
+                pipe = pipe.invert()
+            elif op.operation == OperationType.ADJUST_CONTRAST:
+                pipe = pipe.adjust_contrast(factor=op.contrast_factor)
+            elif op.operation == OperationType.ADJUST_BRIGHTNESS:
+                pipe = pipe.adjust_brightness(factor=op.brightness_factor)
+            elif op.operation == OperationType.SHARPEN:
+                pipe = pipe.sharpen(strength=op.sharpen_strength or 1.0)
+            elif op.operation == OperationType.PAD:
+                pipe = pipe.pad(
+                    top=op.pad_top or 0,
+                    bottom=op.pad_bottom or 0,
+                    left=op.pad_left or 0,
+                    right=op.pad_right or 0,
+                    value=op.pad_value or 0,
+                )
+            elif op.operation == OperationType.HISTOGRAM_EQUALIZE:
+                pipe = pipe.grayscale().equalize_histogram()
+            elif op.operation == OperationType.CANNY:
+                pipe = pipe.grayscale().canny(
+                    low_threshold=op.low_threshold,
+                    high_threshold=op.high_threshold,
+                )
+            elif op.operation == OperationType.SOBEL:
+                pipe = pipe.grayscale().sobel(axis=op.sobel_axis or "x")
 
         return pipe
 
@@ -202,6 +241,45 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
                 pipe = pipe.cast(dtype=op.dtype)
             elif op.operation == OperationType.SCALE:
                 pipe = pipe.scale(factor=op.scale_factor)
+            elif op.operation == OperationType.ROTATE:
+                pipe = pipe.rotate(angle=op.angle, expand=op.expand)
+            elif op.operation == OperationType.ERODE:
+                pipe = (
+                    pipe.grayscale()
+                    .threshold(128)
+                    .erode(ksize=op.ksize, iterations=op.iterations or 1)
+                )
+            elif op.operation == OperationType.DILATE:
+                pipe = (
+                    pipe.grayscale()
+                    .threshold(128)
+                    .dilate(ksize=op.ksize, iterations=op.iterations or 1)
+                )
+            elif op.operation == OperationType.INVERT:
+                pipe = pipe.invert()
+            elif op.operation == OperationType.ADJUST_CONTRAST:
+                pipe = pipe.adjust_contrast(factor=op.contrast_factor)
+            elif op.operation == OperationType.ADJUST_BRIGHTNESS:
+                pipe = pipe.adjust_brightness(factor=op.brightness_factor)
+            elif op.operation == OperationType.SHARPEN:
+                pipe = pipe.sharpen(strength=op.sharpen_strength or 1.0)
+            elif op.operation == OperationType.PAD:
+                pipe = pipe.pad(
+                    top=op.pad_top or 0,
+                    bottom=op.pad_bottom or 0,
+                    left=op.pad_left or 0,
+                    right=op.pad_right or 0,
+                    value=op.pad_value or 0,
+                )
+            elif op.operation == OperationType.HISTOGRAM_EQUALIZE:
+                pipe = pipe.grayscale().equalize_histogram()
+            elif op.operation == OperationType.CANNY:
+                pipe = pipe.grayscale().canny(
+                    low_threshold=op.low_threshold,
+                    high_threshold=op.high_threshold,
+                )
+            elif op.operation == OperationType.SOBEL:
+                pipe = pipe.grayscale().sobel(axis=op.sobel_axis or "x")
 
         return pipe
 

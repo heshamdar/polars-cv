@@ -32,6 +32,17 @@ class OperationType(Enum):
     THRESHOLD = auto()
     CAST = auto()
     SCALE = auto()
+    ROTATE = auto()
+    ERODE = auto()
+    DILATE = auto()
+    INVERT = auto()
+    ADJUST_CONTRAST = auto()
+    ADJUST_BRIGHTNESS = auto()
+    SHARPEN = auto()
+    PAD = auto()
+    HISTOGRAM_EQUALIZE = auto()
+    CANNY = auto()
+    SOBEL = auto()
 
 
 @dataclass
@@ -49,6 +60,21 @@ class OperationParams:
     crop_width: int | None = None
     scale_factor: float | None = None
     dtype: str | None = None  # For cast
+    angle: float | None = None  # For rotate
+    expand: bool = False  # For rotate
+    ksize: int | None = None  # For erode/dilate
+    iterations: int | None = None  # For erode/dilate
+    contrast_factor: float | None = None  # For adjust_contrast
+    brightness_factor: float | None = None  # For adjust_brightness
+    sharpen_strength: float | None = None  # For sharpen
+    pad_top: int | None = None  # For pad
+    pad_bottom: int | None = None
+    pad_left: int | None = None
+    pad_right: int | None = None
+    pad_value: int | None = None
+    low_threshold: float | None = None  # For canny
+    high_threshold: float | None = None
+    sobel_axis: str | None = None  # For sobel: "x" or "y"
 
 
 @dataclass
@@ -243,6 +269,190 @@ class BaseFrameworkAdapter(ABC):
         """
         ...
 
+    def rotate(self, img: Any, angle: float, *, expand: bool = False) -> Any:
+        """
+        Rotate an image by the given angle in degrees.
+
+        Args:
+            img: Image in the framework's native format.
+            angle: Rotation angle in degrees.
+            expand: Whether to expand the canvas to fit the rotated image.
+
+        Returns:
+            Rotated image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def erode(self, img: Any, ksize: int, iterations: int = 1) -> Any:
+        """
+        Apply morphological erosion.
+
+        Args:
+            img: Image in the framework's native format (grayscale).
+            ksize: Kernel size.
+            iterations: Number of iterations.
+
+        Returns:
+            Eroded image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def dilate(self, img: Any, ksize: int, iterations: int = 1) -> Any:
+        """
+        Apply morphological dilation.
+
+        Args:
+            img: Image in the framework's native format (grayscale).
+            ksize: Kernel size.
+            iterations: Number of iterations.
+
+        Returns:
+            Dilated image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def invert(self, img: Any) -> Any:
+        """
+        Invert pixel values.
+
+        Args:
+            img: Image in the framework's native format.
+
+        Returns:
+            Inverted image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def adjust_contrast(self, img: Any, factor: float) -> Any:
+        """
+        Adjust image contrast.
+
+        Args:
+            img: Image in the framework's native format.
+            factor: Contrast factor (1.0 = no change).
+
+        Returns:
+            Contrast-adjusted image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def adjust_brightness(self, img: Any, factor: float) -> Any:
+        """
+        Adjust image brightness.
+
+        Args:
+            img: Image in the framework's native format.
+            factor: Brightness factor (1.0 = no change).
+
+        Returns:
+            Brightness-adjusted image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def sharpen(self, img: Any, strength: float) -> Any:
+        """
+        Apply sharpening filter.
+
+        Args:
+            img: Image in the framework's native format.
+            strength: Sharpening strength.
+
+        Returns:
+            Sharpened image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def pad(
+        self, img: Any, top: int, bottom: int, left: int, right: int, value: int = 0
+    ) -> Any:
+        """
+        Add padding to image edges.
+
+        Args:
+            img: Image in the framework's native format.
+            top: Top padding.
+            bottom: Bottom padding.
+            left: Left padding.
+            right: Right padding.
+            value: Fill value.
+
+        Returns:
+            Padded image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def histogram_equalize(self, img: Any) -> Any:
+        """
+        Apply histogram equalization for contrast enhancement.
+
+        Args:
+            img: Image in the framework's native format (grayscale).
+
+        Returns:
+            Equalized image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def canny(self, img: Any, low_threshold: float, high_threshold: float) -> Any:
+        """
+        Apply Canny edge detection.
+
+        Args:
+            img: Image in the framework's native format (grayscale).
+            low_threshold: Low hysteresis threshold.
+            high_threshold: High hysteresis threshold.
+
+        Returns:
+            Binary edge map.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
+    def sobel(self, img: Any, axis: str = "x") -> Any:
+        """
+        Apply Sobel gradient operator.
+
+        Args:
+            img: Image in the framework's native format (grayscale).
+            axis: Gradient direction, "x" or "y".
+
+        Returns:
+            Gradient image.
+
+        Raises:
+            NotImplementedError: If the framework does not support this operation.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def to_numpy(self, img: Any) -> "npt.NDArray[np.uint8] | npt.NDArray[np.float32]":
         """
@@ -318,6 +528,72 @@ class BaseFrameworkAdapter(ABC):
                 msg = "Threshold requires value"
                 raise ValueError(msg)
             return self.threshold(img, params.threshold_value)
+
+        elif op == OperationType.ROTATE:
+            if params.angle is None:
+                msg = "Rotate requires angle"
+                raise ValueError(msg)
+            return self.rotate(img, params.angle, expand=params.expand)
+
+        elif op == OperationType.ERODE:
+            if params.ksize is None:
+                msg = "Erode requires ksize"
+                raise ValueError(msg)
+            return self.erode(img, params.ksize, params.iterations or 1)
+
+        elif op == OperationType.DILATE:
+            if params.ksize is None:
+                msg = "Dilate requires ksize"
+                raise ValueError(msg)
+            return self.dilate(img, params.ksize, params.iterations or 1)
+
+        elif op == OperationType.INVERT:
+            return self.invert(img)
+
+        elif op == OperationType.ADJUST_CONTRAST:
+            if params.contrast_factor is None:
+                msg = "Adjust contrast requires contrast_factor"
+                raise ValueError(msg)
+            return self.adjust_contrast(img, params.contrast_factor)
+
+        elif op == OperationType.ADJUST_BRIGHTNESS:
+            if params.brightness_factor is None:
+                msg = "Adjust brightness requires brightness_factor"
+                raise ValueError(msg)
+            return self.adjust_brightness(img, params.brightness_factor)
+
+        elif op == OperationType.SHARPEN:
+            return self.sharpen(img, params.sharpen_strength or 1.0)
+
+        elif op == OperationType.PAD:
+            if (
+                params.pad_top is None
+                or params.pad_bottom is None
+                or params.pad_left is None
+                or params.pad_right is None
+            ):
+                msg = "Pad requires pad_top, pad_bottom, pad_left, pad_right"
+                raise ValueError(msg)
+            return self.pad(
+                img,
+                params.pad_top,
+                params.pad_bottom,
+                params.pad_left,
+                params.pad_right,
+                params.pad_value or 0,
+            )
+
+        elif op == OperationType.HISTOGRAM_EQUALIZE:
+            return self.histogram_equalize(img)
+
+        elif op == OperationType.CANNY:
+            if params.low_threshold is None or params.high_threshold is None:
+                msg = "Canny requires low_threshold and high_threshold"
+                raise ValueError(msg)
+            return self.canny(img, params.low_threshold, params.high_threshold)
+
+        elif op == OperationType.SOBEL:
+            return self.sobel(img, params.sobel_axis or "x")
 
         else:
             msg = f"Unsupported operation: {op}"

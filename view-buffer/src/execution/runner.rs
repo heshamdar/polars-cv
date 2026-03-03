@@ -4,6 +4,7 @@ use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
 use crate::execution::tiling::{get_tile_config, is_tiling_enabled, maybe_tiled};
 use crate::expr::ViewExpr;
+use crate::ops::affine::AffineParams;
 use crate::ops::dto::ViewDto;
 use crate::ops::traits::Op;
 use crate::ops::{ComputeOp, ImageOp, ViewOp};
@@ -131,7 +132,19 @@ pub fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
 fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
     match op {
         ComputeOp::Cast(dtype) => buf.cast(dtype),
-        ComputeOp::Affine(_params) => unimplemented!("Affine transform compute"),
+        ComputeOp::Affine(params) => apply_affine_warp(buf, params),
+        ComputeOp::RotateAffine {
+            angle_deg,
+            expand,
+            interpolation,
+            border_value,
+        } => {
+            let h = buf.shape()[0] as u32;
+            let w = buf.shape()[1] as u32;
+            let params =
+                AffineParams::from_rotation(angle_deg, h, w, expand, interpolation, border_value);
+            apply_affine_warp(buf, params)
+        }
         ComputeOp::Scale(factor) => apply_scalar_op(&buf, |x: f32| x * factor),
         ComputeOp::Relu => apply_scalar_op(&buf, |x: f32| if x > 0.0 { x } else { 0.0 }),
         ComputeOp::Fused(ref kernel) => buf.apply_fused_kernel(kernel),
@@ -1217,149 +1230,145 @@ fn get_channel_count(shape: &[usize]) -> usize {
     }
 }
 
-/// Rotate buffer by arbitrary angle using bilinear interpolation.
+/// Apply a 2D affine warp to a `ViewBuffer`.
 ///
-/// Dtype-generic: works on any numeric type via `f64` interpolation space.
-/// Supports strided input buffers and handles both expand and non-expand modes.
-/// When expand=false, the output has the same dimensions as input (corners may be cropped).
-/// When expand=true, the output dimensions are calculated to fit the rotated image.
-#[cfg(feature = "image_interop")]
-fn rotate_arbitrary(buf: ViewBuffer, angle: f32, expand: bool) -> ViewBuffer {
+/// Dispatches to `affine_warp_typed` based on the buffer's dtype.
+fn apply_affine_warp(buf: ViewBuffer, params: crate::ops::affine::AffineParams) -> ViewBuffer {
     let shape = buf.shape();
     if shape.len() < 2 {
-        return buf; // Can't rotate 1D or 0D
+        return buf;
     }
 
     let dtype = buf.dtype();
-
     match dtype {
-        DType::U8 => rotate_typed::<u8>(buf, angle, expand),
-        DType::I8 => rotate_typed::<i8>(buf, angle, expand),
-        DType::U16 => rotate_typed::<u16>(buf, angle, expand),
-        DType::I16 => rotate_typed::<i16>(buf, angle, expand),
-        DType::U32 => rotate_typed::<u32>(buf, angle, expand),
-        DType::I32 => rotate_typed::<i32>(buf, angle, expand),
-        DType::F32 => rotate_typed::<f32>(buf, angle, expand),
-        DType::F64 => rotate_typed::<f64>(buf, angle, expand),
-        DType::U64 => rotate_typed::<u64>(buf, angle, expand),
-        DType::I64 => rotate_typed::<i64>(buf, angle, expand),
+        DType::U8 => affine_warp_typed::<u8>(buf, &params),
+        DType::I8 => affine_warp_typed::<i8>(buf, &params),
+        DType::U16 => affine_warp_typed::<u16>(buf, &params),
+        DType::I16 => affine_warp_typed::<i16>(buf, &params),
+        DType::U32 => affine_warp_typed::<u32>(buf, &params),
+        DType::I32 => affine_warp_typed::<i32>(buf, &params),
+        DType::F32 => affine_warp_typed::<f32>(buf, &params),
+        DType::F64 => affine_warp_typed::<f64>(buf, &params),
+        DType::U64 => affine_warp_typed::<u64>(buf, &params),
+        DType::I64 => affine_warp_typed::<i64>(buf, &params),
     }
 }
 
-/// Typed rotate helper: performs bilinear interpolation in `f64` arithmetic,
-/// reading and writing elements of type `T`.
-///
-/// For integer types the interpolated value is clamped to the representable
-/// range before casting back to `T`.
-#[cfg(feature = "image_interop")]
-fn rotate_typed<T>(buf: ViewBuffer, angle: f32, expand: bool) -> ViewBuffer
+/// Typed affine warp: bilinear or nearest interpolation in `f64` arithmetic.
+fn affine_warp_typed<T>(buf: ViewBuffer, params: &crate::ops::affine::AffineParams) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
 {
+    use crate::ops::affine::InterpolationType;
     use num_traits::NumCast;
 
     let shape = buf.shape();
-    let h = shape[0] as f64;
-    let w = shape[1] as f64;
+    let in_h = shape[0];
+    let in_w = shape[1];
     let channels = shape.get(2).copied().unwrap_or(1);
-    let shape_vec = shape.to_vec();
 
-    let angle_rad = (angle as f64).to_radians();
-    let cos_a = angle_rad.cos();
-    let sin_a = angle_rad.sin();
+    let out_h = params.output_height as usize;
+    let out_w = params.output_width as usize;
 
-    // Calculate output dimensions
-    let (out_h, out_w) = if expand {
-        let new_h = (h * cos_a.abs() + w * sin_a.abs()).ceil() as usize;
-        let new_w = (h * sin_a.abs() + w * cos_a.abs()).ceil() as usize;
-        (new_h, new_w)
+    // The user-facing matrix follows OpenCV convention (forward mapping).
+    // Invert the 2x3 matrix for inverse-mapping interpolation.
+    let [a_fwd, b_fwd, tx_fwd, c_fwd, d_fwd, ty_fwd] = params.matrix;
+    let det = a_fwd * d_fwd - b_fwd * c_fwd;
+    let (a, b, tx, c, d, ty) = if det.abs() < 1e-15 {
+        // Singular matrix — fall back to identity (no-op)
+        (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
     } else {
-        (shape_vec[0], shape_vec[1])
+        let inv_det = 1.0 / det;
+        let ai = d_fwd * inv_det;
+        let bi = -b_fwd * inv_det;
+        let ci = -c_fwd * inv_det;
+        let di = a_fwd * inv_det;
+        let txi = -(ai * tx_fwd + bi * ty_fwd);
+        let tyi = -(ci * tx_fwd + di * ty_fwd);
+        (ai, bi, txi, ci, di, tyi)
     };
 
-    // Center points
-    let center_x_in = (w - 1.0) * 0.5;
-    let center_y_in = (h - 1.0) * 0.5;
-    let center_x_out = (out_w as f64 - 1.0) * 0.5;
-    let center_y_out = (out_h as f64 - 1.0) * 0.5;
-
-    // Ensure contiguous input for efficient access
     let contig_buf = if buf.layout.is_contiguous() {
         buf
     } else {
         buf.to_contiguous()
     };
-
     let src_data: &[T] = contig_buf.as_slice::<T>();
 
-    // Allocate output buffer
     let output_size = out_h * out_w * channels;
-    let mut dst_data: Vec<T> = vec![T::default(); output_size];
+    let border_val: T = NumCast::from(params.border_value).unwrap_or(T::default());
+    let mut dst_data: Vec<T> = vec![border_val; output_size];
 
-    // For floats, we skip clamping entirely (no range limit needed).
     let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
 
-    // Inverse rotation: for each output pixel, find source pixel
-    for y_out in 0..out_h {
-        for x_out in 0..out_w {
-            let x_rel = x_out as f64 - center_x_out;
-            let y_rel = y_out as f64 - center_y_out;
+    for y_dst in 0..out_h {
+        for x_dst in 0..out_w {
+            let x_src = a * x_dst as f64 + b * y_dst as f64 + tx;
+            let y_src = c * x_dst as f64 + d * y_dst as f64 + ty;
 
-            // Apply inverse rotation (counter-clockwise to get source)
-            let x_src = x_rel * cos_a + y_rel * sin_a + center_x_in;
-            let y_src = -x_rel * sin_a + y_rel * cos_a + center_y_in;
+            match params.interpolation {
+                InterpolationType::Nearest => {
+                    let sx = x_src.round() as i64;
+                    let sy = y_src.round() as i64;
+                    if sx >= 0 && sy >= 0 && (sx as usize) < in_w && (sy as usize) < in_h {
+                        let src_idx = (sy as usize * in_w + sx as usize) * channels;
+                        let dst_idx = (y_dst * out_w + x_dst) * channels;
+                        dst_data[dst_idx..dst_idx + channels]
+                            .copy_from_slice(&src_data[src_idx..src_idx + channels]);
+                    }
+                }
+                InterpolationType::Bilinear => {
+                    let x0 = x_src.floor() as i64;
+                    let y0 = y_src.floor() as i64;
+                    let x1 = x0 + 1;
+                    let y1 = y0 + 1;
 
-            // Bilinear interpolation coordinates
-            let x0 = x_src.floor() as i64;
-            let y0 = y_src.floor() as i64;
-            let x1 = x0 + 1;
-            let y1 = y0 + 1;
+                    // Fully out of bounds — dst already filled with border_val
+                    if x1 < 0 || y1 < 0 || x0 >= in_w as i64 || y0 >= in_h as i64 {
+                        continue;
+                    }
 
-            let dx = x_src - x0 as f64;
-            let dy = y_src - y0 as f64;
+                    let dx = x_src - x0 as f64;
+                    let dy = y_src - y0 as f64;
 
-            // Check bounds — out of bounds pixels are zero-filled (default)
-            if x0 < 0 || y0 < 0 || x1 >= w as i64 || y1 >= h as i64 {
-                // dst_data is already zero-initialized via T::default()
-                continue;
-            }
+                    let bv: f64 = params.border_value;
 
-            // Get four corner pixels
-            let get_pixel = |x: i64, y: i64| -> &[T] {
-                let idx = (y as usize * shape_vec[1] + x as usize) * channels;
-                &src_data[idx..idx + channels]
-            };
+                    let in_bounds = |px: i64, py: i64| -> bool {
+                        px >= 0 && py >= 0 && (px as usize) < in_w && (py as usize) < in_h
+                    };
 
-            let p00 = get_pixel(x0, y0);
-            let p10 = get_pixel(x1, y0);
-            let p01 = get_pixel(x0, y1);
-            let p11 = get_pixel(x1, y1);
+                    let dst_idx = (y_dst * out_w + x_dst) * channels;
+                    for ch in 0..channels {
+                        let sample = |px: i64, py: i64| -> f64 {
+                            if in_bounds(px, py) {
+                                let idx = (py as usize * in_w + px as usize) * channels + ch;
+                                NumCast::from(src_data[idx]).unwrap_or(bv)
+                            } else {
+                                bv
+                            }
+                        };
 
-            // Bilinear interpolation per channel in f64 space
-            for c in 0..channels {
-                let v00: f64 = NumCast::from(p00[c]).unwrap_or(0.0);
-                let v10: f64 = NumCast::from(p10[c]).unwrap_or(0.0);
-                let v01: f64 = NumCast::from(p01[c]).unwrap_or(0.0);
-                let v11: f64 = NumCast::from(p11[c]).unwrap_or(0.0);
+                        let v00 = sample(x0, y0);
+                        let v10 = sample(x1, y0);
+                        let v01 = sample(x0, y1);
+                        let v11 = sample(x1, y1);
 
-                let v0 = v00 * (1.0 - dx) + v10 * dx;
-                let v1 = v01 * (1.0 - dx) + v11 * dx;
-                let v = v0 * (1.0 - dy) + v1 * dy;
+                        let v0 = v00 * (1.0 - dx) + v10 * dx;
+                        let v1 = v01 * (1.0 - dx) + v11 * dx;
+                        let v = v0 * (1.0 - dy) + v1 * dy;
 
-                // For integer types, clamp to valid range before casting back
-                let clamped = if is_float {
-                    v
-                } else {
-                    clamp_for_dtype(v, T::DTYPE)
-                };
-
-                dst_data[(y_out * out_w + x_out) * channels + c] =
-                    NumCast::from(clamped).unwrap_or(T::default());
+                        let clamped = if is_float {
+                            v
+                        } else {
+                            clamp_for_dtype(v, T::DTYPE)
+                        };
+                        dst_data[dst_idx + ch] = NumCast::from(clamped).unwrap_or(T::default());
+                    }
+                }
             }
         }
     }
 
-    // Build output shape
     let output_shape = if channels == 1 {
         vec![out_h, out_w]
     } else {
@@ -1370,7 +1379,6 @@ where
 }
 
 /// Clamp an `f64` value to the representable range of the given integer `DType`.
-#[cfg(feature = "image_interop")]
 #[inline]
 fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
     match dtype {
@@ -1398,7 +1406,6 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
             height,
             filter,
         } => resize_strided(work_buf, width, height, filter),
-        ImageOpKind::Rotate { angle, expand } => rotate_arbitrary(work_buf, angle, expand),
         ImageOpKind::Canny {
             low_threshold,
             high_threshold,
