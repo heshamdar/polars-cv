@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scenario",
         type=str,
-        choices=["all", "single_ops", "pipelines", "e2e"],
+        choices=["all", "single_ops", "pipelines", "e2e", "lance_vs_parquet"],
         default="all",
         help="Benchmark scenario to run (default: all)",
     )
@@ -302,6 +302,31 @@ def run_benchmarks(args: argparse.Namespace) -> int:
             verbose=not args.quiet,
         )
         collector.add_many(results)
+
+    if args.scenario in ("all", "lance_vs_parquet"):
+        if not args.quiet:
+            print("\nRunning Lance vs Parquet storage benchmarks...", flush=True)
+        try:
+            from benchmarks.scenarios.lance_vs_parquet import (
+                print_storage_results,
+                run_lance_vs_parquet,
+            )
+
+            storage_results = run_lance_vs_parquet(
+                image_counts=counts,
+                image_sizes=sizes,
+                warmup_iterations=args.warmup,
+                benchmark_iterations=args.iterations,
+                verbose=not args.quiet,
+            )
+            print_storage_results(storage_results)
+        except ImportError:
+            if not args.quiet:
+                print(
+                    "  SKIPPED: lance not installed "
+                    "(pip install lance pyarrow)",
+                    flush=True,
+                )
 
     # Output results
     if args.output == "json":

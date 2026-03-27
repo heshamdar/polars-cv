@@ -456,6 +456,192 @@ def generate_imagefolder_dataset(
     )
 
 
+@dataclass
+class LanceDataset:
+    """
+    A Lance dataset containing image bytes inline with metadata.
+
+    All data (image bytes + label + class_name) is stored in a single
+    Lance file, unlike ImageFolderDataset which uses separate image files
+    alongside a metadata.parquet.
+
+    This enables O(1-2 IO ops) random access via Lance's repetition index,
+    versus Parquet's pattern of: read metadata row → seek to image file.
+    """
+
+    dataset_path: Path
+    class_names: list[str]
+    image_count: int
+    image_size: tuple[int, int]
+
+    def cleanup(self) -> None:
+        """Clean up the Lance dataset directory."""
+        if self.dataset_path.exists():
+            shutil.rmtree(self.dataset_path)
+
+
+def generate_lance_dataset(
+    output_dir: str | Path,
+    num_images: int = 1000,
+    num_classes: int = 10,
+    height: int = 224,
+    width: int = 224,
+    pattern: str = "mixed",
+    base_seed: int = 42,
+) -> "LanceDataset":
+    """
+    Generate a Lance dataset with image bytes stored inline alongside metadata.
+
+    Unlike :func:`generate_imagefolder_dataset`, all data lives in a single
+    ``.lance`` directory — no separate image files.  This is the canonical
+    Lance layout for CV/ML datasets and enables Lance's fast random access.
+
+    The images generated are identical to those produced by
+    :func:`generate_imagefolder_dataset` when called with the same
+    ``base_seed``, so the two functions produce directly comparable datasets.
+
+    Schema stored in Lance::
+
+        image_bytes : large_binary   (PNG-encoded pixel data)
+        label       : int32
+        class_name  : string
+
+    Args:
+        output_dir: Parent directory; a ``dataset.lance`` sub-directory will
+            be created inside it.
+        num_images: Total number of images to generate.
+        num_classes: Number of classification categories.
+        height: Image height in pixels.
+        width: Image width in pixels.
+        pattern: Image pattern (``"gradient"``, ``"noise"``,
+            ``"checkerboard"``, ``"mixed"``).
+        base_seed: Random seed — must match the seed used for the
+            corresponding :func:`generate_imagefolder_dataset` call to keep
+            comparisons fair.
+
+    Returns:
+        :class:`LanceDataset` pointing at the written ``.lance`` directory.
+
+    Raises:
+        ImportError: If ``lance`` is not installed.
+
+    Example::
+
+        >>> ds = generate_lance_dataset("./data", num_images=500)
+        >>> print(ds.dataset_path)   # ./data/dataset.lance
+        >>> ds.cleanup()
+    """
+    try:
+        import lance
+        import pyarrow as pa
+    except ImportError as exc:
+        msg = (
+            "lance and pyarrow are required for Lance dataset generation. "
+            "Install them with: pip install lance pyarrow"
+        )
+        raise ImportError(msg) from exc
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    dataset_path = output_path / "dataset.lance"
+
+    class_names = [f"class_{i}" for i in range(num_classes)]
+
+    patterns = (
+        ["gradient", "noise", "checkerboard"] if pattern == "mixed" else [pattern]
+    )
+    rng = np.random.default_rng(base_seed)
+
+    image_bytes_list: list[bytes] = []
+    labels: list[int] = []
+    class_names_col: list[str] = []
+
+    for i in range(num_images):
+        label = i % num_classes
+        class_name = class_names[label]
+        current_pattern = patterns[i % len(patterns)]
+        seed = base_seed + i if current_pattern == "noise" else None
+
+        if current_pattern == "gradient":
+            arr = generate_gradient_image(height, width, 3)
+            noise = rng.integers(-10, 10, size=arr.shape, dtype=np.int16)
+            arr = np.clip(arr.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        elif current_pattern == "noise":
+            arr = generate_noise_image(height, width, 3, seed)
+        else:
+            arr = generate_pattern_image(height, width, 3, current_pattern)
+            arr = np.roll(arr, shift=i % 32, axis=0)
+
+        image_bytes_list.append(array_to_png_bytes(arr))
+        labels.append(label)
+        class_names_col.append(class_name)
+
+    table = pa.table(
+        {
+            "image_bytes": pa.array(image_bytes_list, type=pa.large_binary()),
+            "label": pa.array(labels, type=pa.int32()),
+            "class_name": pa.array(class_names_col, type=pa.string()),
+        }
+    )
+
+    lance.write_dataset(table, str(dataset_path))
+
+    return LanceDataset(
+        dataset_path=dataset_path,
+        class_names=class_names,
+        image_count=num_images,
+        image_size=(width, height),
+    )
+
+
+@contextmanager
+def temporary_lance_dataset(
+    num_images: int = 1000,
+    num_classes: int = 10,
+    height: int = 224,
+    width: int = 224,
+    pattern: str = "mixed",
+    base_seed: int = 42,
+) -> "Iterator[LanceDataset]":
+    """
+    Context manager for creating a temporary Lance dataset with automatic cleanup.
+
+    Args:
+        num_images: Total number of images.
+        num_classes: Number of categories.
+        height: Image height.
+        width: Image width.
+        pattern: Image pattern.
+        base_seed: Random seed.
+
+    Yields:
+        :class:`LanceDataset` that will be cleaned up on exit.
+
+    Example::
+
+        >>> with temporary_lance_dataset(num_images=100) as ds:
+        ...     # use the dataset ...
+        ...     pass
+        >>> # .lance directory is automatically removed
+    """
+    temp_dir = Path(tempfile.mkdtemp(prefix="polars_cv_lance_"))
+    dataset = generate_lance_dataset(
+        output_dir=temp_dir,
+        num_images=num_images,
+        num_classes=num_classes,
+        height=height,
+        width=width,
+        pattern=pattern,
+        base_seed=base_seed,
+    )
+    try:
+        yield dataset
+    finally:
+        dataset.cleanup()
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+
+
 @contextmanager
 def temporary_imagefolder_dataset(
     num_images: int = 1000,

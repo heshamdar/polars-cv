@@ -50,6 +50,8 @@ bench = [
     "matplotlib>=3.9.4",
     "jupyterlab",
     "datasets>=2.0",
+    "lance>=0.14",
+    "lancedb>=0.6",
 ]
 docs = [
     "mkdocs-material>=9.0",
