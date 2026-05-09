@@ -119,7 +119,7 @@ pub enum BufferStorage {
     #[cfg(feature = "polars_interop")]
     PolarsArrow {
         /// The underlying polars-arrow buffer (Arc-backed, cheap to clone).
-        buffer: polars_arrow::buffer::Buffer<u8>,
+        buffer: polars_buffer::Buffer<u8>,
         /// Byte offset into the buffer where this view starts.
         offset: usize,
         /// Length of this view in bytes.
@@ -424,7 +424,7 @@ impl ViewBuffer {
     /// Panics if `offset + required_bytes > buffer.len()`.
     #[cfg(feature = "polars_interop")]
     pub fn from_polars_buffer(
-        buffer: polars_arrow::buffer::Buffer<u8>,
+        buffer: polars_buffer::Buffer<u8>,
         offset: usize,
         shape: Vec<usize>,
         dtype: DType,
@@ -467,7 +467,7 @@ impl ViewBuffer {
     /// `shape.product() * dtype.size_of()`.
     #[cfg(feature = "polars_interop")]
     pub fn from_polars_buffer_slice(
-        buffer: polars_arrow::buffer::Buffer<u8>,
+        buffer: polars_buffer::Buffer<u8>,
         offset: usize,
         len: usize,
         shape: Vec<usize>,
@@ -511,7 +511,7 @@ impl ViewBuffer {
     /// * `dtype` - Element data type.
     #[cfg(feature = "polars_interop")]
     pub fn from_polars_buffer_slice_with_strides(
-        buffer: polars_arrow::buffer::Buffer<u8>,
+        buffer: polars_buffer::Buffer<u8>,
         offset: usize,
         len: usize,
         shape: Vec<usize>,
@@ -693,7 +693,7 @@ impl ViewBuffer {
     /// # Returns
     /// A tuple of `(Buffer<u8>, shape, dtype)` for use in output encoding.
     #[cfg(feature = "polars_interop")]
-    pub fn into_polars_buffer(self) -> (polars_arrow::buffer::Buffer<u8>, Vec<usize>, DType) {
+    pub fn into_polars_buffer(self) -> (polars_buffer::Buffer<u8>, Vec<usize>, DType) {
         self.into_polars_buffer_with_policy(SlicePolicy::default())
     }
 
@@ -725,7 +725,7 @@ impl ViewBuffer {
     pub fn into_polars_buffer_with_policy(
         self,
         policy: SlicePolicy,
-    ) -> (polars_arrow::buffer::Buffer<u8>, Vec<usize>, DType) {
+    ) -> (polars_buffer::Buffer<u8>, Vec<usize>, DType) {
         let shape = self.layout.shape.clone();
         let dtype = self.layout.dtype;
         let offset = self.layout.offset;
@@ -741,7 +741,7 @@ impl ViewBuffer {
             } if is_contiguous => {
                 // True zero-copy: return the original buffer with adjusted slice
                 let combined_offset = buf_offset + offset;
-                let sliced = polars_buf.sliced(combined_offset, required_bytes);
+                let sliced = polars_buf.sliced(combined_offset..combined_offset + required_bytes);
                 (sliced, shape, dtype)
             }
 
@@ -769,25 +769,25 @@ impl ViewBuffer {
                     // Try to unwrap the Arc - should succeed since we checked refcount
                     match Arc::try_unwrap(arc) {
                         Ok(full_vec) => {
-                            let full_buffer = polars_arrow::buffer::Buffer::from(full_vec);
+                            let full_buffer = polars_buffer::Buffer::from(full_vec);
                             if offset == 0 && required_bytes == full_buffer.len() {
                                 (full_buffer, shape, dtype)
                             } else {
                                 // Zero-copy slice using Buffer::sliced()
-                                (full_buffer.sliced(offset, required_bytes), shape, dtype)
+                                (full_buffer.sliced(offset..offset + required_bytes), shape, dtype)
                             }
                         }
                         Err(arc) => {
                             // Arc unwrap failed (shouldn't happen) - copy the slice
                             let slice = &arc[offset..offset + required_bytes];
-                            let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                            let buffer = polars_buffer::Buffer::from(slice.to_vec());
                             (buffer, shape, dtype)
                         }
                     }
                 } else {
                     // Policy says copy - extract just the slice
                     let slice = &arc[offset..offset + required_bytes];
-                    let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                    let buffer = polars_buffer::Buffer::from(slice.to_vec());
                     (buffer, shape, dtype)
                 }
             }
@@ -801,7 +801,7 @@ impl ViewBuffer {
                 .to_contiguous();
                 let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                 let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                let buffer = polars_buffer::Buffer::from(slice.to_vec());
                 (buffer, shape, dtype)
             }
         }
@@ -834,7 +834,7 @@ impl ViewBuffer {
     pub fn into_polars_buffer_strided(
         self,
     ) -> (
-        polars_arrow::buffer::Buffer<u8>,
+        polars_buffer::Buffer<u8>,
         Vec<usize>,
         Vec<isize>,
         usize,
@@ -855,7 +855,7 @@ impl ViewBuffer {
         self,
         policy: SlicePolicy,
     ) -> (
-        polars_arrow::buffer::Buffer<u8>,
+        polars_buffer::Buffer<u8>,
         Vec<usize>,
         Vec<isize>,
         usize,
@@ -904,7 +904,7 @@ impl ViewBuffer {
                     let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                     let slice =
                         unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                    let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                    let buffer = polars_buffer::Buffer::from(slice.to_vec());
                     (buffer, contig_shape, contig_strides, 0, dtype)
                 }
             }
@@ -929,7 +929,7 @@ impl ViewBuffer {
                     // Try to unwrap the Arc and return full buffer with stride info
                     match Arc::try_unwrap(arc) {
                         Ok(full_vec) => {
-                            let full_buffer = polars_arrow::buffer::Buffer::from(full_vec);
+                            let full_buffer = polars_buffer::Buffer::from(full_vec);
                             (full_buffer, shape, strides, offset, dtype)
                         }
                         Err(arc) => {
@@ -946,7 +946,7 @@ impl ViewBuffer {
                             let slice = unsafe {
                                 std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len)
                             };
-                            let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                            let buffer = polars_buffer::Buffer::from(slice.to_vec());
                             (buffer, contig_shape, contig_strides, 0, dtype)
                         }
                     }
@@ -962,7 +962,7 @@ impl ViewBuffer {
                     let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                     let slice =
                         unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                    let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                    let buffer = polars_buffer::Buffer::from(slice.to_vec());
                     (buffer, contig_shape, contig_strides, 0, dtype)
                 }
             }
@@ -979,7 +979,7 @@ impl ViewBuffer {
                 let contig_strides = contig.layout.strides.clone();
                 let data_len = contig.layout.num_elements() * contig.layout.dtype.size_of();
                 let slice = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                let buffer = polars_arrow::buffer::Buffer::from(slice.to_vec());
+                let buffer = polars_buffer::Buffer::from(slice.to_vec());
                 (buffer, contig_shape, contig_strides, 0, dtype)
             }
         }
