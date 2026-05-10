@@ -15,12 +15,17 @@
 //! table) are driven by what is registered here.
 
 pub mod contract;
+pub mod executor;
+pub mod ir;
 pub mod op;
 pub mod ops;
 pub mod params;
 pub mod registry;
 pub mod sink;
+pub mod sinks;
 pub mod source;
+pub mod sources;
+pub mod wire;
 
 pub use contract::{AlphaMode, DTypeEffect, NdimEffect, OpContract};
 pub use op::{ExecCtx, InputArity, OpError, OpHandle, OpInputs, Operation};
@@ -30,6 +35,10 @@ pub use registry::{
 };
 pub use sink::{find_sink, iter_sinks, Sink, SinkRegistration, SinkRowOutput};
 pub use source::{find_source, iter_sources, Source, SourceRegistration};
+pub use executor::{CompileError, CompiledGraph, ExecError};
+pub use ir::{Graph, Inputs, Node, NodeId, OutputBinding, PlannedSchema, RootBinding,
+              SerializedParams, SinkSpec, SourceSpec};
+pub use wire::{decode, decode_default, encode, encode_default, WireError, WireFormat};
 
 pub use view_buffer::ops::{Domain, NodeOutput};
 

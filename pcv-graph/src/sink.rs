@@ -13,6 +13,7 @@ use crate::params::ParamMap;
 ///
 /// The bridge layer in `polars-cv` knows how to assemble each variant into a
 /// Polars Series of the appropriate dtype.
+#[derive(Debug)]
 pub enum SinkRowOutput {
     /// Encoded bytes (e.g. PNG, JPEG, blob layout).
     Bytes(Vec<u8>),
