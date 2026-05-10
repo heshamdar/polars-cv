@@ -1,6 +1,6 @@
 # Root Cargo.toml
 [workspace]
-members = ["view-buffer", "polars-cv"]
+members = ["view-buffer", "polars-cv", "pcv-graph"]
 resolver = "2"
 
 # Workspace-level profile settings
