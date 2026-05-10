@@ -5,4 +5,5 @@ from polars_cv._types import AlphaMode, DTypeEffect, NdimEffect, OpContract
 WIRE_VERSION: int = 2
 
 OPERATION_CONTRACTS: dict[str, OpContract] = {
+    "identity": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
 }
