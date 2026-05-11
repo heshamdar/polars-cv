@@ -5,12 +5,20 @@ from polars_cv._types import AlphaMode, DTypeEffect, NdimEffect, OpContract
 WIRE_VERSION: int = 2
 
 OPERATION_CONTRACTS: dict[str, OpContract] = {
+    "adjust_contrast": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "adjust_gamma": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "cast": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
     "channel_select": OpContract(DTypeEffect.PRESERVE, NdimEffect.REDUCE_ONE, AlphaMode.DROP),
+    "clamp": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
     "crop": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
     "flip": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
     "grayscale": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.DROP),
     "identity": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "invert": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "normalize": OpContract(DTypeEffect.CONFIGURABLE_F32, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "relu": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
     "reshape": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
     "rotate": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "scale": OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
     "transpose": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
 }

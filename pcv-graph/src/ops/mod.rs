@@ -4,12 +4,20 @@
 //! the registry is a single-file change and a single `submit!` call — no
 //! match arms or central tables to update.
 
+pub mod adjust_contrast;
+pub mod adjust_gamma;
+pub mod cast;
 pub mod channel_select;
+pub mod clamp;
 pub mod common;
 pub mod crop;
 pub mod flip;
 pub mod grayscale;
 pub mod identity;
+pub mod invert;
+pub mod normalize;
+pub mod relu;
 pub mod reshape;
 pub mod rotate;
+pub mod scale;
 pub mod transpose;

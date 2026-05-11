@@ -5,10 +5,33 @@
 //! a [`NodeOutput::Buffer`]. Centralizing it here keeps each op file focused
 //! on the parameter parsing that actually differs between ops.
 
+use view_buffer::core::dtype::DType;
 use view_buffer::expr::ViewExpr;
 use view_buffer::ops::{Domain, NodeOutput, ViewDto};
 
 use crate::op::{OpError, OpInputs};
+
+/// Parse the canonical dtype string. Matches `polars-cv/src/execute.rs:1348`.
+pub fn parse_dtype(op_name: &'static str, s: &str) -> Result<DType, OpError> {
+    Ok(match s {
+        "u8" => DType::U8,
+        "i8" => DType::I8,
+        "u16" => DType::U16,
+        "i16" => DType::I16,
+        "u32" => DType::U32,
+        "i32" => DType::I32,
+        "u64" => DType::U64,
+        "i64" => DType::I64,
+        "f32" => DType::F32,
+        "f64" => DType::F64,
+        other => {
+            return Err(OpError::Failed {
+                op: op_name,
+                message: format!("unknown dtype `{other}`"),
+            })
+        }
+    })
+}
 
 /// Apply a single [`ViewDto`] to the single buffer input of an op.
 ///
