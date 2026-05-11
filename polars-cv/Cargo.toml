@@ -10,6 +10,12 @@ name = "polars_cv"
 crate-type = ["cdylib"]
 
 [dependencies]
+# v2 graph subsystem (typed IR + executor; lives in `pcv-graph` workspace
+# member). Routes the polars-cv plugin's vb_graph_v2 entry point to the new
+# inventory-based registry while v1 (the local graph/ module) still owns
+# vb_graph. Both coexist until step 12.
+pcv-graph = { path = "../pcv-graph" }
+
 # Core library - use serde feature for pipeline serialization
 # NOTE: Do NOT enable "python" feature to avoid pyo3 version conflict
 view-buffer = { path = "../view-buffer", default-features = false, features = [
