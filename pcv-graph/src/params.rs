@@ -102,6 +102,75 @@ pub fn opt_bool(params: &ParamMap, name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Pull an optional `i64` with a default.
+pub fn opt_i64(params: &ParamMap, name: &str, default: i64) -> i64 {
+    params
+        .get(name)
+        .and_then(|v| v.as_i64())
+        .unwrap_or(default)
+}
+
+/// Pull an optional `f64` with a default.
+pub fn opt_f64(params: &ParamMap, name: &str, default: f64) -> f64 {
+    params
+        .get(name)
+        .and_then(|v| v.as_f64())
+        .unwrap_or(default)
+}
+
+/// Pull a required JSON array as `Vec<usize>`. Each entry must be a
+/// non-negative integer.
+pub fn require_usize_array(
+    params: &ParamMap,
+    op: &'static str,
+    name: &'static str,
+) -> Result<Vec<usize>, ParamError> {
+    let v = params
+        .get(name)
+        .ok_or(ParamError::Missing { op, name })?;
+    let arr = v.as_array().ok_or_else(|| ParamError::WrongType {
+        op,
+        name,
+        expected: "list[int]",
+        got: type_name_of(v),
+    })?;
+    arr.iter()
+        .map(|entry| {
+            entry
+                .as_u64()
+                .map(|u| u as usize)
+                .or_else(|| entry.as_i64().map(|i| i.max(0) as usize))
+                .ok_or_else(|| ParamError::WrongType {
+                    op,
+                    name,
+                    expected: "list[int]",
+                    got: type_name_of(entry),
+                })
+        })
+        .collect()
+}
+
+/// Pull an optional JSON array as `Vec<usize>` with a default.
+pub fn opt_usize_array(
+    params: &ParamMap,
+    name: &str,
+    default: Vec<usize>,
+) -> Vec<usize> {
+    match params.get(name).and_then(|v| v.as_array()) {
+        Some(arr) => arr
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_u64()
+                    .map(|u| u as usize)
+                    .or_else(|| entry.as_i64().map(|i| i.max(0) as usize))
+                    .unwrap_or(0)
+            })
+            .collect(),
+        None => default,
+    }
+}
+
 fn type_name_of(v: &LiteralValue) -> String {
     match v {
         LiteralValue::Null => "null".into(),

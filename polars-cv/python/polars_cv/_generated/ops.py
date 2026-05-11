@@ -5,6 +5,12 @@ from polars_cv._types import AlphaMode, DTypeEffect, NdimEffect, OpContract
 WIRE_VERSION: int = 2
 
 OPERATION_CONTRACTS: dict[str, OpContract] = {
+    "channel_select": OpContract(DTypeEffect.PRESERVE, NdimEffect.REDUCE_ONE, AlphaMode.DROP),
+    "crop": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "flip": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
     "grayscale": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.DROP),
     "identity": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "reshape": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "rotate": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
+    "transpose": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH),
 }

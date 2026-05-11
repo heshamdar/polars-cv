@@ -140,6 +140,28 @@ pub fn fail(op: &'static str, message: impl Into<String>) -> OpError {
     }
 }
 
+impl From<crate::params::ParamError> for OpError {
+    fn from(err: crate::params::ParamError) -> Self {
+        use crate::params::ParamError;
+        match err {
+            ParamError::Missing { op, name } => OpError::Failed {
+                op,
+                message: format!("missing required parameter `{name}`"),
+            },
+            ParamError::WrongType {
+                op, name, expected, got,
+            } => OpError::Failed {
+                op,
+                message: format!("parameter `{name}`: expected {expected}, got {got}"),
+            },
+            ParamError::OutOfRange { op, name, message } => OpError::Failed {
+                op,
+                message: format!("parameter `{name}` out of range: {message}"),
+            },
+        }
+    }
+}
+
 /// The operation trait — implemented once per built-in or extension op.
 ///
 /// Implementations are constructed by [`OpRegistration::factory`] from a
