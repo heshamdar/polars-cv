@@ -4,3 +4,4 @@
 //! source is a single-file change.
 
 pub mod bytes_passthrough;
+pub mod image_bytes;
