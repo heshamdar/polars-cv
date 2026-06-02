@@ -10,6 +10,12 @@ name = "polars_cv"
 crate-type = ["cdylib"]
 
 [dependencies]
+# v2 graph subsystem (typed IR + executor; lives in `pcv-graph` workspace
+# member). Routes the polars-cv plugin's vb_graph_v2 entry point to the new
+# inventory-based registry while v1 (the local graph/ module) still owns
+# vb_graph. Both coexist until step 12.
+pcv-graph = { path = "../pcv-graph" }
+
 # Core library - use serde feature for pipeline serialization
 # NOTE: Do NOT enable "python" feature to avoid pyo3 version conflict
 view-buffer = { path = "../view-buffer", default-features = false, features = [
@@ -21,10 +27,10 @@ view-buffer = { path = "../view-buffer", default-features = false, features = [
     "serde",
 ] }
 
-# Polars plugin essentials - use pyo3 0.23 which is compatible with pyo3-polars 0.20
+# Polars plugin essentials - pyo3 0.27 is required by pyo3-polars 0.26
 # Note: dtype-i8/dtype-u8/dtype-i16/dtype-u16 required for Int8/UInt8/Int16/UInt16 Series
 # See: https://github.com/pola-rs/polars/issues/24171
-polars = { version = "0.46", default-features = false, features = [
+polars = { version = "0.53", default-features = false, features = [
     "dtype-array",
     "dtype-struct",
     "dtype-i8",
@@ -32,9 +38,10 @@ polars = { version = "0.46", default-features = false, features = [
     "dtype-i16",
     "dtype-u16",
 ] }
-polars-arrow = { version = "0.46" }
-pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
-pyo3-polars = { version = "0.20", features = ["derive"] }
+polars-arrow = { version = "0.53" }
+polars-buffer = { version = "0.53" }
+pyo3 = { version = "0.27", features = ["abi3-py310"] }
+pyo3-polars = { version = "0.26", features = ["derive"] }
 
 # Image encoding support
 image = "0.25"
@@ -56,8 +63,8 @@ url = { version = "2" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [features]
-pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py39"]
+pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py310"]
 
 [dev-dependencies]
 # For testing
-polars = { version = "0.46", features = ["dtype-array", "dtype-struct", "lazy"] }
+polars = { version = "0.53", features = ["dtype-array", "dtype-struct"] }

@@ -3,6 +3,7 @@
 //! This crate provides expression functions for applying image and array
 //! processing pipelines to Polars DataFrame columns, powered by view-buffer.
 
+mod bridge_v2;
 mod cloud;
 mod contour;
 mod execute;
@@ -182,6 +183,28 @@ fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series
 #[polars_expr(output_type_func_with_kwargs=unified_output_dtype)]
 fn vb_graph(inputs: &[Series], kwargs: GraphKwargs) -> PolarsResult<Series> {
     execute_graph(inputs, &kwargs)
+}
+
+// ============================================================================
+// v2 graph execution (lives in `pcv-graph`)
+// ============================================================================
+// The Python builder selects between `vb_graph` and `vb_graph_v2` based on
+// the `PCV_USE_V2` env var. Once the v2 path covers every op/source/sink
+// (step 11), v1 is deleted and `vb_graph_v2` is renamed back to `vb_graph`.
+
+#[polars_expr(output_type_func_with_kwargs=vb_graph_v2_output_dtype)]
+fn vb_graph_v2(
+    inputs: &[Series],
+    kwargs: bridge_v2::V2Kwargs,
+) -> PolarsResult<Series> {
+    bridge_v2::execute_v2(inputs, &kwargs)
+}
+
+fn vb_graph_v2_output_dtype(
+    input_fields: &[Field],
+    kwargs: bridge_v2::V2Kwargs,
+) -> PolarsResult<Field> {
+    bridge_v2::output_field_v2(input_fields, &kwargs)
 }
 
 /// Compute the output dtype for unified graph (single or multi-output).

@@ -25,7 +25,8 @@ tiff = { version = "0.10", optional = true }
 fast_image_resize = { version = "5.0", optional = true }
 arrow = { version = "53.0", features = ["ffi"], optional = true }
 image_hasher = { version = "3.0", optional = true }
-polars-arrow = { version = "0.46", optional = true }
+polars-arrow = { version = "0.53", optional = true }
+polars-buffer = { version = "0.53", optional = true }
 
 # NEW: Serialization & Protocol dependencies (Phase 1)
 serde = { version = "1.0", features = ["derive"], optional = true }
@@ -39,7 +40,8 @@ image = "0.25"
 tiff = "0.10"
 fast_image_resize = "5.0"
 arrow = { version = "53.0", features = ["ffi"] }
-polars-arrow = "0.46"
+polars-arrow = "0.53"
+polars-buffer = "0.53"
 # Added for tests
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -52,7 +54,7 @@ default = ["ndarray_interop"]
 ndarray_interop = ["dep:ndarray"]
 image_interop = ["dep:image", "dep:fast_image_resize", "dep:tiff"]
 arrow_interop = ["dep:arrow"]
-polars_interop = ["dep:polars-arrow"]
+polars_interop = ["dep:polars-arrow", "dep:polars-buffer"]
 
 # Output format support (no external deps, just format logic)
 numpy_interop = []
