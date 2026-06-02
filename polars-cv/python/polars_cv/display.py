@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import io
+import struct
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -319,9 +320,11 @@ def _to_png_bytes(val: Any, fmt: str) -> bytes | None:
         return None
 
     if mime == "view":
+        # Malformed/unsupported blobs fail at header parsing or array reshape;
+        # let unexpected errors (programming bugs) propagate rather than hide them.
         try:
             return _view_to_png(val)
-        except Exception:
+        except (struct.error, ValueError, IndexError, OSError):
             return None
 
     if mime in ("image/png", "image/jpeg", "image/webp", "image/gif"):
@@ -336,7 +339,7 @@ def _to_png_bytes(val: Any, fmt: str) -> bytes | None:
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             return buf.getvalue()
-        except Exception:
+        except (OSError, ValueError):
             return None
 
     return None
