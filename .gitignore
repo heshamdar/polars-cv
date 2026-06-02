@@ -80,3 +80,4 @@ polars-cv/notebooks/wiki/*
 polars-cv/examples/outputs/*
 polars-cv/.cache/*
 .vscode/*
+dist/
