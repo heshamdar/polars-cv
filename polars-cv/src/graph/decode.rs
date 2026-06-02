@@ -45,12 +45,6 @@ fn compute_null_mask(series: &Series) -> Vec<bool> {
 fn count_non_null(series: &Series) -> usize {
     series.len() - series.null_count()
 }
-/// Check if a specific row is null in a series.
-///
-/// Uses `AnyValue::Null` check to avoid allocating a full boolean array.
-fn is_row_null(series: &Series, row_idx: usize) -> bool {
-    matches!(series.get(row_idx), Ok(AnyValue::Null) | Err(_))
-}
 /// Extract binary data from a BinaryChunked at a specific row.
 ///
 /// Returns the data as a polars-arrow buffer (involves copy for BinaryViewArray).
@@ -71,9 +65,8 @@ pub(crate) fn get_binary_row_buffer(
     binary_ca: &BinaryChunked,
     row_idx: usize,
 ) -> Option<(polars_arrow::buffer::Buffer<u8>, usize, usize)> {
-    if is_row_null(&binary_ca.clone().into_series(), row_idx) {
-        return None;
-    }
+    // `get` returns `None` for null (or out-of-bounds) rows, so it doubles as the
+    // null check — no need to materialise a validity mask for the whole column.
     let bytes = binary_ca.get(row_idx)?;
     let len = bytes.len();
     let buffer = polars_arrow::buffer::Buffer::from(bytes.to_vec());
@@ -98,10 +91,7 @@ pub(crate) fn decode_binary_zero_copy(
     dtype_str: Option<&str>,
 ) -> Result<ViewBuffer, String> {
     match source_format {
-        "blob" => {
-            let slice_data: Vec<u8> = buffer.as_slice()[offset..offset + len].to_vec();
-            decode_blob_zero_copy(buffer, offset, len, &slice_data)
-        }
+        "blob" => decode_blob_zero_copy(buffer, offset, len),
         "raw" => {
             let dtype_s = dtype_str.ok_or("Raw source format requires dtype")?;
             let dtype = parse_dtype_str(dtype_s)?;
@@ -127,12 +117,14 @@ fn decode_blob_zero_copy(
     buffer: polars_arrow::buffer::Buffer<u8>,
     base_offset: usize,
     total_len: usize,
-    slice: &[u8],
 ) -> Result<ViewBuffer, String> {
     use view_buffer::protocol::{u8_to_dtype, HEADER_SIZE, MAGIC_BYTES, VERSION};
     if total_len < HEADER_SIZE {
         return Err("Blob data too short for header".into());
     }
+    // Read the header directly from the shared buffer — no copy needed, the
+    // final ViewBuffer references the same `buffer` for its data.
+    let slice = &buffer.as_slice()[base_offset..base_offset + total_len];
     let magic = &slice[0..4];
     if magic != MAGIC_BYTES {
         return Err("Invalid blob magic bytes".into());
@@ -304,7 +296,7 @@ fn try_decode_array_zero_copy(
         let arr_ca = series
             .array()
             .map_err(|e| format!("Array access error: {e}"))?;
-        if is_row_null(&arr_ca.clone().into_series(), row_idx) {
+        if is_array_row_null(arr_ca, row_idx) {
             return Ok(None);
         }
         if let Some((buffer, offset, len)) = get_array_row_buffer(arr_ca, row_idx, dtype) {
@@ -352,6 +344,22 @@ fn is_primitive_dtype(dt: &DataType) -> bool {
 /// Get zero-copy buffer access for an Array row.
 ///
 /// Returns `(buffer, offset, len)` if zero-copy is possible.
+/// Check whether the given row of an `ArrayChunked` is null.
+///
+/// Walks the chunks (cheap) and queries the arrow validity bitmap directly,
+/// avoiding the per-row full-column clone that `is_row_null` would incur.
+fn is_array_row_null(arr_ca: &ArrayChunked, row_idx: usize) -> bool {
+    use polars_arrow::array::Array;
+    let mut cumulative_len = 0;
+    for chunk in arr_ca.downcast_iter() {
+        let chunk_len = chunk.len();
+        if row_idx < cumulative_len + chunk_len {
+            return chunk.is_null(row_idx - cumulative_len);
+        }
+        cumulative_len += chunk_len;
+    }
+    true
+}
 fn get_array_row_buffer(
     arr_ca: &ArrayChunked,
     row_idx: usize,
