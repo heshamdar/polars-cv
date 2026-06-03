@@ -318,66 +318,144 @@ impl ViewBuffer {
         let shape = contig.shape().to_vec();
         let _len: usize = shape.iter().product();
 
-        // Macro to handle all dtype combinations
+        // Macro to handle all dtype combinations.
+        //
+        // Two variants by source kind:
+        // - `int`:   integer source -> plain `as` (no fractional part to round).
+        // - `float`: float source -> **round to nearest** before narrowing to an
+        //            integer target, so e.g. 140.75_f32 -> 141_u8 rather than 140.
+        //            Rust's float->int `as` already saturates out-of-range values
+        //            and maps NaN -> 0, so clamping behaviour is preserved.
+        //            Float->float targets keep plain `as` (no rounding).
         macro_rules! cast_impl {
-            ($src:ty, $dst_dtype:expr) => {{
+            (int $src:ty, $dst_dtype:expr) => {{
                 let src_data = contig.as_slice::<$src>();
                 match $dst_dtype {
-                    DType::U8 => {
-                        let data: Vec<u8> = src_data.iter().map(|&x| x as u8).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
-                    DType::I8 => {
-                        let data: Vec<i8> = src_data.iter().map(|&x| x as i8).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
-                    DType::U16 => {
-                        let data: Vec<u16> = src_data.iter().map(|&x| x as u16).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
-                    DType::I16 => {
-                        let data: Vec<i16> = src_data.iter().map(|&x| x as i16).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
-                    DType::U32 => {
-                        let data: Vec<u32> = src_data.iter().map(|&x| x as u32).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
-                    DType::I32 => {
-                        let data: Vec<i32> = src_data.iter().map(|&x| x as i32).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
-                    DType::U64 => {
-                        let data: Vec<u64> = src_data.iter().map(|&x| x as u64).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
-                    DType::I64 => {
-                        let data: Vec<i64> = src_data.iter().map(|&x| x as i64).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
-                    DType::F32 => {
-                        let data: Vec<f32> = src_data.iter().map(|&x| x as f32).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
-                    DType::F64 => {
-                        let data: Vec<f64> = src_data.iter().map(|&x| x as f64).collect();
-                        Self::from_vec_with_shape(data, shape)
-                    }
+                    DType::U8 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as u8).collect::<Vec<u8>>(),
+                        shape,
+                    ),
+                    DType::I8 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as i8).collect::<Vec<i8>>(),
+                        shape,
+                    ),
+                    DType::U16 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as u16).collect::<Vec<u16>>(),
+                        shape,
+                    ),
+                    DType::I16 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as i16).collect::<Vec<i16>>(),
+                        shape,
+                    ),
+                    DType::U32 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as u32).collect::<Vec<u32>>(),
+                        shape,
+                    ),
+                    DType::I32 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as i32).collect::<Vec<i32>>(),
+                        shape,
+                    ),
+                    DType::U64 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as u64).collect::<Vec<u64>>(),
+                        shape,
+                    ),
+                    DType::I64 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
+                        shape,
+                    ),
+                    DType::F32 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as f32).collect::<Vec<f32>>(),
+                        shape,
+                    ),
+                    DType::F64 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as f64).collect::<Vec<f64>>(),
+                        shape,
+                    ),
+                }
+            }};
+            (float $src:ty, $dst_dtype:expr) => {{
+                let src_data = contig.as_slice::<$src>();
+                match $dst_dtype {
+                    DType::U8 => Self::from_vec_with_shape(
+                        src_data
+                            .iter()
+                            .map(|&x| x.round() as u8)
+                            .collect::<Vec<u8>>(),
+                        shape,
+                    ),
+                    DType::I8 => Self::from_vec_with_shape(
+                        src_data
+                            .iter()
+                            .map(|&x| x.round() as i8)
+                            .collect::<Vec<i8>>(),
+                        shape,
+                    ),
+                    DType::U16 => Self::from_vec_with_shape(
+                        src_data
+                            .iter()
+                            .map(|&x| x.round() as u16)
+                            .collect::<Vec<u16>>(),
+                        shape,
+                    ),
+                    DType::I16 => Self::from_vec_with_shape(
+                        src_data
+                            .iter()
+                            .map(|&x| x.round() as i16)
+                            .collect::<Vec<i16>>(),
+                        shape,
+                    ),
+                    DType::U32 => Self::from_vec_with_shape(
+                        src_data
+                            .iter()
+                            .map(|&x| x.round() as u32)
+                            .collect::<Vec<u32>>(),
+                        shape,
+                    ),
+                    DType::I32 => Self::from_vec_with_shape(
+                        src_data
+                            .iter()
+                            .map(|&x| x.round() as i32)
+                            .collect::<Vec<i32>>(),
+                        shape,
+                    ),
+                    DType::U64 => Self::from_vec_with_shape(
+                        src_data
+                            .iter()
+                            .map(|&x| x.round() as u64)
+                            .collect::<Vec<u64>>(),
+                        shape,
+                    ),
+                    DType::I64 => Self::from_vec_with_shape(
+                        src_data
+                            .iter()
+                            .map(|&x| x.round() as i64)
+                            .collect::<Vec<i64>>(),
+                        shape,
+                    ),
+                    // Float -> float: no rounding.
+                    DType::F32 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as f32).collect::<Vec<f32>>(),
+                        shape,
+                    ),
+                    DType::F64 => Self::from_vec_with_shape(
+                        src_data.iter().map(|&x| x as f64).collect::<Vec<f64>>(),
+                        shape,
+                    ),
                 }
             }};
         }
 
         match self.layout.dtype {
-            DType::U8 => cast_impl!(u8, target_dtype),
-            DType::I8 => cast_impl!(i8, target_dtype),
-            DType::U16 => cast_impl!(u16, target_dtype),
-            DType::I16 => cast_impl!(i16, target_dtype),
-            DType::U32 => cast_impl!(u32, target_dtype),
-            DType::I32 => cast_impl!(i32, target_dtype),
-            DType::U64 => cast_impl!(u64, target_dtype),
-            DType::I64 => cast_impl!(i64, target_dtype),
-            DType::F32 => cast_impl!(f32, target_dtype),
-            DType::F64 => cast_impl!(f64, target_dtype),
+            DType::U8 => cast_impl!(int u8, target_dtype),
+            DType::I8 => cast_impl!(int i8, target_dtype),
+            DType::U16 => cast_impl!(int u16, target_dtype),
+            DType::I16 => cast_impl!(int i16, target_dtype),
+            DType::U32 => cast_impl!(int u32, target_dtype),
+            DType::I32 => cast_impl!(int i32, target_dtype),
+            DType::U64 => cast_impl!(int u64, target_dtype),
+            DType::I64 => cast_impl!(int i64, target_dtype),
+            DType::F32 => cast_impl!(float f32, target_dtype),
+            DType::F64 => cast_impl!(float f64, target_dtype),
         }
     }
 
@@ -1677,5 +1755,43 @@ impl ViewBuffer {
         self.layout.shape = shape;
         self.layout = Layout::new_contiguous(self.layout.shape, self.layout.dtype);
         self
+    }
+}
+
+#[cfg(test)]
+mod cast_round_tests {
+    use crate::{DType, ViewBuffer};
+
+    #[test]
+    fn float_to_int_rounds_to_nearest() {
+        // f32 -> u8 must round to nearest, not truncate (regression guard for the
+        // RGB<->YCbCr roundtrip which drifted under truncation).
+        let buf = ViewBuffer::from_vec(vec![140.75f32, 0.6, 1.4, 254.6, 255.9]);
+        let out = buf.cast(DType::U8);
+        assert_eq!(out.as_slice::<u8>(), &[141, 1, 1, 255, 255]);
+    }
+
+    #[test]
+    fn float_to_int_handles_negative_and_nan() {
+        let buf = ViewBuffer::from_vec(vec![-0.6f32, -0.4, f32::NAN]);
+        let out = buf.cast(DType::I8);
+        // -0.6 -> -1, -0.4 -> 0, NaN -> 0 (saturating float->int cast)
+        assert_eq!(out.as_slice::<i8>(), &[-1, 0, 0]);
+    }
+
+    #[test]
+    fn float_to_float_does_not_round() {
+        let buf = ViewBuffer::from_vec(vec![1.25f32, 2.75]);
+        let out = buf.cast(DType::F64);
+        assert_eq!(out.as_slice::<f64>(), &[1.25f64, 2.75]);
+    }
+
+    #[test]
+    fn int_to_int_uses_plain_cast() {
+        // Integer narrowing keeps plain `as` (wrapping) semantics — only
+        // float sources gained rounding.
+        let buf = ViewBuffer::from_vec(vec![10u16, 250, 300]);
+        let out = buf.cast(DType::U8);
+        assert_eq!(out.as_slice::<u8>(), &[10, 250, 44]);
     }
 }
