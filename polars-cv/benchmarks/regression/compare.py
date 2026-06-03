@@ -175,8 +175,12 @@ def summarize(deltas: list[Delta]) -> dict[str, Any]:
     for d in deltas:
         counts[d.status.value] += 1
     regressions = [
-        {"key": list(map(_jsonable, d.key)), "throughput_pct": d.throughput_pct,
-         "latency_pct": d.latency_pct, "reason": d.reason}
+        {
+            "key": list(map(_jsonable, d.key)),
+            "throughput_pct": d.throughput_pct,
+            "latency_pct": d.latency_pct,
+            "reason": d.reason,
+        }
         for d in deltas
         if d.status in (Status.REGRESSED, Status.MISSING)
     ]
@@ -194,19 +198,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("baseline", help="baseline results JSON")
     parser.add_argument("candidate", help="candidate results JSON")
     parser.add_argument(
-        "--throughput-threshold", type=float, default=DEFAULT_THROUGHPUT_PCT,
+        "--throughput-threshold",
+        type=float,
+        default=DEFAULT_THROUGHPUT_PCT,
         help="percent throughput drop that counts as a regression (default: 5)",
     )
     parser.add_argument(
-        "--latency-threshold", type=float, default=DEFAULT_LATENCY_PCT,
+        "--latency-threshold",
+        type=float,
+        default=DEFAULT_LATENCY_PCT,
         help="percent latency rise that counts as a regression (default: 5)",
     )
     parser.add_argument(
-        "--memory-threshold", type=float, default=DEFAULT_MEMORY_PCT,
+        "--memory-threshold",
+        type=float,
+        default=DEFAULT_MEMORY_PCT,
         help="percent peak-memory rise that counts as a regression (default: 15)",
     )
     parser.add_argument(
-        "--gate-memory", action="store_true",
+        "--gate-memory",
+        action="store_true",
         help="treat memory regressions as failures (advisory by default)",
     )
     parser.add_argument(
@@ -232,9 +243,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(summary, indent=2))
 
-    failed = summary["counts"][Status.REGRESSED.value] + summary["counts"][
-        Status.MISSING.value
-    ]
+    failed = (
+        summary["counts"][Status.REGRESSED.value]
+        + summary["counts"][Status.MISSING.value]
+    )
     if failed:
         print(f"\nFAIL: {failed} regressed/missing result(s).")
         return 1

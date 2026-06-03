@@ -1,0 +1,86 @@
+name: Benchmark (manual)
+
+# Manual, advisory-only performance run. This is NOT a PR gate — shared CI
+# runners are too noisy to gate on absolute timings (see
+# benchmarks/regression/README.md). Trigger it from the Actions tab to capture
+# a results JSON for a branch/commit, then download the artifact and compare
+# locally with `python -m benchmarks.regression.compare baseline.json candidate.json`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "Comma-separated scenarios (single_ops,pipelines,e2e,zero_copy)"
+        default: "pipelines"
+        type: string
+      counts:
+        description: "Comma-separated image counts"
+        default: "300"
+        type: string
+      threads:
+        description: "Pinned thread count"
+        default: "1"
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  benchmark:
+    name: Run regression suite (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Determine package directory
+        id: package_dir
+        shell: bash
+        run: |
+          if [ -d "polars-cv" ]; then
+            echo "dir=polars-cv" >> $GITHUB_OUTPUT
+          else
+            echo "dir=." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        run: uv sync --group dev
+
+      - name: Build extension (release)
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          maturin develop --release
+
+      - name: Run regression suite
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          python -m benchmarks.regression.run_suite \
+            --out "results-${GITHUB_SHA::8}.json" \
+            --scenarios "${{ inputs.scenarios }}" \
+            --counts "${{ inputs.counts }}" \
+            --threads "${{ inputs.threads }}"
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-results-${{ github.sha }}
+          path: ${{ steps.package_dir.outputs.dir }}/results-*.json*
+          if-no-files-found: error
