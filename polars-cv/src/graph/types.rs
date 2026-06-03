@@ -638,7 +638,7 @@ impl UnifiedGraph {
                         );
                         match decode_result {
                             Ok(output) => output,
-                            Err(e) if on_error_null => None,
+                            Err(_e) if on_error_null => None,
                             Err(e) => return Err(e),
                         }
                     } else {
@@ -652,9 +652,7 @@ impl UnifiedGraph {
                         // for `apply_op`). Non-literal nodes resolve into a local
                         // Vec that the borrow then points at.
                         let resolved_dtos: Vec<ViewDto>;
-                        let view_dtos: &[ViewDto] = if let Some(cached) =
-                            precompiled.get(node_id)
-                        {
+                        let view_dtos: &[ViewDto] = if let Some(cached) = precompiled.get(node_id) {
                             cached
                         } else {
                             let mut dtos = Vec::with_capacity(node.ops.len());
