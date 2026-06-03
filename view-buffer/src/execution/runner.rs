@@ -699,6 +699,17 @@ fn resize_strided(
     }
 }
 
+#[cfg(feature = "image_interop")]
+thread_local! {
+    /// Reused across resize calls on the same worker thread to avoid
+    /// reallocating fast_image_resize's internal scratch buffers on every row.
+    /// `fir::Resizer` adapts to the pixel type and dimensions on each `resize`
+    /// call, so a single instance safely serves U8/U16/F32 at any size. It is
+    /// thread-local, so streaming morsel workers never share one.
+    static FIR_RESIZER: std::cell::RefCell<fir::Resizer> =
+        std::cell::RefCell::new(fir::Resizer::new());
+}
+
 /// Perform a typed resize for U8 data.
 #[cfg(feature = "image_interop")]
 fn resize_typed_u8(
@@ -723,14 +734,15 @@ fn resize_typed_u8(
         fir::images::Image::from_slice_u8(target_width, target_height, &mut dst_data, pixel_type)
             .expect("Failed to create dest image");
 
-    let mut resizer = fir::Resizer::new();
-    resizer
-        .resize(
-            &src_image,
-            &mut dst_image,
-            &fir::ResizeOptions::new().resize_alg(fir_filter),
-        )
-        .expect("Resize failed");
+    FIR_RESIZER.with(|cell| {
+        cell.borrow_mut()
+            .resize(
+                &src_image,
+                &mut dst_image,
+                &fir::ResizeOptions::new().resize_alg(fir_filter),
+            )
+            .expect("Resize failed");
+    });
 
     ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
 }
@@ -765,14 +777,15 @@ fn resize_typed_u16(
         fir::images::Image::from_slice_u8(target_width, target_height, dst_bytes, pixel_type)
             .expect("Failed to create dest image");
 
-    let mut resizer = fir::Resizer::new();
-    resizer
-        .resize(
-            &src_image,
-            &mut dst_image,
-            &fir::ResizeOptions::new().resize_alg(fir_filter),
-        )
-        .expect("Resize failed");
+    FIR_RESIZER.with(|cell| {
+        cell.borrow_mut()
+            .resize(
+                &src_image,
+                &mut dst_image,
+                &fir::ResizeOptions::new().resize_alg(fir_filter),
+            )
+            .expect("Resize failed");
+    });
 
     ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
 }
@@ -807,14 +820,15 @@ fn resize_typed_f32(
         fir::images::Image::from_slice_u8(target_width, target_height, dst_bytes, pixel_type)
             .expect("Failed to create dest image");
 
-    let mut resizer = fir::Resizer::new();
-    resizer
-        .resize(
-            &src_image,
-            &mut dst_image,
-            &fir::ResizeOptions::new().resize_alg(fir_filter),
-        )
-        .expect("Resize failed");
+    FIR_RESIZER.with(|cell| {
+        cell.borrow_mut()
+            .resize(
+                &src_image,
+                &mut dst_image,
+                &fir::ResizeOptions::new().resize_alg(fir_filter),
+            )
+            .expect("Resize failed");
+    });
 
     ViewBuffer::from_vec(dst_data).reshape(vec![target_height as usize, target_width as usize, c])
 }

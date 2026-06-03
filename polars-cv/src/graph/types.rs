@@ -646,9 +646,16 @@ impl UnifiedGraph {
                         node_outputs.get(upstream_id).cloned()
                     };
                     if let Some(input) = node_input {
-                        let view_dtos: Vec<ViewDto> = if let Some(cached) = precompiled.get(node_id)
+                        // Borrow the precompiled (all-literal) ops instead of
+                        // cloning the whole Vec every row; only ops that end up
+                        // in `pending_buffer_ops` are cloned (they must be owned
+                        // for `apply_op`). Non-literal nodes resolve into a local
+                        // Vec that the borrow then points at.
+                        let resolved_dtos: Vec<ViewDto>;
+                        let view_dtos: &[ViewDto] = if let Some(cached) =
+                            precompiled.get(node_id)
                         {
-                            cached.clone()
+                            cached
                         } else {
                             let mut dtos = Vec::with_capacity(node.ops.len());
                             for op_spec in &node.ops {
@@ -657,7 +664,8 @@ impl UnifiedGraph {
                                     Err(e) => return Err(format!("Op resolution error: {e}")),
                                 }
                             }
-                            dtos
+                            resolved_dtos = dtos;
+                            &resolved_dtos
                         };
                         let mut current_output = input;
                         fn flush_buffer_ops(
@@ -682,7 +690,7 @@ impl UnifiedGraph {
                         }
                         let mut pending_buffer_ops: Vec<ViewDto> = Vec::new();
                         for view_dto in view_dtos {
-                            match &view_dto {
+                            match view_dto {
                                 ViewDto::Geometry(geo_op) => {
                                     current_output =
                                         flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
