@@ -94,10 +94,19 @@ python -m benchmarks.regression.compare a.json b.json   # expect all NEUTRAL, ex
 `--latency-threshold` (5), `--memory-threshold` (15), `--gate-memory`
 (memory is advisory unless set), `--json` (machine-readable summary).
 
+## CI (manual, advisory)
+
+`.github/workflows/benchmark.yml` runs this suite on demand
+(`workflow_dispatch`, inputs: scenarios / counts / threads), builds release,
+and uploads the results JSON as an artifact. It is **not** a PR gate —
+shared CI runners are too noisy to gate on absolute timings. Download two runs'
+artifacts and `compare` them locally.
+
 ## Notes
 
-- Throughput is the gate metric; latency is the cross-check. Peak memory is
-  whole-process RSS (noisy) so it is advisory by default.
+- Throughput is the only gated metric; latency is its reciprocal (shown for
+  context). Peak memory is whole-process RSS (noisy) so it is advisory by
+  default (`--gate-memory` to include it).
 - The underlying scenarios report the mean over `--iterations`; `--repeats`
   runs the whole suite N times and keeps best-of, which is the only available
   noise-rejection lever.

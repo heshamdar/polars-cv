@@ -80,19 +80,31 @@ def _run_once(
     results: list[BenchmarkResult] = []
     if "single_ops" in cfg.scenarios:
         results += run_all_single_ops(
-            adapters, cfg.image_counts, cfg.image_sizes,
-            cfg.warmup_iterations, cfg.benchmark_iterations, verbose=verbose,
+            adapters,
+            cfg.image_counts,
+            cfg.image_sizes,
+            cfg.warmup_iterations,
+            cfg.benchmark_iterations,
+            verbose=verbose,
         )
     if "pipelines" in cfg.scenarios:
         results += run_all_pipelines(
-            adapters, cfg.image_counts, cfg.image_sizes,
-            cfg.warmup_iterations, cfg.benchmark_iterations,
-            complexity_filter=None, verbose=verbose,
+            adapters,
+            cfg.image_counts,
+            cfg.image_sizes,
+            cfg.warmup_iterations,
+            cfg.benchmark_iterations,
+            complexity_filter=None,
+            verbose=verbose,
         )
     if "e2e" in cfg.scenarios:
         results += run_all_e2e_workflows(
-            adapters, cfg.image_counts, cfg.image_sizes,
-            cfg.warmup_iterations, cfg.benchmark_iterations, verbose=verbose,
+            adapters,
+            cfg.image_counts,
+            cfg.image_sizes,
+            cfg.warmup_iterations,
+            cfg.benchmark_iterations,
+            verbose=verbose,
         )
     if "zero_copy" in cfg.scenarios:
         # zero_copy has its own hardcoded matrix and no adapter arg; its results
@@ -140,7 +152,9 @@ def _git_sha() -> str | None:
     try:
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return out.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -171,7 +185,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the polars-cv regression suite.")
     parser.add_argument("--out", required=True, help="output results JSON path")
     parser.add_argument(
-        "--scenarios", default=",".join(DEFAULT.scenarios),
+        "--scenarios",
+        default=",".join(DEFAULT.scenarios),
         help=f"comma-separated subset of {ALL_SCENARIOS} (default: %(default)s)",
     )
     parser.add_argument("--counts", help="comma-separated image counts override")
@@ -191,7 +206,9 @@ def _cfg_from_args(args: argparse.Namespace) -> SuiteConfig:
         msg = f"unknown scenario(s): {unknown}; valid: {ALL_SCENARIOS}"
         raise SystemExit(msg)
     counts = (
-        [int(c) for c in args.counts.split(",")] if args.counts else DEFAULT.image_counts
+        [int(c) for c in args.counts.split(",")]
+        if args.counts
+        else DEFAULT.image_counts
     )
     sizes = (
         [(int(s), int(s)) for s in args.sizes.split(",")]
