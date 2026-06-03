@@ -1437,49 +1437,62 @@ fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 work_buf.to_contiguous()
             };
 
+            // Blur in the native dtype so f32/u16 images keep their precision
+            // instead of being downconverted to u8. u8/u16/f32 are handled
+            // directly by the `image` crate; any other dtype round-trips
+            // through f32 (mirroring the resize fallback).
+            match contig_buf.dtype() {
+                DType::U8 => blur_typed_u8(&contig_buf, sigma),
+                DType::U16 => blur_typed_u16(&contig_buf, sigma),
+                DType::F32 => blur_typed_f32(&contig_buf, sigma),
+                other => {
+                    let f32_buf = contig_buf.cast(DType::F32);
+                    blur_typed_f32(&f32_buf, sigma).cast(other)
+                }
+            }
+        }
+    }
+}
+
+/// Generate a Gaussian-blur function for one concrete subpixel type. Dispatches
+/// on channel count to the matching `image` pixel type and preserves the input
+/// dtype. Concrete types are used because `image`'s `Enlargeable` bound (needed
+/// by `imageops::blur`) lives in a private module and can't be named generically.
+macro_rules! gen_blur_typed {
+    ($name:ident, $S:ty) => {
+        #[cfg(feature = "image_interop")]
+        fn $name(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer {
             let shape = contig_buf.shape();
             let (h, w, c) = (
                 shape[0] as u32,
                 shape[1] as u32,
                 *shape.get(2).unwrap_or(&1) as u32,
             );
-            let count = contig_buf.layout.num_elements();
-            let raw_vec =
-                unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count).to_vec() };
+            let raw_vec = contig_buf.as_slice::<$S>().to_vec();
+
+            macro_rules! blur_channels {
+                ($pix:ty, $channels:expr) => {{
+                    let img_buf: ImageBuffer<$pix, Vec<$S>> =
+                        ImageBuffer::from_raw(w, h, raw_vec).expect("blur: buffer size mismatch");
+                    let blurred = imageops::blur(&img_buf, sigma);
+                    ViewBuffer::from_vec(blurred.into_raw())
+                        .reshape(vec![h as usize, w as usize, $channels])
+                }};
+            }
 
             match c {
-                4 => {
-                    let img_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
-                        ImageBuffer::from_raw(w, h, raw_vec).unwrap();
-                    let blurred = imageops::blur(&img_buf, sigma);
-                    ViewBuffer::from_vec(blurred.into_raw())
-                        .reshape(vec![h as usize, w as usize, 4])
-                }
-                3 => {
-                    let img_buf: ImageBuffer<Rgb<u8>, Vec<u8>> =
-                        ImageBuffer::from_raw(w, h, raw_vec).unwrap();
-                    let blurred = imageops::blur(&img_buf, sigma);
-                    ViewBuffer::from_vec(blurred.into_raw())
-                        .reshape(vec![h as usize, w as usize, 3])
-                }
-                2 => {
-                    let img_buf: ImageBuffer<LumaA<u8>, Vec<u8>> =
-                        ImageBuffer::from_raw(w, h, raw_vec).unwrap();
-                    let blurred = imageops::blur(&img_buf, sigma);
-                    ViewBuffer::from_vec(blurred.into_raw())
-                        .reshape(vec![h as usize, w as usize, 2])
-                }
-                _ => {
-                    let img_buf: ImageBuffer<Luma<u8>, Vec<u8>> =
-                        ImageBuffer::from_raw(w, h, raw_vec).unwrap();
-                    let blurred = imageops::blur(&img_buf, sigma);
-                    ViewBuffer::from_vec(blurred.into_raw())
-                        .reshape(vec![h as usize, w as usize, 1])
-                }
+                4 => blur_channels!(Rgba<$S>, 4),
+                3 => blur_channels!(Rgb<$S>, 3),
+                2 => blur_channels!(LumaA<$S>, 2),
+                _ => blur_channels!(Luma<$S>, 1),
             }
         }
-    }
+    };
 }
+
+gen_blur_typed!(blur_typed_u8, u8);
+gen_blur_typed!(blur_typed_u16, u16);
+gen_blur_typed!(blur_typed_f32, f32);
 
 #[cfg(not(feature = "image_interop"))]
 pub fn apply_image(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {

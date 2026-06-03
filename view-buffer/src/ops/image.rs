@@ -173,8 +173,9 @@ impl Op for ImageOp {
             ImageOpKind::Grayscale => None,
             // Threshold compares each element against a float threshold — generic.
             ImageOpKind::Threshold(_) => None,
-            // Blur uses the `image` crate which requires U8 data internally.
-            ImageOpKind::Blur { .. } => Some(DType::U8),
+            // Blur operates on the input's native dtype (u8/u16/f32 directly;
+            // other dtypes via an f32 round-trip inside the kernel).
+            ImageOpKind::Blur { .. } => None,
             // Canny converts internally to grayscale f32
             ImageOpKind::Canny { .. } => None,
             // Histogram equalize works on U8 data
@@ -194,8 +195,8 @@ impl Op for ImageOp {
             ImageOpKind::Grayscale => OutputDTypeRule::PreserveInput,
             // Threshold always produces a U8 binary mask (0 or 255).
             ImageOpKind::Threshold(_) => OutputDTypeRule::Fixed(DType::U8),
-            // Blur uses the `image` crate which produces U8 output.
-            ImageOpKind::Blur { .. } => OutputDTypeRule::Fixed(DType::U8),
+            // Blur preserves the input dtype (Gaussian smoothing is value-preserving).
+            ImageOpKind::Blur { .. } => OutputDTypeRule::PreserveInput,
             // Canny produces a U8 binary edge map (0 or 255).
             ImageOpKind::Canny { .. } => OutputDTypeRule::Fixed(DType::U8),
             // Histogram equalize produces U8 output.
