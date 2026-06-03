@@ -584,8 +584,9 @@ mod tests {
         // Decode back from TIFF
         let decoded_buffer = ImageAdapter::decode_tiff(&encoded).unwrap();
 
-        // Verify shape is preserved
-        assert_eq!(decoded_buffer.shape(), &[2, 2]);
+        // decode_tiff always returns 3D [H, W, C] (consistent with PNG/JPEG decode);
+        // a 2x2 grayscale image decodes to [2, 2, 1].
+        assert_eq!(decoded_buffer.shape(), &[2, 2, 1]);
         assert_eq!(decoded_buffer.dtype(), crate::core::dtype::DType::F32);
 
         // Verify data is preserved (floating-point precision)
@@ -613,8 +614,9 @@ mod tests {
         // Decode back from TIFF
         let decoded_buffer = ImageAdapter::decode_tiff(&encoded).unwrap();
 
-        // Verify shape and data type are preserved
-        assert_eq!(decoded_buffer.shape(), &[2, 2]);
+        // decode_tiff always returns 3D [H, W, C] (consistent with PNG/JPEG decode);
+        // a 2x2 grayscale image decodes to [2, 2, 1].
+        assert_eq!(decoded_buffer.shape(), &[2, 2, 1]);
         assert_eq!(decoded_buffer.dtype(), crate::core::dtype::DType::U8);
 
         // Verify data is preserved exactly
