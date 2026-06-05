@@ -26,7 +26,69 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register tiling configuration functions
     m.add_function(wrap_pyfunction!(configure_tiling, m)?)?;
     m.add_function(wrap_pyfunction!(get_tiling_config, m)?)?;
+    m.add_function(wrap_pyfunction!(op_dtype_rule, m)?)?;
     Ok(())
+}
+
+// ============================================================================
+// Contract introspection (single-authority bridge for the Python schema layer)
+// ============================================================================
+
+/// Canonical short name for a view-buffer `DType`.
+///
+/// Matches the values of the Python `DType` enum so the two vocabularies line up.
+fn dtype_short_name(dt: view_buffer::DType) -> &'static str {
+    use view_buffer::DType;
+    match dt {
+        DType::U8 => "u8",
+        DType::I8 => "i8",
+        DType::U16 => "u16",
+        DType::I16 => "i16",
+        DType::U32 => "u32",
+        DType::I32 => "i32",
+        DType::U64 => "u64",
+        DType::I64 => "i64",
+        DType::F32 => "f32",
+        DType::F64 => "f64",
+    }
+}
+
+/// Canonical string for an output-dtype rule.
+///
+/// This is the shared vocabulary the Python contract-parity test compares
+/// against. It mirrors the Python `DTypeEffect` values: `preserve`, `promote`,
+/// `fixed:<dtype>`, `config:<dtype>`.
+fn dtype_rule_name(rule: view_buffer::OutputDTypeRule) -> String {
+    use view_buffer::OutputDTypeRule as R;
+    match rule {
+        R::PreserveInput => "preserve".to_string(),
+        R::PromoteToFloat => "promote".to_string(),
+        R::Fixed(d) => format!("fixed:{}", dtype_short_name(d)),
+        R::Configurable(d) => format!("config:{}", dtype_short_name(d)),
+        R::ForceF64 => "fixed:f64".to_string(),
+        R::ForceI64 => "fixed:i64".to_string(),
+        R::ForceU64 => "fixed:u64".to_string(),
+        R::ForceU32 => "fixed:u32".to_string(),
+    }
+}
+
+/// Return the canonical output-dtype rule for a single serialized op spec.
+///
+/// `op_json` is one `OpSpec` as produced by the Python builder
+/// (`OpSpec.to_dict()`): `{"op": "<name>", "<param>": {..ParamValue..}, ...}`.
+///
+/// This exposes view-buffer's `ViewDto::output_dtype_rule()` — the single
+/// authority for "what dtype does this op produce" — so the Python schema layer
+/// can be checked against (and ultimately defer to) it instead of maintaining a
+/// parallel dtype table that can drift.
+#[pyfunction]
+fn op_dtype_rule(op_json: &str) -> PyResult<String> {
+    let op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
+    let empty: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
+    let dto = crate::execute::resolve_op(&op_spec, 0, &empty)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))?;
+    Ok(dtype_rule_name(dto.output_dtype_rule()))
 }
 
 // ============================================================================

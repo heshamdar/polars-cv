@@ -200,6 +200,121 @@ def test_registry_parity_no_dead_contracts():
 
 
 # ---------------------------------------------------------------------------
+# 2b. Contract parity (A1) — Python dtype contracts match the Rust authority
+# ---------------------------------------------------------------------------
+#
+# view-buffer's ViewDto::output_dtype_rule() is the single authority for an op's
+# output dtype. The Python OPERATION_CONTRACTS table currently re-declares the
+# same knowledge as DTypeEffect; this test fails if the two drift (the exact
+# class of bug that made the blur contract say u8 while execution produced f32).
+
+# Python DTypeEffect.value -> canonical rule string returned by _lib.op_dtype_rule.
+_EFFECT_TO_RULE = {
+    "preserve": "preserve",
+    "promote": "promote",
+    "u8": "fixed:u8",
+    "f32": "fixed:f32",
+    "f64": "fixed:f64",
+    "i64": "fixed:i64",
+    "u64": "fixed:u64",
+    "u32": "fixed:u32",
+    "config_f32": "config:f32",
+}
+
+# op name -> builder producing a Pipeline whose LAST op is the op under test,
+# using only literal params (so resolve_op needs no expression columns).
+_OP_BUILDERS = {
+    "resize": lambda: Pipeline().source("image_bytes").resize(height=4, width=4),
+    "grayscale": lambda: Pipeline().source("image_bytes").grayscale(),
+    "threshold": lambda: Pipeline().source("image_bytes").grayscale().threshold(128),
+    "blur": lambda: Pipeline().source("image_bytes").blur(sigma=1.0),
+    "scale": lambda: Pipeline().source("image_bytes").scale(2.0),
+    "clamp": lambda: Pipeline().source("image_bytes").clamp(0.0, 255.0),
+    "relu": lambda: Pipeline().source("image_bytes").relu(),
+    "invert": lambda: Pipeline().source("image_bytes").invert(),
+    "adjust_contrast": lambda: Pipeline().source("image_bytes").adjust_contrast(factor=1.2),
+    "adjust_gamma": lambda: Pipeline().source("image_bytes").adjust_gamma(gamma=1.2),
+    "cvt_color": lambda: Pipeline().source("image_bytes").cvt_color("rgb", "hsv"),
+    "convolve2d": lambda: Pipeline().source("image_bytes").convolve2d([0, 0, 0, 0, 1, 0, 0, 0, 0], 3),
+    "erode": lambda: Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3),
+    "dilate": lambda: Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3),
+    "morphology_gradient": lambda: Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3),
+    "canny": lambda: Pipeline().source("image_bytes").grayscale().canny(),
+    "equalize_histogram": lambda: Pipeline().source("image_bytes").grayscale().equalize_histogram(),
+    "channel_select": lambda: Pipeline().source("image_bytes").channel_select(index=0),
+    "channel_swap": lambda: Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0]),
+    "flip": lambda: Pipeline().source("image_bytes").flip([0]),
+}
+
+# Ops deliberately NOT strict-compared here, each with a reason. Keeping this
+# explicit (rather than "everything not in _OP_BUILDERS") means a newly-added
+# contract must be classified — the completeness test below fails otherwise.
+_OP_PARITY_EXCEPTIONS = {
+    # Param-dependent output dtype (rule depends on the dtype/out_dtype param).
+    "cast": "dtype set by param",
+    "normalize": "configurable out_dtype",
+    # Domain-changing ops: produce scalar/vector/contour, not a buffer dtype, so
+    # the buffer-dtype rule is intentionally not the observable output dtype.
+    "reduce_sum": "scalar domain", "reduce_mean": "scalar domain",
+    "reduce_std": "scalar domain", "reduce_max": "scalar domain",
+    "reduce_min": "scalar domain", "reduce_popcount": "scalar domain",
+    "reduce_percentile": "scalar domain", "reduce_argmax": "scalar domain",
+    "reduce_argmin": "scalar domain", "extract_shape": "vector domain",
+    "label_reduce": "vector domain", "histogram": "vector domain",
+    "perceptual_hash": "vector domain", "rasterize": "contour->buffer source op",
+    "contour_area": "contour domain", "contour_perimeter": "contour domain",
+    "contour_centroid": "contour domain", "contour_bounding_box": "contour domain",
+    # Dead contracts (B2): these lower to convolve2d and never appear as an op.
+    "sobel": "lowers to convolve2d (B2)", "laplacian": "lowers to convolve2d (B2)",
+    "sharpen": "lowers to convolve2d (B2)",
+    # Graph-level / multi-input or complex-param ops not yet covered by a builder.
+    "channel_merge": "multi-input graph op", "warp_affine": "matrix params",
+    "rotate": "param-dependent fast-path vs affine", "reshape": "param-dependent ndim",
+    "transpose": "needs valid axes", "crop": "covered by view rule, builder TBD",
+    "pad": "builder TBD", "pad_to_size": "builder TBD", "letterbox": "builder TBD",
+    "resize_scale": "deferred resize, builder TBD",
+    "resize_to_height": "deferred resize, builder TBD",
+    "resize_to_width": "deferred resize, builder TBD",
+    "resize_max": "deferred resize, builder TBD",
+    "resize_min": "deferred resize, builder TBD",
+}
+
+
+def test_contract_parity_completeness():
+    """Every contracted op must be either parity-checked or explicitly excepted."""
+    from polars_cv._types import OPERATION_CONTRACTS
+
+    classified = set(_OP_BUILDERS) | set(_OP_PARITY_EXCEPTIONS)
+    uncovered = set(OPERATION_CONTRACTS) - classified
+    assert not uncovered, (
+        f"Contracts not classified for parity (add a builder or an exception): {sorted(uncovered)}"
+    )
+
+
+@plugin_required
+@pytest.mark.parametrize("op_name", sorted(_OP_BUILDERS))
+def test_contract_parity_dtype_rule(op_name):
+    """Python DTypeEffect must equal the Rust ViewDto::output_dtype_rule (A1)."""
+    import json
+
+    from polars_cv._types import OPERATION_CONTRACTS
+
+    rule_fn = getattr(getattr(polars_cv, "_lib", None), "op_dtype_rule", None)
+    if not callable(rule_fn):
+        pytest.skip("_lib.op_dtype_rule() not built")
+
+    pipe = _OP_BUILDERS[op_name]()
+    op_json = json.dumps(pipe._ops[-1].to_dict())
+    rust_rule = rule_fn(op_json)
+
+    effect = OPERATION_CONTRACTS[op_name].dtype_effect.value
+    expected = _EFFECT_TO_RULE[effect]
+    assert rust_rule == expected, (
+        f"{op_name}: Python contract says {expected!r} but Rust authority says {rust_rule!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 3. Enum parity (A4) — Python user enums match Rust variants
 # ---------------------------------------------------------------------------
 
