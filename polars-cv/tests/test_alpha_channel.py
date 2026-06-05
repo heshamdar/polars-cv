@@ -136,8 +136,13 @@ class TestAlphaModeContracts:
             )
 
     def test_strip_process_restore_ops(self) -> None:
-        """Ops that strip, process, and restore alpha."""
-        spr_ops = ["blur", "cvt_color", "sobel", "laplacian", "sharpen"]
+        """Ops that strip, process, and restore alpha.
+
+        sobel/laplacian/sharpen are intentionally absent: they are convenience
+        builders that lower to convolve2d (PASSTHROUGH), so their alpha handling
+        is governed by the convolve2d contract, not a contract of their own.
+        """
+        spr_ops = ["blur", "cvt_color"]
         for op in spr_ops:
             contract = OPERATION_CONTRACTS[op]
             assert contract.alpha_mode is AlphaMode.STRIP_PROCESS_RESTORE, (
