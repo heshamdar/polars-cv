@@ -16,7 +16,6 @@ import polars as pl
 
 from polars_cv._types import (
     OPERATION_CONTRACTS,
-    AlphaMode,
     CloudOptions,
     ColorSpace,
     DType,
@@ -25,7 +24,6 @@ from polars_cv._types import (
     HashAlgorithm,
     HistogramOutput,
     IntOrExpr,
-    NdimEffect,
     NormalizeMethod,
     OpSpec,
     OutputDType,
@@ -192,16 +190,19 @@ class Pipeline:
             # contract's global default.
             pre_contract_dtype = dtype
             contract = OPERATION_CONTRACTS.get(op_name)
+            op_json: str | None = None
             if contract is not None:
-                # The output dtype is resolved by view-buffer's
-                # ViewDto::output_dtype_rule (exposed as op_output_dtype) rather
-                # than re-applied from a parallel Python rule, so the two can no
-                # longer drift. The Python contract table is retained only as the
-                # set of dtype-relevant ops (and is guarded against the Rust
-                # authority by the contract-parity sanitation tests).
+                # Dtype, rank and channel effects are all resolved from
+                # view-buffer's op contract (output_dtype_rule / output_rank_rule
+                # / output_channel_rule) rather than re-applied from parallel
+                # Python rules, so the layers can no longer drift. The Python
+                # contract table is retained only as the set of schema-relevant
+                # ops (guarded against the Rust authority by the contract-parity
+                # sanitation tests).
                 from polars_cv._lib import op_output_dtype
 
-                dtype = op_output_dtype(json.dumps(op_spec.to_dict()), dtype)
+                op_json = json.dumps(op_spec.to_dict())
+                dtype = op_output_dtype(op_json, dtype)
 
             # Param-dependent override: cast uses the explicit dtype param
             if op_name == "cast":
@@ -276,19 +277,20 @@ class Pipeline:
                 ndim = 0
                 continue
 
-            # Generic ndim from contract
+            # Generic ndim from the Rust rank rule (single authority). For
+            # buffer-domain ops this is the rank; scalar/vector domains are then
+            # overridden by the domain sync below (0 / 1).
             if contract is not None:
-                ndim_eff = contract.ndim_effect
-                if ndim_eff is NdimEffect.TO_ZERO:
-                    ndim = 0
-                elif ndim_eff is NdimEffect.TO_ONE:
-                    ndim = 1
-                elif ndim_eff is NdimEffect.TO_THREE:
-                    ndim = 3
-                elif ndim_eff is NdimEffect.REDUCE_ONE:
+                from polars_cv._lib import op_contract as _op_contract
+
+                assert op_json is not None  # set whenever contract is not None
+                rank_rule = _op_contract(op_json)["rank_rule"]
+                if rank_rule.startswith("fixed:"):
+                    ndim = int(rank_rule.split(":", 1)[1])
+                elif rank_rule == "reduce_one":
                     if ndim is not None:
                         ndim = max(0, ndim - 1)
-                # PRESERVE → ndim unchanged
+                # "preserve" / "unknown" → ndim unchanged
 
             # Sync ndim with domain for scalar/vector domains
             if domain == Pipeline.DOMAIN_SCALAR:
@@ -408,8 +410,8 @@ class Pipeline:
         Update shape hints based on the operation being added.
 
         Height/width updates are handled per-op. Channel updates are driven
-        by the operation's ``AlphaMode`` contract via
-        :meth:`_update_channels_from_contract`.
+        by the operation's view-buffer channel rule via
+        :meth:`_update_channels_from_rule`.
 
         Args:
             op_name: Name of the operation.
@@ -535,73 +537,48 @@ class Pipeline:
             else:
                 self._shape_hints.width = None
 
-        # --- Channel updates driven by AlphaMode contract ---
-        self._update_channels_from_contract(op_name, params)
+        # --- Channel updates driven by the Rust channel rule ---
+        self._update_channels_from_rule()
 
-    def _update_channels_from_contract(
-        self, op_name: str, params: dict[str, ParamValue]
-    ) -> None:
-        """Update channel hints based on the operation's ``AlphaMode`` contract.
+    def _update_channels_from_rule(self) -> None:
+        """Update channel hints from the operation's view-buffer channel rule.
 
-        Args:
-            op_name: Name of the operation.
-            params: Parameters of the operation.
+        Reads ``output_channel_rule`` from the op contract (the single
+        authority) rather than re-declaring alpha handling in Python. The op is
+        read from ``self._ops[-1]`` so its full parameter set (e.g. an erode
+        ``ksize``, a cvt_color target space) is available to resolve the rule:
+
+        - ``preserve`` / ``n/a``: leave the channel hint unchanged.
+        - ``unknown``: the effect is not knowable at plan time → drop the hint.
+        - ``fixed:<n>``: the op always produces ``n`` channels (e.g. grayscale).
+        - ``strip_restore:<c>``: ``c`` color channels plus a preserved input
+          alpha channel (an input channel count of 2 or 4).
         """
-        contract = OPERATION_CONTRACTS.get(op_name)
-        if contract is None:
+        from polars_cv._lib import op_contract
+
+        op_json = json.dumps(self._ops[-1].to_dict())
+        rule = op_contract(op_json)["channel_rule"]
+
+        if rule in ("preserve", "n/a"):
             return
-
-        if contract.alpha_mode is AlphaMode.PASSTHROUGH:
+        if rule == "unknown":
+            self._shape_hints.channels = None
             return
-
-        if contract.alpha_mode is AlphaMode.NOT_APPLICABLE:
+        if rule.startswith("fixed:"):
+            self._shape_hints.channels = ParamValue(
+                is_expr=False, value=int(rule.split(":", 1)[1])
+            )
             return
-
-        if contract.alpha_mode is AlphaMode.DROP:
-            if contract.ndim_effect is NdimEffect.PRESERVE:
-                self._shape_hints.channels = ParamValue(is_expr=False, value=1)
-            return
-
-        if contract.alpha_mode is AlphaMode.STRIP_PROCESS_RESTORE:
-            op_color_channels = self._get_op_color_channels(op_name, params)
-            if op_color_channels is None:
-                self._shape_hints.channels = None
-                return
-
+        if rule.startswith("strip_restore:"):
+            color_channels = int(rule.split(":", 1)[1])
             input_c = self._shape_hints.channels
             if input_c is not None and not input_c.is_expr:
                 has_alpha = input_c.value in (2, 4)
-                output_c = op_color_channels + (1 if has_alpha else 0)
-                self._shape_hints.channels = ParamValue(is_expr=False, value=output_c)
+                self._shape_hints.channels = ParamValue(
+                    is_expr=False, value=color_channels + (1 if has_alpha else 0)
+                )
             else:
                 self._shape_hints.channels = None
-
-    def _get_op_color_channels(
-        self, op_name: str, params: dict[str, ParamValue]
-    ) -> int | None:
-        """Return the number of color channels an operation produces.
-
-        Used by STRIP_PROCESS_RESTORE ops to compute total output channels
-        (color channels + 1 if alpha is present).
-
-        Args:
-            op_name: Name of the operation.
-            params: Parameters of the operation.
-
-        Returns:
-            Number of output color channels, or ``None`` if unknown.
-        """
-        if op_name == "cvt_color":
-            to_space = params.get("to_space")
-            if to_space and not to_space.is_expr:
-                return 1 if to_space.value == "gray" else 3
-            return None
-        # blur, sobel, laplacian, sharpen preserve input color channel count
-        input_c = self._shape_hints.channels
-        if input_c is not None and not input_c.is_expr:
-            has_alpha = input_c.value in (2, 4)
-            return input_c.value - (1 if has_alpha else 0)
-        return None
 
     def _compute_rotate_expand_shape(self, norm_angle: float) -> None:
         """Compute output dimensions for ``rotate(expand=True)``.

@@ -100,6 +100,35 @@ fn dtype_rule_name(rule: view_buffer::OutputDTypeRule) -> String {
     }
 }
 
+/// Canonical string for an output-rank rule.
+///
+/// The plan-time vocabulary the Python schema layer reads (it no longer
+/// re-declares the effect): `preserve`, `reduce_one`, `fixed:<n>`, `unknown`.
+fn rank_rule_name(rule: view_buffer::OutputRankRule) -> String {
+    use view_buffer::OutputRankRule as R;
+    match rule {
+        R::PreserveRank => "preserve".to_string(),
+        R::ReduceByOne => "reduce_one".to_string(),
+        R::Fixed(n) => format!("fixed:{n}"),
+        R::Unknown => "unknown".to_string(),
+    }
+}
+
+/// Canonical string for an output-channel rule.
+///
+/// Mirrors the former Python alpha contract as plain data: `preserve`,
+/// `fixed:<n>`, `strip_restore:<color_channels>`, `n/a`, `unknown`.
+fn channel_rule_name(rule: view_buffer::OutputChannelRule) -> String {
+    use view_buffer::OutputChannelRule as R;
+    match rule {
+        R::PreserveChannels => "preserve".to_string(),
+        R::Fixed(n) => format!("fixed:{n}"),
+        R::StripProcessRestore { color_channels } => format!("strip_restore:{color_channels}"),
+        R::NotApplicable => "n/a".to_string(),
+        R::Unknown => "unknown".to_string(),
+    }
+}
+
 /// Resolve one serialized op spec to its `ViewDto`, mapping errors to Python.
 ///
 /// Shared by `op_output_dtype` and `op_contract` so neither re-implements the
@@ -238,16 +267,19 @@ fn enum_variants(name: &str) -> PyResult<Vec<String>> {
 
 /// Return the full contract for a single serialized op spec.
 ///
-/// Returns a dict with the canonical `dtype_rule` plus `input_domain` and
-/// `output_domain` (from view-buffer's `Domain::name()`). This is the single
-/// authority the Python schema layer is checked against, covering both the
-/// dtype and the domain knowledge that previously lived in two parallel Python
-/// tables (`OPERATION_CONTRACTS` and `_OPERATION_OUTPUT_DOMAIN`).
+/// Returns a dict with the canonical `dtype_rule`, `rank_rule` and
+/// `channel_rule` plus `input_domain` and `output_domain` (from view-buffer's
+/// `Domain::name()`). This is the single authority the Python schema layer reads
+/// instead of re-declaring, covering the dtype, dimensionality/channel and
+/// domain knowledge that previously lived in parallel Python tables
+/// (`OPERATION_CONTRACTS` and `_OPERATION_OUTPUT_DOMAIN`).
 #[pyfunction]
 fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<PyObject> {
     let dto = resolve_op_from_json(op_json)?;
     let dict = pyo3::types::PyDict::new(py);
     dict.set_item("dtype_rule", dtype_rule_name(dto.output_dtype_rule()))?;
+    dict.set_item("rank_rule", rank_rule_name(dto.output_rank_rule()))?;
+    dict.set_item("channel_rule", channel_rule_name(dto.output_channel_rule()))?;
     dict.set_item("input_domain", dto.input_domain().name())?;
     dict.set_item("output_domain", dto.output_domain().name())?;
     Ok(dict.into())
