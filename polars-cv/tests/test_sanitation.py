@@ -188,15 +188,18 @@ def test_registry_parity_pipeline_ops_are_executable():
 
 @plugin_required
 def test_registry_parity_no_dead_contracts():
-    """No contract exists for an op the Pipeline never emits (B2: sobel/laplacian/sharpen)."""
+    """Ops the Pipeline never emits are not executable (B2: sobel/laplacian/sharpen)."""
+    import json
+
     lib = getattr(polars_cv, "_lib", None)
     contract_fn = getattr(lib, "op_contract", None) if lib is not None else None
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not implemented yet (Phase 1/3)")
-    # sobel/laplacian/sharpen lower to convolve2d and must NOT have standalone contracts.
+    # sobel/laplacian/sharpen lower to convolve2d; they are not real executable
+    # ops, so resolving them must fail (their standalone contracts are dead, B2).
     for lowered in ("sobel", "laplacian", "sharpen"):
         with pytest.raises(Exception):
-            contract_fn(lowered)
+            contract_fn(json.dumps({"op": lowered}))
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +314,32 @@ def test_contract_parity_dtype_rule(op_name):
     expected = _EFFECT_TO_RULE[effect]
     assert rust_rule == expected, (
         f"{op_name}: Python contract says {expected!r} but Rust authority says {rust_rule!r}"
+    )
+
+
+@plugin_required
+@pytest.mark.parametrize("op_name", sorted(_OP_BUILDERS))
+def test_contract_parity_output_domain(op_name):
+    """Python's declared output domain must match the Rust authority (A10).
+
+    Guards against drift between Pipeline._OPERATION_OUTPUT_DOMAIN and
+    view-buffer's ViewDto::output_domain() — the second of the two parallel
+    Python tables.
+    """
+    import json
+
+    from polars_cv.pipeline import Pipeline as _P
+
+    contract_fn = getattr(getattr(polars_cv, "_lib", None), "op_contract", None)
+    if not callable(contract_fn):
+        pytest.skip("_lib.op_contract() not built")
+
+    pipe = _OP_BUILDERS[op_name]()
+    contract = contract_fn(json.dumps(pipe._ops[-1].to_dict()))
+    expected = _P._OPERATION_OUTPUT_DOMAIN.get(op_name, "buffer")
+    assert contract["output_domain"] == expected, (
+        f"{op_name}: Python domain {expected!r} but Rust authority says "
+        f"{contract['output_domain']!r}"
     )
 
 

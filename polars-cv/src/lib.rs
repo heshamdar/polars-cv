@@ -27,6 +27,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(configure_tiling, m)?)?;
     m.add_function(wrap_pyfunction!(get_tiling_config, m)?)?;
     m.add_function(wrap_pyfunction!(op_dtype_rule, m)?)?;
+    m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     Ok(())
 }
 
@@ -83,12 +84,36 @@ fn dtype_rule_name(rule: view_buffer::OutputDTypeRule) -> String {
 /// parallel dtype table that can drift.
 #[pyfunction]
 fn op_dtype_rule(op_json: &str) -> PyResult<String> {
+    Ok(dtype_rule_name(resolve_op_from_json(op_json)?.output_dtype_rule()))
+}
+
+/// Resolve one serialized op spec to its `ViewDto`, mapping errors to Python.
+///
+/// Shared by `op_dtype_rule` and `op_contract` so neither re-implements the
+/// deserialize → resolve path.
+fn resolve_op_from_json(op_json: &str) -> PyResult<view_buffer::ViewDto> {
     let op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
     let empty: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
-    let dto = crate::execute::resolve_op(&op_spec, 0, &empty)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))?;
-    Ok(dtype_rule_name(dto.output_dtype_rule()))
+    crate::execute::resolve_op(&op_spec, 0, &empty)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
+}
+
+/// Return the full contract for a single serialized op spec.
+///
+/// Returns a dict with the canonical `dtype_rule` plus `input_domain` and
+/// `output_domain` (from view-buffer's `Domain::name()`). This is the single
+/// authority the Python schema layer is checked against, covering both the
+/// dtype and the domain knowledge that previously lived in two parallel Python
+/// tables (`OPERATION_CONTRACTS` and `_OPERATION_OUTPUT_DOMAIN`).
+#[pyfunction]
+fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<PyObject> {
+    let dto = resolve_op_from_json(op_json)?;
+    let dict = pyo3::types::PyDict::new(py);
+    dict.set_item("dtype_rule", dtype_rule_name(dto.output_dtype_rule()))?;
+    dict.set_item("input_domain", dto.input_domain().name())?;
+    dict.set_item("output_domain", dto.output_domain().name())?;
+    Ok(dict.into())
 }
 
 // ============================================================================
