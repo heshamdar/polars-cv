@@ -33,11 +33,9 @@ import io
 import polars as pl
 import pytest
 
-from tests.conftest import plugin_required
-
 import polars_cv
 from polars_cv import Pipeline
-
+from tests.conftest import plugin_required
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -213,14 +211,20 @@ def test_enum_parity_python_matches_rust(enum_name):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason="A4: ExpectedDType/OutputDType overlap DType and must be consolidated. "
-    "Fixed in Phase 2.",
-    strict=True,
-)
-def test_no_duplicate_dtype_enums():
-    """Only one dtype enum should exist; the overlapping copies are removed."""
+def test_no_duplicate_expected_dtype_enum():
+    """ExpectedDType was an exact duplicate of DType and must not exist (A4)."""
     import polars_cv._types as t
 
     assert not hasattr(t, "ExpectedDType"), "ExpectedDType should be folded into DType"
+
+
+@pytest.mark.xfail(
+    reason="A4: OutputDType (override options + PRESERVE) overlaps DType and is "
+    "consolidated once the Rust OutputDTypeRule authority lands. Phase 2.",
+    strict=True,
+)
+def test_no_duplicate_output_dtype_enum():
+    """The configurable-output-dtype enum collapses into the single dtype authority."""
+    import polars_cv._types as t
+
     assert not hasattr(t, "OutputDType"), "OutputDType should be folded into DType"
