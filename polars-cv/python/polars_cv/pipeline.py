@@ -113,29 +113,6 @@ class Pipeline:
     DOMAIN_VECTOR = "vector"
     DOMAIN_HISTOGRAM = "histogram"
 
-    # Mapping of operations to the domain they produce
-    # Operations not listed here preserve the current domain
-    # Note: reduce_argmax/reduce_argmin always preserve buffer domain (reduced shape)
-    _OPERATION_OUTPUT_DOMAIN: dict[str, str] = {
-        "extract_shape": DOMAIN_VECTOR,
-        "perceptual_hash": DOMAIN_VECTOR,
-        "histogram": DOMAIN_VECTOR,  # For most modes, quantized preserves buffer
-        "reduce_sum": DOMAIN_SCALAR,
-        "reduce_max": DOMAIN_SCALAR,  # When axis=None
-        "reduce_min": DOMAIN_SCALAR,
-        "reduce_mean": DOMAIN_SCALAR,
-        "reduce_std": DOMAIN_SCALAR,
-        "reduce_popcount": DOMAIN_SCALAR,
-        # reduce_argmax/reduce_argmin are NOT here - they always preserve buffer domain
-        "extract_contours": DOMAIN_CONTOUR,
-        "rasterize": DOMAIN_BUFFER,
-        "contour_area": DOMAIN_SCALAR,
-        "contour_perimeter": DOMAIN_SCALAR,
-        "contour_centroid": DOMAIN_VECTOR,
-        "contour_bounding_box": DOMAIN_VECTOR,
-        "label_reduce": DOMAIN_VECTOR,
-    }
-
     def __init__(self) -> None:
         """Initialize an empty pipeline."""
         self._source: SourceSpec | None = None
@@ -177,31 +154,28 @@ class Pipeline:
         dtype = initial_dtype
         ndim = initial_ndim
 
+        from polars_cv._lib import op_contract, op_output_dtype
+
         for op_spec in ops:
             op_name = op_spec.op
+            op_json = json.dumps(op_spec.to_dict())
+            # The single authority for this op's schema effect: output domain,
+            # dtype rule, rank rule and channel rule all come from view-buffer's
+            # ViewDto contract, so no Python table re-declares them.
+            rust = op_contract(op_json)
 
-            # --- Domain ---
-            if op_name in Pipeline._OPERATION_OUTPUT_DOMAIN:
-                domain = Pipeline._OPERATION_OUTPUT_DOMAIN[op_name]
+            # --- Domain (view-buffer authority) ---
+            # ``any`` is view-buffer's identity domain (materialize); it leaves
+            # the pipeline domain unchanged.
+            if rust["output_domain"] != "any":
+                domain = rust["output_domain"]
 
-            # --- Dtype (deferred to the Rust authority) ---
-            # Save the pre-contract dtype so axis-based reductions that
-            # PRESERVE can fall back to the input dtype rather than the
-            # contract's global default.
+            # --- Dtype (resolved by view-buffer's output_dtype_rule) ---
+            # Save the pre-contract dtype so axis-based reductions that PRESERVE
+            # can fall back to the input dtype rather than a global default.
             pre_contract_dtype = dtype
             contract = OPERATION_CONTRACTS.get(op_name)
-            op_json: str | None = None
             if contract is not None:
-                # Dtype, rank and channel effects are all resolved from
-                # view-buffer's op contract (output_dtype_rule / output_rank_rule
-                # / output_channel_rule) rather than re-applied from parallel
-                # Python rules, so the layers can no longer drift. The Python
-                # contract table is retained only as the set of schema-relevant
-                # ops (guarded against the Rust authority by the contract-parity
-                # sanitation tests).
-                from polars_cv._lib import op_output_dtype
-
-                op_json = json.dumps(op_spec.to_dict())
                 dtype = op_output_dtype(op_json, dtype)
 
             # Param-dependent override: cast uses the explicit dtype param
@@ -281,10 +255,7 @@ class Pipeline:
             # buffer-domain ops this is the rank; scalar/vector domains are then
             # overridden by the domain sync below (0 / 1).
             if contract is not None:
-                from polars_cv._lib import op_contract as _op_contract
-
-                assert op_json is not None  # set whenever contract is not None
-                rank_rule = _op_contract(op_json)["rank_rule"]
+                rank_rule = rust["rank_rule"]
                 if rank_rule.startswith("fixed:"):
                     ndim = int(rank_rule.split(":", 1)[1])
                 elif rank_rule == "reduce_one":

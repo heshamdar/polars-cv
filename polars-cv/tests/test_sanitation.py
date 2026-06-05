@@ -388,27 +388,28 @@ def test_contract_parity_dtype_rule(op_name):
 
 @plugin_required
 @pytest.mark.parametrize("op_name", sorted(_OP_BUILDERS))
-def test_contract_parity_output_domain(op_name):
-    """Python's declared output domain must match the Rust authority (A10).
+def test_planner_domain_is_sourced_from_rust(op_name):
+    """The planner derives each op's output domain from the view-buffer
+    contract (ViewDto::output_domain) rather than a Python domain table (A10).
 
-    Guards against drift between Pipeline._OPERATION_OUTPUT_DOMAIN and
-    view-buffer's ViewDto::output_domain() — the second of the two parallel
-    Python tables.
+    The former Pipeline._OPERATION_OUTPUT_DOMAIN dict is gone; this guards
+    against a special-case in _compute_output_domain_dtype_ndim diverging from
+    the Rust authority for buffer-producing ops.
     """
     import json
-
-    from polars_cv.pipeline import Pipeline as _P
 
     contract_fn = getattr(getattr(polars_cv, "_lib", None), "op_contract", None)
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not built")
 
     pipe = _OP_BUILDERS[op_name]()
-    contract = contract_fn(json.dumps(pipe._ops[-1].to_dict()))
-    expected = _P._OPERATION_OUTPUT_DOMAIN.get(op_name, "buffer")
-    assert contract["output_domain"] == expected, (
-        f"{op_name}: Python domain {expected!r} but Rust authority says "
-        f"{contract['output_domain']!r}"
+    rust_domain = contract_fn(json.dumps(pipe._ops[-1].to_dict()))["output_domain"]
+    planned_domain, _, _ = Pipeline._compute_output_domain_dtype_ndim(
+        pipe._ops, initial_domain="buffer", initial_dtype="u8"
+    )
+    assert planned_domain == rust_domain, (
+        f"{op_name}: planner domain {planned_domain!r} != Rust authority "
+        f"{rust_domain!r}"
     )
 
 
