@@ -244,26 +244,6 @@ class Domain(str, Enum):
     HISTOGRAM = "histogram"  # Histogram buckets
 
 
-class ExpectedDType(str, Enum):
-    """
-    Expected output dtype for list/array sinks.
-
-    This is used for static type inference at Polars planning time.
-    The values correspond to Polars dtypes.
-    """
-
-    UINT8 = "u8"
-    INT8 = "i8"
-    UINT16 = "u16"
-    INT16 = "i16"
-    UINT32 = "u32"
-    INT32 = "i32"
-    UINT64 = "u64"
-    INT64 = "i64"
-    FLOAT32 = "f32"
-    FLOAT64 = "f64"
-
-
 class DTypeEffect(str, Enum):
     """
     How an operation affects the buffer dtype.
