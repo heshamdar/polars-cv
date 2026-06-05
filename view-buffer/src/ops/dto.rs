@@ -244,6 +244,52 @@ impl ViewDto {
         }
     }
 
+    /// Get the rule that determines this operation's output dtype.
+    ///
+    /// This is the single authority for "what element dtype does this op
+    /// produce". Operations backed by an [`Op`] implementation delegate to it;
+    /// graph-level variants (deferred resize, padding, channel ops, …) declare
+    /// their rule here. Plan-time schema inference and the execution-time dtype
+    /// guard both consult this, so the planned and produced dtype cannot diverge.
+    pub fn output_dtype_rule(&self) -> crate::core::dtype::OutputDTypeRule {
+        use crate::core::dtype::OutputDTypeRule;
+        match self {
+            ViewDto::View(op) => op.output_dtype_rule(),
+            ViewDto::Compute(op) => op.output_dtype_rule(),
+            ViewDto::Image(op) => op.output_dtype_rule(),
+            ViewDto::Geometry(op) => op.output_dtype_rule(),
+            ViewDto::PerceptualHash(op) => op.output_dtype_rule(),
+            ViewDto::Binary { op, .. } => op.output_dtype_rule(),
+            ViewDto::Reduction(op) => op.output_dtype_rule(),
+            ViewDto::Histogram(op) => op.output_dtype_rule(),
+            ViewDto::Filter(op) => op.output_dtype_rule(),
+            // Color conversion preserves element dtype (routes through f32 internally).
+            ViewDto::Color(_) => OutputDTypeRule::PreserveInput,
+            // Mask application preserves the buffer dtype.
+            ViewDto::ApplyMask { .. } => OutputDTypeRule::PreserveInput,
+            // Deferred resize variants only change dimensions, not dtype.
+            ViewDto::ResizeScale { .. }
+            | ViewDto::ResizeToHeight { .. }
+            | ViewDto::ResizeToWidth { .. }
+            | ViewDto::ResizeMax { .. }
+            | ViewDto::ResizeMin { .. } => OutputDTypeRule::PreserveInput,
+            // Padding preserves dtype.
+            ViewDto::Pad { .. } | ViewDto::PadToSize { .. } | ViewDto::Letterbox { .. } => {
+                OutputDTypeRule::PreserveInput
+            }
+            // Materialize is a no-op for dtype.
+            ViewDto::Materialize => OutputDTypeRule::PreserveInput,
+            // ExtractShape yields dimension values as f64.
+            ViewDto::ExtractShape => OutputDTypeRule::ForceF64,
+            // Channel reorder/merge preserve element dtype.
+            ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => {
+                OutputDTypeRule::PreserveInput
+            }
+            // LabelReduce yields f64 region measures.
+            ViewDto::LabelReduce { .. } => OutputDTypeRule::ForceF64,
+        }
+    }
+
     /// Get the name of this operation for error messages.
     pub fn name(&self) -> &'static str {
         match self {
