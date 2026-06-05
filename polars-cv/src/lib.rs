@@ -126,33 +126,9 @@ fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series
     // Parse the unified graph specification
     let mut graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
 
-    // Resolve "auto" dtype/ndim from input series (mirrors unified_output_dtype logic).
-    // Only resolve from the Polars column type when the leaf is a numeric type
-    // (i.e., inside List/Array nesting). For Binary/String columns (image/file
-    // sources), the column type does not reflect the decoded buffer dtype, so
-    // leave "auto" unresolved — runtime validation will be skipped.
-    if !inputs.is_empty() {
-        let (leaf_dtype, ndim) = peel_nesting(inputs[0].dtype());
-        let inferred_dtype_str = polars_dtype_to_str(&leaf_dtype);
-
-        for spec in graph.outputs.values_mut() {
-            if spec.expected_dtype == "auto" {
-                match &leaf_dtype {
-                    DataType::Binary | DataType::String | DataType::Null => {
-                        // Image/file sources: cannot infer buffer dtype from column type.
-                        // Leave as "auto" — validation will be skipped.
-                    }
-                    _ => {
-                        // List/array sources: leaf type is meaningful.
-                        spec.expected_dtype = inferred_dtype_str.to_string();
-                    }
-                }
-            }
-            if spec.expected_ndim.is_none() && ndim > 0 {
-                spec.expected_ndim = Some(ndim);
-            }
-        }
-    }
+    // Resolve "auto" dtype/ndim from the input column type. Shared with the
+    // planning-time path (`unified_output_dtype`) so the two can never drift.
+    resolve_auto_inputs(&mut graph, inputs.first().map(|s| s.dtype()));
 
     // Count the number of root node column bindings to determine where expression columns start
     let num_source_columns = graph.column_bindings.len().max(1);
@@ -200,33 +176,10 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
     // Parse the graph JSON to extract output specifications
     let mut graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
 
-    // If we have input fields, extract the inner dtype and nesting depth
-    // so we can resolve "auto" sentinels in output specs.
-    // Only resolve from the Polars column type when the leaf is numeric
-    // (List/Array sources). For Binary/String (image/file sources), the
-    // column type does not reflect the decoded buffer dtype.
-    if !input_fields.is_empty() {
-        let (leaf_dtype, ndim) = peel_nesting(input_fields[0].dtype());
-        let inferred_dtype_str = polars_dtype_to_str(&leaf_dtype);
-
-        for spec in graph.outputs.values_mut() {
-            if spec.expected_dtype == "auto" {
-                match &leaf_dtype {
-                    DataType::Binary | DataType::String | DataType::Null => {
-                        // Image/file sources: cannot infer buffer dtype from column type.
-                        // Leave as "auto" — schema will use a safe default.
-                    }
-                    _ => {
-                        // List/array sources: leaf type is meaningful.
-                        spec.expected_dtype = inferred_dtype_str.to_string();
-                    }
-                }
-            }
-            if spec.expected_ndim.is_none() && ndim > 0 {
-                spec.expected_ndim = Some(ndim);
-            }
-        }
-    }
+    // Resolve "auto" sentinels in output specs from the input column type.
+    // Shared with the execution-time path (`execute_graph`) so the planned and
+    // executed schema are computed by exactly one piece of logic.
+    resolve_auto_inputs(&mut graph, input_fields.first().map(|f| f.dtype()));
 
     if graph.is_single_output() {
         // Single output mode - return typed field based on domain/sink/dtype
@@ -249,6 +202,38 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
         }
 
         Ok(Field::new(name, DataType::Struct(fields)))
+    }
+}
+
+/// Resolve `"auto"` dtype and missing ndim on a graph's output specs from the
+/// first input column's type.
+///
+/// This is the single implementation shared by both the planning-time
+/// (`unified_output_dtype`) and execution-time (`execute_graph`) entry points,
+/// so the inferred schema cannot diverge between the two.
+///
+/// Only the leaf type of List/Array sources is meaningful for dtype: for
+/// Binary/String (image/file) sources the column type does not reflect the
+/// decoded buffer dtype, so `"auto"` is left unresolved.
+fn resolve_auto_inputs(graph: &mut UnifiedGraph, first_input_dtype: Option<&DataType>) {
+    let Some(dt) = first_input_dtype else {
+        return;
+    };
+    let (leaf_dtype, ndim) = peel_nesting(dt);
+    let inferred_dtype_str = polars_dtype_to_str(&leaf_dtype);
+
+    for spec in graph.outputs.values_mut() {
+        if spec.expected_dtype == "auto" {
+            match &leaf_dtype {
+                // Image/file sources: cannot infer buffer dtype from column type.
+                DataType::Binary | DataType::String | DataType::Null => {}
+                // List/array sources: leaf type is meaningful.
+                _ => spec.expected_dtype = inferred_dtype_str.to_string(),
+            }
+        }
+        if spec.expected_ndim.is_none() && ndim > 0 {
+            spec.expected_ndim = Some(ndim);
+        }
     }
 }
 
