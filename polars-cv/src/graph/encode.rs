@@ -604,7 +604,9 @@ pub(crate) fn encode_node_output(
         (NodeOutput::Buffer(buf), "numpy" | "torch") => {
             Ok(OutputValue::NumpyStruct((**buf).clone()))
         }
-        (NodeOutput::Buffer(buf), "native") if spec.expected_domain == "histogram" => {
+        (NodeOutput::Buffer(buf), "native")
+            if spec.expected_encoding.as_deref() == Some("histogram_buckets") =>
+        {
             let contig = buf.to_contiguous();
             Ok(OutputValue::HistogramBuckets(contig.as_slice::<f64>().to_vec()))
         }

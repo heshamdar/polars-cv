@@ -459,21 +459,28 @@ def test_enum_parity_dtype():
     assert py == rust, f"DType: python {py} != rust {rust}"
 
 
+# view-buffer's `any` Domain is an internal identity domain (materialize) that is
+# never surfaced to a Python pipeline, so it is excluded from the comparison.
+_RUST_INTERNAL_DOMAINS = {"any"}
+
+
 @plugin_required
-@pytest.mark.xfail(
-    reason="A4: Domain vocabularies diverge — Rust has `any`, Python has "
-    "`histogram`. Reconciled in Phase 2 (one Domain enum across the boundary).",
-    strict=True,
-)
 def test_enum_parity_domain():
-    """Python Domain values must equal the Rust Domain variant set (A4)."""
+    """Python Domain values must equal the surfaced Rust Domain variant set (A4).
+
+    The former Python-only `histogram` "domain" is gone (histogram buckets are a
+    `vector` output whose struct schema is selected by the sink encoding), so the
+    only remaining difference is Rust's internal `any` domain, which is never
+    surfaced to a pipeline.
+    """
     rust = _rust_enum_variants("Domain")
     if rust is None:
         pytest.skip("_lib.enum_variants() not built")
     import polars_cv._types as t
 
+    surfaced = rust - _RUST_INTERNAL_DOMAINS
     py = {m.value for m in t.Domain}
-    assert py == rust, f"Domain: python {py} != rust {rust}"
+    assert py == surfaced, f"Domain: python {py} != surfaced rust {surfaced}"
 
 
 # SourceFormat/SinkFormat are intentionally NOT enum-parity-checked: view-buffer
