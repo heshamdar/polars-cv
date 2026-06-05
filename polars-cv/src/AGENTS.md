@@ -93,7 +93,7 @@ match op_spec.op.as_str() {
 | `contour` | Parse Struct column into `Contour`, optionally rasterize to mask |
 | `list` / `array` | Zero-copy (when contiguous) or copy from Polars nested types |
 
-Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`. The `AlphaMode` contract in Python documents how each operation handles alpha; Rust implements the corresponding behavior based on the buffer's actual channel count.
+Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`. Each op's `ViewDto` contract exposes a channel rule that the Python planner reads for planning-time channel inference; Rust implements the corresponding behavior based on the buffer's actual channel count.
 
 ### Sink Encoding (`graph/encode.rs`)
 

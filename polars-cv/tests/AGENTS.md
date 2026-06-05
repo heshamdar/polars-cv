@@ -27,7 +27,7 @@ The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`
 |------|--------------|
 | `test_pipeline_builder.py` | Pipeline construction, domain tracking, operation chaining |
 | `test_lazy_schema.py` | LazyPipelineExpr schema inference |
-| `test_dtype_contracts.py` | Operation dtype/ndim contracts in `OPERATION_CONTRACTS` |
+| `test_dtype_contracts.py` | Plan-time and end-to-end dtype tracking (planner sources dtype from the view-buffer contract) |
 | `test_serialization.py` | Pipeline JSON serialization |
 | `test_geometry_schemas.py` | Geometry schema definitions and validation |
 | `test_affine_builder.py` | Affine pipeline builder (warp_affine, shear, rotate_and_scale), contracts, fusion |
@@ -69,7 +69,7 @@ The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`
 | `test_on_error.py` | `on_error="null"` graceful error handling |
 | `test_display.py` | `show_images()` display utility |
 | `test_tiff_integration.py` | TIFF format integration |
-| `test_alpha_channel.py` | Alpha channel decode/encode, AlphaMode contracts (including DROP for threshold/erode/dilate/morph_gradient), planning-time channel inference, rotate expand shape hints |
+| `test_alpha_channel.py` | Alpha channel decode/encode (including DROP for threshold/erode/dilate/morph_gradient), planning-time channel inference from view-buffer channel rules, rotate expand shape hints |
 
 ### Reference Tests (`tests/reference/`)
 

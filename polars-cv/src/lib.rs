@@ -83,9 +83,9 @@ fn parse_dtype(s: &str) -> PyResult<view_buffer::DType> {
 
 /// Canonical string for an output-dtype rule.
 ///
-/// This is the shared vocabulary the Python contract-parity test compares
-/// against. It mirrors the Python `DTypeEffect` values: `preserve`, `promote`,
-/// `fixed:<dtype>`, `config:<dtype>`.
+/// This is the shared vocabulary the Python planner reads (via `op_contract`)
+/// to infer output dtypes: `preserve`, `promote`, `fixed:<dtype>`,
+/// `config:<dtype>`.
 fn dtype_rule_name(rule: view_buffer::OutputDTypeRule) -> String {
     use view_buffer::OutputDTypeRule as R;
     match rule {
@@ -116,7 +116,7 @@ fn rank_rule_name(rule: view_buffer::OutputRankRule) -> String {
 
 /// Canonical string for an output-channel rule.
 ///
-/// Mirrors the former Python alpha contract as plain data: `preserve`,
+/// The vocabulary the Python planner reads for channel inference: `preserve`,
 /// `fixed:<n>`, `strip_restore:<color_channels>`, `n/a`, `unknown`.
 fn channel_rule_name(rule: view_buffer::OutputChannelRule) -> String {
     use view_buffer::OutputChannelRule as R;
@@ -178,8 +178,8 @@ fn op_output_dtype(op_json: &str, input_dtype: &str) -> PyResult<String> {
     let dto = resolve_op_from_json(op_json)?;
     let rule = dto.output_dtype_rule();
 
-    // The out_dtype override is honored only for the configurable rule, matching
-    // the Python OpContract.resolve_dtype semantics (other rules ignore it).
+    // The out_dtype override is honored only for the configurable rule
+    // (other rules ignore it).
     let override_dt = if matches!(rule, R::Configurable(_)) {
         out_dtype_override(op_json)?
     } else {
