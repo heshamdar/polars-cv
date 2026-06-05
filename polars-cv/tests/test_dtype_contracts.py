@@ -2,9 +2,9 @@
 Tests for the operation contract system and dtype preservation.
 
 Verifies that:
-- The Python ``OpContract`` system correctly tracks dtypes through pipelines.
+- The planner (sourcing dtype from view-buffer's per-op contract) tracks dtypes
+  through pipelines.
 - Resize operations preserve input dtype (the core bug fix).
-- All operations listed in ``OPERATION_CONTRACTS`` have consistent declarations.
 - The Rust execution layer honours the planned dtype.
 """
 
@@ -19,11 +19,6 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
-from polars_cv._types import (
-    OPERATION_CONTRACTS,
-    DTypeEffect,
-    NdimEffect,
-)
 
 if TYPE_CHECKING:
     pass
@@ -80,89 +75,7 @@ def test_image_png(encode_png: Callable[[np.ndarray], bytes]) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# 1. Contract consistency checks (pure Python, no plugin needed)
-# ---------------------------------------------------------------------------
-
-
-class TestContractConsistency:
-    """Verify that OPERATION_CONTRACTS is well-formed and complete."""
-
-    def test_all_contracts_have_valid_dtype_effect(self) -> None:
-        """Every contract's dtype_effect must be a valid DTypeEffect member."""
-        for name, contract in OPERATION_CONTRACTS.items():
-            assert isinstance(contract.dtype_effect, DTypeEffect), (
-                f"Operation '{name}' has invalid dtype_effect: {contract.dtype_effect}"
-            )
-
-    def test_all_contracts_have_valid_ndim_effect(self) -> None:
-        """Every contract's ndim_effect must be a valid NdimEffect member."""
-        for name, contract in OPERATION_CONTRACTS.items():
-            assert isinstance(contract.ndim_effect, NdimEffect), (
-                f"Operation '{name}' has invalid ndim_effect: {contract.ndim_effect}"
-            )
-
-    def test_resize_variants_preserve_dtype(self) -> None:
-        """All resize operations must declare PRESERVE for dtype."""
-        resize_ops = [
-            "resize",
-            "resize_scale",
-            "resize_to_height",
-            "resize_to_width",
-            "resize_max",
-            "resize_min",
-        ]
-        for op_name in resize_ops:
-            contract = OPERATION_CONTRACTS[op_name]
-            assert contract.dtype_effect is DTypeEffect.PRESERVE, (
-                f"'{op_name}' should have DTypeEffect.PRESERVE, "
-                f"got {contract.dtype_effect}"
-            )
-            assert contract.ndim_effect is NdimEffect.PRESERVE, (
-                f"'{op_name}' should have NdimEffect.PRESERVE, "
-                f"got {contract.ndim_effect}"
-            )
-
-    def test_rotate_contract_preserves_dtype(self) -> None:
-        """Rotate must declare DTypeEffect.PRESERVE (spatial transformation)."""
-        contract = OPERATION_CONTRACTS["rotate"]
-        assert contract.dtype_effect is DTypeEffect.PRESERVE, (
-            f"'rotate' should have DTypeEffect.PRESERVE, got {contract.dtype_effect}"
-        )
-
-    def test_grayscale_contract_preserves_dtype(self) -> None:
-        """Grayscale must declare DTypeEffect.PRESERVE (channel reduction only)."""
-        contract = OPERATION_CONTRACTS["grayscale"]
-        assert contract.dtype_effect is DTypeEffect.PRESERVE, (
-            f"'grayscale' should have DTypeEffect.PRESERVE, got {contract.dtype_effect}"
-        )
-
-    def test_threshold_contract_fixed_u8(self) -> None:
-        """Threshold must declare DTypeEffect.FIXED_U8 (binary mask output)."""
-        contract = OPERATION_CONTRACTS["threshold"]
-        assert contract.dtype_effect is DTypeEffect.FIXED_U8, (
-            f"'threshold' should have DTypeEffect.FIXED_U8, got {contract.dtype_effect}"
-        )
-
-    def test_spatial_view_ops_preserve_dtype(self) -> None:
-        """Pad, crop, flip, transpose, letterbox should preserve dtype."""
-        ops = ["pad", "pad_to_size", "letterbox", "crop", "flip", "transpose"]
-        for op_name in ops:
-            contract = OPERATION_CONTRACTS[op_name]
-            assert contract.dtype_effect is DTypeEffect.PRESERVE, (
-                f"'{op_name}' should have DTypeEffect.PRESERVE, "
-                f"got {contract.dtype_effect}"
-            )
-
-    # NOTE: dtype *resolution* (PRESERVE/FIXED/PROMOTE/CONFIGURABLE + out_dtype
-    # override) is no longer implemented in Python — the schema layer defers to
-    # view-buffer's OutputDTypeRule::resolve via _lib.op_output_dtype. The rule
-    # math is covered by Rust unit tests, the Python-vs-Rust classification by
-    # the contract-parity sanitation tests, and the end-to-end resolution by the
-    # TestPipelineOutputDtype cases below.
-
-
-# ---------------------------------------------------------------------------
-# 2. Pipeline output_dtype inference (pure Python, no plugin)
+# 1. Pipeline output_dtype inference (pure Python, no plugin)
 # ---------------------------------------------------------------------------
 
 
