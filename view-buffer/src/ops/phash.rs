@@ -12,6 +12,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::cost::OpCost;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 
@@ -182,6 +183,15 @@ impl Op for PerceptualHashOp {
     fn infer_shape(&self, _inputs: &[&[usize]]) -> Vec<usize> {
         // Output is always a 1D array of hash bytes
         vec![self.hash_bytes()]
+    }
+
+    fn output_rank_rule(&self) -> OutputRankRule {
+        // Always a 1-D byte vector regardless of input rank.
+        OutputRankRule::Fixed(1)
+    }
+
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        OutputChannelRule::NotApplicable
     }
 
     fn infer_dtype(&self, _inputs: &[DType]) -> DType {

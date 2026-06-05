@@ -6,6 +6,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
 use crate::ops::cost::OpCost;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 
@@ -303,6 +304,25 @@ impl Op for HistogramOp {
             HistogramOutput::Edges => vec![num_bins + 1],
             HistogramOutput::Buckets => vec![num_bins, 4],
         }
+    }
+
+    fn output_rank_rule(&self) -> OutputRankRule {
+        match self.output {
+            // 1-D bin vectors.
+            HistogramOutput::Counts | HistogramOutput::Normalized | HistogramOutput::Edges => {
+                OutputRankRule::Fixed(1)
+            }
+            // [num_bins, 4] bucket table.
+            HistogramOutput::Buckets => OutputRankRule::Fixed(2),
+            // Quantized relabels in place, preserving the input rank.
+            HistogramOutput::Quantized => OutputRankRule::PreserveRank,
+        }
+    }
+
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        // Bin vectors/tables have no channel concept; quantized output mirrors
+        // the input channels but is consumed as a relabelled buffer.
+        OutputChannelRule::NotApplicable
     }
 
     fn infer_dtype(&self, _inputs: &[DType]) -> DType {

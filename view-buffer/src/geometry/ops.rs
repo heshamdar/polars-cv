@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::cost::OpCost;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
@@ -217,6 +218,44 @@ impl Op for GeometryOp {
                 // Variable-length output, placeholder
                 vec![]
             }
+        }
+    }
+
+    fn output_rank_rule(&self) -> OutputRankRule {
+        match self {
+            // Scalar/vector measures emit a fixed-length 1-D result.
+            GeometryOp::Area { .. }
+            | GeometryOp::Perimeter
+            | GeometryOp::IsConvex
+            | GeometryOp::ContainsPoint { .. }
+            | GeometryOp::IoU
+            | GeometryOp::Dice
+            | GeometryOp::HausdorffDistance
+            | GeometryOp::Winding
+            | GeometryOp::Centroid
+            | GeometryOp::BoundingBox => OutputRankRule::Fixed(1),
+            // Contour→contour transforms preserve the point-list rank.
+            GeometryOp::Translate { .. }
+            | GeometryOp::Scale { .. }
+            | GeometryOp::Flip
+            | GeometryOp::EnsureWinding { .. }
+            | GeometryOp::Normalize { .. }
+            | GeometryOp::ToAbsolute { .. }
+            | GeometryOp::Simplify { .. }
+            | GeometryOp::ConvexHull => OutputRankRule::PreserveRank,
+            // Rasterize emits an [H, W, 1] image.
+            GeometryOp::Rasterize { .. } => OutputRankRule::Fixed(3),
+            // Extraction produces a variable-length contour set.
+            GeometryOp::ExtractContours { .. } => OutputRankRule::Unknown,
+        }
+    }
+
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        match self {
+            // Rasterize produces a single-channel mask.
+            GeometryOp::Rasterize { .. } => OutputChannelRule::Fixed(1),
+            // Everything else is scalar/vector/contour data, not an image.
+            _ => OutputChannelRule::NotApplicable,
         }
     }
 
