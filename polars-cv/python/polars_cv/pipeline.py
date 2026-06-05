@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._types import (
-    OPERATION_CONTRACTS,
     CloudOptions,
     ColorSpace,
     DType,
@@ -136,9 +135,10 @@ class Pipeline:
         """
         Compute the output domain, dtype, and ndim after applying operations.
 
-        Uses :data:`OPERATION_CONTRACTS` for dtype and ndim inference.
-        Param-dependent overrides (cast, histogram, axis reductions) are
-        handled as special cases on top of the contract defaults.
+        Every op's domain, dtype and rank come from view-buffer's per-op contract
+        (``op_contract`` / ``op_output_dtype``) — the single authority. A few
+        param-dependent cases (cast, histogram, axis reductions) are handled as
+        special cases on top of those results.
 
         Args:
             ops: Sequence of operations to analyze.
@@ -170,12 +170,10 @@ class Pipeline:
                 domain = rust["output_domain"]
 
             # --- Dtype (resolved by view-buffer's output_dtype_rule) ---
-            # Save the pre-contract dtype so axis-based reductions that PRESERVE
-            # can fall back to the input dtype rather than a global default.
-            pre_contract_dtype = dtype
-            contract = OPERATION_CONTRACTS.get(op_name)
-            if contract is not None:
-                dtype = op_output_dtype(op_json, dtype)
+            # Save the input dtype so axis-based reductions that PRESERVE can
+            # fall back to it rather than a global default.
+            pre_dtype = dtype
+            dtype = op_output_dtype(op_json, dtype)
 
             # Param-dependent override: cast uses the explicit dtype param
             if op_name == "cast":
@@ -232,10 +230,10 @@ class Pipeline:
                     and axis_param.value is not None
                 ):
                     # Axis reduction: keeps buffer domain, reduces ndim by 1.
-                    # Dtype for axis-based reduce_max/reduce_min is PRESERVE
-                    # (the contract's global FIXED_F64 doesn't apply here).
+                    # reduce_max/reduce_min preserve the input dtype (view-buffer's
+                    # rule already does this; kept explicit for clarity).
                     if op_name in ("reduce_max", "reduce_min"):
-                        dtype = pre_contract_dtype
+                        dtype = pre_dtype
                     domain = Pipeline.DOMAIN_BUFFER
                     if ndim is not None:
                         ndim = max(0, ndim - 1)
@@ -255,14 +253,13 @@ class Pipeline:
             # Generic ndim from the Rust rank rule (single authority). For
             # buffer-domain ops this is the rank; scalar/vector domains are then
             # overridden by the domain sync below (0 / 1).
-            if contract is not None:
-                rank_rule = rust["rank_rule"]
-                if rank_rule.startswith("fixed:"):
-                    ndim = int(rank_rule.split(":", 1)[1])
-                elif rank_rule == "reduce_one":
-                    if ndim is not None:
-                        ndim = max(0, ndim - 1)
-                # "preserve" / "unknown" → ndim unchanged
+            rank_rule = rust["rank_rule"]
+            if rank_rule.startswith("fixed:"):
+                ndim = int(rank_rule.split(":", 1)[1])
+            elif rank_rule == "reduce_one":
+                if ndim is not None:
+                    ndim = max(0, ndim - 1)
+            # "preserve" / "unknown" → ndim unchanged
 
             # Sync ndim with domain for scalar/vector domains
             if domain == Pipeline.DOMAIN_SCALAR:

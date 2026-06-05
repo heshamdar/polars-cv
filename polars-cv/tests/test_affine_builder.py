@@ -351,33 +351,3 @@ class TestAffineFusion:
         assert fused["output_height"]["value"] == 224
         assert fused["output_width"]["value"] == 224
 
-
-class TestAffineContract:
-    """Tests for the warp_affine operation contract."""
-
-    def test_contract_exists(self) -> None:
-        """warp_affine has an entry in OPERATION_CONTRACTS."""
-        from polars_cv._types import OPERATION_CONTRACTS
-
-        assert "warp_affine" in OPERATION_CONTRACTS
-
-    def test_contract_preserves_dtype(self) -> None:
-        """warp_affine contract preserves dtype."""
-        from polars_cv._types import OPERATION_CONTRACTS, DTypeEffect
-
-        contract = OPERATION_CONTRACTS["warp_affine"]
-        assert contract.dtype_effect is DTypeEffect.PRESERVE
-
-    def test_contract_preserves_ndim(self) -> None:
-        """warp_affine contract preserves ndim."""
-        from polars_cv._types import OPERATION_CONTRACTS, NdimEffect
-
-        contract = OPERATION_CONTRACTS["warp_affine"]
-        assert contract.ndim_effect is NdimEffect.PRESERVE
-
-    def test_contract_alpha_passthrough(self) -> None:
-        """warp_affine uses PASSTHROUGH alpha mode (all channels transformed)."""
-        from polars_cv._types import OPERATION_CONTRACTS, AlphaMode
-
-        contract = OPERATION_CONTRACTS["warp_affine"]
-        assert contract.alpha_mode is AlphaMode.PASSTHROUGH

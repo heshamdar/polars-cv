@@ -26,7 +26,6 @@ from ._lib import get_tiling_config as _get_tiling_config
 from ._types import (
     IMAGENET_MEAN,
     IMAGENET_STD,
-    AlphaMode,
     CloudOptions,
     ColorSpace,
     HashAlgorithm,
@@ -435,7 +434,6 @@ __all__ = [
     "configure_tiling",
     "get_tiling_config",
     # Types
-    "AlphaMode",
     "CloudOptions",
     "ColorSpace",
     "HashAlgorithm",
