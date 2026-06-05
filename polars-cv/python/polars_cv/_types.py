@@ -248,9 +248,14 @@ class DTypeEffect(str, Enum):
     """
     How an operation affects the buffer dtype.
 
-    Mirrors the Rust ``OutputDTypeRule`` enum so that plan-time dtype inference
-    on the Python side agrees with the Rust execution layer.  Each operation
-    declares exactly one ``DTypeEffect`` in its ``OpContract``.
+    Mirrors the Rust ``OutputDTypeRule`` enum. Each operation declares exactly
+    one ``DTypeEffect`` in its ``OpContract``; this classification is the set of
+    dtype-relevant ops and is checked against the Rust authority by the
+    contract-parity sanitation tests.
+
+    Note: the *resolution* of a concrete output dtype is not done here — the
+    schema layer defers to view-buffer's ``OutputDTypeRule::resolve`` (exposed
+    as ``_lib.op_output_dtype``) so the rule is applied in exactly one place.
     """
 
     PRESERVE = "preserve"
@@ -279,51 +284,6 @@ class DTypeEffect(str, Enum):
 
     CONFIGURABLE_F32 = "config_f32"
     """Default Float32, but overridable via ``out_dtype`` parameter."""
-
-    def resolve(self, input_dtype: str) -> str:
-        """
-        Resolve the concrete output dtype given the current input dtype.
-
-        When ``input_dtype`` is ``"auto"`` (unknown at plan time, e.g. from
-        image sources), only effects with a deterministic output can resolve
-        it.  ``PRESERVE`` and ``PROMOTE_TO_FLOAT`` propagate ``"auto"``
-        because their output depends on the actual input dtype.
-
-        Args:
-            input_dtype: The dtype of the data entering this operation,
-                or ``"auto"`` when the dtype is not yet known.
-
-        Returns:
-            The expected output dtype string (e.g. ``"f32"``, ``"u8"``,
-            or ``"auto"`` if still unknown).
-        """
-        if input_dtype == "auto":
-            # Fixed-output effects resolve regardless of input
-            if self in (
-                DTypeEffect.FIXED_U8,
-                DTypeEffect.FIXED_F32,
-                DTypeEffect.FIXED_F64,
-                DTypeEffect.FIXED_I64,
-                DTypeEffect.FIXED_U64,
-                DTypeEffect.FIXED_U32,
-            ):
-                return self.value
-            if self is DTypeEffect.CONFIGURABLE_F32:
-                # Default output is f32; caller handles out_dtype override.
-                return "f32"
-            # PRESERVE, PROMOTE_TO_FLOAT: output depends on input -> still unknown
-            return "auto"
-
-        if self is DTypeEffect.PRESERVE:
-            return input_dtype
-        if self is DTypeEffect.PROMOTE_TO_FLOAT:
-            return input_dtype if input_dtype in ("f32", "f64") else "f32"
-        if self is DTypeEffect.CONFIGURABLE_F32:
-            # Caller should check params for out_dtype override first.
-            # This default is used when no override is present.
-            return "f32"
-        # All FIXED_* variants: the enum value *is* the dtype string.
-        return self.value
 
 
 class NdimEffect(str, Enum):
@@ -356,42 +316,16 @@ class OpContract:
     Plan-time declaration of an operation's effects on dtype, ndim, and alpha.
 
     Every operation must have an ``OpContract`` entry in
-    :data:`OPERATION_CONTRACTS`.  The contract is the **single source of truth**
-    on the Python side for dtype, ndim, and channel inference; it mirrors the
-    Rust ``OutputDTypeRule`` and is validated at execution time.
+    :data:`OPERATION_CONTRACTS`.  The contract classifies each op's dtype, ndim,
+    and channel effects for plan-time inference. The concrete output *dtype* is
+    resolved by the Rust authority (``_lib.op_output_dtype``), not from
+    ``dtype_effect`` directly; the ``dtype_effect`` classification is kept in
+    parity with that authority by the contract-parity sanitation tests.
     """
 
     dtype_effect: DTypeEffect
     ndim_effect: NdimEffect
     alpha_mode: AlphaMode = AlphaMode.NOT_APPLICABLE
-
-    def resolve_dtype(
-        self,
-        input_dtype: str,
-        params: "dict[str, ParamValue] | None" = None,
-    ) -> str:
-        """
-        Resolve the concrete output dtype for this contract.
-
-        Handles the ``CONFIGURABLE_F32`` case by checking for an
-        ``out_dtype`` parameter override; otherwise delegates to
-        :meth:`DTypeEffect.resolve`.
-
-        Args:
-            input_dtype: Dtype string entering the operation.
-            params: Operation parameters (may contain ``out_dtype``).
-
-        Returns:
-            The expected output dtype string.
-        """
-        if (
-            self.dtype_effect is DTypeEffect.CONFIGURABLE_F32
-            and params
-            and (od := params.get("out_dtype"))
-            and not od.is_expr
-        ):
-            return str(od.value)
-        return self.dtype_effect.resolve(input_dtype)
 
 
 # ---------------------------------------------------------------------------

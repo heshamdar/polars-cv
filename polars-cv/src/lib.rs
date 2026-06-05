@@ -27,6 +27,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(configure_tiling, m)?)?;
     m.add_function(wrap_pyfunction!(get_tiling_config, m)?)?;
     m.add_function(wrap_pyfunction!(op_dtype_rule, m)?)?;
+    m.add_function(wrap_pyfunction!(op_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     Ok(())
@@ -53,6 +54,32 @@ fn dtype_short_name(dt: view_buffer::DType) -> &'static str {
         DType::F32 => "f32",
         DType::F64 => "f64",
     }
+}
+
+/// Parse a short dtype name back into a view-buffer `DType`.
+///
+/// Inverse of [`dtype_short_name`]. Used to turn the Python schema layer's
+/// dtype strings into the `DType` the canonical [`OutputDTypeRule::resolve`]
+/// authority operates on.
+fn parse_dtype(s: &str) -> PyResult<view_buffer::DType> {
+    use view_buffer::DType;
+    Ok(match s {
+        "u8" => DType::U8,
+        "i8" => DType::I8,
+        "u16" => DType::U16,
+        "i16" => DType::I16,
+        "u32" => DType::U32,
+        "i32" => DType::I32,
+        "u64" => DType::U64,
+        "i64" => DType::I64,
+        "f32" => DType::F32,
+        "f64" => DType::F64,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown dtype {other:?}"
+            )))
+        }
+    })
 }
 
 /// Canonical string for an output-dtype rule.
@@ -90,14 +117,91 @@ fn op_dtype_rule(op_json: &str) -> PyResult<String> {
 
 /// Resolve one serialized op spec to its `ViewDto`, mapping errors to Python.
 ///
-/// Shared by `op_dtype_rule` and `op_contract` so neither re-implements the
-/// deserialize → resolve path.
+/// Shared by `op_dtype_rule`, `op_output_dtype`, and `op_contract` so none of
+/// them re-implement the deserialize → resolve path.
+///
+/// Expression parameters (dynamic, per-row values like a column-driven resize
+/// height) are *neutralized* with a placeholder before resolution: each
+/// referenced column is bound to a one-element `Int64` series. The schema
+/// knowledge these functions expose — output dtype rule, domain, and the
+/// dimensionality rule — never depends on the concrete numeric value of a
+/// dimensional parameter, so the placeholder is sound and lets introspection
+/// work on the same live op specs the planner sees (which routinely carry
+/// expression params) rather than only literal-only ops.
 fn resolve_op_from_json(op_json: &str) -> PyResult<view_buffer::ViewDto> {
     let op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
-    let empty: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
-    crate::execute::resolve_op(&op_spec, 0, &empty)
+    // Own the placeholder series so the borrowed map outlives `resolve_op`.
+    let placeholders: Vec<Series> = op_spec
+        .params
+        .values()
+        .filter_map(|p| p.column_name())
+        .map(|name| Series::new(name.into(), &[1_i64]))
+        .collect();
+    let cols: std::collections::HashMap<String, &Series> = placeholders
+        .iter()
+        .map(|s| (s.name().to_string(), s))
+        .collect();
+    crate::execute::resolve_op(&op_spec, 0, &cols)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
+}
+
+/// Resolve the concrete output dtype of one op given its input dtype.
+///
+/// This is the single authority the Python schema layer defers to instead of
+/// re-applying a parallel dtype rule: it composes view-buffer's
+/// `ViewDto::output_dtype_rule()` with `OutputDTypeRule::resolve`.
+///
+/// `input_dtype` is a short dtype name (`"u8"`, `"f32"`, …) or the sentinel
+/// `"auto"` used for image sources whose decoded dtype is not yet known. For
+/// `"auto"`, input-dependent rules (`PreserveInput`, `PromoteToFloat`)
+/// propagate `"auto"`; fixed/configurable rules resolve to their concrete
+/// dtype. An `out_dtype` literal parameter overrides the result only for the
+/// `Configurable` rule, mirroring the configurable-output contract.
+#[pyfunction]
+fn op_output_dtype(op_json: &str, input_dtype: &str) -> PyResult<String> {
+    use view_buffer::OutputDTypeRule as R;
+    let dto = resolve_op_from_json(op_json)?;
+    let rule = dto.output_dtype_rule();
+
+    // The out_dtype override is honored only for the configurable rule, matching
+    // the Python OpContract.resolve_dtype semantics (other rules ignore it).
+    let override_dt = if matches!(rule, R::Configurable(_)) {
+        out_dtype_override(op_json)?
+    } else {
+        None
+    };
+
+    if input_dtype == "auto" {
+        if let Some(d) = override_dt {
+            return Ok(dtype_short_name(d).to_string());
+        }
+        return Ok(match rule {
+            // Output follows the (unknown) input: stays unknown.
+            R::PreserveInput | R::PromoteToFloat => "auto".to_string(),
+            // Fixed/configurable/force rules ignore the input dtype.
+            _ => dtype_short_name(rule.resolve(view_buffer::DType::U8, None)).to_string(),
+        });
+    }
+
+    let in_dt = parse_dtype(input_dtype)?;
+    Ok(dtype_short_name(rule.resolve(in_dt, override_dt)).to_string())
+}
+
+/// Extract the literal `out_dtype` parameter from a serialized op spec, if any.
+///
+/// Returns `None` when the parameter is absent or is an expression (dynamic),
+/// in which case the rule's default applies.
+fn out_dtype_override(op_json: &str) -> PyResult<Option<view_buffer::DType>> {
+    let op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
+    match op_spec.params.get("out_dtype") {
+        Some(crate::params::ParamValue::Literal { value }) => match value.as_str() {
+            Some(s) => Ok(Some(parse_dtype(s)?)),
+            None => Ok(None),
+        },
+        _ => Ok(None),
+    }
 }
 
 /// Return the string variants of a Rust enum, for Python<->Rust parity checks.
