@@ -28,6 +28,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_tiling_config, m)?)?;
     m.add_function(wrap_pyfunction!(op_dtype_rule, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
+    m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     Ok(())
 }
 
@@ -97,6 +98,53 @@ fn resolve_op_from_json(op_json: &str) -> PyResult<view_buffer::ViewDto> {
     let empty: std::collections::HashMap<String, &Series> = std::collections::HashMap::new();
     crate::execute::resolve_op(&op_spec, 0, &empty)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
+}
+
+/// Return the string variants of a Rust enum, for Python<->Rust parity checks.
+///
+/// Supports the enums that have a single canonical Rust definition the Python
+/// user-facing enum must mirror. `DType` and `Domain` are sourced from
+/// view-buffer (their `dtype_short_name` / `Domain::name`). Format enums are
+/// intentionally not exposed here: view-buffer's `SourceFormat`/`SinkFormat`
+/// use a different vocabulary than the graph's string formats, a divergence
+/// slated for consolidation rather than enforcement.
+#[pyfunction]
+fn enum_variants(name: &str) -> PyResult<Vec<String>> {
+    use view_buffer::ops::Domain;
+    use view_buffer::DType;
+    let variants: Vec<String> = match name {
+        "DType" => [
+            DType::U8,
+            DType::I8,
+            DType::U16,
+            DType::I16,
+            DType::U32,
+            DType::I32,
+            DType::U64,
+            DType::I64,
+            DType::F32,
+            DType::F64,
+        ]
+        .iter()
+        .map(|d| dtype_short_name(*d).to_string())
+        .collect(),
+        "Domain" => [
+            Domain::Buffer,
+            Domain::Contour,
+            Domain::Scalar,
+            Domain::Vector,
+            Domain::Any,
+        ]
+        .iter()
+        .map(|d| d.name().to_string())
+        .collect(),
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "no canonical Rust enum named {other}"
+            )))
+        }
+    };
+    Ok(variants)
 }
 
 /// Return the full contract for a single serialized op spec.
