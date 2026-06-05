@@ -111,7 +111,6 @@ class Pipeline:
     DOMAIN_CONTOUR = "contour"
     DOMAIN_SCALAR = "scalar"
     DOMAIN_VECTOR = "vector"
-    DOMAIN_HISTOGRAM = "histogram"
 
     def __init__(self) -> None:
         """Initialize an empty pipeline."""
@@ -195,7 +194,9 @@ class Pipeline:
                         # ndim remains same – skip generic ndim logic below
                         continue
                     elif mode == "buckets":
-                        domain = Pipeline.DOMAIN_HISTOGRAM
+                        # Buckets are a vector-domain output; their struct schema
+                        # is selected by the sink encoding, not the domain.
+                        domain = Pipeline.DOMAIN_VECTOR
                         # dtype is structurally defined by the native encoder
                         dtype = "auto"
                         ndim = 1
@@ -208,7 +209,7 @@ class Pipeline:
                         ndim = 1
                 else:
                     # Default mode is buckets -> ndim=1
-                    domain = Pipeline.DOMAIN_HISTOGRAM
+                    domain = Pipeline.DOMAIN_VECTOR
                     dtype = "auto"
                     ndim = 1
                 continue  # ndim already set; skip generic ndim logic
@@ -358,6 +359,25 @@ class Pipeline:
             Output dtype string: ``"u8"``, ``"f32"``, ``"f64"``, ``"auto"``, etc.
         """
         return self._output_dtype
+
+    def output_encoding(self) -> str | None:
+        """Get the sink encoding selector for this pipeline's output, if any.
+
+        Most outputs are encoded by their (domain, sink-format) pair. A few share
+        a domain but need a distinct Polars schema; this names that encoding so it
+        can be carried alongside the domain rather than overloading it.
+
+        Currently the only such case is histogram ``buckets``: a ``vector``-domain
+        output encoded as ``List(Struct[lower_edge, upper_edge, count,
+        normalized])``. Returns ``"histogram_buckets"`` for it, else ``None``.
+        """
+        if self._ops:
+            last = self._ops[-1]
+            if last.op == "histogram":
+                mode = last.params.get("output")
+                if mode is not None and not mode.is_expr and mode.value == "buckets":
+                    return "histogram_buckets"
+        return None
 
     def _update_output_dtype(self, op_name: str) -> None:
         """
@@ -3126,7 +3146,9 @@ class Pipeline:
             new._current_domain = self.DOMAIN_BUFFER
             new._output_dtype = "u32"
         elif output_mode == HistogramOutput.BUCKETS:
-            new._current_domain = self.DOMAIN_HISTOGRAM
+            # Buckets are a vector-domain output; the bucket-struct schema is
+            # selected by the sink encoding (see output_encoding), not the domain.
+            new._current_domain = self.DOMAIN_VECTOR
             new._output_dtype = "auto"
         else:
             # All other modes return a vector

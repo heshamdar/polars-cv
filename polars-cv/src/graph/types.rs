@@ -43,6 +43,15 @@ pub struct OutputSpec {
     /// Expected number of dimensions for list sinks.
     #[serde(default)]
     pub expected_ndim: Option<usize>,
+    /// Optional sink encoding selector, independent of the output domain.
+    ///
+    /// Some outputs share a domain but need a distinct Polars schema. For
+    /// example histogram buckets are a `vector`-domain output, but are encoded
+    /// as `List(Struct[lower_edge, upper_edge, count, normalized])`. Python sets
+    /// this to `"histogram_buckets"` for that case; `None` means encode by the
+    /// (domain, format) pair as usual.
+    #[serde(default)]
+    pub expected_encoding: Option<String>,
 }
 /// Result type for individual row execution.
 ///

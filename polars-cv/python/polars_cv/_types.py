@@ -240,8 +240,8 @@ class Domain(str, Enum):
     BUFFER = "buffer"  # Image/array data
     CONTOUR = "contour"  # Extracted geometry
     SCALAR = "scalar"  # Single numeric value
-    VECTOR = "vector"  # Fixed-length numeric array
-    HISTOGRAM = "histogram"  # Histogram buckets
+    VECTOR = "vector"  # Fixed-length numeric array (incl. histogram buckets,
+    # whose List(Struct) schema is selected by the sink encoding, not the domain)
 
 
 class DTypeEffect(str, Enum):
