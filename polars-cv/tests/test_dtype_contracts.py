@@ -20,11 +20,9 @@ import pytest
 
 from polars_cv import Pipeline
 from polars_cv._types import (
+    OPERATION_CONTRACTS,
     DTypeEffect,
     NdimEffect,
-    OPERATION_CONTRACTS,
-    OpContract,
-    ParamValue,
 )
 
 if TYPE_CHECKING:
@@ -155,37 +153,12 @@ class TestContractConsistency:
                 f"got {contract.dtype_effect}"
             )
 
-    def test_resolve_dtype_preserve(self) -> None:
-        """OpContract with PRESERVE should return the input dtype unchanged."""
-        contract = OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE)
-        assert contract.resolve_dtype("f32") == "f32"
-        assert contract.resolve_dtype("u8") == "u8"
-        assert contract.resolve_dtype("f64") == "f64"
-        assert contract.resolve_dtype("u16") == "u16"
-
-    def test_resolve_dtype_fixed(self) -> None:
-        """OpContract with a FIXED dtype should always return that dtype."""
-        contract = OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE)
-        assert contract.resolve_dtype("f32") == "u8"
-        assert contract.resolve_dtype("u8") == "u8"
-        assert contract.resolve_dtype("f64") == "u8"
-
-    def test_resolve_dtype_promote_to_float(self) -> None:
-        """PROMOTE_TO_FLOAT: integers -> f32, floats -> unchanged."""
-        contract = OpContract(DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE)
-        assert contract.resolve_dtype("u8") == "f32"
-        assert contract.resolve_dtype("i16") == "f32"
-        assert contract.resolve_dtype("f32") == "f32"
-        assert contract.resolve_dtype("f64") == "f64"
-
-    def test_resolve_dtype_configurable_with_override(self) -> None:
-        """CONFIGURABLE_F32: default f32, but overridable via out_dtype param."""
-        contract = OpContract(DTypeEffect.CONFIGURABLE_F32, NdimEffect.PRESERVE)
-        # Default
-        assert contract.resolve_dtype("u8") == "f32"
-        # With override
-        params = {"out_dtype": ParamValue(is_expr=False, value="f64")}
-        assert contract.resolve_dtype("u8", params) == "f64"
+    # NOTE: dtype *resolution* (PRESERVE/FIXED/PROMOTE/CONFIGURABLE + out_dtype
+    # override) is no longer implemented in Python — the schema layer defers to
+    # view-buffer's OutputDTypeRule::resolve via _lib.op_output_dtype. The rule
+    # math is covered by Rust unit tests, the Python-vs-Rust classification by
+    # the contract-parity sanitation tests, and the end-to-end resolution by the
+    # TestPipelineOutputDtype cases below.
 
 
 # ---------------------------------------------------------------------------

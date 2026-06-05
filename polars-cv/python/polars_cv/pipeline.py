@@ -186,14 +186,22 @@ class Pipeline:
             if op_name in Pipeline._OPERATION_OUTPUT_DOMAIN:
                 domain = Pipeline._OPERATION_OUTPUT_DOMAIN[op_name]
 
-            # --- Dtype (contract-based) ---
+            # --- Dtype (deferred to the Rust authority) ---
             # Save the pre-contract dtype so axis-based reductions that
             # PRESERVE can fall back to the input dtype rather than the
             # contract's global default.
             pre_contract_dtype = dtype
             contract = OPERATION_CONTRACTS.get(op_name)
             if contract is not None:
-                dtype = contract.resolve_dtype(dtype, op_spec.params)
+                # The output dtype is resolved by view-buffer's
+                # ViewDto::output_dtype_rule (exposed as op_output_dtype) rather
+                # than re-applied from a parallel Python rule, so the two can no
+                # longer drift. The Python contract table is retained only as the
+                # set of dtype-relevant ops (and is guarded against the Rust
+                # authority by the contract-parity sanitation tests).
+                from polars_cv._lib import op_output_dtype
+
+                dtype = op_output_dtype(json.dumps(op_spec.to_dict()), dtype)
 
             # Param-dependent override: cast uses the explicit dtype param
             if op_name == "cast":
