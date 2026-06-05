@@ -161,6 +161,78 @@ def test_plan_equals_exec_binary_promote():
     assert planned == realized
 
 
+def _planned_shape(pipe):
+    """The pipeline's plan-time [H, W, C], using None for unknown/expr dims."""
+
+    def known(p):
+        return p.value if (p is not None and not p.is_expr) else None
+
+    sh = pipe._shape_hints
+    return [known(sh.height), known(sh.width), known(sh.channels)]
+
+
+# (label, build-pipeline, png-mode) exercising the rank/channel rules end-to-end.
+_SHAPE_PIPELINES = [
+    ("resize_rgb", lambda: Pipeline().source("image_bytes").resize(height=6, width=5), "RGB"),
+    (
+        "resize_grayscale",
+        lambda: Pipeline().source("image_bytes").resize(height=6, width=6).grayscale(),
+        "RGB",
+    ),
+    (
+        "resize_rgba_preserves_4ch",
+        lambda: Pipeline()
+        .source("image_bytes")
+        .assert_shape(channels=4)
+        .resize(height=6, width=6),
+        "RGBA",
+    ),
+    (
+        "cvt_gray_on_rgba_is_graya",
+        lambda: Pipeline()
+        .source("image_bytes")
+        .assert_shape(channels=4)
+        .resize(height=6, width=6)
+        .cvt_color("rgb", "gray"),
+        "RGBA",
+    ),
+    (
+        "cvt_hsv_on_rgba_preserves_4ch",
+        lambda: Pipeline()
+        .source("image_bytes")
+        .assert_shape(channels=4)
+        .resize(height=6, width=6)
+        .cvt_color("rgb", "hsv"),
+        "RGBA",
+    ),
+]
+
+
+@plugin_required
+@pytest.mark.parametrize(
+    "label,build,mode", _SHAPE_PIPELINES, ids=[c[0] for c in _SHAPE_PIPELINES]
+)
+def test_plan_equals_exec_shape(label, build, mode):
+    """Each shape dimension the planner claims to know must match the realized
+    array shape (plan == exec for shape, the WS-1 rank/channel invariant)."""
+    df = pl.DataFrame({"out": [_png(width=8, height=8, mode=mode)]})
+    pipe = build()
+    realized = list(
+        polars_cv.numpy_from_struct(
+            df.lazy()
+            .select(out=pl.col("out").cv.pipe(pipe).sink("numpy"))
+            .collect()["out"][0]
+        ).shape
+    )
+    planned = _planned_shape(pipe)
+    for i, p in enumerate(planned):
+        if p is not None:
+            assert p == realized[i], (
+                f"{label}: planned dim {i} = {p} but realized = {realized[i]} "
+                f"(planned {planned} vs realized {realized})"
+            )
+
+
 # ---------------------------------------------------------------------------
 # 2. Registry parity (B1/B2) — one op, known everywhere, contracted once
 # ---------------------------------------------------------------------------
@@ -338,6 +410,30 @@ def test_contract_parity_output_domain(op_name):
         f"{op_name}: Python domain {expected!r} but Rust authority says "
         f"{contract['output_domain']!r}"
     )
+
+
+@plugin_required
+@pytest.mark.parametrize("op_name", sorted(_OP_BUILDERS))
+def test_contract_exposes_rank_and_channel_rules(op_name):
+    """Every op's contract exposes a rank_rule and channel_rule in the known
+    vocabulary — the single authority the Python planner reads instead of
+    re-declaring an NdimEffect/AlphaMode of its own."""
+    import json
+
+    contract_fn = getattr(getattr(polars_cv, "_lib", None), "op_contract", None)
+    if not callable(contract_fn):
+        pytest.skip("_lib.op_contract() not built")
+
+    contract = contract_fn(json.dumps(_OP_BUILDERS[op_name]()._ops[-1].to_dict()))
+    rank, channel = contract["rank_rule"], contract["channel_rule"]
+
+    assert rank in ("preserve", "reduce_one", "unknown") or (
+        rank.startswith("fixed:") and rank.split(":", 1)[1].isdigit()
+    ), f"{op_name}: unexpected rank_rule {rank!r}"
+    assert channel in ("preserve", "n/a", "unknown") or (
+        channel.startswith(("fixed:", "strip_restore:"))
+        and channel.split(":", 1)[1].isdigit()
+    ), f"{op_name}: unexpected channel_rule {channel!r}"
 
 
 # ---------------------------------------------------------------------------
