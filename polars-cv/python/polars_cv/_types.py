@@ -475,22 +475,11 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
     "convolve2d": OpContract(
         DTypeEffect.PROMOTE_TO_FLOAT, NdimEffect.PRESERVE, AlphaMode.PASSTHROUGH
     ),
-    # sobel/laplacian/sharpen: STRIP_PROCESS_RESTORE — edge/frequency filters on color channels.
-    "sobel": OpContract(
-        DTypeEffect.PROMOTE_TO_FLOAT,
-        NdimEffect.PRESERVE,
-        AlphaMode.STRIP_PROCESS_RESTORE,
-    ),
-    "laplacian": OpContract(
-        DTypeEffect.PROMOTE_TO_FLOAT,
-        NdimEffect.PRESERVE,
-        AlphaMode.STRIP_PROCESS_RESTORE,
-    ),
-    "sharpen": OpContract(
-        DTypeEffect.PROMOTE_TO_FLOAT,
-        NdimEffect.PRESERVE,
-        AlphaMode.STRIP_PROCESS_RESTORE,
-    ),
+    # NOTE: sobel/laplacian/sharpen are NOT listed here. They are convenience
+    # builders that lower to convolve2d (op="convolve2d"); they never emit their
+    # own op name, so a contract keyed by "sobel"/"laplacian"/"sharpen" would be
+    # dead. The convolve2d contract above is the one that actually applies.
+    # test_registry_parity_no_dead_contracts guards that these stay non-ops.
     # --- Morphological operations — DROP: single-channel only, alpha discarded ---
     "erode": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.DROP),
     "dilate": OpContract(DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.DROP),

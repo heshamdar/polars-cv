@@ -211,7 +211,7 @@ def test_registry_parity_no_dead_contracts():
 # same knowledge as DTypeEffect; this test fails if the two drift (the exact
 # class of bug that made the blur contract say u8 while execution produced f32).
 
-# Python DTypeEffect.value -> canonical rule string returned by _lib.op_dtype_rule.
+# Python DTypeEffect.value -> canonical rule string in _lib.op_contract["dtype_rule"].
 _EFFECT_TO_RULE = {
     "preserve": "preserve",
     "promote": "promote",
@@ -267,9 +267,6 @@ _OP_PARITY_EXCEPTIONS = {
     "perceptual_hash": "vector domain", "rasterize": "contour->buffer source op",
     "contour_area": "contour domain", "contour_perimeter": "contour domain",
     "contour_centroid": "contour domain", "contour_bounding_box": "contour domain",
-    # Dead contracts (B2): these lower to convolve2d and never appear as an op.
-    "sobel": "lowers to convolve2d (B2)", "laplacian": "lowers to convolve2d (B2)",
-    "sharpen": "lowers to convolve2d (B2)",
     # Graph-level / multi-input or complex-param ops not yet covered by a builder.
     "channel_merge": "multi-input graph op", "warp_affine": "matrix params",
     "rotate": "param-dependent fast-path vs affine", "reshape": "param-dependent ndim",
@@ -302,13 +299,13 @@ def test_contract_parity_dtype_rule(op_name):
 
     from polars_cv._types import OPERATION_CONTRACTS
 
-    rule_fn = getattr(getattr(polars_cv, "_lib", None), "op_dtype_rule", None)
-    if not callable(rule_fn):
-        pytest.skip("_lib.op_dtype_rule() not built")
+    contract_fn = getattr(getattr(polars_cv, "_lib", None), "op_contract", None)
+    if not callable(contract_fn):
+        pytest.skip("_lib.op_contract() not built")
 
     pipe = _OP_BUILDERS[op_name]()
     op_json = json.dumps(pipe._ops[-1].to_dict())
-    rust_rule = rule_fn(op_json)
+    rust_rule = contract_fn(op_json)["dtype_rule"]
 
     effect = OPERATION_CONTRACTS[op_name].dtype_effect.value
     expected = _EFFECT_TO_RULE[effect]

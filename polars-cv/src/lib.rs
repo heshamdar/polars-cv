@@ -26,7 +26,6 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register tiling configuration functions
     m.add_function(wrap_pyfunction!(configure_tiling, m)?)?;
     m.add_function(wrap_pyfunction!(get_tiling_config, m)?)?;
-    m.add_function(wrap_pyfunction!(op_dtype_rule, m)?)?;
     m.add_function(wrap_pyfunction!(op_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
@@ -101,24 +100,10 @@ fn dtype_rule_name(rule: view_buffer::OutputDTypeRule) -> String {
     }
 }
 
-/// Return the canonical output-dtype rule for a single serialized op spec.
-///
-/// `op_json` is one `OpSpec` as produced by the Python builder
-/// (`OpSpec.to_dict()`): `{"op": "<name>", "<param>": {..ParamValue..}, ...}`.
-///
-/// This exposes view-buffer's `ViewDto::output_dtype_rule()` — the single
-/// authority for "what dtype does this op produce" — so the Python schema layer
-/// can be checked against (and ultimately defer to) it instead of maintaining a
-/// parallel dtype table that can drift.
-#[pyfunction]
-fn op_dtype_rule(op_json: &str) -> PyResult<String> {
-    Ok(dtype_rule_name(resolve_op_from_json(op_json)?.output_dtype_rule()))
-}
-
 /// Resolve one serialized op spec to its `ViewDto`, mapping errors to Python.
 ///
-/// Shared by `op_dtype_rule`, `op_output_dtype`, and `op_contract` so none of
-/// them re-implement the deserialize → resolve path.
+/// Shared by `op_output_dtype` and `op_contract` so neither re-implements the
+/// deserialize → resolve path.
 ///
 /// Expression parameters (dynamic, per-row values like a column-driven resize
 /// height) are *neutralized* with a placeholder before resolution: each
