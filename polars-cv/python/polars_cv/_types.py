@@ -435,8 +435,12 @@ OPERATION_CONTRACTS: dict[str, OpContract] = {
     # Threshold: DROP — requires single-channel input.
     "threshold": OpContract(DTypeEffect.FIXED_U8, NdimEffect.PRESERVE, AlphaMode.DROP),
     # Blur: STRIP_PROCESS_RESTORE — alpha separated, blur on color, alpha restored.
+    # Blur preserves the input dtype (Gaussian smoothing is value-preserving); this
+    # mirrors view-buffer's ImageOpKind::Blur => OutputDTypeRule::PreserveInput. The
+    # contract previously declared FIXED_U8, which made `cast(f32).blur(...)` fail the
+    # execution-time dtype guard (planned u8 vs produced f32).
     "blur": OpContract(
-        DTypeEffect.FIXED_U8, NdimEffect.PRESERVE, AlphaMode.STRIP_PROCESS_RESTORE
+        DTypeEffect.PRESERVE, NdimEffect.PRESERVE, AlphaMode.STRIP_PROCESS_RESTORE
     ),
     # Rotate: PASSTHROUGH — all channels rotated uniformly.
     "rotate": OpContract(

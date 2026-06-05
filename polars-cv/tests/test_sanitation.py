@@ -95,6 +95,22 @@ def test_plan_equals_exec_list_sink(label, build):
 
 
 @plugin_required
+def test_plan_equals_exec_blur_preserves_float_dtype():
+    """blur preserves dtype: `cast(f32).blur()` must plan AND produce f32.
+
+    Regression for an A1 contract drift: the Python blur contract declared
+    FIXED_U8 while view-buffer's blur preserves the input dtype, so this
+    pipeline previously failed the execution-time dtype guard.
+    """
+    df = pl.DataFrame({"out": [_png()]})
+    pipe = Pipeline().source("image_bytes").resize(height=6, width=6).cast("f32").blur(sigma=1.0)
+    expr = pl.col("out").cv.pipe(pipe).sink("list")
+    planned, realized = _planned_and_realized(df, expr)
+    assert planned == realized
+    assert realized == pl.List(pl.List(pl.List(pl.Float32)))
+
+
+@plugin_required
 def test_plan_equals_exec_array_sink():
     """Array sink with explicit shape: planned == realized."""
     df = pl.DataFrame({"out": [_png(width=6, height=6)]})
