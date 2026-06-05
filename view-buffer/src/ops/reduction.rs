@@ -6,6 +6,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
 use crate::ops::cost::OpCost;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 
@@ -538,6 +539,30 @@ impl Op for ReductionOp {
                 out_shape
             }
         }
+    }
+
+    fn output_rank_rule(&self) -> OutputRankRule {
+        // Global reductions collapse to a single scalar slot ([1]); axis
+        // reductions drop the reduced axis.
+        let global = match self {
+            ReductionOp::Max { axis }
+            | ReductionOp::Min { axis }
+            | ReductionOp::Mean { axis }
+            | ReductionOp::Std { axis, .. }
+            | ReductionOp::Sum { axis } => axis.is_none(),
+            ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => false,
+            ReductionOp::PopCount | ReductionOp::Percentile { .. } => true,
+        };
+        if global {
+            OutputRankRule::Fixed(1)
+        } else {
+            OutputRankRule::ReduceByOne
+        }
+    }
+
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        // Reductions produce scalar/vector data, not an image with channels.
+        OutputChannelRule::NotApplicable
     }
 
     fn infer_dtype(&self, inputs: &[DType]) -> DType {

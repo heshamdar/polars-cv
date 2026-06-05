@@ -2,6 +2,7 @@
 
 use crate::core::dtype::DType;
 use crate::ops::cost::OpCost;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
@@ -71,6 +72,38 @@ impl Op for ViewOp {
                 } else {
                     input_shape.to_vec()
                 }
+            }
+        }
+    }
+
+    fn output_rank_rule(&self) -> OutputRankRule {
+        match self {
+            // Selecting a channel drops the trailing channel dimension.
+            ViewOp::ChannelSelect { .. } => OutputRankRule::ReduceByOne,
+            // Reshape produces an arbitrary rank known only from its target.
+            ViewOp::Reshape(_) => OutputRankRule::Unknown,
+            // Transpose/flip/crop/rotate all keep the rank.
+            ViewOp::Transpose(_)
+            | ViewOp::Flip(_)
+            | ViewOp::Crop { .. }
+            | ViewOp::Rotate90
+            | ViewOp::Rotate180
+            | ViewOp::Rotate270 => OutputRankRule::PreserveRank,
+        }
+    }
+
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        match self {
+            // ChannelSelect collapses to a single 2-D plane (no channel dim).
+            ViewOp::ChannelSelect { .. } => OutputChannelRule::NotApplicable,
+            // Transpose can move the channel axis; reshape is arbitrary; crop can
+            // slice the channel dimension itself — none are declarable up front.
+            ViewOp::Transpose(_) | ViewOp::Reshape(_) | ViewOp::Crop { .. } => {
+                OutputChannelRule::Unknown
+            }
+            // Flip/rotate preserve the channel dimension.
+            ViewOp::Flip(_) | ViewOp::Rotate90 | ViewOp::Rotate180 | ViewOp::Rotate270 => {
+                OutputChannelRule::PreserveChannels
             }
         }
     }

@@ -5,6 +5,7 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -78,6 +79,19 @@ impl ColorConvertOp {
     /// All other conversions preserve the input dtype.
     pub fn promotes_to_float(&self) -> bool {
         matches!(self.from, ColorSpace::Lab) || matches!(self.to, ColorSpace::Lab)
+    }
+
+    /// Declared rank effect: color conversion never changes the rank.
+    pub fn output_rank_rule(&self) -> OutputRankRule {
+        OutputRankRule::PreserveRank
+    }
+
+    /// Declared channel effect: the color channels become the target color
+    /// space's channel count, with any input alpha channel preserved.
+    pub fn output_channel_rule(&self) -> OutputChannelRule {
+        OutputChannelRule::StripProcessRestore {
+            color_channels: self.to.channels(),
+        }
     }
 }
 
