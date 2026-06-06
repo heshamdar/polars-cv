@@ -10,6 +10,7 @@ use crate::ops::histogram::HistogramOp;
 use crate::ops::image::ImageOp;
 use crate::ops::phash::PerceptualHashOp;
 use crate::ops::reduction::ReductionOp;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::Op;
 use crate::ops::view::ViewOp;
 use crate::ops::Domain;
@@ -241,6 +242,131 @@ impl ViewDto {
             ViewDto::Color(_) => Domain::Buffer,
             // Convolution produces buffers
             ViewDto::Filter(_) => Domain::Buffer,
+        }
+    }
+
+    /// Get the rule that determines this operation's output dtype.
+    ///
+    /// This is the single authority for "what element dtype does this op
+    /// produce". Operations backed by an [`Op`] implementation delegate to it;
+    /// graph-level variants (deferred resize, padding, channel ops, …) declare
+    /// their rule here. Plan-time schema inference and the execution-time dtype
+    /// guard both consult this, so the planned and produced dtype cannot diverge.
+    pub fn output_dtype_rule(&self) -> crate::core::dtype::OutputDTypeRule {
+        use crate::core::dtype::OutputDTypeRule;
+        match self {
+            ViewDto::View(op) => op.output_dtype_rule(),
+            ViewDto::Compute(op) => op.output_dtype_rule(),
+            ViewDto::Image(op) => op.output_dtype_rule(),
+            ViewDto::Geometry(op) => op.output_dtype_rule(),
+            ViewDto::PerceptualHash(op) => op.output_dtype_rule(),
+            ViewDto::Binary { op, .. } => op.output_dtype_rule(),
+            ViewDto::Reduction(op) => op.output_dtype_rule(),
+            ViewDto::Histogram(op) => op.output_dtype_rule(),
+            ViewDto::Filter(op) => op.output_dtype_rule(),
+            // Color conversion preserves element dtype (routes through f32 internally).
+            ViewDto::Color(_) => OutputDTypeRule::PreserveInput,
+            // Mask application preserves the buffer dtype.
+            ViewDto::ApplyMask { .. } => OutputDTypeRule::PreserveInput,
+            // Deferred resize variants only change dimensions, not dtype.
+            ViewDto::ResizeScale { .. }
+            | ViewDto::ResizeToHeight { .. }
+            | ViewDto::ResizeToWidth { .. }
+            | ViewDto::ResizeMax { .. }
+            | ViewDto::ResizeMin { .. } => OutputDTypeRule::PreserveInput,
+            // Padding preserves dtype.
+            ViewDto::Pad { .. } | ViewDto::PadToSize { .. } | ViewDto::Letterbox { .. } => {
+                OutputDTypeRule::PreserveInput
+            }
+            // Materialize is a no-op for dtype.
+            ViewDto::Materialize => OutputDTypeRule::PreserveInput,
+            // ExtractShape yields dimension values as f64.
+            ViewDto::ExtractShape => OutputDTypeRule::ForceF64,
+            // Channel reorder/merge preserve element dtype.
+            ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => {
+                OutputDTypeRule::PreserveInput
+            }
+            // LabelReduce yields f64 region measures.
+            ViewDto::LabelReduce { .. } => OutputDTypeRule::ForceF64,
+        }
+    }
+
+    /// Get the rule that determines how this operation transforms the input
+    /// *rank* (number of dimensions).
+    ///
+    /// The structural, plan-time-inspectable counterpart to `infer_shape`,
+    /// alongside [`output_dtype_rule`](ViewDto::output_dtype_rule). Op-backed
+    /// variants delegate to the [`Op`] implementation; graph-level variants
+    /// declare their rule here.
+    pub fn output_rank_rule(&self) -> OutputRankRule {
+        match self {
+            ViewDto::View(op) => op.output_rank_rule(),
+            ViewDto::Compute(op) => op.output_rank_rule(),
+            ViewDto::Image(op) => op.output_rank_rule(),
+            ViewDto::Geometry(op) => op.output_rank_rule(),
+            ViewDto::PerceptualHash(op) => op.output_rank_rule(),
+            ViewDto::Binary { op, .. } => op.output_rank_rule(),
+            ViewDto::Reduction(op) => op.output_rank_rule(),
+            ViewDto::Histogram(op) => op.output_rank_rule(),
+            ViewDto::Filter(op) => op.output_rank_rule(),
+            ViewDto::Color(op) => op.output_rank_rule(),
+            // Mask application and materialize are shape-identity.
+            ViewDto::ApplyMask { .. } | ViewDto::Materialize => OutputRankRule::PreserveRank,
+            // Deferred resize/padding only change H/W, never the rank.
+            ViewDto::ResizeScale { .. }
+            | ViewDto::ResizeToHeight { .. }
+            | ViewDto::ResizeToWidth { .. }
+            | ViewDto::ResizeMax { .. }
+            | ViewDto::ResizeMin { .. }
+            | ViewDto::Pad { .. }
+            | ViewDto::PadToSize { .. }
+            | ViewDto::Letterbox { .. } => OutputRankRule::PreserveRank,
+            // Channel reorder keeps rank; merge always yields an [H, W, C] image.
+            ViewDto::ChannelSwap { .. } => OutputRankRule::PreserveRank,
+            ViewDto::ChannelMerge { .. } => OutputRankRule::Fixed(3),
+            // ExtractShape and LabelReduce emit 1-D vectors.
+            ViewDto::ExtractShape | ViewDto::LabelReduce { .. } => OutputRankRule::Fixed(1),
+        }
+    }
+
+    /// Get the rule that determines how this operation transforms the input
+    /// *channel count* (the trailing dimension of an `[H, W, C]` buffer).
+    ///
+    /// The single authority for plan-time channel inference, replacing the
+    /// former Python-side alpha/channel contract.
+    pub fn output_channel_rule(&self) -> OutputChannelRule {
+        match self {
+            ViewDto::View(op) => op.output_channel_rule(),
+            ViewDto::Compute(op) => op.output_channel_rule(),
+            ViewDto::Image(op) => op.output_channel_rule(),
+            ViewDto::Geometry(op) => op.output_channel_rule(),
+            ViewDto::PerceptualHash(op) => op.output_channel_rule(),
+            ViewDto::Binary { op, .. } => op.output_channel_rule(),
+            ViewDto::Reduction(op) => op.output_channel_rule(),
+            ViewDto::Histogram(op) => op.output_channel_rule(),
+            ViewDto::Filter(op) => op.output_channel_rule(),
+            ViewDto::Color(op) => op.output_channel_rule(),
+            // Mask application and materialize preserve channels.
+            ViewDto::ApplyMask { .. } | ViewDto::Materialize => {
+                OutputChannelRule::PreserveChannels
+            }
+            // Deferred resize/padding preserve the channel count.
+            ViewDto::ResizeScale { .. }
+            | ViewDto::ResizeToHeight { .. }
+            | ViewDto::ResizeToWidth { .. }
+            | ViewDto::ResizeMax { .. }
+            | ViewDto::ResizeMin { .. }
+            | ViewDto::Pad { .. }
+            | ViewDto::PadToSize { .. }
+            | ViewDto::Letterbox { .. } => OutputChannelRule::PreserveChannels,
+            // Channel reorder preserves the count; merge produces one channel
+            // per merged single-channel input (this buffer + the others).
+            ViewDto::ChannelSwap { .. } => OutputChannelRule::PreserveChannels,
+            ViewDto::ChannelMerge { other_node_ids } => {
+                OutputChannelRule::Fixed(other_node_ids.len() + 1)
+            }
+            // Dimension vectors have no channel concept.
+            ViewDto::ExtractShape | ViewDto::LabelReduce { .. } => OutputChannelRule::NotApplicable,
         }
     }
 

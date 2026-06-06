@@ -112,19 +112,6 @@ Supports PNG, JPEG, WebP, TIFF, BMP, GIF, VIEW protocol blobs, and numpy-sink st
 
 ## Types
 
-### AlphaMode
-
-Declares how an operation handles alpha channels.
-
-```python
-from polars_cv import AlphaMode
-
-AlphaMode.PASSTHROUGH           # All channels processed uniformly
-AlphaMode.STRIP_PROCESS_RESTORE # Alpha separated, restored after op
-AlphaMode.DROP                  # Alpha discarded, output channels fixed
-AlphaMode.NOT_APPLICABLE        # Non-image ops
-```
-
 ### ColorSpace
 
 Color space identifiers for `cvt_color`.

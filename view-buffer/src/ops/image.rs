@@ -1,6 +1,7 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::execution::tiling::TilePolicy;
 use crate::ops::cost::OpCost;
+use crate::ops::shape_rule::OutputChannelRule;
 use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
@@ -109,6 +110,22 @@ impl Op for ImageOp {
             ImageOpKind::Erode { .. } => input_shape.to_vec(),
             ImageOpKind::Dilate { .. } => input_shape.to_vec(),
             ImageOpKind::MorphGradient { .. } => input_shape.to_vec(),
+        }
+    }
+
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        match &self.kind {
+            // Grayscale and Canny collapse to a single channel.
+            ImageOpKind::Grayscale | ImageOpKind::Canny { .. } => OutputChannelRule::Fixed(1),
+            // Threshold, Resize, Blur, HistogramEqualize and the morphological
+            // operations are applied per-channel and preserve the channel count.
+            ImageOpKind::Threshold(_)
+            | ImageOpKind::Resize { .. }
+            | ImageOpKind::Blur { .. }
+            | ImageOpKind::HistogramEqualize
+            | ImageOpKind::Erode { .. }
+            | ImageOpKind::Dilate { .. }
+            | ImageOpKind::MorphGradient { .. } => OutputChannelRule::PreserveChannels,
         }
     }
 

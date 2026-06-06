@@ -43,6 +43,15 @@ pub struct OutputSpec {
     /// Expected number of dimensions for list sinks.
     #[serde(default)]
     pub expected_ndim: Option<usize>,
+    /// Optional sink encoding selector, independent of the output domain.
+    ///
+    /// Some outputs share a domain but need a distinct Polars schema. For
+    /// example histogram buckets are a `vector`-domain output, but are encoded
+    /// as `List(Struct[lower_edge, upper_edge, count, normalized])`. Python sets
+    /// this to `"histogram_buckets"` for that case; `None` means encode by the
+    /// (domain, format) pair as usual.
+    #[serde(default)]
+    pub expected_encoding: Option<String>,
 }
 /// Result type for individual row execution.
 ///
@@ -1202,7 +1211,8 @@ impl UnifiedGraph {
                 for (alias, spec) in &self.outputs {
                     if let Some(output) = node_outputs.get(&spec.node) {
                         // Validate that the buffer dtype matches the planned
-                        // expected_dtype from the Python contract system.
+                        // expected_dtype (inferred by the Python planner from
+                        // this op's view-buffer contract).
                         // "auto" is resolved elsewhere and skipped here.
                         if spec.expected_dtype != "auto" {
                             if let Some(buf) = output.as_buffer() {
@@ -1214,7 +1224,7 @@ impl UnifiedGraph {
                                         return Err(format!(
                                             "Output '{alias}': planned dtype {expected:?} but execution \
                                              produced {actual:?}. This indicates a mismatch between \
-                                             the Python OpContract and the Rust implementation."
+                                             the planner's view-buffer contract and the Rust implementation."
                                         ));
                                     }
                                 }

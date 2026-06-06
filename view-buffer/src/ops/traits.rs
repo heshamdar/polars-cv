@@ -3,6 +3,7 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::execution::tiling::TilePolicy;
 use crate::ops::cost::OpCost;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::validation::ValidationError;
 use crate::ops::{Domain, NodeOutput};
 
@@ -45,6 +46,32 @@ pub trait Op {
 
     /// Infers the output shape given input shapes.
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize>;
+
+    /// Declares how this operation transforms the input *rank* (number of
+    /// dimensions).
+    ///
+    /// This is the plan-time-inspectable, structural counterpart to
+    /// [`infer_shape`](Op::infer_shape): it states the rank effect abstractly
+    /// (and can say [`Unknown`](OutputRankRule::Unknown)) without a concrete
+    /// input shape. `infer_shape` stays the concrete authority; the two are
+    /// bound by a parity test so they cannot diverge.
+    ///
+    /// Default: [`OutputRankRule::PreserveRank`].
+    fn output_rank_rule(&self) -> OutputRankRule {
+        OutputRankRule::PreserveRank
+    }
+
+    /// Declares how this operation transforms the input *channel count* (the
+    /// trailing dimension of an `[H, W, C]` buffer).
+    ///
+    /// The plan-time-inspectable, structural counterpart to
+    /// [`infer_shape`](Op::infer_shape) for the channel dimension. Replaces the
+    /// Python-side alpha/channel contract as the single authority.
+    ///
+    /// Default: [`OutputChannelRule::PreserveChannels`].
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        OutputChannelRule::PreserveChannels
+    }
 
     /// Infers the output dtype given input dtypes.
     ///

@@ -601,6 +601,12 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
 ///
 /// Returns the appropriate dtype based on domain, sink format, and expected dtype.
 pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
+    // Encoding takes precedence over the (domain, format) pair: it selects a
+    // distinct Polars schema for outputs that share a domain (e.g. histogram
+    // buckets are a vector-domain output encoded as a struct list).
+    if spec.expected_encoding.as_deref() == Some("histogram_buckets") {
+        return Ok(DataType::List(Box::new(histogram_struct_dtype())));
+    }
     let format = spec.sink.format.as_str();
     let domain = spec.expected_domain.as_str();
     match (domain, format) {
@@ -661,7 +667,6 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             }
         }
         ("contour", "native") => Ok(DataType::List(Box::new(contour_struct_dtype()))),
-        ("histogram", "native") => Ok(DataType::List(Box::new(histogram_struct_dtype()))),
         _ => Ok(DataType::Binary),
     }
 }
@@ -670,6 +675,9 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
 /// This ensures that null values are pushed with the appropriate type variant,
 /// allowing the series builder to use static type information.
 pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> RowResult {
+    if spec.expected_encoding.as_deref() == Some("histogram_buckets") {
+        return RowResult::HistogramBuckets(None);
+    }
     let format = spec.sink.format.as_str();
     let domain = spec.expected_domain.as_str();
     match (domain, format) {
@@ -679,7 +687,6 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> RowResult {
         ("buffer", "array") => RowResult::TypedArray(None),
         ("scalar", "native") => RowResult::Scalar(None),
         ("contour", "native") => RowResult::Contours(None),
-        ("histogram", "native") => RowResult::HistogramBuckets(None),
         _ => RowResult::Binary(None),
     }
 }
@@ -696,6 +703,19 @@ pub(crate) fn build_series_from_spec(
     let format = spec.sink.format.as_str();
     let domain = spec.expected_domain.as_str();
     let dtype = &spec.expected_dtype;
+    if spec.expected_encoding.as_deref() == Some("histogram_buckets") {
+        let values: PolarsResult<Vec<AnyValue<'static>>> = data
+            .iter()
+            .map(|r| match r {
+                RowResult::HistogramBuckets(Some(buckets)) => {
+                    histogram_buckets_to_polars_value(buckets)
+                }
+                _ => Ok(AnyValue::Null),
+            })
+            .collect();
+        let histogram_dtype = DataType::List(Box::new(histogram_struct_dtype()));
+        return Series::from_any_values_and_dtype(name, &values?, &histogram_dtype, true);
+    }
     match (domain, format) {
         ("buffer", "numpy" | "torch") => {
             let buffers: Vec<Option<ViewBuffer>> = data
@@ -819,20 +839,6 @@ pub(crate) fn build_series_from_spec(
             let values = values?;
             let contour_dtype = DataType::List(Box::new(contour_struct_dtype()));
             Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
-        }
-        ("histogram", "native") => {
-            let values: PolarsResult<Vec<AnyValue<'static>>> = data
-                .iter()
-                .map(|r| match r {
-                    RowResult::HistogramBuckets(Some(buckets)) => {
-                        histogram_buckets_to_polars_value(buckets)
-                    }
-                    _ => Ok(AnyValue::Null),
-                })
-                .collect();
-            let values = values?;
-            let histogram_dtype = DataType::List(Box::new(histogram_struct_dtype()));
-            Series::from_any_values_and_dtype(name, &values, &histogram_dtype, true)
         }
         _ => {
             let binary_data: Vec<Option<Vec<u8>>> = data

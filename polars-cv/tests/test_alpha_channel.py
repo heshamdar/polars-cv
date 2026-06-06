@@ -1,8 +1,8 @@
 """Tests for alpha channel preservation and handling.
 
 Verifies that RGBA (4-channel) and GrayA (2-channel) images are decoded,
-processed, and encoded correctly, and that the AlphaMode contract system
-drives channel inference at planning time.
+processed, and encoded correctly, and that view-buffer's per-op channel rules
+drive channel inference at planning time.
 """
 
 from __future__ import annotations
@@ -11,8 +11,7 @@ import io
 
 import numpy as np
 import polars as pl
-from polars_cv import AlphaMode, Pipeline
-from polars_cv._types import OPERATION_CONTRACTS
+from polars_cv import Pipeline
 
 from tests.conftest import plugin_required
 
@@ -79,100 +78,8 @@ def _extract_shape(df: pl.DataFrame, col: str = "output") -> list[int]:
     return list(arr.shape)
 
 
-# ---------------------------------------------------------------------------
-# Contract tests (no plugin required)
-# ---------------------------------------------------------------------------
-
-
-class TestAlphaModeContracts:
-    """Verify AlphaMode is assigned correctly in OPERATION_CONTRACTS."""
-
-    def test_passthrough_ops_have_passthrough(self) -> None:
-        """Spatial and element-wise ops should be PASSTHROUGH."""
-        passthrough_ops = [
-            "resize",
-            "normalize",
-            "cast",
-            "clamp",
-            "scale",
-            "relu",
-            "flip",
-            "transpose",
-            "crop",
-            "pad",
-            "pad_to_size",
-            "letterbox",
-            "rotate",
-            "reshape",
-            "adjust_contrast",
-            "adjust_gamma",
-            "invert",
-            "convolve2d",
-            "channel_swap",
-            "equalize_histogram",
-        ]
-        for op in passthrough_ops:
-            contract = OPERATION_CONTRACTS[op]
-            assert contract.alpha_mode is AlphaMode.PASSTHROUGH, (
-                f"{op} should be PASSTHROUGH, got {contract.alpha_mode}"
-            )
-
-    def test_drop_ops_have_drop(self) -> None:
-        """Ops that discard alpha should be DROP."""
-        drop_ops = [
-            "grayscale",
-            "canny",
-            "threshold",
-            "channel_select",
-            "perceptual_hash",
-            "erode",
-            "dilate",
-            "morphology_gradient",
-        ]
-        for op in drop_ops:
-            contract = OPERATION_CONTRACTS[op]
-            assert contract.alpha_mode is AlphaMode.DROP, (
-                f"{op} should be DROP, got {contract.alpha_mode}"
-            )
-
-    def test_strip_process_restore_ops(self) -> None:
-        """Ops that strip, process, and restore alpha."""
-        spr_ops = ["blur", "cvt_color", "sobel", "laplacian", "sharpen"]
-        for op in spr_ops:
-            contract = OPERATION_CONTRACTS[op]
-            assert contract.alpha_mode is AlphaMode.STRIP_PROCESS_RESTORE, (
-                f"{op} should be STRIP_PROCESS_RESTORE, got {contract.alpha_mode}"
-            )
-
-    def test_not_applicable_ops(self) -> None:
-        """Non-image domain ops should be NOT_APPLICABLE."""
-        na_ops = [
-            "reduce_sum",
-            "reduce_mean",
-            "extract_shape",
-            "contour_area",
-            "histogram",
-            "channel_merge",
-        ]
-        for op in na_ops:
-            contract = OPERATION_CONTRACTS[op]
-            assert contract.alpha_mode is AlphaMode.NOT_APPLICABLE, (
-                f"{op} should be NOT_APPLICABLE, got {contract.alpha_mode}"
-            )
-
-    def test_every_contract_has_alpha_mode(self) -> None:
-        """All contracts should have an explicitly set AlphaMode."""
-        for op_name, contract in OPERATION_CONTRACTS.items():
-            assert hasattr(contract, "alpha_mode"), (
-                f"{op_name} contract is missing alpha_mode"
-            )
-            assert isinstance(contract.alpha_mode, AlphaMode), (
-                f"{op_name} alpha_mode is not an AlphaMode enum"
-            )
-
-
 class TestChannelInferencePlanning:
-    """Verify planning-time channel inference uses AlphaMode correctly."""
+    """Verify planning-time channel inference uses the Rust channel rules."""
 
     def test_image_source_channels_unknown(self) -> None:
         """Image sources should have unknown channels at planning time."""

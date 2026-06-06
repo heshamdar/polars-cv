@@ -15,8 +15,6 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._types import (
-    OPERATION_CONTRACTS,
-    AlphaMode,
     CloudOptions,
     ColorSpace,
     DType,
@@ -25,7 +23,6 @@ from polars_cv._types import (
     HashAlgorithm,
     HistogramOutput,
     IntOrExpr,
-    NdimEffect,
     NormalizeMethod,
     OpSpec,
     OutputDType,
@@ -113,30 +110,30 @@ class Pipeline:
     DOMAIN_CONTOUR = "contour"
     DOMAIN_SCALAR = "scalar"
     DOMAIN_VECTOR = "vector"
-    DOMAIN_HISTOGRAM = "histogram"
 
-    # Mapping of operations to the domain they produce
-    # Operations not listed here preserve the current domain
-    # Note: reduce_argmax/reduce_argmin always preserve buffer domain (reduced shape)
-    _OPERATION_OUTPUT_DOMAIN: dict[str, str] = {
-        "extract_shape": DOMAIN_VECTOR,
-        "perceptual_hash": DOMAIN_VECTOR,
-        "histogram": DOMAIN_VECTOR,  # For most modes, quantized preserves buffer
-        "reduce_sum": DOMAIN_SCALAR,
-        "reduce_max": DOMAIN_SCALAR,  # When axis=None
-        "reduce_min": DOMAIN_SCALAR,
-        "reduce_mean": DOMAIN_SCALAR,
-        "reduce_std": DOMAIN_SCALAR,
-        "reduce_popcount": DOMAIN_SCALAR,
-        # reduce_argmax/reduce_argmin are NOT here - they always preserve buffer domain
-        "extract_contours": DOMAIN_CONTOUR,
-        "rasterize": DOMAIN_BUFFER,
-        "contour_area": DOMAIN_SCALAR,
-        "contour_perimeter": DOMAIN_SCALAR,
-        "contour_centroid": DOMAIN_VECTOR,
-        "contour_bounding_box": DOMAIN_VECTOR,
-        "label_reduce": DOMAIN_VECTOR,
-    }
+    # Registry of every operation name a pipeline can emit (via builder methods
+    # here and the binary-op helpers in lazy.py). It must be a subset of the
+    # Rust executor's registry (``_lib.known_ops()``) so every emitted op is
+    # executable — enforced by ``test_registry_parity_*`` and kept honest by a
+    # source-scan drift test in test_sanitation.py.
+    OP_NAMES: frozenset[str] = frozenset({
+        "add", "adjust_contrast", "adjust_gamma", "apply_mask", "bitwise_and",
+        "bitwise_or", "bitwise_xor", "blend", "blur", "canny",
+        "cast", "channel_select", "channel_swap", "clamp", "contour_area",
+        "contour_bounding_box", "contour_centroid", "contour_convex_hull",
+        "contour_perimeter", "contour_scale", "contour_simplify",
+        "contour_translate", "convolve2d", "crop", "cvt_color",
+        "dilate", "divide", "equalize_histogram", "erode", "extract_contours",
+        "extract_shape", "flip", "grayscale", "histogram", "invert",
+        "label_reduce", "letterbox", "maximum", "minimum", "morphology_gradient",
+        "multiply", "normalize", "pad", "pad_to_size", "perceptual_hash",
+        "rasterize", "ratio", "reduce_argmax", "reduce_argmin", "reduce_max",
+        "reduce_mean", "reduce_min", "reduce_percentile", "reduce_popcount",
+        "reduce_std", "reduce_sum", "relu", "reshape", "resize",
+        "resize_max", "resize_min", "resize_scale", "resize_to_height",
+        "resize_to_width", "rotate", "scale", "subtract", "threshold",
+        "transpose", "warp_affine",
+    })
 
     def __init__(self) -> None:
         """Initialize an empty pipeline."""
@@ -162,9 +159,10 @@ class Pipeline:
         """
         Compute the output domain, dtype, and ndim after applying operations.
 
-        Uses :data:`OPERATION_CONTRACTS` for dtype and ndim inference.
-        Param-dependent overrides (cast, histogram, axis reductions) are
-        handled as special cases on top of the contract defaults.
+        Every op's domain, dtype and rank come from view-buffer's per-op contract
+        (``op_contract`` / ``op_output_dtype``) — the single authority. A few
+        param-dependent cases (cast, histogram, axis reductions) are handled as
+        special cases on top of those results.
 
         Args:
             ops: Sequence of operations to analyze.
@@ -179,21 +177,27 @@ class Pipeline:
         dtype = initial_dtype
         ndim = initial_ndim
 
+        from polars_cv._lib import op_contract, op_output_dtype
+
         for op_spec in ops:
             op_name = op_spec.op
+            op_json = json.dumps(op_spec.to_dict())
+            # The single authority for this op's schema effect: output domain,
+            # dtype rule, rank rule and channel rule all come from view-buffer's
+            # ViewDto contract, so no Python table re-declares them.
+            rust = op_contract(op_json)
 
-            # --- Domain ---
-            if op_name in Pipeline._OPERATION_OUTPUT_DOMAIN:
-                domain = Pipeline._OPERATION_OUTPUT_DOMAIN[op_name]
+            # --- Domain (view-buffer authority) ---
+            # ``any`` is view-buffer's identity domain (materialize); it leaves
+            # the pipeline domain unchanged.
+            if rust["output_domain"] != "any":
+                domain = rust["output_domain"]
 
-            # --- Dtype (contract-based) ---
-            # Save the pre-contract dtype so axis-based reductions that
-            # PRESERVE can fall back to the input dtype rather than the
-            # contract's global default.
-            pre_contract_dtype = dtype
-            contract = OPERATION_CONTRACTS.get(op_name)
-            if contract is not None:
-                dtype = contract.resolve_dtype(dtype, op_spec.params)
+            # --- Dtype (resolved by view-buffer's output_dtype_rule) ---
+            # Save the input dtype so axis-based reductions that PRESERVE can
+            # fall back to it rather than a global default.
+            pre_dtype = dtype
+            dtype = op_output_dtype(op_json, dtype)
 
             # Param-dependent override: cast uses the explicit dtype param
             if op_name == "cast":
@@ -212,7 +216,9 @@ class Pipeline:
                         # ndim remains same – skip generic ndim logic below
                         continue
                     elif mode == "buckets":
-                        domain = Pipeline.DOMAIN_HISTOGRAM
+                        # Buckets are a vector-domain output; their struct schema
+                        # is selected by the sink encoding, not the domain.
+                        domain = Pipeline.DOMAIN_VECTOR
                         # dtype is structurally defined by the native encoder
                         dtype = "auto"
                         ndim = 1
@@ -225,7 +231,7 @@ class Pipeline:
                         ndim = 1
                 else:
                     # Default mode is buckets -> ndim=1
-                    domain = Pipeline.DOMAIN_HISTOGRAM
+                    domain = Pipeline.DOMAIN_VECTOR
                     dtype = "auto"
                     ndim = 1
                 continue  # ndim already set; skip generic ndim logic
@@ -248,10 +254,10 @@ class Pipeline:
                     and axis_param.value is not None
                 ):
                     # Axis reduction: keeps buffer domain, reduces ndim by 1.
-                    # Dtype for axis-based reduce_max/reduce_min is PRESERVE
-                    # (the contract's global FIXED_F64 doesn't apply here).
+                    # reduce_max/reduce_min preserve the input dtype (view-buffer's
+                    # rule already does this; kept explicit for clarity).
                     if op_name in ("reduce_max", "reduce_min"):
-                        dtype = pre_contract_dtype
+                        dtype = pre_dtype
                     domain = Pipeline.DOMAIN_BUFFER
                     if ndim is not None:
                         ndim = max(0, ndim - 1)
@@ -268,19 +274,16 @@ class Pipeline:
                 ndim = 0
                 continue
 
-            # Generic ndim from contract
-            if contract is not None:
-                ndim_eff = contract.ndim_effect
-                if ndim_eff is NdimEffect.TO_ZERO:
-                    ndim = 0
-                elif ndim_eff is NdimEffect.TO_ONE:
-                    ndim = 1
-                elif ndim_eff is NdimEffect.TO_THREE:
-                    ndim = 3
-                elif ndim_eff is NdimEffect.REDUCE_ONE:
-                    if ndim is not None:
-                        ndim = max(0, ndim - 1)
-                # PRESERVE → ndim unchanged
+            # Generic ndim from the Rust rank rule (single authority). For
+            # buffer-domain ops this is the rank; scalar/vector domains are then
+            # overridden by the domain sync below (0 / 1).
+            rank_rule = rust["rank_rule"]
+            if rank_rule.startswith("fixed:"):
+                ndim = int(rank_rule.split(":", 1)[1])
+            elif rank_rule == "reduce_one":
+                if ndim is not None:
+                    ndim = max(0, ndim - 1)
+            # "preserve" / "unknown" → ndim unchanged
 
             # Sync ndim with domain for scalar/vector domains
             if domain == Pipeline.DOMAIN_SCALAR:
@@ -378,6 +381,25 @@ class Pipeline:
         """
         return self._output_dtype
 
+    def output_encoding(self) -> str | None:
+        """Get the sink encoding selector for this pipeline's output, if any.
+
+        Most outputs are encoded by their (domain, sink-format) pair. A few share
+        a domain but need a distinct Polars schema; this names that encoding so it
+        can be carried alongside the domain rather than overloading it.
+
+        Currently the only such case is histogram ``buckets``: a ``vector``-domain
+        output encoded as ``List(Struct[lower_edge, upper_edge, count,
+        normalized])``. Returns ``"histogram_buckets"`` for it, else ``None``.
+        """
+        if self._ops:
+            last = self._ops[-1]
+            if last.op == "histogram":
+                mode = last.params.get("output")
+                if mode is not None and not mode.is_expr and mode.value == "buckets":
+                    return "histogram_buckets"
+        return None
+
     def _update_output_dtype(self, op_name: str) -> None:
         """
         Update the output dtype based on the operation being added.
@@ -400,8 +422,8 @@ class Pipeline:
         Update shape hints based on the operation being added.
 
         Height/width updates are handled per-op. Channel updates are driven
-        by the operation's ``AlphaMode`` contract via
-        :meth:`_update_channels_from_contract`.
+        by the operation's view-buffer channel rule via
+        :meth:`_update_channels_from_rule`.
 
         Args:
             op_name: Name of the operation.
@@ -527,73 +549,48 @@ class Pipeline:
             else:
                 self._shape_hints.width = None
 
-        # --- Channel updates driven by AlphaMode contract ---
-        self._update_channels_from_contract(op_name, params)
+        # --- Channel updates driven by the Rust channel rule ---
+        self._update_channels_from_rule()
 
-    def _update_channels_from_contract(
-        self, op_name: str, params: dict[str, ParamValue]
-    ) -> None:
-        """Update channel hints based on the operation's ``AlphaMode`` contract.
+    def _update_channels_from_rule(self) -> None:
+        """Update channel hints from the operation's view-buffer channel rule.
 
-        Args:
-            op_name: Name of the operation.
-            params: Parameters of the operation.
+        Reads ``output_channel_rule`` from the op contract (the single
+        authority) rather than re-declaring alpha handling in Python. The op is
+        read from ``self._ops[-1]`` so its full parameter set (e.g. an erode
+        ``ksize``, a cvt_color target space) is available to resolve the rule:
+
+        - ``preserve`` / ``n/a``: leave the channel hint unchanged.
+        - ``unknown``: the effect is not knowable at plan time → drop the hint.
+        - ``fixed:<n>``: the op always produces ``n`` channels (e.g. grayscale).
+        - ``strip_restore:<c>``: ``c`` color channels plus a preserved input
+          alpha channel (an input channel count of 2 or 4).
         """
-        contract = OPERATION_CONTRACTS.get(op_name)
-        if contract is None:
+        from polars_cv._lib import op_contract
+
+        op_json = json.dumps(self._ops[-1].to_dict())
+        rule = op_contract(op_json)["channel_rule"]
+
+        if rule in ("preserve", "n/a"):
             return
-
-        if contract.alpha_mode is AlphaMode.PASSTHROUGH:
+        if rule == "unknown":
+            self._shape_hints.channels = None
             return
-
-        if contract.alpha_mode is AlphaMode.NOT_APPLICABLE:
+        if rule.startswith("fixed:"):
+            self._shape_hints.channels = ParamValue(
+                is_expr=False, value=int(rule.split(":", 1)[1])
+            )
             return
-
-        if contract.alpha_mode is AlphaMode.DROP:
-            if contract.ndim_effect is NdimEffect.PRESERVE:
-                self._shape_hints.channels = ParamValue(is_expr=False, value=1)
-            return
-
-        if contract.alpha_mode is AlphaMode.STRIP_PROCESS_RESTORE:
-            op_color_channels = self._get_op_color_channels(op_name, params)
-            if op_color_channels is None:
-                self._shape_hints.channels = None
-                return
-
+        if rule.startswith("strip_restore:"):
+            color_channels = int(rule.split(":", 1)[1])
             input_c = self._shape_hints.channels
             if input_c is not None and not input_c.is_expr:
                 has_alpha = input_c.value in (2, 4)
-                output_c = op_color_channels + (1 if has_alpha else 0)
-                self._shape_hints.channels = ParamValue(is_expr=False, value=output_c)
+                self._shape_hints.channels = ParamValue(
+                    is_expr=False, value=color_channels + (1 if has_alpha else 0)
+                )
             else:
                 self._shape_hints.channels = None
-
-    def _get_op_color_channels(
-        self, op_name: str, params: dict[str, ParamValue]
-    ) -> int | None:
-        """Return the number of color channels an operation produces.
-
-        Used by STRIP_PROCESS_RESTORE ops to compute total output channels
-        (color channels + 1 if alpha is present).
-
-        Args:
-            op_name: Name of the operation.
-            params: Parameters of the operation.
-
-        Returns:
-            Number of output color channels, or ``None`` if unknown.
-        """
-        if op_name == "cvt_color":
-            to_space = params.get("to_space")
-            if to_space and not to_space.is_expr:
-                return 1 if to_space.value == "gray" else 3
-            return None
-        # blur, sobel, laplacian, sharpen preserve input color channel count
-        input_c = self._shape_hints.channels
-        if input_c is not None and not input_c.is_expr:
-            has_alpha = input_c.value in (2, 4)
-            return input_c.value - (1 if has_alpha else 0)
-        return None
 
     def _compute_rotate_expand_shape(self, norm_angle: float) -> None:
         """Compute output dimensions for ``rotate(expand=True)``.
@@ -3170,7 +3167,9 @@ class Pipeline:
             new._current_domain = self.DOMAIN_BUFFER
             new._output_dtype = "u32"
         elif output_mode == HistogramOutput.BUCKETS:
-            new._current_domain = self.DOMAIN_HISTOGRAM
+            # Buckets are a vector-domain output; the bucket-struct schema is
+            # selected by the sink encoding (see output_encoding), not the domain.
+            new._current_domain = self.DOMAIN_VECTOR
             new._output_dtype = "auto"
         else:
             # All other modes return a vector
