@@ -111,6 +111,30 @@ class Pipeline:
     DOMAIN_SCALAR = "scalar"
     DOMAIN_VECTOR = "vector"
 
+    # Registry of every operation name a pipeline can emit (via builder methods
+    # here and the binary-op helpers in lazy.py). It must be a subset of the
+    # Rust executor's registry (``_lib.known_ops()``) so every emitted op is
+    # executable — enforced by ``test_registry_parity_*`` and kept honest by a
+    # source-scan drift test in test_sanitation.py.
+    OP_NAMES: frozenset[str] = frozenset({
+        "add", "adjust_contrast", "adjust_gamma", "apply_mask", "bitwise_and",
+        "bitwise_or", "bitwise_xor", "blend", "blur", "canny",
+        "cast", "channel_select", "channel_swap", "clamp", "contour_area",
+        "contour_bounding_box", "contour_centroid", "contour_convex_hull",
+        "contour_perimeter", "contour_scale", "contour_simplify",
+        "contour_translate", "convolve2d", "crop", "cvt_color",
+        "dilate", "divide", "equalize_histogram", "erode", "extract_contours",
+        "extract_shape", "flip", "grayscale", "histogram", "invert",
+        "label_reduce", "letterbox", "maximum", "minimum", "morphology_gradient",
+        "multiply", "normalize", "pad", "pad_to_size", "perceptual_hash",
+        "rasterize", "ratio", "reduce_argmax", "reduce_argmin", "reduce_max",
+        "reduce_mean", "reduce_min", "reduce_percentile", "reduce_popcount",
+        "reduce_std", "reduce_sum", "relu", "reshape", "resize",
+        "resize_max", "resize_min", "resize_scale", "resize_to_height",
+        "resize_to_width", "rotate", "scale", "subtract", "threshold",
+        "transpose", "warp_affine",
+    })
+
     def __init__(self) -> None:
         """Initialize an empty pipeline."""
         self._source: SourceSpec | None = None

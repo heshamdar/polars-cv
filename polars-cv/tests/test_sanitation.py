@@ -258,6 +258,40 @@ def test_registry_parity_pipeline_ops_are_executable():
     assert not missing, f"Pipeline ops with no Rust executor arm: {sorted(missing)}"
 
 
+def _emitted_op_names_from_source():
+    """Op names actually emitted by the Python builders, scanned from source.
+
+    Pipeline builders emit ``op="<name>"`` literals (pipeline.py) and the binary
+    helpers emit ``_binary_op("<name>")`` / ``_add_binary_op("<name>")``
+    (lazy.py). Scanning the source keeps the comparison drift-proof without a
+    second hand-maintained list.
+    """
+    import re
+    from pathlib import Path
+
+    pkg = Path(polars_cv.__file__).parent
+    names: set[str] = set()
+    text = (pkg / "pipeline.py").read_text()
+    names |= set(re.findall(r'op="([a-z_0-9]+)"', text))
+    lazy = (pkg / "lazy.py").read_text()
+    names |= set(re.findall(r'_(?:add_)?binary_op\("([a-z_]+)"', lazy))
+    return names
+
+
+def test_op_names_covers_all_emitted_ops():
+    """Pipeline.OP_NAMES must list exactly the ops the builders actually emit.
+
+    Guards against OP_NAMES silently under-listing (a new builder op missing
+    from the registry) or over-listing (a stale entry no builder emits).
+    """
+    emitted = _emitted_op_names_from_source()
+    declared = set(Pipeline.OP_NAMES)
+    assert emitted == declared, (
+        f"OP_NAMES out of sync with builders: "
+        f"missing={sorted(emitted - declared)} stale={sorted(declared - emitted)}"
+    )
+
+
 @plugin_required
 def test_registry_parity_no_dead_contracts():
     """Ops the Pipeline never emits are not executable (B2: sobel/laplacian/sharpen)."""

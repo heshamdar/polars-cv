@@ -29,6 +29,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(op_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
+    m.add_function(wrap_pyfunction!(known_ops, m)?)?;
     Ok(())
 }
 
@@ -263,6 +264,16 @@ fn enum_variants(name: &str) -> PyResult<Vec<String>> {
         }
     };
     Ok(variants)
+}
+
+/// Return the names of every operation the executor can resolve.
+///
+/// This is the registry surfaced from [`crate::execute::KNOWN_OPS`] so Python
+/// can assert that every op a `Pipeline` emits is executable (B1) without
+/// hand-syncing a second list.
+#[pyfunction]
+fn known_ops() -> Vec<String> {
+    crate::execute::KNOWN_OPS.iter().map(|s| s.to_string()).collect()
 }
 
 /// Return the full contract for a single serialized op spec.
