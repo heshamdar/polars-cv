@@ -257,6 +257,139 @@ fn enum_variants(name: &str) -> PyResult<Vec<String>> {
         .iter()
         .map(|d| d.name().to_string())
         .collect(),
+        // User-facing API enums. Each maps its variants through an exhaustive
+        // `match`, so adding a variant to the view-buffer enum is a compile error
+        // here until the canonical string is supplied — the Rust enum is the
+        // authority and the Python parity tests assert the surfaced set matches.
+        "NormalizeMethod" => {
+            use view_buffer::ops::NormalizeMethod as M;
+            [
+                M::MinMax,
+                M::ZScore,
+                M::Preset {
+                    mean: vec![],
+                    std: vec![],
+                },
+            ]
+            .iter()
+            .map(|m| {
+                match m {
+                    M::MinMax => "minmax",
+                    M::ZScore => "zscore",
+                    M::Preset { .. } => "preset",
+                }
+                .to_string()
+            })
+            .collect()
+        }
+        "ColorSpace" => {
+            use view_buffer::ops::ColorSpace as C;
+            [C::Rgb, C::Bgr, C::Hsv, C::Lab, C::YCbCr, C::Gray]
+                .iter()
+                .map(|c| {
+                    match c {
+                        C::Rgb => "rgb",
+                        C::Bgr => "bgr",
+                        C::Hsv => "hsv",
+                        C::Lab => "lab",
+                        C::YCbCr => "ycbcr",
+                        C::Gray => "gray",
+                    }
+                    .to_string()
+                })
+                .collect()
+        }
+        "HashAlgorithm" => {
+            use view_buffer::ops::HashAlgorithm as H;
+            [H::Average, H::Difference, H::Perceptual, H::Blockhash]
+                .iter()
+                .map(|h| {
+                    match h {
+                        H::Average => "average",
+                        H::Difference => "difference",
+                        H::Perceptual => "perceptual",
+                        H::Blockhash => "blockhash",
+                    }
+                    .to_string()
+                })
+                .collect()
+        }
+        "HistogramOutput" => {
+            use view_buffer::ops::HistogramOutput as H;
+            [
+                H::Counts,
+                H::Normalized,
+                H::Quantized,
+                H::Edges,
+                H::Buckets,
+            ]
+            .iter()
+            .map(|h| {
+                match h {
+                    H::Counts => "counts",
+                    H::Normalized => "normalized",
+                    H::Quantized => "quantized",
+                    H::Edges => "edges",
+                    H::Buckets => "buckets",
+                }
+                .to_string()
+            })
+            .collect()
+        }
+        "PadMode" => {
+            use view_buffer::ops::dto::PadMode as P;
+            [P::Constant, P::Edge, P::Reflect, P::Symmetric]
+                .iter()
+                .map(|p| {
+                    match p {
+                        P::Constant => "constant",
+                        P::Edge => "edge",
+                        P::Reflect => "reflect",
+                        P::Symmetric => "symmetric",
+                    }
+                    .to_string()
+                })
+                .collect()
+        }
+        "PadPosition" => {
+            use view_buffer::ops::dto::PadPosition as P;
+            [P::Center, P::TopLeft, P::BottomRight]
+                .iter()
+                .map(|p| {
+                    match p {
+                        P::Center => "center",
+                        P::TopLeft => "top-left",
+                        P::BottomRight => "bottom-right",
+                    }
+                    .to_string()
+                })
+                .collect()
+        }
+        // FilterType: Rust's `Triangle` is surfaced as "bilinear" (its API name).
+        // Python deliberately exposes only a subset (nearest/bilinear/lanczos3);
+        // the parity test asserts Python ⊆ this set, not equality.
+        "FilterType" => {
+            use view_buffer::ops::FilterType as F;
+            [
+                F::Nearest,
+                F::Triangle,
+                F::CatmullRom,
+                F::Gaussian,
+                F::Lanczos3,
+            ]
+            .iter()
+            .map(|f| {
+                match f {
+                    F::Nearest => "nearest",
+                    F::Triangle => "bilinear",
+                    F::CatmullRom => "catmullrom",
+                    F::Gaussian => "gaussian",
+                    F::Lanczos3 => "lanczos3",
+                }
+                .to_string()
+            })
+            .collect()
+        }
         other => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "no canonical Rust enum named {other}"
