@@ -27,6 +27,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(configure_tiling, m)?)?;
     m.add_function(wrap_pyfunction!(get_tiling_config, m)?)?;
     m.add_function(wrap_pyfunction!(op_output_dtype, m)?)?;
+    m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
@@ -203,6 +204,55 @@ fn op_output_dtype(op_json: &str, input_dtype: &str) -> PyResult<String> {
     Ok(dtype_short_name(rule.resolve(in_dt, override_dt)).to_string())
 }
 
+/// Map a Python-facing binary op name to its view-buffer `BinaryOp`.
+///
+/// These are the same op strings the `Pipeline` emits (and `resolve_op`
+/// consumes); kept here so the planner's two-input dtype query does not need a
+/// full serialized op spec.
+fn parse_binary_op(name: &str) -> PyResult<view_buffer::BinaryOp> {
+    use view_buffer::BinaryOp as B;
+    Ok(match name {
+        "add" => B::Add,
+        "subtract" => B::Subtract,
+        "multiply" => B::Multiply,
+        "blend" => B::Blend,
+        "divide" => B::Divide,
+        "ratio" => B::Ratio,
+        "maximum" => B::Maximum,
+        "minimum" => B::Minimum,
+        "bitwise_and" => B::BitwiseAnd,
+        "bitwise_or" => B::BitwiseOr,
+        "bitwise_xor" => B::BitwiseXor,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown binary op {other:?}"
+            )))
+        }
+    })
+}
+
+/// Resolve the output dtype of a binary op given *both* operand dtypes.
+///
+/// This is the two-input analogue of [`op_output_dtype`]. Binary ops promote
+/// across both operands (and Divide/Ratio further promote to float for true
+/// division), so the planner cannot reuse the single-input rule — it defers to
+/// view-buffer's [`BinaryOp::output_dtype`] authority, the same one execution
+/// uses, so plan and exec dtypes are computed once.
+///
+/// Either operand may be the `"auto"` sentinel (an image source whose decoded
+/// dtype is not yet known); the result is then `"auto"`, and a downstream typed
+/// list/array sink requires the user to supply an explicit dtype.
+#[pyfunction]
+fn binary_output_dtype(op_name: &str, left: &str, right: &str) -> PyResult<String> {
+    if left == "auto" || right == "auto" {
+        return Ok("auto".to_string());
+    }
+    let op = parse_binary_op(op_name)?;
+    let l = parse_dtype(left)?;
+    let r = parse_dtype(right)?;
+    Ok(dtype_short_name(op.output_dtype(l, r)).to_string())
+}
+
 /// Extract the literal `out_dtype` parameter from a serialized op spec, if any.
 ///
 /// Returns `None` when the parameter is absent or is an expression (dynamic),
@@ -316,25 +366,19 @@ fn enum_variants(name: &str) -> PyResult<Vec<String>> {
         }
         "HistogramOutput" => {
             use view_buffer::ops::HistogramOutput as H;
-            [
-                H::Counts,
-                H::Normalized,
-                H::Quantized,
-                H::Edges,
-                H::Buckets,
-            ]
-            .iter()
-            .map(|h| {
-                match h {
-                    H::Counts => "counts",
-                    H::Normalized => "normalized",
-                    H::Quantized => "quantized",
-                    H::Edges => "edges",
-                    H::Buckets => "buckets",
-                }
-                .to_string()
-            })
-            .collect()
+            [H::Counts, H::Normalized, H::Quantized, H::Edges, H::Buckets]
+                .iter()
+                .map(|h| {
+                    match h {
+                        H::Counts => "counts",
+                        H::Normalized => "normalized",
+                        H::Quantized => "quantized",
+                        H::Edges => "edges",
+                        H::Buckets => "buckets",
+                    }
+                    .to_string()
+                })
+                .collect()
         }
         "PadMode" => {
             use view_buffer::ops::dto::PadMode as P;
@@ -406,7 +450,10 @@ fn enum_variants(name: &str) -> PyResult<Vec<String>> {
 /// hand-syncing a second list.
 #[pyfunction]
 fn known_ops() -> Vec<String> {
-    crate::execute::KNOWN_OPS.iter().map(|s| s.to_string()).collect()
+    crate::execute::KNOWN_OPS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Return the full contract for a single serialized op spec.

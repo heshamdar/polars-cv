@@ -115,7 +115,7 @@ class TestListSink:
 
         df = pl.DataFrame({"mask": [mask_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale()
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
         result = df.select(values=pl.col("mask").cv.pipe(pipe).sink("list"))
 
         # Grayscale produces shape [2, 2, 1] -> nested List[List[List[UInt8]]]
@@ -142,7 +142,7 @@ class TestListSink:
 
         df = pl.DataFrame({"mask": [mask_bytes]})
 
-        pipe = Pipeline().source("image_bytes").grayscale()
+        pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
         result = df.select(values=pl.col("mask").cv.pipe(pipe).sink("list"))
 
         values = result["values"][0].to_list()

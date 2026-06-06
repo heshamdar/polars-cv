@@ -5,7 +5,7 @@ from polars_cv import Pipeline
 
 def test_lazy_schema_resize_list():
     """Test that resize correctly updates schema for list sink."""
-    pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
+    pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=100, width=200)
 
     df = pl.DataFrame({"image": [b""]})
     # Use a dummy column to avoid issues with empty binary if needed
@@ -21,7 +21,7 @@ def test_lazy_schema_resize_list():
 
 def test_lazy_schema_resize_array():
     """Test that resize correctly updates schema for array sink."""
-    pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
+    pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=100, width=200)
 
     df = pl.DataFrame({"image": [b""]})
     schema = (
@@ -51,7 +51,9 @@ def test_lazy_schema_cast():
 
 def test_lazy_schema_grayscale():
     """Test that grayscale updates channels in schema."""
-    pipe = Pipeline().source("image_bytes").resize(height=100, width=200).grayscale()
+    pipe = (
+        Pipeline().source("image_bytes", dtype="u8").resize(height=100, width=200).grayscale()
+    )
 
     df = pl.DataFrame({"image": [b""]})
     schema = (
@@ -66,7 +68,9 @@ def test_lazy_schema_grayscale():
 def test_lazy_schema_assert_shape():
     """Test that assert_shape provides schema info."""
     pipe = (
-        Pipeline().source("image_bytes").assert_shape(height=128, width=128, channels=3)
+        Pipeline()
+        .source("image_bytes", dtype="u8")
+        .assert_shape(height=128, width=128, channels=3)
     )
 
     df = pl.DataFrame({"image": [b""]})
@@ -101,7 +105,7 @@ def test_lazy_schema_complex_chain():
 
 def test_lazy_schema_unknown_shape_known_ndim():
     """Test that file_path source (unknown shape) still provides 3D nesting for list sink."""
-    pipe = Pipeline().source("file_path")
+    pipe = Pipeline().source("file_path", dtype="u8")
 
     df = pl.DataFrame({"img_path": ["https://example.com/img.png"]})
     schema = (
@@ -115,7 +119,8 @@ def test_lazy_schema_unknown_shape_known_ndim():
 
 def test_lazy_schema_array_sink_requires_shape():
     """Test that array sink fails if shape is not deterministic and not provided."""
-    pipe = Pipeline().source("file_path")
+    # dtype is supplied so the failure under test is specifically the missing shape.
+    pipe = Pipeline().source("file_path", dtype="u8")
 
     df = pl.DataFrame({"img_path": ["https://example.com/img.png"]})
 
@@ -125,7 +130,7 @@ def test_lazy_schema_array_sink_requires_shape():
 
 def test_lazy_schema_array_sink_with_manual_shape():
     """Test that array sink works with manual shape even if source shape is unknown."""
-    pipe = Pipeline().source("file_path")
+    pipe = Pipeline().source("file_path", dtype="u8")
 
     df = pl.DataFrame({"img_path": ["https://example.com/img.png"]})
     schema = (

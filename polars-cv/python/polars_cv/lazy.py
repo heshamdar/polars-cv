@@ -24,6 +24,44 @@ def _generate_node_id() -> str:
     return f"node_{uuid.uuid4().hex[:8]}"
 
 
+def _require_concrete_sink_dtype(pipeline: Any, fmt: str, alias: str | None = None) -> None:
+    """Enforce that a typed ``list``/``array`` sink knows its element dtype.
+
+    A Polars ``List``/``Array`` column needs a concrete inner dtype at planning
+    time. For image/blob sources the decoded dtype is only known at runtime, so a
+    plan-time guess (it would silently fall back to ``u8``) can diverge from what
+    execution produces (e.g. a 16-bit image). Rather than guess, require the user
+    to supply the dtype.
+
+    A ``list``/``array`` *source* is exempt: its element dtype is carried in the
+    input column's schema and resolved at planning time (not by sampling rows).
+    Binary/blob sinks and the numpy/torch struct sinks never need a static
+    element dtype, so they are not checked here.
+    """
+    if fmt not in ("list", "array"):
+        return
+    if pipeline._output_dtype != "auto":
+        return
+
+    from polars_cv._types import SourceFormat
+
+    source_resolves_dtype = (
+        pipeline._source is not None
+        and pipeline._source.format in (SourceFormat.LIST, SourceFormat.ARRAY)
+    )
+    if source_resolves_dtype:
+        return
+
+    where = f" (alias '{alias}')" if alias else ""
+    msg = (
+        f"Element dtype is unknown for the '{fmt}' sink{where}: the decoded dtype "
+        "of an image/blob source is only known at runtime, so a typed Polars "
+        f"'{fmt}' output cannot be planned. Supply an explicit dtype — e.g. "
+        'source(..., dtype="u16") or a .cast("u16") before the sink.'
+    )
+    raise ValueError(msg)
+
+
 class LazyPipelineExpr:
     """
     Lazy pipeline expression for composed operations.
@@ -200,6 +238,11 @@ class LazyPipelineExpr:
             # Validate array sinks in multi-output
 
             for alias, fmt_str in format.items():
+                # Typed list/array sinks must know their element dtype at plan time.
+                node = self._find_node_by_alias(alias, all_nodes)
+                if node is not None:
+                    _require_concrete_sink_dtype(node._pipeline, fmt_str, alias)
+
                 # Validate list sink ndim — allow None when Rust can resolve
                 # it from the Polars column type (list/array sources).
                 if fmt_str == "list":
@@ -224,6 +267,9 @@ class LazyPipelineExpr:
             graph.set_multi_output(format, **kwargs)
         else:
             # Single output mode
+            # Typed list/array sinks must know their element dtype at plan time.
+            _require_concrete_sink_dtype(self._pipeline, format)
+
             # Validate array sink
 
             if format == "array" and "shape" not in kwargs:
@@ -1180,9 +1226,20 @@ class LazyPipelineExpr:
         # already applied by the upstream node
         new_pipeline = PipelineClass()
         new_pipeline._source = SourceSpec(format=SourceFormat.BLOB)
-        # Copy both domain and dtype for proper static type inference
+        # Copy the domain; the dtype comes from view-buffer's two-input authority
+        # (binary_output_dtype) so the planned dtype reflects the operator's
+        # promotion across BOTH operands (e.g. true division of two u8 -> f32),
+        # not just the left operand. "auto" operands propagate "auto".
+        from polars_cv._lib import binary_output_dtype
+
         new_pipeline._current_domain = self._pipeline._current_domain
-        new_pipeline._output_dtype = self._pipeline._output_dtype
+        new_pipeline._output_dtype = binary_output_dtype(
+            op, self._pipeline._output_dtype, other._pipeline._output_dtype
+        )
+        # A binary op broadcasts two equal-rank buffers, so the rank is preserved.
+        # Carry it from the left operand so a downstream list/array sink knows the
+        # nesting depth at plan time.
+        new_pipeline._expected_ndim = self._pipeline._expected_ndim
         new_pipeline._add_binary_op(op, other._node_id)
 
         return LazyPipelineExpr(

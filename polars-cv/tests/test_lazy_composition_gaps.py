@@ -262,8 +262,9 @@ class TestBlendRatioExecution:
 
         result = df.select(out=expr1.ratio(expr2).sink("numpy"))
         arr = numpy_from_struct(result.row(0)[0])
+        # ratio is true division: u8 operands promote to f32.
         assert arr.shape == (30, 30, 3)
-        assert arr.dtype == np.uint8
+        assert arr.dtype == np.float32
 
 
 @plugin_required

@@ -347,9 +347,7 @@ impl ViewDto {
             ViewDto::Filter(op) => op.output_channel_rule(),
             ViewDto::Color(op) => op.output_channel_rule(),
             // Mask application and materialize preserve channels.
-            ViewDto::ApplyMask { .. } | ViewDto::Materialize => {
-                OutputChannelRule::PreserveChannels
-            }
+            ViewDto::ApplyMask { .. } | ViewDto::Materialize => OutputChannelRule::PreserveChannels,
             // Deferred resize/padding preserve the channel count.
             ViewDto::ResizeScale { .. }
             | ViewDto::ResizeToHeight { .. }

@@ -490,12 +490,13 @@ class TestLazyCompositionExecution:
 
         result_expr = expr1.divide(expr2).sink("numpy")
 
-        # This will FAIL until divide is implemented in execute.rs
         result = df.select(output=result_expr)
         output = numpy_from_struct(result.row(0)[0])
 
+        # divide is true division: u8 operands promote to f32 (200 / 100 = 2.0).
         assert output.shape == (100, 100, 3)
-        assert output.dtype == np.uint8
+        assert output.dtype == np.float32
+        np.testing.assert_allclose(output, 2.0, atol=1e-5)
 
     def test_chained_composition_execution(
         self,

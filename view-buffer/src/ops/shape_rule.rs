@@ -147,7 +147,8 @@ mod parity_tests {
                     out,
                 );
                 assert_eq!(
-                    expected_c, out[2],
+                    expected_c,
+                    out[2],
                     "{}: channel rule {:?} predicted {} channels but infer_shape gave {:?}",
                     op.name(),
                     op.output_channel_rule(),
@@ -161,27 +162,75 @@ mod parity_tests {
     #[test]
     fn image_ops_match_infer_shape() {
         let probe = [4usize, 4, 3];
-        check(&ImageOp { kind: ImageOpKind::Threshold(128.0) }, &probe);
         check(
             &ImageOp {
-                kind: ImageOpKind::Resize { width: 8, height: 8, filter: FilterType::Nearest },
+                kind: ImageOpKind::Threshold(128.0),
             },
             &probe,
         );
-        check(&ImageOp { kind: ImageOpKind::Blur { sigma: 1.0 } }, &probe);
-        check(&ImageOp { kind: ImageOpKind::Grayscale }, &probe);
         check(
             &ImageOp {
-                kind: ImageOpKind::Canny { low_threshold: 50.0, high_threshold: 150.0 },
+                kind: ImageOpKind::Resize {
+                    width: 8,
+                    height: 8,
+                    filter: FilterType::Nearest,
+                },
             },
             &probe,
         );
-        check(&ImageOp { kind: ImageOpKind::HistogramEqualize }, &probe);
+        check(
+            &ImageOp {
+                kind: ImageOpKind::Blur { sigma: 1.0 },
+            },
+            &probe,
+        );
+        check(
+            &ImageOp {
+                kind: ImageOpKind::Grayscale,
+            },
+            &probe,
+        );
+        check(
+            &ImageOp {
+                kind: ImageOpKind::Canny {
+                    low_threshold: 50.0,
+                    high_threshold: 150.0,
+                },
+            },
+            &probe,
+        );
+        check(
+            &ImageOp {
+                kind: ImageOpKind::HistogramEqualize,
+            },
+            &probe,
+        );
         // Morphological ops preserve channels — the case where the old Python
         // contract (drop→1ch) disagreed with execution. Lock in the truth.
-        check(&ImageOp { kind: ImageOpKind::Erode { ksize: 3, iterations: 1 } }, &probe);
-        check(&ImageOp { kind: ImageOpKind::Dilate { ksize: 3, iterations: 1 } }, &probe);
-        check(&ImageOp { kind: ImageOpKind::MorphGradient { ksize: 3 } }, &probe);
+        check(
+            &ImageOp {
+                kind: ImageOpKind::Erode {
+                    ksize: 3,
+                    iterations: 1,
+                },
+            },
+            &probe,
+        );
+        check(
+            &ImageOp {
+                kind: ImageOpKind::Dilate {
+                    ksize: 3,
+                    iterations: 1,
+                },
+            },
+            &probe,
+        );
+        check(
+            &ImageOp {
+                kind: ImageOpKind::MorphGradient { ksize: 3 },
+            },
+            &probe,
+        );
     }
 
     #[test]
@@ -190,7 +239,13 @@ mod parity_tests {
         check(&ViewOp::Transpose(vec![2, 1, 0]), &probe);
         check(&ViewOp::Reshape(vec![48]), &probe);
         check(&ViewOp::Flip(vec![0]), &probe);
-        check(&ViewOp::Crop { start: vec![0, 0, 0], end: vec![2, 2, 3] }, &probe);
+        check(
+            &ViewOp::Crop {
+                start: vec![0, 0, 0],
+                end: vec![2, 2, 3],
+            },
+            &probe,
+        );
         check(&ViewOp::Rotate90, &probe);
         check(&ViewOp::Rotate180, &probe);
         check(&ViewOp::Rotate270, &probe);
@@ -262,11 +317,14 @@ mod parity_tests {
         check(&GeometryOp::BoundingBox, &contour);
         check(&GeometryOp::Translate { dx: 1.0, dy: 2.0 }, &contour);
         check(&GeometryOp::IoU, &contour);
-        check(&GeometryOp::ExtractContours {
-            mode: ExtractMode::External,
-            method: ApproxMethod::Simple,
-            min_area: None,
-        }, &contour);
+        check(
+            &GeometryOp::ExtractContours {
+                mode: ExtractMode::External,
+                method: ApproxMethod::Simple,
+                min_area: None,
+            },
+            &contour,
+        );
         // Rasterize emits [H, W, 1]; probe rank-3 so the channel rule is bound too.
         check(
             &GeometryOp::Rasterize {
