@@ -332,6 +332,31 @@ pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult
     }
 }
 
+/// The complete set of operation names `resolve_op` can execute.
+///
+/// This is the single registry of executable ops, surfaced to Python via
+/// `_lib.known_ops()` so the planner/tests can check that every op a `Pipeline`
+/// emits is executable (B1). It must list exactly the top-level match arms in
+/// [`resolve_op`]; the `known_ops_all_resolve` unit test guards the forward
+/// direction (every entry resolves), and `unknown_op_is_rejected` guards that
+/// the catch-all still rejects names that are not arms.
+pub const KNOWN_OPS: &[&str] = &[
+    "add", "adjust_contrast", "adjust_gamma", "apply_mask", "bitwise_and", "bitwise_or",
+    "bitwise_xor", "blend", "blur", "canny", "cast", "channel_merge",
+    "channel_select", "channel_swap", "clamp", "contour_area", "contour_bounding_box",
+    "contour_centroid", "contour_convex_hull", "contour_flip", "contour_is_convex",
+    "contour_normalize", "contour_perimeter", "contour_scale", "contour_simplify",
+    "contour_to_absolute", "contour_translate", "contour_winding", "convolve2d", "crop",
+    "cvt_color", "dilate", "divide", "equalize_histogram", "erode", "extract_contours",
+    "extract_shape", "flip", "grayscale", "histogram", "invert", "label_reduce",
+    "letterbox", "maximum", "minimum", "morphology_gradient", "multiply", "normalize",
+    "pad", "pad_to_size", "perceptual_hash", "rasterize", "ratio", "reduce_argmax",
+    "reduce_argmin", "reduce_max", "reduce_mean", "reduce_min", "reduce_percentile",
+    "reduce_popcount", "reduce_std", "reduce_sum", "relu", "reshape", "resize",
+    "resize_max", "resize_min", "resize_scale", "resize_to_height", "resize_to_width",
+    "rotate", "scale", "subtract", "threshold", "transpose", "warp_affine",
+];
+
 /// Resolve an operation specification to a ViewDto.
 pub fn resolve_op(
     op_spec: &OpSpec,
@@ -1370,5 +1395,60 @@ fn parse_filter(s: &str) -> PolarsResult<FilterType> {
         "catmullrom" => Ok(FilterType::CatmullRom),
         "gaussian" => Ok(FilterType::Gaussian),
         other => Err(polars_err!(ComputeError: "Unknown filter type: {}", other)),
+    }
+}
+
+#[cfg(test)]
+mod known_ops_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Build an OpSpec with no params (enough to exercise the name dispatch).
+    fn op(name: &str) -> OpSpec {
+        OpSpec {
+            op: name.to_string(),
+            params: HashMap::new(),
+        }
+    }
+
+    /// Every name in KNOWN_OPS must be a real resolve_op arm: with empty params
+    /// most arms fail with a missing-param error, but none may fall through to
+    /// the "Unknown operation" catch-all.
+    #[test]
+    fn known_ops_all_resolve() {
+        let cols: HashMap<String, &polars::prelude::Series> = HashMap::new();
+        for name in KNOWN_OPS {
+            if let Err(e) = resolve_op(&op(name), 0, &cols) {
+                let msg = e.to_string();
+                assert!(
+                    !msg.contains("Unknown operation"),
+                    "KNOWN_OPS lists '{name}' but resolve_op has no arm for it: {msg}"
+                );
+            }
+        }
+    }
+
+    /// A name that is not an arm must be rejected by the catch-all, so the
+    /// registry can't silently accept bogus ops.
+    #[test]
+    fn unknown_op_is_rejected() {
+        let cols: HashMap<String, &polars::prelude::Series> = HashMap::new();
+        let err = resolve_op(&op("definitely_not_a_real_op"), 0, &cols)
+            .expect_err("bogus op must not resolve");
+        assert!(err.to_string().contains("Unknown operation"));
+    }
+
+    /// KNOWN_OPS must be sorted and unique so the registry is easy to scan and
+    /// diff against the Python OP_NAMES set.
+    #[test]
+    fn known_ops_sorted_and_unique() {
+        for pair in KNOWN_OPS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "KNOWN_OPS must be sorted/unique; '{}' !< '{}'",
+                pair[0],
+                pair[1]
+            );
+        }
     }
 }
