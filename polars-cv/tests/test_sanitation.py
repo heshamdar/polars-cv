@@ -442,6 +442,47 @@ def test_enum_parity_domain():
     assert py == surfaced, f"Domain: python {py} != surfaced rust {surfaced}"
 
 
+@plugin_required
+@pytest.mark.parametrize(
+    "enum_name",
+    [
+        "NormalizeMethod",
+        "ColorSpace",
+        "HashAlgorithm",
+        "HistogramOutput",
+        "PadMode",
+        "PadPosition",
+    ],
+)
+def test_enum_parity_api_enums(enum_name):
+    """Each user-facing API enum must equal its view-buffer authority set (A4)."""
+    rust = _rust_enum_variants(enum_name)
+    if rust is None:
+        pytest.skip("_lib.enum_variants() not built")
+    import polars_cv._types as t
+
+    py = {m.value for m in getattr(t, enum_name)}
+    assert py == rust, f"{enum_name}: python {py} != rust {rust}"
+
+
+@plugin_required
+def test_enum_parity_filter_type_is_subset():
+    """Python FilterType is a documented subset of view-buffer's FilterType.
+
+    Rust also offers catmullrom/gaussian (and surfaces `Triangle` as "bilinear");
+    polars-cv intentionally exposes only nearest/bilinear/lanczos3. Guard the
+    subset so a new Python value can't escape the Rust authority.
+    """
+    rust = _rust_enum_variants("FilterType")
+    if rust is None:
+        pytest.skip("_lib.enum_variants() not built")
+    import polars_cv._types as t
+
+    py = {m.value for m in t.FilterType}
+    assert py <= rust, f"FilterType: python {py} is not a subset of rust {rust}"
+    assert {"catmullrom", "gaussian"} <= rust, "expected Rust-only filter variants"
+
+
 # SourceFormat/SinkFormat are intentionally NOT enum-parity-checked: view-buffer
 # defines its own (CamelCase) format enums while the graph boundary uses plain
 # strings and Python defines a third set — a three-way representation split to
@@ -460,13 +501,21 @@ def test_no_duplicate_expected_dtype_enum():
     assert not hasattr(t, "ExpectedDType"), "ExpectedDType should be folded into DType"
 
 
-@pytest.mark.xfail(
-    reason="A4: OutputDType (override options + PRESERVE) overlaps DType and is "
-    "consolidated once the Rust OutputDTypeRule authority lands. Phase 2.",
-    strict=True,
-)
-def test_no_duplicate_output_dtype_enum():
-    """The configurable-output-dtype enum collapses into the single dtype authority."""
+def test_output_dtype_is_strategy_not_dtype_duplicate():
+    """OutputDType is an out-dtype *strategy*, not a second copy of DType (A4).
+
+    It carries the `preserve` strategy (keep input dtype, promoting ints to f32)
+    that DType cannot express, and exposes only the handful of dtypes worth
+    requesting as an output override — so it is deliberately kept distinct rather
+    than folded into DType. Guard that it stays a strategy (i.e. not equal to the
+    full dtype set and still offering `preserve`).
+    """
     import polars_cv._types as t
 
-    assert not hasattr(t, "OutputDType"), "OutputDType should be folded into DType"
+    out_values = {m.value for m in t.OutputDType}
+    dtype_values = {m.value for m in t.DType}
+    assert "preserve" in out_values, "OutputDType must offer the preserve strategy"
+    assert "preserve" not in dtype_values, "DType must not carry a strategy value"
+    assert out_values != dtype_values, (
+        "OutputDType must remain a strategy enum distinct from DType, not a duplicate"
+    )
