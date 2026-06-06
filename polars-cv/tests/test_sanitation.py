@@ -64,15 +64,27 @@ def _planned_and_realized(df: pl.DataFrame, expr: pl.Expr, col: str = "out"):
     return planned, realized
 
 
+def _leaf_dtype(dtype: pl.DataType) -> pl.DataType:
+    """Peel nested List/Array wrappers to the innermost element dtype."""
+    while isinstance(dtype, (pl.List, pl.Array)):
+        dtype = dtype.inner
+    return dtype
+
+
 # ---------------------------------------------------------------------------
 # 1. Plan == Exec (A1/A2/A3) — the headline invariant
 # ---------------------------------------------------------------------------
 
 # (label, build-pipeline-callable) for image-source pipelines whose output dtype
 # is deterministic and must agree between planning and execution.
+# Typed list sinks require a known element dtype at plan time: either an
+# explicit source dtype, or a dtype-fixing op (cast). Both forms are exercised.
 _DETERMINISTIC_LIST_PIPELINES = [
-    ("resize_u8", lambda: Pipeline().source("image_bytes").resize(height=6, width=6)),
-    ("grayscale_u8", lambda: Pipeline().source("image_bytes").resize(height=6, width=6).grayscale()),
+    ("resize_u8", lambda: Pipeline().source("image_bytes", dtype="u8").resize(height=6, width=6)),
+    (
+        "grayscale_u8",
+        lambda: Pipeline().source("image_bytes", dtype="u8").resize(height=6, width=6).grayscale(),
+    ),
     ("cast_f32", lambda: Pipeline().source("image_bytes").resize(height=6, width=6).cast("f32")),
     ("cast_f64", lambda: Pipeline().source("image_bytes").resize(height=6, width=6).cast("f64")),
     (
@@ -114,7 +126,7 @@ def test_plan_equals_exec_blur_preserves_float_dtype():
 def test_plan_equals_exec_array_sink():
     """Array sink with explicit shape: planned == realized."""
     df = pl.DataFrame({"out": [_png(width=6, height=6)]})
-    pipe = Pipeline().source("image_bytes").resize(height=6, width=6)
+    pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=6, width=6)
     expr = pl.col("out").cv.pipe(pipe).sink("array", shape=[6, 6, 3])
     planned, realized = _planned_and_realized(df, expr)
     assert planned == realized
@@ -131,34 +143,44 @@ def test_plan_equals_exec_scalar_reduction():
 
 
 @plugin_required
-@pytest.mark.xfail(
-    reason="A2: image-source dtype is 'auto'; the plan-time guess can diverge from "
-    "the actually-decoded dtype (e.g. 16-bit images). Fixed in Phase 1.",
-    strict=False,
-)
-def test_plan_equals_exec_auto_16bit_image():
-    """16-bit image with no dtype-fixing op: planned 'auto' must equal realized u16."""
-    df = pl.DataFrame({"out": [_png(mode="I;16")]})
+def test_auto_16bit_image_list_sink_requires_explicit_dtype():
+    """A2: an image source with no known dtype cannot feed a typed list sink.
+
+    The decoded dtype is only known at runtime, so the planner must refuse to
+    guess (it would silently fall back to u8 and diverge from the realized u16).
+    The user is required to supply the dtype instead.
+    """
     pipe = Pipeline().source("image_bytes")
-    expr = pl.col("out").cv.pipe(pipe).sink("list")
-    planned, realized = _planned_and_realized(df, expr)
-    assert planned == realized
+    with pytest.raises(ValueError, match="(?i)explicit dtype"):
+        pl.col("out").cv.pipe(pipe).sink("list")
 
 
 @plugin_required
-@pytest.mark.xfail(
-    reason="A3: binary-op output dtype is copied from the left operand only, ignoring "
-    "the operator's promotion semantics. Fixed in Phase 4.",
-    strict=False,
-)
+def test_auto_16bit_with_explicit_dtype_plan_equals_exec():
+    """A2: with an explicit source dtype, the 16-bit image plans and realizes u16."""
+    df = pl.DataFrame({"out": [_png(mode="I;16")]})
+    pipe = Pipeline().source("image_bytes", dtype="u16")
+    expr = pl.col("out").cv.pipe(pipe).sink("list")
+    planned, realized = _planned_and_realized(df, expr)
+    assert planned == realized
+    assert _leaf_dtype(realized) == pl.UInt16
+
+
+@plugin_required
 def test_plan_equals_exec_binary_promote():
-    """A promoting binary op (divide) must declare the promoted dtype, not the left's."""
+    """A3: a promoting binary op (true division) declares the promoted dtype.
+
+    ``divide`` of two u8 images promotes to f32 (true division), and the planned
+    dtype must match what execution produces — not the left operand's u8. The
+    operands carry an explicit dtype so the typed sink is plannable.
+    """
     df = pl.DataFrame({"out": [_png()]})
-    left = pl.col("out").cv.pipe(Pipeline().source("image_bytes").grayscale())
-    right = pl.col("out").cv.pipe(Pipeline().source("image_bytes").grayscale())
+    left = pl.col("out").cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
+    right = pl.col("out").cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
     expr = left.divide(right).sink("list")
     planned, realized = _planned_and_realized(df, expr)
     assert planned == realized
+    assert _leaf_dtype(realized) == pl.Float32
 
 
 def _planned_shape(pipe):
@@ -306,6 +328,69 @@ def test_registry_parity_no_dead_contracts():
     for lowered in ("sobel", "laplacian", "sharpen"):
         with pytest.raises(Exception):
             contract_fn(json.dumps({"op": lowered}))
+
+
+_REQUIRED_LIB_HOOKS = (
+    "op_contract",
+    "op_output_dtype",
+    "binary_output_dtype",
+    "known_ops",
+    "enum_variants",
+)
+
+
+@plugin_required
+def test_lib_introspection_api_is_present():
+    """A built plugin MUST expose every introspection hook (no false-green CI).
+
+    The other parity tests ``pytest.skip`` when a hook is missing so they switch
+    on automatically as the API lands. Once the plugin is actually built, a
+    missing hook is a real regression (e.g. a function dropped from the
+    ``#[pymodule]``), not a not-yet-implemented feature — so this guard turns it
+    into a hard failure instead of a silent skip.
+    """
+    lib = getattr(polars_cv, "_lib", None)
+    assert lib is not None, "compiled _lib missing despite the plugin .so being present"
+    missing = [name for name in _REQUIRED_LIB_HOOKS if not callable(getattr(lib, name, None))]
+    assert not missing, f"_lib is built but missing introspection hooks: {missing}"
+
+
+def _binary_op_names_from_source() -> set[str]:
+    """Binary op names the lazy API emits via ``self._binary_op("<name>")``."""
+    import re
+    from pathlib import Path
+
+    lazy = (Path(polars_cv.__file__).parent / "lazy.py").read_text()
+    return set(re.findall(r'self\._binary_op\("([a-z_]+)"', lazy))
+
+
+@plugin_required
+def test_binary_output_dtype_authority():
+    """The two-input dtype FFI resolves every binary op and encodes true division.
+
+    Guards both the new ``binary_output_dtype`` hook and its op-name mapping
+    against the binary ops the Python API actually emits (drift-proof: the names
+    are scanned from source).
+    """
+    from polars_cv._lib import binary_output_dtype
+
+    emitted = _binary_op_names_from_source()
+    assert emitted, "no binary ops scanned from lazy.py — scan regex out of date?"
+    for op in emitted:
+        # Every emitted binary op must resolve through the FFI without error.
+        result = binary_output_dtype(op, "u8", "u8")
+        assert result in {"u8", "f32"}, f"{op}: unexpected dtype {result}"
+
+    # True division promotes integers to float; other ops use plain promotion.
+    assert binary_output_dtype("divide", "u8", "u8") == "f32"
+    assert binary_output_dtype("ratio", "u16", "u16") == "f32"
+    assert binary_output_dtype("divide", "f64", "f64") == "f64"
+    assert binary_output_dtype("add", "u8", "u8") == "u8"
+    assert binary_output_dtype("add", "u8", "u16") == "u16"
+    assert binary_output_dtype("add", "u8", "f32") == "f32"
+    # An unknown operand dtype keeps the result unknown (handled by the sink).
+    assert binary_output_dtype("divide", "auto", "u8") == "auto"
+    assert binary_output_dtype("add", "u8", "auto") == "auto"
 
 
 # ---------------------------------------------------------------------------

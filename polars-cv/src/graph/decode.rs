@@ -590,12 +590,30 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
         "i64" => DataType::Int64,
         "f32" => DataType::Float32,
         "f64" => DataType::Float64,
-        // "auto" means dtype was not resolved at planning time.
-        // For binary sinks this is irrelevant; for list/array sinks Python
-        // enforces a concrete dtype before reaching here.  Fall back to UInt8
-        // as a safe default for schema inference.
+        // "auto" (or any unknown string) means the dtype was not resolved at
+        // planning time. Typed list/array sinks reject this up front (see
+        // `list_array_inner_dtype`); the remaining callers (binary/struct sinks)
+        // do not depend on this value, so a UInt8 fallback is harmless.
         _ => DataType::UInt8,
     }
+}
+
+/// Resolve the inner element dtype for a typed list/array sink.
+///
+/// Refuses the unresolved `"auto"` sentinel: it means the decoded dtype was
+/// never pinned down at planning time. The Python sink builder rejects this for
+/// list/array sinks up front (requiring an explicit dtype), so reaching here
+/// with `"auto"` is an internal error — fail loudly rather than silently
+/// materialize a `u8` column that may disagree with execution.
+fn list_array_inner_dtype(dtype: &str, sink: &str) -> PolarsResult<DataType> {
+    if dtype == "auto" {
+        polars_bail!(ComputeError:
+            "internal error: '{sink}' sink reached schema resolution with an \
+             unresolved 'auto' element dtype. Supply an explicit dtype \
+             (e.g. source(..., dtype=\"u16\") or .cast(...)) before the sink."
+        );
+    }
+    Ok(dtype_str_to_polars(dtype))
 }
 /// Get the Polars DataType for a given output specification.
 ///
@@ -613,7 +631,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
         ("buffer", "numpy" | "torch") => Ok(crate::output::numpy_output_dtype()),
         ("buffer", "png" | "jpeg" | "webp" | "blob") => Ok(DataType::Binary),
         ("buffer", "list") => {
-            let inner = dtype_str_to_polars(&spec.expected_dtype);
+            let inner = list_array_inner_dtype(&spec.expected_dtype, "list")?;
             if let Some(ref shape) = spec.expected_shape {
                 let mut dtype = inner;
                 for _ in 0..shape.len() {
@@ -631,7 +649,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             }
         }
         ("buffer", "array") => {
-            let inner = dtype_str_to_polars(&spec.expected_dtype);
+            let inner = list_array_inner_dtype(&spec.expected_dtype, "array")?;
             let shape = spec.sink.shape.as_ref().or(spec.expected_shape.as_ref());
             if let Some(shape) = shape {
                 let mut dtype = inner;

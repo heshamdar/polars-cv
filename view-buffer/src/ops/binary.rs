@@ -11,8 +11,9 @@
 //! - `Add`/`Subtract`: Saturating arithmetic (clamps to valid range)
 //! - `Multiply`: Saturating multiplication (clamps to max value)
 //! - `Blend`: Normalized multiplication ((a/max) * (b/max) * max)
-//! - `Divide`: Integer division with zero protection
-//! - `Ratio`: Scaled division ((a/b) * max, clamped)
+//! - `Divide`/`Ratio`: True division — integer operands promote to float and
+//!   `a / b` is computed in float (zero divisor yields 0), so the result dtype
+//!   is `f32` (or `f64` when an operand is already `f64`).
 //!
 //! ## For float types (f32, f64):
 //! - All operations use standard IEEE 754 arithmetic
@@ -58,16 +59,16 @@ pub enum BinaryOp {
     /// For u16: (a/65535) * (b/65535) * 65535
     /// For f32/f64: Standard multiplication (same as Multiply).
     Blend,
-    /// Element-wise division.
+    /// Element-wise division (true division).
     ///
-    /// For u8/u16: Integer division with zero protection (returns 0).
-    /// For f32/f64: Standard division.
+    /// Integer operands promote to float; `a / b` is computed in float with zero
+    /// protection (returns 0 when the divisor is 0). Output dtype is `f32` (or
+    /// `f64` when an operand is already `f64`).
     Divide,
-    /// Scaled ratio division.
+    /// Element-wise ratio (true division).
     ///
-    /// For u8: (a/b) * 255, clamped to [0, 255]
-    /// For u16: (a/b) * 65535, clamped to [0, 65535]
-    /// For f32/f64: Standard division (same as Divide).
+    /// Currently identical to [`Divide`](BinaryOp::Divide): integer operands
+    /// promote to float and `a / b` is computed in float with zero protection.
     Ratio,
     /// Element-wise maximum.
     Maximum,
@@ -93,18 +94,59 @@ impl BinaryOp {
         let output_shape =
             broadcast_shapes(a.shape(), b.shape()).expect("Shapes must be broadcastable");
 
-        match (a.dtype(), b.dtype()) {
-            (DType::U8, DType::U8) => self.execute_u8(a, b, &output_shape),
-            (DType::U16, DType::U16) => self.execute_u16(a, b, &output_shape),
-            (DType::F32, DType::F32) => self.execute_float::<f32>(a, b, &output_shape),
+        // The result dtype comes from the single authority shared with planning
+        // (`output_dtype`). Computing it here lets execution match the plan-time
+        // schema by construction.
+        let out_dtype = self.output_dtype(a.dtype(), b.dtype());
+
+        // Divide and Ratio use *true division*: integer operands promote to
+        // float so `a / b` is computed in float rather than truncated. Route
+        // them through the float path even when both inputs are the same int.
+        let force_float = matches!(self, BinaryOp::Divide | BinaryOp::Ratio);
+
+        let result = match (a.dtype(), b.dtype()) {
+            (DType::U8, DType::U8) if !force_float => self.execute_u8(a, b, &output_shape),
+            (DType::U16, DType::U16) if !force_float => self.execute_u16(a, b, &output_shape),
             (DType::F64, DType::F64) => self.execute_float::<f64>(a, b, &output_shape),
-            // For mixed types, promote to the wider type
+            (DType::F32, DType::F32) => self.execute_float::<f32>(a, b, &output_shape),
+            // Mixed dtypes, or an integer pair whose declared output is float
+            // (true division): promote both operands to the float compute type.
             _ => {
-                // For now, cast to f32 for mixed types
-                let a_f32 = a.cast_to(DType::F32);
-                let b_f32 = b.cast_to(DType::F32);
-                self.execute_float::<f32>(&a_f32, &b_f32, &output_shape)
+                let compute = if out_dtype == DType::F64 {
+                    DType::F64
+                } else {
+                    DType::F32
+                };
+                let a_c = a.cast_to(compute);
+                let b_c = b.cast_to(compute);
+                match compute {
+                    DType::F64 => self.execute_float::<f64>(&a_c, &b_c, &output_shape),
+                    _ => self.execute_float::<f32>(&a_c, &b_c, &output_shape),
+                }
             }
+        };
+
+        // Guarantee the produced buffer carries exactly the authority dtype
+        // (e.g. an int+int promotion that computed in f32 is cast back down).
+        if result.dtype() == out_dtype {
+            result
+        } else {
+            result.cast_to(out_dtype)
+        }
+    }
+
+    /// The output dtype of this binary op for the given operand dtypes.
+    ///
+    /// This is the single authority shared by planning (the `binary_output_dtype`
+    /// FFI) and execution ([`execute`](BinaryOp::execute)). Divide and Ratio use
+    /// *true division*: integer operands promote to float (`F32`, or `F64` when an
+    /// operand is already `F64`), matching numpy-style semantics. All other ops
+    /// use standard numeric promotion of the two operands.
+    pub fn output_dtype(&self, left: DType, right: DType) -> DType {
+        let promoted = promote_dtypes(left, right);
+        match self {
+            BinaryOp::Divide | BinaryOp::Ratio => to_float(promoted),
+            _ => promoted,
         }
     }
 
@@ -456,9 +498,11 @@ impl Op for BinaryOp {
     }
 
     fn infer_dtype(&self, inputs: &[DType]) -> DType {
-        // Promote to the wider type
+        // Delegate to the single output-dtype authority so plan-time and
+        // exec-time dtypes are computed by exactly one rule (true division for
+        // Divide/Ratio, standard promotion otherwise).
         if inputs.len() >= 2 {
-            promote_dtypes(inputs[0], inputs[1])
+            self.output_dtype(inputs[0], inputs[1])
         } else {
             inputs[0]
         }
@@ -547,6 +591,17 @@ pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
 
     result.reverse();
     Some(result)
+}
+
+/// Promote an integer dtype to `F32` for true division; floats keep their width.
+///
+/// Used by [`BinaryOp::output_dtype`] for Divide/Ratio so the result of `a / b`
+/// is a float regardless of the (integer) input types.
+fn to_float(d: DType) -> DType {
+    match d {
+        DType::F64 => DType::F64,
+        _ => DType::F32,
+    }
 }
 
 /// Promote two dtypes to a common type.
@@ -673,14 +728,75 @@ mod tests {
     }
 
     #[test]
-    fn test_u8_ratio() {
+    fn test_u8_ratio_is_true_division() {
+        // Ratio now uses true division: integer operands promote to f32 and the
+        // result is `a / b` (not the old scaled `(a/b) * 255`).
         let a = ViewBuffer::from_vec_with_shape(vec![128u8, 64, 255], vec![3]);
         let b = ViewBuffer::from_vec_with_shape(vec![64u8, 128, 255], vec![3]);
         let result = BinaryOp::Ratio.execute(&a, &b);
-        let data = result.as_slice::<u8>();
-        assert_eq!(data[0], 255); // (128/64) * 255 = 510 -> 255 (clamped)
-        assert_eq!(data[1], 127); // (64/128) * 255 = 127.5 -> 127
-        assert_eq!(data[2], 255); // (255/255) * 255 = 255
+        assert_eq!(result.dtype(), DType::F32);
+        let data = result.as_slice::<f32>();
+        assert!((data[0] - 2.0).abs() < 1e-6); // 128 / 64
+        assert!((data[1] - 0.5).abs() < 1e-6); // 64 / 128
+        assert!((data[2] - 1.0).abs() < 1e-6); // 255 / 255
+    }
+
+    #[test]
+    fn test_u8_divide_is_true_division() {
+        // divide(u8, u8) promotes to f32 and computes true division, not the
+        // truncating integer division it used to.
+        let a = ViewBuffer::from_vec_with_shape(vec![130u8, 128, 1], vec![3]);
+        let b = ViewBuffer::from_vec_with_shape(vec![64u8, 64, 0], vec![3]);
+        let result = BinaryOp::Divide.execute(&a, &b);
+        assert_eq!(result.dtype(), DType::F32);
+        let data = result.as_slice::<f32>();
+        assert!((data[0] - (130.0 / 64.0)).abs() < 1e-6); // ~2.031, not 2
+        assert!((data[1] - 2.0).abs() < 1e-6);
+        assert_eq!(data[2], 0.0); // zero divisor protected
+    }
+
+    #[test]
+    fn test_output_dtype_authority() {
+        // Standard promotion for non-dividing ops.
+        assert_eq!(BinaryOp::Add.output_dtype(DType::U8, DType::U8), DType::U8);
+        assert_eq!(
+            BinaryOp::Add.output_dtype(DType::U8, DType::U16),
+            DType::U16
+        );
+        assert_eq!(
+            BinaryOp::Add.output_dtype(DType::U8, DType::F32),
+            DType::F32
+        );
+        // True division always lands on a float.
+        assert_eq!(
+            BinaryOp::Divide.output_dtype(DType::U8, DType::U8),
+            DType::F32
+        );
+        assert_eq!(
+            BinaryOp::Ratio.output_dtype(DType::U16, DType::U16),
+            DType::F32
+        );
+        assert_eq!(
+            BinaryOp::Divide.output_dtype(DType::F64, DType::F64),
+            DType::F64
+        );
+        assert_eq!(
+            BinaryOp::Divide.output_dtype(DType::U8, DType::F64),
+            DType::F64
+        );
+    }
+
+    #[test]
+    fn test_mixed_dtype_add_matches_authority() {
+        // A promoting integer add computes in float internally but the produced
+        // buffer must carry the authority dtype (u16), matching planning.
+        let a = ViewBuffer::from_vec_with_shape(vec![200u8, 100], vec![2]);
+        let b = ViewBuffer::from_vec_with_shape(vec![400u16, 50], vec![2]);
+        let result = BinaryOp::Add.execute(&a, &b);
+        assert_eq!(result.dtype(), DType::U16);
+        let data = result.as_slice::<u16>();
+        assert_eq!(data[0], 600);
+        assert_eq!(data[1], 150);
     }
 
     #[test]

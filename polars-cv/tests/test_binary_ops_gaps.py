@@ -99,21 +99,15 @@ class TestRatioExecution:
         self,
         sample_pair: tuple[np.ndarray, np.ndarray, bytes, bytes],
     ) -> None:
-        """Ratio should match (a/b)*255, clamped semantics."""
+        """Ratio should match true division (a / b) semantics."""
         img1, img2, png1, png2 = sample_pair
 
-        # NumPy reference
-        expected = np.zeros_like(img1, dtype=np.uint8)
-        zero_mask = img2 == 0
-        nonzero_mask = ~zero_mask
-        expected[nonzero_mask] = np.clip(
-            (img1[nonzero_mask].astype(np.uint32) * 255)
-            // img2[nonzero_mask].astype(np.uint32),
-            0,
-            255,
-        ).astype(np.uint8)
-        expected[zero_mask & (img1 == 0)] = 0
-        expected[zero_mask & (img1 != 0)] = 255
+        # NumPy reference: true division a / b (float), with zero protection.
+        a = img1.astype(np.float32)
+        b = img2.astype(np.float32)
+        expected = np.where(img2 == 0, 0.0, a / np.where(img2 == 0, 1.0, b)).astype(
+            np.float32
+        )
 
         df = pl.DataFrame({"img1": [png1], "img2": [png2]})
         pipe1 = Pipeline().source("image_bytes")
