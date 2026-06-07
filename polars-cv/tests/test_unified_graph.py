@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 import pytest
+
 from polars_cv import Pipeline
 from polars_cv.geometry.schemas import contour_from_points
 

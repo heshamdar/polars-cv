@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+
 from polars_cv.metrics import ContourMatcher, froc_curve, lroc_curve
 from polars_cv.metrics._metrics._lroc import _build_lroc_curve
-
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:

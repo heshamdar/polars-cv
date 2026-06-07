@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:

@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import polars as pl
-import polars_cv  # noqa: F401 — registers .cv namespace
 
+import polars_cv  # noqa: F401 — registers .cv namespace
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:

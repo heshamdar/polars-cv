@@ -6,6 +6,7 @@ import json
 
 import polars as pl
 import pytest
+
 from polars_cv import Pipeline
 from polars_cv._types import DType, SourceFormat
 

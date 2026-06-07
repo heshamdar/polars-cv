@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import polars as pl
+
 from polars_cv.metrics import DetectionTable, PreMatchedAdapter, precision_recall_curve
 from polars_cv.metrics._matching._protocol import Matcher
 from polars_cv.metrics._types import COL_CLASS_ID, COL_IMAGE_ID, COL_N_GTS

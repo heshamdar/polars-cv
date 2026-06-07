@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 from PIL import Image
+
 from polars_cv import Pipeline, mask_dice, mask_iou
 
 if TYPE_CHECKING:

@@ -256,12 +256,10 @@ impl PipelineSpec {
                         );
                     }
                 }
-                "threshold" => {
-                    if !op.params.contains_key("value") {
-                        return Err(
-                            polars_err!(ComputeError: "threshold operation requires 'value' parameter"),
-                        );
-                    }
+                "threshold" if !op.params.contains_key("value") => {
+                    return Err(
+                        polars_err!(ComputeError: "threshold operation requires 'value' parameter"),
+                    );
                 }
                 _ => {}
             }

@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+
 from polars_cv import Pipeline
 from polars_cv.geometry import CONTOUR_SET_SCHEMA, MATCH_RESULT_SCHEMA
-
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:

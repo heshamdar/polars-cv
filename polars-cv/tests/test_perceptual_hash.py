@@ -11,6 +11,7 @@ from io import BytesIO
 
 import polars as pl
 from PIL import Image
+
 from polars_cv import HashAlgorithm, Pipeline
 
 

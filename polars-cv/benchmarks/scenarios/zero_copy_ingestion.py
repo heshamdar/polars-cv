@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 from PIL import Image
+
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:

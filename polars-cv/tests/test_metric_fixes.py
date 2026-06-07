@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+
 from polars_cv.metrics import (
     DetectionTable,
     froc_curve,
