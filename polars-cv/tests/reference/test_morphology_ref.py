@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 import polars as pl
 import pytest
+
 from polars_cv import Pipeline
 from polars_cv.pipeline import Pipeline as PipelineClass
-
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:

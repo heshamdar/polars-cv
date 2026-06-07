@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:
@@ -350,4 +351,3 @@ class TestAffineFusion:
         fused = spec["ops"][0]
         assert fused["output_height"]["value"] == 224
         assert fused["output_width"]["value"] == 224
-

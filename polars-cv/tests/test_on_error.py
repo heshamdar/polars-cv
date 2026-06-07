@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
 
 import polars as pl
-import polars_cv  # noqa: F401 — registers .cv namespace
 import pytest
-from polars_cv import Pipeline
 
+import polars_cv  # noqa: F401 — registers .cv namespace
+from polars_cv import Pipeline
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:

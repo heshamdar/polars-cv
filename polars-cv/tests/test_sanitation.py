@@ -42,7 +42,9 @@ from tests.conftest import plugin_required
 # ---------------------------------------------------------------------------
 
 
-def _png(width: int = 8, height: int = 8, color=(128, 64, 32), mode: str = "RGB") -> bytes:
+def _png(
+    width: int = 8, height: int = 8, color=(128, 64, 32), mode: str = "RGB"
+) -> bytes:
     """Encode a small test image to PNG bytes in the requested PIL mode."""
     PIL = pytest.importorskip("PIL.Image")
     if mode == "I;16":
@@ -80,22 +82,46 @@ def _leaf_dtype(dtype: pl.DataType) -> pl.DataType:
 # Typed list sinks require a known element dtype at plan time: either an
 # explicit source dtype, or a dtype-fixing op (cast). Both forms are exercised.
 _DETERMINISTIC_LIST_PIPELINES = [
-    ("resize_u8", lambda: Pipeline().source("image_bytes", dtype="u8").resize(height=6, width=6)),
+    (
+        "resize_u8",
+        lambda: Pipeline().source("image_bytes", dtype="u8").resize(height=6, width=6),
+    ),
     (
         "grayscale_u8",
-        lambda: Pipeline().source("image_bytes", dtype="u8").resize(height=6, width=6).grayscale(),
+        lambda: (
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .resize(height=6, width=6)
+            .grayscale()
+        ),
     ),
-    ("cast_f32", lambda: Pipeline().source("image_bytes").resize(height=6, width=6).cast("f32")),
-    ("cast_f64", lambda: Pipeline().source("image_bytes").resize(height=6, width=6).cast("f64")),
+    (
+        "cast_f32",
+        lambda: Pipeline().source("image_bytes").resize(height=6, width=6).cast("f32"),
+    ),
+    (
+        "cast_f64",
+        lambda: Pipeline().source("image_bytes").resize(height=6, width=6).cast("f64"),
+    ),
     (
         "grayscale_then_cast_f64",
-        lambda: Pipeline().source("image_bytes").resize(height=6, width=6).grayscale().cast("f64"),
+        lambda: (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=6, width=6)
+            .grayscale()
+            .cast("f64")
+        ),
     ),
 ]
 
 
 @plugin_required
-@pytest.mark.parametrize("label,build", _DETERMINISTIC_LIST_PIPELINES, ids=lambda v: v if isinstance(v, str) else "")
+@pytest.mark.parametrize(
+    "label,build",
+    _DETERMINISTIC_LIST_PIPELINES,
+    ids=lambda v: v if isinstance(v, str) else "",
+)
 def test_plan_equals_exec_list_sink(label, build):
     """Planned list-sink dtype must equal the realized dtype (real PNG data)."""
     if not isinstance(label, str):  # parametrize passes both tuple elements
@@ -115,7 +141,13 @@ def test_plan_equals_exec_blur_preserves_float_dtype():
     pipeline previously failed the execution-time dtype guard.
     """
     df = pl.DataFrame({"out": [_png()]})
-    pipe = Pipeline().source("image_bytes").resize(height=6, width=6).cast("f32").blur(sigma=1.0)
+    pipe = (
+        Pipeline()
+        .source("image_bytes")
+        .resize(height=6, width=6)
+        .cast("f32")
+        .blur(sigma=1.0)
+    )
     expr = pl.col("out").cv.pipe(pipe).sink("list")
     planned, realized = _planned_and_realized(df, expr)
     assert planned == realized
@@ -175,8 +207,12 @@ def test_plan_equals_exec_binary_promote():
     operands carry an explicit dtype so the typed sink is plannable.
     """
     df = pl.DataFrame({"out": [_png()]})
-    left = pl.col("out").cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
-    right = pl.col("out").cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
+    left = pl.col("out").cv.pipe(
+        Pipeline().source("image_bytes", dtype="u8").grayscale()
+    )
+    right = pl.col("out").cv.pipe(
+        Pipeline().source("image_bytes", dtype="u8").grayscale()
+    )
     expr = left.divide(right).sink("list")
     planned, realized = _planned_and_realized(df, expr)
     assert planned == realized
@@ -195,7 +231,11 @@ def _planned_shape(pipe):
 
 # (label, build-pipeline, png-mode) exercising the rank/channel rules end-to-end.
 _SHAPE_PIPELINES = [
-    ("resize_rgb", lambda: Pipeline().source("image_bytes").resize(height=6, width=5), "RGB"),
+    (
+        "resize_rgb",
+        lambda: Pipeline().source("image_bytes").resize(height=6, width=5),
+        "RGB",
+    ),
     (
         "resize_grayscale",
         lambda: Pipeline().source("image_bytes").resize(height=6, width=6).grayscale(),
@@ -203,28 +243,34 @@ _SHAPE_PIPELINES = [
     ),
     (
         "resize_rgba_preserves_4ch",
-        lambda: Pipeline()
-        .source("image_bytes")
-        .assert_shape(channels=4)
-        .resize(height=6, width=6),
+        lambda: (
+            Pipeline()
+            .source("image_bytes")
+            .assert_shape(channels=4)
+            .resize(height=6, width=6)
+        ),
         "RGBA",
     ),
     (
         "cvt_gray_on_rgba_is_graya",
-        lambda: Pipeline()
-        .source("image_bytes")
-        .assert_shape(channels=4)
-        .resize(height=6, width=6)
-        .cvt_color("rgb", "gray"),
+        lambda: (
+            Pipeline()
+            .source("image_bytes")
+            .assert_shape(channels=4)
+            .resize(height=6, width=6)
+            .cvt_color("rgb", "gray")
+        ),
         "RGBA",
     ),
     (
         "cvt_hsv_on_rgba_preserves_4ch",
-        lambda: Pipeline()
-        .source("image_bytes")
-        .assert_shape(channels=4)
-        .resize(height=6, width=6)
-        .cvt_color("rgb", "hsv"),
+        lambda: (
+            Pipeline()
+            .source("image_bytes")
+            .assert_shape(channels=4)
+            .resize(height=6, width=6)
+            .cvt_color("rgb", "hsv")
+        ),
         "RGBA",
     ),
 ]
@@ -351,7 +397,9 @@ def test_lib_introspection_api_is_present():
     """
     lib = getattr(polars_cv, "_lib", None)
     assert lib is not None, "compiled _lib missing despite the plugin .so being present"
-    missing = [name for name in _REQUIRED_LIB_HOOKS if not callable(getattr(lib, name, None))]
+    missing = [
+        name for name in _REQUIRED_LIB_HOOKS if not callable(getattr(lib, name, None))
+    ]
     assert not missing, f"_lib is built but missing introspection hooks: {missing}"
 
 
@@ -415,17 +463,35 @@ _OP_BUILDERS = {
     "clamp": lambda: Pipeline().source("image_bytes").clamp(0.0, 255.0),
     "relu": lambda: Pipeline().source("image_bytes").relu(),
     "invert": lambda: Pipeline().source("image_bytes").invert(),
-    "adjust_contrast": lambda: Pipeline().source("image_bytes").adjust_contrast(factor=1.2),
+    "adjust_contrast": lambda: (
+        Pipeline().source("image_bytes").adjust_contrast(factor=1.2)
+    ),
     "adjust_gamma": lambda: Pipeline().source("image_bytes").adjust_gamma(gamma=1.2),
     "cvt_color": lambda: Pipeline().source("image_bytes").cvt_color("rgb", "hsv"),
-    "convolve2d": lambda: Pipeline().source("image_bytes").convolve2d([0, 0, 0, 0, 1, 0, 0, 0, 0], 3),
-    "erode": lambda: Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3),
-    "dilate": lambda: Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3),
-    "morphology_gradient": lambda: Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3),
+    "convolve2d": lambda: (
+        Pipeline().source("image_bytes").convolve2d([0, 0, 0, 0, 1, 0, 0, 0, 0], 3)
+    ),
+    "erode": lambda: (
+        Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
+    ),
+    "dilate": lambda: (
+        Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
+    ),
+    "morphology_gradient": lambda: (
+        Pipeline()
+        .source("image_bytes")
+        .grayscale()
+        .threshold(128)
+        .morphology_gradient(ksize=3)
+    ),
     "canny": lambda: Pipeline().source("image_bytes").grayscale().canny(),
-    "equalize_histogram": lambda: Pipeline().source("image_bytes").grayscale().equalize_histogram(),
+    "equalize_histogram": lambda: (
+        Pipeline().source("image_bytes").grayscale().equalize_histogram()
+    ),
     "channel_select": lambda: Pipeline().source("image_bytes").channel_select(index=0),
-    "channel_swap": lambda: Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0]),
+    "channel_swap": lambda: (
+        Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
+    ),
     "flip": lambda: Pipeline().source("image_bytes").flip([0]),
 }
 

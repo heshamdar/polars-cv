@@ -50,7 +50,9 @@ def _make_blobs(count: int, size: int) -> list[bytes]:
     for _ in range(count):
         arr = rng.integers(0, 256, size=(size, size, 3), dtype=np.uint8)
         rows.append(arr)
-    df = pl.DataFrame({"img": rows}, schema={"img": pl.Array(pl.UInt8, (size, size, 3))})
+    df = pl.DataFrame(
+        {"img": rows}, schema={"img": pl.Array(pl.UInt8, (size, size, 3))}
+    )
     blobs = df.select(
         blob=pl.col("img").cv.pipe(Pipeline().source("array")).sink("blob")
     )["blob"].to_list()

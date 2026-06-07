@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+
 from polars_cv.metrics import DetectionTable, average_precision
 from polars_cv.metrics._bootstrap import (
     BootstrapResult,

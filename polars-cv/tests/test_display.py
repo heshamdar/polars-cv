@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 import polars as pl
 import pytest
+
 from polars_cv.display import (
     _detect_mime,
     _is_notebook,

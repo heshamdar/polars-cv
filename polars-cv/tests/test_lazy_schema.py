@@ -1,5 +1,6 @@
 import polars as pl
 import pytest
+
 from polars_cv import Pipeline
 
 
@@ -52,7 +53,10 @@ def test_lazy_schema_cast():
 def test_lazy_schema_grayscale():
     """Test that grayscale updates channels in schema."""
     pipe = (
-        Pipeline().source("image_bytes", dtype="u8").resize(height=100, width=200).grayscale()
+        Pipeline()
+        .source("image_bytes", dtype="u8")
+        .resize(height=100, width=200)
+        .grayscale()
     )
 
     df = pl.DataFrame({"image": [b""]})

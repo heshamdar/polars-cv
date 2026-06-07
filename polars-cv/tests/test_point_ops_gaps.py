@@ -12,6 +12,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+
 from polars_cv.geometry import POINT_SCHEMA
 
 

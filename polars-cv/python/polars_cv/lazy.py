@@ -24,7 +24,9 @@ def _generate_node_id() -> str:
     return f"node_{uuid.uuid4().hex[:8]}"
 
 
-def _require_concrete_sink_dtype(pipeline: Any, fmt: str, alias: str | None = None) -> None:
+def _require_concrete_sink_dtype(
+    pipeline: Any, fmt: str, alias: str | None = None
+) -> None:
     """Enforce that a typed ``list``/``array`` sink knows its element dtype.
 
     A Polars ``List``/``Array`` column needs a concrete inner dtype at planning

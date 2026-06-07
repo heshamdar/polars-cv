@@ -25,6 +25,7 @@ from typing import Callable
 import numpy as np
 import polars as pl
 import pytest
+
 from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_struct
 
 # ---------------------------------------------------------------------------

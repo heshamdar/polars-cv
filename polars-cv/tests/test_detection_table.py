@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
     COL_DET_IDX,

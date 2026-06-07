@@ -252,8 +252,9 @@ def benchmark_polars_cv_pipeline(
         BenchmarkResult with timing information.
     """
     import torch
-    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_struct
     from torch.utils.data import DataLoader, Dataset
+
+    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_struct
 
     mode = "streaming" if use_streaming else "eager"
     log(f"Setting up polars-cv pipeline (mode={mode})...")
@@ -391,8 +392,9 @@ def verify_output_equivalence(
     """
     import torch
     from datasets import load_dataset
-    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_struct
     from torchvision import transforms
+
+    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_struct
 
     log("Verifying output equivalence between pipelines...")
     log("  Note: Minor differences expected due to resize interpolation algorithms")
@@ -488,10 +490,11 @@ def run_inference_serving(
     """
     import torch
     from datasets import load_dataset
-    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_struct
     from torch.utils.data import DataLoader, Dataset
     from torchvision import transforms
     from torchvision.models import resnet18
+
+    from polars_cv import IMAGENET_MEAN, IMAGENET_STD, Pipeline, numpy_from_struct
 
     log_step(f"INFERENCE SERVING COMPARISON ({num_epochs} passes)")
 

@@ -17,6 +17,7 @@ import numpy as np
 import polars as pl
 import pytest
 from PIL import Image
+
 from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import polars as pl
+
 from polars_cv import Pipeline
 from polars_cv._types import ParamValue
 

@@ -11,8 +11,8 @@ import io
 
 import numpy as np
 import polars as pl
-from polars_cv import Pipeline
 
+from polars_cv import Pipeline
 from tests.conftest import plugin_required
 
 

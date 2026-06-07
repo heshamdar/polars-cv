@@ -8,6 +8,7 @@ native floating-point TIFF encoding works correctly.
 import struct
 
 import polars as pl
+
 from polars_cv import Pipeline
 
 

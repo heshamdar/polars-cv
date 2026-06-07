@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+
 from polars_cv import Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:

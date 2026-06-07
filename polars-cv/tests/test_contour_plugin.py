@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+
 from polars_cv.geometry import CONTOUR_SCHEMA, POINT_SCHEMA
 
 if TYPE_CHECKING:

@@ -6,14 +6,15 @@ diagnostic features: IoU, region proportion, masked pixel statistics,
 percentiles, and annotation counts.
 """
 
+from io import BytesIO
+
 import numpy as np
 import polars as pl
 import pytest
-from io import BytesIO
 from PIL import Image
 
-from polars_cv.pipeline import Pipeline
 from polars_cv.geometry.schemas import CONTOUR_SCHEMA
+from polars_cv.pipeline import Pipeline
 
 
 def encode_png(arr: np.ndarray) -> bytes:

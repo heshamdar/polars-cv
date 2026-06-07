@@ -196,13 +196,7 @@ impl BinaryOp {
                 let product = (a_val as u32) * (b_val as u32);
                 ((product + 127) / 255) as u8
             }
-            BinaryOp::Divide => {
-                if b_val == 0 {
-                    0
-                } else {
-                    a_val / b_val
-                }
-            }
+            BinaryOp::Divide => a_val.checked_div(b_val).unwrap_or(0),
             BinaryOp::Ratio => {
                 if b_val == 0 {
                     if a_val == 0 {
@@ -290,14 +284,8 @@ impl BinaryOp {
                     // Use rounding division
                     ((product + 32767) / 65535) as u16
                 }
-                BinaryOp::Divide => {
-                    // Integer division with zero protection
-                    if b_val == 0 {
-                        0
-                    } else {
-                        a_val / b_val
-                    }
-                }
+                // Integer division with zero protection
+                BinaryOp::Divide => a_val.checked_div(b_val).unwrap_or(0),
                 BinaryOp::Ratio => {
                     // Scaled ratio: (a/b) * 65535, clamped
                     if b_val == 0 {
