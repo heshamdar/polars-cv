@@ -31,10 +31,10 @@ pub use execution::{
     apply_channel_merge, apply_channel_swap, execute_plan, ExecutionPlan, PlanStep,
 };
 
-// Re-exports - Tiling
+// Re-exports - Execution strategy
 pub use execution::{
-    configure_tiling, get_tile_config, is_tiling_enabled, set_tile_config, with_tile_config,
-    TileConfig, TilePolicy,
+    get_execution_strategy, set_execution_strategy, with_execution_strategy, ExecutionStrategy,
+    TilePolicy, ADAPTIVE_THRESHOLD_BYTES, DEFAULT_TILE_SIZE,
 };
 
 // Re-exports - Expression

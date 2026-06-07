@@ -1,750 +1,447 @@
-//! Tiled execution for cache-efficient processing of large images.
+//! Segment-level tiled execution for cache-efficient pipeline processing.
 //!
-//! This module provides opt-in tiled execution that improves cache efficiency
-//! for large images by processing in fixed-size tiles (e.g., 256x256).
+//! # Why this matters
 //!
-//! # Overview
+//! The naive approach tiles *per operation*: extract a tile, apply one op,
+//! reassemble the full image, then repeat for the next op.  This destroys
+//! cache residency between ops because the full image is written to DRAM and
+//! read back on every step.
 //!
-//! Tiled execution sits as a transparent wrapper around existing operations:
-//! - Input tiles are extracted as zero-copy views via [`ViewBuffer::slice()`]
-//! - Tiles are processed sequentially in row-major order for cache locality
-//! - Output is pre-allocated and tiles are copied incrementally
-//! - No changes to existing operation implementations are required
+//! This module implements **outer-loop tiling**: consecutive tileable ops are
+//! grouped into *segments*, and each tile is run through **all ops in the
+//! segment** before the next tile is fetched.  Each 256 × 256 RGB tile is
+//! ~192 KB — it stays in L2 through every op in the segment.
 //!
-//! # Usage
+//! # Segment formation
 //!
-//! Enable tiled execution via environment variable:
+//! Operations are classified by [`TilePolicy`]:
 //!
-//! ```bash
-//! VIEW_BUFFER_TILE_SIZE=256 ./my_program
-//! ```
+//! | Policy | Examples | Halo |
+//! |---|---|---|
+//! | `PointWise` | scale, relu, cast, grayscale, threshold | 0 |
+//! | `LocalNeighborhood` | blur, erode, dilate, morph-gradient | > 0 |
+//! | `Global` | resize, affine, global-normalize, canny | full image |
 //!
-//! Or programmatically via [`with_tile_config()`]:
+//! Consecutive `PointWise` and `LocalNeighborhood` steps form one *tileable
+//! segment*.  A `Global` step, a `ViewOp`, or `MaterializeContiguous` always
+//! terminates the current segment and runs on the full buffer.
 //!
-//! ```ignore
-//! use view_buffer::{TileConfig, with_tile_config};
+//! # Halo accumulation
 //!
-//! let result = with_tile_config(Some(TileConfig::default()), || {
-//!     // Operations here will use tiled execution for large images
-//!     expr.plan().execute()
-//! });
-//! ```
-//!
-//! # Cache Efficiency
-//!
-//! The default tile size of 256×256 produces ~192KB tiles for RGB images,
-//! which fits comfortably in L2 cache on most modern CPUs. This reduces
-//! memory bandwidth pressure and improves cache hit rates.
-//!
-//! # Zero-Copy Semantics
-//!
-//! Input tiles are extracted using [`ViewBuffer::slice()`], which creates
-//! views without copying data. This preserves the zero-copy paradigm:
-//! - Input tile extraction: zero-copy (shares Arc storage)
-//! - Strided input handling: works correctly through stride composition
-//! - Output allocation: inherent to compute ops, same as non-tiled
+//! For a segment `[blur(halo=3), erode(halo=1)]` the combined halo is 4: the
+//! erode needs 1 pixel of context that was produced by the blur, and the blur
+//! needs 3 pixels of the original image, so we extract 4 extra pixels around
+//! each tile's core to satisfy both in one extraction.
 
-use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::core::buffer::{BufferStorage, ViewBuffer};
 use crate::core::layout::Layout;
+use crate::execution::plan::PlanStep;
+use crate::execution::runner::{apply_compute_inner, apply_image_inner, apply_perceptual_hash, apply_view};
+use crate::ops::traits::Op;
 
-// ============================================================
-// Fast-Path Atomic Flag
-// ============================================================
+// ── TilePolicy ────────────────────────────────────────────────────────────────
 
-/// Global atomic flag for fast "is tiling enabled" check.
+/// Declares how an operation interacts with spatial locality.
 ///
-/// This avoids expensive thread-local storage access on every operation
-/// when tiling is disabled. The flag is kept in sync with the thread-local
-/// configuration via [`set_tile_config()`].
-///
-/// Note: This is a "hint" that may lag behind thread-local state in multi-threaded
-/// scenarios, but that's acceptable since:
-/// - Most usage is single-threaded (Polars plugin)
-/// - False positives just mean we do the TLS lookup (small overhead)
-/// - False negatives are impossible since we set atomic BEFORE TLS on enable
-///
-/// Tiling is currently disabled by default due to performance issues.
-static TILING_ENABLED: AtomicBool = AtomicBool::new(false);
-
-/// Fast check if tiling is potentially enabled.
-///
-/// This is a cheap atomic load that avoids thread-local storage access.
-/// Returns `true` if tiling might be enabled (requires TLS check to confirm).
-/// Returns `false` if tiling is definitely disabled (no TLS check needed).
-#[inline(always)]
-pub fn is_tiling_enabled() -> bool {
-    TILING_ENABLED.load(Ordering::Relaxed)
-}
-
-/// Configuration for tiled execution.
-///
-/// Controls when and how tiling is applied to image operations.
-///
-/// # Tile Size Selection
-///
-/// The default tile size of 256×256 is chosen to fit in L2 cache:
-/// - 256×256×3 (RGB) = 192KB
-/// - 256×256×1 (grayscale) = 64KB
-///
-/// Both fit comfortably in typical L2 caches (256KB-1MB on Intel/AMD,
-/// 4MB on Apple M-series).
-#[derive(Debug, Clone, PartialEq)]
-pub struct TileConfig {
-    /// Tile size in pixels (both width and height).
-    ///
-    /// Default: 256 (192KB for RGB, fits L2 cache).
-    pub tile_size: usize,
-
-    /// Minimum image dimension to enable tiling.
-    ///
-    /// Images smaller than this in both dimensions skip tiling
-    /// since they likely already fit in cache.
-    ///
-    /// Default: 512.
-    pub min_image_size: usize,
-}
-
-impl Default for TileConfig {
-    fn default() -> Self {
-        Self {
-            tile_size: 256,
-            min_image_size: 512,
-        }
-    }
-}
-
-impl TileConfig {
-    /// Creates a new tile configuration with the specified tile size.
-    ///
-    /// Uses default minimum image size of 512.
-    pub fn new(tile_size: usize) -> Self {
-        Self {
-            tile_size,
-            ..Default::default()
-        }
-    }
-
-    /// Creates a new tile configuration with both tile size and minimum image size.
-    pub fn with_min_size(tile_size: usize, min_image_size: usize) -> Self {
-        Self {
-            tile_size,
-            min_image_size,
-        }
-    }
-}
-
-/// Policy describing how an operation can be tiled.
-///
-/// Operations declare their tiling policy to enable the execution layer
-/// to automatically apply tiled execution when appropriate.
+/// Used during segmentation to decide whether an op can participate in
+/// outer-loop tiling, and if so, how large a halo to extract around each tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TilePolicy {
-    /// No dependencies between pixels - can process each pixel independently.
+    /// No pixel dependencies — every output pixel depends only on the
+    /// corresponding input pixel.  Halo = 0.
     ///
-    /// Examples: threshold, grayscale, scale, relu, clamp, cast.
-    ///
-    /// These operations have halo=0 and can be tiled without overlap.
+    /// Examples: threshold, scale, relu, clamp, cast, grayscale, invert.
     PointWise,
 
-    /// Needs neighboring pixels within a radius (halo region).
+    /// Needs neighboring pixels within a radius.  Tiles must include `halo`
+    /// extra pixels on each edge to provide correct context.
     ///
-    /// Examples: blur (halo = 3*sigma), convolution, morphological ops.
-    ///
-    /// Tiles must include extra pixels around the core region to provide
-    /// context for pixels at tile edges. Only the core region (excluding
-    /// halo) is copied to the output.
+    /// Examples: Gaussian blur (`halo ≈ 3σ`), erode/dilate (`halo = ksize/2`).
     LocalNeighborhood {
-        /// The number of pixels needed around each tile edge.
-        ///
-        /// For a Gaussian blur with sigma=2, halo would be 6 (3*sigma).
+        /// Extra pixels needed on each edge of the tile.
         halo: usize,
     },
 
-    /// Cannot be tiled - needs access to the full image.
+    /// Needs access to the full image — cannot be tiled.
     ///
-    /// Examples: resize (global resampling), normalize(minmax/zscore) (needs
-    /// global statistics), perceptual hash, histogram.
-    ///
-    /// These operations are executed on the full buffer without tiling.
+    /// Examples: resize (global resampling), affine warp, histogram
+    /// equalization, global normalize (min/max or z-score), Canny.
     Global,
 }
 
 impl TilePolicy {
-    /// Returns the halo size for this policy.
-    ///
-    /// Returns 0 for PointWise and Global policies.
+    /// Returns the halo size for this policy (0 for `PointWise` and `Global`).
     #[inline]
-    pub fn halo(&self) -> usize {
+    pub fn halo(self) -> usize {
         match self {
-            TilePolicy::PointWise => 0,
-            TilePolicy::LocalNeighborhood { halo } => *halo,
-            TilePolicy::Global => 0,
+            TilePolicy::LocalNeighborhood { halo } => halo,
+            _ => 0,
         }
     }
 
-    /// Returns true if this operation can be tiled.
+    /// Returns `true` if this op can participate in a tileable segment.
     #[inline]
-    pub fn is_tileable(&self) -> bool {
+    pub fn is_tileable(self) -> bool {
         !matches!(self, TilePolicy::Global)
     }
 }
 
-// ============================================================
-// Thread-Local Configuration
-// ============================================================
+// ── Segment formation ─────────────────────────────────────────────────────────
 
-/// Initializes the default tile configuration.
-///
-/// Priority order:
-/// 1. Environment variable `VIEW_BUFFER_TILE_SIZE` (explicit tile size)
-/// 2. Environment variable `VIEW_BUFFER_TILING=0` or `false` (disable tiling)
-/// 3. Default: tiling ON with tile_size=256, min_image_size=512
-///
-/// Also sets the global atomic flag to match the initial configuration.
-fn init_default_tile_config() -> Option<TileConfig> {
-    // Check for explicit tile size first
-    if let Ok(size_str) = std::env::var("VIEW_BUFFER_TILE_SIZE") {
-        if let Ok(size) = size_str.parse::<usize>() {
-            // Atomic flag already defaults to true, no change needed
-            return Some(TileConfig::new(size));
+/// A group of consecutive plan steps that share a tile during execution.
+struct TileableSegment {
+    steps: Vec<PlanStep>,
+    /// Sum of per-op halos — the number of extra pixels to extract around each
+    /// tile's core to satisfy all ops in the segment.
+    combined_halo: usize,
+}
+
+enum Segment {
+    /// One or more tileable steps processed together on each tile.
+    Tileable(TileableSegment),
+    /// A single step that runs on the full buffer (Global policy, ViewOp, or
+    /// MaterializeContiguous).
+    Full(PlanStep),
+}
+
+/// Groups `steps` into segments: consecutive tileable ops become one
+/// `Tileable` segment; everything else becomes individual `Full` steps.
+fn make_segments(steps: Vec<PlanStep>) -> Vec<Segment> {
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut current: Option<TileableSegment> = None;
+
+    let flush = |current: Option<TileableSegment>, segments: &mut Vec<Segment>| {
+        if let Some(seg) = current {
+            segments.push(Segment::Tileable(seg));
+        }
+    };
+
+    for step in steps {
+        match step_tile_policy(&step) {
+            // ViewOps and MaterializeContiguous: flush + run immediately.
+            None => {
+                flush(current.take(), &mut segments);
+                segments.push(Segment::Full(step));
+            }
+            // Global ops: flush + run on full buffer.
+            Some(TilePolicy::Global) => {
+                flush(current.take(), &mut segments);
+                segments.push(Segment::Full(step));
+            }
+            // Tileable (PointWise or LocalNeighborhood): accumulate.
+            Some(policy) => {
+                let halo = policy.halo();
+                match current.as_mut() {
+                    Some(seg) => {
+                        seg.combined_halo += halo;
+                        seg.steps.push(step);
+                    }
+                    None => {
+                        current = Some(TileableSegment {
+                            steps: vec![step],
+                            combined_halo: halo,
+                        });
+                    }
+                }
+            }
         }
     }
 
-    // Check if tiling is explicitly disabled
-    if let Ok(val) = std::env::var("VIEW_BUFFER_TILING") {
-        let lower = val.to_lowercase();
-        if lower == "none"
-            || lower.is_empty()
-            || lower == "0"
-            || lower == "false"
-            || lower == "off"
-            || lower == "no"
-        {
-            // Disable tiling - update atomic flag
-            TILING_ENABLED.store(false, Ordering::Relaxed);
-            return None;
-        }
-    }
-
-    // Default: tiling OFF (disabled by default due to performance issues)
-    // Matches the TILING_ENABLED atomic which defaults to false
-    None
+    flush(current, &mut segments);
+    segments
 }
 
-thread_local! {
-    /// Thread-local tile configuration.
-    ///
-    /// Default: Tiling enabled with tile_size=256, min_image_size=512.
-    ///
-    /// Can be configured via:
-    /// - Environment variable `VIEW_BUFFER_TILE_SIZE=256` (set tile size)
-    /// - Environment variable `VIEW_BUFFER_TILING=0` (disable tiling)
-    /// - Programmatically via [`set_tile_config()`] or [`with_tile_config()`]
-    static TILE_CONFIG: RefCell<Option<TileConfig>> = RefCell::new(init_default_tile_config());
-}
-
-/// Sets the global tile configuration.
-///
-/// This sets the thread-local tile configuration that will be used for
-/// all subsequent operations on this thread. Also updates the global
-/// atomic flag for fast-path checking.
-///
-/// # Arguments
-///
-/// * `config` - The tile configuration, or `None` to disable tiling.
-///
-/// # Example
-///
-/// ```ignore
-/// use view_buffer::{TileConfig, set_tile_config};
-///
-/// // Enable tiling with custom settings
-/// set_tile_config(Some(TileConfig::with_min_size(256, 1024)));
-///
-/// // Disable tiling entirely
-/// set_tile_config(None);
-/// ```
-pub fn set_tile_config(config: Option<TileConfig>) {
-    // Update atomic flag BEFORE TLS for enable (ensures no false negatives)
-    // Update atomic flag AFTER TLS for disable (ensures fast path works)
-    let is_enabled = config.is_some();
-    if is_enabled {
-        TILING_ENABLED.store(true, Ordering::Relaxed);
-    }
-    TILE_CONFIG.with(|c| {
-        *c.borrow_mut() = config;
-    });
-    if !is_enabled {
-        TILING_ENABLED.store(false, Ordering::Relaxed);
+/// Returns the tiling policy for a plan step, or `None` for steps that must
+/// be executed immediately on the full buffer (ViewOp, MaterializeContiguous).
+fn step_tile_policy(step: &PlanStep) -> Option<TilePolicy> {
+    match step {
+        PlanStep::View(_) | PlanStep::MaterializeContiguous => None,
+        PlanStep::Compute(op) => Some(op.tile_policy()),
+        PlanStep::Image(op) => Some(op.tile_policy()),
+        PlanStep::PerceptualHash(_) => Some(TilePolicy::Global),
     }
 }
 
-/// Configures tiling with a minimum image size threshold.
-///
-/// This is a convenience function that enables tiling with the default
-/// tile size (256) but allows customizing when tiling activates.
-///
-/// # Arguments
-///
-/// * `min_image_size` - Minimum dimension (height or width) for tiling to activate.
-///   Pass `None` to disable tiling entirely.
-///
-/// # Example
-///
-/// ```ignore
-/// use view_buffer::configure_tiling;
-///
-/// // Only tile images larger than 1024 pixels
-/// configure_tiling(Some(1024));
-///
-/// // Disable tiling
-/// configure_tiling(None);
-/// ```
-pub fn configure_tiling(min_image_size: Option<usize>) {
-    let config = min_image_size.map(|size| TileConfig::with_min_size(256, size));
-    set_tile_config(config);
-}
+// ── Outer-loop segment execution ─────────────────────────────────────────────
 
-/// Gets the current tile configuration (if enabled).
+/// Executes `steps` on `source` using segment-level tiling.
 ///
-/// Returns `None` if tiling is disabled or not configured.
-pub fn get_tile_config() -> Option<TileConfig> {
-    TILE_CONFIG.with(|c| c.borrow().clone())
-}
+/// Consecutive tileable ops are grouped and each tile is run through the
+/// entire group before the next tile is fetched.  Global ops and view ops
+/// still run on the full buffer.
+pub fn execute_segmented_tiled(
+    source: ViewBuffer,
+    steps: Vec<PlanStep>,
+    tile_size: usize,
+) -> ViewBuffer {
+    let segments = make_segments(steps);
+    let mut current = source;
 
-/// Executes a closure with a specific tile configuration.
-///
-/// This temporarily sets the thread-local tile configuration for the
-/// duration of the closure, restoring the previous value afterward.
-///
-/// # Arguments
-///
-/// * `config` - The tile configuration to use, or `None` to disable tiling.
-/// * `f` - The closure to execute with the specified configuration.
-///
-/// # Example
-///
-/// ```ignore
-/// use view_buffer::{TileConfig, with_tile_config};
-///
-/// // Enable tiling with 128×128 tiles
-/// let result = with_tile_config(Some(TileConfig::new(128)), || {
-///     // Tiled execution is enabled here
-///     pipeline.execute()
-/// });
-///
-/// // Disable tiling explicitly
-/// let result = with_tile_config(None, || {
-///     // Tiling is disabled here
-///     pipeline.execute()
-/// });
-/// ```
-pub fn with_tile_config<T, F: FnOnce() -> T>(config: Option<TileConfig>, f: F) -> T {
-    // Save current config and atomic state
-    let prev = TILE_CONFIG.with(|c| c.borrow().clone());
-    let prev_enabled = TILING_ENABLED.load(Ordering::Relaxed);
-
-    // Set new config and update atomic to match
-    TILING_ENABLED.store(config.is_some(), Ordering::Relaxed);
-    TILE_CONFIG.with(|c| {
-        *c.borrow_mut() = config;
-    });
-
-    // Execute closure
-    let result = f();
-
-    // Restore previous config and atomic state
-    TILING_ENABLED.store(prev_enabled, Ordering::Relaxed);
-    TILE_CONFIG.with(|c| {
-        *c.borrow_mut() = prev;
-    });
-
-    result
-}
-
-// ============================================================
-// Tiled Execution Functions
-// ============================================================
-
-/// Check if tiling should be applied based on image shape and configuration.
-///
-/// Returns `true` if the image is large enough to benefit from tiling.
-pub fn should_tile(shape: &[usize], config: &TileConfig) -> bool {
-    // Need at least 2D for image tiling
-    if shape.len() < 2 {
-        return false;
+    for segment in segments {
+        current = match segment {
+            Segment::Full(step) => apply_step_full(current, step),
+            Segment::Tileable(seg) => {
+                execute_tile_segment(current, seg.steps, tile_size, seg.combined_halo)
+            }
+        };
     }
 
-    let h = shape[0];
-    let w = shape[1];
-
-    // Only tile if at least one dimension exceeds the minimum
-    h > config.min_image_size || w > config.min_image_size
+    current
 }
 
-/// Convenience wrapper: apply tiling if enabled and beneficial.
+/// Applies a single plan step to the full buffer without any tiling.
+pub(crate) fn apply_step_full(buf: ViewBuffer, step: PlanStep) -> ViewBuffer {
+    match step {
+        PlanStep::View(op) => apply_view(buf, op),
+        PlanStep::Compute(op) => apply_compute_inner(buf, op),
+        PlanStep::Image(op) => apply_image_inner(buf, op),
+        PlanStep::PerceptualHash(op) => apply_perceptual_hash(buf, op),
+        PlanStep::MaterializeContiguous => buf.to_contiguous(),
+    }
+}
+
+// ── Tile execution ────────────────────────────────────────────────────────────
+
+/// Executes all `steps` in a tileable segment using outer-loop tiling.
 ///
-/// This is the main entry point for tiled execution. It checks whether
-/// tiling is enabled and appropriate, then either applies tiled execution
-/// or falls through to direct execution.
-///
-/// # Arguments
-///
-/// * `input` - The input buffer to process.
-/// * `halo` - The halo size needed by the operation (0 for point-wise ops).
-/// * `config` - Optional tile configuration. If `None`, tiling is disabled.
-/// * `op` - The operation closure to apply.
-///
-/// # Returns
-///
-/// The result of applying the operation, either tiled or directly.
-///
-/// # Example
-///
-/// ```ignore
-/// let result = maybe_tiled(
-///     input,
-///     0, // halo for point-wise op
-///     get_tile_config().as_ref(),
-///     |tile| apply_threshold(tile, 128),
-/// );
-/// ```
-pub fn maybe_tiled<F>(
+/// Each tile (plus its halo) is run through every op in `steps` before the
+/// next tile is processed.  Only the core region (excluding halo) of each
+/// output tile is copied to the final output buffer.
+fn execute_tile_segment(
     input: ViewBuffer,
-    halo: usize,
-    config: Option<&TileConfig>,
-    op: F,
-) -> ViewBuffer
-where
-    F: Fn(ViewBuffer) -> ViewBuffer,
-{
-    match config {
-        Some(cfg) if should_tile(input.shape(), cfg) => {
-            execute_tiled(input, halo, cfg.tile_size, op)
-        }
-        _ => op(input), // No tiling - pass through unchanged
-    }
-}
-
-/// Execute an operation with tiled processing.
-///
-/// This function divides the input into tiles, applies the operation to each
-/// tile, and assembles the results into the output buffer.
-///
-/// # Tile Processing
-///
-/// 1. **Input tile extraction**: Each tile is extracted as a zero-copy view
-///    using `ViewBuffer::slice()`. The tile includes a halo region around
-///    the core to provide context for operations like blur.
-///
-/// 2. **Operation application**: The operation is applied to the tile.
-///    The operation sees a regular `ViewBuffer` and doesn't need to know
-///    it's processing a tile.
-///
-/// 3. **Output assembly**: The core region of the output tile (excluding
-///    halo) is copied to the pre-allocated output buffer.
-///
-/// # Halo Handling
-///
-/// For operations with local dependencies (like blur), the input tile
-/// includes extra pixels (halo) around the core region:
-///
-/// ```text
-/// ┌───────────────────┐
-/// │   Halo (top)      │ ← Read from input
-/// ├───────────────────┤
-/// │                   │
-/// │   Core Tile       │ ← Produce output
-/// │                   │
-/// ├───────────────────┤
-/// │   Halo (bottom)   │ ← Read from input
-/// └───────────────────┘
-/// ```
-///
-/// At image edges, the halo is clamped to available pixels.
-///
-/// # Arguments
-///
-/// * `input` - The input buffer to tile.
-/// * `halo` - Number of pixels needed around each tile edge.
-/// * `tile_size` - Size of each tile (both width and height).
-/// * `op` - The operation to apply to each tile.
-///
-/// # Returns
-///
-/// A new buffer containing the assembled output.
-pub fn execute_tiled<F>(input: ViewBuffer, halo: usize, tile_size: usize, op: F) -> ViewBuffer
-where
-    F: Fn(ViewBuffer) -> ViewBuffer,
-{
+    steps: Vec<PlanStep>,
+    tile_size: usize,
+    combined_halo: usize,
+) -> ViewBuffer {
     let input_shape = input.shape();
-    let input_ndim = input_shape.len();
+    let ndim = input_shape.len();
     let (h, w) = (input_shape[0], input_shape[1]);
-    let input_channels = input_shape.get(2).copied().unwrap_or(1);
+    let in_channels = input_shape.get(2).copied().unwrap_or(1);
 
-    // We need to determine output characteristics by processing the first tile
-    // because operations may change channels (e.g., grayscale) or dtype
-    let first_tile_y: usize = 0;
-    let first_tile_x: usize = 0;
+    // Process the first tile to discover the output dtype and channel count
+    // (ops like grayscale reduce channels; cast changes dtype).
+    let first_tile = extract_tile(&input, 0, 0, tile_size, combined_halo, h, w, in_channels, ndim);
+    let first_out = run_steps_on_tile(first_tile, &steps);
 
-    // Extract first input tile
-    let in_y0 = first_tile_y.saturating_sub(halo);
-    let in_y1 = (first_tile_y + tile_size + halo).min(h);
-    let in_x0 = first_tile_x.saturating_sub(halo);
-    let in_x1 = (first_tile_x + tile_size + halo).min(w);
+    let out_shape = first_out.shape();
+    let out_ndim = out_shape.len();
+    let out_channels = out_shape.get(2).copied().unwrap_or(1);
+    let out_dtype = first_out.dtype();
+    let out_elem = out_dtype.size_of();
 
-    let (start, end) = if input_ndim >= 3 {
-        (vec![in_y0, in_x0, 0], vec![in_y1, in_x1, input_channels])
-    } else {
-        (vec![in_y0, in_x0], vec![in_y1, in_x1])
-    };
-    let first_input_tile = input.slice(&start, &end);
+    // Pre-allocate the output buffer.
+    let mut output_data: Vec<u8> = vec![0u8; h * w * out_channels * out_elem];
 
-    // Materialize if tile is non-contiguous (e.g., from flipped buffer)
-    let first_input_tile = if first_input_tile.layout.is_contiguous() {
-        first_input_tile
-    } else {
-        first_input_tile.to_contiguous()
-    };
-    let first_output_tile = op(first_input_tile);
-
-    // Determine output characteristics from first tile
-    let first_output_shape = first_output_tile.shape();
-    let output_ndim = first_output_shape.len();
-    let output_channels = first_output_shape.get(2).copied().unwrap_or(1);
-    let output_dtype = first_output_tile.dtype();
-    let output_dtype_size = output_dtype.size_of();
-
-    // Pre-allocate output buffer with correct characteristics
-    let output_bytes = h * w * output_channels * output_dtype_size;
-    let mut output_data: Vec<u8> = vec![0u8; output_bytes];
-
-    // Copy first tile's core region to output
-    let core_h_first = tile_size.min(h);
-    let core_w_first = tile_size.min(w);
-    copy_tile_to_output(
-        &first_output_tile,
-        0, // core_y_offset (first tile has no halo at top-left)
-        0, // core_x_offset
+    // Copy the first tile's core into the output.
+    copy_core(
+        &first_out,
+        0, 0, // core offset inside the tile output
         &mut output_data,
-        0, // dst_y
-        0, // dst_x
-        core_h_first,
-        core_w_first,
-        w,
-        output_channels,
-        output_dtype_size,
+        0, 0, // destination top-left
+        tile_size.min(h),
+        tile_size.min(w),
+        w, out_channels, out_elem,
     );
 
-    // Process remaining tiles in row-major order (cache-friendly)
+    // Process remaining tiles in row-major order (cache-friendly scan).
     for tile_y in (0..h).step_by(tile_size) {
         for tile_x in (0..w).step_by(tile_size) {
-            // Skip the first tile (already processed)
             if tile_y == 0 && tile_x == 0 {
-                continue;
+                continue; // already done above
             }
 
-            // === INPUT: ZERO-COPY TILE EXTRACTION ===
-            let in_y0 = tile_y.saturating_sub(halo);
-            let in_y1 = (tile_y + tile_size + halo).min(h);
-            let in_x0 = tile_x.saturating_sub(halo);
-            let in_x1 = (tile_x + tile_size + halo).min(w);
+            let tile = extract_tile(
+                &input, tile_y, tile_x,
+                tile_size, combined_halo,
+                h, w, in_channels, ndim,
+            );
+            let out_tile = run_steps_on_tile(tile, &steps);
 
-            let (start, end) = if input_ndim >= 3 {
-                (vec![in_y0, in_x0, 0], vec![in_y1, in_x1, input_channels])
-            } else {
-                (vec![in_y0, in_x0], vec![in_y1, in_x1])
-            };
-            let input_tile = input.slice(&start, &end);
+            // The halo may be clamped at image edges (when tile_y < combined_halo,
+            // in_y0 is 0 rather than tile_y - combined_halo).
+            let in_y0 = tile_y.saturating_sub(combined_halo);
+            let in_x0 = tile_x.saturating_sub(combined_halo);
+            let core_y_off = tile_y - in_y0; // pixels to skip at top of output tile
+            let core_x_off = tile_x - in_x0;
+            let core_h = tile_size.min(h - tile_y);
+            let core_w = tile_size.min(w - tile_x);
 
-            // Materialize if tile is non-contiguous (e.g., from flipped buffer)
-            // This ensures operations that require contiguous data work correctly
-            let input_tile = if input_tile.layout.is_contiguous() {
-                input_tile
-            } else {
-                input_tile.to_contiguous()
-            };
-
-            // === COMPUTE: APPLY OPERATION ===
-            let output_tile = op(input_tile);
-
-            // === OUTPUT: COPY CORE REGION TO FINAL BUFFER ===
-            let out_y0 = tile_y;
-            let out_y1 = (tile_y + tile_size).min(h);
-            let out_x0 = tile_x;
-            let out_x1 = (tile_x + tile_size).min(w);
-            let core_h = out_y1 - out_y0;
-            let core_w = out_x1 - out_x0;
-
-            // Offset into the output_tile to skip halo
-            let core_y_offset = tile_y - in_y0;
-            let core_x_offset = tile_x - in_x0;
-
-            copy_tile_to_output(
-                &output_tile,
-                core_y_offset,
-                core_x_offset,
+            copy_core(
+                &out_tile,
+                core_y_off, core_x_off,
                 &mut output_data,
-                out_y0,
-                out_x0,
-                core_h,
-                core_w,
-                w,
-                output_channels,
-                output_dtype_size,
+                tile_y, tile_x,
+                core_h, core_w,
+                w, out_channels, out_elem,
             );
         }
     }
 
-    // Reconstruct ViewBuffer from output data
-    let final_output_shape = if output_ndim >= 3 {
-        vec![h, w, output_channels]
+    let final_shape = if out_ndim >= 3 {
+        vec![h, w, out_channels]
     } else {
         vec![h, w]
     };
 
     ViewBuffer {
         data: BufferStorage::Rust(Arc::new(output_data)),
-        layout: Layout::new_contiguous(final_output_shape, output_dtype),
+        layout: Layout::new_contiguous(final_shape, out_dtype),
     }
 }
 
-/// Copy a tile's core region to the output buffer.
+/// Extracts a tile (plus halo) from `input` as a contiguous owned buffer.
 ///
-/// This function handles the strided copy from the output tile (which may
-/// have halo regions) to the final output buffer.
+/// The returned buffer includes `combined_halo` extra pixels on each edge
+/// where the image boundary permits; edges are clamped to available data.
+fn extract_tile(
+    input: &ViewBuffer,
+    tile_y: usize,
+    tile_x: usize,
+    tile_size: usize,
+    halo: usize,
+    img_h: usize,
+    img_w: usize,
+    channels: usize,
+    ndim: usize,
+) -> ViewBuffer {
+    let in_y0 = tile_y.saturating_sub(halo);
+    let in_y1 = (tile_y + tile_size + halo).min(img_h);
+    let in_x0 = tile_x.saturating_sub(halo);
+    let in_x1 = (tile_x + tile_size + halo).min(img_w);
+
+    let (start, end) = if ndim >= 3 {
+        (vec![in_y0, in_x0, 0], vec![in_y1, in_x1, channels])
+    } else {
+        (vec![in_y0, in_x0], vec![in_y1, in_x1])
+    };
+
+    let tile = input.slice(&start, &end);
+    // Always materialize: tiles are small (~192 KB for 256×256 RGB) and many
+    // ops require contiguous input anyway.
+    if tile.layout_facts().is_contiguous() {
+        tile
+    } else {
+        tile.to_contiguous()
+    }
+}
+
+/// Applies all steps in a segment to a tile buffer.
+///
+/// The tile is always contiguous on entry (guaranteed by [`extract_tile`]).
+fn run_steps_on_tile(mut tile: ViewBuffer, steps: &[PlanStep]) -> ViewBuffer {
+    for step in steps {
+        tile = apply_step_full(tile, step.clone());
+    }
+    tile
+}
+
+/// Copies the core region of `src_tile` (skipping halo) into `dst`.
+///
+/// `core_y_off` / `core_x_off` are the row/column offsets inside `src_tile`
+/// where the core begins (the halo region to skip).
 #[allow(clippy::too_many_arguments)]
-#[inline]
-fn copy_tile_to_output(
-    tile: &ViewBuffer,
-    src_y_offset: usize,
-    src_x_offset: usize,
+fn copy_core(
+    src_tile: &ViewBuffer,
+    core_y_off: usize,
+    core_x_off: usize,
     dst: &mut [u8],
     dst_y: usize,
     dst_x: usize,
-    height: usize,
-    width: usize,
-    dst_width: usize,
+    core_h: usize,
+    core_w: usize,
+    dst_w: usize,
     channels: usize,
-    dtype_size: usize,
+    elem_size: usize,
 ) {
-    let tile_shape = tile.shape();
-    let tile_strides = tile.strides_bytes();
-    let tile_ptr = unsafe { tile.as_ptr::<u8>() };
+    let tile_strides = src_tile.strides_bytes();
+    let tile_ptr = unsafe { src_tile.as_ptr::<u8>() };
 
-    // Bytes per row in destination (contiguous)
-    let dst_row_bytes = dst_width * channels * dtype_size;
+    let dst_row_stride = dst_w * channels * elem_size;
+    let copy_row_bytes = core_w * channels * elem_size;
 
-    // Bytes to copy per row
-    let copy_bytes_per_row = width * channels * dtype_size;
+    for row in 0..core_h {
+        let src_y = core_y_off + row;
+        let src_x = core_x_off;
 
-    for row in 0..height {
-        let src_y = src_y_offset + row;
-        let src_x = src_x_offset;
+        let src_byte_off = (src_y as isize * tile_strides[0])
+            + (src_x as isize * tile_strides[1]);
 
-        // Source offset in tile (handle strides)
-        let src_offset = if tile_shape.len() >= 3 {
-            // HWC layout
-            (src_y as isize * tile_strides[0]) + (src_x as isize * tile_strides[1])
-        } else {
-            // HW layout (treat as HW1)
-            (src_y as isize * tile_strides[0]) + (src_x as isize * tile_strides[1])
-        };
+        let dst_byte_off = (dst_y + row) * dst_row_stride + dst_x * channels * elem_size;
 
-        // Destination offset (contiguous layout)
-        let dst_offset = (dst_y + row) * dst_row_bytes + dst_x * channels * dtype_size;
-
-        // Copy the row
         unsafe {
-            let src = tile_ptr.offset(src_offset);
-            let dst_ptr = dst.as_mut_ptr().add(dst_offset);
-            std::ptr::copy_nonoverlapping(src, dst_ptr, copy_bytes_per_row);
+            let src_ptr = tile_ptr.offset(src_byte_off);
+            let dst_ptr = dst.as_mut_ptr().add(dst_byte_off);
+            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_row_bytes);
         }
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_tile_config_default() {
-        let config = TileConfig::default();
-        assert_eq!(config.tile_size, 256);
-        assert_eq!(config.min_image_size, 512);
-    }
-
-    #[test]
-    fn test_tile_config_new() {
-        let config = TileConfig::new(128);
-        assert_eq!(config.tile_size, 128);
-        assert_eq!(config.min_image_size, 512);
-    }
-
-    #[test]
-    fn test_tile_policy_halo() {
+    fn tile_policy_halo() {
         assert_eq!(TilePolicy::PointWise.halo(), 0);
         assert_eq!(TilePolicy::LocalNeighborhood { halo: 6 }.halo(), 6);
         assert_eq!(TilePolicy::Global.halo(), 0);
     }
 
     #[test]
-    fn test_tile_policy_is_tileable() {
+    fn tile_policy_is_tileable() {
         assert!(TilePolicy::PointWise.is_tileable());
-        assert!(TilePolicy::LocalNeighborhood { halo: 6 }.is_tileable());
+        assert!(TilePolicy::LocalNeighborhood { halo: 4 }.is_tileable());
         assert!(!TilePolicy::Global.is_tileable());
     }
 
     #[test]
-    fn test_should_tile_small_image() {
-        let config = TileConfig::default();
-        // 100x100 is below min_image_size
-        assert!(!should_tile(&[100, 100, 3], &config));
+    fn segmentation_groups_tileable_ops() {
+        use crate::execution::plan::PlanStep;
+        use crate::ops::{ComputeOp, ImageOp, ImageOpKind};
+
+        // scale (PointWise) + blur (LocalNeighborhood) should merge into one segment.
+        let steps = vec![
+            PlanStep::Compute(ComputeOp::Scale(2.0)),
+            PlanStep::Image(ImageOp {
+                kind: ImageOpKind::Blur { sigma: 1.0 },
+            }),
+        ];
+        let segs = make_segments(steps);
+        assert_eq!(segs.len(), 1);
+        match &segs[0] {
+            Segment::Tileable(s) => {
+                assert_eq!(s.steps.len(), 2);
+                assert_eq!(s.combined_halo, 3); // blur halo = ceil(3*1.0) = 3
+            }
+            _ => panic!("expected Tileable"),
+        }
     }
 
     #[test]
-    fn test_should_tile_large_image() {
-        let config = TileConfig::default();
-        // 1000x1000 exceeds min_image_size
-        assert!(should_tile(&[1000, 1000, 3], &config));
-    }
+    fn segmentation_breaks_on_global() {
+        use crate::execution::plan::PlanStep;
+        use crate::ops::{ComputeOp, ImageOp, ImageOpKind};
 
-    #[test]
-    fn test_should_tile_one_large_dim() {
-        let config = TileConfig::default();
-        // 100x1000 - width exceeds min_image_size
-        assert!(should_tile(&[100, 1000, 3], &config));
-    }
-
-    #[test]
-    fn test_with_tile_config() {
-        // Initially may or may not be set (depends on env)
-        let initial = get_tile_config();
-
-        // Enable tiling
-        let result = with_tile_config(Some(TileConfig::new(128)), || {
-            let config = get_tile_config();
-            assert!(config.is_some());
-            assert_eq!(config.unwrap().tile_size, 128);
-            42
-        });
-        assert_eq!(result, 42);
-
-        // Should be restored
-        assert_eq!(get_tile_config(), initial);
-
-        // Disable tiling
-        let result = with_tile_config(None, || {
-            assert!(get_tile_config().is_none());
-            "done"
-        });
-        assert_eq!(result, "done");
-
-        // Should still be restored
-        assert_eq!(get_tile_config(), initial);
+        let steps = vec![
+            PlanStep::Compute(ComputeOp::Scale(2.0)),
+            PlanStep::Image(ImageOp {
+                kind: ImageOpKind::Resize {
+                    height: 224,
+                    width: 224,
+                    filter: crate::ops::FilterType::Lanczos3,
+                },
+            }),
+            PlanStep::Compute(ComputeOp::Scale(0.5)),
+        ];
+        let segs = make_segments(steps);
+        // scale → [Tileable], resize → [Full], scale → [Tileable]
+        assert_eq!(segs.len(), 3);
+        assert!(matches!(segs[0], Segment::Tileable(_)));
+        assert!(matches!(segs[1], Segment::Full(_)));
+        assert!(matches!(segs[2], Segment::Tileable(_)));
     }
 }

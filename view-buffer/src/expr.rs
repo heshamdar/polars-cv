@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
 use crate::core::layout::Layout;
-use crate::execution::{ExecutionPlan, PlanStep};
+use crate::execution::{get_execution_strategy, ExecutionPlan, PlanStep};
 use crate::ops::affine::AffineParams;
 use crate::ops::cost::{OpCost, OpCostReport};
 use crate::ops::io::{PlaceholderMeta, SinkFormat, SourceFormat};
@@ -1125,9 +1125,16 @@ impl ViewExpr {
     // --- Execution Planning ---
 
     /// Builds and returns an execution plan from the expression graph.
+    ///
+    /// The plan captures the current thread-local [`ExecutionStrategy`] so
+    /// callers can set the strategy via [`set_execution_strategy`] before
+    /// calling `plan()`, or override it later with
+    /// [`ExecutionPlan::with_strategy`].
     pub fn plan(self: &Arc<Self>) -> ExecutionPlan {
         let optimized_expr = self.optimize();
-        optimized_expr.build_plan()
+        let mut plan = optimized_expr.build_plan();
+        plan.strategy = get_execution_strategy();
+        plan
     }
 
     fn build_plan(&self) -> ExecutionPlan {
@@ -1135,6 +1142,7 @@ impl ViewExpr {
             ExprNode::Source(buf) => ExecutionPlan {
                 source: buf.as_ref().clone(),
                 steps: Vec::new(),
+                strategy: crate::execution::ExecutionStrategy::Adaptive,
             },
             ExprNode::LazySource { .. } => {
                 panic!("LazySource must be resolved before building plan");
