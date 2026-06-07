@@ -21,8 +21,8 @@ import polars as pl
 if TYPE_CHECKING:
     import numpy as np
 
-from ._lib import configure_tiling as _configure_tiling
-from ._lib import get_tiling_config as _get_tiling_config
+from ._lib import get_execution_strategy as _get_execution_strategy
+from ._lib import set_execution_strategy as _set_execution_strategy
 from ._types import (
     IMAGENET_MEAN,
     IMAGENET_STD,
@@ -274,76 +274,52 @@ def mask_iou(
     return intersection_sum / (union_sum + epsilon)
 
 
-def configure_tiling(min_image_size: int | None = 512) -> None:
+def set_execution_strategy(strategy: str = "adaptive") -> None:
     """
-    Configure tiled execution for large image processing.
+    Set the execution strategy for pipeline runs on the current thread.
 
-    Tiled execution improves cache efficiency when processing large images
-    by dividing them into smaller tiles (default 256x256) that fit in CPU cache.
-    This can significantly improve performance for very large images.
-
-    By default, tiling is **enabled** for images larger than 512 pixels
-    in any dimension.
+    Controls whether image pipelines use full-image processing (one pass per
+    op) or **segment-level tiling** (all ops in a tileable segment share each
+    cache-sized tile before moving to the next tile, keeping working data in
+    L1/L2 cache through the whole segment).
 
     Args:
-        min_image_size: Minimum dimension (height or width) for tiling to activate.
-            - ``None``: Disable tiling entirely (process all images as single buffers)
-            - ``0``: Enable tiling for all images regardless of size
-            - Positive integer: Only tile images larger than this threshold (default: 512)
+        strategy: One of:
+            - ``"adaptive"`` *(default)*: auto-selects tiling for images whose
+              byte footprint exceeds ~512 KB; uses full-image for smaller images.
+            - ``"full"``: always process the full buffer per op (zero overhead,
+              optimal when images are small).
+            - ``"tiled"``: always use segment-level tiling (256-pixel tiles,
+              512 KB threshold).
 
     Example:
         ```python
-        >>> import polars_cv
-        >>>
-        >>> # Check current configuration
-        >>> print(polars_cv.get_tiling_config())
-        {'enabled': True, 'tile_size': 256, 'min_image_size': 512}
-        >>>
-        >>> # Disable tiling (useful for debugging or small images only)
-        >>> polars_cv.configure_tiling(None)
-        >>>
-        >>> # Only tile very large images (>2048 pixels)
-        >>> polars_cv.configure_tiling(2048)
-        >>>
-        >>> # Reset to default (tile images > 512 pixels)
-        >>> polars_cv.configure_tiling(512)
+        import polars_cv
+
+        # Force full-image processing (fastest for small images)
+        polars_cv.set_execution_strategy("full")
+
+        # Let the engine auto-select (default, usually best)
+        polars_cv.set_execution_strategy("adaptive")
         ```
 
     Note:
-        Tiling is **transparent** - results are identical whether tiling is
-        on or off. The only difference is memory access patterns and cache
-        efficiency. For very large images (e.g., 10000x10000), tiling can
-        provide 2-5x speedups by keeping working data in CPU cache.
+        This sets a **thread-local** value.  The ``"adaptive"`` default is
+        already optimal for most workloads — the engine picks tiling only when
+        the image is large enough to benefit.  Use the ``VIEW_BUFFER_STRATEGY``
+        environment variable to change the default for all threads.
     """
-    _configure_tiling(min_image_size)
+    _set_execution_strategy(strategy)
 
 
-def get_tiling_config() -> dict[str, int | bool] | None:
+def get_execution_strategy() -> str:
     """
-    Get the current tiling configuration.
+    Get the current execution strategy for this thread.
 
     Returns:
-        A dict with tiling settings if enabled, or ``None`` if disabled.
-        When enabled, the dict contains:
-        - ``enabled``: Always ``True``
-        - ``tile_size``: Size of each tile in pixels (default: 256)
-        - ``min_image_size``: Minimum image dimension to trigger tiling
-
-    Example:
-        ```python
-        >>> import polars_cv
-        >>>
-        >>> config = polars_cv.get_tiling_config()
-        >>> if config:
-        ...     print(f"Tiling: {config['tile_size']}x{config['tile_size']} tiles")
-        ...     print(f"Activates for images > {config['min_image_size']}px")
-        ... else:
-        ...     print("Tiling disabled")
-        Tiling: 256x256 tiles
-        Activates for images > 512px
-        ```
+        ``"adaptive"``, ``"full"``, or ``"tiled"``.
     """
-    return _get_tiling_config()
+    return _get_execution_strategy()
 
 
 def hamming_distance(
@@ -431,8 +407,8 @@ __all__ = [
     "CvNamespace",
     "LazyPipelineExpr",
     # Tiling configuration
-    "configure_tiling",
-    "get_tiling_config",
+    "set_execution_strategy",
+    "get_execution_strategy",
     # Types
     "CloudOptions",
     "ColorSpace",

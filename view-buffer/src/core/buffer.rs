@@ -638,6 +638,16 @@ impl ViewBuffer {
         &self.layout.strides
     }
 
+    /// Returns the number of bytes occupied by the logical elements of this view.
+    ///
+    /// For non-contiguous views this is the number of *elements* × element size,
+    /// not the underlying storage size.  Used by the execution strategy to
+    /// decide whether tiling is worthwhile.
+    #[inline]
+    pub fn size_bytes(&self) -> usize {
+        self.layout.num_elements() * self.layout.dtype.size_of()
+    }
+
     /// Returns a raw pointer to the start of the view data.
     ///
     /// # Safety

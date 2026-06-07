@@ -1,8 +1,12 @@
-//! Execution runners for applying operations.
+//! Pure operation runners — apply one op to one full buffer.
+//!
+//! These functions have no tiling or strategy logic; that lives in
+//! [`execution::tiling`] and [`execution::plan`].  Everything here is
+//! `pub(crate)` so both the full-image path and the tiling path can call the
+//! same implementations.
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
-use crate::execution::tiling::{get_tile_config, is_tiling_enabled, maybe_tiled};
 use crate::expr::ViewExpr;
 use crate::ops::affine::AffineParams;
 use crate::ops::dto::ViewDto;
@@ -101,35 +105,8 @@ pub fn apply_view(buf: ViewBuffer, op: ViewOp) -> ViewBuffer {
 }
 
 /// Applies a compute operation to a buffer.
-///
-/// If tiling is enabled (via environment variable or [`with_tile_config`]),
-/// tileable operations will be executed tile-by-tile for improved cache efficiency.
 #[inline]
-pub fn apply_compute(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
-    // Fast path: atomic check avoids TLS access when tiling is disabled
-    if !is_tiling_enabled() {
-        return apply_compute_inner(buf, op);
-    }
-
-    // Slow path: tiling might be enabled, check TLS and policy
-    let tile_config = get_tile_config();
-    if let Some(ref config) = tile_config {
-        let policy = op.tile_policy();
-        if policy.is_tileable() {
-            let halo = policy.halo();
-            let op_clone = op.clone();
-            return maybe_tiled(buf, halo, Some(config), move |tile| {
-                apply_compute_inner(tile, op_clone.clone())
-            });
-        }
-    }
-
-    apply_compute_inner(buf, op)
-}
-
-/// Inner implementation of compute operations (without tiling logic).
-#[inline]
-fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
+pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer {
     match op {
         ComputeOp::Cast(dtype) => buf.cast(dtype),
         ComputeOp::Affine(params) => apply_affine_warp(buf, params),
@@ -1022,11 +999,13 @@ where
 ///   (resize, rotate, grayscale, threshold).
 ///   The buffer is passed through unchanged.
 ///
-/// If tiling is enabled (via environment variable or [`with_tile_config`]),
-/// tileable operations will be executed tile-by-tile for improved cache efficiency.
+/// Applies an image operation to a buffer.
+///
+/// Handles dtype promotion (converting to the op's working dtype before
+/// dispatch) and validates the output dtype contract in debug builds.
 #[cfg(feature = "image_interop")]
 #[inline]
-pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
+pub(crate) fn apply_image_inner(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     let input_dtype = buf.dtype();
 
     // Only convert to U8 when the operation requires it.
@@ -1036,29 +1015,8 @@ pub fn apply_image(buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
         None => buf, // Resize: use the input's native dtype
     };
 
-    // Execute (tiled or not)
-    let result = if !is_tiling_enabled() {
-        apply_image_inner(work_buf, op.clone())
-    } else {
-        let tile_config = get_tile_config();
-        if let Some(ref config) = tile_config {
-            let policy = op.tile_policy();
-            if policy.is_tileable() {
-                let halo = policy.halo();
-                let op_clone = op.clone();
-                maybe_tiled(work_buf, halo, Some(config), move |tile| {
-                    apply_image_inner(tile, op_clone.clone())
-                })
-            } else {
-                apply_image_inner(work_buf, op.clone())
-            }
-        } else {
-            apply_image_inner(work_buf, op.clone())
-        }
-    };
+    let result = apply_image_dispatch(work_buf, op.clone());
 
-    // Runtime contract validation: the produced dtype must match the
-    // operation's declared output_dtype_rule for the given input dtype.
     debug_assert!(
         op.validate_output_dtype(input_dtype, result.dtype())
             .is_ok(),
@@ -1411,7 +1369,7 @@ fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
 /// Inner implementation of image operations (without tiling logic).
 #[cfg(feature = "image_interop")]
 #[inline]
-fn apply_image_inner(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
+fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
     match op.kind {
         ImageOpKind::Threshold(thresh) => threshold_generic(work_buf, thresh),
         ImageOpKind::Grayscale => grayscale_strided(work_buf),
@@ -1495,7 +1453,7 @@ gen_blur_typed!(blur_typed_u16, u16);
 gen_blur_typed!(blur_typed_f32, f32);
 
 #[cfg(not(feature = "image_interop"))]
-pub fn apply_image(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
+pub(crate) fn apply_image_inner(_buf: ViewBuffer, _op: ImageOp) -> ViewBuffer {
     panic!("Image operations require the 'image_interop' feature");
 }
 

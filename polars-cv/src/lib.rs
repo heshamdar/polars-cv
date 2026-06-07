@@ -23,9 +23,9 @@ use serde::Deserialize;
 #[pymodule]
 #[pyo3(name = "_lib")]
 fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Register tiling configuration functions
-    m.add_function(wrap_pyfunction!(configure_tiling, m)?)?;
-    m.add_function(wrap_pyfunction!(get_tiling_config, m)?)?;
+        // Execution strategy
+    m.add_function(wrap_pyfunction!(set_execution_strategy, m)?)?;
+    m.add_function(wrap_pyfunction!(get_execution_strategy, m)?)?;
     m.add_function(wrap_pyfunction!(op_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
@@ -480,74 +480,53 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<PyObject> {
 // Tiling Configuration (Python-exposed)
 // ============================================================================
 
-/// Configure tiled execution for large image processing.
+/// Set the execution strategy for pipeline runs on this thread.
 ///
-/// Tiled execution improves cache efficiency when processing large images
-/// by dividing them into smaller tiles (default 256x256) that fit in CPU cache.
-///
-/// By default, tiling is enabled for images larger than 512 pixels in any dimension.
+/// The strategy controls whether image pipelines use full-image processing
+/// (one pass per op) or segment-level tiling (all ops in a tileable segment
+/// share each cache-sized tile before moving to the next).
 ///
 /// Args:
-///     min_image_size: Minimum dimension (height or width) for tiling to activate.
-///         - `None` or `0`: Disable tiling entirely
-///         - Positive integer: Only tile images larger than this threshold
-///         - Default when polars-cv loads: 512
-///
-/// Examples:
-///     >>> import polars_cv
-///     >>> # Disable tiling (process all images as single buffers)
-///     >>> polars_cv.configure_tiling(None)
-///     >>>
-///     >>> # Only tile very large images (>2048 pixels)
-///     >>> polars_cv.configure_tiling(2048)
-///     >>>
-///     >>> # Disable tiling (same as None)
-///     >>> polars_cv.configure_tiling(0)
+///     strategy: One of ``"adaptive"`` (default), ``"full"``, or
+///         ``"tiled"``.  ``"adaptive"`` auto-selects tiling for images whose
+///         byte footprint exceeds 512 KB; ``"full"`` always uses single-pass;
+///         ``"tiled"`` always tiles (with 256-pixel tiles and a 512 KB
+///         threshold).
 ///
 /// Note:
-///     Tiling is transparent - results are identical whether tiling is on or off.
-///     The only difference is memory access patterns and cache efficiency.
+///     This sets a **thread-local** value.  Polars' streaming engine runs
+///     each morsel on a worker thread; the default ``"adaptive"`` strategy
+///     is already optimal for most workloads.  Use ``VIEW_BUFFER_STRATEGY``
+///     env var to change the default for all threads.
 #[pyfunction]
-#[pyo3(signature = (min_image_size=None))]
-fn configure_tiling(min_image_size: Option<usize>) -> PyResult<()> {
-    match min_image_size {
-        None | Some(0) => {
-            // Disable tiling
-            view_buffer::set_tile_config(None);
-        }
-        Some(size) => {
-            // Enable tiling with specified threshold
-            view_buffer::configure_tiling(Some(size));
-        }
-    }
+#[pyo3(signature = (strategy = "adaptive"))]
+fn set_execution_strategy(strategy: &str) -> PyResult<()> {
+    use view_buffer::{ExecutionStrategy, ADAPTIVE_THRESHOLD_BYTES, DEFAULT_TILE_SIZE};
+    let s = match strategy.to_lowercase().as_str() {
+        "full" | "full_image" | "fullimage" => ExecutionStrategy::FullImage,
+        "tiled" => ExecutionStrategy::Tiled {
+            tile_size: DEFAULT_TILE_SIZE,
+            threshold_bytes: ADAPTIVE_THRESHOLD_BYTES,
+        },
+        "adaptive" | _ => ExecutionStrategy::Adaptive,
+    };
+    view_buffer::set_execution_strategy(s);
     Ok(())
 }
 
-/// Get the current tiling configuration.
+/// Get the current execution strategy for this thread.
 ///
 /// Returns:
-///     A dict with 'enabled', 'tile_size', and 'min_image_size' keys,
-///     or None if tiling is disabled.
-///
-/// Examples:
-///     >>> import polars_cv
-///     >>> config = polars_cv.get_tiling_config()
-///     >>> if config:
-///     ...     print(f"Tiling enabled: tile_size={config['tile_size']}, min={config['min_image_size']}")
-///     ... else:
-///     ...     print("Tiling disabled")
+///     ``"full"``, ``"tiled"``, or ``"adaptive"``.
 #[pyfunction]
-fn get_tiling_config(py: Python<'_>) -> PyResult<PyObject> {
-    match view_buffer::get_tile_config() {
-        Some(config) => {
-            let dict = pyo3::types::PyDict::new(py);
-            dict.set_item("enabled", true)?;
-            dict.set_item("tile_size", config.tile_size)?;
-            dict.set_item("min_image_size", config.min_image_size)?;
-            Ok(dict.into())
-        }
-        None => Ok(py.None()),
-    }
+fn get_execution_strategy() -> PyResult<&'static str> {
+    use view_buffer::ExecutionStrategy;
+    let s = match view_buffer::get_execution_strategy() {
+        ExecutionStrategy::FullImage => "full",
+        ExecutionStrategy::Tiled { .. } => "tiled",
+        ExecutionStrategy::Adaptive => "adaptive",
+    };
+    Ok(s)
 }
 
 use crate::graph::UnifiedGraph;
