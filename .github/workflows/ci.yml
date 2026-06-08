@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_BUILD_RUSTFLAGS: ""   # disable target-cpu=native for reproducible CI/wheel builds
 
 jobs:
   test:
