@@ -7,6 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_RUSTFLAGS: ""   # disable target-cpu=native so wheels are portable manylinux binaries
 
 jobs:
   build-wheels:

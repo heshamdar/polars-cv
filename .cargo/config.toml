@@ -1,0 +1,8 @@
+[build]
+# Enables AVX2/BMI2 auto-vectorization for local development builds.
+# Benefits: grayscale_u8, threshold_simd (32-byte chunks), FusedKernel,
+# and the separable blur inner loops.
+#
+# Disabled in CI/wheel builds via CARGO_BUILD_RUSTFLAGS="" env override
+# (see .github/workflows/ci.yml and publish.yml) so wheels are portable.
+rustflags = ["-C", "target-cpu=native"]
