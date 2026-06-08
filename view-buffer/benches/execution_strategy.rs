@@ -30,6 +30,14 @@ fn make_f32(h: usize, w: usize) -> ViewBuffer {
     ViewBuffer::from_vec(data).reshape(vec![h, w])
 }
 
+/// Build a deterministic f32 RGB image in [0, 1].
+fn make_f32_rgb(h: usize, w: usize) -> ViewBuffer {
+    let data: Vec<f32> = (0..h * w * 3)
+        .map(|i| ((i.wrapping_mul(2654435769) >> 24) as f32) / 255.0)
+        .collect();
+    ViewBuffer::from_vec(data).reshape(vec![h, w, 3])
+}
+
 // ── Strategies ────────────────────────────────────────────────────────────────
 
 fn full_image() -> ExecutionStrategy {
@@ -262,12 +270,13 @@ fn bench_global_barrier(c: &mut Criterion) {
 fn bench_long_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("long_pipeline_5ops");
     // scale → relu → grayscale → blur → clamp: one big tileable segment.
+    // Uses f32 RGB input because scale requires f32.
 
     for &(h, w) in &[(128usize, 128), (256, 256), (512, 512), (1024, 1024), (2048, 2048)] {
         let label = format!("{h}x{w}");
-        group.throughput(Throughput::Bytes((h * w * 3) as u64));
+        group.throughput(Throughput::Bytes((h * w * 3 * 4) as u64)); // f32 = 4 bytes
 
-        let buf = make_rgb(h, w);
+        let buf = make_f32_rgb(h, w);
 
         group.bench_with_input(
             BenchmarkId::new("full_image", &label),
