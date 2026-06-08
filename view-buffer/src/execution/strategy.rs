@@ -13,7 +13,7 @@
 //!   L1/L2 through all ops in the segment before the next tile is fetched.
 //!   Only activates when the image exceeds `threshold_bytes`.
 //! * **`Adaptive`** (default) – selects `Tiled` automatically when the source
-//!   exceeds 512 KB; otherwise falls back to `FullImage`.
+//!   exceeds 4 MB; otherwise falls back to `FullImage`.
 //!
 //! # Thread-local default
 //!
@@ -29,12 +29,17 @@ use std::cell::RefCell;
 pub const DEFAULT_TILE_SIZE: usize = 256;
 
 /// Default threshold above which `Adaptive` activates tiling.
-/// 512 KB means we tile when the image itself won't fit in L2.
-pub const ADAPTIVE_THRESHOLD_BYTES: usize = 512 * 1024;
+///
+/// 4 MB corresponds to a ~1154×1154 RGB image — benchmarks show the tiling
+/// crossover (where cache savings exceed per-tile overhead) is in the 4–8 MB
+/// range for mixed LocalNeighborhood+PointWise segments.  Setting it at 4 MB
+/// keeps tiling off for 512×512 and 1024×1024 images where the overhead
+/// currently outweighs the cache benefit.
+pub const ADAPTIVE_THRESHOLD_BYTES: usize = 4 * 1024 * 1024;
 
 /// Controls how an [`ExecutionPlan`](crate::execution::plan::ExecutionPlan)
 /// processes its buffer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum ExecutionStrategy {
     /// Always process the full buffer in a single pass per op.
     ///
@@ -54,15 +59,10 @@ pub enum ExecutionStrategy {
         threshold_bytes: usize,
     },
 
-    /// Auto-select: `Tiled` with defaults when source image > 512 KB,
+    /// Auto-select: `Tiled` with defaults when source image > 4 MB,
     /// `FullImage` otherwise.
+    #[default]
     Adaptive,
-}
-
-impl Default for ExecutionStrategy {
-    fn default() -> Self {
-        ExecutionStrategy::Adaptive
-    }
 }
 
 impl ExecutionStrategy {

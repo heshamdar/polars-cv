@@ -1252,6 +1252,10 @@ fn try_fuse(outer: &ComputeOp, inner: &ComputeOp) -> Option<ComputeOp> {
                 list.push(ScalarOp::Relu);
                 true
             }
+            ComputeOp::Clamp { min, max } => {
+                list.push(ScalarOp::Clamp(*min, *max));
+                true
+            }
             ComputeOp::Fused(k) => {
                 list.extend(k.ops.iter().cloned());
                 true

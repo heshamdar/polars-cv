@@ -122,11 +122,18 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
                 AffineParams::from_rotation(angle_deg, h, w, expand, interpolation, border_value);
             apply_affine_warp(buf, params)
         }
-        ComputeOp::Scale(factor) => apply_scalar_op(&buf, |x: f32| x * factor),
-        ComputeOp::Relu => apply_scalar_op(&buf, |x: f32| if x > 0.0 { x } else { 0.0 }),
-        ComputeOp::Fused(ref kernel) => buf.apply_fused_kernel(kernel),
+        ComputeOp::Scale(factor) => apply_scalar_owned(buf, move |x: f32| x * factor),
+        ComputeOp::Relu => apply_scalar_owned(buf, |x: f32| if x > 0.0 { x } else { 0.0 }),
+        ComputeOp::Fused(ref kernel) => {
+            let mut buf = buf;
+            if buf.try_apply_fused_kernel_inplace(kernel) {
+                buf
+            } else {
+                buf.apply_fused_kernel(kernel)
+            }
+        }
         ComputeOp::Normalize(ref method) => apply_normalize(&buf, method),
-        ComputeOp::Clamp { min, max } => apply_scalar_op(&buf, move |x: f32| x.clamp(min, max)),
+        ComputeOp::Clamp { min, max } => apply_scalar_owned(buf, move |x: f32| x.clamp(min, max)),
         ComputeOp::AdjustContrast(factor) => apply_adjust_contrast(&buf, factor),
         ComputeOp::AdjustGamma(gamma) => apply_adjust_gamma(&buf, gamma),
         ComputeOp::Invert => apply_invert(&buf),
@@ -518,6 +525,39 @@ where
     let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
     let new_data: Vec<f32> = src.iter().map(|&x| op(x)).collect();
     ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
+}
+
+/// Scalar op applied to an owned buffer.
+///
+/// When the buffer is already contiguous F32 with a sole strong reference
+/// (refcount == 1), the data is mutated in-place — no heap allocation.
+/// Falls back to `apply_scalar_op` for all other cases (dtype promotion,
+/// non-contiguous layout, or shared Arc).
+fn apply_scalar_owned<F>(mut buf: ViewBuffer, op: F) -> ViewBuffer
+where
+    F: Fn(f32) -> f32 + Copy,
+{
+    use crate::core::buffer::BufferStorage;
+    use std::sync::Arc;
+
+    if buf.dtype() == DType::F32 && buf.layout.is_contiguous() {
+        if let BufferStorage::Rust(ref mut arc) = buf.data {
+            if let Some(vec) = Arc::get_mut(arc) {
+                let count = buf.layout.num_elements();
+                let data = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        vec.as_mut_ptr().add(buf.layout.offset) as *mut f32,
+                        count,
+                    )
+                };
+                for x in data.iter_mut() {
+                    *x = op(*x);
+                }
+                return buf;
+            }
+        }
+    }
+    apply_scalar_op(&buf, op)
 }
 
 /// Convert a buffer to U8 for image operations.
