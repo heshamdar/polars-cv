@@ -501,12 +501,12 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<PyObject> {
 #[pyfunction]
 #[pyo3(signature = (strategy = "adaptive"))]
 fn set_execution_strategy(strategy: &str) -> PyResult<()> {
-    use view_buffer::{ExecutionStrategy, ADAPTIVE_THRESHOLD_BYTES, DEFAULT_TILE_SIZE};
+    use view_buffer::{ExecutionStrategy, DEFAULT_TILE_SIZE};
     let s = match strategy.to_lowercase().as_str() {
         "full" | "full_image" | "fullimage" => ExecutionStrategy::FullImage,
         "tiled" => ExecutionStrategy::Tiled {
             tile_size: DEFAULT_TILE_SIZE,
-            threshold_bytes: ADAPTIVE_THRESHOLD_BYTES,
+            threshold_bytes: 0,  // always tile, regardless of image size
         },
         "adaptive" | _ => ExecutionStrategy::Adaptive,
     };

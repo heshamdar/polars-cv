@@ -125,7 +125,13 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
         ComputeOp::Scale(factor) => apply_scalar_owned(buf, move |x: f32| x * factor),
         ComputeOp::Relu => apply_scalar_owned(buf, |x: f32| if x > 0.0 { x } else { 0.0 }),
         ComputeOp::Fused(ref kernel) => {
-            let mut buf = buf;
+            // FusedKernel only operates on F32; auto-cast non-F32 input (same contract
+            // as apply_scalar_op, which each constituent op would do if executed separately).
+            let mut buf = if buf.dtype() != DType::F32 {
+                buf.cast(DType::F32)
+            } else {
+                buf
+            };
             if buf.try_apply_fused_kernel_inplace(kernel) {
                 buf
             } else {
