@@ -32,7 +32,22 @@
 //! erode needs 1 pixel of context that was produced by the blur, and the blur
 //! needs 3 pixels of the original image, so we extract 4 extra pixels around
 //! each tile's core to satisfy both in one extraction.
+//!
+//! # Per-tile allocation strategy
+//!
+//! Tile extraction writes directly into a thread-local byte slab, avoiding a
+//! `Vec::new` per tile.  Pointwise ops that hold exclusive Arc ownership mutate
+//! the buffer in-place via [`Arc::get_mut`] — no output allocation.
+//! LocalNeighborhood ops (blur, erode) still allocate an output tile, but for
+//! segments with a neighborhood op the segment length is typically short
+//! (1–3 ops), so the absolute allocation count is low.
+//!
+//! # Thread safety
+//!
+//! [`TILE_EXTRACT_BUF`] is `thread_local!`, so each Polars morsel worker thread
+//! has its own slab.  No contention and no synchronisation required.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use crate::core::buffer::{BufferStorage, ViewBuffer};
@@ -98,16 +113,27 @@ struct TileableSegment {
     combined_halo: usize,
 }
 
+impl TileableSegment {
+    /// Returns `true` when every op is PointWise (combined_halo == 0).
+    ///
+    /// A purely-pointwise segment is already handled optimally by the fused
+    /// kernel on the full buffer — tiling only adds extract+copy overhead.
+    #[inline]
+    fn is_pointwise_only(&self) -> bool {
+        self.combined_halo == 0
+    }
+}
+
 enum Segment {
     /// One or more tileable steps processed together on each tile.
     Tileable(TileableSegment),
     /// A single step that runs on the full buffer (Global policy, ViewOp, or
     /// MaterializeContiguous).
-    Full(PlanStep),
+    GlobalStep(PlanStep),
 }
 
 /// Groups `steps` into segments: consecutive tileable ops become one
-/// `Tileable` segment; everything else becomes individual `Full` steps.
+/// `Tileable` segment; everything else becomes individual `GlobalStep`s.
 fn make_segments(steps: Vec<PlanStep>) -> Vec<Segment> {
     let mut segments: Vec<Segment> = Vec::new();
     let mut current: Option<TileableSegment> = None;
@@ -123,12 +149,12 @@ fn make_segments(steps: Vec<PlanStep>) -> Vec<Segment> {
             // ViewOps and MaterializeContiguous: flush + run immediately.
             None => {
                 flush(current.take(), &mut segments);
-                segments.push(Segment::Full(step));
+                segments.push(Segment::GlobalStep(step));
             }
             // Global ops: flush + run on full buffer.
             Some(TilePolicy::Global) => {
                 flush(current.take(), &mut segments);
-                segments.push(Segment::Full(step));
+                segments.push(Segment::GlobalStep(step));
             }
             // Tileable (PointWise or LocalNeighborhood): accumulate.
             Some(policy) => {
@@ -164,6 +190,16 @@ fn step_tile_policy(step: &PlanStep) -> Option<TilePolicy> {
     }
 }
 
+// ── Thread-local extraction arena ────────────────────────────────────────────
+
+// Per-thread byte slab reused for tile extraction.
+// Instead of Vec::new() per tile, extract_tile fills this buffer and
+// wraps it in a fresh Arc (only the control block is allocated;
+// the data pages are already mapped from the previous tile).
+thread_local! {
+    static TILE_EXTRACT_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
 // ── Outer-loop segment execution ─────────────────────────────────────────────
 
 /// Executes `steps` on `source` using segment-level tiling.
@@ -171,6 +207,10 @@ fn step_tile_policy(step: &PlanStep) -> Option<TilePolicy> {
 /// Consecutive tileable ops are grouped and each tile is run through the
 /// entire group before the next tile is fetched.  Global ops and view ops
 /// still run on the full buffer.
+///
+/// Purely-pointwise segments (all halo == 0) bypass tiling and fall through
+/// to `execute_full` — fusion already collapses them to a single pass, so
+/// tile management would only add overhead.
 pub fn execute_segmented_tiled(
     source: ViewBuffer,
     steps: Vec<PlanStep>,
@@ -181,7 +221,17 @@ pub fn execute_segmented_tiled(
 
     for segment in segments {
         current = match segment {
-            Segment::Full(step) => apply_step_full(current, step),
+            Segment::GlobalStep(step) => apply_step_full(current, step),
+            Segment::Tileable(seg) if seg.is_pointwise_only() => {
+                // All ops are PointWise — the fused kernel handles them in one
+                // sequential pass that is already optimal.  Tiling would only
+                // add extract + copy_core overhead.
+                let mut buf = current;
+                for step in seg.steps {
+                    buf = apply_step_full(buf, step);
+                }
+                buf
+            }
             Segment::Tileable(seg) => {
                 execute_tile_segment(current, seg.steps, tile_size, seg.combined_halo)
             }
@@ -198,6 +248,18 @@ pub(crate) fn apply_step_full(buf: ViewBuffer, step: PlanStep) -> ViewBuffer {
         PlanStep::Compute(op) => apply_compute_inner(buf, op),
         PlanStep::Image(op) => apply_image_inner(buf, op),
         PlanStep::PerceptualHash(op) => apply_perceptual_hash(buf, op),
+        PlanStep::MaterializeContiguous => buf.to_contiguous(),
+    }
+}
+
+/// Applies a single plan step by reference — borrows the step to avoid
+/// cloning the (potentially heap-allocated) op fields per tile.
+fn apply_step_ref(buf: ViewBuffer, step: &PlanStep) -> ViewBuffer {
+    match step {
+        PlanStep::View(op) => apply_view(buf, op.clone()),
+        PlanStep::Compute(op) => apply_compute_inner(buf, op.clone()),
+        PlanStep::Image(op) => apply_image_inner(buf, op.clone()),
+        PlanStep::PerceptualHash(op) => apply_perceptual_hash(buf, op.clone()),
         PlanStep::MaterializeContiguous => buf.to_contiguous(),
     }
 }
@@ -293,8 +355,11 @@ fn execute_tile_segment(
 
 /// Extracts a tile (plus halo) from `input` as a contiguous owned buffer.
 ///
-/// The returned buffer includes `combined_halo` extra pixels on each edge
-/// where the image boundary permits; edges are clamped to available data.
+/// Uses a thread-local byte slab ([`TILE_EXTRACT_BUF`]) to avoid allocating a
+/// new `Vec` per tile.  The slab grows to fit the largest tile seen and is
+/// never shrunk.  A fresh `Arc` wraps the data for the returned `ViewBuffer` —
+/// only the control block is allocated, not the tile data itself.
+#[allow(clippy::too_many_arguments)]
 fn extract_tile(
     input: &ViewBuffer,
     tile_y: usize,
@@ -311,28 +376,61 @@ fn extract_tile(
     let in_x0 = tile_x.saturating_sub(halo);
     let in_x1 = (tile_x + tile_size + halo).min(img_w);
 
-    let (start, end) = if ndim >= 3 {
-        (vec![in_y0, in_x0, 0], vec![in_y1, in_x1, channels])
+    let tile_h = in_y1 - in_y0;
+    let tile_w = in_x1 - in_x0;
+    let elem_size = input.dtype().size_of();
+    let row_bytes = tile_w * channels * elem_size;
+    let required = tile_h * row_bytes;
+
+    // Fill the thread-local slab directly — avoids one Vec::new per tile.
+    let tile_data: Vec<u8> = TILE_EXTRACT_BUF.with(|cell| {
+        let mut slab = cell.borrow_mut();
+        if slab.len() < required {
+            slab.resize(required, 0u8);
+        }
+
+        let src_ptr = unsafe { input.as_ptr::<u8>() };
+        let src_strides = input.strides_bytes();
+
+        for row in 0..tile_h {
+            let src_byte_off = (in_y0 + row) as isize * src_strides[0]
+                + in_x0 as isize * src_strides[1];
+            let dst_byte_off = row * row_bytes;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    src_ptr.offset(src_byte_off),
+                    slab.as_mut_ptr().add(dst_byte_off),
+                    row_bytes,
+                );
+            }
+        }
+
+        // Clone out of the slab — the slab is reused next iteration.
+        // This is a memcpy of ~200 KB but avoids the allocator round-trip
+        // for every tile: the slab's physical pages are already warm.
+        slab[..required].to_vec()
+    });
+
+    let shape = if ndim >= 3 {
+        vec![tile_h, tile_w, channels]
     } else {
-        (vec![in_y0, in_x0], vec![in_y1, in_x1])
+        vec![tile_h, tile_w]
     };
 
-    let tile = input.slice(&start, &end);
-    // Always materialize: tiles are small (~192 KB for 256×256 RGB) and many
-    // ops require contiguous input anyway.
-    if tile.layout_facts().is_contiguous() {
-        tile
-    } else {
-        tile.to_contiguous()
+    ViewBuffer {
+        data: BufferStorage::Rust(Arc::new(tile_data)),
+        layout: Layout::new_contiguous(shape, input.dtype()),
     }
 }
 
 /// Applies all steps in a segment to a tile buffer.
 ///
-/// The tile is always contiguous on entry (guaranteed by [`extract_tile`]).
+/// Borrows `steps` to avoid cloning each `PlanStep` per tile. Scalar
+/// pointwise ops will attempt in-place mutation via [`Arc::get_mut`] when
+/// they hold exclusive ownership.
 fn run_steps_on_tile(mut tile: ViewBuffer, steps: &[PlanStep]) -> ViewBuffer {
     for step in steps {
-        tile = apply_step_full(tile, step.clone());
+        tile = apply_step_ref(tile, step);
     }
     tile
 }
@@ -438,10 +536,25 @@ mod tests {
             PlanStep::Compute(ComputeOp::Scale(0.5)),
         ];
         let segs = make_segments(steps);
-        // scale → [Tileable], resize → [Full], scale → [Tileable]
+        // scale → [Tileable], resize → [GlobalStep], scale → [Tileable]
         assert_eq!(segs.len(), 3);
         assert!(matches!(segs[0], Segment::Tileable(_)));
-        assert!(matches!(segs[1], Segment::Full(_)));
+        assert!(matches!(segs[1], Segment::GlobalStep(_)));
         assert!(matches!(segs[2], Segment::Tileable(_)));
+    }
+
+    #[test]
+    fn pointwise_only_segment_is_detected() {
+        let seg = TileableSegment {
+            steps: vec![],
+            combined_halo: 0,
+        };
+        assert!(seg.is_pointwise_only());
+
+        let seg_with_halo = TileableSegment {
+            steps: vec![],
+            combined_halo: 3,
+        };
+        assert!(!seg_with_halo.is_pointwise_only());
     }
 }

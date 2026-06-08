@@ -1591,6 +1591,63 @@ impl ViewBuffer {
         }
     }
 
+    /// Applies a fused kernel of scalar operations in-place, without allocation.
+    ///
+    /// Succeeds only when the buffer is F32, contiguous, and this `Arc` has exactly
+    /// one strong reference (i.e. the caller holds exclusive ownership).  In that case
+    /// the inner `Vec<u8>` is mutated directly — zero heap allocation.
+    ///
+    /// Returns `true` if the in-place path was taken, `false` if the caller should
+    /// fall back to the allocating [`apply_fused_kernel`] path.
+    pub fn try_apply_fused_kernel_inplace(&mut self, kernel: &FusedKernel) -> bool {
+        if self.dtype() != DType::F32 || !self.layout.is_contiguous() {
+            return false;
+        }
+        let BufferStorage::Rust(ref mut arc) = self.data else {
+            return false;
+        };
+        let Some(vec) = Arc::get_mut(arc) else {
+            return false;
+        };
+
+        let total_elems: usize = self.layout.shape.iter().product();
+        let data = unsafe {
+            std::slice::from_raw_parts_mut(
+                vec.as_mut_ptr().add(self.layout.offset) as *mut f32,
+                total_elems,
+            )
+        };
+
+        const CHUNK_SIZE: usize = 8;
+        let chunks = total_elems / CHUNK_SIZE;
+        let remainder = total_elems % CHUNK_SIZE;
+
+        for chunk_idx in 0..chunks {
+            let base = chunk_idx * CHUNK_SIZE;
+            let chunk = &mut data[base..base + CHUNK_SIZE];
+            for op in &kernel.ops {
+                match op {
+                    ScalarOp::Add(c) => { for v in chunk.iter_mut() { *v += c; } }
+                    ScalarOp::Mul(c) => { for v in chunk.iter_mut() { *v *= c; } }
+                    ScalarOp::Relu   => { for v in chunk.iter_mut() { *v = v.max(0.0); } }
+                    ScalarOp::Clamp(mn, mx) => { for v in chunk.iter_mut() { *v = v.clamp(*mn, *mx); } }
+                }
+            }
+        }
+        let rem_start = chunks * CHUNK_SIZE;
+        for x in &mut data[rem_start..rem_start + remainder] {
+            for op in &kernel.ops {
+                match op {
+                    ScalarOp::Add(c) => { *x += c; }
+                    ScalarOp::Mul(c) => { *x *= c; }
+                    ScalarOp::Relu   => { *x = x.max(0.0); }
+                    ScalarOp::Clamp(mn, mx) => { *x = x.clamp(*mn, *mx); }
+                }
+            }
+        }
+        true
+    }
+
     /// Applies a fused kernel of scalar operations element-wise.
     ///
     /// This function is optimized for SIMD processing when the buffer is contiguous.
