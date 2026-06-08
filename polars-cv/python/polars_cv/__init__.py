@@ -21,8 +21,6 @@ import polars as pl
 if TYPE_CHECKING:
     import numpy as np
 
-from ._lib import get_execution_strategy as _get_execution_strategy
-from ._lib import set_execution_strategy as _set_execution_strategy
 from ._types import (
     IMAGENET_MEAN,
     IMAGENET_STD,
@@ -274,54 +272,6 @@ def mask_iou(
     return intersection_sum / (union_sum + epsilon)
 
 
-def set_execution_strategy(strategy: str = "adaptive") -> None:
-    """
-    Set the execution strategy for pipeline runs on the current thread.
-
-    Controls whether image pipelines use full-image processing (one pass per
-    op) or **segment-level tiling** (all ops in a tileable segment share each
-    cache-sized tile before moving to the next tile, keeping working data in
-    L1/L2 cache through the whole segment).
-
-    Args:
-        strategy: One of:
-            - ``"adaptive"`` *(default)*: auto-selects tiling for images whose
-              byte footprint exceeds ~512 KB; uses full-image for smaller images.
-            - ``"full"``: always process the full buffer per op (zero overhead,
-              optimal when images are small).
-            - ``"tiled"``: always use segment-level tiling (256-pixel tiles,
-              512 KB threshold).
-
-    Example:
-        ```python
-        import polars_cv
-
-        # Force full-image processing (fastest for small images)
-        polars_cv.set_execution_strategy("full")
-
-        # Let the engine auto-select (default, usually best)
-        polars_cv.set_execution_strategy("adaptive")
-        ```
-
-    Note:
-        This sets a **thread-local** value.  The ``"adaptive"`` default is
-        already optimal for most workloads — the engine picks tiling only when
-        the image is large enough to benefit.  Use the ``VIEW_BUFFER_STRATEGY``
-        environment variable to change the default for all threads.
-    """
-    _set_execution_strategy(strategy)
-
-
-def get_execution_strategy() -> str:
-    """
-    Get the current execution strategy for this thread.
-
-    Returns:
-        ``"adaptive"``, ``"full"``, or ``"tiled"``.
-    """
-    return _get_execution_strategy()
-
-
 def hamming_distance(
     hash1: LazyPipelineExpr,
     hash2: LazyPipelineExpr,
@@ -406,9 +356,6 @@ __all__ = [
     "Pipeline",
     "CvNamespace",
     "LazyPipelineExpr",
-    # Tiling configuration
-    "set_execution_strategy",
-    "get_execution_strategy",
     # Types
     "CloudOptions",
     "ColorSpace",

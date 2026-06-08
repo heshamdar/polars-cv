@@ -6,7 +6,6 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::execution::tiling::TilePolicy;
 use crate::ops::cost::OpCost;
 use crate::ops::traits::{MemoryEffect, Op};
 
@@ -81,10 +80,6 @@ impl Op for ConvolveOp {
         OutputDTypeRule::PromoteToFloat
     }
 
-    fn tile_policy(&self) -> TilePolicy {
-        let half = self.ksize / 2;
-        TilePolicy::LocalNeighborhood { halo: half }
-    }
 }
 
 /// Apply 2D convolution to a buffer.
