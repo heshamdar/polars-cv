@@ -1618,31 +1618,16 @@ impl ViewBuffer {
             )
         };
 
-        const CHUNK_SIZE: usize = 8;
-        let chunks = total_elems / CHUNK_SIZE;
-        let remainder = total_elems % CHUNK_SIZE;
-
-        for chunk_idx in 0..chunks {
-            let base = chunk_idx * CHUNK_SIZE;
-            let chunk = &mut data[base..base + CHUNK_SIZE];
-            for op in &kernel.ops {
-                match op {
-                    ScalarOp::Add(c) => { for v in chunk.iter_mut() { *v += c; } }
-                    ScalarOp::Mul(c) => { for v in chunk.iter_mut() { *v *= c; } }
-                    ScalarOp::Relu   => { for v in chunk.iter_mut() { *v = v.max(0.0); } }
-                    ScalarOp::Clamp(mn, mx) => { for v in chunk.iter_mut() { *v = v.clamp(*mn, *mx); } }
-                }
-            }
-        }
-        let rem_start = chunks * CHUNK_SIZE;
-        for x in &mut data[rem_start..rem_start + remainder] {
-            for op in &kernel.ops {
-                match op {
-                    ScalarOp::Add(c) => { *x += c; }
-                    ScalarOp::Mul(c) => { *x *= c; }
-                    ScalarOp::Relu   => { *x = x.max(0.0); }
-                    ScalarOp::Clamp(mn, mx) => { *x = x.clamp(*mn, *mx); }
-                }
+        // One full-array pass per op — the inner loop is a simple scalar
+        // operation that LLVM can auto-vectorize with SIMD (the closure is
+        // known at compile time within each match arm, unlike the old
+        // chunk-then-ops order which blocked auto-vectorization).
+        for op in &kernel.ops {
+            match op {
+                ScalarOp::Add(c)        => { for x in data.iter_mut() { *x += *c; } }
+                ScalarOp::Mul(c)        => { for x in data.iter_mut() { *x *= *c; } }
+                ScalarOp::Relu          => { for x in data.iter_mut() { *x = x.max(0.0); } }
+                ScalarOp::Clamp(lo, hi) => { for x in data.iter_mut() { *x = x.clamp(*lo, *hi); } }
             }
         }
         true
@@ -1675,67 +1660,23 @@ impl ViewBuffer {
         kernel: &FusedKernel,
         total_elems: usize,
     ) -> ViewBuffer {
-        let mut output = Vec::with_capacity(total_elems);
-
         let src_ptr = unsafe { self.data.as_ptr().add(self.layout.offset) as *const f32 };
         let src = unsafe { std::slice::from_raw_parts(src_ptr, total_elems) };
 
-        // Process in chunks of 8 for better vectorization (f32 x 8 = 256 bits = AVX)
-        const CHUNK_SIZE: usize = 8;
-        let chunks = total_elems / CHUNK_SIZE;
-        let remainder = total_elems % CHUNK_SIZE;
-
-        // Process main chunks - compiler can auto-vectorize this
-        for chunk_idx in 0..chunks {
-            let base = chunk_idx * CHUNK_SIZE;
-
-            // Read chunk (hint for SIMD)
-            let mut acc = [0.0f32; CHUNK_SIZE];
-            acc.copy_from_slice(&src[base..base + CHUNK_SIZE]);
-
-            // Apply all operations to the chunk
-            for op in &kernel.ops {
-                match op {
-                    ScalarOp::Add(c) => {
-                        for v in &mut acc {
-                            *v += c;
-                        }
-                    }
-                    ScalarOp::Mul(c) => {
-                        for v in &mut acc {
-                            *v *= c;
-                        }
-                    }
-                    ScalarOp::Relu => {
-                        for v in &mut acc {
-                            *v = v.max(0.0);
-                        }
-                    }
-                    ScalarOp::Clamp(min, max) => {
-                        for v in &mut acc {
-                            *v = v.clamp(*min, *max);
-                        }
-                    }
-                }
+        // Copy source into output buffer, then apply each op in a full-array pass.
+        // One pass per op (vs one pass total) costs slightly more bandwidth but lets
+        // LLVM auto-vectorize each inner loop with AVX/AVX2/NEON — the inner loop
+        // is a simple scalar operation with no enum dispatch, so the compiler can
+        // emit a SIMD loop. The bandwidth tradeoff breaks even at ~2 ops for typical
+        // L2-resident tile sizes.
+        let mut output: Vec<f32> = src.to_vec();
+        for op in &kernel.ops {
+            match op {
+                ScalarOp::Add(c)        => { for x in output.iter_mut() { *x += *c; } }
+                ScalarOp::Mul(c)        => { for x in output.iter_mut() { *x *= *c; } }
+                ScalarOp::Relu          => { for x in output.iter_mut() { *x = x.max(0.0); } }
+                ScalarOp::Clamp(lo, hi) => { for x in output.iter_mut() { *x = x.clamp(*lo, *hi); } }
             }
-
-            // Write results
-            output.extend_from_slice(&acc);
-        }
-
-        // Handle remainder elements
-        let remainder_start = chunks * CHUNK_SIZE;
-        for i in 0..remainder {
-            let mut acc = src[remainder_start + i];
-            for op in &kernel.ops {
-                match op {
-                    ScalarOp::Add(c) => acc += c,
-                    ScalarOp::Mul(c) => acc *= c,
-                    ScalarOp::Relu => acc = acc.max(0.0),
-                    ScalarOp::Clamp(min, max) => acc = acc.clamp(*min, *max),
-                }
-            }
-            output.push(acc);
         }
 
         // Convert f32 vec to bytes
