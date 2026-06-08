@@ -31,12 +31,6 @@ pub use execution::{
     apply_channel_merge, apply_channel_swap, execute_plan, ExecutionPlan, PlanStep,
 };
 
-// Re-exports - Execution strategy
-pub use execution::{
-    get_execution_strategy, set_execution_strategy, with_execution_strategy, ExecutionStrategy,
-    TilePolicy, ADAPTIVE_THRESHOLD_BYTES, DEFAULT_TILE_SIZE,
-};
-
 // Re-exports - Expression
 pub use expr::{PipelineCostReport, ViewExpr};
 

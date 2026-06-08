@@ -1,7 +1,6 @@
 //! Compute operations that transform data.
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::execution::tiling::TilePolicy;
 use crate::ops::affine::{AffineParams, InterpolationType};
 use crate::ops::cost::OpCost;
 use crate::ops::scalar::FusedKernel;
@@ -260,22 +259,4 @@ impl Op for ComputeOp {
         }
     }
 
-    #[inline]
-    fn tile_policy(&self) -> TilePolicy {
-        match self {
-            ComputeOp::Scale(_) => TilePolicy::PointWise,
-            ComputeOp::Relu => TilePolicy::PointWise,
-            ComputeOp::Clamp { .. } => TilePolicy::PointWise,
-            ComputeOp::Cast(_) => TilePolicy::PointWise,
-            ComputeOp::Fused(_) => TilePolicy::PointWise,
-            ComputeOp::AdjustGamma(_) => TilePolicy::PointWise,
-            ComputeOp::Invert => TilePolicy::PointWise,
-            ComputeOp::Normalize(NormalizeMethod::Preset { .. }) => TilePolicy::PointWise,
-            ComputeOp::Normalize(NormalizeMethod::MinMax) => TilePolicy::Global,
-            ComputeOp::Normalize(NormalizeMethod::ZScore) => TilePolicy::Global,
-            ComputeOp::AdjustContrast(_) => TilePolicy::Global,
-            ComputeOp::Affine(_) => TilePolicy::Global,
-            ComputeOp::RotateAffine { .. } => TilePolicy::Global,
-        }
-    }
 }

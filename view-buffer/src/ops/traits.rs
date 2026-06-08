@@ -1,7 +1,6 @@
 //! Core operation traits and types.
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::execution::tiling::TilePolicy;
 use crate::ops::cost::OpCost;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::validation::ValidationError;
@@ -175,38 +174,6 @@ pub trait Op {
         Ok(())
     }
 
-    // --- Tiling Support ---
-
-    /// Returns the tiling policy for this operation.
-    ///
-    /// The tiling policy determines whether and how the operation can be
-    /// executed in tiles for improved cache efficiency.
-    ///
-    /// Default: [`TilePolicy::Global`] (cannot be tiled) for safety.
-    /// Operations should override this to enable tiled execution.
-    ///
-    /// # Policies
-    ///
-    /// - [`TilePolicy::PointWise`]: No pixel dependencies (halo=0)
-    /// - [`TilePolicy::LocalNeighborhood`]: Needs pixel radius (e.g., blur)
-    /// - [`TilePolicy::Global`]: Cannot be tiled (e.g., resize, normalize)
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// fn tile_policy(&self) -> TilePolicy {
-    ///     match self {
-    ///         MyOp::Threshold => TilePolicy::PointWise,
-    ///         MyOp::Blur { sigma } => TilePolicy::LocalNeighborhood {
-    ///             halo: (*sigma * 3.0).ceil() as usize,
-    ///         },
-    ///         MyOp::Resize { .. } => TilePolicy::Global,
-    ///     }
-    /// }
-    /// ```
-    fn tile_policy(&self) -> TilePolicy {
-        TilePolicy::Global
-    }
 }
 
 // ============================================================

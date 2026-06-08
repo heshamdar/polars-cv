@@ -23,9 +23,6 @@ use serde::Deserialize;
 #[pymodule]
 #[pyo3(name = "_lib")]
 fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-        // Execution strategy
-    m.add_function(wrap_pyfunction!(set_execution_strategy, m)?)?;
-    m.add_function(wrap_pyfunction!(get_execution_strategy, m)?)?;
     m.add_function(wrap_pyfunction!(op_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
@@ -474,59 +471,6 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<PyObject> {
     dict.set_item("input_domain", dto.input_domain().name())?;
     dict.set_item("output_domain", dto.output_domain().name())?;
     Ok(dict.into())
-}
-
-// ============================================================================
-// Tiling Configuration (Python-exposed)
-// ============================================================================
-
-/// Set the execution strategy for pipeline runs on this thread.
-///
-/// The strategy controls whether image pipelines use full-image processing
-/// (one pass per op) or segment-level tiling (all ops in a tileable segment
-/// share each cache-sized tile before moving to the next).
-///
-/// Args:
-///     strategy: One of ``"adaptive"`` (default), ``"full"``, or
-///         ``"tiled"``.  ``"adaptive"`` auto-selects tiling for images whose
-///         byte footprint exceeds 512 KB; ``"full"`` always uses single-pass;
-///         ``"tiled"`` always tiles (with 256-pixel tiles and a 512 KB
-///         threshold).
-///
-/// Note:
-///     This sets a **thread-local** value.  Polars' streaming engine runs
-///     each morsel on a worker thread; the default ``"adaptive"`` strategy
-///     is already optimal for most workloads.  Use ``VIEW_BUFFER_STRATEGY``
-///     env var to change the default for all threads.
-#[pyfunction]
-#[pyo3(signature = (strategy = "adaptive"))]
-fn set_execution_strategy(strategy: &str) -> PyResult<()> {
-    use view_buffer::{ExecutionStrategy, DEFAULT_TILE_SIZE};
-    let s = match strategy.to_lowercase().as_str() {
-        "full" | "full_image" | "fullimage" => ExecutionStrategy::FullImage,
-        "tiled" => ExecutionStrategy::Tiled {
-            tile_size: DEFAULT_TILE_SIZE,
-            threshold_bytes: 0,  // always tile, regardless of image size
-        },
-        "adaptive" | _ => ExecutionStrategy::Adaptive,
-    };
-    view_buffer::set_execution_strategy(s);
-    Ok(())
-}
-
-/// Get the current execution strategy for this thread.
-///
-/// Returns:
-///     ``"full"``, ``"tiled"``, or ``"adaptive"``.
-#[pyfunction]
-fn get_execution_strategy() -> PyResult<&'static str> {
-    use view_buffer::ExecutionStrategy;
-    let s = match view_buffer::get_execution_strategy() {
-        ExecutionStrategy::FullImage => "full",
-        ExecutionStrategy::Tiled { .. } => "tiled",
-        ExecutionStrategy::Adaptive => "adaptive",
-    };
-    Ok(s)
 }
 
 use crate::graph::UnifiedGraph;

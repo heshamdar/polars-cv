@@ -1,5 +1,4 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::execution::tiling::TilePolicy;
 use crate::ops::cost::OpCost;
 use crate::ops::shape_rule::OutputChannelRule;
 use crate::ops::traits::{MemoryEffect, Op};
@@ -225,37 +224,4 @@ impl Op for ImageOp {
         }
     }
 
-    #[inline]
-    fn tile_policy(&self) -> TilePolicy {
-        match &self.kind {
-            // Point-wise operations - no pixel dependencies
-            ImageOpKind::Threshold(_) => TilePolicy::PointWise,
-            ImageOpKind::Grayscale => TilePolicy::PointWise,
-
-            // Blur needs neighboring pixels - halo = 3*sigma (rounded up)
-            ImageOpKind::Blur { sigma } => TilePolicy::LocalNeighborhood {
-                halo: (*sigma * 3.0).ceil() as usize,
-            },
-
-            // Resize uses global resampling - cannot be tiled
-            ImageOpKind::Resize { .. } => TilePolicy::Global,
-
-            // Canny needs full image for NMS and hysteresis
-            ImageOpKind::Canny { .. } => TilePolicy::Global,
-
-            // Histogram equalize needs full histogram (CDF)
-            ImageOpKind::HistogramEqualize => TilePolicy::Global,
-
-            // Morphological ops need local neighborhood
-            ImageOpKind::Erode { ksize, .. } => TilePolicy::LocalNeighborhood {
-                halo: (*ksize as usize) / 2,
-            },
-            ImageOpKind::Dilate { ksize, .. } => TilePolicy::LocalNeighborhood {
-                halo: (*ksize as usize) / 2,
-            },
-            ImageOpKind::MorphGradient { ksize } => TilePolicy::LocalNeighborhood {
-                halo: (*ksize as usize) / 2,
-            },
-        }
-    }
 }
