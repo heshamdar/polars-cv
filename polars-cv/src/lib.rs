@@ -142,20 +142,29 @@ fn channel_rule_name(rule: view_buffer::OutputChannelRule) -> String {
 /// work on the same live op specs the planner sees (which routinely carry
 /// expression params) rather than only literal-only ops.
 fn resolve_op_from_json(op_json: &str) -> PyResult<view_buffer::ViewDto> {
-    let op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
+    use crate::params::{ParamCtx, ParamValue};
+
+    let mut op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
-    // Own the placeholder series so the borrowed map outlives `resolve_op`.
-    let placeholders: Vec<Series> = op_spec
-        .params
-        .values()
-        .filter_map(|p| p.column_name())
-        .map(|name| Series::new(name.into(), &[1_i64]))
-        .collect();
-    let cols: std::collections::HashMap<String, &Series> = placeholders
-        .iter()
-        .map(|s| (s.name().to_string(), s))
-        .collect();
-    crate::execute::resolve_op(&op_spec, 0, &cols)
+    // Bind each expression param to a placeholder slot holding `1_i64`,
+    // mirroring what graph compilation does with the real input columns.
+    // `label_reduce.contours` carries the column *name* through the DTO and
+    // stays unbound, exactly as in `graph::compiled::bind_graph_params`.
+    let keep_named = op_spec.op == "label_reduce";
+    let mut placeholders: Vec<Series> = Vec::new();
+    for (pname, p) in op_spec.params.iter_mut() {
+        if keep_named && pname == "contours" {
+            continue;
+        }
+        if matches!(p, ParamValue::Expr { .. }) {
+            *p = ParamValue::Slot {
+                idx: placeholders.len(),
+            };
+            placeholders.push(Series::new("".into(), &[1_i64]));
+        }
+    }
+    let ctx = ParamCtx::from_inputs(&placeholders);
+    crate::execute::resolve_op(&op_spec, 0, &ctx)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
 }
 
@@ -473,8 +482,6 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<PyObject> {
     Ok(dict.into())
 }
 
-use crate::graph::UnifiedGraph;
-
 // ============================================================================
 // Graph Execution
 // ============================================================================
@@ -491,32 +498,15 @@ pub struct GraphKwargs {
 
 /// Shared implementation for graph execution.
 ///
-/// Handles both single-output and multi-output graphs uniformly.
+/// Handles both single-output and multi-output graphs uniformly. The compiled
+/// form of the graph (parsed spec, topological order, slot-bound params,
+/// pre-resolved static ops) is fetched from the process-wide cache, so under
+/// the streaming engine repeated per-morsel invocations skip re-compilation.
+/// Everything data-dependent ("auto" dtype resolution, per-row decode/params)
+/// happens inside `CompiledGraph::execute` per call.
 fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series> {
-    // Parse the unified graph specification
-    let mut graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
-
-    // Resolve "auto" dtype/ndim from the input column type. Shared with the
-    // planning-time path (`unified_output_dtype`) so the two can never drift.
-    resolve_auto_inputs(&mut graph, inputs.first().map(|s| s.dtype()));
-
-    // Count the number of root node column bindings to determine where expression columns start
-    let num_source_columns = graph.column_bindings.len().max(1);
-
-    // Build expression columns map from inputs after the source columns
-    let expr_columns: std::collections::HashMap<String, &Series> = kwargs
-        .expr_column_names
-        .iter()
-        .enumerate()
-        .filter_map(|(i, name)| {
-            inputs
-                .get(num_source_columns + i)
-                .map(|s| (name.clone(), s))
-        })
-        .collect();
-
-    // Execute the graph
-    graph.execute(inputs, &expr_columns)
+    let compiled = crate::graph::get_or_compile(&kwargs.graph_json, &kwargs.expr_column_names)?;
+    compiled.execute(inputs)
 }
 
 /// Unified pipeline graph execution for single output.
@@ -543,98 +533,30 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
         PlSmallStr::from_static("output")
     };
 
-    // Parse the graph JSON to extract output specifications
-    let mut graph = UnifiedGraph::from_json(&kwargs.graph_json)?;
-
-    // Resolve "auto" sentinels in output specs from the input column type.
-    // Shared with the execution-time path (`execute_graph`) so the planned and
-    // executed schema are computed by exactly one piece of logic.
-    resolve_auto_inputs(&mut graph, input_fields.first().map(|f| f.dtype()));
+    // The compiled graph is fetched from the same cache the execution path
+    // uses, and `"auto"` sentinels are resolved by the same
+    // `resolved_output_specs` — the planned and executed schema are computed
+    // by exactly one piece of logic and cannot diverge.
+    let compiled = crate::graph::get_or_compile(&kwargs.graph_json, &kwargs.expr_column_names)?;
+    let graph = compiled.graph();
+    let resolved =
+        crate::graph::resolved_output_specs(graph, input_fields.first().map(|f| f.dtype()));
 
     if graph.is_single_output() {
         // Single output mode - return typed field based on domain/sink/dtype
-        let spec = graph
-            .outputs
-            .get("_output")
+        let (_, spec) = resolved
+            .first()
             .ok_or_else(|| polars_err!(ComputeError: "Single output graph missing _output key"))?;
         let dtype = crate::graph::dtype_for_output(spec)?;
         Ok(Field::new(name, dtype))
     } else {
-        // Multi-output mode - build Struct with typed fields
-        let mut output_names: Vec<&String> = graph.outputs.keys().collect();
-        output_names.sort();
-
-        let mut fields: Vec<Field> = Vec::with_capacity(output_names.len());
-        for alias in output_names {
-            let spec = graph.outputs.get(alias).unwrap();
+        // Multi-output mode - build Struct with typed fields (alias-sorted)
+        let mut fields: Vec<Field> = Vec::with_capacity(resolved.len());
+        for (alias, spec) in &resolved {
             let dtype = crate::graph::dtype_for_output(spec)?;
             fields.push(Field::new(PlSmallStr::from(alias.as_str()), dtype));
         }
 
         Ok(Field::new(name, DataType::Struct(fields)))
-    }
-}
-
-/// Resolve `"auto"` dtype and missing ndim on a graph's output specs from the
-/// first input column's type.
-///
-/// This is the single implementation shared by both the planning-time
-/// (`unified_output_dtype`) and execution-time (`execute_graph`) entry points,
-/// so the inferred schema cannot diverge between the two.
-///
-/// Only the leaf type of List/Array sources is meaningful for dtype: for
-/// Binary/String (image/file) sources the column type does not reflect the
-/// decoded buffer dtype, so `"auto"` is left unresolved.
-fn resolve_auto_inputs(graph: &mut UnifiedGraph, first_input_dtype: Option<&DataType>) {
-    let Some(dt) = first_input_dtype else {
-        return;
-    };
-    let (leaf_dtype, ndim) = peel_nesting(dt);
-    let inferred_dtype_str = polars_dtype_to_str(&leaf_dtype);
-
-    for spec in graph.outputs.values_mut() {
-        if spec.expected_dtype == "auto" {
-            match &leaf_dtype {
-                // Image/file sources: cannot infer buffer dtype from column type.
-                DataType::Binary | DataType::String | DataType::Null => {}
-                // List/array sources: leaf type is meaningful.
-                _ => spec.expected_dtype = inferred_dtype_str.to_string(),
-            }
-        }
-        if spec.expected_ndim.is_none() && ndim > 0 {
-            spec.expected_ndim = Some(ndim);
-        }
-    }
-}
-
-/// Recursively peel List/Array nesting to find the leaf dtype and depth.
-fn peel_nesting(dt: &DataType) -> (DataType, usize) {
-    match dt {
-        DataType::List(inner) => {
-            let (leaf, depth) = peel_nesting(inner);
-            (leaf, depth + 1)
-        }
-        DataType::Array(inner, _) => {
-            let (leaf, depth) = peel_nesting(inner);
-            (leaf, depth + 1)
-        }
-        other => (other.clone(), 0),
-    }
-}
-
-/// Convert a Polars DataType to the dtype string used in output specs.
-fn polars_dtype_to_str(dt: &DataType) -> &'static str {
-    match dt {
-        DataType::UInt8 => "u8",
-        DataType::Int8 => "i8",
-        DataType::UInt16 => "u16",
-        DataType::Int16 => "i16",
-        DataType::UInt32 => "u32",
-        DataType::Int32 => "i32",
-        DataType::UInt64 => "u64",
-        DataType::Int64 => "i64",
-        DataType::Float32 => "f32",
-        DataType::Float64 => "f64",
-        _ => "u8", // fallback for non-numeric types
     }
 }
