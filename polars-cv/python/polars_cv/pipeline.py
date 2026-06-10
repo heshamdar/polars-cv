@@ -3262,7 +3262,7 @@ class Pipeline:
                 params={"signed": ParamValue(is_expr=False, value=signed)},
             )
         )
-        new._current_domain = self.DOMAIN_SCALAR
+        new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("contour_area")
         return new
 
@@ -3281,7 +3281,7 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_CONTOUR, "perimeter")
         new = self._clone()
         new._ops.append(OpSpec(op="contour_perimeter", params={}))
-        new._current_domain = self.DOMAIN_SCALAR
+        new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("contour_perimeter")
         return new
 

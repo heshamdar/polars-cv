@@ -471,7 +471,7 @@ class TestContourPipeline:
     """Full contour-extraction workflow with correctness checks."""
 
     def test_rectangle_contour_area(self) -> None:
-        """A 60×40 white rectangle should have area ≈ 2400 px²."""
+        """area() returns one value per contour; the largest should be ≈ 2400 px²."""
         h, w = 100, 100
         # Must be 3-channel RGB so polars-cv decodes as a color image
         arr = np.zeros((h, w, 3), dtype=np.uint8)
@@ -484,17 +484,18 @@ class TestContourPipeline:
             .source("image_bytes")
             .grayscale()
             .threshold(128)
-            .extract_contours(min_area=1000.0)  # filter tiny edge sub-contours
+            .extract_contours()
             .area()
         )
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("native"))
 
-        # area() uses the Shoelace formula on the contour boundary;
-        # it counts boundary pixels so the result is slightly under 2400
-        area_val = result["out"][0]
-        assert area_val is not None
-        assert abs(float(area_val) - 2400.0) < 200, (
-            f"Rectangle area ≈ 2400, got {float(area_val):.1f}"
+        # area() now returns a List[f64] — one area per detected contour.
+        # The largest contour is the rectangle boundary (Shoelace area ≈ 2301).
+        areas = list(result["out"][0])
+        assert len(areas) > 0, "No contours found"
+        max_area = max(areas)
+        assert abs(max_area - 2400.0) < 200, (
+            f"Largest contour area ≈ 2400, got {max_area:.1f}"
         )
 
     def test_contour_centroid_near_center(self) -> None:
@@ -512,14 +513,18 @@ class TestContourPipeline:
             .source("image_bytes")
             .grayscale()
             .threshold(128)
-            .extract_contours(min_area=1000.0)  # filter tiny edge sub-contours
+            .extract_contours(min_area=1000.0)  # select only the main square
             .centroid()
         )
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("native"))
 
-        centroid = result["out"][0]
-        assert centroid is not None
-        cx, cy = float(centroid[0]), float(centroid[1])
+        # centroid() returns [cx₀, cy₀, cx₁, cy₁, ...]; with min_area=1000 there
+        # is exactly one contour so the vector is [cx, cy].
+        centroid_vals = list(result["out"][0])
+        assert len(centroid_vals) == 2, (
+            f"Expected 2-element centroid for one contour, got {len(centroid_vals)}"
+        )
+        cx, cy = centroid_vals[0], centroid_vals[1]
         assert abs(cx - 50.0) < 5.0, f"Centroid x={cx:.1f} not near 50"
         assert abs(cy - 50.0) < 5.0, f"Centroid y={cy:.1f} not near 50"
 
