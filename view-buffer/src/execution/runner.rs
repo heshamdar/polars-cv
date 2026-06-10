@@ -1404,15 +1404,18 @@ where
 #[inline]
 fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
     match dtype {
-        DType::U8 => v.clamp(0.0, u8::MAX as f64),
-        DType::I8 => v.clamp(i8::MIN as f64, i8::MAX as f64),
-        DType::U16 => v.clamp(0.0, u16::MAX as f64),
-        DType::I16 => v.clamp(i16::MIN as f64, i16::MAX as f64),
-        DType::U32 => v.clamp(0.0, u32::MAX as f64),
-        DType::I32 => v.clamp(i32::MIN as f64, i32::MAX as f64),
-        DType::U64 => v.clamp(0.0, u64::MAX as f64),
-        DType::I64 => v.clamp(i64::MIN as f64, i64::MAX as f64),
-        DType::F32 | DType::F64 => v, // No clamping for floats
+        // Round before clamping so that e.g. 127.9999 → 128, not 127.
+        // NumCast::from truncates (floor) for positive floats, so without rounding
+        // Gaussian convolution on a solid-128 image gives 127.
+        DType::U8 => v.round().clamp(0.0, u8::MAX as f64),
+        DType::I8 => v.round().clamp(i8::MIN as f64, i8::MAX as f64),
+        DType::U16 => v.round().clamp(0.0, u16::MAX as f64),
+        DType::I16 => v.round().clamp(i16::MIN as f64, i16::MAX as f64),
+        DType::U32 => v.round().clamp(0.0, u32::MAX as f64),
+        DType::I32 => v.round().clamp(i32::MIN as f64, i32::MAX as f64),
+        DType::U64 => v.round().clamp(0.0, u64::MAX as f64),
+        DType::I64 => v.round().clamp(i64::MIN as f64, i64::MAX as f64),
+        DType::F32 | DType::F64 => v,
     }
 }
 
