@@ -68,6 +68,24 @@ pub(crate) enum RowResult {
     HistogramBuckets(Option<Vec<f64>>),
 }
 
+/// Per-row error policy for graph execution.
+///
+/// Applies to `Result`-level errors while producing a row (source decode,
+/// op resolution/execution, output encode). Panics are not covered — they
+/// abort the batch via the executor's `catch_unwind` backstop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowErrorPolicy {
+    /// Propagate the first error and fail the whole expression (default).
+    #[default]
+    Raise,
+    /// A failing row yields null for all of its outputs; other rows proceed.
+    Null,
+    /// As `Null`, plus a reserved `_error: String` field in the output
+    /// struct carrying the failure message for bad rows.
+    NullWithMessage,
+}
+
 /// Unified pipeline graph specification.
 ///
 /// This struct handles all cases:
@@ -80,6 +98,9 @@ pub struct UnifiedGraph {
     /// misparsed (also relevant for any persisted graph JSON).
     #[serde(default)]
     pub version: u32,
+    /// Per-row error policy for the whole graph.
+    #[serde(default)]
+    pub on_error: RowErrorPolicy,
     /// Named nodes in the graph.
     pub nodes: HashMap<String, GraphNode>,
     /// Output specifications (alias -> spec).

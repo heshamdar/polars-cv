@@ -55,11 +55,26 @@ Returns a single `Series` (typed column for single output, Struct for multi-outp
 
 ### Graph Execution Flow
 
-1. `UnifiedGraph::from_json()` deserializes the JSON graph
-2. Resolve `auto` dtypes from input column types where possible
-3. `execution_order()` computes topological processing order
-4. Per-row: decode sources → apply operations (ViewExpr chain) → encode outputs
-5. Collect row results into the appropriate Polars Series type
+Execution is split into a cacheable **compile** phase and a per-call phase
+(`graph/compiled.rs`):
+
+1. `get_or_compile()` fetches a `CompiledGraph` from a process-wide cache
+   keyed by `(graph_json, expr_column_names)` — hash plus full string
+   equality, never the hash alone. On miss, `CompiledGraph::compile()`
+   parses the JSON, computes the topological order, binds every
+   `ParamValue::Expr` to an input slot (`ParamValue::Slot`), and resolves
+   all-literal ops once (`OpResolver::Static`); ops with dynamic params
+   re-resolve per row through typed slot reads (`OpResolver::Dynamic`).
+2. Per call: build `ParamCtx` (typed accessors over the input series) and
+   `resolved_output_specs` (per-call `"auto"` dtype/ndim resolution from the
+   input column type — shared with plan-time `unified_output_dtype`).
+3. Per-row: decode sources → apply operations (ViewExpr chain) → encode outputs
+4. Collect row results into the appropriate Polars Series type
+
+**Cache-safety invariant:** `CompiledGraph` must contain nothing derived from
+the data (no input dtypes, shapes, row counts, or null masks) — one cached
+graph must behave identically across heterogeneous inputs. See the module
+docs in `graph/compiled.rs` and `tests/test_graph_cache.py`.
 
 ### `resolve_op` — Operation Dispatcher
 
@@ -142,7 +157,8 @@ Contains serde types (`PipelineSpec`, `SourceSpec`, `SinkSpec`, `OpSpec`) for JS
 - Rust panics in `view-buffer` are caught by `std::panic::catch_unwind` and converted to `PolarsResult::Err`
 - Source decoding errors produce `polars_err!(ComputeError: ...)` with descriptive messages
 - Null inputs produce null outputs (null propagation)
-- `on_error="null"` on source spec wraps decode in an inner closure; errors produce `None` instead of propagating
+- `on_error="null"` on source spec: decode errors produce `None` for that node instead of propagating (parsed once at compile into `CompiledGraph::source_null_nodes`)
+- Graph-level `RowErrorPolicy` (`graph.on_error`: `raise` | `null` | `null_with_message`): any `Result` error while producing a row either fails the expression (raise), nulls all of that row's outputs (null), or additionally records the message in a reserved `_error: String` struct field (null_with_message — forces struct output even for single-output graphs; `unified_output_dtype` mirrors this so plan==exec). Set from Python via `Pipeline.on_error()`. Panics are not covered by the policy — they abort the batch via `catch_unwind`.
 
 ## Dependencies
 

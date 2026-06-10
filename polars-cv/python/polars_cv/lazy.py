@@ -163,6 +163,8 @@ class LazyPipelineExpr:
             # Only the NEW operations (not self's ops)
             new_pipeline._ops = pipeline._ops.copy()
             new_pipeline._expr_refs = pipeline._expr_refs.copy()
+            # Carry the graph-level error policy through continuations.
+            new_pipeline._on_error = pipeline._on_error
             # Compute continuation node type state from upstream state + new ops.
             # Using the op-only pipeline state here is incorrect because it loses
             # the upstream dtype/domain context and can cause contract drift.
@@ -964,6 +966,20 @@ class LazyPipelineExpr:
         from polars_cv.pipeline import Pipeline
 
         return self.pipe(Pipeline().invert())
+
+    def on_error(self, policy: str) -> "LazyPipelineExpr":
+        """
+        Set the per-row error policy for the executed pipeline graph.
+
+        See :meth:`polars_cv.Pipeline.on_error` for the policy semantics
+        (``"raise"``, ``"null"``, ``"null_with_message"``).
+
+        Returns:
+            New LazyPipelineExpr with the error policy set.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return self.pipe(Pipeline().on_error(policy))
 
     # --- Color Space Conversion ---
 

@@ -204,6 +204,8 @@ class Pipeline:
         self._output_dtype: str = "auto"
         # Number of dimensions tracking
         self._expected_ndim: int | None = None
+        # Per-row error policy for the executed graph ("raise" by default).
+        self._on_error: str = "raise"
 
     @staticmethod
     def _compute_output_domain_dtype_ndim(
@@ -377,6 +379,48 @@ class Pipeline:
         new._current_domain = self._current_domain
         new._output_dtype = self._output_dtype
         new._expected_ndim = self._expected_ndim
+        new._on_error = self._on_error
+        return new
+
+    def on_error(self, policy: str) -> "Pipeline":
+        """
+        Set the per-row error policy for the executed pipeline graph.
+
+        Controls what happens when producing a single row fails (source
+        decode, operation execution, or output encoding):
+
+        - ``"raise"`` (default): the first failing row fails the whole
+          expression with its error.
+        - ``"null"``: failing rows yield null for **all** of the graph's
+          outputs; other rows are unaffected.
+        - ``"null_with_message"``: as ``"null"``, plus the output becomes a
+          struct with a reserved ``_error`` string field carrying the failure
+          message for bad rows (null for good rows). Single-output pipelines
+          become a two-field struct (``_output`` + ``_error``).
+
+        This is a graph-level setting: when pipelines are composed
+        (``merge_pipe``, binary ops), all composed pipelines must agree on
+        the policy.
+
+        Note: the per-source ``source(..., on_error="null")`` setting remains
+        independent — it nulls only the outputs that depend on a failing
+        source decode, while this policy covers any error producing the row.
+
+        Args:
+            policy: One of ``"raise"``, ``"null"``, ``"null_with_message"``.
+
+        Returns:
+            New Pipeline with the error policy set.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224).on_error("null")
+        """
+        valid = ("raise", "null", "null_with_message")
+        if policy not in valid:
+            msg = f"on_error must be one of {valid}, got '{policy}'"
+            raise ValueError(msg)
+        new = self._clone()
+        new._on_error = policy
         return new
 
     def _source_equal(self, other: "Pipeline") -> bool:

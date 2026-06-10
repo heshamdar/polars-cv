@@ -542,7 +542,11 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
     let resolved =
         crate::graph::resolved_output_specs(graph, input_fields.first().map(|f| f.dtype()));
 
-    if graph.is_single_output() {
+    // The null_with_message error policy appends a reserved `_error` field,
+    // which forces struct output even for single-output graphs. This mirrors
+    // the execution path exactly (same compiled graph, same resolved specs).
+    let with_message = graph.on_error == crate::graph::RowErrorPolicy::NullWithMessage;
+    if graph.is_single_output() && !with_message {
         // Single output mode - return typed field based on domain/sink/dtype
         let (_, spec) = resolved
             .first()
@@ -551,10 +555,16 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
         Ok(Field::new(name, dtype))
     } else {
         // Multi-output mode - build Struct with typed fields (alias-sorted)
-        let mut fields: Vec<Field> = Vec::with_capacity(resolved.len());
+        let mut fields: Vec<Field> = Vec::with_capacity(resolved.len() + 1);
         for (alias, spec) in &resolved {
             let dtype = crate::graph::dtype_for_output(spec)?;
             fields.push(Field::new(PlSmallStr::from(alias.as_str()), dtype));
+        }
+        if with_message {
+            fields.push(Field::new(
+                PlSmallStr::from_static("_error"),
+                DataType::String,
+            ));
         }
 
         Ok(Field::new(name, DataType::Struct(fields)))
