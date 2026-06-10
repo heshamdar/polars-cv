@@ -3,6 +3,13 @@
 # Benefits: grayscale_u8, threshold_simd (32-byte chunks), FusedKernel,
 # and the separable blur inner loops.
 #
+# `x86-64-v3` (AVX2/BMI2/FMA) rather than `native`: native builds embed
+# whatever the *build* host's CPUID reports, which traps with SIGILL when the
+# process later runs on a host without those features (observed with AVX-VNNI
+# under virtualized/heterogeneous hosts — the crash kills the whole Python
+# process and cannot be caught). v3 covers every x86 CPU since ~2015 and
+# retains the vectorization wins listed above.
+#
 # Disabled in CI/wheel builds via CARGO_BUILD_RUSTFLAGS="" env override
 # (see .github/workflows/ci.yml and publish.yml) so wheels are portable.
-rustflags = ["-C", "target-cpu=native"]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
