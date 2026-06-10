@@ -10,7 +10,7 @@ use polars::chunked_array::builder::ListPrimitiveChunkedBuilder;
 use polars::prelude::*;
 use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Contour};
 use view_buffer::ops::NodeOutput;
-use view_buffer::{GeometryOp, Op, ViewBuffer};
+use view_buffer::{BinaryOp, GeometryOp, Op, ViewBuffer};
 
 use crate::contour::contour_to_anyvalue;
 use crate::pipeline::{PipelineSpec, SourceSpec};
@@ -65,7 +65,8 @@ pub(crate) fn execute_geometry_op(
                 );
                 Ok(NodeOutput::from_buffer(mask))
             } else {
-                let buffer = rasterize(
+                // Render all contours onto the same canvas by folding with max.
+                let mut canvas = rasterize(
                     &contours[0],
                     *width,
                     *height,
@@ -73,54 +74,59 @@ pub(crate) fn execute_geometry_op(
                     *background,
                     *anti_alias,
                 );
-                Ok(NodeOutput::from_buffer(buffer))
+                for c in &contours[1..] {
+                    let overlay = rasterize(c, *width, *height, *fill_value, *background, *anti_alias);
+                    canvas = BinaryOp::Maximum.execute(&canvas, &overlay);
+                }
+                Ok(NodeOutput::from_buffer(canvas))
             }
         }
         GeometryOp::Area { signed } => {
             let contours = input
                 .as_contours()
                 .ok_or_else(|| "Area requires Contour input".to_string())?;
-            let area = if contours.is_empty() {
-                0.0
-            } else {
-                view_buffer::geometry::measures::area(&contours[0], *signed)
-            };
-            Ok(NodeOutput::from_scalar(area))
+            let areas: Vec<f64> = contours
+                .iter()
+                .map(|c| view_buffer::geometry::measures::area(c, *signed))
+                .collect();
+            Ok(NodeOutput::from_vector(areas))
         }
         GeometryOp::Perimeter => {
             let contours = input
                 .as_contours()
                 .ok_or_else(|| "Perimeter requires Contour input".to_string())?;
-            let perimeter = if contours.is_empty() {
-                0.0
-            } else {
-                view_buffer::geometry::measures::perimeter(&contours[0])
-            };
-            Ok(NodeOutput::from_scalar(perimeter))
+            let perimeters: Vec<f64> = contours
+                .iter()
+                .map(|c| view_buffer::geometry::measures::perimeter(c))
+                .collect();
+            Ok(NodeOutput::from_vector(perimeters))
         }
         GeometryOp::Centroid => {
             let contours = input
                 .as_contours()
                 .ok_or_else(|| "Centroid requires Contour input".to_string())?;
-            let (cx, cy) = if contours.is_empty() {
-                (0.0, 0.0)
-            } else {
-                let pt = view_buffer::geometry::measures::centroid(&contours[0]);
-                (pt.x, pt.y)
-            };
-            Ok(NodeOutput::from_vector(vec![cx, cy]))
+            // Flat interleaved: [cx₀, cy₀, cx₁, cy₁, ...]
+            let mut coords = Vec::with_capacity(contours.len() * 2);
+            for c in contours.iter() {
+                let pt = view_buffer::geometry::measures::centroid(c);
+                coords.push(pt.x);
+                coords.push(pt.y);
+            }
+            Ok(NodeOutput::from_vector(coords))
         }
         GeometryOp::BoundingBox => {
             let contours = input
                 .as_contours()
                 .ok_or_else(|| "BoundingBox requires Contour input".to_string())?;
-            let bbox = if contours.is_empty() || contours[0].bounding_box().is_none() {
-                vec![0.0, 0.0, 0.0, 0.0]
-            } else {
-                let bb = contours[0].bounding_box().unwrap();
-                vec![bb.x, bb.y, bb.width, bb.height]
-            };
-            Ok(NodeOutput::from_vector(bbox))
+            // Flat interleaved: [x₀, y₀, w₀, h₀, x₁, y₁, w₁, h₁, ...]
+            let mut coords = Vec::with_capacity(contours.len() * 4);
+            for c in contours.iter() {
+                match c.bounding_box() {
+                    Some(bb) => coords.extend_from_slice(&[bb.x, bb.y, bb.width, bb.height]),
+                    None => coords.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]),
+                }
+            }
+            Ok(NodeOutput::from_vector(coords))
         }
         GeometryOp::Translate { dx, dy } => {
             let contours = input
