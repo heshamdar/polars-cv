@@ -301,7 +301,7 @@ class TestSeamlessPipeline:
 
         - resized: Buffer → numpy
         - contours: Contour → native list[struct]
-        - area: Scalar → native float
+        - area: Vector (one value per contour) → native list[float]
         """
         img_pipe = (
             Pipeline().source("image_bytes").resize(height=50, width=50).grayscale()
@@ -317,14 +317,14 @@ class TestSeamlessPipeline:
         )
         contours = pl.col("image").cv.pipe(contour_pipe).alias("contours")
 
-        # Stats pipeline: extract contour then compute area
+        # Stats pipeline: extract contours then compute per-contour areas
         stats_pipe = (
             Pipeline()
             .source("image_bytes")
             .grayscale()
             .threshold(128)
             .extract_contours()
-            .area()  # Contour → Scalar
+            .area()  # Contour → Vector (one area per contour)
         )
         area = pl.col("image").cv.pipe(stats_pipe).alias("area")
 
@@ -336,7 +336,7 @@ class TestSeamlessPipeline:
             {
                 "resized": "numpy",  # Buffer → Binary
                 "contours": "native",  # Contour → List[Struct]
-                "area": "native",  # Scalar → Float64
+                "area": "native",  # Vector → List[Float64]
             }
         )
 
@@ -353,9 +353,11 @@ class TestSeamlessPipeline:
         first_exterior = contours_series.list.get(0).struct.field("exterior")[0]
         assert first_exterior is not None
 
-        area_val = result["outputs"].struct.field("area")[0]
-        assert isinstance(area_val, float)
-        assert area_val > 0  # Square should have positive area
+        # area() measures every extracted contour: one value per contour.
+        area_vals = result["outputs"].struct.field("area")[0]
+        assert area_vals is not None
+        assert len(area_vals) == contours_series.list.len()[0]
+        assert all(v > 0 for v in area_vals)
 
     def test_domain_validation_error(self) -> None:
         """
@@ -369,8 +371,8 @@ class TestSeamlessPipeline:
                 height=50, width=50
             )
 
-    def test_area_returns_scalar_directly(self, sample_df: pl.DataFrame) -> None:
-        """Scalar outputs should return as native Float64, not Binary."""
+    def test_area_returns_per_contour_list(self, sample_df: pl.DataFrame) -> None:
+        """area() yields one value per extracted contour as native List(Float64)."""
         pipe = (
             Pipeline()
             .source("image_bytes")
@@ -384,11 +386,13 @@ class TestSeamlessPipeline:
             area=pl.col("image").cv.pipe(pipe).sink("native")
         )
 
-        # Should be Float64, not Binary
-        assert result["area"].dtype == pl.Float64
-        # Area should be positive (the white square has area)
-        assert result["area"][0] is not None
-        assert result["area"][0] > 0
+        # Vector domain: List(Float64), not Binary and not a bare scalar.
+        assert result["area"].dtype == pl.List(pl.Float64)
+        areas = result["area"][0]
+        assert areas is not None
+        assert len(areas) > 0
+        # Every measured contour has positive area.
+        assert all(v > 0 for v in areas)
 
     def test_rasterize_after_extract_produces_buffer(
         self, sample_df: pl.DataFrame
