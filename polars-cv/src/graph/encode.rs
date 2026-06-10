@@ -75,7 +75,8 @@ pub(crate) fn execute_geometry_op(
                     *anti_alias,
                 );
                 for c in &contours[1..] {
-                    let overlay = rasterize(c, *width, *height, *fill_value, *background, *anti_alias);
+                    let overlay =
+                        rasterize(c, *width, *height, *fill_value, *background, *anti_alias);
                     canvas = BinaryOp::Maximum.execute(&canvas, &overlay);
                 }
                 Ok(NodeOutput::from_buffer(canvas))

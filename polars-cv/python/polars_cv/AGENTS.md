@@ -43,7 +43,13 @@ pipe = Pipeline().source("image_bytes").channel_select(index=0)
 pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
 pipe = Pipeline().source("image_bytes").sobel(axis="x")
 pipe = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
-pipe = Pipeline().source("image_bytes", on_error="null")  # graceful error handling
+pipe = Pipeline().source("image_bytes", on_error="null")  # null this source's decode errors
+pipe = Pipeline().source("image_bytes").resize(height=224, width=224).on_error("null")
+# ^ graph-level per-row policy: "raise" (default) | "null" | "null_with_message".
+#   "null" nulls all outputs of a failing row (decode, op, or encode errors);
+#   "null_with_message" additionally adds a reserved `_error` string field to
+#   the output struct. Composed pipelines must agree on the policy
+#   (PipelineGraph._to_dict raises on conflicts).
 ```
 
 Key internal state tracked on each Pipeline:

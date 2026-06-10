@@ -303,7 +303,9 @@ impl<'a> ParamCol<'a> {
             },
             TypedCol::I64(ca) => ca.get(idx),
             TypedCol::F32(ca) => match ca.get(idx) {
-                Some(v) => Some(float_to_i64(v as f64).ok_or_else(|| self.cast_err(row_idx, "i64"))?),
+                Some(v) => {
+                    Some(float_to_i64(v as f64).ok_or_else(|| self.cast_err(row_idx, "i64"))?)
+                }
                 None => None,
             },
             TypedCol::F64(ca) => match ca.get(idx) {

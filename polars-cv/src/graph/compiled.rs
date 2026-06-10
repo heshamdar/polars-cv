@@ -41,7 +41,7 @@ use super::decode::{
     get_binary_row_buffer, null_row_result_for_spec, pad_buffer,
 };
 use super::encode::{encode_node_output, execute_geometry_op};
-use super::types::{OutputSpec, OutputValue, RowResult, UnifiedGraph};
+use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
 
 /// The exact kwargs a graph was compiled from. Stored on the compiled graph
 /// so cache hits can be validated by full equality, never by hash alone.
@@ -70,6 +70,9 @@ pub struct CompiledGraph {
     /// Expression column name → absolute input slot (for ops that carry the
     /// column *name* through a view-buffer DTO, e.g. `label_reduce`).
     name_to_slot: HashMap<String, usize>,
+    /// Nodes whose source declared `on_error: "null"`: their decode errors
+    /// become a null node output instead of failing the row.
+    source_null_nodes: std::collections::HashSet<String>,
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
@@ -101,6 +104,33 @@ impl CompiledGraph {
 
         bind_graph_params(&mut graph, &name_to_slot)?;
 
+        // Parse the per-source error setting once at the edge (the executor
+        // checks a set membership instead of comparing strings per row).
+        let mut source_null_nodes = std::collections::HashSet::new();
+        for (node_id, node) in &graph.nodes {
+            match node.source.on_error.as_str() {
+                "raise" => {}
+                "null" => {
+                    source_null_nodes.insert(node_id.clone());
+                }
+                other => {
+                    return Err(polars_err!(ComputeError:
+                        "Unknown source on_error value '{}' for node '{}' (expected 'raise' or 'null')",
+                        other, node_id
+                    ))
+                }
+            }
+        }
+
+        // `_error` is reserved for the error-message field of the
+        // null_with_message policy; an output alias would collide with it.
+        if graph.on_error == RowErrorPolicy::NullWithMessage && graph.outputs.contains_key("_error")
+        {
+            return Err(polars_err!(ComputeError:
+                "Output alias '_error' is reserved when on_error='null_with_message'"
+            ));
+        }
+
         // Resolve all-literal ops once; anything slot-bound re-resolves per row.
         let empty_ctx = ParamCtx::empty();
         let mut resolvers: HashMap<String, Vec<OpResolver>> =
@@ -124,6 +154,7 @@ impl CompiledGraph {
             graph,
             resolvers,
             name_to_slot,
+            source_null_nodes,
             key: GraphKwargsKey {
                 graph_json: graph_json.to_string(),
                 expr_column_names: expr_column_names.to_vec(),
@@ -150,10 +181,7 @@ impl CompiledGraph {
         let state = ExecState {
             inputs,
             ctx: ParamCtx::from_inputs(inputs),
-            resolved_outputs: resolved_output_specs(
-                &self.graph,
-                inputs.first().map(|s| s.dtype()),
-            ),
+            resolved_outputs: resolved_output_specs(&self.graph, inputs.first().map(|s| s.dtype())),
         };
 
         let mut results: HashMap<String, Vec<RowResult>> = HashMap::new();
@@ -163,8 +191,8 @@ impl CompiledGraph {
         let batch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.execute_rows(&state, len, &mut results)
         }));
-        match batch_result {
-            Ok(Ok(())) => {}
+        let error_messages = match batch_result {
+            Ok(Ok(messages)) => messages,
             Ok(Err(msg)) => {
                 return Err(polars_err!(ComputeError : "Pipeline execution failed: {}", msg));
             }
@@ -178,18 +206,25 @@ impl CompiledGraph {
                 };
                 return Err(polars_err!(ComputeError : "Pipeline batch failed: {}", panic_msg));
             }
-        }
+        };
 
-        if self.graph.is_single_output() {
+        let with_message = self.graph.on_error == RowErrorPolicy::NullWithMessage;
+        if self.graph.is_single_output() && !with_message {
             let (_, spec) = &state.resolved_outputs[0];
             let data = results.get("_output").unwrap();
             build_series_from_spec(inputs[0].name().clone(), spec, data)
         } else {
-            let mut fields: Vec<Series> = Vec::with_capacity(state.resolved_outputs.len());
+            let mut fields: Vec<Series> = Vec::with_capacity(state.resolved_outputs.len() + 1);
             for (alias, spec) in &state.resolved_outputs {
                 let data = results.get(alias).unwrap();
                 let field_series = build_series_from_spec(PlSmallStr::from_str(alias), spec, data)?;
                 fields.push(field_series);
+            }
+            if with_message {
+                fields.push(Series::new(
+                    PlSmallStr::from_static("_error"),
+                    error_messages,
+                ));
             }
             let output_name = inputs[0].name().clone();
             StructChunked::from_series(output_name, len, fields.iter()).map(|sc| sc.into_series())
@@ -198,22 +233,69 @@ impl CompiledGraph {
 
     /// The per-row loop: decode sources, run ops, encode outputs.
     ///
-    /// Errors are `String` so the surrounding `catch_unwind`/`PolarsError`
-    /// wrapping stays in one place.
+    /// Applies the graph's [`RowErrorPolicy`] to per-row errors and returns
+    /// one error-message slot per row when the policy is `NullWithMessage`
+    /// (an empty Vec otherwise). Errors are `String` so the surrounding
+    /// `catch_unwind`/`PolarsError` wrapping stays in one place.
     fn execute_rows(
         &self,
         state: &ExecState<'_>,
         len: usize,
         results: &mut HashMap<String, Vec<RowResult>>,
-    ) -> Result<(), String> {
-        let order = self.graph.topological_order();
-        let inputs = state.inputs;
-        let ctx = &state.ctx;
+    ) -> Result<Vec<Option<String>>, String> {
+        let policy = self.graph.on_error;
+        let with_message = policy == RowErrorPolicy::NullWithMessage;
+        let mut error_messages: Vec<Option<String>> = if with_message {
+            Vec::with_capacity(len)
+        } else {
+            Vec::new()
+        };
         // Allocated once and reused across rows/nodes to avoid per-row churn.
         let mut node_outputs: HashMap<String, NodeOutput> = HashMap::new();
         let mut dto_scratch: Vec<Cow<'_, ViewDto>> = Vec::new();
         for row_idx in 0..len {
             node_outputs.clear();
+            let row_result =
+                self.execute_one_row(state, row_idx, &mut node_outputs, &mut dto_scratch, results);
+            match row_result {
+                Ok(()) => {
+                    if with_message {
+                        error_messages.push(None);
+                    }
+                }
+                Err(msg) => match policy {
+                    RowErrorPolicy::Raise => return Err(msg),
+                    RowErrorPolicy::Null | RowErrorPolicy::NullWithMessage => {
+                        // All-or-nothing per row: drop anything this row may
+                        // have pushed before failing, then null every output.
+                        for (alias, spec) in &state.resolved_outputs {
+                            let rows = results.get_mut(alias).unwrap();
+                            rows.truncate(row_idx);
+                            rows.push(null_row_result_for_spec(spec));
+                        }
+                        if with_message {
+                            error_messages.push(Some(msg));
+                        }
+                    }
+                },
+            }
+        }
+        Ok(error_messages)
+    }
+
+    /// Execute every node and encode every output for one row.
+    fn execute_one_row<'g>(
+        &'g self,
+        state: &ExecState<'_>,
+        row_idx: usize,
+        node_outputs: &mut HashMap<String, NodeOutput>,
+        dto_scratch: &mut Vec<Cow<'g, ViewDto>>,
+        results: &mut HashMap<String, Vec<RowResult>>,
+    ) -> Result<(), String> {
+        let order = self.graph.topological_order();
+        let inputs = state.inputs;
+        let ctx = &state.ctx;
+        {
             for node_id in order {
                 let node = match self.graph.nodes.get(node_id) {
                     Some(n) => n,
@@ -221,7 +303,7 @@ impl CompiledGraph {
                 };
                 let has_column_binding = self.graph.column_bindings.contains_key(node_id);
                 let node_input: Option<NodeOutput> = if has_column_binding {
-                    let on_error_null = node.source.on_error == "null";
+                    let on_error_null = self.source_null_nodes.contains(node_id);
                     let decode_result: Result<Option<NodeOutput>, String> = (|| {
                         let col_idx = self
                             .graph
@@ -401,7 +483,8 @@ impl CompiledGraph {
                                 }
                             }
                         }
-                    })();
+                    })(
+                    );
                     match decode_result {
                         Ok(output) => output,
                         Err(_e) if on_error_null => None,
@@ -421,14 +504,10 @@ impl CompiledGraph {
                         for resolver in resolvers {
                             match resolver {
                                 OpResolver::Static(dto) => dto_scratch.push(Cow::Borrowed(dto)),
-                                OpResolver::Dynamic(spec) => {
-                                    match resolve_op(spec, row_idx, ctx) {
-                                        Ok(dto) => dto_scratch.push(Cow::Owned(dto)),
-                                        Err(e) => {
-                                            return Err(format!("Op resolution error: {e}"))
-                                        }
-                                    }
-                                }
+                                OpResolver::Dynamic(spec) => match resolve_op(spec, row_idx, ctx) {
+                                    Ok(dto) => dto_scratch.push(Cow::Owned(dto)),
+                                    Err(e) => return Err(format!("Op resolution error: {e}")),
+                                },
                             }
                         }
                     }
@@ -451,7 +530,7 @@ impl CompiledGraph {
                         Ok(NodeOutput::from_buffer(result))
                     }
                     let mut pending_buffer_ops: Vec<ViewDto> = Vec::new();
-                    for view_dto in &dto_scratch {
+                    for view_dto in dto_scratch.iter() {
                         match view_dto.as_ref() {
                             ViewDto::Geometry(geo_op) => {
                                 current_output =
@@ -823,18 +902,18 @@ impl CompiledGraph {
                                         )
                                     })?;
                                 let contour_col = ctx.col(*slot).map_err(|e| e.to_string())?;
-                                let contour_value =
-                                    contour_col.get_any(row_idx).map_err(|e| {
-                                        format!(
-                                            "LabelReduce failed to read contours at row {row_idx}: {e}"
-                                        )
-                                    })?;
+                                let contour_value = contour_col.get_any(row_idx).map_err(|e| {
+                                    format!(
+                                        "LabelReduce failed to read contours at row {row_idx}: {e}"
+                                    )
+                                })?;
                                 if contour_value.is_null() {
                                     current_output = NodeOutput::from_vector(Vec::new());
                                     continue;
                                 }
-                                let contours = parse_contour_list(&contour_value)
-                                    .map_err(|e| format!("LabelReduce contour parsing failed: {e}"))?;
+                                let contours = parse_contour_list(&contour_value).map_err(|e| {
+                                    format!("LabelReduce contour parsing failed: {e}")
+                                })?;
                                 let parsed_reduction = parse_label_reduction(reduction)?;
                                 let parsed_region_mode = parse_label_region_mode(region_mode)?;
                                 let grid = buffer_to_grid(current_buf)?;
@@ -952,7 +1031,9 @@ impl CompiledGraph {
                             let row_result = match encoded {
                                 OutputValue::Binary(bytes) => RowResult::Binary(Some(bytes)),
                                 OutputValue::Scalar(val) => RowResult::Scalar(Some(val)),
-                                OutputValue::Vector(vals) => RowResult::Vector(Some((*vals).clone())),
+                                OutputValue::Vector(vals) => {
+                                    RowResult::Vector(Some((*vals).clone()))
+                                }
                                 OutputValue::Contours(contours) => {
                                     RowResult::Contours(Some((*contours).clone()))
                                 }
@@ -1032,9 +1113,9 @@ fn bind_graph_params(
 /// Rewrite one `Expr` param to its bound `Slot` form (literals untouched).
 fn bind_param(p: &mut ParamValue, name_to_slot: &HashMap<String, usize>) -> PolarsResult<()> {
     if let ParamValue::Expr { col, .. } = p {
-        let name = col.as_deref().ok_or_else(
-            || polars_err!(ComputeError: "Expression parameter missing column name"),
-        )?;
+        let name = col
+            .as_deref()
+            .ok_or_else(|| polars_err!(ComputeError: "Expression parameter missing column name"))?;
         let idx = name_to_slot.get(name).ok_or_else(|| {
             polars_err!(ComputeError:
                 "Column '{}' not found in expression inputs", name
@@ -1176,9 +1257,7 @@ pub(crate) fn get_or_compile(
 
     let mut cache = graph_cache().lock().unwrap();
     let already_present = cache.iter().any(|(h, c)| {
-        *h == hash
-            && c.key.graph_json == graph_json
-            && c.key.expr_column_names == expr_column_names
+        *h == hash && c.key.graph_json == graph_json && c.key.expr_column_names == expr_column_names
     });
     if !already_present {
         cache.insert(0, (hash, compiled.clone()));
@@ -1397,10 +1476,7 @@ mod tests {
     #[test]
     fn static_ops_are_precompiled_and_dynamic_are_not() {
         let compiled = CompiledGraph::compile(SIMPLE_GRAPH, &[]).unwrap();
-        assert!(matches!(
-            compiled.resolvers["n0"][0],
-            OpResolver::Static(_)
-        ));
+        assert!(matches!(compiled.resolvers["n0"][0], OpResolver::Static(_)));
 
         let compiled = CompiledGraph::compile(DYNAMIC_GRAPH, &["f".to_string()]).unwrap();
         assert!(matches!(
