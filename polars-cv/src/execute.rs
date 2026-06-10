@@ -12,7 +12,7 @@ use view_buffer::{
     ImageOpKind, InterpolationType, NormalizeMethod, ViewBuffer, ViewDto, ViewOp,
 };
 
-use crate::params::ParamValue;
+use crate::params::{ParamCtx, ParamValue};
 use crate::pipeline::{OpSpec, PipelineSpec};
 
 /// Decode a contour source by parsing the struct and rasterizing to ViewBuffer.
@@ -20,13 +20,13 @@ pub fn decode_contour_source(
     value: &AnyValue,
     row_idx: usize,
     pipeline: &PipelineSpec,
-    expr_columns: &HashMap<String, &Series>,
+    ctx: &ParamCtx,
 ) -> PolarsResult<ViewBuffer> {
     // Parse the contour from the struct
     let contour = parse_contour_from_anyvalue(value)?;
 
     // Resolve dimensions
-    let (width, height) = resolve_contour_dimensions(row_idx, pipeline, expr_columns)?;
+    let (width, height) = resolve_contour_dimensions(row_idx, pipeline, ctx)?;
 
     // Get fill and background values
     let fill_value = pipeline.source.fill_value;
@@ -207,7 +207,7 @@ fn extract_f64(value: &AnyValue) -> PolarsResult<f64> {
 fn resolve_contour_dimensions(
     row_idx: usize,
     pipeline: &PipelineSpec,
-    expr_columns: &HashMap<String, &Series>,
+    ctx: &ParamCtx,
 ) -> PolarsResult<(u32, u32)> {
     // Check for shape_pipeline first (not yet implemented - just error)
     if pipeline.source.shape_pipeline.is_some() {
@@ -222,14 +222,14 @@ fn resolve_contour_dimensions(
         .width
         .as_ref()
         .ok_or_else(|| polars_err!(ComputeError: "Contour source requires 'width' parameter"))?
-        .resolve_usize(row_idx, expr_columns)? as u32;
+        .resolve_usize(row_idx, ctx)? as u32;
 
     let height = pipeline
         .source
         .height
         .as_ref()
         .ok_or_else(|| polars_err!(ComputeError: "Contour source requires 'height' parameter"))?
-        .resolve_usize(row_idx, expr_columns)? as u32;
+        .resolve_usize(row_idx, ctx)? as u32;
 
     Ok((width, height))
 }
@@ -423,7 +423,7 @@ pub const KNOWN_OPS: &[&str] = &[
 pub fn resolve_op(
     op_spec: &OpSpec,
     row_idx: usize,
-    expr_columns: &HashMap<String, &Series>,
+    ctx: &ParamCtx,
 ) -> PolarsResult<ViewDto> {
     match op_spec.op.as_str() {
         // View operations
@@ -435,7 +435,7 @@ pub fn resolve_op(
             let shape_params = get_param(&op_spec.params, "shape")?.as_param_list()?;
             let shape: Vec<usize> = shape_params
                 .iter()
-                .map(|p| p.resolve_usize(row_idx, expr_columns))
+                .map(|p| p.resolve_usize(row_idx, ctx))
                 .collect::<PolarsResult<_>>()?;
             Ok(ViewDto::View(ViewOp::Reshape(shape)))
         }
@@ -446,9 +446,9 @@ pub fn resolve_op(
         "crop" => {
             // Allow negative values for top/left and clamp to 0
             // This makes the API more forgiving and follows NumPy/OpenCV conventions
-            let top_raw = get_param(&op_spec.params, "top")?.resolve_i64(row_idx, expr_columns)?;
+            let top_raw = get_param(&op_spec.params, "top")?.resolve_i64(row_idx, ctx)?;
             let left_raw =
-                get_param(&op_spec.params, "left")?.resolve_i64(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "left")?.resolve_i64(row_idx, ctx)?;
 
             // Clamp negative values to 0
             let top = top_raw.max(0) as usize;
@@ -459,7 +459,7 @@ pub fn resolve_op(
                 .params
                 .get("height")
                 .map(|p| {
-                    let h = p.resolve_i64(row_idx, expr_columns)?;
+                    let h = p.resolve_i64(row_idx, ctx)?;
                     // Clamp negative height to 0 (will result in empty crop)
                     Ok::<usize, PolarsError>(h.max(0) as usize)
                 })
@@ -468,7 +468,7 @@ pub fn resolve_op(
                 .params
                 .get("width")
                 .map(|p| {
-                    let w = p.resolve_i64(row_idx, expr_columns)?;
+                    let w = p.resolve_i64(row_idx, ctx)?;
                     // Clamp negative width to 0 (will result in empty crop)
                     Ok::<usize, PolarsError>(w.max(0) as usize)
                 })
@@ -491,17 +491,17 @@ pub fn resolve_op(
         // Compute operations
         "cast" => {
             let dtype_str = get_param(&op_spec.params, "dtype")?.resolve_string()?;
-            let dtype = parse_dtype(&dtype_str)?;
+            let dtype = parse_dtype(dtype_str)?;
             Ok(ViewDto::Compute(ComputeOp::Cast(dtype)))
         }
         "scale" => {
             let factor =
-                get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, ctx)?;
             Ok(ViewDto::Compute(ComputeOp::Scale(factor)))
         }
         "normalize" => {
             let method_str = get_param(&op_spec.params, "method")?.resolve_string()?;
-            let method = match method_str.as_str() {
+            let method = match method_str {
                 "minmax" => NormalizeMethod::MinMax,
                 "zscore" => NormalizeMethod::ZScore,
                 "preset" => {
@@ -528,8 +528,8 @@ pub fn resolve_op(
             Ok(ViewDto::Compute(ComputeOp::Normalize(method)))
         }
         "clamp" => {
-            let min = get_param(&op_spec.params, "min")?.resolve_f32(row_idx, expr_columns)?;
-            let max = get_param(&op_spec.params, "max")?.resolve_f32(row_idx, expr_columns)?;
+            let min = get_param(&op_spec.params, "min")?.resolve_f32(row_idx, ctx)?;
+            let max = get_param(&op_spec.params, "max")?.resolve_f32(row_idx, ctx)?;
             Ok(ViewDto::Compute(ComputeOp::Clamp { min, max }))
         }
         "relu" => Ok(ViewDto::Compute(ComputeOp::Relu)),
@@ -537,10 +537,10 @@ pub fn resolve_op(
         // Image operations
         "resize" => {
             let height =
-                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, expr_columns)?;
-            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
+            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(&filter_str)?;
+            let filter = parse_filter(filter_str)?;
 
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Resize {
@@ -552,11 +552,11 @@ pub fn resolve_op(
         }
         "resize_scale" => {
             let scale_x =
-                get_param(&op_spec.params, "scale_x")?.resolve_f32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "scale_x")?.resolve_f32(row_idx, ctx)?;
             let scale_y =
-                get_param(&op_spec.params, "scale_y")?.resolve_f32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "scale_y")?.resolve_f32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(&filter_str)?;
+            let filter = parse_filter(filter_str)?;
 
             Ok(ViewDto::ResizeScale {
                 scale_x,
@@ -566,32 +566,32 @@ pub fn resolve_op(
         }
         "resize_to_height" => {
             let height =
-                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(&filter_str)?;
+            let filter = parse_filter(filter_str)?;
 
             Ok(ViewDto::ResizeToHeight { height, filter })
         }
         "resize_to_width" => {
-            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, expr_columns)?;
+            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(&filter_str)?;
+            let filter = parse_filter(filter_str)?;
 
             Ok(ViewDto::ResizeToWidth { width, filter })
         }
         "resize_max" => {
             let max_size =
-                get_param(&op_spec.params, "max_size")?.resolve_u32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "max_size")?.resolve_u32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(&filter_str)?;
+            let filter = parse_filter(filter_str)?;
 
             Ok(ViewDto::ResizeMax { max_size, filter })
         }
         "resize_min" => {
             let min_size =
-                get_param(&op_spec.params, "min_size")?.resolve_u32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "min_size")?.resolve_u32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(&filter_str)?;
+            let filter = parse_filter(filter_str)?;
 
             Ok(ViewDto::ResizeMin { min_size, filter })
         }
@@ -600,14 +600,14 @@ pub fn resolve_op(
         "pad" => {
             use view_buffer::ops::dto::PadMode;
 
-            let top = get_param(&op_spec.params, "top")?.resolve_u32(row_idx, expr_columns)?;
+            let top = get_param(&op_spec.params, "top")?.resolve_u32(row_idx, ctx)?;
             let bottom =
-                get_param(&op_spec.params, "bottom")?.resolve_u32(row_idx, expr_columns)?;
-            let left = get_param(&op_spec.params, "left")?.resolve_u32(row_idx, expr_columns)?;
-            let right = get_param(&op_spec.params, "right")?.resolve_u32(row_idx, expr_columns)?;
-            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "bottom")?.resolve_u32(row_idx, ctx)?;
+            let left = get_param(&op_spec.params, "left")?.resolve_u32(row_idx, ctx)?;
+            let right = get_param(&op_spec.params, "right")?.resolve_u32(row_idx, ctx)?;
+            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
             let mode_str = get_param(&op_spec.params, "mode")?.resolve_string()?;
-            let mode = match mode_str.as_str() {
+            let mode = match mode_str {
                 "constant" => PadMode::Constant,
                 "edge" => PadMode::Edge,
                 "reflect" => PadMode::Reflect,
@@ -628,11 +628,11 @@ pub fn resolve_op(
             use view_buffer::ops::dto::PadPosition;
 
             let height =
-                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, expr_columns)?;
-            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, expr_columns)?;
-            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
+            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
+            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
             let position_str = get_param(&op_spec.params, "position")?.resolve_string()?;
-            let position = match position_str.as_str() {
+            let position = match position_str {
                 "center" => PadPosition::Center,
                 "top-left" => PadPosition::TopLeft,
                 "bottom-right" => PadPosition::BottomRight,
@@ -648,9 +648,9 @@ pub fn resolve_op(
         }
         "letterbox" => {
             let height =
-                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, expr_columns)?;
-            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, expr_columns)?;
-            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
+            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
+            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
 
             Ok(ViewDto::Letterbox {
                 height,
@@ -662,19 +662,19 @@ pub fn resolve_op(
             kind: ImageOpKind::Grayscale,
         })),
         "threshold" => {
-            let value = get_param(&op_spec.params, "value")?.resolve_f64(row_idx, expr_columns)?;
+            let value = get_param(&op_spec.params, "value")?.resolve_f64(row_idx, ctx)?;
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Threshold(value),
             }))
         }
         "blur" => {
-            let sigma = get_param(&op_spec.params, "sigma")?.resolve_f32(row_idx, expr_columns)?;
+            let sigma = get_param(&op_spec.params, "sigma")?.resolve_f32(row_idx, ctx)?;
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Blur { sigma },
             }))
         }
         "rotate" => {
-            let angle = get_param(&op_spec.params, "angle")?.resolve_f32(row_idx, expr_columns)?;
+            let angle = get_param(&op_spec.params, "angle")?.resolve_f32(row_idx, ctx)?;
             let expand = op_spec
                 .params
                 .get("expand")
@@ -785,9 +785,9 @@ pub fn resolve_op(
                 .map_err(|_| polars_err!(ComputeError: "warp_affine: matrix conversion failed"))?;
 
             let output_height =
-                get_param(&op_spec.params, "output_height")?.resolve_u32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "output_height")?.resolve_u32(row_idx, ctx)?;
             let output_width =
-                get_param(&op_spec.params, "output_width")?.resolve_u32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "output_width")?.resolve_u32(row_idx, ctx)?;
 
             let interp_str = op_spec
                 .params
@@ -850,7 +850,7 @@ pub fn resolve_op(
             let hash_size = op_spec
                 .params
                 .get("hash_size")
-                .map(|p| p.resolve_usize(row_idx, expr_columns).unwrap_or(64) as u32)
+                .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(64) as u32)
                 .unwrap_or(64);
 
             Ok(ViewDto::PerceptualHash(
@@ -861,18 +861,18 @@ pub fn resolve_op(
         // Geometry operations
         "rasterize" => {
             let width =
-                get_param(&op_spec.params, "width")?.resolve_usize(row_idx, expr_columns)? as u32;
+                get_param(&op_spec.params, "width")?.resolve_usize(row_idx, ctx)? as u32;
             let height =
-                get_param(&op_spec.params, "height")?.resolve_usize(row_idx, expr_columns)? as u32;
+                get_param(&op_spec.params, "height")?.resolve_usize(row_idx, ctx)? as u32;
             let fill_value = op_spec
                 .params
                 .get("fill_value")
-                .map(|p| p.resolve_usize(row_idx, expr_columns).unwrap_or(255) as u8)
+                .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(255) as u8)
                 .unwrap_or(255);
             let background = op_spec
                 .params
                 .get("background")
-                .map(|p| p.resolve_usize(row_idx, expr_columns).unwrap_or(0) as u8)
+                .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(0) as u8)
                 .unwrap_or(0);
             let anti_alias = op_spec
                 .params
@@ -968,13 +968,13 @@ pub fn resolve_op(
 
         // Geometry transforms
         "contour_translate" => {
-            let dx = get_param(&op_spec.params, "dx")?.resolve_f64(row_idx, expr_columns)?;
-            let dy = get_param(&op_spec.params, "dy")?.resolve_f64(row_idx, expr_columns)?;
+            let dx = get_param(&op_spec.params, "dx")?.resolve_f64(row_idx, ctx)?;
+            let dy = get_param(&op_spec.params, "dy")?.resolve_f64(row_idx, ctx)?;
             Ok(ViewDto::Geometry(GeometryOp::Translate { dx, dy }))
         }
         "contour_scale" => {
-            let sx = get_param(&op_spec.params, "sx")?.resolve_f64(row_idx, expr_columns)?;
-            let sy = get_param(&op_spec.params, "sy")?.resolve_f64(row_idx, expr_columns)?;
+            let sx = get_param(&op_spec.params, "sx")?.resolve_f64(row_idx, ctx)?;
+            let sy = get_param(&op_spec.params, "sy")?.resolve_f64(row_idx, ctx)?;
             Ok(ViewDto::Geometry(GeometryOp::Scale {
                 sx,
                 sy,
@@ -984,14 +984,14 @@ pub fn resolve_op(
         "contour_flip" => Ok(ViewDto::Geometry(GeometryOp::Flip)),
         "contour_simplify" => {
             let tolerance =
-                get_param(&op_spec.params, "tolerance")?.resolve_f64(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "tolerance")?.resolve_f64(row_idx, ctx)?;
             Ok(ViewDto::Geometry(GeometryOp::Simplify { tolerance }))
         }
         "contour_normalize" => {
             let ref_width =
-                get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, ctx)?;
             let ref_height =
-                get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, ctx)?;
             Ok(ViewDto::Geometry(GeometryOp::Normalize {
                 ref_width,
                 ref_height,
@@ -999,9 +999,9 @@ pub fn resolve_op(
         }
         "contour_to_absolute" => {
             let ref_width =
-                get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, ctx)?;
             let ref_height =
-                get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, ctx)?;
             Ok(ViewDto::Geometry(GeometryOp::ToAbsolute {
                 ref_width,
                 ref_height,
@@ -1010,77 +1010,77 @@ pub fn resolve_op(
 
         // Binary operations
         "add" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::Add,
                 other_node_id,
             })
         }
         "subtract" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::Subtract,
                 other_node_id,
             })
         }
         "multiply" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::Multiply,
                 other_node_id,
             })
         }
         "divide" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::Divide,
                 other_node_id,
             })
         }
         "blend" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::Blend,
                 other_node_id,
             })
         }
         "ratio" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::Ratio,
                 other_node_id,
             })
         }
         "maximum" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::Maximum,
                 other_node_id,
             })
         }
         "minimum" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::Minimum,
                 other_node_id,
             })
         }
         "bitwise_and" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::BitwiseAnd,
                 other_node_id,
             })
         }
         "bitwise_or" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::BitwiseOr,
                 other_node_id,
             })
         }
         "bitwise_xor" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let other_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             Ok(ViewDto::Binary {
                 op: BinaryOp::BitwiseXor,
                 other_node_id,
@@ -1103,7 +1103,7 @@ pub fn resolve_op(
             let axis = op_spec
                 .params
                 .get("axis")
-                .and_then(|p| p.resolve_usize(row_idx, expr_columns).ok());
+                .and_then(|p| p.resolve_usize(row_idx, ctx).ok());
             Ok(ViewDto::Reduction(ReductionOp::Max { axis }))
         }
         "reduce_min" => {
@@ -1111,7 +1111,7 @@ pub fn resolve_op(
             let axis = op_spec
                 .params
                 .get("axis")
-                .and_then(|p| p.resolve_usize(row_idx, expr_columns).ok());
+                .and_then(|p| p.resolve_usize(row_idx, ctx).ok());
             Ok(ViewDto::Reduction(ReductionOp::Min { axis }))
         }
         "reduce_mean" => {
@@ -1119,7 +1119,7 @@ pub fn resolve_op(
             let axis = op_spec
                 .params
                 .get("axis")
-                .and_then(|p| p.resolve_usize(row_idx, expr_columns).ok());
+                .and_then(|p| p.resolve_usize(row_idx, ctx).ok());
             Ok(ViewDto::Reduction(ReductionOp::Mean { axis }))
         }
         "reduce_std" => {
@@ -1127,27 +1127,27 @@ pub fn resolve_op(
             let axis = op_spec
                 .params
                 .get("axis")
-                .and_then(|p| p.resolve_usize(row_idx, expr_columns).ok());
+                .and_then(|p| p.resolve_usize(row_idx, ctx).ok());
             let ddof = op_spec
                 .params
                 .get("ddof")
-                .map(|p| p.resolve_usize(row_idx, expr_columns).unwrap_or(0) as u8)
+                .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(0) as u8)
                 .unwrap_or(0);
             Ok(ViewDto::Reduction(ReductionOp::Std { axis, ddof }))
         }
         "reduce_percentile" => {
             use view_buffer::ops::ReductionOp;
-            let q = get_param(&op_spec.params, "q")?.resolve_f64(row_idx, expr_columns)?;
+            let q = get_param(&op_spec.params, "q")?.resolve_f64(row_idx, ctx)?;
             Ok(ViewDto::Reduction(ReductionOp::Percentile { q }))
         }
         "reduce_argmax" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, expr_columns)?;
+            let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, ctx)?;
             Ok(ViewDto::Reduction(ReductionOp::ArgMax { axis }))
         }
         "reduce_argmin" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, expr_columns)?;
+            let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, ctx)?;
             Ok(ViewDto::Reduction(ReductionOp::ArgMin { axis }))
         }
         "extract_shape" => {
@@ -1156,6 +1156,10 @@ pub fn resolve_op(
         }
         "label_reduce" => {
             let contours_param = get_param(&op_spec.params, "contours")?;
+            // The contour column is referenced by *name* inside the ViewDto
+            // (a view-buffer type), so graph compilation deliberately leaves
+            // this param unbound; the executor maps the name to its input
+            // slot via `CompiledGraph::name_to_slot`.
             let contours_expr = match contours_param {
                 ParamValue::Expr { col: Some(col), .. } => col.clone(),
                 ParamValue::Expr { col: None, .. } => {
@@ -1163,7 +1167,7 @@ pub fn resolve_op(
                         ComputeError: "label_reduce requires a contour expression with a column key"
                     ))
                 }
-                ParamValue::Literal { .. } => {
+                ParamValue::Literal { .. } | ParamValue::Slot { .. } => {
                     return Err(polars_err!(
                         ComputeError: "label_reduce contours parameter must be a Polars expression"
                     ))
@@ -1174,17 +1178,17 @@ pub fn resolve_op(
                 .get("reduction")
                 .map(|p| p.resolve_string())
                 .transpose()?
-                .unwrap_or_else(|| "max".to_string());
+                .unwrap_or("max");
             let region_mode = op_spec
                 .params
                 .get("region_mode")
                 .map(|p| p.resolve_string())
                 .transpose()?
-                .unwrap_or_else(|| "interior".to_string());
+                .unwrap_or("interior");
             Ok(ViewDto::LabelReduce {
                 contours_expr,
-                reduction,
-                region_mode,
+                reduction: reduction.to_string(),
+                region_mode: region_mode.to_string(),
             })
         }
 
@@ -1197,12 +1201,12 @@ pub fn resolve_op(
                 // If it's a vector, those are the edges
                 (edges.len().saturating_sub(1), Some(edges))
             } else {
-                (bins_param.resolve_usize(row_idx, expr_columns)?, None)
+                (bins_param.resolve_usize(row_idx, ctx)?, None)
             };
 
             // Parse closed mode
             let closed_str = get_param(&op_spec.params, "closed")?.resolve_string()?;
-            let closed = match closed_str.as_str() {
+            let closed = match closed_str {
                 "left" => HistogramClosed::Left,
                 "right" => HistogramClosed::Right,
                 other => {
@@ -1214,7 +1218,7 @@ pub fn resolve_op(
 
             // Parse output mode
             let output_str = get_param(&op_spec.params, "output")?.resolve_string()?;
-            let output = match output_str.as_str() {
+            let output = match output_str {
                 "counts" => HistogramOutput::Counts,
                 "normalized" => HistogramOutput::Normalized,
                 "quantized" => HistogramOutput::Quantized,
@@ -1232,9 +1236,9 @@ pub fn resolve_op(
                 && op_spec.params.contains_key("range_max")
             {
                 let range_min =
-                    get_param(&op_spec.params, "range_min")?.resolve_f64(row_idx, expr_columns)?;
+                    get_param(&op_spec.params, "range_min")?.resolve_f64(row_idx, ctx)?;
                 let range_max =
-                    get_param(&op_spec.params, "range_max")?.resolve_f64(row_idx, expr_columns)?;
+                    get_param(&op_spec.params, "range_max")?.resolve_f64(row_idx, ctx)?;
                 Some((range_min, range_max))
             } else {
                 None
@@ -1256,7 +1260,7 @@ pub fn resolve_op(
         // Channel operations
         "channel_select" => {
             let index =
-                get_param(&op_spec.params, "index")?.resolve_usize(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "index")?.resolve_usize(row_idx, ctx)?;
             Ok(ViewDto::View(ViewOp::ChannelSelect { index }))
         }
         "channel_swap" => {
@@ -1284,11 +1288,11 @@ pub fn resolve_op(
         // Intensity operations
         "adjust_contrast" => {
             let factor =
-                get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, ctx)?;
             Ok(ViewDto::Compute(ComputeOp::AdjustContrast(factor)))
         }
         "adjust_gamma" => {
-            let gamma = get_param(&op_spec.params, "gamma")?.resolve_f32(row_idx, expr_columns)?;
+            let gamma = get_param(&op_spec.params, "gamma")?.resolve_f32(row_idx, ctx)?;
             Ok(ViewDto::Compute(ComputeOp::AdjustGamma(gamma)))
         }
         "invert" => Ok(ViewDto::Compute(ComputeOp::Invert)),
@@ -1299,9 +1303,9 @@ pub fn resolve_op(
 
             let from_str = get_param(&op_spec.params, "from_space")?.resolve_string()?;
             let to_str = get_param(&op_spec.params, "to_space")?.resolve_string()?;
-            let from = ColorSpace::from_str_name(&from_str)
+            let from = ColorSpace::from_str_name(from_str)
                 .ok_or_else(|| polars_err!(ComputeError: "Unknown color space: {}", from_str))?;
-            let to = ColorSpace::from_str_name(&to_str)
+            let to = ColorSpace::from_str_name(to_str)
                 .ok_or_else(|| polars_err!(ComputeError: "Unknown color space: {}", to_str))?;
             Ok(ViewDto::Color(ColorConvertOp { from, to }))
         }
@@ -1316,7 +1320,7 @@ pub fn resolve_op(
                     || polars_err!(ComputeError: "convolve2d requires 'kernel' as array of floats"),
                 )?;
             let ksize =
-                get_param(&op_spec.params, "ksize")?.resolve_usize(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "ksize")?.resolve_usize(row_idx, ctx)?;
             let normalize = op_spec
                 .params
                 .get("normalize")
@@ -1334,8 +1338,8 @@ pub fn resolve_op(
                 .get("border")
                 .map(|p| p.resolve_string())
                 .transpose()?
-                .unwrap_or_else(|| "replicate".to_string());
-            let border = match border_str.as_str() {
+                .unwrap_or("replicate");
+            let border = match border_str {
                 "replicate" => BorderMode::Replicate,
                 "zero" => BorderMode::Zero,
                 "reflect" => BorderMode::Reflect,
@@ -1350,11 +1354,11 @@ pub fn resolve_op(
             }))
         }
         "erode" => {
-            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, expr_columns)?;
+            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
             let iterations = op_spec
                 .params
                 .get("iterations")
-                .map(|p| p.resolve_u32(row_idx, expr_columns))
+                .map(|p| p.resolve_u32(row_idx, ctx))
                 .transpose()?
                 .unwrap_or(1);
             Ok(ViewDto::Image(ImageOp {
@@ -1362,11 +1366,11 @@ pub fn resolve_op(
             }))
         }
         "dilate" => {
-            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, expr_columns)?;
+            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
             let iterations = op_spec
                 .params
                 .get("iterations")
-                .map(|p| p.resolve_u32(row_idx, expr_columns))
+                .map(|p| p.resolve_u32(row_idx, ctx))
                 .transpose()?
                 .unwrap_or(1);
             Ok(ViewDto::Image(ImageOp {
@@ -1374,7 +1378,7 @@ pub fn resolve_op(
             }))
         }
         "morphology_gradient" => {
-            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, expr_columns)?;
+            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::MorphGradient { ksize },
             }))
@@ -1382,9 +1386,9 @@ pub fn resolve_op(
 
         "canny" => {
             let low_threshold =
-                get_param(&op_spec.params, "low_threshold")?.resolve_f32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "low_threshold")?.resolve_f32(row_idx, ctx)?;
             let high_threshold =
-                get_param(&op_spec.params, "high_threshold")?.resolve_f32(row_idx, expr_columns)?;
+                get_param(&op_spec.params, "high_threshold")?.resolve_f32(row_idx, ctx)?;
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Canny {
                     low_threshold,
@@ -1398,7 +1402,7 @@ pub fn resolve_op(
 
         // Mask operation
         "apply_mask" => {
-            let mask_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?;
+            let mask_node_id = get_param(&op_spec.params, "other_node")?.resolve_string()?.to_string();
             let invert = op_spec
                 .params
                 .get("invert")
@@ -1478,9 +1482,9 @@ mod known_ops_tests {
     /// the "Unknown operation" catch-all.
     #[test]
     fn known_ops_all_resolve() {
-        let cols: HashMap<String, &polars::prelude::Series> = HashMap::new();
+        let ctx = ParamCtx::empty();
         for name in KNOWN_OPS {
-            if let Err(e) = resolve_op(&op(name), 0, &cols) {
+            if let Err(e) = resolve_op(&op(name), 0, &ctx) {
                 let msg = e.to_string();
                 assert!(
                     !msg.contains("Unknown operation"),
@@ -1494,8 +1498,8 @@ mod known_ops_tests {
     /// registry can't silently accept bogus ops.
     #[test]
     fn unknown_op_is_rejected() {
-        let cols: HashMap<String, &polars::prelude::Series> = HashMap::new();
-        let err = resolve_op(&op("definitely_not_a_real_op"), 0, &cols)
+        let ctx = ParamCtx::empty();
+        let err = resolve_op(&op("definitely_not_a_real_op"), 0, &ctx)
             .expect_err("bogus op must not resolve");
         assert!(err.to_string().contains("Unknown operation"));
     }

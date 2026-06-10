@@ -608,6 +608,9 @@ class PipelineGraph:
             }
 
         graph_spec = {
+            # Wire-format version; the Rust side rejects versions newer than
+            # it understands instead of misparsing them.
+            "version": 1,
             "nodes": nodes_dict,
             "outputs": outputs_spec,
             "column_bindings": self._column_bindings,

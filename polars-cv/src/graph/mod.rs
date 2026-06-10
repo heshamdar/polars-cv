@@ -9,6 +9,9 @@
 #[path = "types.rs"]
 pub(crate) mod types;
 
+#[path = "compiled.rs"]
+pub(crate) mod compiled;
+
 #[path = "decode.rs"]
 pub(crate) mod decode;
 
@@ -16,5 +19,5 @@ pub(crate) mod decode;
 pub(crate) mod encode;
 
 // Re-exports for crate-level access
+pub(crate) use compiled::{get_or_compile, resolved_output_specs};
 pub(crate) use decode::dtype_for_output;
-pub use types::UnifiedGraph;

@@ -97,7 +97,7 @@ pub(crate) fn execute_geometry_op(
                 .ok_or_else(|| "Perimeter requires Contour input".to_string())?;
             let perimeters: Vec<f64> = contours
                 .iter()
-                .map(|c| view_buffer::geometry::measures::perimeter(c))
+                .map(view_buffer::geometry::measures::perimeter)
                 .collect();
             Ok(NodeOutput::from_vector(perimeters))
         }
