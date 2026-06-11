@@ -298,3 +298,48 @@ class TestGraphVersionField:
         df = pl.DataFrame({"img": [_png(4, 4)]})
         with pytest.raises(pl.exceptions.ComputeError, match="version"):
             df.with_columns(out=expr)
+
+
+@plugin_required
+class TestGraphStructureValidation:
+    """Malformed graphs must fail at compile time with clear errors."""
+
+    def _run_doctored(self, mutate):
+        import json
+
+        from polars.plugins import register_plugin_function
+
+        from polars_cv._graph import LIB_PATH, PipelineGraph
+
+        graph = PipelineGraph()
+        pipe = Pipeline().source("image_bytes").grayscale()
+        graph.add_node("n0", pipe, column=pl.col("img"))
+        graph.set_output("n0", "numpy")
+        spec = json.loads(graph._to_json())
+        # _to_json() alone doesn't run to_expr()'s column binding pass.
+        spec["column_bindings"] = {"n0": 0}
+        mutate(spec)
+        expr = register_plugin_function(
+            plugin_path=LIB_PATH,
+            function_name="vb_graph",
+            args=[pl.col("img")],
+            kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
+            is_elementwise=True,
+        )
+        df = pl.DataFrame({"img": [_png(4, 4)]})
+        return df.with_columns(out=expr)
+
+    def test_output_referencing_unknown_node_errors(self) -> None:
+        # Previously this silently produced an all-null output column.
+        def mutate(spec):
+            spec["outputs"]["_output"]["node"] = "typo"
+
+        with pytest.raises(pl.exceptions.ComputeError, match="unknown node 'typo'"):
+            self._run_doctored(mutate)
+
+    def test_unknown_source_format_errors_at_compile(self) -> None:
+        def mutate(spec):
+            spec["nodes"]["n0"]["source"]["format"] = "telegram"
+
+        with pytest.raises(pl.exceptions.ComputeError, match="unknown source format"):
+            self._run_doctored(mutate)
