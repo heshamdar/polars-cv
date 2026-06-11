@@ -36,6 +36,12 @@ pub struct SourceSpec {
     /// (string key/value pairs matching `cloud::CloudOptions::from_map`).
     #[serde(default)]
     pub cloud_options: Option<HashMap<String, String>>,
+    /// Explicit decode-scale assertion for image sources: the pipeline only
+    /// needs at least this many pixels on the image's long side. JPEG decode
+    /// uses IDCT scaling (1/8, 1/4, 1/2) to skip work; other formats decode
+    /// at full size.
+    #[serde(default)]
+    pub decode_max_size: Option<u32>,
     /// Whether to require contiguous data for list/array sources.
     /// If true and data is jagged, an error is raised.
     #[serde(default)]

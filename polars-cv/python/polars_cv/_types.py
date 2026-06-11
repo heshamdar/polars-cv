@@ -409,6 +409,9 @@ class SourceSpec:
     #   "raise" (default): propagate decode errors (fails the entire batch)
     #   "null": treat decode errors as null output for that row
     on_error: str = "raise"
+    # Explicit decode-scale assertion: the pipeline only needs this many
+    # pixels on the decoded image's long side (JPEG uses IDCT scaling).
+    decode_max_size: int | None = None
 
     def __eq__(self, other: object) -> bool:
         """Compare two SourceSpecs for equality."""
@@ -425,6 +428,7 @@ class SourceSpec:
             and self.cloud_options == other.cloud_options
             and self.require_contiguous == other.require_contiguous
             and self.on_error == other.on_error
+            and self.decode_max_size == other.decode_max_size
         )
 
     def __hash__(self) -> int:
@@ -441,6 +445,7 @@ class SourceSpec:
                 str(self.cloud_options) if self.cloud_options else None,
                 self.require_contiguous,
                 self.on_error,
+                self.decode_max_size,
             )
         )
 
@@ -466,6 +471,8 @@ class SourceSpec:
         # execution can authenticate remote reads.
         if self.format == SourceFormat.FILE_PATH and self.cloud_options is not None:
             result["cloud_options"] = self.cloud_options.to_dict()
+        if self.decode_max_size is not None:
+            result["decode_max_size"] = self.decode_max_size
         if self.on_error != "raise":
             result["on_error"] = self.on_error
         return result

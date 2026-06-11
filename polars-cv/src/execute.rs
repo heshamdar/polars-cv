@@ -234,13 +234,53 @@ fn resolve_contour_dimensions(
     Ok((width, height))
 }
 
+/// Decode a JPEG at a reduced IDCT scale sufficient for `max_size` pixels on
+/// the long side.
+///
+/// Picks the smallest of the decoder's supported scale factors (1/8, 1/4,
+/// 1/2, 1) whose output is >= `max_size` on at least one axis, so the long
+/// side never drops below `min(max_size, original)` — downstream resizes
+/// down to `max_size` never upscale. Returns `None` for non-JPEG bytes or
+/// pixel formats the scaled path does not cover (16-bit, CMYK); the caller
+/// falls back to the full decoder.
+fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
+    // JPEG SOI marker; anything else takes the regular decode path.
+    if bytes.len() < 2 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return None;
+    }
+    let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(bytes));
+    let requested = max_size.min(u16::MAX as u32) as u16;
+    let (width, height) = decoder.scale(requested, requested).ok()?;
+    let pixels = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    let (h, w) = (height as usize, width as usize);
+    // Shapes mirror ImageAdapter::decode: grayscale is [H, W, 1].
+    match info.pixel_format {
+        jpeg_decoder::PixelFormat::L8 => {
+            Some(ViewBuffer::from_vec_with_shape(pixels, vec![h, w, 1]))
+        }
+        jpeg_decoder::PixelFormat::RGB24 => {
+            Some(ViewBuffer::from_vec_with_shape(pixels, vec![h, w, 3]))
+        }
+        _ => None,
+    }
+}
+
 /// Decode the source bytes into a ViewBuffer.
 pub fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<ViewBuffer> {
     match pipeline.source_format() {
         "image_bytes" => {
-            // Use image crate to decode
-            let buf = ImageAdapter::decode(bytes)
-                .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?;
+            // An explicit decode-scale assertion lets JPEG decode skip work
+            // via IDCT scaling; other formats fall through to a full decode.
+            let scaled = pipeline
+                .source
+                .decode_max_size
+                .and_then(|max_size| decode_jpeg_scaled(bytes, max_size));
+            let buf = match scaled {
+                Some(buf) => buf,
+                None => ImageAdapter::decode(bytes)
+                    .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?,
+            };
             // If source spec declares an expected dtype, cast to it.
             // This is a no-op when the decoded dtype already matches.
             if let Some(ref dtype_str) = pipeline.source.dtype {

@@ -736,6 +736,8 @@ class Pipeline:
         require_contiguous: bool = False,
         # Error handling for source decoding
         on_error: str = "raise",
+        # Explicit decode-scale assertion for image sources
+        decode_max_size: int | None = None,
     ) -> "Pipeline":
         """
         Define the input source format.
@@ -780,6 +782,18 @@ class Pipeline:
                   entire batch).
                 - ``"null"``: treat decode errors as null output for that row,
                   allowing the rest of the batch to succeed.
+            decode_max_size: Explicit assertion that the pipeline only needs
+                at least this many pixels on the decoded image's long side
+                (for ``"image_bytes"`` / ``"file_path"`` sources). JPEG
+                decoding then uses IDCT scaling (1/8, 1/4 or 1/2) to skip
+                work — a large CPU and memory win for thumbnail pipelines.
+                The decoded long side never drops below
+                ``min(decode_max_size, original)``, so a downstream resize
+                down to this size never upscales. Other formats (PNG, …)
+                ignore the assertion and decode at full size. Note that a
+                scaled decode followed by a resize is not bit-identical to a
+                full decode followed by the same resize (different
+                resampling path) — hence the explicit opt-in.
 
         Example:
             ```python
@@ -813,6 +827,17 @@ class Pipeline:
         if on_error not in ("raise", "null"):
             msg = f"on_error must be 'raise' or 'null', got '{on_error}'"
             raise ValueError(msg)
+
+        if decode_max_size is not None:
+            if fmt not in (SourceFormat.IMAGE_BYTES, SourceFormat.FILE_PATH):
+                msg = (
+                    "decode_max_size only applies to 'image_bytes'/'file_path' "
+                    f"sources, got '{format}'"
+                )
+                raise ValueError(msg)
+            if not isinstance(decode_max_size, int) or decode_max_size <= 0:
+                msg = f"decode_max_size must be a positive int, got {decode_max_size!r}"
+                raise ValueError(msg)
 
         dtype_enum = None
         if dtype is not None:
@@ -911,6 +936,7 @@ class Pipeline:
                 cloud_options=cloud_opts,
                 require_contiguous=require_contiguous,
                 on_error=on_error,
+                decode_max_size=decode_max_size,
             )
             # Set dtype and ndim based on source format
             if fmt == SourceFormat.RAW:
