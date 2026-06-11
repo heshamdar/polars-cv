@@ -118,8 +118,16 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
                 AffineParams::from_rotation(angle_deg, h, w, expand, interpolation, border_value);
             apply_affine_warp(buf, params)
         }
-        ComputeOp::Scale(factor) => apply_scalar_owned(buf, move |x: f32| x * factor),
-        ComputeOp::Relu => apply_scalar_owned(buf, |x: f32| if x > 0.0 { x } else { 0.0 }),
+        ComputeOp::Scale(factor) => apply_scalar_owned_with(
+            buf,
+            move |x: f32| x * factor,
+            move |x: f64| x * factor as f64,
+        ),
+        ComputeOp::Relu => apply_scalar_owned_with(
+            buf,
+            |x: f32| if x > 0.0 { x } else { 0.0 },
+            |x: f64| if x > 0.0 { x } else { 0.0 },
+        ),
         ComputeOp::Fused(ref kernel) => {
             // The kernel reads any numeric dtype (converting to f32 during
             // the gather) and converts to its out_dtype while writing — no
@@ -133,7 +141,11 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
             }
         }
         ComputeOp::Normalize(ref method) => apply_normalize(&buf, method),
-        ComputeOp::Clamp { min, max } => apply_scalar_owned(buf, move |x: f32| x.clamp(min, max)),
+        ComputeOp::Clamp { min, max } => apply_scalar_owned_with(
+            buf,
+            move |x: f32| x.clamp(min, max),
+            move |x: f64| x.clamp(min as f64, max as f64),
+        ),
         ComputeOp::AdjustContrast(factor) => apply_adjust_contrast(&buf, factor),
         ComputeOp::AdjustGamma(gamma) => apply_adjust_gamma(&buf, gamma),
         ComputeOp::Invert => apply_invert(&buf),
@@ -283,6 +295,20 @@ fn apply_normalize(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> Vi
 /// Computes the global mean, then scales each pixel's deviation from it.
 /// Input is cast to f32; output is f32.
 fn apply_adjust_contrast(buf: &ViewBuffer, factor: f32) -> ViewBuffer {
+    // f64 input computes (and stays) in f64, per the PromoteToFloat contract.
+    if buf.dtype() == DType::F64 {
+        let contig = buf.to_contiguous();
+        let count = contig.layout.num_elements();
+        let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+        let mean: f64 = if count > 0 {
+            src.iter().sum::<f64>() / count as f64
+        } else {
+            0.0
+        };
+        let factor = factor as f64;
+        let new_data: Vec<f64> = src.iter().map(|&x| (x - mean) * factor + mean).collect();
+        return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
+    }
     let work_buf = if buf.dtype() != DType::F32 {
         buf.cast(DType::F32)
     } else {
@@ -304,9 +330,21 @@ fn apply_adjust_contrast(buf: &ViewBuffer, factor: f32) -> ViewBuffer {
 /// Adjust gamma (power-law): normalize to [0,1], apply `pixel^gamma`, denormalize.
 ///
 /// For u8 input the [0,255] range is used; for float [0,1] is assumed.
-/// Output is always f32.
+/// Integer inputs promote to f32; f64 input computes (and stays) in f64,
+/// per the PromoteToFloat contract.
 fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f32) -> ViewBuffer {
     let input_dtype = buf.dtype();
+    if input_dtype == DType::F64 {
+        let contig = buf.to_contiguous();
+        let count = contig.layout.num_elements();
+        let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+        let gamma = gamma as f64;
+        let new_data: Vec<f64> = src
+            .iter()
+            .map(|&x| x.clamp(0.0, 1.0).powf(gamma))
+            .collect();
+        return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
+    }
     let work_buf = if input_dtype != DType::F32 {
         buf.cast(DType::F32)
     } else {
@@ -489,19 +527,37 @@ pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
     }
 }
 
-/// Apply a scalar operation element-wise, accepting any numeric input type.
+/// Apply a scalar operation element-wise, honoring the float-promotion
+/// dtype contract (`OutputDTypeRule::PromoteToFloat`):
 ///
-/// This function automatically casts the input to f32 for computation,
-/// as per the dtype promotion contract. The output is always f32.
+/// - f64 input computes in f64 and returns f64 (the rule preserves f64);
+/// - every other numeric input is promoted to f32, computed in f32, and
+///   returned as f32.
 ///
-/// This follows the pattern used by NumPy, PyTorch, and other numeric libraries:
-/// - Accept any numeric input dtype
-/// - Perform computation in f32 for numerical stability
-/// - Return f32 (can be cast to desired output type afterward)
-fn apply_scalar_op<F>(buf: &ViewBuffer, op: F) -> ViewBuffer
+/// This follows the pattern used by NumPy, PyTorch, and other numeric
+/// libraries. Both closures must implement the same operation at their
+/// respective precision.
+fn apply_scalar_op_with<F32Op, F64Op>(buf: &ViewBuffer, op32: F32Op, op64: F64Op) -> ViewBuffer
 where
-    F: Fn(f32) -> f32,
+    F32Op: Fn(f32) -> f32,
+    F64Op: Fn(f64) -> f64,
 {
+    if buf.dtype() == DType::F64 {
+        // Try to use ndarray if available for efficient strided iteration
+        #[cfg(feature = "ndarray_interop")]
+        {
+            if let Ok(view) = buf.as_array_view::<f64>() {
+                let result_array = view.mapv(&op64);
+                return ViewBuffer::from_array(result_array);
+            }
+        }
+        let contig = buf.to_contiguous();
+        let count = contig.layout.num_elements();
+        let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+        let new_data: Vec<f64> = src.iter().map(|&x| op64(x)).collect();
+        return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
+    }
+
     // Cast to f32 working dtype if needed (dtype promotion)
     let work_buf = if buf.dtype() != DType::F32 {
         buf.cast(DType::F32)
@@ -514,7 +570,7 @@ where
     #[cfg(feature = "ndarray_interop")]
     {
         if let Ok(view) = work_buf.as_array_view::<f32>() {
-            let result_array = view.mapv(&op);
+            let result_array = view.mapv(&op32);
             return ViewBuffer::from_array(result_array);
         }
     }
@@ -523,41 +579,55 @@ where
     let contig = work_buf.to_contiguous();
     let count = contig.layout.num_elements();
     let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
-    let new_data: Vec<f32> = src.iter().map(|&x| op(x)).collect();
+    let new_data: Vec<f32> = src.iter().map(|&x| op32(x)).collect();
     ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
 }
 
 /// Scalar op applied to an owned buffer.
 ///
-/// When the buffer is already contiguous F32 with a sole strong reference
-/// (refcount == 1), the data is mutated in-place — no heap allocation.
-/// Falls back to `apply_scalar_op` for all other cases (dtype promotion,
-/// non-contiguous layout, or shared Arc).
-fn apply_scalar_owned<F>(mut buf: ViewBuffer, op: F) -> ViewBuffer
+/// When the buffer is already a contiguous float (f32 or f64) with a sole
+/// strong reference (refcount == 1), the data is mutated in-place — no heap
+/// allocation. Falls back to [`apply_scalar_op_with`] for all other cases
+/// (dtype promotion, non-contiguous layout, or shared Arc).
+fn apply_scalar_owned_with<F32Op, F64Op>(
+    mut buf: ViewBuffer,
+    op32: F32Op,
+    op64: F64Op,
+) -> ViewBuffer
 where
-    F: Fn(f32) -> f32 + Copy,
+    F32Op: Fn(f32) -> f32 + Copy,
+    F64Op: Fn(f64) -> f64 + Copy,
 {
     use crate::core::buffer::BufferStorage;
     use std::sync::Arc;
 
-    if buf.dtype() == DType::F32 && buf.layout.is_contiguous() {
+    let dtype = buf.dtype();
+    if matches!(dtype, DType::F32 | DType::F64) && buf.layout.is_contiguous() {
         if let BufferStorage::Rust(ref mut arc) = buf.data {
             if let Some(vec) = Arc::get_mut(arc) {
                 let count = buf.layout.num_elements();
-                let data = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        vec.as_mut_ptr().add(buf.layout.offset) as *mut f32,
-                        count,
-                    )
-                };
-                for x in data.iter_mut() {
-                    *x = op(*x);
+                let base = unsafe { vec.as_mut_ptr().add(buf.layout.offset) };
+                match dtype {
+                    DType::F32 => {
+                        let data =
+                            unsafe { std::slice::from_raw_parts_mut(base as *mut f32, count) };
+                        for x in data.iter_mut() {
+                            *x = op32(*x);
+                        }
+                    }
+                    _ => {
+                        let data =
+                            unsafe { std::slice::from_raw_parts_mut(base as *mut f64, count) };
+                        for x in data.iter_mut() {
+                            *x = op64(*x);
+                        }
+                    }
                 }
                 return buf;
             }
         }
     }
-    apply_scalar_op(&buf, op)
+    apply_scalar_op_with(&buf, op32, op64)
 }
 
 /// Convert a buffer to U8 for image operations.

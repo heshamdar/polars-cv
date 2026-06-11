@@ -383,3 +383,55 @@ class TestThresholdDtypeE2E:
         assert arr.dtype == np.uint8
         unique_vals = set(arr.flatten().tolist())
         assert unique_vals.issubset({0, 255})
+
+
+@plugin_required
+class TestF64ScalarOpsEndToEnd:
+    """f64 data through the PromoteToFloat scalar family must stay f64.
+
+    These ops previously computed everything in f32 and returned f32 for
+    f64 inputs, diverging from the declared dtype contract — a user with
+    f64 data hit the per-row dtype guard ("planned f64 but produced f32").
+    The runtime now honors the contract: plan == exec, values in f64.
+    """
+
+    # A value that loses precision when round-tripped through f32.
+    PRECISE = 0.12345678901234567
+
+    def _run(self, build_pipe) -> pl.DataFrame:
+        # 3D [H, W, C] data: the planner assumes list sources are 3D buffers.
+        df = pl.DataFrame(
+            {"x": [[[[self.PRECISE]], [[0.5]]]]},
+            schema={"x": pl.List(pl.List(pl.List(pl.Float64)))},
+        )
+        pipe = build_pipe(Pipeline().source("list", dtype="f64"))
+        lf = df.lazy().with_columns(out=pl.col("x").cv.pipe(pipe).sink("list"))
+        planned = lf.collect_schema()["out"]
+        out = lf.collect()
+        assert planned == out["out"].dtype, "plan != exec for f64 scalar op"
+        return out
+
+    def test_scale_keeps_f64_precision(self) -> None:
+        out = self._run(lambda p: p.scale(2.0))
+        assert out["out"].dtype == pl.List(pl.List(pl.List(pl.Float64)))
+        val = out["out"][0][0][0][0]
+        assert val == self.PRECISE * 2.0
+        # The old f32 path would have collapsed the low-order bits.
+        assert val != float(np.float32(self.PRECISE) * np.float32(2.0))
+
+    def test_relu_keeps_f64(self) -> None:
+        out = self._run(lambda p: p.relu())
+        assert out["out"][0][0][0][0] == self.PRECISE
+
+    def test_clamp_keeps_f64(self) -> None:
+        out = self._run(lambda p: p.clamp(min_val=0.0, max_val=1.0))
+        assert out["out"][0][0][0][0] == self.PRECISE
+
+    def test_adjust_gamma_keeps_f64(self) -> None:
+        out = self._run(lambda p: p.adjust_gamma(gamma=2.0))
+        assert out["out"][0][0][0][0] == self.PRECISE**2.0
+
+    def test_adjust_contrast_keeps_f64(self) -> None:
+        out = self._run(lambda p: p.adjust_contrast(factor=1.0))
+        # factor=1.0 is the identity: (x - mean) * 1 + mean == x.
+        assert out["out"][0][0][0][0] == self.PRECISE

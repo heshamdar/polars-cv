@@ -1266,9 +1266,9 @@ fn extract_ops(
     list: &mut Vec<ScalarOp>,
 ) -> bool {
     // The float-promoting scalar family is excluded for f64 inputs: the
-    // dtype contract preserves f64 there while the unfused runtime computes
-    // (and returns) f32 — a pre-existing divergence the fused kernel must
-    // not take a side on. f64 chains simply stay unfused.
+    // dtype contract preserves f64 (and the unfused runtime now computes in
+    // f64), but the fused kernel computes in f32 — fusing would silently
+    // drop precision. f64 chains simply stay unfused.
     let promote_family_fusable = input_dtype != DType::F64;
     match op {
         ComputeOp::Scale(s) if promote_family_fusable => {
