@@ -670,3 +670,99 @@ class TestLazyCompositionExecution:
         assert np.all(output[0, 0] == 0)
         # Pixels inside contour should have original values
         assert np.any(output[50, 50] > 0)
+
+
+@plugin_required
+class TestGeneratedLazyWrappers:
+    """Smoke tests for the lazy wrappers covering each newly added family.
+
+    The full wrapper set is guarded structurally by
+    test_lazy_pipeline_method_parity; these verify a representative chain
+    from each family actually executes through .pipe() continuations.
+    """
+
+    def _df(self, w: int = 16, h: int = 16) -> pl.DataFrame:
+        import io
+
+        from PIL import Image
+
+        arr = np.linspace(0, 255, h * w * 3).reshape(h, w, 3).astype(np.uint8)
+        buf = io.BytesIO()
+        Image.fromarray(arr, "RGB").save(buf, format="PNG")
+        return pl.DataFrame({"img": [buf.getvalue()]})
+
+    def _base(self, df: pl.DataFrame) -> LazyPipelineExpr:
+        return pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+
+    def test_resize_family_chain(self) -> None:
+        df = self._df()
+        expr = self._base(df).grayscale().resize(height=8, width=4).sink("numpy")
+        out = df.with_columns(out=expr)
+        assert numpy_from_struct(out["out"][0]).shape == (8, 4, 1)
+
+    def test_pad_chain(self) -> None:
+        df = self._df()
+        expr = self._base(df).pad(top=2, bottom=2, left=1, right=1).sink("numpy")
+        out = df.with_columns(out=expr)
+        assert numpy_from_struct(out["out"][0]).shape == (20, 18, 3)
+
+    def test_rotate_chain(self) -> None:
+        df = self._df(w=8, h=16)
+        expr = self._base(df).rotate(90).sink("numpy")
+        out = df.with_columns(out=expr)
+        assert numpy_from_struct(out["out"][0]).shape == (8, 16, 3)
+
+    def test_reduction_chain(self) -> None:
+        df = self._df()
+        expr = self._base(df).extract_shape().sink("native")
+        out = df.with_columns(out=expr)
+        assert list(out["out"][0]) == [16.0, 16.0, 3.0]
+
+    def test_contour_measure_chain(self) -> None:
+        df = self._df()
+        expr = (
+            self._base(df)
+            .grayscale()
+            .threshold(100)
+            .extract_contours()
+            .area()
+            .sink("native")
+        )
+        out = df.with_columns(out=expr)
+        assert out["out"].dtype == pl.List(pl.Float64)
+
+    def test_histogram_chain(self) -> None:
+        df = self._df()
+        expr = self._base(df).grayscale().histogram(bins=8).sink("native")
+        out = df.with_columns(out=expr)
+        # Default output mode is buckets: one struct per bin.
+        assert len(out["out"][0]) == 8
+
+    def test_shape_hints_survive_lazy_chaining(self) -> None:
+        # Shape knowledge now replays through .pipe() continuations: an array
+        # sink needs (H, W, C) at plan time, satisfied here entirely by the
+        # lazily-chained resize + grayscale (no explicit shape= argument).
+        df = self._df()
+        expr = (
+            pl.col("img")
+            .cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+            .resize(height=6, width=5)
+            .grayscale()
+            .sink("array")
+        )
+        out = df.with_columns(out=expr)
+        assert out["out"].dtype == pl.Array(pl.Array(pl.Array(pl.UInt8, 1), 5), 6)
+
+    def test_assert_shape_on_lazy_expr(self) -> None:
+        # assert_shape used to be Pipeline-only; through the hint replay it
+        # now works mid-chain (here: asserting channels for an array sink).
+        df = self._df()
+        expr = (
+            pl.col("img")
+            .cv.pipe(Pipeline().source("image_bytes", dtype="u8"))
+            .resize(height=6, width=5)
+            .assert_shape(channels=3)
+            .sink("array")
+        )
+        out = df.with_columns(out=expr)
+        assert out["out"].dtype == pl.Array(pl.Array(pl.Array(pl.UInt8, 3), 5), 6)
