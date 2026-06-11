@@ -462,6 +462,10 @@ class SourceSpec:
         # Include require_contiguous for list/array sources
         if self.format in (SourceFormat.LIST, SourceFormat.ARRAY):
             result["require_contiguous"] = self.require_contiguous
+        # Cloud credentials must round-trip for file_path sources so graph
+        # execution can authenticate remote reads.
+        if self.format == SourceFormat.FILE_PATH and self.cloud_options is not None:
+            result["cloud_options"] = self.cloud_options.to_dict()
         if self.on_error != "raise":
             result["on_error"] = self.on_error
         return result

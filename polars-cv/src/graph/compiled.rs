@@ -73,6 +73,9 @@ pub struct CompiledGraph {
     /// Nodes whose source declared `on_error: "null"`: their decode errors
     /// become a null node output instead of failing the row.
     source_null_nodes: std::collections::HashSet<String>,
+    /// Per-node cloud credentials for `file_path` sources, parsed once at
+    /// the edge from the source spec's string map.
+    cloud_options: HashMap<String, crate::cloud::CloudOptions>,
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
@@ -86,7 +89,15 @@ struct ExecState<'a> {
     /// Output specs with `"auto"` dtype/ndim resolved from the input column
     /// type, sorted by alias.
     resolved_outputs: Vec<(String, OutputSpec)>,
+    /// Bytes of this batch's remote `file_path` sources, fetched concurrently
+    /// up front (node_id → path → result). Converts per-row network latency
+    /// into per-batch latency; per-path errors surface at their row so the
+    /// usual error policies apply.
+    prefetched: HashMap<String, HashMap<String, Result<Vec<u8>, String>>>,
 }
+
+/// Maximum concurrent remote fetches during source prefetch.
+const PREFETCH_CONCURRENCY: usize = 16;
 
 impl CompiledGraph {
     /// Compile a graph from the plugin kwargs.
@@ -119,6 +130,14 @@ impl CompiledGraph {
                         other, node_id
                     ))
                 }
+            }
+        }
+
+        // Parse per-node cloud credentials once at the edge.
+        let mut cloud_options: HashMap<String, crate::cloud::CloudOptions> = HashMap::new();
+        for (node_id, node) in &graph.nodes {
+            if let Some(map) = &node.source.cloud_options {
+                cloud_options.insert(node_id.clone(), crate::cloud::CloudOptions::from_map(map));
             }
         }
 
@@ -155,6 +174,7 @@ impl CompiledGraph {
             resolvers,
             name_to_slot,
             source_null_nodes,
+            cloud_options,
             key: GraphKwargsKey {
                 graph_json: graph_json.to_string(),
                 expr_column_names: expr_column_names.to_vec(),
@@ -182,6 +202,7 @@ impl CompiledGraph {
             inputs,
             ctx: ParamCtx::from_inputs(inputs),
             resolved_outputs: resolved_output_specs(&self.graph, inputs.first().map(|s| s.dtype())),
+            prefetched: self.prefetch_remote_sources(inputs),
         };
 
         let mut results: HashMap<String, Vec<RowResult>> = HashMap::new();
@@ -390,30 +411,46 @@ impl CompiledGraph {
                                 };
                                 match input_ca.get(row_idx) {
                                     Some(path) => {
-                                        let bytes = if path.starts_with("s3://")
-                                            || path.starts_with("gs://")
-                                            || path.starts_with("az://")
-                                            || path.starts_with("abfs://")
-                                            || path.starts_with("abfss://")
-                                            || path.starts_with("http://")
-                                            || path.starts_with("https://")
-                                        {
-                                            match crate::cloud::read_file(path, None) {
-                                                Ok(b) => b,
-                                                Err(e) => {
+                                        // Remote sources were fetched concurrently before
+                                        // the row loop; local files are read inline.
+                                        let owned_bytes: Vec<u8>;
+                                        let bytes: &[u8] = if crate::cloud::is_remote_path(path) {
+                                            match state
+                                                .prefetched
+                                                .get(node_id)
+                                                .and_then(|m| m.get(path))
+                                            {
+                                                Some(Ok(b)) => b.as_slice(),
+                                                Some(Err(e)) => {
                                                     return Err(format!(
                                                         "Failed to read remote file '{path}': {e}"
                                                     ));
                                                 }
+                                                // Defensive: every remote path in the batch
+                                                // is prefetched, but fall back to an inline
+                                                // fetch rather than miss.
+                                                None => {
+                                                    owned_bytes = crate::cloud::read_file(
+                                                        path,
+                                                        self.cloud_options.get(node_id),
+                                                    )
+                                                    .map_err(|e| {
+                                                        format!(
+                                                            "Failed to read remote file '{path}': {e}"
+                                                        )
+                                                    })?;
+                                                    owned_bytes.as_slice()
+                                                }
                                             }
                                         } else {
-                                            std::fs::read(path).map_err(|e| {
+                                            owned_bytes = std::fs::read(path).map_err(|e| {
                                                 format!("Failed to read local file '{path}': {e}")
-                                            })?
+                                            })?;
+                                            owned_bytes.as_slice()
                                         };
                                         let mut temp_spec = self.temp_pipeline_spec(node, state);
                                         temp_spec.source.format = "image_bytes".to_string();
-                                        match decode_source(&bytes, &temp_spec) {
+                                        match decode_source(bytes, &temp_spec) {
                                             Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
                                             Err(e) => {
                                                 Err(format!("Decode error for file '{path}': {e}"))
@@ -1061,6 +1098,51 @@ impl CompiledGraph {
             }
         }
         Ok(())
+    }
+
+    /// Concurrently fetch every remote `file_path` source in this batch.
+    ///
+    /// Per-call (per morsel) and derived only from this batch's path values —
+    /// nothing here is cached on the compiled graph. Distinct paths are
+    /// fetched once; wrong-dtype columns are skipped so the row loop reports
+    /// them with its usual error message.
+    fn prefetch_remote_sources(
+        &self,
+        inputs: &[Series],
+    ) -> HashMap<String, HashMap<String, Result<Vec<u8>, String>>> {
+        let mut prefetched = HashMap::new();
+        for (node_id, node) in &self.graph.nodes {
+            if node.source.format != "file_path" {
+                continue;
+            }
+            let Some(col_idx) = self.graph.column_bindings.get(node_id) else {
+                continue;
+            };
+            let Some(series) = inputs.get(*col_idx) else {
+                continue;
+            };
+            let Ok(ca) = series.str() else {
+                continue;
+            };
+            let remote: Vec<String> = ca
+                .into_iter()
+                .flatten()
+                .filter(|p| crate::cloud::is_remote_path(p))
+                .map(str::to_string)
+                .collect();
+            if remote.is_empty() {
+                continue;
+            }
+            prefetched.insert(
+                node_id.clone(),
+                crate::cloud::read_files_concurrent(
+                    &remote,
+                    self.cloud_options.get(node_id),
+                    PREFETCH_CONCURRENCY,
+                ),
+            );
+        }
+        prefetched
     }
 
     /// Build the throwaway `PipelineSpec` some decode paths expect.
