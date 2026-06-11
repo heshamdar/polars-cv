@@ -103,6 +103,7 @@ impl CompiledGraph {
     /// Compile a graph from the plugin kwargs.
     pub fn compile(graph_json: &str, expr_column_names: &[String]) -> PolarsResult<Self> {
         let mut graph = UnifiedGraph::from_json(graph_json)?;
+        validate_graph_structure(&graph)?;
 
         // Expression columns are appended to the plugin inputs after the
         // source columns; bind each referenced name to its absolute index.
@@ -198,6 +199,16 @@ impl CompiledGraph {
         } else {
             return Err(polars_err!(ComputeError : "No input columns provided"));
         };
+        // Column bindings are compile-time data but their bounds depend on
+        // this call's inputs: check once here instead of per row.
+        for (node_id, col_idx) in &self.graph.column_bindings {
+            if *col_idx >= inputs.len() {
+                return Err(polars_err!(ComputeError:
+                    "Column index {} out of bounds for node '{}' ({} input columns)",
+                    col_idx, node_id, inputs.len()
+                ));
+            }
+        }
         let state = ExecState {
             inputs,
             ctx: ParamCtx::from_inputs(inputs),
@@ -326,17 +337,13 @@ impl CompiledGraph {
                 let node_input: Option<NodeOutput> = if has_column_binding {
                     let on_error_null = self.source_null_nodes.contains(node_id);
                     let decode_result: Result<Option<NodeOutput>, String> = (|| {
+                        // Bounds are validated once per call in `execute()`.
                         let col_idx = self
                             .graph
                             .column_bindings
                             .get(node_id)
                             .copied()
                             .unwrap_or(0);
-                        if col_idx >= inputs.len() {
-                            return Err(format!(
-                                "Column index {col_idx} out of bounds for node '{node_id}'"
-                            ));
-                        }
                         let input_series = &inputs[col_idx];
                         let source_format = node.source.format.as_str();
                         if source_format == "contour" {
@@ -1163,6 +1170,65 @@ impl CompiledGraph {
     }
 }
 
+/// Source formats the executor can decode. Kept in sync with the row loop's
+/// source dispatch and `decode_source`.
+const KNOWN_SOURCE_FORMATS: &[&str] = &[
+    "array",
+    "blob",
+    "contour",
+    "file_path",
+    "image_bytes",
+    "list",
+    "raw",
+];
+
+/// Validate the structural invariants the executor relies on, at compile time.
+///
+/// Each of these used to fail late and badly: a typo'd output node silently
+/// produced all-null rows, a non-root node without upstream panicked at
+/// `upstream[0]`, and unknown source formats surfaced as per-row decode
+/// errors. Compile-time rejection gives one clear error instead.
+fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
+    for (node_id, node) in &graph.nodes {
+        if !KNOWN_SOURCE_FORMATS.contains(&node.source.format.as_str()) {
+            polars_bail!(ComputeError:
+                "Node '{}': unknown source format '{}' (expected one of {:?})",
+                node_id, node.source.format, KNOWN_SOURCE_FORMATS
+            );
+        }
+        if !graph.column_bindings.contains_key(node_id) && node.upstream.is_empty() {
+            polars_bail!(ComputeError:
+                "Node '{}' has neither an input column binding nor an upstream node",
+                node_id
+            );
+        }
+        for upstream_id in &node.upstream {
+            if !graph.nodes.contains_key(upstream_id) {
+                polars_bail!(ComputeError:
+                    "Node '{}' references unknown upstream node '{}'",
+                    node_id, upstream_id
+                );
+            }
+        }
+    }
+    for (alias, spec) in &graph.outputs {
+        if !graph.nodes.contains_key(&spec.node) {
+            polars_bail!(ComputeError:
+                "Output '{}' references unknown node '{}'",
+                alias, spec.node
+            );
+        }
+        match spec.expected_encoding.as_deref() {
+            None | Some("histogram_buckets") => {}
+            Some(other) => polars_bail!(ComputeError:
+                "Output '{}': unknown expected_encoding '{}' (expected 'histogram_buckets')",
+                alias, other
+            ),
+        }
+    }
+    Ok(())
+}
+
 /// Bind every expression parameter in the graph to its input slot.
 ///
 /// `label_reduce`'s `contours` param is deliberately left as `Expr` — the
@@ -1582,5 +1648,91 @@ mod tests {
             .err()
             .expect("compiling with a missing expr column must fail");
         assert!(err.to_string().contains("not found in expression inputs"));
+    }
+    // --- Compile-time structural validation ---
+    //
+    // Each case used to fail late (per-row error), silently (all-null
+    // output), or with a panic. They must now be clear compile errors.
+
+    fn compile_err(graph_json: &str) -> String {
+        CompiledGraph::compile(graph_json, &[])
+            .err()
+            .expect("malformed graph must fail to compile")
+            .to_string()
+    }
+
+    #[test]
+    fn output_referencing_unknown_node_is_a_compile_error() {
+        // Previously: silent all-null output column.
+        let err = compile_err(
+            r#"{
+            "nodes": {"n0": {"source": {"format": "blob"}}},
+            "outputs": {"_output": {"node": "nope", "sink": {"format": "blob"}}},
+            "column_bindings": {"n0": 0}
+        }"#,
+        );
+        assert!(err.contains("unknown node 'nope'"), "{err}");
+    }
+
+    #[test]
+    fn node_without_binding_or_upstream_is_a_compile_error() {
+        // Previously: panic at `upstream[0]` in the row loop.
+        let err = compile_err(
+            r#"{
+            "nodes": {
+                "n0": {"source": {"format": "blob"}},
+                "orphan": {"source": {"format": "blob"}}
+            },
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+            "column_bindings": {"n0": 0}
+        }"#,
+        );
+        assert!(
+            err.contains("neither an input column binding nor an upstream"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unknown_upstream_reference_is_a_compile_error() {
+        let err = compile_err(
+            r#"{
+            "nodes": {
+                "n0": {"source": {"format": "blob"}},
+                "n1": {"source": {"format": "blob"}, "upstream": ["ghost"]}
+            },
+            "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
+            "column_bindings": {"n0": 0}
+        }"#,
+        );
+        assert!(err.contains("unknown upstream node 'ghost'"), "{err}");
+    }
+
+    #[test]
+    fn unknown_source_format_is_a_compile_error() {
+        let err = compile_err(
+            r#"{
+            "nodes": {"n0": {"source": {"format": "carrier_pigeon"}}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+            "column_bindings": {"n0": 0}
+        }"#,
+        );
+        assert!(
+            err.contains("unknown source format 'carrier_pigeon'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unknown_expected_encoding_is_a_compile_error() {
+        // Previously: silently ignored (treated as plain encoding).
+        let err = compile_err(
+            r#"{
+            "nodes": {"n0": {"source": {"format": "blob"}}},
+            "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}, "expected_encoding": "morse"}},
+            "column_bindings": {"n0": 0}
+        }"#,
+        );
+        assert!(err.contains("unknown expected_encoding 'morse'"), "{err}");
     }
 }

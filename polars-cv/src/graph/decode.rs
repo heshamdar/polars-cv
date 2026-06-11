@@ -629,7 +629,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
     let domain = spec.expected_domain.as_str();
     match (domain, format) {
         ("buffer", "numpy" | "torch") => Ok(crate::output::numpy_output_dtype()),
-        ("buffer", "png" | "jpeg" | "webp" | "blob") => Ok(DataType::Binary),
+        ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") => Ok(DataType::Binary),
         ("buffer", "list") => {
             let inner = list_array_inner_dtype(&spec.expected_dtype, "list")?;
             if let Some(ref shape) = spec.expected_shape {
@@ -684,8 +684,36 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
                 Ok(DataType::List(Box::new(inner)))
             }
         }
+        // Fixed-size vector outputs (e.g. perceptual hashes) as Array.
+        // This pair used to ride the silent Binary fallthrough: execution
+        // produced an Array while lazy schema claimed Binary.
+        ("vector", "array") => {
+            let inner = list_array_inner_dtype(&spec.expected_dtype, "array")?;
+            let shape = spec.sink.shape.as_ref().or(spec.expected_shape.as_ref());
+            if let Some(shape) = shape {
+                let mut dtype = inner;
+                for &dim in shape.iter().rev() {
+                    dtype = DataType::Array(Box::new(dtype), dim);
+                }
+                Ok(dtype)
+            } else {
+                polars_bail!(ComputeError:
+                    "array sink requires a known shape at planning time. \
+                     Provide shape via .sink(shape=[...])."
+                );
+            }
+        }
         ("contour", "native") => Ok(DataType::List(Box::new(contour_struct_dtype()))),
-        _ => Ok(DataType::Binary),
+        ("buffer", "native") => polars_bail!(ComputeError:
+            "'native' sink is not defined for buffer outputs; use an explicit \
+             format (numpy, png, list, array, blob, ...)"
+        ),
+        // Unknown pairs used to silently default to Binary, masking planner
+        // bugs (a typo'd format/domain produced a Binary column of garbage).
+        (domain, format) => polars_bail!(ComputeError:
+            "Unsupported output combination: domain '{}' with sink format '{}'",
+            domain, format
+        ),
     }
 }
 /// Create a null RowResult with the correct type based on OutputSpec.
@@ -700,9 +728,11 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> RowResult {
     let domain = spec.expected_domain.as_str();
     match (domain, format) {
         ("buffer", "numpy" | "torch") => RowResult::NumpyStruct(None),
-        ("buffer", "png" | "jpeg" | "webp" | "blob") | (_, "binary") => RowResult::Binary(None),
+        ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") | (_, "binary") => {
+            RowResult::Binary(None)
+        }
         ("buffer", "list") | ("vector", "native" | "list") => RowResult::TypedList(None),
-        ("buffer", "array") => RowResult::TypedArray(None),
+        ("buffer" | "vector", "array") => RowResult::TypedArray(None),
         ("scalar", "native") => RowResult::Scalar(None),
         ("contour", "native") => RowResult::Contours(None),
         _ => RowResult::Binary(None),
@@ -745,7 +775,7 @@ pub(crate) fn build_series_from_spec(
                 .collect();
             crate::output::build_numpy_series(name, buffers)
         }
-        ("buffer", "png" | "jpeg" | "webp" | "blob") | (_, "binary") => {
+        ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") | (_, "binary") => {
             let binary_data: Vec<Option<Vec<u8>>> = data
                 .iter()
                 .map(|r| match r {
