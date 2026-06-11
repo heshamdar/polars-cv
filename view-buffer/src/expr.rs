@@ -472,33 +472,36 @@ impl ViewExpr {
         let new_shape = self.shape.clone();
         // StridePreserving, same dtype -> same strides
         let new_strides = self.strides.clone();
+        let new_dtype = op.infer_dtype(&[self.dtype]);
 
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: new_shape,
             strides: new_strides,
-            dtype: self.dtype,
+            dtype: new_dtype,
         })
     }
 
     pub fn relu(self: &Arc<Self>) -> Arc<Self> {
         let op = ComputeOp::Relu;
+        let new_dtype = op.infer_dtype(&[self.dtype]);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            dtype: self.dtype,
+            dtype: new_dtype,
         })
     }
 
     pub fn fused(self: &Arc<Self>, kernel: FusedKernel) -> Arc<Self> {
         let op = ComputeOp::Fused(kernel);
         // Fused preserves strides and shape
+        let new_dtype = op.infer_dtype(&[self.dtype]);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            dtype: self.dtype,
+            dtype: new_dtype,
         })
     }
 
@@ -509,22 +512,24 @@ impl ViewExpr {
         let new_shape = op.infer_shape(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
 
+        let new_dtype = op.infer_dtype(&[self.dtype]);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: new_shape,
             strides: new_strides,
-            dtype: self.dtype,
+            dtype: new_dtype,
         })
     }
 
     /// Clamp values to [min, max] range.
     pub fn clamp(self: &Arc<Self>, min: f32, max: f32) -> Arc<Self> {
         let op = ComputeOp::Clamp { min, max };
+        let new_dtype = op.infer_dtype(&[self.dtype]);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            dtype: self.dtype,
+            dtype: new_dtype,
         })
     }
 
@@ -532,33 +537,36 @@ impl ViewExpr {
     pub fn adjust_contrast(self: &Arc<Self>, factor: f32) -> Arc<Self> {
         let op = ComputeOp::AdjustContrast(factor);
         let new_strides = self.calc_strides(&op, &self.shape);
+        let new_dtype = op.infer_dtype(&[self.dtype]);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
             strides: new_strides,
-            dtype: self.dtype,
+            dtype: new_dtype,
         })
     }
 
     /// Adjust gamma (power-law transformation).
     pub fn adjust_gamma(self: &Arc<Self>, gamma: f32) -> Arc<Self> {
         let op = ComputeOp::AdjustGamma(gamma);
+        let new_dtype = op.infer_dtype(&[self.dtype]);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            dtype: self.dtype,
+            dtype: new_dtype,
         })
     }
 
     /// Invert pixel values: `max_val - pixel`.
     pub fn invert(self: &Arc<Self>) -> Arc<Self> {
         let op = ComputeOp::Invert;
+        let new_dtype = op.infer_dtype(&[self.dtype]);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
             strides: self.strides.clone(),
-            dtype: self.dtype,
+            dtype: new_dtype,
         })
     }
 
@@ -798,13 +806,26 @@ impl ViewExpr {
 
                     // Try fusing scalar operations
                     if let ExprNode::Compute(ref op2, ref grand_children) = &child.node {
-                        if let Some(fused) = try_fuse(&op1, op2) {
-                            return Arc::new(Self {
-                                node: ExprNode::Compute(fused, grand_children.clone()),
-                                shape: self.shape.clone(),
-                                strides: self.strides.clone(),
-                                dtype: self.dtype,
-                            });
+                        if grand_children.len() == 1 {
+                            // Each op's lowering may depend on the dtype it
+                            // would have received unfused; the kernel's output
+                            // is pinned to the chain's planned dtype.
+                            let inner_input_dtype = grand_children[0].dtype;
+                            let outer_input_dtype = child.dtype;
+                            if let Some(fused) = try_fuse(
+                                &op1,
+                                op2,
+                                inner_input_dtype,
+                                outer_input_dtype,
+                                self.dtype,
+                            ) {
+                                return Arc::new(Self {
+                                    node: ExprNode::Compute(fused, grand_children.clone()),
+                                    shape: self.shape.clone(),
+                                    strides: self.strides.clone(),
+                                    dtype: self.dtype,
+                                });
+                            }
                         }
                     }
                 }
@@ -1231,38 +1252,118 @@ pub struct PipelineCostReport {
 
 // --- Helper for Fusion ---
 
-fn try_fuse(outer: &ComputeOp, inner: &ComputeOp) -> Option<ComputeOp> {
+/// Lower one compute op into fused [`ScalarOp`]s, if it is fusable.
+///
+/// `input_dtype` is the dtype the op would have received unfused — needed
+/// because some lowerings are dtype-dependent (`Invert`'s max value, gamma's
+/// normalization range). `is_outer` distinguishes the chain's last op: an
+/// outer `Cast` lowers to *no* ops because the kernel's `out_dtype` (pinned
+/// to the chain's planned dtype by [`try_fuse`]) performs the conversion.
+fn extract_ops(
+    op: &ComputeOp,
+    input_dtype: DType,
+    is_outer: bool,
+    list: &mut Vec<ScalarOp>,
+) -> bool {
+    // The float-promoting scalar family is excluded for f64 inputs: the
+    // dtype contract preserves f64 there while the unfused runtime computes
+    // (and returns) f32 — a pre-existing divergence the fused kernel must
+    // not take a side on. f64 chains simply stay unfused.
+    let promote_family_fusable = input_dtype != DType::F64;
+    match op {
+        ComputeOp::Scale(s) if promote_family_fusable => {
+            list.push(ScalarOp::Mul(*s));
+            true
+        }
+        ComputeOp::Relu if promote_family_fusable => {
+            list.push(ScalarOp::Relu);
+            true
+        }
+        ComputeOp::Clamp { min, max } if promote_family_fusable => {
+            list.push(ScalarOp::Clamp(*min, *max));
+            true
+        }
+        // Gamma is scan-free and lowers exactly to its unfused formula:
+        // `((x / max).clamp(0, 1)).powf(g) * max`, max = 255 for integer
+        // inputs, 1 for float inputs (matching `apply_adjust_gamma`).
+        ComputeOp::AdjustGamma(g) if promote_family_fusable => {
+            let max_val: f32 = if input_dtype == DType::F32 {
+                1.0
+            } else {
+                255.0
+            };
+            if max_val != 1.0 {
+                list.push(ScalarOp::Div(max_val));
+            }
+            list.push(ScalarOp::Clamp(0.0, 1.0));
+            list.push(ScalarOp::Pow(*g));
+            if max_val != 1.0 {
+                list.push(ScalarOp::Mul(max_val));
+            }
+            true
+        }
+        // Invert is `max - x`, which is `-x + max` (bit-identical in IEEE
+        // arithmetic for the float case, exact integers for u8/u16 in f32).
+        // Only the dtypes whose unfused output round-trips exactly through
+        // the kernel's f32 compute are fused: f64 would lose precision, and
+        // the remaining integer dtypes take an unfused fallback path with
+        // different output-dtype behavior.
+        ComputeOp::Invert => {
+            let max_val: f32 = match input_dtype {
+                DType::U8 => 255.0,
+                DType::U16 => 65535.0,
+                DType::F32 => 1.0,
+                _ => return false,
+            };
+            list.push(ScalarOp::Mul(-1.0));
+            list.push(ScalarOp::Add(max_val));
+            true
+        }
+        // A cast is the kernel's own read/write conversion:
+        // - as the chain's last op, the kernel's out_dtype performs it;
+        // - mid-chain, only cast-to-f32 is a no-op (the kernel computes in
+        //   f32 anyway); other mid-chain casts quantize and must materialize.
+        ComputeOp::Cast(target) => is_outer || *target == DType::F32,
+        // An existing kernel can be extended only while its result is still
+        // raw f32 — a non-f32 out_dtype is a quantization step that later
+        // ops must observe.
+        ComputeOp::Fused(k) => {
+            if !is_outer && k.out_dtype != DType::F32 {
+                return false;
+            }
+            list.extend(k.ops.iter().cloned());
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Try to fuse two adjacent compute ops into a single `FusedKernel`.
+///
+/// `inner` runs first (on data of `inner_input_dtype`), then `outer` (on
+/// data of `outer_input_dtype` — inner's planned output). The kernel's
+/// `out_dtype` is pinned to `planned_out_dtype`, the dtype the *unfused*
+/// chain would produce, so fusion can never change the planned schema —
+/// plan == exec holds by construction for any fused combination.
+fn try_fuse(
+    outer: &ComputeOp,
+    inner: &ComputeOp,
+    inner_input_dtype: DType,
+    outer_input_dtype: DType,
+    planned_out_dtype: DType,
+) -> Option<ComputeOp> {
     let mut ops = Vec::new();
 
-    fn extract_ops(op: &ComputeOp, list: &mut Vec<ScalarOp>) -> bool {
-        match op {
-            ComputeOp::Scale(s) => {
-                list.push(ScalarOp::Mul(*s));
-                true
-            }
-            ComputeOp::Relu => {
-                list.push(ScalarOp::Relu);
-                true
-            }
-            ComputeOp::Clamp { min, max } => {
-                list.push(ScalarOp::Clamp(*min, *max));
-                true
-            }
-            ComputeOp::Fused(k) => {
-                list.extend(k.ops.iter().cloned());
-                true
-            }
-            _ => false,
-        }
-    }
-
-    if !extract_ops(inner, &mut ops) {
+    if !extract_ops(inner, inner_input_dtype, false, &mut ops) {
         return None;
     }
 
-    if !extract_ops(outer, &mut ops) {
+    if !extract_ops(outer, outer_input_dtype, true, &mut ops) {
         return None;
     }
 
-    Some(ComputeOp::Fused(FusedKernel { ops }))
+    Some(ComputeOp::Fused(FusedKernel {
+        ops,
+        out_dtype: planned_out_dtype,
+    }))
 }

@@ -135,7 +135,10 @@ impl Op for ComputeOp {
             ComputeOp::Invert => inputs[0],
             ComputeOp::Affine(_) => inputs[0],
             ComputeOp::RotateAffine { .. } => inputs[0],
-            ComputeOp::Fused(_) => inputs[0],
+            // The kernel computes in f32 and converts to its pinned output
+            // dtype in the same pass (set to the unfused chain's planned
+            // dtype at fusion time).
+            ComputeOp::Fused(k) => k.out_dtype,
         }
     }
 
@@ -255,8 +258,7 @@ impl Op for ComputeOp {
             ComputeOp::Cast(target) => OutputDTypeRule::Fixed(*target),
             ComputeOp::Affine(_) => OutputDTypeRule::PreserveInput,
             ComputeOp::RotateAffine { .. } => OutputDTypeRule::PreserveInput,
-            ComputeOp::Fused(_) => OutputDTypeRule::PreserveInput,
+            ComputeOp::Fused(k) => OutputDTypeRule::Fixed(k.out_dtype),
         }
     }
-
 }

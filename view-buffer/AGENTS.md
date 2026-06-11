@@ -183,6 +183,18 @@ See `.cursor/polars-cv-contribution-guide.md` for a full walkthrough.
 ## Performance Notes
 
 - View operations are O(1) — metadata only
-- Kernel fusion reduces memory traffic for consecutive scalar ops
+- Kernel fusion reduces memory traffic for consecutive scalar ops. The
+  fusable set is `Scale`, `Relu`, `Clamp`, `AdjustGamma`, `Invert`
+  (u8/u16/f32 inputs), and `Cast` — casts fold into the kernel itself:
+  the kernel reads any numeric input dtype (converting to f32 during the
+  gather) and converts its f32 result to `FusedKernel::out_dtype` while
+  writing, so `u8 -> cast(f32) -> scale -> clamp -> relu` is a single pass
+  with no cast materializations. `out_dtype` is pinned at fusion time to the
+  dtype the *unfused* chain would produce (`expr.rs::try_fuse`), so fusion
+  can never change the planned schema. f64 inputs are excluded from the
+  promote-family lowering (the dtype contract preserves f64 there while the
+  unfused runtime computes f32 — a pre-existing divergence fusion must not
+  take a side on). Equivalence is guarded by `tests/fused_ops.rs`, which
+  compares every fused chain bit-for-bit against per-op execution.
 - Zero-copy interop avoids unnecessary allocations between Arrow, ndarray, and image
 - Contiguous buffers enable SIMD-friendly iteration patterns

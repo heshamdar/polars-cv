@@ -22,7 +22,6 @@ use crate::interop::image::AsImageView;
 #[cfg(feature = "ndarray_interop")]
 use crate::interop::ndarray::{AsNdarray, FromNdarray};
 
-
 #[cfg(feature = "image_interop")]
 use image::Luma;
 
@@ -122,13 +121,11 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
         ComputeOp::Scale(factor) => apply_scalar_owned(buf, move |x: f32| x * factor),
         ComputeOp::Relu => apply_scalar_owned(buf, |x: f32| if x > 0.0 { x } else { 0.0 }),
         ComputeOp::Fused(ref kernel) => {
-            // FusedKernel only operates on F32; auto-cast non-F32 input (same contract
-            // as apply_scalar_op, which each constituent op would do if executed separately).
-            let mut buf = if buf.dtype() != DType::F32 {
-                buf.cast(DType::F32)
-            } else {
-                buf
-            };
+            // The kernel reads any numeric dtype (converting to f32 during
+            // the gather) and converts to its out_dtype while writing — no
+            // separate cast materializations. The in-place path applies when
+            // no conversion is involved on either end (f32 → f32).
+            let mut buf = buf;
             if buf.try_apply_fused_kernel_inplace(kernel) {
                 buf
             } else {
@@ -1446,7 +1443,7 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 work_buf.to_contiguous()
             };
             match contig_buf.dtype() {
-                DType::U8  => separable_gaussian_blur_typed::<u8>(&contig_buf, sigma),
+                DType::U8 => separable_gaussian_blur_typed::<u8>(&contig_buf, sigma),
                 DType::U16 => separable_gaussian_blur_typed::<u16>(&contig_buf, sigma),
                 DType::F32 => separable_gaussian_blur_typed::<f32>(&contig_buf, sigma),
                 other => {
@@ -1515,8 +1512,8 @@ where
                 for ch in 0..c {
                     let mut sum = 0.0f32;
                     for (ki, &kw) in kernel.iter().enumerate() {
-                        let sx = (x as i64 + ki as i64 - radius as i64)
-                            .clamp(0, w as i64 - 1) as usize;
+                        let sx =
+                            (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1) as usize;
                         let v: f32 = NumCast::from(src[(y * w + sx) * c + ch]).unwrap_or(0.0);
                         sum += kw * v;
                     }
@@ -1534,8 +1531,7 @@ where
             for ch in 0..c {
                 let mut sum = 0.0f32;
                 for (ki, &kw) in kernel.iter().enumerate() {
-                    let sy = (y as i64 + ki as i64 - radius as i64)
-                        .clamp(0, h as i64 - 1) as usize;
+                    let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
                     sum += kw * horiz[(sy * w + x) * c + ch];
                 }
                 let clamped = clamp_for_dtype(sum as f64, T::DTYPE);
