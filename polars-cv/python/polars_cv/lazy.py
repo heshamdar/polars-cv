@@ -15,7 +15,7 @@ import polars as pl
 
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
-    from polars_cv._types import FloatOrExpr, IntOrExpr
+    from polars_cv._types import FloatOrExpr, HashAlgorithm, IntOrExpr
     from polars_cv.pipeline import Pipeline
 
 
@@ -165,6 +165,21 @@ class LazyPipelineExpr:
             new_pipeline._expr_refs = pipeline._expr_refs.copy()
             # Carry the graph-level error policy through continuations.
             new_pipeline._on_error = pipeline._on_error
+            # Shape knowledge must survive continuations: replay each new op's
+            # plan-time shape effect over the UPSTREAM hints (the standalone
+            # pipeline computed its hints from an empty start, which loses
+            # e.g. pad's additive updates), then overlay any dimension the
+            # standalone pipeline knows outright (a resize target,
+            # an assert_shape) — that knowledge is upstream-independent.
+            import copy as _copy
+
+            new_pipeline._shape_hints = _copy.deepcopy(self._pipeline._shape_hints)
+            for op_spec in new_pipeline._ops:
+                new_pipeline._update_shape_hints(op_spec.op, op_spec.params, op_spec)
+            for dim in ("height", "width", "channels", "batch"):
+                inner_value = getattr(pipeline._shape_hints, dim)
+                if inner_value is not None:
+                    setattr(new_pipeline._shape_hints, dim, _copy.deepcopy(inner_value))
             # Compute continuation node type state from upstream state + new ops.
             # Using the op-only pipeline state here is incorrect because it loses
             # the upstream dtype/domain context and can cause contract drift.
@@ -1232,7 +1247,505 @@ class LazyPipelineExpr:
 
         return self.pipe(Pipeline().equalize_histogram())
 
+    # --- Pipeline method parity (generated wrappers) ---
+    #
+    # Thin counterparts of every chainable Pipeline method, delegating
+    # through .pipe(self._continuation().op(...)) so builder-time domain
+    # validation sees the upstream state. Guarded against drift by
+    # test_lazy_pipeline_method_parity in tests/test_sanitation.py.
+
+    def area(
+        self,
+        *,
+        signed: "bool" = False,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.area`."""
+        return self.pipe(self._continuation().area(signed=signed))
+
+    def assert_shape(
+        self,
+        *,
+        height: "IntOrExpr | None" = None,
+        width: "IntOrExpr | None" = None,
+        channels: "IntOrExpr | None" = None,
+        batch: "IntOrExpr | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.assert_shape`."""
+        return self.pipe(
+            self._continuation().assert_shape(
+                height=height, width=width, channels=channels, batch=batch
+            )
+        )
+
+    def blur(
+        self,
+        sigma: "FloatOrExpr",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.blur`."""
+        return self.pipe(self._continuation().blur(sigma=sigma))
+
+    def bounding_box(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.bounding_box`."""
+        return self.pipe(self._continuation().bounding_box())
+
+    def cast(
+        self,
+        dtype: "str",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.cast`."""
+        return self.pipe(self._continuation().cast(dtype=dtype))
+
+    def centroid(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.centroid`."""
+        return self.pipe(self._continuation().centroid())
+
+    def clamp(
+        self,
+        min_val: "FloatOrExpr",
+        max_val: "FloatOrExpr",
+        out_dtype: "str | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.clamp`."""
+        return self.pipe(
+            self._continuation().clamp(
+                min_val=min_val, max_val=max_val, out_dtype=out_dtype
+            )
+        )
+
+    def convex_hull(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.convex_hull`."""
+        return self.pipe(self._continuation().convex_hull())
+
+    def crop(
+        self,
+        *,
+        top: "IntOrExpr" = 0,
+        left: "IntOrExpr" = 0,
+        height: "IntOrExpr | None" = None,
+        width: "IntOrExpr | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.crop`."""
+        return self.pipe(
+            self._continuation().crop(top=top, left=left, height=height, width=width)
+        )
+
+    def extract_contours(
+        self,
+        *,
+        mode: "str" = "external",
+        method: "str" = "simple",
+        min_area: "float | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.extract_contours`."""
+        return self.pipe(
+            self._continuation().extract_contours(
+                mode=mode, method=method, min_area=min_area
+            )
+        )
+
+    def extract_shape(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.extract_shape`."""
+        return self.pipe(self._continuation().extract_shape())
+
+    def flip(
+        self,
+        axes: "list[int]",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.flip`."""
+        return self.pipe(self._continuation().flip(axes=axes))
+
+    def flip_h(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.flip_h`."""
+        return self.pipe(self._continuation().flip_h())
+
+    def flip_v(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.flip_v`."""
+        return self.pipe(self._continuation().flip_v())
+
+    def grayscale(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.grayscale`."""
+        return self.pipe(self._continuation().grayscale())
+
+    def histogram(
+        self,
+        bins: "IntOrExpr | list[float]" = 256,
+        range: "tuple[float, float] | None" = None,
+        closed: "str" = "left",
+        output: "str" = "buckets",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.histogram`."""
+        return self.pipe(
+            self._continuation().histogram(
+                bins=bins, range=range, closed=closed, output=output
+            )
+        )
+
+    def letterbox(
+        self,
+        *,
+        height: "IntOrExpr",
+        width: "IntOrExpr",
+        value: "FloatOrExpr" = 0.0,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.letterbox`."""
+        return self.pipe(
+            self._continuation().letterbox(height=height, width=width, value=value)
+        )
+
+    def normalize(
+        self,
+        method: "str" = "minmax",
+        mean: "list[float] | None" = None,
+        std: "list[float] | None" = None,
+        out_dtype: "str | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.normalize`."""
+        return self.pipe(
+            self._continuation().normalize(
+                method=method, mean=mean, std=std, out_dtype=out_dtype
+            )
+        )
+
+    def pad(
+        self,
+        *,
+        top: "IntOrExpr" = 0,
+        bottom: "IntOrExpr" = 0,
+        left: "IntOrExpr" = 0,
+        right: "IntOrExpr" = 0,
+        value: "FloatOrExpr" = 0.0,
+        mode: "str" = "constant",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.pad`."""
+        return self.pipe(
+            self._continuation().pad(
+                top=top, bottom=bottom, left=left, right=right, value=value, mode=mode
+            )
+        )
+
+    def pad_to_size(
+        self,
+        *,
+        height: "IntOrExpr",
+        width: "IntOrExpr",
+        position: "str" = "center",
+        value: "FloatOrExpr" = 0.0,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.pad_to_size`."""
+        return self.pipe(
+            self._continuation().pad_to_size(
+                height=height, width=width, position=position, value=value
+            )
+        )
+
+    def perceptual_hash(
+        self,
+        algorithm: "HashAlgorithm | str" = "perceptual",
+        hash_size: "int" = 64,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.perceptual_hash`."""
+        return self.pipe(
+            self._continuation().perceptual_hash(
+                algorithm=algorithm, hash_size=hash_size
+            )
+        )
+
+    def perimeter(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.perimeter`."""
+        return self.pipe(self._continuation().perimeter())
+
+    def rasterize(
+        self,
+        *,
+        width: "IntOrExpr | None" = None,
+        height: "IntOrExpr | None" = None,
+        shape: "'LazyPipelineExpr | None'" = None,
+        fill_value: "IntOrExpr" = 255,
+        background: "IntOrExpr" = 0,
+        anti_alias: "bool" = False,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.rasterize`."""
+        return self.pipe(
+            self._continuation().rasterize(
+                width=width,
+                height=height,
+                shape=shape,
+                fill_value=fill_value,
+                background=background,
+                anti_alias=anti_alias,
+            )
+        )
+
+    def reduce_argmax(
+        self,
+        axis: "int",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_argmax`."""
+        return self.pipe(self._continuation().reduce_argmax(axis=axis))
+
+    def reduce_argmin(
+        self,
+        axis: "int",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_argmin`."""
+        return self.pipe(self._continuation().reduce_argmin(axis=axis))
+
+    def reduce_max(
+        self,
+        axis: "int | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_max`."""
+        return self.pipe(self._continuation().reduce_max(axis=axis))
+
+    def reduce_mean(
+        self,
+        axis: "int | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_mean`."""
+        return self.pipe(self._continuation().reduce_mean(axis=axis))
+
+    def reduce_min(
+        self,
+        axis: "int | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_min`."""
+        return self.pipe(self._continuation().reduce_min(axis=axis))
+
+    def reduce_percentile(
+        self,
+        q: "FloatOrExpr",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_percentile`."""
+        return self.pipe(self._continuation().reduce_percentile(q=q))
+
+    def reduce_popcount(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_popcount`."""
+        return self.pipe(self._continuation().reduce_popcount())
+
+    def reduce_std(
+        self,
+        axis: "int | None" = None,
+        ddof: "IntOrExpr" = 0,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_std`."""
+        return self.pipe(self._continuation().reduce_std(axis=axis, ddof=ddof))
+
+    def reduce_sum(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_sum`."""
+        return self.pipe(self._continuation().reduce_sum())
+
+    def relu(self) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.relu`."""
+        return self.pipe(self._continuation().relu())
+
+    def reshape(
+        self,
+        shape: "list[int | pl.Expr]",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.reshape`."""
+        return self.pipe(self._continuation().reshape(shape=shape))
+
+    def resize(
+        self,
+        *,
+        height: "IntOrExpr",
+        width: "IntOrExpr",
+        filter: "str" = "lanczos3",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize`."""
+        return self.pipe(
+            self._continuation().resize(height=height, width=width, filter=filter)
+        )
+
+    def resize_max(
+        self,
+        max_size: "IntOrExpr",
+        *,
+        filter: "str" = "lanczos3",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_max`."""
+        return self.pipe(
+            self._continuation().resize_max(max_size=max_size, filter=filter)
+        )
+
+    def resize_min(
+        self,
+        min_size: "IntOrExpr",
+        *,
+        filter: "str" = "lanczos3",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_min`."""
+        return self.pipe(
+            self._continuation().resize_min(min_size=min_size, filter=filter)
+        )
+
+    def resize_scale(
+        self,
+        *,
+        scale: "FloatOrExpr | None" = None,
+        scale_x: "FloatOrExpr | None" = None,
+        scale_y: "FloatOrExpr | None" = None,
+        filter: "str" = "lanczos3",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_scale`."""
+        return self.pipe(
+            self._continuation().resize_scale(
+                scale=scale, scale_x=scale_x, scale_y=scale_y, filter=filter
+            )
+        )
+
+    def resize_to_height(
+        self,
+        height: "IntOrExpr",
+        *,
+        filter: "str" = "lanczos3",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_to_height`."""
+        return self.pipe(
+            self._continuation().resize_to_height(height=height, filter=filter)
+        )
+
+    def resize_to_width(
+        self,
+        width: "IntOrExpr",
+        *,
+        filter: "str" = "lanczos3",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_to_width`."""
+        return self.pipe(
+            self._continuation().resize_to_width(width=width, filter=filter)
+        )
+
+    def rotate(
+        self,
+        angle: "FloatOrExpr",
+        *,
+        expand: "bool" = False,
+        interpolation: "str" = "bilinear",
+        border_value: "float" = 0.0,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.rotate`."""
+        return self.pipe(
+            self._continuation().rotate(
+                angle=angle,
+                expand=expand,
+                interpolation=interpolation,
+                border_value=border_value,
+            )
+        )
+
+    def rotate_and_scale(
+        self,
+        *,
+        angle: "float",
+        scale: "float" = 1.0,
+        center: "tuple[float, float] | None" = None,
+        output_size: "tuple[int, int] | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.rotate_and_scale`."""
+        return self.pipe(
+            self._continuation().rotate_and_scale(
+                angle=angle, scale=scale, center=center, output_size=output_size
+            )
+        )
+
+    def scale(
+        self,
+        factor: "FloatOrExpr",
+        out_dtype: "str | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.scale`."""
+        return self.pipe(self._continuation().scale(factor=factor, out_dtype=out_dtype))
+
+    def scale_contour(
+        self,
+        *,
+        sx: "FloatOrExpr",
+        sy: "FloatOrExpr",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.scale_contour`."""
+        return self.pipe(self._continuation().scale_contour(sx=sx, sy=sy))
+
+    def shear(
+        self,
+        *,
+        sx: "float" = 0.0,
+        sy: "float" = 0.0,
+        output_size: "tuple[int, int] | None" = None,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.shear`."""
+        return self.pipe(
+            self._continuation().shear(sx=sx, sy=sy, output_size=output_size)
+        )
+
+    def simplify(
+        self,
+        *,
+        tolerance: "FloatOrExpr",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.simplify`."""
+        return self.pipe(self._continuation().simplify(tolerance=tolerance))
+
+    def threshold(
+        self,
+        value: "'IntOrExpr | FloatOrExpr'",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.threshold`."""
+        return self.pipe(self._continuation().threshold(value=value))
+
+    def translate(
+        self,
+        *,
+        dx: "FloatOrExpr",
+        dy: "FloatOrExpr",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.translate`."""
+        return self.pipe(self._continuation().translate(dx=dx, dy=dy))
+
+    def transpose(
+        self,
+        axes: "list[int]",
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.transpose`."""
+        return self.pipe(self._continuation().transpose(axes=axes))
+
+    def warp_affine(
+        self,
+        matrix: "list[float]",
+        output_size: "tuple[IntOrExpr, IntOrExpr]",
+        *,
+        interpolation: "str" = "bilinear",
+        border_value: "float" = 0.0,
+    ) -> "LazyPipelineExpr":
+        """Lazy counterpart of :meth:`polars_cv.Pipeline.warp_affine`."""
+        return self.pipe(
+            self._continuation().warp_affine(
+                matrix=matrix,
+                output_size=output_size,
+                interpolation=interpolation,
+                border_value=border_value,
+            )
+        )
+
     # --- Internal Helpers ---
+
+    def _continuation(self) -> "Pipeline":
+        """A sourceless Pipeline seeded with this expression's planner state.
+
+        Domain-sensitive builders (contour measures, reductions) validate
+        their input domain at construction time; a bare ``Pipeline()`` starts
+        in the buffer domain and would reject e.g. ``.area()`` after
+        ``.extract_contours()``. ``pipe()`` recomputes the continuation
+        node's state from upstream regardless — this seed only exists so the
+        builder-time validation sees the truth.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        inner = Pipeline()
+        inner._current_domain = self._pipeline._current_domain
+        inner._output_dtype = self._pipeline._output_dtype
+        inner._expected_ndim = self._pipeline._expected_ndim
+        return inner
 
     def _binary_op(self, op: str, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
         """Create a binary operation between this and another LazyPipelineExpr."""

@@ -517,7 +517,12 @@ class Pipeline:
             )
         )
 
-    def _update_shape_hints(self, op_name: str, params: dict[str, ParamValue]) -> None:
+    def _update_shape_hints(
+        self,
+        op_name: str,
+        params: dict[str, ParamValue],
+        op_spec: "OpSpec | None" = None,
+    ) -> None:
         """
         Update shape hints based on the operation being added.
 
@@ -528,6 +533,9 @@ class Pipeline:
         Args:
             op_name: Name of the operation.
             params: Parameters of the operation.
+            op_spec: The op spec the channel rule should be resolved for.
+                Defaults to the most recently appended op; continuation
+                replays (``LazyPipelineExpr.pipe``) pass each op explicitly.
         """
         # --- Height / Width updates ---
         if op_name == "resize":
@@ -650,14 +658,14 @@ class Pipeline:
                 self._shape_hints.width = None
 
         # --- Channel updates driven by the Rust channel rule ---
-        self._update_channels_from_rule()
+        self._update_channels_from_rule(op_spec)
 
-    def _update_channels_from_rule(self) -> None:
+    def _update_channels_from_rule(self, op_spec: "OpSpec | None" = None) -> None:
         """Update channel hints from the operation's view-buffer channel rule.
 
         Reads ``output_channel_rule`` from the op contract (the single
-        authority) rather than re-declaring alpha handling in Python. The op is
-        read from ``self._ops[-1]`` so its full parameter set (e.g. an erode
+        authority) rather than re-declaring alpha handling in Python. The op
+        defaults to ``self._ops[-1]`` so its full parameter set (e.g. an erode
         ``ksize``, a cvt_color target space) is available to resolve the rule:
 
         - ``preserve`` / ``n/a``: leave the channel hint unchanged.
@@ -668,7 +676,8 @@ class Pipeline:
         """
         from polars_cv._lib import op_contract
 
-        op_json = json.dumps(self._ops[-1].to_dict())
+        spec = op_spec if op_spec is not None else self._ops[-1]
+        op_json = json.dumps(spec.to_dict())
         rule = op_contract(op_json)["channel_rule"]
 
         if rule in ("preserve", "n/a"):

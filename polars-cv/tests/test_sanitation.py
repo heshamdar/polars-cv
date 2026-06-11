@@ -670,3 +670,55 @@ def test_output_dtype_is_strategy_not_dtype_duplicate():
     assert out_values != dtype_values, (
         "OutputDType must remain a strategy enum distinct from DType, not a duplicate"
     )
+
+
+# ---------------------------------------------------------------------------
+# Pipeline <-> LazyPipelineExpr method parity
+# ---------------------------------------------------------------------------
+
+# Intentional asymmetries between the eager builder and the lazy expression.
+_PIPELINE_ONLY_METHODS = {
+    "source",  # sources are defined when the chain starts, not mid-chain
+    "validate",
+    "has_source",
+    "to_graph",
+    "current_domain",
+    "output_dtype",
+    "output_encoding",  # builder/planner introspection, not chainable ops
+}
+
+
+def test_lazy_pipeline_method_parity():
+    """Every chainable Pipeline method must exist on LazyPipelineExpr with an
+    identical parameter list. Guards the wrapper set against drift when new
+    Pipeline methods are added (the gap had grown to ~50 missing methods,
+    including the entire resize family, before this guard existed)."""
+    import inspect
+
+    from polars_cv.lazy import LazyPipelineExpr
+    from polars_cv.pipeline import Pipeline
+
+    pipeline_methods = {
+        name
+        for name in dir(Pipeline)
+        if not name.startswith("_") and callable(getattr(Pipeline, name))
+    }
+    chainable = pipeline_methods - _PIPELINE_ONLY_METHODS
+
+    missing = sorted(n for n in chainable if not hasattr(LazyPipelineExpr, n))
+    assert not missing, f"LazyPipelineExpr is missing Pipeline methods: {missing}"
+
+    for name in sorted(chainable):
+        p_sig = inspect.signature(getattr(Pipeline, name))
+        l_sig = inspect.signature(getattr(LazyPipelineExpr, name))
+        # Compare parameter names, kinds and defaults (skip `self`); string
+        # defaults compare equal to their str-enum counterparts.
+        p_params = [
+            (p.name, p.kind, p.default) for p in list(p_sig.parameters.values())[1:]
+        ]
+        l_params = [
+            (p.name, p.kind, p.default) for p in list(l_sig.parameters.values())[1:]
+        ]
+        assert p_params == l_params, (
+            f"Signature drift on '{name}':\n  Pipeline: {p_params}\n  Lazy:     {l_params}"
+        )

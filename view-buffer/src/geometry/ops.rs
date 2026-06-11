@@ -470,17 +470,22 @@ impl GeometryOp {
             GeometryOp::Rasterize { .. } => Domain::Buffer,
 
             // Scalar measures
-            GeometryOp::Area { .. }
-            | GeometryOp::Perimeter
-            | GeometryOp::IsConvex
+            GeometryOp::IsConvex
             | GeometryOp::ContainsPoint { .. }
             | GeometryOp::Winding
             | GeometryOp::IoU
             | GeometryOp::Dice
             | GeometryOp::HausdorffDistance => Domain::Scalar,
 
-            // Vector measures (multi-value)
-            GeometryOp::Centroid | GeometryOp::BoundingBox => Domain::Vector,
+            // Per-contour measures: one value (or coordinate group) per
+            // extracted contour. Execution iterates every contour, so these
+            // are vector outputs — Area/Perimeter previously declared Scalar
+            // here, which silently nulled lazily-chained measures (the eager
+            // Python builder masked it with a manual domain override).
+            GeometryOp::Area { .. }
+            | GeometryOp::Perimeter
+            | GeometryOp::Centroid
+            | GeometryOp::BoundingBox => Domain::Vector,
 
             // Contour transforms preserve contour domain
             GeometryOp::Translate { .. }
@@ -563,10 +568,10 @@ mod tests {
         assert_eq!(rasterize.input_domain(), Domain::Contour);
         assert_eq!(rasterize.output_domain(), Domain::Buffer);
 
-        // Area: Contour → Scalar
+        // Area: Contour → Vector (one area per extracted contour)
         let area = GeometryOp::Area { signed: false };
         assert_eq!(area.input_domain(), Domain::Contour);
-        assert_eq!(area.output_domain(), Domain::Scalar);
+        assert_eq!(area.output_domain(), Domain::Vector);
 
         // Translate: Contour → Contour
         let translate = GeometryOp::Translate { dx: 10.0, dy: 20.0 };
