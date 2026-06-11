@@ -54,6 +54,7 @@ url = { version = "2" }
 # HTTP support for URL sources (http://, https://)
 # Uses async client within tokio runtime (same as cloud storage)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+jpeg-decoder = "0.3"
 
 [features]
 pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py39"]
