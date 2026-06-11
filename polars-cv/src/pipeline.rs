@@ -32,6 +32,10 @@ pub struct SourceSpec {
     /// Serialized shape pipeline for dimension inference.
     #[serde(default)]
     pub shape_pipeline: Option<serde_json::Value>,
+    /// Cloud-storage credentials/options for `file_path` sources
+    /// (string key/value pairs matching `cloud::CloudOptions::from_map`).
+    #[serde(default)]
+    pub cloud_options: Option<HashMap<String, String>>,
     /// Whether to require contiguous data for list/array sources.
     /// If true and data is jagged, an error is raised.
     #[serde(default)]

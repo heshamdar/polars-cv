@@ -163,7 +163,6 @@ cargo clippy --workspace           # Lint Rust
 ## Known Issues
 
 - **Tiling (no-op):** `configure_tiling` / `get_tiling_config` are exposed but non-functional. Should be removed or investigated for SIMD improvements. See `view-buffer/AGENTS.md`.
-- **`cloud_options` not serialized:** `SourceSpec.to_dict()` in `_types.py` omits `cloud_options`, so cloud config may not propagate through graph pipelines.
 - **`ANNOTATED_POINT_SCHEMA` not re-exported:** Defined in `geometry/schemas.py`, exported by `geometry/__init__.py`, but missing from `polars_cv/__init__.py` `__all__`.
 - **`PipelineSpec` consolidation:** `pipeline.rs` serde types (`PipelineSpec`, `SourceSpec`, `SinkSpec`, `OpSpec`) could be consolidated into graph-owned types. `PipelineSpec` wrapper itself may be removable.
 - **Inconsistent test fixtures:** Many test files redefine `_plugin_available()`, `plugin_required`, and PNG creation fixtures instead of using shared ones from `conftest.py`.

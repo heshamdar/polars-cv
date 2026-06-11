@@ -297,6 +297,50 @@ fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
     })
 }
 
+/// Fetch many files concurrently with bounded parallelism.
+///
+/// Each path is fetched with the same logic (and credentials) as
+/// [`read_file`]; results are keyed by path, errors carried per path as
+/// strings. Graph execution uses this to prefetch a batch's remote sources
+/// before the row loop, converting per-row network latency into per-batch
+/// latency.
+///
+/// Implementation: bounded scoped OS threads, each performing one blocking
+/// [`read_file`] (which itself parks on the shared tokio runtime). This keeps
+/// per-file behavior — auth, retries, error text — byte-identical to the
+/// sequential path.
+pub fn read_files_concurrent(
+    paths: &[String],
+    options: Option<&CloudOptions>,
+    max_concurrency: usize,
+) -> HashMap<String, Result<Vec<u8>, String>> {
+    let mut results: HashMap<String, Result<Vec<u8>, String>> = HashMap::with_capacity(paths.len());
+    // Fetch each distinct path once, even when many rows repeat it.
+    let unique: Vec<&String> = {
+        let mut seen = std::collections::HashSet::new();
+        paths.iter().filter(|p| seen.insert(p.as_str())).collect()
+    };
+    for chunk in unique.chunks(max_concurrency.max(1)) {
+        let fetched: Vec<(String, Result<Vec<u8>, String>)> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|path| {
+                    s.spawn(move || {
+                        let result = read_file(path, options).map_err(|e| e.to_string());
+                        ((*path).clone(), result)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("prefetch thread panicked"))
+                .collect()
+        });
+        results.extend(fetched);
+    }
+    results
+}
+
 /// Check if a path is a remote URL (cloud storage or HTTP).
 ///
 /// Returns true for:

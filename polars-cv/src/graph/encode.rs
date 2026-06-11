@@ -627,6 +627,7 @@ pub(crate) fn encode_node_output(
                     fill_value: 255,
                     background: 0,
                     shape_pipeline: None,
+                    cloud_options: None,
                     require_contiguous: false,
                     on_error: "raise".to_string(),
                 },

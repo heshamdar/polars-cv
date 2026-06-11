@@ -173,5 +173,4 @@ Subsystem-specific AGENTS.md files provide deeper guidance:
 ## Known Limitations
 
 - `configure_tiling` / `get_tiling_config` are exposed but currently non-functional (no-op).
-- `cloud_options` are not serialized through graph pipelines and may not propagate correctly.
 - `ANNOTATED_POINT_SCHEMA` is defined in `geometry/` but not re-exported from the top-level `__all__`.
