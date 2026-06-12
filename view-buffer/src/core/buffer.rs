@@ -1226,6 +1226,25 @@ impl ViewBuffer {
     /// Serializes the view to a binary blob (ViewBlob format).
     /// Always forces materialization to contiguous layout for transport efficiency.
     pub fn to_blob(&self) -> Vec<u8> {
+        let mut blob = Vec::with_capacity(self.blob_len());
+        self.write_blob_into(&mut blob);
+        blob
+    }
+
+    /// The nominal byte length `write_blob_into` will append for this view
+    /// (header + shape + strides + logical payload). Intended for buffer
+    /// pre-allocation; `write_blob_into` reserves what it actually needs.
+    pub fn blob_len(&self) -> usize {
+        let rank = self.shape().len();
+        let data_len: usize = self.layout.num_elements() * self.dtype().size_of();
+        HEADER_SIZE + rank * 8 + rank * 8 + data_len
+    }
+
+    /// Appends the ViewBlob serialization of this view to `out`.
+    ///
+    /// Byte-identical to `to_blob` (which is implemented on top of this);
+    /// callers that reuse a scratch buffer avoid the per-call allocation.
+    pub fn write_blob_into(&self, out: &mut Vec<u8>) {
         // 1. Ensure Contiguous
         let buffer = self.to_contiguous();
         let shape = buffer.shape();
@@ -1248,28 +1267,25 @@ impl ViewBuffer {
             reserved: [0; 40],
         };
 
-        // 3. Allocate Output Vector
-        // Size = Header + ShapeArr + StrideArr + Data
         let data_len = buffer.data.len();
-        let total_size = (data_offset as usize) + data_len;
-        let mut blob = Vec::with_capacity(total_size);
+        out.reserve((data_offset as usize) + data_len);
 
-        // 4. Write Parts
+        // 3. Write Parts
         // Header
         // Use unsafe copy to bytes for the #[repr(C)] struct
         let header_slice = unsafe {
             std::slice::from_raw_parts(&header as *const ViewHeader as *const u8, HEADER_SIZE)
         };
-        blob.extend_from_slice(header_slice);
+        out.extend_from_slice(header_slice);
 
         // Shape (u64)
         for &dim in shape {
-            blob.extend_from_slice(&(dim as u64).to_le_bytes());
+            out.extend_from_slice(&(dim as u64).to_le_bytes());
         }
 
         // Strides (i64)
         for &stride in strides {
-            blob.extend_from_slice(&(stride as i64).to_le_bytes());
+            out.extend_from_slice(&(stride as i64).to_le_bytes());
         }
 
         // Data
@@ -1277,9 +1293,7 @@ impl ViewBuffer {
         // We use the pointer to copy the bytes.
         let raw_ptr = unsafe { buffer.as_ptr::<u8>() };
         let raw_slice = unsafe { std::slice::from_raw_parts(raw_ptr, data_len) };
-        blob.extend_from_slice(raw_slice);
-
-        blob
+        out.extend_from_slice(raw_slice);
     }
 
     /// Deserializes a ViewBuffer from a binary blob.
