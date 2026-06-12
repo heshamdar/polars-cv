@@ -13,24 +13,24 @@ use view_buffer::{
 };
 
 use crate::params::{ParamCtx, ParamValue};
-use crate::pipeline::{OpSpec, PipelineSpec};
+use crate::pipeline::{OpSpec, SinkSpec, SourceSpec};
 
 /// Decode a contour source by parsing the struct and rasterizing to ViewBuffer.
 pub fn decode_contour_source(
     value: &AnyValue,
     row_idx: usize,
-    pipeline: &PipelineSpec,
+    source: &SourceSpec,
     ctx: &ParamCtx,
 ) -> PolarsResult<ViewBuffer> {
     // Parse the contour from the struct
     let contour = parse_contour_from_anyvalue(value)?;
 
     // Resolve dimensions
-    let (width, height) = resolve_contour_dimensions(row_idx, pipeline, ctx)?;
+    let (width, height) = resolve_contour_dimensions(row_idx, source, ctx)?;
 
     // Get fill and background values
-    let fill_value = pipeline.source.fill_value;
-    let background = pipeline.source.background;
+    let fill_value = source.fill_value;
+    let background = source.background;
 
     // Rasterize the contour to a ViewBuffer
     Ok(rasterize(
@@ -206,26 +206,24 @@ fn extract_f64(value: &AnyValue) -> PolarsResult<f64> {
 /// Resolve contour dimensions from pipeline source spec.
 fn resolve_contour_dimensions(
     row_idx: usize,
-    pipeline: &PipelineSpec,
+    source: &SourceSpec,
     ctx: &ParamCtx,
 ) -> PolarsResult<(u32, u32)> {
     // Check for shape_pipeline first (not yet implemented - just error)
-    if pipeline.source.shape_pipeline.is_some() {
+    if source.shape_pipeline.is_some() {
         return Err(
             polars_err!(ComputeError: "Shape inference from pipeline not yet implemented. Use explicit width/height."),
         );
     }
 
     // Get explicit width and height
-    let width = pipeline
-        .source
+    let width = source
         .width
         .as_ref()
         .ok_or_else(|| polars_err!(ComputeError: "Contour source requires 'width' parameter"))?
         .resolve_usize(row_idx, ctx)? as u32;
 
-    let height = pipeline
-        .source
+    let height = source
         .height
         .as_ref()
         .ok_or_else(|| polars_err!(ComputeError: "Contour source requires 'height' parameter"))?
@@ -267,13 +265,12 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
 }
 
 /// Decode the source bytes into a ViewBuffer.
-pub fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<ViewBuffer> {
-    match pipeline.source_format() {
+pub fn decode_source(bytes: &[u8], source: &SourceSpec) -> PolarsResult<ViewBuffer> {
+    match source.format.as_str() {
         "image_bytes" => {
             // An explicit decode-scale assertion lets JPEG decode skip work
             // via IDCT scaling; other formats fall through to a full decode.
-            let scaled = pipeline
-                .source
+            let scaled = source
                 .decode_max_size
                 .and_then(|max_size| decode_jpeg_scaled(bytes, max_size));
             let buf = match scaled {
@@ -283,7 +280,7 @@ pub fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<View
             };
             // If source spec declares an expected dtype, cast to it.
             // This is a no-op when the decoded dtype already matches.
-            if let Some(ref dtype_str) = pipeline.source.dtype {
+            if let Some(ref dtype_str) = source.dtype {
                 let target = parse_dtype(dtype_str)?;
                 if buf.dtype() != target {
                     return Ok(buf.cast(target));
@@ -298,8 +295,7 @@ pub fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<View
         }
         "raw" => {
             // Raw bytes - need dtype from source spec
-            let dtype_str = pipeline
-                .source
+            let dtype_str = source
                 .dtype
                 .as_ref()
                 .ok_or_else(|| polars_err!(ComputeError: "Raw source format requires dtype"))?;
@@ -324,8 +320,8 @@ pub fn decode_source(bytes: &[u8], pipeline: &PipelineSpec) -> PolarsResult<View
 ///
 /// Note: numpy/torch sinks are now handled by the output module for zero-copy support.
 /// This function handles png, jpeg, blob, and raw binary formats.
-pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult<Vec<u8>> {
-    match pipeline.sink_format() {
+pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>> {
+    match sink.format.as_str() {
         "numpy" | "torch" => {
             // numpy/torch now use struct-based output via crate::output module
             // This path should not be reached in normal operation
@@ -339,7 +335,7 @@ pub fn encode_sink(buffer: &ViewBuffer, pipeline: &PipelineSpec) -> PolarsResult
         "png" => ImageAdapter::encode(buffer, image::ImageFormat::Png)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode PNG: {:?}", e)),
         "jpeg" => {
-            let quality = pipeline.sink.quality;
+            let quality = sink.quality;
             ImageAdapter::encode_jpeg(buffer, quality)
                 .map_err(|e| polars_err!(ComputeError: "Failed to encode JPEG: {:?}", e))
         }

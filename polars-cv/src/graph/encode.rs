@@ -13,7 +13,6 @@ use view_buffer::ops::NodeOutput;
 use view_buffer::{BinaryOp, GeometryOp, Op, ViewBuffer};
 
 use crate::contour::contour_to_anyvalue;
-use crate::pipeline::{PipelineSpec, SourceSpec};
 
 use super::decode::dtype_str_to_polars;
 use super::types::{OutputSpec, OutputValue, TypedBufferData};
@@ -618,25 +617,7 @@ pub(crate) fn encode_node_output(
             Ok(OutputValue::HistogramBuckets(contig.as_slice::<f64>().to_vec()))
         }
         (NodeOutput::Buffer(buf), "png" | "jpeg" | "webp" | "tiff" | "blob") => {
-            let pipeline = PipelineSpec {
-                source: SourceSpec {
-                    format: "blob".to_string(),
-                    dtype: None,
-                    width: None,
-                    height: None,
-                    fill_value: 255,
-                    background: 0,
-                    shape_pipeline: None,
-                    cloud_options: None,
-                    decode_max_size: None,
-                    require_contiguous: false,
-                    on_error: "raise".to_string(),
-                },
-                shape_hints: None,
-                ops: vec![],
-                sink: sink.clone(),
-            };
-            crate::execute::encode_sink(buf, &pipeline)
+            crate::execute::encode_sink(buf, sink)
                 .map(OutputValue::Binary)
                 .map_err(|e| format!("Encode error: {e}"))
         }

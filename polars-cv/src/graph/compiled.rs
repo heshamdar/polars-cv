@@ -34,7 +34,7 @@ use crate::execute::{
     decode_contour_source, decode_contour_source_with_dims, decode_source, resolve_op,
 };
 use crate::params::{ParamCtx, ParamValue};
-use crate::pipeline::{OpSpec, PipelineSpec};
+use crate::pipeline::OpSpec;
 
 use super::decode::{
     apply_mask, build_series_from_spec, decode_binary_zero_copy, decode_list_or_array_source,
@@ -428,9 +428,11 @@ impl CompiledGraph {
                                             Err(e) => Err(format!("Contour decode error: {e}")),
                                         }
                                     } else {
-                                        let temp_spec = self.temp_pipeline_spec(node, state);
                                         match decode_contour_source(
-                                            &value, row_idx, &temp_spec, ctx,
+                                            &value,
+                                            row_idx,
+                                            &node.source,
+                                            ctx,
                                         ) {
                                             Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
                                             Err(e) => Err(format!("Contour decode error: {e}")),
@@ -494,9 +496,10 @@ impl CompiledGraph {
                                             })?;
                                             owned_bytes.as_slice()
                                         };
-                                        let mut temp_spec = self.temp_pipeline_spec(node, state);
-                                        temp_spec.source.format = "image_bytes".to_string();
-                                        match decode_source(bytes, &temp_spec) {
+                                        // file_path contents decode like image bytes.
+                                        let mut source = node.source.clone();
+                                        source.format = "image_bytes".to_string();
+                                        match decode_source(bytes, &source) {
                                             Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
                                             Err(e) => {
                                                 Err(format!("Decode error for file '{path}': {e}"))
@@ -555,13 +558,10 @@ impl CompiledGraph {
                                 }
                             } else {
                                 match input_ca.get(row_idx) {
-                                    Some(bytes) => {
-                                        let temp_spec = self.temp_pipeline_spec(node, state);
-                                        match decode_source(bytes, &temp_spec) {
-                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                            Err(e) => Err(format!("Decode error: {e}")),
-                                        }
-                                    }
+                                    Some(bytes) => match decode_source(bytes, &node.source) {
+                                        Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                        Err(e) => Err(format!("Decode error: {e}")),
+                                    },
                                     None => Ok(None),
                                 }
                             }
@@ -1248,23 +1248,6 @@ impl CompiledGraph {
             );
         }
         prefetched
-    }
-
-    /// Build the throwaway `PipelineSpec` some decode paths expect.
-    ///
-    /// Only the source spec matters to those paths; the sink is filled from
-    /// the first output for structural completeness.
-    fn temp_pipeline_spec(
-        &self,
-        node: &super::types::GraphNode,
-        state: &ExecState<'_>,
-    ) -> PipelineSpec {
-        PipelineSpec {
-            source: node.source.clone(),
-            shape_hints: None,
-            ops: vec![],
-            sink: state.resolved_outputs[0].1.sink.clone(),
-        }
     }
 }
 
