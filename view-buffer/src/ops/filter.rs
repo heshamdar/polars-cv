@@ -79,7 +79,6 @@ impl Op for ConvolveOp {
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         OutputDTypeRule::PromoteToFloat
     }
-
 }
 
 /// Apply 2D convolution to a buffer.
