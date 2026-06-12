@@ -33,7 +33,7 @@ maturin develop --release  # Builds cdylib and installs into .venv
 | `graph/decode.rs` | Source decoding, `dtype_for_output` schema inference, reflect/symmetric padding |
 | `graph/encode.rs` | Output encoding, geometry op execution |
 | `execute.rs` | `resolve_op()` (op-spec to `ViewDto`), decode/encode helpers shared by graph execution |
-| `pipeline.rs` | `PipelineSpec`, `SourceSpec`, `SinkSpec`, `OpSpec` serde types for JSON deserialization |
+| `pipeline.rs` | `SourceSpec`, `SinkSpec`, `OpSpec` serde types for JSON deserialization |
 | `params.rs` | `ParamValue` — literal vs expression parameter resolution |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `cloud.rs` | Cloud storage and HTTP file reads via `object_store` + `reqwest` |
@@ -144,7 +144,7 @@ Current responsibilities: `resolve_op()`, `decode_source()`, `decode_contour_sou
 
 ### `pipeline.rs`
 
-Contains serde types (`PipelineSpec`, `SourceSpec`, `SinkSpec`, `OpSpec`) for JSON deserialization. The graph system uses `SourceSpec`, `SinkSpec`, and `OpSpec` via `GraphNode`. The `PipelineSpec` wrapper itself may be removable.
+Contains serde types (`SourceSpec`, `SinkSpec`, `OpSpec`) for JSON deserialization. The graph system uses them via `GraphNode`/`OutputSpec`; the decode/encode helpers take `&SourceSpec`/`&SinkSpec` directly (the old `PipelineSpec` wrapper was removed).
 
 ## Adding a New Operation (Rust Side)
 
