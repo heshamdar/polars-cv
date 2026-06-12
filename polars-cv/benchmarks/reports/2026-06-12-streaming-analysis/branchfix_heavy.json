@@ -1,0 +1,59 @@
+Starting polars-cv benchmark suite...
+[
+  {
+    "framework": "polars-cv-eager",
+    "operation": "heavy_pipeline",
+    "image_count": 100,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.0701540884001588,
+    "throughput_images_per_second": 1425.4336743654935,
+    "latency_ms_per_image": 0.701540884001588,
+    "peak_memory_mb": 147.65234375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "heavy_pipeline",
+    "image_count": 100,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.020995273000517047,
+    "throughput_images_per_second": 4762.976885203509,
+    "latency_ms_per_image": 0.20995273000517048,
+    "peak_memory_mb": 168.421875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "heavy_pipeline",
+    "image_count": 1000,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.7409786299998814,
+    "throughput_images_per_second": 1349.5665860163335,
+    "latency_ms_per_image": 0.7409786299998814,
+    "peak_memory_mb": 478.05859375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "heavy_pipeline",
+    "image_count": 1000,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.1832623346002947,
+    "throughput_images_per_second": 5456.658631906307,
+    "latency_ms_per_image": 0.1832623346002947,
+    "peak_memory_mb": 394.359375,
+    "gpu_mode": null
+  }
+]

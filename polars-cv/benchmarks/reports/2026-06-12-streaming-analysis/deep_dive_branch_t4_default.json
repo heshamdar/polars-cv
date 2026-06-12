@@ -1,0 +1,102 @@
+[
+ {
+  "label": "branch_t4_default",
+  "experiment": "imagenet_blob_1000",
+  "case": "eager",
+  "rows": 1000,
+  "seconds": 1.0910098210006254,
+  "rows_per_sec": 916.5820332239033,
+  "threads": 4,
+  "morsel_size": "default"
+ },
+ {
+  "label": "branch_t4_default",
+  "experiment": "imagenet_blob_1000",
+  "case": "streaming",
+  "rows": 1000,
+  "seconds": 0.18212792700069258,
+  "rows_per_sec": 5490.646143445081,
+  "threads": 4,
+  "morsel_size": "default"
+ },
+ {
+  "label": "branch_t4_default",
+  "experiment": "tiny_8x8_flip_20000",
+  "case": "eager",
+  "rows": 20000,
+  "seconds": 0.036792630000491044,
+  "rows_per_sec": 543587.1260014051,
+  "threads": 4,
+  "morsel_size": "default"
+ },
+ {
+  "label": "branch_t4_default",
+  "experiment": "tiny_8x8_flip_20000",
+  "case": "streaming",
+  "rows": 20000,
+  "seconds": 0.00985795000087819,
+  "rows_per_sec": 2028819.3791019744,
+  "threads": 4,
+  "morsel_size": "default"
+ },
+ {
+  "label": "branch_t4_default",
+  "experiment": "tiny_8x8_20ops_20000",
+  "case": "eager",
+  "rows": 20000,
+  "seconds": 0.26910051699996984,
+  "rows_per_sec": 74321.67066405986,
+  "threads": 4,
+  "morsel_size": "default"
+ },
+ {
+  "label": "branch_t4_default",
+  "experiment": "tiny_8x8_20ops_20000",
+  "case": "streaming",
+  "rows": 20000,
+  "seconds": 0.07165626699861605,
+  "rows_per_sec": 279110.2695928365,
+  "threads": 4,
+  "morsel_size": "default"
+ },
+ {
+  "label": "branch_t4_default",
+  "experiment": "decode_share_resize_500",
+  "case": "png_source_streaming",
+  "rows": 500,
+  "seconds": 0.10454487600145512,
+  "rows_per_sec": 4782.635162272713,
+  "threads": 4,
+  "morsel_size": "default"
+ },
+ {
+  "label": "branch_t4_default",
+  "experiment": "decode_share_resize_500",
+  "case": "blob_source_streaming",
+  "rows": 500,
+  "seconds": 0.027028512000470073,
+  "rows_per_sec": 18498.9835915238,
+  "threads": 4,
+  "morsel_size": "default"
+ },
+ {
+  "label": "branch_t4_default",
+  "experiment": "sink_share_resize_500",
+  "case": "numpy_sink_streaming",
+  "rows": 500,
+  "seconds": 0.024941618999946513,
+  "rows_per_sec": 20046.81412225374,
+  "threads": 4,
+  "morsel_size": "default"
+ },
+ {
+  "label": "branch_t4_default",
+  "experiment": "identity_blob_500",
+  "case": "streaming",
+  "rows": 500,
+  "seconds": 0.007748486001219135,
+  "rows_per_sec": 64528.7350227297,
+  "threads": 4,
+  "morsel_size": "default"
+ }
+]
