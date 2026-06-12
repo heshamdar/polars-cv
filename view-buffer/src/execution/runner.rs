@@ -339,10 +339,7 @@ fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f32) -> ViewBuffer {
         let count = contig.layout.num_elements();
         let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
         let gamma = gamma as f64;
-        let new_data: Vec<f64> = src
-            .iter()
-            .map(|&x| x.clamp(0.0, 1.0).powf(gamma))
-            .collect();
+        let new_data: Vec<f64> = src.iter().map(|&x| x.clamp(0.0, 1.0).powf(gamma)).collect();
         return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
     }
     let work_buf = if input_dtype != DType::F32 {
@@ -1549,6 +1546,16 @@ fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
 /// Border handling: replicate (edge pixels clamped to image boundary), matching
 /// the behaviour of `morph_minmax_typed` in the same file.
 ///
+/// Structured for auto-vectorization:
+/// - the input is converted to f32 once up front (n casts instead of k·n
+///   per-tap `NumCast` calls);
+/// - the horizontal pass accumulates each kernel tap as a contiguous
+///   shifted-slice multiply-add over the row interior, with clamped-index
+///   gathers only for the `radius` columns at each border;
+/// - the vertical pass accumulates whole rows (`row_out += k·row_src`), so
+///   border handling is a per-row clamp, not a per-element one;
+/// - the f32 → T conversion happens once per element after the passes.
+///
 /// The horizontal-pass intermediate is stored in a thread-local f32 slab
 /// (`BLUR_HORIZ_BUF`) that grows to fit the largest image seen per thread and
 /// is never shrunk — zero allocator round-trip on warm paths.
@@ -1564,53 +1571,102 @@ where
     let w = shape[1];
     let c = shape.get(2).copied().unwrap_or(1);
     let n = h * w * c;
+    let wc = w * c;
 
     let kernel = gaussian_kernel_1d(sigma);
     let radius = kernel.len() / 2;
     let src: &[T] = contig_buf.as_slice::<T>();
 
-    // ── Horizontal pass: T → f32 ─────────────────────────────────────────
-    // Row-major access pattern is cache-friendly.  The slab borrow ends at
-    // `to_vec()` so the vertical pass can borrow it again if needed.
-    let horiz: Vec<f32> = BLUR_HORIZ_BUF.with(|cell| {
+    // ── Convert input to f32 once ────────────────────────────────────────
+    let mut input_f32: Vec<f32> = Vec::with_capacity(n);
+    input_f32.extend(src.iter().map(|&v| {
+        let v: f32 = NumCast::from(v).unwrap_or(0.0);
+        v
+    }));
+
+    BLUR_HORIZ_BUF.with(|cell| {
         let mut slab = cell.borrow_mut();
         if slab.len() < n {
             slab.resize(n, 0.0f32);
         }
+        let horiz = &mut slab[..n];
+
+        // ── Horizontal pass (f32 → f32) ──────────────────────────────────
         for y in 0..h {
-            for x in 0..w {
+            let row_in = &input_f32[y * wc..(y + 1) * wc];
+            let row_out = &mut horiz[y * wc..(y + 1) * wc];
+
+            if w <= 2 * radius {
+                // Image narrower than the kernel: clamped gather everywhere.
+                for x in 0..w {
+                    for ch in 0..c {
+                        let mut sum = 0.0f32;
+                        for (ki, &kw) in kernel.iter().enumerate() {
+                            let sx = (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1)
+                                as usize;
+                            sum += kw * row_in[sx * c + ch];
+                        }
+                        row_out[x * c + ch] = sum;
+                    }
+                }
+                continue;
+            }
+
+            // Interior: per-tap shifted-slice multiply-add over contiguous
+            // memory — the inner zip vectorizes.
+            let lo = radius * c;
+            let hi = (w - radius) * c;
+            row_out[lo..hi].fill(0.0);
+            for (ki, &kw) in kernel.iter().enumerate() {
+                let shift = (ki as i64 - radius as i64) * c as i64;
+                let src_start = (lo as i64 + shift) as usize;
+                let src_slice = &row_in[src_start..src_start + (hi - lo)];
+                for (o, &v) in row_out[lo..hi].iter_mut().zip(src_slice) {
+                    *o += kw * v;
+                }
+            }
+            // Borders: clamped gather for `radius` columns on each side.
+            for x in (0..radius).chain(w - radius..w) {
                 for ch in 0..c {
                     let mut sum = 0.0f32;
                     for (ki, &kw) in kernel.iter().enumerate() {
                         let sx =
                             (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1) as usize;
-                        let v: f32 = NumCast::from(src[(y * w + sx) * c + ch]).unwrap_or(0.0);
-                        sum += kw * v;
+                        sum += kw * row_in[sx * c + ch];
                     }
-                    slab[(y * w + x) * c + ch] = sum;
+                    row_out[x * c + ch] = sum;
                 }
             }
         }
-        slab[..n].to_vec()
-    });
 
-    // ── Vertical pass: f32 → T ───────────────────────────────────────────
-    let mut out: Vec<T> = vec![T::default(); n];
-    for y in 0..h {
-        for x in 0..w {
-            for ch in 0..c {
-                let mut sum = 0.0f32;
-                for (ki, &kw) in kernel.iter().enumerate() {
-                    let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
-                    sum += kw * horiz[(sy * w + x) * c + ch];
+        // ── Vertical pass (f32 → f32 row accumulation) → T ───────────────
+        let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
+        let mut acc_row = vec![0.0f32; wc];
+        let mut out: Vec<T> = Vec::with_capacity(n);
+        for y in 0..h {
+            acc_row.fill(0.0);
+            for (ki, &kw) in kernel.iter().enumerate() {
+                let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
+                let src_row = &horiz[sy * wc..(sy + 1) * wc];
+                for (o, &v) in acc_row.iter_mut().zip(src_row) {
+                    *o += kw * v;
                 }
-                let clamped = clamp_for_dtype(sum as f64, T::DTYPE);
-                out[(y * w + x) * c + ch] = NumCast::from(clamped).unwrap_or(T::default());
+            }
+            if is_float {
+                out.extend(
+                    acc_row
+                        .iter()
+                        .map(|&v| NumCast::from(v).unwrap_or(T::default())),
+                );
+            } else {
+                out.extend(acc_row.iter().map(|&v| {
+                    NumCast::from(clamp_for_dtype(v as f64, T::DTYPE)).unwrap_or(T::default())
+                }));
             }
         }
-    }
 
-    ViewBuffer::from_vec_with_shape(out, shape.to_vec())
+        ViewBuffer::from_vec_with_shape(out, shape.to_vec())
+    })
 }
 
 #[cfg(not(feature = "image_interop"))]

@@ -223,5 +223,4 @@ impl Op for ImageOp {
             ImageOpKind::MorphGradient { .. } => OutputDTypeRule::PreserveInput,
         }
     }
-
 }

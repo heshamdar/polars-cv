@@ -1,9 +1,11 @@
 //! Execution plan types and the executor.
 
 use crate::core::buffer::ViewBuffer;
-use crate::execution::runner::{apply_compute_inner, apply_image_inner, apply_perceptual_hash, apply_view};
-use crate::ops::{ComputeOp, ImageOp, ViewOp};
+use crate::execution::runner::{
+    apply_compute_inner, apply_image_inner, apply_perceptual_hash, apply_view,
+};
 use crate::ops::phash::PerceptualHashOp;
+use crate::ops::{ComputeOp, ImageOp, ViewOp};
 
 /// A single step in a flat execution plan.
 #[derive(Debug, Clone)]
@@ -44,4 +46,3 @@ pub(crate) fn apply_step(buf: ViewBuffer, step: PlanStep) -> ViewBuffer {
         PlanStep::MaterializeContiguous => buf.to_contiguous(),
     }
 }
-
