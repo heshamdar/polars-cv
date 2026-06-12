@@ -776,15 +776,16 @@ pub(crate) fn build_series_from_spec(
             crate::output::build_numpy_series(name, buffers)
         }
         ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") | (_, "binary") => {
-            let binary_data: Vec<Option<Vec<u8>>> = data
-                .iter()
-                .map(|r| match r {
-                    RowResult::Binary(b) => b.clone(),
-                    _ => None,
-                })
-                .collect();
-            let output_ca = BinaryChunked::from_iter_options(name, binary_data.into_iter());
-            Ok(output_ca.into_series())
+            // Append borrowed slices straight into the builder — no per-row
+            // Vec<u8> clone before the Arrow copy.
+            let mut builder = BinaryChunkedBuilder::new(name, data.len());
+            for r in data {
+                match r {
+                    RowResult::Binary(Some(b)) => builder.append_value(b),
+                    _ => builder.append_null(),
+                }
+            }
+            Ok(builder.finish().into_series())
         }
         ("buffer", "list") => {
             let rows: Vec<TypedListRow> = data
@@ -889,15 +890,14 @@ pub(crate) fn build_series_from_spec(
             Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
         }
         _ => {
-            let binary_data: Vec<Option<Vec<u8>>> = data
-                .iter()
-                .map(|r| match r {
-                    RowResult::Binary(b) => b.clone(),
-                    _ => None,
-                })
-                .collect();
-            let output_ca = BinaryChunked::from_iter_options(name, binary_data.into_iter());
-            Ok(output_ca.into_series())
+            let mut builder = BinaryChunkedBuilder::new(name, data.len());
+            for r in data {
+                match r {
+                    RowResult::Binary(Some(b)) => builder.append_value(b),
+                    _ => builder.append_null(),
+                }
+            }
+            Ok(builder.finish().into_series())
         }
     }
 }

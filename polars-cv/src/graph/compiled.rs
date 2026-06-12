@@ -363,6 +363,53 @@ impl CompiledGraph {
         dto_scratch: &mut Vec<ResolvedStep<'g>>,
         results: &mut HashMap<String, Vec<RowResult>>,
     ) -> Result<(), String> {
+        self.run_row_nodes(state, row_idx, node_outputs, dto_scratch)?;
+        for (alias, spec) in &state.resolved_outputs {
+            if let Some(output) = node_outputs.get(&spec.node) {
+                validate_output_dtype(alias, spec, output)?;
+                match encode_node_output(output, spec) {
+                    Ok(encoded) => {
+                        let row_result = match encoded {
+                            OutputValue::Binary(bytes) => RowResult::Binary(Some(bytes)),
+                            OutputValue::Scalar(val) => RowResult::Scalar(Some(val)),
+                            OutputValue::Vector(vals) => RowResult::Vector(Some((*vals).clone())),
+                            OutputValue::Contours(contours) => {
+                                RowResult::Contours(Some((*contours).clone()))
+                            }
+                            OutputValue::TypedList { data, shape } => {
+                                RowResult::TypedList(Some((data, shape)))
+                            }
+                            OutputValue::TypedArray { data, shape } => {
+                                RowResult::TypedArray(Some((data, shape)))
+                            }
+                            OutputValue::NumpyStruct(buf) => RowResult::NumpyStruct(Some(buf)),
+                            OutputValue::HistogramBuckets(buckets) => {
+                                RowResult::HistogramBuckets(Some(buckets))
+                            }
+                        };
+                        results.get_mut(alias).unwrap().push(row_result);
+                    }
+                    Err(e) => {
+                        return Err(format!("Encode error for '{alias}': {e}"));
+                    }
+                }
+            } else {
+                let null_result = null_row_result_for_spec(spec);
+                results.get_mut(alias).unwrap().push(null_result);
+            }
+        }
+        Ok(())
+    }
+
+    /// Run every node of the graph for one row, leaving each node's output in
+    /// `node_outputs` (no output encoding).
+    fn run_row_nodes<'g>(
+        &'g self,
+        state: &ExecState<'_>,
+        row_idx: usize,
+        node_outputs: &mut HashMap<String, NodeOutput>,
+        dto_scratch: &mut Vec<ResolvedStep<'g>>,
+    ) -> Result<(), String> {
         let order = self.graph.topological_order();
         let inputs = state.inputs;
         let ctx = &state.ctx;
@@ -1146,61 +1193,6 @@ impl CompiledGraph {
                     node_outputs.insert(node_id.clone(), current_output);
                 }
             }
-            for (alias, spec) in &state.resolved_outputs {
-                if let Some(output) = node_outputs.get(&spec.node) {
-                    // Validate that the buffer dtype matches the planned
-                    // expected_dtype (inferred by the Python planner from
-                    // this op's view-buffer contract).
-                    // "auto" is resolved elsewhere and skipped here.
-                    if spec.expected_dtype != "auto" {
-                        if let Some(buf) = output.as_buffer() {
-                            if let Ok(expected) =
-                                super::decode::parse_dtype_str(&spec.expected_dtype)
-                            {
-                                let actual = buf.dtype();
-                                if actual != expected {
-                                    return Err(format!(
-                                        "Output '{alias}': planned dtype {expected:?} but execution \
-                                         produced {actual:?}. This indicates a mismatch between \
-                                         the planner's view-buffer contract and the Rust implementation."
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    match encode_node_output(output, spec) {
-                        Ok(encoded) => {
-                            let row_result = match encoded {
-                                OutputValue::Binary(bytes) => RowResult::Binary(Some(bytes)),
-                                OutputValue::Scalar(val) => RowResult::Scalar(Some(val)),
-                                OutputValue::Vector(vals) => {
-                                    RowResult::Vector(Some((*vals).clone()))
-                                }
-                                OutputValue::Contours(contours) => {
-                                    RowResult::Contours(Some((*contours).clone()))
-                                }
-                                OutputValue::TypedList { data, shape } => {
-                                    RowResult::TypedList(Some((data, shape)))
-                                }
-                                OutputValue::TypedArray { data, shape } => {
-                                    RowResult::TypedArray(Some((data, shape)))
-                                }
-                                OutputValue::NumpyStruct(buf) => RowResult::NumpyStruct(Some(buf)),
-                                OutputValue::HistogramBuckets(buckets) => {
-                                    RowResult::HistogramBuckets(Some(buckets))
-                                }
-                            };
-                            results.get_mut(alias).unwrap().push(row_result);
-                        }
-                        Err(e) => {
-                            return Err(format!("Encode error for '{alias}': {e}"));
-                        }
-                    }
-                } else {
-                    let null_result = null_row_result_for_spec(spec);
-                    results.get_mut(alias).unwrap().push(null_result);
-                }
-            }
         }
         Ok(())
     }
@@ -1511,6 +1503,31 @@ enum LabelRegionMode {
     Interior,
     Boundary,
     Bbox,
+}
+
+/// Validate that a buffer output's dtype matches the planned expected_dtype
+/// (inferred by the Python planner from the op's view-buffer contract).
+/// "auto" is resolved elsewhere and skipped here.
+fn validate_output_dtype(
+    alias: &str,
+    spec: &OutputSpec,
+    output: &NodeOutput,
+) -> Result<(), String> {
+    if spec.expected_dtype != "auto" {
+        if let Some(buf) = output.as_buffer() {
+            if let Ok(expected) = super::decode::parse_dtype_str(&spec.expected_dtype) {
+                let actual = buf.dtype();
+                if actual != expected {
+                    return Err(format!(
+                        "Output '{alias}': planned dtype {expected:?} but execution \
+                         produced {actual:?}. This indicates a mismatch between \
+                         the planner's view-buffer contract and the Rust implementation."
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse_label_reduction(value: &str) -> Result<LabelReduction, String> {
