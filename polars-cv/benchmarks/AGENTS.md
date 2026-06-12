@@ -40,11 +40,14 @@ benchmarks/
 │   ├── pipelines.py                # Multi-op pipeline benchmarks
 │   ├── e2e_workflow.py             # End-to-end file-to-memory
 │   └── zero_copy_ingestion.py      # Zero-copy path benchmarks
-└── utils/                          # Shared utilities
-    ├── data_gen.py                 # Synthetic test data generation
-    ├── memory.py                   # Memory measurement
-    ├── results.py                  # Result formatting and comparison
-    └── validation.py               # Cross-framework result validation
+├── utils/                          # Shared utilities
+│   ├── data_gen.py                 # Synthetic test data generation
+│   ├── memory.py                   # Memory measurement
+│   ├── results.py                  # Result formatting and comparison
+│   └── validation.py               # Cross-framework result validation
+└── reports/                        # Dated benchmark runs + analysis writeups
+    └── 2026-06-12-streaming-analysis/  # main vs OpenCV/Pillow/torchvision,
+                                        # streaming-engine deep dive, raw JSON
 ```
 
 ## Frameworks Compared
