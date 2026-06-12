@@ -64,6 +64,9 @@ class CvNamespace:
         return LazyPipelineExpr(
             column=self._expr,
             pipeline=pipe,
+            # Ops referencing other nodes (rasterize(shape=...)) make those
+            # nodes upstream dependencies so they execute first.
+            upstream=list(pipe._shape_refs),
         )
 
     # ------------------------------------------------------------------

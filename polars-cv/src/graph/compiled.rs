@@ -57,6 +57,20 @@ pub(crate) enum OpResolver {
     /// Has at least one dynamic (slot-bound) param: re-resolved per row with
     /// direct typed slot reads (no string-keyed lookups, no `AnyValue`).
     Dynamic(OpSpec),
+    /// `rasterize(shape=<node>)`: output dimensions come from another node's
+    /// buffer at execution time (the referenced node is an upstream
+    /// dependency, so it has already run); the remaining params resolve from
+    /// the spec like any dynamic op.
+    RasterizeShapeRef { spec: OpSpec, shape_node: String },
+}
+
+/// One op of a node's chain, resolved for the current row.
+enum ResolvedStep<'a> {
+    Dto(Cow<'a, ViewDto>),
+    RasterizeShapeRef {
+        spec: &'a OpSpec,
+        shape_node: &'a str,
+    },
 }
 
 /// A pipeline graph compiled for repeated execution.
@@ -107,7 +121,16 @@ impl CompiledGraph {
 
         // Expression columns are appended to the plugin inputs after the
         // source columns; bind each referenced name to its absolute index.
-        let num_source_columns = graph.column_bindings.len().max(1);
+        // Several root nodes may share one input column (one binding entry
+        // each, same column index), so the offset is the number of *distinct*
+        // columns — counting entries would shift every expression slot.
+        let num_source_columns = graph
+            .column_bindings
+            .values()
+            .copied()
+            .max()
+            .map(|max_idx| max_idx + 1)
+            .unwrap_or(1);
         let name_to_slot: HashMap<String, usize> = expr_column_names
             .iter()
             .enumerate()
@@ -156,17 +179,33 @@ impl CompiledGraph {
         let mut resolvers: HashMap<String, Vec<OpResolver>> =
             HashMap::with_capacity(graph.nodes.len());
         for (node_id, node) in &graph.nodes {
-            let node_resolvers: Vec<OpResolver> = node
-                .ops
-                .iter()
-                .map(|spec| {
-                    if spec.is_all_literal() {
-                        resolve_op(spec, 0, &empty_ctx).map(OpResolver::Static)
-                    } else {
-                        Ok(OpResolver::Dynamic(spec.clone()))
+            let mut node_resolvers: Vec<OpResolver> = Vec::with_capacity(node.ops.len());
+            for spec in &node.ops {
+                // rasterize(shape=<node>) carries a shape_ref instead of
+                // width/height; it gets a dedicated resolver because its
+                // dimensions come from another node's output, not a param.
+                if spec.op == "rasterize" {
+                    if let Some(shape_ref) = spec.params.get("shape_ref") {
+                        let shape_node = shape_ref.resolve_string()?.to_string();
+                        if !graph.nodes.contains_key(&shape_node) {
+                            return Err(polars_err!(ComputeError:
+                                "Node '{}': rasterize shape reference '{}' is not a node in the graph",
+                                node_id, shape_node
+                            ));
+                        }
+                        node_resolvers.push(OpResolver::RasterizeShapeRef {
+                            spec: spec.clone(),
+                            shape_node,
+                        });
+                        continue;
                     }
-                })
-                .collect::<PolarsResult<_>>()?;
+                }
+                if spec.is_all_literal() {
+                    node_resolvers.push(OpResolver::Static(resolve_op(spec, 0, &empty_ctx)?));
+                } else {
+                    node_resolvers.push(OpResolver::Dynamic(spec.clone()));
+                }
+            }
             resolvers.insert(node_id.clone(), node_resolvers);
         }
 
@@ -284,7 +323,7 @@ impl CompiledGraph {
         };
         // Allocated once and reused across rows/nodes to avoid per-row churn.
         let mut node_outputs: HashMap<String, NodeOutput> = HashMap::new();
-        let mut dto_scratch: Vec<Cow<'_, ViewDto>> = Vec::new();
+        let mut dto_scratch: Vec<ResolvedStep<'_>> = Vec::new();
         for row_idx in 0..len {
             node_outputs.clear();
             let row_result =
@@ -321,7 +360,7 @@ impl CompiledGraph {
         state: &ExecState<'_>,
         row_idx: usize,
         node_outputs: &mut HashMap<String, NodeOutput>,
-        dto_scratch: &mut Vec<Cow<'g, ViewDto>>,
+        dto_scratch: &mut Vec<ResolvedStep<'g>>,
         results: &mut HashMap<String, Vec<RowResult>>,
     ) -> Result<(), String> {
         let order = self.graph.topological_order();
@@ -547,11 +586,15 @@ impl CompiledGraph {
                     if let Some(resolvers) = self.resolvers.get(node_id) {
                         for resolver in resolvers {
                             match resolver {
-                                OpResolver::Static(dto) => dto_scratch.push(Cow::Borrowed(dto)),
+                                OpResolver::Static(dto) => {
+                                    dto_scratch.push(ResolvedStep::Dto(Cow::Borrowed(dto)))
+                                }
                                 OpResolver::Dynamic(spec) => match resolve_op(spec, row_idx, ctx) {
-                                    Ok(dto) => dto_scratch.push(Cow::Owned(dto)),
+                                    Ok(dto) => dto_scratch.push(ResolvedStep::Dto(Cow::Owned(dto))),
                                     Err(e) => return Err(format!("Op resolution error: {e}")),
                                 },
+                                OpResolver::RasterizeShapeRef { spec, shape_node } => dto_scratch
+                                    .push(ResolvedStep::RasterizeShapeRef { spec, shape_node }),
                             }
                         }
                     }
@@ -574,7 +617,62 @@ impl CompiledGraph {
                         Ok(NodeOutput::from_buffer(result))
                     }
                     let mut pending_buffer_ops: Vec<ViewDto> = Vec::new();
-                    for view_dto in dto_scratch.iter() {
+                    for step in dto_scratch.iter() {
+                        let view_dto = match step {
+                            ResolvedStep::RasterizeShapeRef { spec, shape_node } => {
+                                // Dimensions come from the referenced node's
+                                // buffer (already executed: it is upstream).
+                                current_output =
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                let shape_output =
+                                    node_outputs.get(*shape_node).ok_or_else(|| {
+                                        format!(
+                                            "Rasterize shape reference '{shape_node}' produced no output"
+                                        )
+                                    })?;
+                                let shape_buf = shape_output.as_buffer().ok_or_else(|| {
+                                    format!(
+                                        "Rasterize shape reference '{shape_node}' must be a Buffer, got {:?}",
+                                        shape_output.domain()
+                                    )
+                                })?;
+                                let dims = shape_buf.shape();
+                                if dims.len() < 2 {
+                                    return Err(format!(
+                                        "Rasterize shape reference '{shape_node}' must be at least 2D, got {}D",
+                                        dims.len()
+                                    ));
+                                }
+                                let height = dims[0] as u32;
+                                let width = dims[1] as u32;
+                                let fill_value = spec
+                                    .params
+                                    .get("fill_value")
+                                    .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(255) as u8)
+                                    .unwrap_or(255);
+                                let background = spec
+                                    .params
+                                    .get("background")
+                                    .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(0) as u8)
+                                    .unwrap_or(0);
+                                let anti_alias = matches!(
+                                    spec.params.get("anti_alias"),
+                                    Some(ParamValue::Literal {
+                                        value: serde_json::Value::Bool(true)
+                                    })
+                                );
+                                let geo_op = view_buffer::GeometryOp::Rasterize {
+                                    width,
+                                    height,
+                                    fill_value,
+                                    background,
+                                    anti_alias,
+                                };
+                                current_output = execute_geometry_op(current_output, &geo_op)?;
+                                continue;
+                            }
+                            ResolvedStep::Dto(dto) => dto,
+                        };
                         match view_dto.as_ref() {
                             ViewDto::Geometry(geo_op) => {
                                 current_output =
