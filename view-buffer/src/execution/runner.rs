@@ -1360,9 +1360,9 @@ where
     // Invert the 2x3 matrix for inverse-mapping interpolation.
     let [a_fwd, b_fwd, tx_fwd, c_fwd, d_fwd, ty_fwd] = params.matrix;
     let det = a_fwd * d_fwd - b_fwd * c_fwd;
-    let inv = if det.abs() < 1e-15 {
+    let (a, b, tx, c, d, ty) = if det.abs() < 1e-15 {
         // Singular matrix — fall back to identity (no-op)
-        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
     } else {
         let inv_det = 1.0 / det;
         let ai = d_fwd * inv_det;
@@ -1371,7 +1371,7 @@ where
         let di = a_fwd * inv_det;
         let txi = -(ai * tx_fwd + bi * ty_fwd);
         let tyi = -(ci * tx_fwd + di * ty_fwd);
-        [ai, bi, txi, ci, di, tyi]
+        (ai, bi, txi, ci, di, tyi)
     };
 
     let contig_buf = if buf.layout.is_contiguous() {
@@ -1385,29 +1385,74 @@ where
     let border_val: T = NumCast::from(params.border_value).unwrap_or(T::default());
     let mut dst_data: Vec<T> = vec![border_val; output_size];
 
-    // Monomorphized per interpolation type: the per-pixel `match` of the
-    // original implementation is hoisted out of the loop entirely. The
-    // coordinate expressions are kept verbatim (`a*x + b*y + tx`, evaluated
-    // in f64 with the original association) so results are bit-exact with
-    // the pre-split implementation (see tests/affine_ref.rs).
-    match params.interpolation {
-        InterpolationType::Nearest => affine_warp_nearest::<T>(
-            src_data,
-            &mut dst_data,
-            (in_h, in_w),
-            (out_h, out_w),
-            channels,
-            &inv,
-        ),
-        InterpolationType::Bilinear => affine_warp_bilinear::<T>(
-            src_data,
-            &mut dst_data,
-            (in_h, in_w),
-            (out_h, out_w),
-            channels,
-            &inv,
-            params.border_value,
-        ),
+    let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
+
+    for y_dst in 0..out_h {
+        for x_dst in 0..out_w {
+            let x_src = a * x_dst as f64 + b * y_dst as f64 + tx;
+            let y_src = c * x_dst as f64 + d * y_dst as f64 + ty;
+
+            match params.interpolation {
+                InterpolationType::Nearest => {
+                    let sx = x_src.round() as i64;
+                    let sy = y_src.round() as i64;
+                    if sx >= 0 && sy >= 0 && (sx as usize) < in_w && (sy as usize) < in_h {
+                        let src_idx = (sy as usize * in_w + sx as usize) * channels;
+                        let dst_idx = (y_dst * out_w + x_dst) * channels;
+                        dst_data[dst_idx..dst_idx + channels]
+                            .copy_from_slice(&src_data[src_idx..src_idx + channels]);
+                    }
+                }
+                InterpolationType::Bilinear => {
+                    let x0 = x_src.floor() as i64;
+                    let y0 = y_src.floor() as i64;
+                    let x1 = x0 + 1;
+                    let y1 = y0 + 1;
+
+                    // Fully out of bounds — dst already filled with border_val
+                    if x1 < 0 || y1 < 0 || x0 >= in_w as i64 || y0 >= in_h as i64 {
+                        continue;
+                    }
+
+                    let dx = x_src - x0 as f64;
+                    let dy = y_src - y0 as f64;
+
+                    let bv: f64 = params.border_value;
+
+                    let in_bounds = |px: i64, py: i64| -> bool {
+                        px >= 0 && py >= 0 && (px as usize) < in_w && (py as usize) < in_h
+                    };
+
+                    let dst_idx = (y_dst * out_w + x_dst) * channels;
+                    for ch in 0..channels {
+                        let sample = |px: i64, py: i64| -> f64 {
+                            if in_bounds(px, py) {
+                                let idx = (py as usize * in_w + px as usize) * channels + ch;
+                                NumCast::from(src_data[idx]).unwrap_or(bv)
+                            } else {
+                                bv
+                            }
+                        };
+
+                        let v00 = sample(x0, y0);
+                        let v10 = sample(x1, y0);
+                        let v01 = sample(x0, y1);
+                        let v11 = sample(x1, y1);
+
+                        let v0 = v00 * (1.0 - dx) + v10 * dx;
+                        let v1 = v01 * (1.0 - dx) + v11 * dx;
+                        let v = v0 * (1.0 - dy) + v1 * dy;
+
+                        let clamped = if is_float {
+                            v
+                        } else {
+                            clamp_for_dtype(v, T::DTYPE)
+                        };
+                        dst_data[dst_idx + ch] = NumCast::from(clamped).unwrap_or(T::default());
+                    }
+                }
+            }
+        }
     }
 
     let output_shape = if channels == 1 {
@@ -1419,139 +1464,11 @@ where
     ViewBuffer::from_vec(dst_data).reshape(output_shape)
 }
 
-/// Nearest-neighbor affine warp (monomorphized out of the per-pixel match).
-fn affine_warp_nearest<T>(
-    src_data: &[T],
-    dst_data: &mut [T],
-    (in_h, in_w): (usize, usize),
-    (out_h, out_w): (usize, usize),
-    channels: usize,
-    inv: &[f64; 6],
-) where
-    T: crate::core::dtype::ViewType + Default + Copy,
-{
-    let [a, b, tx, c, d, ty] = *inv;
-    for y_dst in 0..out_h {
-        for x_dst in 0..out_w {
-            let x_src = a * x_dst as f64 + b * y_dst as f64 + tx;
-            let y_src = c * x_dst as f64 + d * y_dst as f64 + ty;
-
-            let sx = x_src.round() as i64;
-            let sy = y_src.round() as i64;
-            if sx >= 0 && sy >= 0 && (sx as usize) < in_w && (sy as usize) < in_h {
-                let src_idx = (sy as usize * in_w + sx as usize) * channels;
-                let dst_idx = (y_dst * out_w + x_dst) * channels;
-                dst_data[dst_idx..dst_idx + channels]
-                    .copy_from_slice(&src_data[src_idx..src_idx + channels]);
-            }
-        }
-    }
-}
-
-/// Bilinear affine warp with an interior fast path.
-///
-/// Interior pixels (all four taps in-bounds) skip the per-tap bounds checks
-/// and the border-value fallback; partially-covered pixels keep the original
-/// per-tap sampled path; fully-out pixels keep the pre-filled border value.
-/// All arithmetic (f64 weights, the original expression association, the
-/// round-then-saturate `clamp_for_dtype` store) is unchanged ⇒ bit-exact.
-#[allow(clippy::too_many_arguments)]
-fn affine_warp_bilinear<T>(
-    src_data: &[T],
-    dst_data: &mut [T],
-    (in_h, in_w): (usize, usize),
-    (out_h, out_w): (usize, usize),
-    channels: usize,
-    inv: &[f64; 6],
-    border_value: f64,
-) where
-    T: crate::core::dtype::ViewType + Default + num_traits::NumCast,
-{
-    use num_traits::NumCast;
-
-    let [a, b, tx, c, d, ty] = *inv;
-    let bv: f64 = border_value;
-    let is_float = matches!(T::DTYPE, DType::F32 | DType::F64);
-
-    for y_dst in 0..out_h {
-        for x_dst in 0..out_w {
-            let x_src = a * x_dst as f64 + b * y_dst as f64 + tx;
-            let y_src = c * x_dst as f64 + d * y_dst as f64 + ty;
-
-            let x0 = x_src.floor() as i64;
-            let y0 = y_src.floor() as i64;
-            let x1 = x0 + 1;
-            let y1 = y0 + 1;
-
-            // Fully out of bounds — dst already filled with border_val
-            if x1 < 0 || y1 < 0 || x0 >= in_w as i64 || y0 >= in_h as i64 {
-                continue;
-            }
-
-            let dx = x_src - x0 as f64;
-            let dy = y_src - y0 as f64;
-            let dst_idx = (y_dst * out_w + x_dst) * channels;
-
-            if x0 >= 0 && y0 >= 0 && (x1 as usize) < in_w && (y1 as usize) < in_h {
-                // Interior fast path: direct loads, no per-tap branches.
-                let row0 = (y0 as usize * in_w + x0 as usize) * channels;
-                let row1 = (y1 as usize * in_w + x0 as usize) * channels;
-                for ch in 0..channels {
-                    let v00: f64 = NumCast::from(src_data[row0 + ch]).unwrap_or(bv);
-                    let v10: f64 = NumCast::from(src_data[row0 + channels + ch]).unwrap_or(bv);
-                    let v01: f64 = NumCast::from(src_data[row1 + ch]).unwrap_or(bv);
-                    let v11: f64 = NumCast::from(src_data[row1 + channels + ch]).unwrap_or(bv);
-
-                    let v0 = v00 * (1.0 - dx) + v10 * dx;
-                    let v1 = v01 * (1.0 - dx) + v11 * dx;
-                    let v = v0 * (1.0 - dy) + v1 * dy;
-
-                    let clamped = if is_float {
-                        v
-                    } else {
-                        clamp_for_dtype(v, T::DTYPE)
-                    };
-                    dst_data[dst_idx + ch] = NumCast::from(clamped).unwrap_or(T::default());
-                }
-            } else {
-                // Partially covered: per-tap bounds checks with the border
-                // value standing in for out-of-bounds taps (original path).
-                let in_bounds = |px: i64, py: i64| -> bool {
-                    px >= 0 && py >= 0 && (px as usize) < in_w && (py as usize) < in_h
-                };
-                for ch in 0..channels {
-                    let sample = |px: i64, py: i64| -> f64 {
-                        if in_bounds(px, py) {
-                            let idx = (py as usize * in_w + px as usize) * channels + ch;
-                            NumCast::from(src_data[idx]).unwrap_or(bv)
-                        } else {
-                            bv
-                        }
-                    };
-
-                    let v00 = sample(x0, y0);
-                    let v10 = sample(x1, y0);
-                    let v01 = sample(x0, y1);
-                    let v11 = sample(x1, y1);
-
-                    let v0 = v00 * (1.0 - dx) + v10 * dx;
-                    let v1 = v01 * (1.0 - dx) + v11 * dx;
-                    let v = v0 * (1.0 - dy) + v1 * dy;
-
-                    let clamped = if is_float {
-                        v
-                    } else {
-                        clamp_for_dtype(v, T::DTYPE)
-                    };
-                    dst_data[dst_idx + ch] = NumCast::from(clamped).unwrap_or(T::default());
-                }
-            }
-        }
-    }
-}
-
 /// Clamp an `f64` value to the representable range of the given integer `DType`.
-#[inline]
+///
+/// `#[inline(always)]`: hot loops call this with a compile-time-constant
+/// dtype from monomorphized contexts, so inlining folds the match away.
+#[inline(always)]
 fn clamp_for_dtype(v: f64, dtype: DType) -> f64 {
     match dtype {
         // Round before clamping so that e.g. 127.9999 → 128, not 127.
