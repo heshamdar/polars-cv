@@ -42,9 +42,6 @@ def _pin_threads(n: int) -> None:
     os.environ["POLARS_MAX_THREADS"] = str(n)
     os.environ["RAYON_NUM_THREADS"] = str(n)
     os.environ["OMP_NUM_THREADS"] = str(n)
-    # Mirror the morsel size the polars-cv adapter sets, so streaming behaves
-    # the same whether or not the adapter import happens to win the race.
-    os.environ.setdefault("POLARS_IDEAL_MORSEL_SIZE", "10")
 
 
 def build_adapters(names: list[str]) -> list[BaseFrameworkAdapter]:

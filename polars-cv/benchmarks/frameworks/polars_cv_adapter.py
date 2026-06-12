@@ -6,11 +6,6 @@ This module provides adapters for polars-cv in both eager and streaming modes.
 
 from __future__ import annotations
 
-import os
-
-os.environ["POLARS_IDEAL_MORSEL_SIZE"] = "10"
-
-
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,11 +13,6 @@ import numpy as np
 import polars as pl
 
 from .base import BaseFrameworkAdapter, OperationParams, OperationType
-
-# import os
-
-# os.environ["POLARS_VERBOSE"] = "1"
-
 
 if TYPE_CHECKING:
     import numpy.typing as npt
