@@ -172,5 +172,4 @@ Subsystem-specific AGENTS.md files provide deeper guidance:
 
 ## Known Limitations
 
-- `configure_tiling` / `get_tiling_config` are exposed but currently non-functional (no-op).
-- `ANNOTATED_POINT_SCHEMA` is defined in `geometry/` but not re-exported from the top-level `__all__`.
+- f64 inputs through the float-promoting scalar ops execute correctly (in f64) but are excluded from kernel fusion, which computes in f32.

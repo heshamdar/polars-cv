@@ -85,6 +85,6 @@ Point and contour namespace operations go directly through `register_plugin_func
 2. **Python:** Add a method to `PointNamespace` or `ContourNamespace` that calls `register_plugin_function`
 3. **Tests:** Add to `tests/test_contour_plugin.py` or create a reference test
 
-## TODO
+## Schema export policy
 
-- `ANNOTATED_POINT_SCHEMA` is exported by `geometry/__init__.py` but not included in `polars_cv/__init__.py` `__all__`. Add it to the top-level exports or decide it should remain geometry-only.
+- `ANNOTATED_POINT_SCHEMA` and `MATCH_RESULT_SCHEMA` are deliberately geometry-only exports (`polars_cv.geometry.ANNOTATED_POINT_SCHEMA`): they describe internal match-result structures, unlike the six user-facing geometry schemas re-exported at the package top level. Import them from `polars_cv.geometry` when needed.

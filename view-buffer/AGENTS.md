@@ -176,9 +176,9 @@ See `.cursor/polars-cv-contribution-guide.md` for a full walkthrough.
 | `perceptual_hash` | image_hasher + image_interop | Perceptual hashing |
 | `serde` | serde, serde_json, bytemuck | Serialization support |
 
-## Tiling (Currently No-Op)
+## Tiling (Removed)
 
-`TileConfig` / `TilePolicy` infrastructure exists in `execution/tiling.rs` but the tiling path is disabled — it did not deliver expected performance gains. May be revisited for SIMD optimization. The Python API still exposes `configure_tiling` / `get_tiling_config` but they are non-functional.
+A tiled execution strategy was implemented, benchmarked, and removed — it did not deliver performance gains over the simple per-op full-array passes that LLVM auto-vectorizes (`execution/tiling.rs` and the Python `configure_tiling` surface no longer exist). Treat that history as a prior for future loop-structure micro-optimizations: benchmark first.
 
 ## Performance Notes
 
