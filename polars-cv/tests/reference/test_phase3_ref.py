@@ -337,6 +337,60 @@ class TestSharpenRef:
             f"original ({orig_grad:.2f})"
         )
 
+    @pytest.mark.parametrize("strength", [0.5, 1.0, 2.0])
+    def test_sharpen_vs_opencv_filter2d(
+        self, gray_png: bytes, gray_image: np.ndarray, strength: float
+    ) -> None:
+        """Sharpen should match cv2.filter2D with the same kernel, full image.
+
+        Our convolve2d defaults to replicate borders, so the cv2 expectation
+        must use BORDER_REPLICATE (cv2's own default is BORDER_REFLECT_101).
+        The sharpen kernel is symmetric, so cv2's correlation equals
+        convolution and no kernel flip is needed.
+        """
+        cv2 = pytest.importorskip("cv2")
+
+        pipe = Pipeline().source("image_bytes").grayscale().sharpen(strength=strength)
+        result = _run_pipe(pipe, gray_png)
+        if result.ndim == 3 and result.shape[2] == 1:
+            result = result.squeeze(-1)
+
+        s = strength
+        kernel = np.array(
+            [[-s, -s, -s], [-s, 1.0 + 8.0 * s, -s], [-s, -s, -s]],
+            dtype=np.float32,
+        )
+        expected = cv2.filter2D(
+            gray_image.astype(np.float32),
+            -1,
+            kernel,
+            borderType=cv2.BORDER_REPLICATE,
+        )
+
+        np.testing.assert_allclose(result, expected, atol=1e-3)
+
+    def test_sharpen_rgb_vs_opencv_filter2d(
+        self, rgb_png: bytes, rgb_image: np.ndarray
+    ) -> None:
+        """RGB sharpen should match per-channel cv2.filter2D, full image."""
+        cv2 = pytest.importorskip("cv2")
+
+        pipe = Pipeline().source("image_bytes").sharpen(strength=1.0)
+        result = _run_pipe(pipe, rgb_png)
+
+        kernel = np.array(
+            [[-1, -1, -1], [-1, 9.0, -1], [-1, -1, -1]],
+            dtype=np.float32,
+        )
+        expected = cv2.filter2D(
+            rgb_image.astype(np.float32),
+            -1,
+            kernel,
+            borderType=cv2.BORDER_REPLICATE,
+        )
+
+        np.testing.assert_allclose(result, expected, atol=1e-3)
+
 
 # ===========================================================================
 # Histogram Equalization

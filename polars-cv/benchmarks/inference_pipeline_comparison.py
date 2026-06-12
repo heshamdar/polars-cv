@@ -30,10 +30,6 @@ Options:
 
 from __future__ import annotations
 
-import os
-
-os.environ["POLARS_IDEAL_MORSEL_SIZE"] = "10"
-
 import argparse
 import time
 from dataclasses import dataclass
