@@ -197,11 +197,14 @@ class LazyPipelineExpr:
                 initial_ndim=upstream_ndim,
             )
 
+            # Ops referencing other nodes (rasterize(shape=...)) make those
+            # nodes upstream dependencies so they execute first.
+            new_pipeline._shape_refs = pipeline._shape_refs.copy()
             return LazyPipelineExpr(
                 column=None,  # No column - receives from upstream, not from DataFrame
                 pipeline=new_pipeline,
                 node_id=_generate_node_id(),
-                upstream=[self],
+                upstream=[self, *new_pipeline._shape_refs],
             )
         else:
             # Has source: create new root node
@@ -210,6 +213,7 @@ class LazyPipelineExpr:
                 column=self._column,
                 pipeline=pipeline,
                 node_id=_generate_node_id(),
+                upstream=list(pipeline._shape_refs),
             )
 
     # --- Sink (materializes to pl.Expr) ---

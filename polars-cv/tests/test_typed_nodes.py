@@ -251,7 +251,6 @@ class TestSeamlessPipeline:
         assert np.any(mask_arr > 0)  # Has white pixels
         assert np.any(mask_arr == 0)  # Has black pixels
 
-    @pytest.mark.xfail(reason="Shape reference in rasterize not yet implemented")
     def test_rasterize_with_shape_reference(self, sample_df: pl.DataFrame) -> None:
         """
         Test rasterize with shape= parameter inferring dimensions from another pipeline.
@@ -557,3 +556,105 @@ class TestMergePipeBranches:
         assert small_arr.shape[1] == 50  # width
         assert large_arr.shape[0] == 100
         assert large_arr.shape[1] == 100
+
+
+class TestRasterizeShapeReference:
+    """rasterize(shape=<expr>) takes its dimensions from another node."""
+
+    def _png(self, w: int, h: int) -> bytes:
+        import io
+
+        from PIL import Image
+
+        arr = np.zeros((h, w), dtype=np.uint8)
+        arr[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4] = 255
+        buf = io.BytesIO()
+        Image.fromarray(arr, "L").save(buf, format="PNG")
+        return buf.getvalue()
+
+    def test_single_output_pulls_shape_node_into_graph(self) -> None:
+        # Sinking ONLY the mask: the referenced node must still be collected
+        # and executed first (upstream wiring), even though it has no output.
+        df = pl.DataFrame({"image": [self._png(40, 30)]})
+        ref = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=12, width=20)
+        )
+        mask_pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .extract_contours()
+            .rasterize(shape=ref)
+        )
+        out = df.with_columns(
+            mask=pl.col("image").cv.pipe(mask_pipe).sink("numpy")
+        )
+        assert numpy_from_struct(out["mask"][0]).shape == (12, 20, 1)
+
+    def test_shape_reference_follows_per_row_dynamic_size(self) -> None:
+        # The referenced node resizes per row; each row's mask must match.
+        df = pl.DataFrame(
+            {
+                "image": [self._png(40, 30), self._png(40, 30)],
+                "h": [8, 16],
+                "w": [10, 24],
+            }
+        )
+        ref = pl.col("image").cv.pipe(
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=pl.col("h"), width=pl.col("w"))
+        )
+        mask_pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .extract_contours()
+            .rasterize(shape=ref)
+        )
+        out = df.with_columns(
+            mask=pl.col("image").cv.pipe(mask_pipe).sink("numpy")
+        )
+        assert numpy_from_struct(out["mask"][0]).shape == (8, 10, 1)
+        assert numpy_from_struct(out["mask"][1]).shape == (16, 24, 1)
+
+    def test_unknown_shape_reference_errors_at_compile(self) -> None:
+        import json
+
+        from polars.plugins import register_plugin_function
+
+        from polars_cv._graph import LIB_PATH, PipelineGraph
+
+        graph = PipelineGraph()
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .extract_contours()
+            .rasterize(width=8, height=8)
+        )
+        graph.add_node("n0", pipe, column=pl.col("image"))
+        graph.set_output("n0", "numpy")
+        spec = json.loads(graph._to_json())
+        spec["column_bindings"] = {"n0": 0}
+        # Doctor the rasterize op into a dangling shape reference.
+        for op in spec["nodes"]["n0"]["ops"]:
+            if op["op"] == "rasterize":
+                op.pop("width", None)
+                op.pop("height", None)
+                op["shape_ref"] = {"type": "literal", "value": "ghost"}
+        expr = register_plugin_function(
+            plugin_path=LIB_PATH,
+            function_name="vb_graph",
+            args=[pl.col("image")],
+            kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
+            is_elementwise=True,
+        )
+        df = pl.DataFrame({"image": [self._png(16, 16)]})
+        with pytest.raises(
+            pl.exceptions.ComputeError, match="shape reference 'ghost'"
+        ):
+            df.with_columns(out=expr)

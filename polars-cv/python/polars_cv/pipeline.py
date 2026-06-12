@@ -206,6 +206,10 @@ class Pipeline:
         self._expected_ndim: int | None = None
         # Per-row error policy for the executed graph ("raise" by default).
         self._on_error: str = "raise"
+        # LazyPipelineExpr nodes referenced by ops (e.g. rasterize(shape=...));
+        # consumers wiring this pipeline into a graph add them as upstream
+        # dependencies so the referenced node executes first.
+        self._shape_refs: "list[LazyPipelineExpr]" = []
 
     @staticmethod
     def _compute_output_domain_dtype_ndim(
@@ -380,6 +384,7 @@ class Pipeline:
         new._output_dtype = self._output_dtype
         new._expected_ndim = self._expected_ndim
         new._on_error = self._on_error
+        new._shape_refs = self._shape_refs.copy()
         return new
 
     def on_error(self, policy: str) -> "Pipeline":
@@ -2855,11 +2860,29 @@ class Pipeline:
                 msg = "'shape' must be a LazyPipelineExpr"
                 raise TypeError(msg)
             params["shape_ref"] = ParamValue(is_expr=False, value=shape._node_id)
+            # The referenced node must execute before this one; graph wiring
+            # (cv.pipe / LazyPipelineExpr.pipe) adds it as an upstream dep.
+            new._shape_refs.append(shape)
+            # Plan-time shape knowledge flows from the referenced pipeline.
+            ref_hints = shape._pipeline._shape_hints
+            for dim in ("height", "width"):
+                value = getattr(ref_hints, dim)
+                if value is not None and not value.is_expr:
+                    setattr(new._shape_hints, dim, value)
+                else:
+                    setattr(new._shape_hints, dim, None)
+
+        if has_explicit:
+            h = params.get("height")
+            w = params.get("width")
+            new._shape_hints.height = h if h and not h.is_expr else None
+            new._shape_hints.width = w if w and not w.is_expr else None
 
         new._ops.append(OpSpec(op="rasterize", params=params))
         new._current_domain = self.DOMAIN_BUFFER
-        # Rasterize produces a u8 buffer image
+        # Rasterize produces a single-channel u8 mask
         new._output_dtype = "u8"
+        new._shape_hints.channels = ParamValue(is_expr=False, value=1)
         return new
 
     def extract_contours(
