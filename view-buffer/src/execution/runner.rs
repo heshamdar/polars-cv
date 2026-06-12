@@ -1760,22 +1760,70 @@ fn morph_minmax_pass(buf: &ViewBuffer, ksize: u32, kind: MorphKind) -> ViewBuffe
     }
     let dtype = buf.dtype();
     match dtype {
-        DType::U8 => morph_minmax_typed::<u8>(buf, ksize, kind),
-        DType::I8 => morph_minmax_typed::<i8>(buf, ksize, kind),
-        DType::U16 => morph_minmax_typed::<u16>(buf, ksize, kind),
-        DType::I16 => morph_minmax_typed::<i16>(buf, ksize, kind),
-        DType::U32 => morph_minmax_typed::<u32>(buf, ksize, kind),
-        DType::I32 => morph_minmax_typed::<i32>(buf, ksize, kind),
-        DType::F32 => morph_minmax_typed::<f32>(buf, ksize, kind),
-        DType::F64 => morph_minmax_typed::<f64>(buf, ksize, kind),
-        DType::U64 => morph_minmax_typed::<u64>(buf, ksize, kind),
-        DType::I64 => morph_minmax_typed::<i64>(buf, ksize, kind),
+        DType::U8 => morph_dispatch::<u8>(buf, ksize, kind),
+        DType::I8 => morph_dispatch::<i8>(buf, ksize, kind),
+        DType::U16 => morph_dispatch::<u16>(buf, ksize, kind),
+        DType::I16 => morph_dispatch::<i16>(buf, ksize, kind),
+        DType::U32 => morph_dispatch::<u32>(buf, ksize, kind),
+        DType::I32 => morph_dispatch::<i32>(buf, ksize, kind),
+        DType::F32 => morph_dispatch::<f32>(buf, ksize, kind),
+        DType::F64 => morph_dispatch::<f64>(buf, ksize, kind),
+        DType::U64 => morph_dispatch::<u64>(buf, ksize, kind),
+        DType::I64 => morph_dispatch::<i64>(buf, ksize, kind),
+    }
+}
+
+/// Select the const-generic Min/Max instantiation for one element type.
+#[cfg(feature = "image_interop")]
+fn morph_dispatch<T>(buf: &ViewBuffer, ksize: u32, kind: MorphKind) -> ViewBuffer
+where
+    T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
+{
+    match kind {
+        MorphKind::Min => morph_minmax_typed::<T, true>(buf, ksize),
+        MorphKind::Max => morph_minmax_typed::<T, false>(buf, ksize),
+    }
+}
+
+/// One Min/Max fold step with the comparison kind monomorphized out of the
+/// loop.
+///
+/// The comparison expression is kept literally as `candidate < val` /
+/// `candidate > val` (NOT `f32::min`/`max`): when `val` is NaN every
+/// comparison is false so NaN is kept, and when `candidate` is NaN it is
+/// ignored — the exact semantics of the original per-element implementation,
+/// preserved for float dtypes (including signed-zero tie behavior, where the
+/// incumbent `val` wins).
+#[cfg(feature = "image_interop")]
+#[inline(always)]
+fn morph_select<T: PartialOrd + Copy, const IS_MIN: bool>(val: T, candidate: T) -> T {
+    let take = if IS_MIN {
+        candidate < val
+    } else {
+        candidate > val
+    };
+    if take {
+        candidate
+    } else {
+        val
     }
 }
 
 /// Typed separable min/max filter: row pass then column pass.
+///
+/// Structured for auto-vectorization (interior/border split, same pattern as
+/// the separable Gaussian blur above):
+/// - row pass: the output row is initialized from the source row (the
+///   original code's `val = center` seed), then each tap `kx ∈ [-r, r]` is a
+///   contiguous shifted-slice elementwise min/max over the in-bounds segment,
+///   with the clamped (replicate) border lanes folding the constant edge
+///   pixel — identical comparison order to the original per-element loop;
+/// - column pass: whole-row elementwise min/max against the clamped source
+///   row per tap (the index clamp happens once per row, not per element).
+///
+/// Bit-exact vs the pre-split implementation (see tests/morph_ref.rs).
 #[cfg(feature = "image_interop")]
-fn morph_minmax_typed<T>(buf: &ViewBuffer, ksize: u32, kind: MorphKind) -> ViewBuffer
+fn morph_minmax_typed<T, const IS_MIN: bool>(buf: &ViewBuffer, ksize: u32) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + Copy + PartialOrd,
 {
@@ -1783,64 +1831,63 @@ where
     let shape = contig.shape();
     let h = shape[0];
     let w = shape[1];
-    let radius = (ksize / 2) as i64;
+    let radius = (ksize / 2) as usize;
     let src: &[T] = contig.as_slice::<T>();
 
-    // Row pass
+    // ── Row pass ─────────────────────────────────────────────────────────
     let mut row_out: Vec<T> = vec![T::default(); h * w];
     for y in 0..h {
-        for x in 0..w {
-            let mut val = src[y * w + x];
-            for kx in -radius..=radius {
-                let sx = (x as i64 + kx).clamp(0, w as i64 - 1) as usize;
-                let candidate = src[y * w + sx];
-                val = match kind {
-                    MorphKind::Min => {
-                        if candidate < val {
-                            candidate
-                        } else {
-                            val
-                        }
-                    }
-                    MorphKind::Max => {
-                        if candidate > val {
-                            candidate
-                        } else {
-                            val
-                        }
-                    }
-                };
+        let row_in = &src[y * w..(y + 1) * w];
+        let row_dst = &mut row_out[y * w..(y + 1) * w];
+
+        if w <= 2 * radius {
+            // Row narrower than the kernel: clamped gather everywhere.
+            for (x, dst) in row_dst.iter_mut().enumerate() {
+                let mut val = row_in[x];
+                for kx in -(radius as i64)..=radius as i64 {
+                    let sx = (x as i64 + kx).clamp(0, w as i64 - 1) as usize;
+                    val = morph_select::<T, IS_MIN>(val, row_in[sx]);
+                }
+                *dst = val;
             }
-            row_out[y * w + x] = val;
+            continue;
+        }
+
+        // Seed with the center pixel, then fold taps in ascending kx order.
+        row_dst.copy_from_slice(row_in);
+        for kx in -(radius as i64)..=radius as i64 {
+            // In-bounds segment for this tap: x ∈ [lo, hi) ⇒ x+kx ∈ [0, w).
+            let lo = (-kx).max(0) as usize;
+            let hi = w - kx.max(0) as usize;
+            let src_seg = &row_in[(lo as i64 + kx) as usize..(hi as i64 + kx) as usize];
+            for (dst, &cand) in row_dst[lo..hi].iter_mut().zip(src_seg) {
+                *dst = morph_select::<T, IS_MIN>(*dst, cand);
+            }
+            // Border lanes: the clamped index degenerates to the edge pixel.
+            let left_edge = row_in[0];
+            for dst in row_dst[..lo].iter_mut() {
+                *dst = morph_select::<T, IS_MIN>(*dst, left_edge);
+            }
+            let right_edge = row_in[w - 1];
+            for dst in row_dst[hi..].iter_mut() {
+                *dst = morph_select::<T, IS_MIN>(*dst, right_edge);
+            }
         }
     }
 
-    // Column pass
-    let mut col_out: Vec<T> = vec![T::default(); h * w];
+    // ── Column pass: whole-row folds with a per-row index clamp ──────────
+    // Seeded from the row-pass output (the original code's `val = center`),
+    // then folded in ascending ky order; src rows live in `row_out`, the
+    // destination in `col_out`, so the borrows are disjoint.
+    let mut col_out: Vec<T> = row_out.clone();
     for y in 0..h {
-        for x in 0..w {
-            let mut val = row_out[y * w + x];
-            for ky in -radius..=radius {
-                let sy = (y as i64 + ky).clamp(0, h as i64 - 1) as usize;
-                let candidate = row_out[sy * w + x];
-                val = match kind {
-                    MorphKind::Min => {
-                        if candidate < val {
-                            candidate
-                        } else {
-                            val
-                        }
-                    }
-                    MorphKind::Max => {
-                        if candidate > val {
-                            candidate
-                        } else {
-                            val
-                        }
-                    }
-                };
+        let dst_row = &mut col_out[y * w..(y + 1) * w];
+        for ky in -(radius as i64)..=radius as i64 {
+            let sy = (y as i64 + ky).clamp(0, h as i64 - 1) as usize;
+            let src_row = &row_out[sy * w..(sy + 1) * w];
+            for (dst, &cand) in dst_row.iter_mut().zip(src_row) {
+                *dst = morph_select::<T, IS_MIN>(*dst, cand);
             }
-            col_out[y * w + x] = val;
         }
     }
 
@@ -1903,12 +1950,92 @@ fn morph_subtract(a: &ViewBuffer, b: &ViewBuffer) -> ViewBuffer {
 // Canny Edge Detection
 // ============================================================
 
+/// The 5×5 σ≈1.4 Gaussian used by Canny. NOT separable (center 15/159 differs
+/// from the outer product of any 1-D kernel), so it runs through the
+/// vectorized 2-D convolution rather than a two-pass separable blur.
+#[cfg(feature = "image_interop")]
+#[rustfmt::skip]
+const CANNY_GAUSSIAN_5X5: [f32; 25] = [
+    2.0/159.0,  4.0/159.0,  5.0/159.0,  4.0/159.0,  2.0/159.0,
+    4.0/159.0,  9.0/159.0, 12.0/159.0,  9.0/159.0,  4.0/159.0,
+    5.0/159.0, 12.0/159.0, 15.0/159.0, 12.0/159.0,  5.0/159.0,
+    4.0/159.0,  9.0/159.0, 12.0/159.0,  9.0/159.0,  4.0/159.0,
+    2.0/159.0,  4.0/159.0,  5.0/159.0,  4.0/159.0,  2.0/159.0,
+];
+
+/// Quantize a gradient direction into the 4 Canny bins without `atan2`.
+///
+/// Replaces `atan2(gy, gx).to_degrees()` binning (bin0 = horizontal
+/// [0°,22.5°)∪[157.5°,180°), bin1 = 45° [22.5°,67.5°), bin2 = vertical
+/// [67.5°,112.5°), bin3 = 135° [112.5°,157.5°)) with sign/ratio comparisons
+/// against tan(22.5°) = √2−1 and tan(67.5°) = √2+1.
+///
+/// Boundary inclusivity differs by sign case because the fold θ = 180°−θ'
+/// flips which side of each boundary is inclusive:
+/// - same sign (θ = θ'): bin0 ⇔ ay <  t22·ax; bin2 ⇔ ay ≥ t67·ax; else bin1
+/// - opposite     (θ = 180−θ'): bin0 ⇔ ay ≤ t22·ax; bin2 ⇔ ay > t67·ax; else bin3
+///
+/// `gx == 0 && gy == 0` is special-cased to bin0 (atan2(0,0) = 0). Agreement
+/// with the atan2 quantizer is exact except where floating-point rounding
+/// puts the computed angle within ~1 ulp of a bin boundary, where the old
+/// answer was itself rounding-determined (see tests/canny_ref.rs grid test).
+#[cfg(feature = "image_interop")]
+#[inline(always)]
+fn canny_direction(gx: f32, gy: f32) -> u8 {
+    const T22: f32 = 0.41421356; // tan(22.5°) = √2 − 1
+    const T67: f32 = 2.4142137; // tan(67.5°) = √2 + 1
+
+    if gx == 0.0 && gy == 0.0 {
+        return 0;
+    }
+    let ax = gx.abs();
+    let ay = gy.abs();
+    let same_sign = (gx >= 0.0) == (gy >= 0.0);
+    let t22ax = T22 * ax;
+    let t67ax = T67 * ax;
+    if same_sign {
+        if ay < t22ax {
+            0
+        } else if ay >= t67ax {
+            2
+        } else {
+            1
+        }
+    } else if ay <= t22ax {
+        0
+    } else if ay > t67ax {
+        2
+    } else {
+        3
+    }
+}
+
 /// Canny edge detection: Gaussian blur → Sobel gradients → NMS → double-threshold hysteresis.
 ///
 /// Operates on a single-channel image. For multi-channel input, converts to
 /// grayscale first. Output is always U8 (0 or 255).
+///
+/// Optimized from the original naive implementation (preserved in
+/// tests/canny_ref.rs) while keeping identical output:
+/// - the 5×5 blur runs through the vectorized `apply_convolve2d` (same tap
+///   order and replicate border ⇒ bit-exact, ~10–20× faster);
+/// - direction quantization avoids the per-pixel `atan2` (see
+///   [`canny_direction`]);
+/// - magnitude keeps `sqrt` (squared-threshold comparisons would not be
+///   bit-exact: f32 sqrt rounding can flip the tie-inclusive `>=` NMS
+///   comparisons);
+/// - double-thresholding is folded into the NMS loop (the `nms` plane is
+///   never materialized; non-maxima and border pixels classify the implicit
+///   0.0 exactly as before — including the degenerate `high ≤ 0` case where
+///   borders become STRONG);
+/// - hysteresis is a single-pass worklist flood fill from STRONG seeds
+///   instead of whole-image sweeps to a fixpoint (identical transitive
+///   closure: a WEAK interior pixel is promoted iff it is 8-connected to a
+///   STRONG pixel through WEAK interior pixels).
 #[cfg(feature = "image_interop")]
 fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> ViewBuffer {
+    use crate::ops::filter::{apply_convolve2d, BorderMode, ConvolveOp};
+
     let shape = buf.shape();
     let channels = shape.get(2).copied().unwrap_or(1);
 
@@ -1930,35 +2057,49 @@ fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> View
     let gh = gray_shape[0];
     let gw = gray_shape[1];
     let count = gh * gw;
-    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
 
-    // Step 1: Gaussian blur (5×5, sigma ≈ 1.4)
-    let blurred = gaussian_blur_5x5(src, gh, gw);
+    // Step 1: Gaussian blur (5×5, sigma ≈ 1.4) via the vectorized 2-D
+    // convolution. Replicate border matches the original's clamped gather.
+    let blurred_buf = apply_convolve2d(
+        &contig,
+        &ConvolveOp {
+            kernel: CANNY_GAUSSIAN_5X5.to_vec(),
+            ksize: 5,
+            normalize: false,
+            border: BorderMode::Replicate,
+        },
+    );
+    let blurred = blurred_buf.as_slice::<f32>();
 
     // Step 2: Sobel gradients
-    let (gx, gy) = sobel_gradients(&blurred, gh, gw);
+    let (gx, gy) = sobel_gradients(blurred, gh, gw);
 
-    // Step 3: Magnitude and direction
+    // Step 3: Magnitude and direction (no atan2)
     let mut magnitude = vec![0.0f32; count];
     let mut direction = vec![0u8; count]; // quantized to 4 directions (0,1,2,3)
     for i in 0..count {
         magnitude[i] = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt();
-        let angle = gy[i].atan2(gx[i]).to_degrees();
-        let angle = if angle < 0.0 { angle + 180.0 } else { angle };
-        direction[i] = if !(22.5..157.5).contains(&angle) {
-            0 // horizontal
-        } else if angle < 67.5 {
-            1 // 45°
-        } else if angle < 112.5 {
-            2 // vertical
-        } else {
-            3 // 135°
-        };
+        direction[i] = canny_direction(gx[i], gy[i]);
     }
 
-    // Step 4: Non-maximum suppression
-    let mut nms = vec![0.0f32; count];
-    for y in 1..gh - 1 {
+    const STRONG: u8 = 255;
+    const WEAK: u8 = 128;
+
+    // Classification of a suppressed (0.0) magnitude — applies to border
+    // pixels and non-maxima, exactly like the original's zero-filled `nms`
+    // plane fed through the threshold loop.
+    let zero_class = if 0.0 >= high_threshold {
+        STRONG
+    } else if 0.0 >= low_threshold {
+        WEAK
+    } else {
+        0
+    };
+
+    // Steps 4+5 fused: non-maximum suppression classifying directly into the
+    // edge map (same `>=` comparisons; the nms plane is never materialized).
+    let mut edges = vec![zero_class; count];
+    for y in 1..gh.saturating_sub(1) {
         for x in 1..gw - 1 {
             let idx = y * gw + x;
             let mag = magnitude[idx];
@@ -1975,42 +2116,42 @@ fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> View
                 ), // 135°
             };
             if mag >= n1 && mag >= n2 {
-                nms[idx] = mag;
+                edges[idx] = if mag >= high_threshold {
+                    STRONG
+                } else if mag >= low_threshold {
+                    WEAK
+                } else {
+                    0
+                };
             }
         }
     }
 
-    // Step 5: Double threshold
-    let mut edges = vec![0u8; count];
-    const STRONG: u8 = 255;
-    const WEAK: u8 = 128;
-    for i in 0..count {
-        if nms[i] >= high_threshold {
-            edges[i] = STRONG;
-        } else if nms[i] >= low_threshold {
-            edges[i] = WEAK;
-        }
-    }
-
-    // Step 6: Hysteresis — keep weak edges connected to strong edges
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for y in 1..gh - 1 {
-            for x in 1..gw - 1 {
-                let idx = y * gw + x;
-                if edges[idx] == WEAK {
-                    let has_strong_neighbor = edges[(y - 1) * gw + x - 1] == STRONG
-                        || edges[(y - 1) * gw + x] == STRONG
-                        || edges[(y - 1) * gw + x + 1] == STRONG
-                        || edges[y * gw + x - 1] == STRONG
-                        || edges[y * gw + x + 1] == STRONG
-                        || edges[(y + 1) * gw + x - 1] == STRONG
-                        || edges[(y + 1) * gw + x] == STRONG
-                        || edges[(y + 1) * gw + x + 1] == STRONG;
-                    if has_strong_neighbor {
-                        edges[idx] = STRONG;
-                        changed = true;
+    // Step 6: Hysteresis — single-pass worklist flood fill from STRONG seeds.
+    // Only WEAK pixels at interior coordinates are ever promoted (the
+    // original sweep iterated `1..h-1 × 1..w-1`); STRONG border pixels still
+    // act as seeds, as they did as neighbors in the original sweep.
+    if gh > 2 && gw > 2 {
+        let mut stack: Vec<u32> = edges
+            .iter()
+            .enumerate()
+            .filter(|(_, &e)| e == STRONG)
+            .map(|(i, _)| i as u32)
+            .collect();
+        while let Some(idx) = stack.pop() {
+            let idx = idx as usize;
+            let y = idx / gw;
+            let x = idx % gw;
+            let y0 = y.saturating_sub(1).max(1);
+            let y1 = (y + 1).min(gh - 2);
+            let x0 = x.saturating_sub(1).max(1);
+            let x1 = (x + 1).min(gw - 2);
+            for ny in y0..=y1 {
+                for nx in x0..=x1 {
+                    let nidx = ny * gw + nx;
+                    if edges[nidx] == WEAK {
+                        edges[nidx] = STRONG;
+                        stack.push(nidx as u32);
                     }
                 }
             }
@@ -2024,34 +2165,6 @@ fn apply_canny(buf: ViewBuffer, low_threshold: f32, high_threshold: f32) -> View
     }
 
     ViewBuffer::from_vec_with_shape(edges, vec![gh, gw, 1])
-}
-
-/// 5×5 Gaussian blur with sigma ≈ 1.4 (used by Canny).
-#[cfg(feature = "image_interop")]
-fn gaussian_blur_5x5(src: &[f32], h: usize, w: usize) -> Vec<f32> {
-    #[rustfmt::skip]
-    let kernel: [f32; 25] = [
-        2.0/159.0,  4.0/159.0,  5.0/159.0,  4.0/159.0,  2.0/159.0,
-        4.0/159.0,  9.0/159.0, 12.0/159.0,  9.0/159.0,  4.0/159.0,
-        5.0/159.0, 12.0/159.0, 15.0/159.0, 12.0/159.0,  5.0/159.0,
-        4.0/159.0,  9.0/159.0, 12.0/159.0,  9.0/159.0,  4.0/159.0,
-        2.0/159.0,  4.0/159.0,  5.0/159.0,  4.0/159.0,  2.0/159.0,
-    ];
-    let mut out = vec![0.0f32; h * w];
-    for y in 0..h {
-        for x in 0..w {
-            let mut sum = 0.0f32;
-            for ky in 0..5i64 {
-                for kx in 0..5i64 {
-                    let sy = (y as i64 + ky - 2).clamp(0, h as i64 - 1) as usize;
-                    let sx = (x as i64 + kx - 2).clamp(0, w as i64 - 1) as usize;
-                    sum += kernel[(ky * 5 + kx) as usize] * src[sy * w + sx];
-                }
-            }
-            out[y * w + x] = sum;
-        }
-    }
-    out
 }
 
 /// Compute Sobel gradients (Gx, Gy) for single-channel image.
@@ -2166,4 +2279,108 @@ pub fn apply_perceptual_hash(
     _op: crate::ops::phash::PerceptualHashOp,
 ) -> ViewBuffer {
     panic!("Perceptual hash operations require the 'perceptual_hash' feature");
+}
+
+#[cfg(all(test, feature = "image_interop"))]
+mod canny_direction_tests {
+    use super::canny_direction;
+
+    /// The original atan2-based quantizer, kept verbatim as the reference.
+    fn atan2_direction(gx: f32, gy: f32) -> u8 {
+        let angle = gy.atan2(gx).to_degrees();
+        let angle = if angle < 0.0 { angle + 180.0 } else { angle };
+        if !(22.5..157.5).contains(&angle) {
+            0
+        } else if angle < 67.5 {
+            1
+        } else if angle < 112.5 {
+            2
+        } else {
+            3
+        }
+    }
+
+    /// Degrees-distance from the nearest direction-bin boundary, in f64.
+    fn boundary_distance_deg(gx: f32, gy: f32) -> f64 {
+        let angle = (gy as f64).atan2(gx as f64).to_degrees();
+        let angle = if angle < 0.0 { angle + 180.0 } else { angle };
+        [22.5f64, 67.5, 112.5, 157.5]
+            .iter()
+            .map(|b| (angle - b).abs())
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    fn check(gx: f32, gy: f32, divergences: &mut Vec<(f32, f32, u8, u8)>) {
+        let got = canny_direction(gx, gy);
+        let want = atan2_direction(gx, gy);
+        if got != want {
+            // Divergence is only acceptable where the angle sits within
+            // rounding distance of a bin boundary, where the atan2 answer
+            // was itself rounding-determined.
+            assert!(
+                boundary_distance_deg(gx, gy) < 1e-4,
+                "direction mismatch away from a bin boundary: \
+                 gx={gx:?} gy={gy:?} got={got} want={want}"
+            );
+            divergences.push((gx, gy, got, want));
+        }
+    }
+
+    #[test]
+    fn direction_quantizer_matches_atan2_reference() {
+        let mut divergences = Vec::new();
+
+        // Exhaustive grid (65×65 including signed values and zeros).
+        let mut v = -8.0f32;
+        let mut grid = Vec::new();
+        while v <= 8.0 {
+            grid.push(v);
+            v += 0.25;
+        }
+        for &gx in &grid {
+            for &gy in &grid {
+                check(gx, gy, &mut divergences);
+            }
+        }
+
+        // Constructed boundary ratios, exact diagonals, axes, signed zeros.
+        const T22: f32 = 0.41421356;
+        const T67: f32 = 2.4142137;
+        for a in [0.5f32, 1.0, 3.0, 100.0, 1e-3] {
+            for (gx, gy) in [
+                (a, T22 * a),
+                (a, -(T22 * a)),
+                (-a, T22 * a),
+                (-a, -(T22 * a)),
+                (a, T67 * a),
+                (a, -(T67 * a)),
+                (-a, T67 * a),
+                (-a, -(T67 * a)),
+                (a, a),
+                (a, -a),
+                (-a, a),
+                (-a, -a),
+                (a, 0.0),
+                (-a, 0.0),
+                (0.0, a),
+                (0.0, -a),
+                (a, -0.0),
+                (-0.0, a),
+            ] {
+                check(gx, gy, &mut divergences);
+            }
+        }
+        check(0.0, 0.0, &mut divergences);
+        check(-0.0, 0.0, &mut divergences);
+        check(0.0, -0.0, &mut divergences);
+        check(-0.0, -0.0, &mut divergences);
+
+        // Bound the rounding-determined divergence set: the grid contains no
+        // exact-boundary ratios, so only the constructed boundary points may
+        // diverge (and only within the 1e-4° band asserted above).
+        assert!(
+            divergences.len() <= 40,
+            "too many boundary divergences: {divergences:?}"
+        );
+    }
 }
