@@ -162,13 +162,16 @@ cargo clippy --workspace           # Lint Rust
 
 ## Known Issues
 
-- **Tiling (no-op):** `configure_tiling` / `get_tiling_config` are exposed but non-functional. Should be removed or investigated for SIMD improvements. See `view-buffer/AGENTS.md`.
-- **`ANNOTATED_POINT_SCHEMA` not re-exported:** Defined in `geometry/schemas.py`, exported by `geometry/__init__.py`, but missing from `polars_cv/__init__.py` `__all__`.
-- **`PipelineSpec` consolidation:** `pipeline.rs` serde types (`PipelineSpec`, `SourceSpec`, `SinkSpec`, `OpSpec`) could be consolidated into graph-owned types. `PipelineSpec` wrapper itself may be removable.
 - **Inconsistent test fixtures:** Many test files redefine `_plugin_available()`, `plugin_required`, and PNG creation fixtures instead of using shared ones from `conftest.py`.
+- **f64 chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for f64 inputs (`view-buffer/src/expr.rs::extract_ops`).
 
 ## Recent Changes
 
+- **Execution core rewrite:** the `vb_graph` plugin compiles graphs once into a process-wide cache (`graph/compiled.rs`: parsed spec, topo order, slot-bound params, pre-resolved static ops) — the streaming engine invokes the plugin per morsel, so repeat calls pay a hash lookup. Graph structure (output node refs, upstream wiring, source formats, encodings) is validated at compile time instead of failing late/silently.
+- **Per-row error policy:** `Pipeline.on_error("raise"|"null"|"null_with_message")` — failing rows null all outputs (optionally with a reserved `_error` message field) instead of failing the batch.
+- **Kernel fusion extended:** casts fold into the FusedKernel (any-numeric read → f32 ops → out-dtype write), plus AdjustGamma/Invert lowerings; `u8 → cast(f32) → scale → clamp → relu` is one pass. The f64 scalar contract is now honored at runtime (f64 in → f64 out).
+- **I/O:** remote `file_path` sources prefetch concurrently per batch (`cloud_options` now round-trips); JPEG sources accept an explicit `decode_max_size` assertion for IDCT-scaled decoding.
+- **Lazy parity:** `LazyPipelineExpr` mirrors every chainable `Pipeline` method (drift-guarded by `test_lazy_pipeline_method_parity`), shape hints replay through `.pipe()` continuations, and `rasterize(shape=<expr>)` shape references are implemented end-to-end.
 - **Rotation/affine unification:** `rotate()` with arbitrary angles now routes through `ComputeOp::RotateAffine` → `AffineParams::from_rotation()` → `apply_affine_warp()`, sharing the affine transform code path. `ImageOpKind::Rotate` has been removed. Zero-copy fast paths (90/180/270) are preserved via `ViewOp`. `rotate()` now accepts `interpolation` and `border_value` parameters. Affine fusion supports `rotate` → `warp_affine` chains.
 - **Contract system fixes:** `_update_channels_from_contract()` now correctly sets `channels=1` for all `AlphaMode.DROP` ops with `NdimEffect.PRESERVE` (threshold, erode, dilate, morphology_gradient). `rotate(expand=True)` computes output dimensions at planning time for static angles.
 - **Dynamic parameter support:** Extended to cover morphology ksize/iterations, channel_select index, convolve2d ksize, pad value, warp_affine output_size, rasterize fill_value/background, reduce_percentile q, reduce_std ddof.
