@@ -60,7 +60,9 @@ def main() -> None:
 
     df = _make_df(args.rows)
 
-    static_pipe = Pipeline().source("blob").scale(1.5).clamp(min_val=0.0, max_val=255.0).relu()
+    static_pipe = (
+        Pipeline().source("blob").scale(1.5).clamp(min_val=0.0, max_val=255.0).relu()
+    )
     dynamic_pipe = (
         Pipeline()
         .source("blob")
@@ -76,8 +78,20 @@ def main() -> None:
 
     print(f"rows={args.rows} buffer=64x64 u8 repeat={args.repeat}")
     print(f"{'case':<22} {'best (s)':>10} {'median (s)':>11} {'rows/s':>12}")
+    # Typed Array sink: exercises the tensor-output path (per-element
+    # construction vs flat reshape) on top of the same kernel chain. The
+    # source dtype assertion makes the f32 output plannable.
+    cases["static->array"] = (
+        Pipeline()
+        .source("blob", dtype="u8")
+        .scale(1.5)
+        .clamp(min_val=0.0, max_val=255.0)
+        .relu()
+    )
     for name, pipe in cases.items():
-        expr = pl.col("img").cv.pipe(pipe).sink("blob")
+        sink_args = ("array",) if name.endswith("array") else ("blob",)
+        sink_kwargs = {"shape": [64, 64]} if name.endswith("array") else {}
+        expr = pl.col("img").cv.pipe(pipe).sink(*sink_args, **sink_kwargs)
 
         def eager(expr=expr):
             df.with_columns(out=expr)

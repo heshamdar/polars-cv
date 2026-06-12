@@ -509,6 +509,14 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
             polars_err!(ComputeError: "Cannot determine shape for array sink. Provide shape via .sink(shape=[...]) or use .resize()/.assert_shape()."),
         );
     };
+    // Fast path: every row present with exactly the target element count —
+    // concatenate the flat values once and reshape into the nested Array.
+    // The fallback builds one AnyValue per ELEMENT (a 224x224x3 tensor is
+    // ~150k enum values plus recursive sub-Series per row), which dominated
+    // sink time for tensor outputs.
+    if let Some(series) = try_build_array_series_flat(name.clone(), rows, dtype_str, &shape)? {
+        return Ok(series);
+    }
     let inner_dtype = dtype_str_to_polars(dtype_str);
     let mut dtype = inner_dtype.clone();
     for &dim in shape.iter().rev() {
@@ -526,6 +534,62 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
         .collect();
     let values = values?;
     Series::from_any_values_and_dtype(name, &values, &dtype, true)
+}
+
+/// Flat construction of an Array-sink series: one values buffer + reshape.
+///
+/// Applies only when no row is null and every row's data length matches the
+/// target shape's element count (any irregularity falls back to the
+/// per-element `AnyValue` path, which handles nulls and per-row validation).
+fn try_build_array_series_flat(
+    name: PlSmallStr,
+    rows: &[TypedListRow],
+    dtype_str: &str,
+    shape: &[usize],
+) -> PolarsResult<Option<Series>> {
+    let expected_len: usize = shape.iter().product();
+    if rows.is_empty() || expected_len == 0 {
+        return Ok(None);
+    }
+    let all_regular = rows.iter().all(|r| match r {
+        Some((data, _)) => data.len() == expected_len && data.dtype_str() == dtype_str,
+        None => false,
+    });
+    if !all_regular {
+        return Ok(None);
+    }
+
+    macro_rules! concat_rows {
+        ($variant:ident) => {{
+            let mut flat = Vec::with_capacity(rows.len() * expected_len);
+            for row in rows {
+                let Some((TypedBufferData::$variant(values), _)) = row else {
+                    return Ok(None);
+                };
+                flat.extend_from_slice(values);
+            }
+            Series::new(name, flat)
+        }};
+    }
+    let first_variant = rows[0].as_ref().map(|(d, _)| d.dtype_str()).unwrap_or("");
+    let flat_series = match first_variant {
+        "u8" => concat_rows!(U8),
+        "i8" => concat_rows!(I8),
+        "u16" => concat_rows!(U16),
+        "i16" => concat_rows!(I16),
+        "u32" => concat_rows!(U32),
+        "i32" => concat_rows!(I32),
+        "u64" => concat_rows!(U64),
+        "i64" => concat_rows!(I64),
+        "f32" => concat_rows!(F32),
+        "f64" => concat_rows!(F64),
+        _ => return Ok(None),
+    };
+
+    let mut dims = Vec::with_capacity(shape.len() + 1);
+    dims.push(ReshapeDimension::new(rows.len() as i64));
+    dims.extend(shape.iter().map(|&d| ReshapeDimension::new(d as i64)));
+    flat_series.reshape_array(&dims).map(Some)
 }
 /// Build a nested Array AnyValue from typed data and shape.
 fn build_typed_nested_array_value(
