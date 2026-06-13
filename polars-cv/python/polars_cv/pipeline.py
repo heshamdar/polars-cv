@@ -1176,10 +1176,47 @@ class Pipeline:
         new._update_output_dtype("cast")
         return new
 
+    def _preserve_dtype_target(self, op_name: str, out_dtype: str | None) -> str:
+        """Resolve the dtype a ``preserve_dtype=True`` scalar op casts back to.
+
+        Returns the planned dtype *before* the op. Raises when it cannot be
+        honored: the parameter is mutually exclusive with ``out_dtype``, and
+        the pre-op dtype must be concrete (image sources default to "auto"
+        unless the source declares a dtype).
+        """
+        if out_dtype is not None:
+            msg = (
+                f"{op_name}: preserve_dtype=True and out_dtype are mutually "
+                "exclusive; pass one or the other."
+            )
+            raise ValueError(msg)
+        pre_dtype = self._output_dtype
+        if pre_dtype == "auto":
+            msg = (
+                f"{op_name}: preserve_dtype=True requires a known input dtype, "
+                "but the pipeline's dtype is 'auto'. Declare the source dtype "
+                "(e.g. .source('image_bytes', dtype='u8')) or use an explicit "
+                ".cast(...) instead."
+            )
+            raise ValueError(msg)
+        return pre_dtype
+
+    def _apply_preserve_dtype(self, new: "Pipeline", pre_dtype: str) -> "Pipeline":
+        """Append the cast-back for ``preserve_dtype=True`` when needed.
+
+        The cast lowers into the existing fused-kernel cast support
+        (round-then-saturate for float→int), so no new execution paths are
+        involved. A no-op cast (op already produced ``pre_dtype``) is skipped.
+        """
+        if new._output_dtype == pre_dtype:
+            return new
+        return new.cast(pre_dtype)
+
     def scale(
         self,
         factor: FloatOrExpr,
         out_dtype: str | None = None,
+        preserve_dtype: bool = False,
     ) -> "Pipeline":
         """
         Multiply all values by a factor.
@@ -1187,11 +1224,21 @@ class Pipeline:
         Args:
             factor: Scale factor.
             out_dtype: Output type (promotes to f32 if None and input is int).
+            preserve_dtype: If True, cast the result back to the input dtype
+                (round-then-saturate for integer targets). The computation
+                still happens in f32; this only restores the storage dtype,
+                e.g. u8 in → u8 out instead of the promoted f32. Requires the
+                pipeline's dtype to be known (not "auto") and is mutually
+                exclusive with ``out_dtype``.
 
         Raises:
-            ValueError: If domain is not buffer.
+            ValueError: If domain is not buffer, or ``preserve_dtype`` cannot
+                be honored (unknown input dtype / combined with ``out_dtype``).
         """
         self._validate_domain(self.DOMAIN_BUFFER, "scale")
+        pre_dtype = (
+            self._preserve_dtype_target("scale", out_dtype) if preserve_dtype else None
+        )
         new = self._clone()
         params: dict[str, ParamValue] = {
             "factor": new._track_expr(factor),
@@ -1209,6 +1256,8 @@ class Pipeline:
 
         new._ops.append(OpSpec(op="scale", params=params))
         new._update_output_dtype("scale")
+        if pre_dtype is not None:
+            new = self._apply_preserve_dtype(new, pre_dtype)
         return new
 
     def normalize(
@@ -1296,6 +1345,7 @@ class Pipeline:
         min_val: FloatOrExpr,
         max_val: FloatOrExpr,
         out_dtype: str | None = None,
+        preserve_dtype: bool = False,
     ) -> "Pipeline":
         """
         Clamp values to a range.
@@ -1311,14 +1361,22 @@ class Pipeline:
                 - "f32": Output float32
                 - "f64": Output float64
                 - "preserve": Keep input dtype (floats preserved, integers -> f32)
+            preserve_dtype: If True, cast the result back to the input dtype
+                (round-then-saturate for integer targets). Requires the
+                pipeline's dtype to be known (not "auto") and is mutually
+                exclusive with ``out_dtype``.
 
         Returns:
             Self for chaining.
 
         Raises:
-            ValueError: If domain is not buffer.
+            ValueError: If domain is not buffer, or ``preserve_dtype`` cannot
+                be honored (unknown input dtype / combined with ``out_dtype``).
         """
         self._validate_domain(self.DOMAIN_BUFFER, "clamp")
+        pre_dtype = (
+            self._preserve_dtype_target("clamp", out_dtype) if preserve_dtype else None
+        )
         new = self._clone()
         params: dict[str, ParamValue] = {
             "min": new._track_expr(min_val),
@@ -1337,6 +1395,8 @@ class Pipeline:
 
         new._ops.append(OpSpec(op="clamp", params=params))
         new._update_output_dtype("clamp")
+        if pre_dtype is not None:
+            new = self._apply_preserve_dtype(new, pre_dtype)
         return new
 
     def relu(self) -> "Pipeline":
@@ -1486,7 +1546,9 @@ class Pipeline:
         new._update_output_dtype("adjust_gamma")
         return new
 
-    def adjust_brightness(self, *, factor: FloatOrExpr) -> "Pipeline":
+    def adjust_brightness(
+        self, *, factor: FloatOrExpr, preserve_dtype: bool = False
+    ) -> "Pipeline":
         """
         Adjust image brightness by scaling pixel values.
 
@@ -1496,6 +1558,10 @@ class Pipeline:
 
         Args:
             factor: Brightness factor. 1.0 = no change, >1 = brighter, <1 = darker.
+            preserve_dtype: If True, cast the result back to the dtype the
+                pipeline had *before* this op (round-then-saturate for integer
+                targets), e.g. u8 in → u8 out instead of the promoted f32.
+                Requires the pipeline's dtype to be known (not "auto").
 
         Returns:
             Self for chaining.
@@ -1505,7 +1571,15 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").adjust_brightness(factor=1.2)
             ```
         """
-        return self.scale(factor=factor).clamp(min_val=0.0, max_val=255.0)
+        pre_dtype = (
+            self._preserve_dtype_target("adjust_brightness", None)
+            if preserve_dtype
+            else None
+        )
+        new = self.scale(factor=factor).clamp(min_val=0.0, max_val=255.0)
+        if pre_dtype is not None:
+            new = self._apply_preserve_dtype(new, pre_dtype)
+        return new
 
     def invert(self) -> "Pipeline":
         """
