@@ -183,33 +183,52 @@ The same inner-loop pattern (per-tap clamp + per-element generic dispatch) is
 exactly what keeps erode/dilate/sharpen/affine slow on `main` — the fix here
 doubles as the template for recommendation #2 below.
 
-## 5. Recommendations (prioritized)
+## 5. Recommendations (prioritized) — status after the follow-up workstreams
 
-1. **Canny rewrite** (biggest single gap, ~40× per-core): separable 5-tap
-   Gaussian, direction quantization via gx/gy sign+ratio comparisons (no
-   `atan2`), squared-magnitude thresholds, worklist-based hysteresis. Expect
-   ≥10× from these four changes; brings 0.10× → ~1× at 4 threads.
-2. **Interior/border split for all neighborhood kernels** (convolve2d/sharpen,
-   erode/dilate, sobel): branch-free contiguous inner loops the compiler can
-   vectorize; monomorphize the min/max kind and border mode out of the inner
-   loop. Erode/dilate can later move to van Herk for large kernels.
-3. **Affine warp**: hoist interpolation dispatch, incremental coordinates,
-   f32/fixed-point u8 path.
-4. **Output-path copy elimination**: encode sinks directly into pre-sized
-   Arrow builders per call instead of `Vec<RowResult>` + rebuild. This narrows
-   the crop/flip/threshold-class gap and removes eager's whole-batch buffering
-   (the reason eager loses to streaming even at 1 thread).
-5. **Within-call row parallelism (rayon) behind a flag**: would fix eager's
-   single-threadedness and help streaming when the engine emits few morsels.
-   With streaming already scaling linearly this is lower priority — but it is
-   the only way `collect()` (default engine) gets multicore behavior today.
-6. **PNG decode** is 72 % of e2e time. The e2e numbers already beat OpenCV
-   because decode parallelizes across morsels, but a faster decoder (e.g.
-   zune-png via `image`'s `fast` features, or decode-time downscaling for JPEG
-   sources) is the largest absolute lever on real file-to-tensor workloads.
-7. **Benchmark hygiene**: drop `POLARS_IDEAL_MORSEL_SIZE=10` from
-   `frameworks/polars_cv_adapter.py` — it no longer helps (Polars 1.37 splits
-   in-memory sources adequately) and actively hurts small-row workloads.
+> Status notes added 2026-06-13 after the optimization workstreams landed on
+> this branch (commits `1abdd55..`). Per-recommendation outcomes below; every
+> kernel change is gated by a naive-reference equivalence test (bit-exact)
+> in `view-buffer/tests/*_ref.rs`.
+
+1. **Canny rewrite** — **DONE** (atan2-free direction quantization, blur via
+   the vectorized 2-D convolution — the 159-kernel is NOT separable, so the
+   "separable 5-tap" idea was wrong — worklist hysteresis, fused
+   threshold/NMS). Measured: 2.6–2.9× kernel speedup, 0.10× → 0.36×@256² /
+   0.19×@512² of OpenCV. The remaining gap is semantic: `cv2.Canny` uses L1
+   magnitude + integer Sobel SIMD by default; matching it would change
+   output. Squared-magnitude thresholds were *not* adopted (not bit-exact:
+   f32 sqrt rounding flips tie-inclusive NMS comparisons).
+2. **Interior/border split for neighborhood kernels** — **DONE**. sharpen
+   0.27× → **0.99–1.04×** of OpenCV; sobel 0.70× → **2.45–2.75×**;
+   erode/dilate 0.24× → **1.15×**@256² / 0.73×@512². van Herk still deferred.
+3. **Affine warp** — **ATTEMPTED, REVERTED** (commit `77a2f8d`): the
+   monomorphized interior-fast-path rewrite measured ~10 % *slower* than the
+   original in production context despite an identical-structure copy being
+   ~10 % faster in the test crate (inlining-context sensitivity). The
+   equivalence tests stay as guards; the real win is an f32/16.16 fixed-point
+   u8 path like OpenCV's warpAffine — a tolerance-gated semantics change,
+   still open.
+4. **Output-path copy elimination** — **DONE** (`write_blob_into` + a
+   single-output Binary fast path appending straight into the Arrow builder;
+   error-policy semantics pinned by `tests/test_binary_fastpath.py`).
+   Measured: flips +20–26 %, pad +13–28 %, resize@512² +25 %, memory −14 %
+   across the regression suite.
+5. **Within-call row parallelism (rayon)** — deferred by decision (streaming
+   already scales linearly; eager-only benefit).
+6. **PNG decode** — **EVALUATED, NOT ADOPTED.** zune-png measured a geomean
+   **0.35×** (i.e. ~3× *slower*) vs `image::load_from_memory` on the 8-bit
+   RGB/RGBA gradient+noise corpus at 256²/512²/1024² (adoption gate was
+   ≥1.3×); the modern `png`+fdeflate stack has overtaken it. Harness and
+   pixel-parity test live in `view-buffer/tests/png_decode_eval.rs`
+   (zune-png stays a dev-only dependency). JPEG decode-time downscaling
+   (`decode_max_size`) already exists; PNG has no equivalent lever.
+7. **Benchmark hygiene** — **DONE** (commit `1abdd55`): morsel-size hack
+   removed from the adapter, regression suite, and inference comparison;
+   sharpen reference test strengthened to a direct `cv2.filter2D` comparison.
+
+Additionally, the caveat below about `PromoteToFloat` payloads is addressed:
+`scale`/`clamp`/`adjust_brightness` now accept opt-in `preserve_dtype=True`
+(lowers to a fused trailing cast; see `tests/test_preserve_dtype.py`).
 
 ## 6. Caveats
 
