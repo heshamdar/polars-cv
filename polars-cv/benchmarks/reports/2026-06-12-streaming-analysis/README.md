@@ -245,3 +245,40 @@ Additionally, the caveat below about `PromoteToFloat` payloads is addressed:
   u8, so those cells compare different output payloads (4× the bytes on our
   side); adding an optional u8-preserving fast path would help both semantics
   parity and throughput.
+
+## 7. Post-optimization results (2026-06-13)
+
+After the workstreams in §5 landed (kernel vectorization, canny rewrite,
+output-path copy elimination, `preserve_dtype`), the same suite measures
+(`ws4_single_ops.json`, `final_pipelines.json`, `final_e2e.json`; full table
+in [`final_tables.md`](./final_tables.md)):
+
+**Geomean vs single-threaded OpenCV over the 56 comparable streaming cells:
+0.84× (branch pre-optimization) → 1.15×.** Cell highlights (streaming,
+count=100):
+
+| Cell | pre-opt | post-opt | vs OpenCV now |
+|---|---|---|---|
+| blur 256² | 452 (regressed state) | 3 376 | 1.03× |
+| erode / dilate 256² | ~4 050 | ~14 460 | 1.16–1.29× |
+| sharpen 256² | 671 | 2 289 | 0.99× |
+| sobel 256² | 2 149 | 8 344 | 2.75× |
+| canny 256² | 1 360 | 3 439 | 0.36× |
+| heavy_pipeline 1000×256² | 1 462 | 4 828 | 1.09× |
+| e2e_imagenet 100×512² | 1 186 | 1 878 | 3.33× |
+
+Remaining deficits and why:
+- **canny (0.19–0.36×)**: ours is bit-exact to the original semantics
+  (f32 L2 magnitude); `cv2.Canny` defaults to L1 magnitude with integer
+  Sobel SIMD — closing further means changing output semantics.
+- **crop/flip (0.4–0.5×)**: pure per-row protocol cost vs OpenCV's
+  zero-work numpy views; WS4 trimmed it (memory −14 %), the remainder is
+  the irreducible blob-encode + Arrow append per row.
+- **affine rotate-45° (≈0.5×)**: rewrite attempted and reverted (§5.3);
+  needs the f32/fixed-point semantics change.
+
+Measurement caveat: the shared host slowed measurably over the session
+(rotate_90 — an untouched zero-copy path — drifted −30 % between runs, and
+identical-binary regression-suite runs wobble ±5–13 %). Per-cell post/pre
+ratios under ~1.3× are within drift; the geomean over 56 cells and the
+targeted A/B measurements quoted in §5 are the reliable signals.
