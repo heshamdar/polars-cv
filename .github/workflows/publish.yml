@@ -17,17 +17,25 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # Linux x86_64
+          # Linux x86_64 (manylinux2014). The `interpreter` pin is required: the
+          # manylinux build container defaults to Python 3.8, which is below the
+          # crate's abi3-py39 floor, so maturin silently falls back to a
+          # version-locked cp38 wheel. Pinning a >=3.9 interpreter makes maturin
+          # emit a portable cp39-abi3 wheel, matching the macOS build.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: manylinux2014
-          # macOS arm64
-          - os: macos-latest
-            target: aarch64-apple-darwin
+            interpreter: "-i python3.12"
+          # Linux aarch64 (manylinux2014) — same abi3 interpreter pin as above.
           - os: ubuntu-24.04-arm
             architecture: aarch64
             target: aarch64-unknown-linux-gnu
             manylinux: manylinux2014
+            interpreter: "-i python3.12"
+          # macOS arm64. The host Python (3.12) is already >= the abi3-py39 floor,
+          # so maturin produces a cp39-abi3 wheel without an explicit interpreter.
+          - os: macos-latest
+            target: aarch64-apple-darwin
 
     steps:
       - uses: actions/checkout@v4
@@ -55,9 +63,29 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --manifest-path polars-cv/Cargo.toml
+          args: --release --out dist ${{ matrix.interpreter }} --manifest-path polars-cv/Cargo.toml
           manylinux: ${{ matrix.manylinux }}
           container: ${{ matrix.container }}
+
+      # Guard against regressing to version-locked (cpXX-cpXX) wheels. Every
+      # wheel we ship must be a portable abi3 wheel so a single artifact covers
+      # all supported Python versions on every platform.
+      - name: Verify wheels are abi3
+        shell: bash
+        run: |
+          shopt -s nullglob
+          fail=0
+          for whl in dist/*.whl; do
+            echo "Built: $(basename "$whl")"
+            if [[ "$(basename "$whl")" != *"-abi3-"* ]]; then
+              echo "::error::Wheel is not abi3 (version-locked): $(basename "$whl")"
+              fail=1
+            fi
+          done
+          if [[ "$fail" -ne 0 ]]; then
+            echo "Expected only abi3 wheels (e.g. cp39-abi3-...); see errors above."
+            exit 1
+          fi
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4

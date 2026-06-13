@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "polars-cv"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "image",
  "jpeg-decoder",
@@ -4172,7 +4172,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "view-buffer"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "arrow",
