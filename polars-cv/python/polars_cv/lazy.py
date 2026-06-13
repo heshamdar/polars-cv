@@ -961,19 +961,25 @@ class LazyPipelineExpr:
 
         return self.pipe(Pipeline().adjust_gamma(gamma=gamma))
 
-    def adjust_brightness(self, *, factor: "FloatOrExpr") -> "LazyPipelineExpr":
+    def adjust_brightness(
+        self, *, factor: "FloatOrExpr", preserve_dtype: bool = False
+    ) -> "LazyPipelineExpr":
         """
         Adjust image brightness by scaling pixel values.
 
         Args:
             factor: Brightness factor. 1.0 = no change, >1 = brighter.
+            preserve_dtype: If True, cast the result back to the pipeline's
+                pre-op dtype (see :meth:`polars_cv.Pipeline.adjust_brightness`).
 
         Returns:
             New LazyPipelineExpr with adjusted brightness.
         """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().adjust_brightness(factor=factor))
+        return self.pipe(
+            self._continuation().adjust_brightness(
+                factor=factor, preserve_dtype=preserve_dtype
+            )
+        )
 
     def invert(self) -> "LazyPipelineExpr":
         """
@@ -1308,11 +1314,15 @@ class LazyPipelineExpr:
         min_val: "FloatOrExpr",
         max_val: "FloatOrExpr",
         out_dtype: "str | None" = None,
+        preserve_dtype: bool = False,
     ) -> "LazyPipelineExpr":
         """Lazy counterpart of :meth:`polars_cv.Pipeline.clamp`."""
         return self.pipe(
             self._continuation().clamp(
-                min_val=min_val, max_val=max_val, out_dtype=out_dtype
+                min_val=min_val,
+                max_val=max_val,
+                out_dtype=out_dtype,
+                preserve_dtype=preserve_dtype,
             )
         )
 
@@ -1657,9 +1667,14 @@ class LazyPipelineExpr:
         self,
         factor: "FloatOrExpr",
         out_dtype: "str | None" = None,
+        preserve_dtype: bool = False,
     ) -> "LazyPipelineExpr":
         """Lazy counterpart of :meth:`polars_cv.Pipeline.scale`."""
-        return self.pipe(self._continuation().scale(factor=factor, out_dtype=out_dtype))
+        return self.pipe(
+            self._continuation().scale(
+                factor=factor, out_dtype=out_dtype, preserve_dtype=preserve_dtype
+            )
+        )
 
     def scale_contour(
         self,
