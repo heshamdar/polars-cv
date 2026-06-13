@@ -587,9 +587,7 @@ class TestRasterizeShapeReference:
             .extract_contours()
             .rasterize(shape=ref)
         )
-        out = df.with_columns(
-            mask=pl.col("image").cv.pipe(mask_pipe).sink("numpy")
-        )
+        out = df.with_columns(mask=pl.col("image").cv.pipe(mask_pipe).sink("numpy"))
         assert numpy_from_struct(out["mask"][0]).shape == (12, 20, 1)
 
     def test_shape_reference_follows_per_row_dynamic_size(self) -> None:
@@ -614,9 +612,7 @@ class TestRasterizeShapeReference:
             .extract_contours()
             .rasterize(shape=ref)
         )
-        out = df.with_columns(
-            mask=pl.col("image").cv.pipe(mask_pipe).sink("numpy")
-        )
+        out = df.with_columns(mask=pl.col("image").cv.pipe(mask_pipe).sink("numpy"))
         assert numpy_from_struct(out["mask"][0]).shape == (8, 10, 1)
         assert numpy_from_struct(out["mask"][1]).shape == (16, 24, 1)
 
@@ -654,7 +650,5 @@ class TestRasterizeShapeReference:
             is_elementwise=True,
         )
         df = pl.DataFrame({"image": [self._png(16, 16)]})
-        with pytest.raises(
-            pl.exceptions.ComputeError, match="shape reference 'ghost'"
-        ):
+        with pytest.raises(pl.exceptions.ComputeError, match="shape reference 'ghost'"):
             df.with_columns(out=expr)

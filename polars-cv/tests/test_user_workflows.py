@@ -144,9 +144,9 @@ class TestMLPreprocessingPipeline:
         # Each row must differ from all other rows
         for i in range(len(outputs)):
             for j in range(i + 1, len(outputs)):
-                assert not np.allclose(
-                    outputs[i], outputs[j]
-                ), f"Rows {i} and {j} are identical — batch isolation broken"
+                assert not np.allclose(outputs[i], outputs[j]), (
+                    f"Rows {i} and {j} are identical — batch isolation broken"
+                )
 
     def test_sink_torch_layout(self) -> None:
         """sink('torch') produces the same HWC struct as numpy sink.
@@ -167,7 +167,9 @@ class TestMLPreprocessingPipeline:
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("torch"))
         out = _decode(result.row(0)[0])
 
-        assert out.shape == (32, 32, 3), f"Expected (32,32,3) HWC struct, got {out.shape}"
+        assert out.shape == (32, 32, 3), (
+            f"Expected (32,32,3) HWC struct, got {out.shape}"
+        )
         assert out.dtype == np.float32
 
 
@@ -186,8 +188,10 @@ class TestPerRowColumnArguments:
         pngs = [_png(_solid(200, 200, (128, 128, 128))) for _ in sizes]
         df = pl.DataFrame({"img": pngs, "h": sizes, "w": sizes})
 
-        pipe = Pipeline().source("image_bytes").resize(
-            height=pl.col("h"), width=pl.col("w")
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=pl.col("h"), width=pl.col("w"))
         )
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
@@ -253,12 +257,12 @@ class TestPerRowColumnArguments:
 
         tops = [0, 5, 10, 20]
         lefts = [0, 3, 8, 15]
-        df = pl.DataFrame(
-            {"img": [png] * 4, "top": tops, "left": lefts}
-        )
+        df = pl.DataFrame({"img": [png] * 4, "top": tops, "left": lefts})
 
-        pipe = Pipeline().source("image_bytes").crop(
-            top=pl.col("top"), left=pl.col("left"), height=10, width=10
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .crop(top=pl.col("top"), left=pl.col("left"), height=10, width=10)
         )
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
@@ -276,9 +280,7 @@ class TestPerRowColumnArguments:
         pngs = [_png(_solid(200, 200, (100, 100, 100)))] * len(heights)
         df = pl.DataFrame({"img": pngs, "h": heights})
 
-        pipe = Pipeline().source("image_bytes").resize(
-            height=pl.col("h"), width=48
-        )
+        pipe = Pipeline().source("image_bytes").resize(height=pl.col("h"), width=48)
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
         for i, h in enumerate(heights):
@@ -310,9 +312,7 @@ class TestBinaryImageAlgebra:
             }
         )
 
-    def _run(
-        self, df: pl.DataFrame, op_name: str, expected_val: int
-    ) -> None:
+    def _run(self, df: pl.DataFrame, op_name: str, expected_val: int) -> None:
         pipe = Pipeline().source("image_bytes")
         la = pl.col("img_a").cv.pipe(pipe)
         lb = pl.col("img_b").cv.pipe(pipe)
@@ -321,7 +321,7 @@ class TestBinaryImageAlgebra:
         out = _decode(result.row(0)[0])
         assert out.dtype == np.uint8
         assert int(out[0, 0, 0]) == expected_val, (
-            f"{op_name}: expected {expected_val}, got {int(out[0,0,0])}"
+            f"{op_name}: expected {expected_val}, got {int(out[0, 0, 0])}"
         )
 
     def test_add_saturating(self) -> None:
@@ -434,7 +434,9 @@ class TestMultiOutputBranching:
         df = pl.DataFrame({"img": [img]})
 
         base_pipe = Pipeline().source("image_bytes").resize(height=32, width=32)
-        gray_pipe = Pipeline().source("image_bytes").resize(height=32, width=32).grayscale()
+        gray_pipe = (
+            Pipeline().source("image_bytes").resize(height=32, width=32).grayscale()
+        )
         blur_pipe = (
             Pipeline().source("image_bytes").resize(height=32, width=32).blur(sigma=1.5)
         )
@@ -577,12 +579,7 @@ class TestComplexChainedPipelines:
             .threshold(128)
             .morphology_open(ksize=5)
         )
-        pipe_orig = (
-            Pipeline()
-            .source("image_bytes")
-            .grayscale()
-            .threshold(128)
-        )
+        pipe_orig = Pipeline().source("image_bytes").grayscale().threshold(128)
 
         result_open = df.select(out=pl.col("img").cv.pipe(pipe_open).sink("numpy"))
         result_orig = df.select(out=pl.col("img").cv.pipe(pipe_orig).sink("numpy"))
@@ -598,7 +595,9 @@ class TestComplexChainedPipelines:
             f"Morph open increased white pixels: {white_after_open} > {white_before}"
         )
         # The isolated noise pixel at (3,3) should be gone
-        assert int(out_open[3, 3, 0]) == 0, "Isolated noise pixel should be removed by open"
+        assert int(out_open[3, 3, 0]) == 0, (
+            "Isolated noise pixel should be removed by open"
+        )
 
     def test_letterbox_preserves_content_and_adds_padding(self) -> None:
         """Non-square image letter-boxed to square: content in center, borders zero."""
@@ -606,7 +605,9 @@ class TestComplexChainedPipelines:
         arr = _solid(100, 200, (200, 50, 50))
         df = pl.DataFrame({"img": [_png(arr)]})
 
-        pipe = Pipeline().source("image_bytes").letterbox(height=200, width=200, value=0)
+        pipe = (
+            Pipeline().source("image_bytes").letterbox(height=200, width=200, value=0)
+        )
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         out = _decode(result.row(0)[0])
 
@@ -616,7 +617,9 @@ class TestComplexChainedPipelines:
         top_row_mean = float(out[0, :, :].mean())
         bot_row_mean = float(out[-1, :, :].mean())
         assert top_row_mean < 20.0, f"Top padding not black (mean={top_row_mean:.1f})"
-        assert bot_row_mean < 20.0, f"Bottom padding not black (mean={bot_row_mean:.1f})"
+        assert bot_row_mean < 20.0, (
+            f"Bottom padding not black (mean={bot_row_mean:.1f})"
+        )
 
         # Center pixel should be non-zero (contains original red content)
         center = out[100, 100]
@@ -655,12 +658,7 @@ class TestComplexChainedPipelines:
         )
         df = pl.DataFrame({"img": [_png(arr)]})
 
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .cast("f32")
-            .normalize(method="minmax")
-        )
+        pipe = Pipeline().source("image_bytes").cast("f32").normalize(method="minmax")
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         out = _decode(result.row(0)[0])
 
@@ -728,8 +726,10 @@ class TestStreamingVsEager:
         pngs = [_png(_solid(100, 100, (128, 128, 128)))] * len(sizes)
         df = pl.DataFrame({"img": pngs, "sz": sizes})
 
-        pipe = Pipeline().source("image_bytes").resize(
-            height=pl.col("sz"), width=pl.col("sz")
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=pl.col("sz"), width=pl.col("sz"))
         )
         expr = pl.col("img").cv.pipe(pipe).sink("numpy")
 
