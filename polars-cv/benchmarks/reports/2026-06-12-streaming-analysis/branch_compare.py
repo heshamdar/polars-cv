@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 import math
+import sys
 from collections import defaultdict
 from pathlib import Path
-
-import sys
 
 sys.path.insert(0, "/home/user/bench-results")
 from analyze import load  # noqa: E402
