@@ -22,8 +22,8 @@ import numpy as np
 import polars as pl
 from PIL import Image
 
-from polars_cv import Pipeline
 import polars_cv.expressions  # noqa: F401
+from polars_cv import Pipeline
 
 LABEL = sys.argv[1] if len(sys.argv) > 1 else "default"
 REPS = int(os.environ.get("DD_REPS", "5"))
@@ -31,7 +31,6 @@ REPS = int(os.environ.get("DD_REPS", "5"))
 
 def make_pngs(n: int, h: int, w: int) -> list[bytes]:
     rng = np.random.default_rng(42)
-    out = []
     arr = rng.integers(0, 256, size=(h, w, 3), dtype=np.uint8)
     buf = io.BytesIO()
     Image.fromarray(arr).save(buf, format="PNG")
