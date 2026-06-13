@@ -745,34 +745,6 @@ pub(crate) fn encode_node_output(
         _ => Err(format!("Unsupported sink format: {format}")),
     }
 }
-/// Encode a Binary-family output (`png`/`jpeg`/`webp`/`tiff`/`blob`) by
-/// appending its bytes to `out`.
-///
-/// Semantically identical to `encode_node_output(..)` returning
-/// `OutputValue::Binary` (errors included), but the dominant `blob` case
-/// serializes straight into the caller's scratch buffer via
-/// `ViewBuffer::write_blob_into`, skipping the per-row `Vec<u8>` allocation.
-pub(crate) fn encode_binary_into(
-    output: &NodeOutput,
-    spec: &OutputSpec,
-    out: &mut Vec<u8>,
-) -> Result<(), String> {
-    if let (NodeOutput::Buffer(buf), "blob") = (output, spec.sink.format.as_str()) {
-        buf.write_blob_into(out);
-        return Ok(());
-    }
-    match encode_node_output(output, spec)? {
-        OutputValue::Binary(bytes) => {
-            out.extend_from_slice(&bytes);
-            Ok(())
-        }
-        _ => Err(format!(
-            "Expected binary-encodable output for sink format '{}'",
-            spec.sink.format
-        )),
-    }
-}
-
 /// Convert contours to Polars AnyValue representation.
 pub(super) fn contours_to_polars_value(contours: &[Contour]) -> PolarsResult<AnyValue<'static>> {
     if contours.is_empty() {
