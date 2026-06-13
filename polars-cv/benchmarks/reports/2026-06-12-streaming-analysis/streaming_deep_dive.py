@@ -117,7 +117,9 @@ N4 = 500
 pngs4 = make_pngs(N4, 256, 256)
 png_df = pl.DataFrame({"images": pngs4})
 blob_df4 = to_blob_df(pngs4)
-rsz_png = Pipeline().source("image_bytes").resize(height=224, width=224, filter="bilinear")
+rsz_png = (
+    Pipeline().source("image_bytes").resize(height=224, width=224, filter="bilinear")
+)
 rsz_blob = Pipeline().source("blob").resize(height=224, width=224, filter="bilinear")
 record(
     "decode_share_resize_500",

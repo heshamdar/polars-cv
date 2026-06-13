@@ -48,11 +48,15 @@ def report(paths: list[Path], baseline: str = "opencv") -> str:
 
     frameworks = sorted({fw for cell in rows.values() for fw in cell})
     out = []
-    header = ["operation", "count", "size"] + [f"{fw} img/s" for fw in frameworks] + [
-        "stream/ocv",
-        "eager/ocv",
-        "stream/eager",
-    ]
+    header = (
+        ["operation", "count", "size"]
+        + [f"{fw} img/s" for fw in frameworks]
+        + [
+            "stream/ocv",
+            "eager/ocv",
+            "stream/eager",
+        ]
+    )
     out.append("\t".join(header))
     for k in sorted(rows):
         cell = rows[k]
