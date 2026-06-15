@@ -29,6 +29,8 @@ benchmarks/
 ├── conftest.py                     # BenchmarkConfig, pytest CLI options
 ├── run_benchmarks.py               # CLI entry point
 ├── inference_pipeline_comparison.py # Inference-focused comparisons
+├── batch_throughput.py             # Batch decode/preprocess throughput benchmarks
+├── plugin_overhead.py              # Per-call plugin/dispatch overhead measurement
 ├── frameworks/                     # Framework adapters
 │   ├── base.py                     # AbstractFrameworkAdapter
 │   ├── polars_cv_adapter.py        # polars-cv (eager + streaming)
@@ -45,6 +47,11 @@ benchmarks/
 │   ├── memory.py                   # Memory measurement
 │   ├── results.py                  # Result formatting and comparison
 │   └── validation.py               # Cross-framework result validation
+├── regression/                     # Performance-regression harness (commit-to-commit)
+│   ├── run_suite.py                # Run the regression suite
+│   ├── compare.py                  # Compare runs / flag regressions
+│   ├── config.py                   # Regression thresholds + config
+│   └── README.md                   # Regression framework docs
 └── reports/                        # Dated benchmark runs + analysis writeups
     └── 2026-06-12-streaming-analysis/  # main vs OpenCV/Pillow/torchvision,
                                         # streaming-engine deep dive, raw JSON

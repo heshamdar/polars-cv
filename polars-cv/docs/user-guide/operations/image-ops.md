@@ -174,6 +174,30 @@ Pipeline().source("image_bytes").invert()
 
 All intensity parameters accept Polars expressions for per-row dynamic values.
 
+### Preserving the input dtype
+
+Intensity operations compute in `f32`, so by default an integer image is
+**promoted to `f32`** on output. Pass `preserve_dtype=True` to cast the result
+back to the input dtype instead — the math still runs in `f32`, but the result is
+rounded and saturated back into the original storage type. This is available on
+`scale`, `clamp`, and `adjust_brightness`.
+
+```python
+# Default: u8 in → f32 out
+Pipeline().source("image_bytes", dtype="u8").adjust_brightness(factor=1.2)
+
+# preserve_dtype: u8 in → u8 out
+Pipeline().source("image_bytes", dtype="u8").adjust_brightness(factor=1.2, preserve_dtype=True)
+```
+
+Two constraints, both enforced at build time:
+
+- The pipeline's dtype must be **known** (not `"auto"`). Pin it at the source
+  (`source(..., dtype="u8")`) or with a prior dtype-fixing op, otherwise a
+  `ValueError` is raised.
+- `preserve_dtype=True` is **mutually exclusive** with `out_dtype` on `scale`
+  and `clamp` — set one or the other, not both.
+
 ## Convolution
 
 Apply 2D convolution with an arbitrary kernel.

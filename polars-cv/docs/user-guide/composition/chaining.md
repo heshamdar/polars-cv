@@ -49,6 +49,29 @@ processed = (
 result = df.with_columns(output=processed.sink("png"))
 ```
 
+## Calling Operations Directly on a Lazy Expression
+
+You don't have to wrap every step in its own `Pipeline`. `LazyPipelineExpr` —
+the object returned by `.cv.pipe(...)` — mirrors every chainable `Pipeline`
+method, so you can call operations directly on the expression:
+
+```python
+# Direct style — operations called straight on the lazy expression
+processed = (
+    pl.col("image").cv.pipe(Pipeline().source("image_bytes"))
+    .resize(height=128, width=128)
+    .grayscale()
+    .threshold(128)
+)
+result = df.with_columns(output=processed.sink("png"))
+```
+
+This is equivalent to the `.pipe(Pipeline()...)` style above — pick whichever
+reads better. Use `.pipe()` when you want to reuse named `Pipeline` fragments
+across expressions; use the direct methods for one-off inline chains. Method
+parity between `Pipeline` and `LazyPipelineExpr` is enforced by a drift guard
+(`test_lazy_pipeline_method_parity`), so the two surfaces stay in sync.
+
 ## Reusable Fragments
 
 Fragments can be reused across different pipelines:
