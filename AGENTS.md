@@ -83,17 +83,16 @@ Pipelines track data domain through operations:
 | `buffer` | Multi-dimensional arrays (images) | After `source("image_bytes")` |
 | `contour` | Geometry (vectors of points) | After `extract_contours()` |
 | `scalar` | Single numeric values | After `reduce_sum()` |
-| `vector` | Multiple numeric values | After `perceptual_hash()`, `bounding_box()` |
-| `histogram` | Histogram buckets (extents and counts) | After `histogram(output="buckets")` |
+| `vector` | Fixed-length numeric arrays, incl. histogram buckets | After `perceptual_hash()`, `bounding_box()`, `histogram()` |
 
 ### Alpha Channel Handling
 
-Alpha channels are **always preserved** during image decoding (RGBA → 4ch, GrayA → 2ch). Each operation declares an `AlphaMode` in its `OpContract`:
+Alpha channels are **always preserved** during image decoding (RGBA → 4ch, GrayA → 2ch). How each operation treats channels (and therefore alpha) is declared by its `OutputChannelRule` in view-buffer (`view-buffer/src/ops/shape_rule.rs`), which the Python planner reads via `channel_rule`:
 
-- **PASSTHROUGH** — all channels processed uniformly (resize, normalize, flip, etc.)
-- **STRIP_PROCESS_RESTORE** — alpha separated, op applied to color channels, alpha restored (blur, cvt_color, sobel)
-- **DROP** — alpha discarded, output channels fixed by the op (grayscale → 1, canny → 1)
-- **NOT_APPLICABLE** — non-image domain ops (reductions, geometry)
+- **`PreserveChannels`** — all channels processed uniformly (resize, normalize, flip, etc.)
+- **`StripProcessRestore { color_channels }`** — alpha separated, op applied to color channels, alpha restored (blur, cvt_color, sobel)
+- **`Fixed(n)`** — alpha discarded, output channels fixed by the op (grayscale → 1, canny → 1)
+- **`NotApplicable` / `Unknown`** — non-image-buffer ops (reductions, geometry) or not knowable at plan time
 
 Image sources have unknown channel count at planning time. Users can assert known channels with `.assert_shape(channels=4)`.
 
@@ -173,6 +172,6 @@ cargo clippy --workspace           # Lint Rust
 - **I/O:** remote `file_path` sources prefetch concurrently per batch (`cloud_options` now round-trips); JPEG sources accept an explicit `decode_max_size` assertion for IDCT-scaled decoding.
 - **Lazy parity:** `LazyPipelineExpr` mirrors every chainable `Pipeline` method (drift-guarded by `test_lazy_pipeline_method_parity`), shape hints replay through `.pipe()` continuations, and `rasterize(shape=<expr>)` shape references are implemented end-to-end.
 - **Rotation/affine unification:** `rotate()` with arbitrary angles now routes through `ComputeOp::RotateAffine` → `AffineParams::from_rotation()` → `apply_affine_warp()`, sharing the affine transform code path. `ImageOpKind::Rotate` has been removed. Zero-copy fast paths (90/180/270) are preserved via `ViewOp`. `rotate()` now accepts `interpolation` and `border_value` parameters. Affine fusion supports `rotate` → `warp_affine` chains.
-- **Contract system fixes:** `_update_channels_from_contract()` now correctly sets `channels=1` for all `AlphaMode.DROP` ops with `NdimEffect.PRESERVE` (threshold, erode, dilate, morphology_gradient). `rotate(expand=True)` computes output dimensions at planning time for static angles.
+- **Schema authority unified in view-buffer:** the Python planner no longer keeps a parallel contract table. Per-op output domain, dtype, rank, and channel count are read from view-buffer's declarative rules (`op_contract`/`op_output_dtype` over `OutputChannelRule`/`OutputRankRule` in `view-buffer/src/ops/shape_rule.rs`); `_update_channels_from_rule()` derives channels (e.g. `Fixed(1)` for grayscale/canny, alpha-aware `StripProcessRestore` for color ops). The old `OPERATION_CONTRACTS`/`AlphaMode`/`NdimEffect` tables were removed. `rotate(expand=True)` computes output dimensions at planning time for static angles.
 - **Dynamic parameter support:** Extended to cover morphology ksize/iterations, channel_select index, convolve2d ksize, pad value, warp_affine output_size, rasterize fill_value/background, reduce_percentile q, reduce_std ddof.
-- **Benchmarks expanded:** 21 single-op benchmarks (up from 8), covering rotation, morphology, intensity adjustments, edge detection, padding, sharpening, and histogram equalization.
+- **Benchmarks expanded:** 20 single-op benchmarks (up from 8), covering rotation, morphology, intensity adjustments, edge detection, padding, sharpening, and histogram equalization.

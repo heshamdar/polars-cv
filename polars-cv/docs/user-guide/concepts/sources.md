@@ -19,14 +19,40 @@ bytes_pipe = Pipeline().source("image_bytes")
 path_pipe = Pipeline().source("file_path")
 ```
 
-### Error Handling with `on_error`
+### Error Handling
 
-By default, decode failures raise an error and abort the query. Set `on_error="null"` to emit a null value for rows that fail to decode, allowing the rest of the DataFrame to process successfully.
+By default, a failure while producing a row raises and aborts the whole query.
+There are two complementary controls for tolerating per-row failures.
+
+**Source-level: `source(..., on_error="null")`** — scoped to decode failures.
+A row that fails to *decode* yields null for the outputs that depend on that
+source; the rest of the DataFrame still processes.
 
 ```python
-# Skip corrupt images instead of aborting
+# Skip undecodable images instead of aborting
 pipe = Pipeline().source("image_bytes", on_error="null").resize(height=224, width=224)
 ```
+
+**Graph-level: `.on_error(policy)`** — a pipeline-wide policy covering **any**
+error that produces a row (source decode, operation execution, or output
+encoding). It takes one of three values:
+
+```python
+# "raise" (default): the first failing row fails the expression with its error.
+pipe = Pipeline().source("image_bytes").resize(height=224, width=224)
+
+# "null": failing rows yield null for ALL of the graph's outputs; good rows are unaffected.
+pipe = Pipeline().source("image_bytes").resize(height=224, width=224).on_error("null")
+
+# "null_with_message": like "null", but the output becomes a struct with a
+# reserved `_error` field carrying the failure message (null for good rows).
+# A single-output pipeline becomes a two-field struct (`_output` + `_error`).
+pipe = Pipeline().source("image_bytes").resize(height=224, width=224).on_error("null_with_message")
+```
+
+`.on_error()` is a graph-level setting: when pipelines are composed (via
+`merge_pipe` or binary ops) they must all agree on the policy. It is also
+mirrored on `LazyPipelineExpr`, so you can set it after `.pipe(...)`.
 
 ## Auto DType Behavior
 

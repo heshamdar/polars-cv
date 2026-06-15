@@ -61,6 +61,21 @@ img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=200
 mask = pl.col("contour").cv.pipe(Pipeline().source("contour", shape=img))
 ```
 
+`shape=` takes a **reference pipeline** (a `LazyPipelineExpr`) instead of literal
+dimensions: the referenced pipeline's output `[H, W]` is resolved and used to size
+the raster canvas, so the mask matches the source image without hard-coding its
+size. The same `shape=` reference is accepted by `rasterize(...)` directly when
+you already have a contour-domain pipeline:
+
+```python
+mask = (
+    pl.col("contour").cv.pipe(Pipeline().source("contour"))
+    .rasterize(shape=img)
+)
+```
+
+Provide either explicit `width`/`height` **or** `shape=` — not both.
+
 ---
 
 ## Points

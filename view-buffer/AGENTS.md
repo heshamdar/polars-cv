@@ -35,15 +35,25 @@ src/
 ├── lib.rs              # Crate root, re-exports
 ├── core/               # ViewBuffer, DType, Layout
 ├── ops/                # Operations
+│   ├── mod.rs          # Module aggregator / re-exports for all op types
 │   ├── dto.rs          # ViewDto — serializable operation enum
+│   ├── traits.rs       # Op trait and core op types (MemoryEffect, OpCost wiring)
 │   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, etc.)
 │   ├── color.rs        # ColorConvertOp, ColorSpace
 │   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
 │   ├── compute.rs      # ComputeOp (cast, scale, normalize, clamp, relu, contrast, gamma, invert, affine, rotate_affine)
+│   ├── scalar.rs       # ScalarOp — elementary f32 ops fusable into a single kernel
 │   ├── affine.rs       # AffineParams, InterpolationType, from_rotation() — affine transform parameters
 │   ├── binary.rs       # BinaryOp (add, subtract, multiply, blend, bitwise)
+│   ├── reduction.rs    # Reduction ops (sum, mean, std, min, max, argmin/argmax, percentile)
 │   ├── histogram.rs    # Histogram computation
-│   └── mod.rs          # Op trait, ViewOp enum (transpose, reshape, flip, crop, channel_select)
+│   ├── phash.rs        # Perceptual hashing (aHash/pHash/dHash) ops
+│   ├── view.rs         # ViewOp enum — zero-copy layout ops (transpose, reshape, flip, crop, channel_select)
+│   ├── shape_rule.rs   # OutputRankRule / OutputChannelRule — plan-time structure rules (the authority)
+│   ├── validation.rs   # Plan-time shape/dtype constraint checks
+│   ├── cost.rs         # OpCost — memory/perf cost categorization for zero-copy analysis
+│   ├── io.rs           # Source/sink format definitions for pipeline composition
+│   └── util.rs         # Shared index/coordinate helpers
 ├── expr.rs             # ViewExpr — lazy expression graph builder
 ├── execution/          # ExecutionPlan, runner, tiling (no-op)
 ├── geometry/           # Contour, Point, BoundingBox, extraction, rasterization, measures, pairwise
@@ -124,13 +134,14 @@ Alpha channels are **always preserved** during image decoding. `from_dynamic_ima
 - RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`
 - RGB → `[H, W, 3]`, Gray → `[H, W, 1]`
 
-Operations handle alpha via three strategies (aligned with the Python `AlphaMode` contract):
+Operations handle alpha via the channel strategy declared by their
+`OutputChannelRule` (`ops/shape_rule.rs`):
 
-| Strategy | Operations | Behavior |
+| `OutputChannelRule` | Operations | Behavior |
 |----------|-----------|----------|
-| **Passthrough** | resize, normalize, crop, flip, pad, etc. | All channels processed uniformly |
-| **Strip-Process-Restore** | blur, cvt_color, sobel, laplacian, sharpen | Alpha split off, op on color channels, alpha re-attached |
-| **Drop** | grayscale, canny, threshold, erode, dilate, morph_gradient | Alpha discarded, fixed output channels |
+| **`PreserveChannels`** | resize, normalize, crop, flip, pad, etc. | All channels processed uniformly |
+| **`StripProcessRestore`** | blur, cvt_color, sobel, laplacian, sharpen | Alpha split off, op on color channels, alpha re-attached |
+| **`Fixed(n)`** | grayscale, canny, threshold, erode, dilate, morph_gradient | Alpha discarded, fixed output channels |
 
 Key implementation points:
 - `ops/color.rs` provides `split_alpha()` / `merge_alpha()` helpers used by `apply_color_convert()`

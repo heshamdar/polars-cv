@@ -77,7 +77,7 @@ Rust: view-buffer (the engine)
 1. User builds a `Pipeline` in Python → internally creates a `PipelineGraph` (DAG of `GraphNode`s).
 2. `.sink(...)` on a `LazyPipelineExpr` serializes the graph to JSON and calls `register_plugin_function("vb_graph", ...)`.
 3. Polars calls the Rust `vb_graph` expression function with the JSON and any per-row expression parameters.
-4. Rust deserializes into `UnifiedGraph`, executes topologically per-row: decode source → apply operations → encode sink.
+4. Rust deserializes into a `UnifiedGraph` and compiles it once into a process-wide cache (`graph/compiled.rs`: parsed spec, topological order, slot-bound params); repeat calls (e.g. per streaming morsel) pay only a hash lookup. It then executes topologically per-row: decode source → apply operations → encode sink.
 5. Returns a Polars `Series` (dtype depends on sink: Binary, Float64, Struct, List, Array).
 
 ### Key Python Modules (`polars-cv/python/polars_cv/`)
@@ -95,10 +95,14 @@ Rust: view-buffer (the engine)
 ### Key Rust Modules
 
 **polars-cv/src/**
-- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference
-- `execute.rs` — `resolve_op()` dispatcher mapping `OpSpec` variants to view-buffer calls
-- `graph/` — `UnifiedGraph` execution engine, source decoding (`decode.rs`), sink encoding (`encode.rs`)
+- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `op_contract`/`op_output_dtype`/`enum_variants`/`known_ops` FFI the Python planner reads
+- `execute.rs` — `resolve_op()` dispatcher mapping `OpSpec` variants to view-buffer calls; owns the `KNOWN_OPS` registry
+- `graph/` — `UnifiedGraph` execution engine: `types.rs` (`UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowErrorPolicy`), `compiled.rs` (process-wide compiled-graph cache), source decoding (`decode.rs`), sink encoding (`encode.rs`)
 - `params.rs` — `ParamValue` resolving literals vs per-row Polars column values
+- `pipeline.rs` — serde types for the JSON graph spec crossing the plugin boundary
+- `cloud.rs` — remote/cloud source I/O (`file_path` decode, `cloud_options`, concurrent prefetch)
+- `image_metadata.rs` — header-only metadata plugin functions (`.cv.width()`/`height()`/`channels()`/`image_dtype()`)
+- `output.rs` — zero-copy numpy/torch struct output encoding
 - `contour.rs`, `point.rs` — standalone plugin functions for geometry namespaces
 
 **view-buffer/src/**
@@ -120,8 +124,7 @@ Every `Pipeline` tracks a **domain** through operations:
 | `buffer` | Multi-dimensional array | `source("image_bytes")` |
 | `contour` | Geometry vectors | `extract_contours()` |
 | `scalar` | Single numeric value | `reduce_sum()` |
-| `vector` | 1-D numeric array | `perceptual_hash()` |
-| `histogram` | Bucket array | `histogram()` |
+| `vector` | 1-D numeric array (incl. histogram buckets) | `perceptual_hash()`, `histogram()` |
 
 Domain constraints are enforced at pipeline-build time. Operations that don't match the current domain raise immediately in Python, not at execution time.
 
@@ -135,10 +138,17 @@ Every operation on `Pipeline` returns a new clone. Do not mutate an existing pip
 
 ### Alpha Channel Handling
 
-Image sources always preserve alpha. Each view-buffer operation declares an `AlphaMode`:
-- `PASSTHROUGH` — all channels processed uniformly
-- `STRIP_PROCESS_RESTORE` — alpha split off, op applied to color channels, alpha re-attached
-- `DROP` — alpha discarded, output has fixed channel count
+Image sources always preserve alpha. How each operation treats channels (and
+therefore alpha) is declared by its `OutputChannelRule` in
+`view-buffer/src/ops/shape_rule.rs`, the single authority the Python planner
+reads via `channel_rule`:
+- `PreserveChannels` — channel count is unchanged (alpha passes through).
+- `StripProcessRestore { color_channels }` — alpha is split off, the op runs on
+  the color channels, then alpha is re-attached (e.g. `RGBA`→gray yields `GrayA`).
+- `Fixed(n)` — output has exactly `n` channels regardless of input (e.g.
+  `grayscale`/`canny` → 1), dropping any alpha.
+- `NotApplicable` / `Unknown` — no `[H, W, C]` image result, or not knowable at
+  plan time.
 
 ### Test Structure
 
