@@ -740,7 +740,9 @@ def test_lazy_stub_is_current():
     spec.loader.exec_module(module)
 
     stub_path = Path(module._STUB_PATH)
-    assert stub_path.exists(), "lazy.pyi is missing; run python scripts/gen_lazy_stub.py"
+    assert stub_path.exists(), (
+        "lazy.pyi is missing; run python scripts/gen_lazy_stub.py"
+    )
     assert stub_path.read_text() == module.generate_stub(), (
         "lazy.pyi is out of date. Run: python scripts/gen_lazy_stub.py"
     )
