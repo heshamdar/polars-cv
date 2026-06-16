@@ -414,18 +414,14 @@ class TestContourNormalize:
     def test_normalize_returns_contour(self, square_df: pl.DataFrame) -> None:
         """Normalize should return a contour."""
         result = square_df.with_columns(
-            normalized=pl.col("contour").contour.normalize(
-                width=100, height=100
-            )
+            normalized=pl.col("contour").contour.normalize(width=100, height=100)
         )
         assert result["normalized"].dtype == result["contour"].dtype
 
     def test_normalize_scales_to_unit_range(self, square_df: pl.DataFrame) -> None:
         """Normalize should scale coordinates to [0, 1] range."""
         result = square_df.with_columns(
-            normalized=pl.col("contour").contour.normalize(
-                width=100, height=100
-            )
+            normalized=pl.col("contour").contour.normalize(width=100, height=100)
         )
         normalized = result["normalized"][0]
         exterior = normalized["exterior"]
@@ -454,9 +450,7 @@ class TestContourToAbsolute:
     def test_to_absolute_returns_contour(self, square_df: pl.DataFrame) -> None:
         """to_absolute should return a contour."""
         result = square_df.with_columns(
-            absolute=pl.col("contour").contour.to_absolute(
-                width=100, height=100
-            )
+            absolute=pl.col("contour").contour.to_absolute(width=100, height=100)
         )
         assert result["absolute"].dtype == result["contour"].dtype
 
