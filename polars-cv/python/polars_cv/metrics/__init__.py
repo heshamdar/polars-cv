@@ -14,6 +14,7 @@ from __future__ import annotations
 from ._bootstrap import BootstrapResult, bootstrap_metric_sequential, bootstrap_pr_auc
 from ._matching import BBoxMatcher, ContourMatcher, Matcher, PreMatchedAdapter
 from ._metrics import (
+    ConfusionResult,
     FROCResult,
     LROCResult,
     PrecisionRecallResult,
@@ -51,6 +52,7 @@ __all__ = [
     "f1_at_threshold",
     "confusion_at_threshold",
     # Result types
+    "ConfusionResult",
     "FROCResult",
     "LROCResult",
     "PrecisionRecallResult",

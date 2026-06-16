@@ -40,7 +40,7 @@ The **user-facing Python layer**. Responsible for:
 ```python
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).grayscale()
 pipe = Pipeline().source("image_bytes").channel_select(index=0)
-pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
 pipe = Pipeline().source("image_bytes").sobel(axis="x")
 pipe = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
 pipe = Pipeline().source("image_bytes", on_error="null")  # null this source's decode errors
@@ -145,11 +145,13 @@ pipe.resize(height=224, width=pl.col("target_w"))
    - Update dtype tracking with `_update_output_dtype()`
    - Return new Pipeline
 
-2. **`lazy.py`**: Add a corresponding method to `LazyPipelineExpr` that delegates to `Pipeline`:
-   ```python
-   def my_op(self, ...) -> "LazyPipelineExpr":
-       return self._chain(Pipeline().my_op(...))
-   ```
+2. **`lazy.py`**: Nothing to add for an ordinary op. `LazyPipelineExpr` generates a
+   forwarder for every chainable `Pipeline` method at import time
+   (`_install_pipeline_forwarders`), copying the signature so `inspect`/IDEs/the
+   parity test see the real parameters. Only define a method explicitly here if it
+   needs bespoke lazy behaviour (e.g. a binary op taking another
+   `LazyPipelineExpr`); the generator skips names already defined. After changing
+   `Pipeline`, regenerate the type stub with `python scripts/gen_lazy_stub.py`.
 
 3. **Schema inference**: nothing to add in `_types.py`. The op's domain, dtype,
    rank and channel effects are read at planning time from its view-buffer

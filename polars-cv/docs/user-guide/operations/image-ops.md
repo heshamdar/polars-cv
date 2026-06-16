@@ -102,11 +102,11 @@ Pipeline().source("image_bytes").grayscale().histogram(bins=10, closed="right")
 
 ## Color Conversion
 
-Convert between color spaces using `cvt_color` or convenience methods.
+Convert between color spaces using `convert_color` or convenience methods.
 
 ```python
 # Generic conversion
-Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+Pipeline().source("image_bytes").convert_color("rgb", "hsv")
 
 # Convenience methods
 Pipeline().source("image_bytes").to_hsv()

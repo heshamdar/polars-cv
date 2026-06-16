@@ -782,8 +782,8 @@ class TestContourNormalizeRoundTrip:
         df = pl.DataFrame({"contour": [square]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(
             roundtrip=pl.col("contour")
-            .contour.normalize(ref_width=100, ref_height=100)
-            .contour.to_absolute(ref_width=100, ref_height=100)
+            .contour.normalize(width=100, height=100)
+            .contour.to_absolute(width=100, height=100)
         )
 
         rt = result["roundtrip"][0]

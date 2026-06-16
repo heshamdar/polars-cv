@@ -87,7 +87,7 @@ IMAGENET_STD: list[float] = [0.229, 0.224, 0.225]
 
 
 class ColorSpace(str, Enum):
-    """Supported color spaces for ``cvt_color``."""
+    """Supported color spaces for ``convert_color``."""
 
     RGB = "rgb"
     BGR = "bgr"

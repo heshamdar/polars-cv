@@ -262,8 +262,8 @@ class TestPointNormalizeRoundTrip:
         )
         result = df.with_columns(
             restored=pl.col("pt")
-            .point.normalize(ref_width=200, ref_height=300)
-            .point.to_absolute(ref_width=200, ref_height=300)
+            .point.normalize(width=200, height=300)
+            .point.to_absolute(width=200, height=300)
         )
         p = result["restored"][0]
         assert p["x"] == pytest.approx(50.0, abs=0.1)
@@ -276,7 +276,7 @@ class TestPointNormalizeRoundTrip:
             schema={"pt": POINT_SCHEMA},
         )
         result = df.with_columns(
-            normed=pl.col("pt").point.normalize(ref_width=100, ref_height=150)
+            normed=pl.col("pt").point.normalize(width=100, height=150)
         )
         p = result["normed"][0]
         assert 0.0 <= p["x"] <= 1.0

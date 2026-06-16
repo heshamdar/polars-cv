@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._confusion import confusion_at_threshold
+from ._confusion import ConfusionResult, confusion_at_threshold
 from ._froc import FROCResult, froc_curve
 from ._lroc import LROCResult, lroc_curve
 from ._precision_recall import (
@@ -16,6 +16,7 @@ from ._precision_recall import (
 )
 
 __all__ = [
+    "ConfusionResult",
     "FROCResult",
     "LROCResult",
     "PrecisionRecallResult",

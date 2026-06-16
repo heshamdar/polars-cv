@@ -161,8 +161,13 @@ reads via `channel_rule`:
 
 1. Implement in **view-buffer** (`view-buffer/src/ops/`) — add to appropriate module and register in `ViewDto`.
 2. Add a dispatch arm in **polars-cv** `src/execute.rs` (`resolve_op()`).
-3. Add a method to `Pipeline` in `python/polars_cv/pipeline.py`.
-4. Mirror the method on `LazyPipelineExpr` in `python/polars_cv/lazy.py`.
+3. Add a method to `Pipeline` in `python/polars_cv/pipeline.py`. The matching
+   `LazyPipelineExpr` method is generated automatically from `Pipeline` at import
+   time (`python/polars_cv/lazy.py`) — do **not** hand-mirror it. If the op needs
+   bespoke lazy behaviour (e.g. it takes another `LazyPipelineExpr` operand),
+   define it explicitly on `LazyPipelineExpr` and the generator will skip it.
+4. Regenerate the type stub: `python scripts/gen_lazy_stub.py` (CI guards it via
+   `test_lazy_stub_is_current`).
 5. Write tests covering both unit (builder validation) and integration (actual execution) cases.
 
 ---

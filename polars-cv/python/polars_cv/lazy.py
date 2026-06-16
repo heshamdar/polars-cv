@@ -15,7 +15,6 @@ import polars as pl
 
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
-    from polars_cv._types import FloatOrExpr, HashAlgorithm, IntOrExpr
     from polars_cv.pipeline import Pipeline
 
 
@@ -900,852 +899,6 @@ class LazyPipelineExpr:
         else:
             return stat_nodes[0].merge_pipe(*stat_nodes[1:])
 
-    # --- Channel Operations ---
-
-    def channel_select(self, *, index: "IntOrExpr") -> "LazyPipelineExpr":
-        """
-        Extract a single channel from a multi-channel image.
-
-        Args:
-            index: Channel index to extract (0-based). Accepts a Polars
-                expression for per-row dynamic selection.
-
-        Returns:
-            New LazyPipelineExpr with the selected channel.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().channel_select(index=index))
-
-    def channel_swap(self, *, order: list[int]) -> "LazyPipelineExpr":
-        """
-        Reorder channels in a multi-channel image.
-
-        Args:
-            order: New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR.
-
-        Returns:
-            New LazyPipelineExpr with reordered channels.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().channel_swap(order=order))
-
-    # --- Intensity Adjustments ---
-
-    def adjust_contrast(self, *, factor: "FloatOrExpr") -> "LazyPipelineExpr":
-        """
-        Adjust image contrast.
-
-        Args:
-            factor: Contrast factor. 1.0 = no change, >1 = more contrast.
-
-        Returns:
-            New LazyPipelineExpr with adjusted contrast.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().adjust_contrast(factor=factor))
-
-    def adjust_gamma(self, *, gamma: "FloatOrExpr") -> "LazyPipelineExpr":
-        """
-        Apply gamma (power-law) correction.
-
-        Args:
-            gamma: Gamma value. <1 = brighter, >1 = darker.
-
-        Returns:
-            New LazyPipelineExpr with gamma correction applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().adjust_gamma(gamma=gamma))
-
-    def adjust_brightness(
-        self, *, factor: "FloatOrExpr", preserve_dtype: bool = False
-    ) -> "LazyPipelineExpr":
-        """
-        Adjust image brightness by scaling pixel values.
-
-        Args:
-            factor: Brightness factor. 1.0 = no change, >1 = brighter.
-            preserve_dtype: If True, cast the result back to the pipeline's
-                pre-op dtype (see :meth:`polars_cv.Pipeline.adjust_brightness`).
-
-        Returns:
-            New LazyPipelineExpr with adjusted brightness.
-        """
-        return self.pipe(
-            self._continuation().adjust_brightness(
-                factor=factor, preserve_dtype=preserve_dtype
-            )
-        )
-
-    def invert(self) -> "LazyPipelineExpr":
-        """
-        Invert pixel values.
-
-        Returns:
-            New LazyPipelineExpr with inverted pixels.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().invert())
-
-    def on_error(self, policy: str) -> "LazyPipelineExpr":
-        """
-        Set the per-row error policy for the executed pipeline graph.
-
-        See :meth:`polars_cv.Pipeline.on_error` for the policy semantics
-        (``"raise"``, ``"null"``, ``"null_with_message"``).
-
-        Returns:
-            New LazyPipelineExpr with the error policy set.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().on_error(policy))
-
-    # --- Color Space Conversion ---
-
-    def cvt_color(self, from_space: str, to_space: str) -> "LazyPipelineExpr":
-        """
-        Convert between color spaces.
-
-        Args:
-            from_space: Source color space (rgb, bgr, hsv, lab, ycbcr, gray).
-            to_space: Target color space (rgb, bgr, hsv, lab, ycbcr, gray).
-
-        Returns:
-            New LazyPipelineExpr with converted color space.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().cvt_color(from_space, to_space))
-
-    def to_hsv(self) -> "LazyPipelineExpr":
-        """Convert from RGB to HSV color space.
-
-        Returns:
-            New LazyPipelineExpr in HSV color space.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().to_hsv())
-
-    def to_lab(self) -> "LazyPipelineExpr":
-        """Convert from RGB to CIE LAB color space.
-
-        Returns:
-            New LazyPipelineExpr in LAB color space (f32).
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().to_lab())
-
-    def to_bgr(self) -> "LazyPipelineExpr":
-        """Convert from RGB to BGR channel order.
-
-        Returns:
-            New LazyPipelineExpr in BGR order.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().to_bgr())
-
-    def to_ycbcr(self) -> "LazyPipelineExpr":
-        """Convert from RGB to YCbCr color space.
-
-        Returns:
-            New LazyPipelineExpr in YCbCr color space.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().to_ycbcr())
-
-    # --- Convolution / Filtering ---
-
-    def convolve2d(
-        self,
-        kernel: list[float],
-        ksize: "IntOrExpr",
-        *,
-        normalize: bool = False,
-        border: str = "replicate",
-    ) -> "LazyPipelineExpr":
-        """
-        Apply generic 2D convolution with an arbitrary kernel.
-
-        Args:
-            kernel: Flattened kernel values (row-major, ``ksize x ksize``).
-            ksize: Kernel dimension (must be odd). Accepts a Polars expression
-                for per-row dynamic values.
-            normalize: If True, divide output by the sum of absolute kernel values.
-            border: Border handling mode (``"replicate"``, ``"zero"``, ``"reflect"``).
-
-        Returns:
-            New LazyPipelineExpr with convolution applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(
-            Pipeline().convolve2d(kernel, ksize, normalize=normalize, border=border)
-        )
-
-    def sobel(self, *, axis: str = "x", ksize: int = 3) -> "LazyPipelineExpr":
-        """
-        Sobel gradient operator.
-
-        Args:
-            axis: Gradient direction — ``"x"`` or ``"y"``.
-            ksize: Kernel size (currently only 3).
-
-        Returns:
-            New LazyPipelineExpr with Sobel gradient applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().sobel(axis=axis, ksize=ksize))
-
-    def laplacian(self, *, ksize: int = 3) -> "LazyPipelineExpr":
-        """
-        Laplacian second-derivative operator.
-
-        Args:
-            ksize: Kernel size (currently only 3).
-
-        Returns:
-            New LazyPipelineExpr with Laplacian applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().laplacian(ksize=ksize))
-
-    def sharpen(self, *, strength: float = 1.0) -> "LazyPipelineExpr":
-        """
-        Sharpen using an unsharp-mask-style kernel.
-
-        Args:
-            strength: Sharpening strength (default 1.0).
-
-        Returns:
-            New LazyPipelineExpr with sharpening applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().sharpen(strength=strength))
-
-    # --- Edge Detection ---
-
-    def canny(
-        self,
-        *,
-        low_threshold: "FloatOrExpr" = 50.0,
-        high_threshold: "FloatOrExpr" = 150.0,
-    ) -> "LazyPipelineExpr":
-        """
-        Canny edge detection.
-
-        Args:
-            low_threshold: Lower hysteresis threshold.
-            high_threshold: Upper hysteresis threshold.
-
-        Returns:
-            New LazyPipelineExpr with edge detection applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(
-            Pipeline().canny(low_threshold=low_threshold, high_threshold=high_threshold)
-        )
-
-    # --- Morphological Operations ---
-
-    def erode(
-        self, *, ksize: "IntOrExpr" = 3, iterations: "IntOrExpr" = 1
-    ) -> "LazyPipelineExpr":
-        """
-        Morphological erosion (local minimum filter).
-
-        Args:
-            ksize: Size of the square structuring element. Accepts a Polars
-                expression for per-row dynamic values.
-            iterations: Number of times the erosion is applied. Accepts a
-                Polars expression for per-row dynamic values.
-
-        Returns:
-            New LazyPipelineExpr with erosion applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().erode(ksize=ksize, iterations=iterations))
-
-    def dilate(
-        self, *, ksize: "IntOrExpr" = 3, iterations: "IntOrExpr" = 1
-    ) -> "LazyPipelineExpr":
-        """
-        Morphological dilation (local maximum filter).
-
-        Args:
-            ksize: Size of the square structuring element. Accepts a Polars
-                expression for per-row dynamic values.
-            iterations: Number of times the dilation is applied. Accepts a
-                Polars expression for per-row dynamic values.
-
-        Returns:
-            New LazyPipelineExpr with dilation applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().dilate(ksize=ksize, iterations=iterations))
-
-    def morphology_open(self, *, ksize: "IntOrExpr" = 3) -> "LazyPipelineExpr":
-        """
-        Morphological opening (erode then dilate).
-
-        Args:
-            ksize: Size of the square structuring element. Accepts a Polars
-                expression for per-row dynamic values.
-
-        Returns:
-            New LazyPipelineExpr with opening applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().morphology_open(ksize=ksize))
-
-    def morphology_close(self, *, ksize: "IntOrExpr" = 3) -> "LazyPipelineExpr":
-        """
-        Morphological closing (dilate then erode).
-
-        Args:
-            ksize: Size of the square structuring element. Accepts a Polars
-                expression for per-row dynamic values.
-
-        Returns:
-            New LazyPipelineExpr with closing applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().morphology_close(ksize=ksize))
-
-    def morphology_gradient(self, *, ksize: "IntOrExpr" = 3) -> "LazyPipelineExpr":
-        """
-        Morphological gradient (dilate - erode).
-
-        Args:
-            ksize: Size of the square structuring element. Accepts a Polars
-                expression for per-row dynamic values.
-
-        Returns:
-            New LazyPipelineExpr with morphological gradient applied.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().morphology_gradient(ksize=ksize))
-
-    # --- Histogram Equalization ---
-
-    def equalize_histogram(self) -> "LazyPipelineExpr":
-        """
-        Apply histogram equalization for contrast enhancement.
-
-        Returns:
-            New LazyPipelineExpr with equalized histogram.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return self.pipe(Pipeline().equalize_histogram())
-
-    # --- Pipeline method parity (generated wrappers) ---
-    #
-    # Thin counterparts of every chainable Pipeline method, delegating
-    # through .pipe(self._continuation().op(...)) so builder-time domain
-    # validation sees the upstream state. Guarded against drift by
-    # test_lazy_pipeline_method_parity in tests/test_sanitation.py.
-
-    def area(
-        self,
-        *,
-        signed: "bool" = False,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.area`."""
-        return self.pipe(self._continuation().area(signed=signed))
-
-    def assert_shape(
-        self,
-        *,
-        height: "IntOrExpr | None" = None,
-        width: "IntOrExpr | None" = None,
-        channels: "IntOrExpr | None" = None,
-        batch: "IntOrExpr | None" = None,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.assert_shape`."""
-        return self.pipe(
-            self._continuation().assert_shape(
-                height=height, width=width, channels=channels, batch=batch
-            )
-        )
-
-    def blur(
-        self,
-        sigma: "FloatOrExpr",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.blur`."""
-        return self.pipe(self._continuation().blur(sigma=sigma))
-
-    def bounding_box(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.bounding_box`."""
-        return self.pipe(self._continuation().bounding_box())
-
-    def cast(
-        self,
-        dtype: "str",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.cast`."""
-        return self.pipe(self._continuation().cast(dtype=dtype))
-
-    def centroid(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.centroid`."""
-        return self.pipe(self._continuation().centroid())
-
-    def clamp(
-        self,
-        min_val: "FloatOrExpr",
-        max_val: "FloatOrExpr",
-        out_dtype: "str | None" = None,
-        preserve_dtype: bool = False,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.clamp`."""
-        return self.pipe(
-            self._continuation().clamp(
-                min_val=min_val,
-                max_val=max_val,
-                out_dtype=out_dtype,
-                preserve_dtype=preserve_dtype,
-            )
-        )
-
-    def convex_hull(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.convex_hull`."""
-        return self.pipe(self._continuation().convex_hull())
-
-    def crop(
-        self,
-        *,
-        top: "IntOrExpr" = 0,
-        left: "IntOrExpr" = 0,
-        height: "IntOrExpr | None" = None,
-        width: "IntOrExpr | None" = None,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.crop`."""
-        return self.pipe(
-            self._continuation().crop(top=top, left=left, height=height, width=width)
-        )
-
-    def extract_contours(
-        self,
-        *,
-        mode: "str" = "external",
-        method: "str" = "simple",
-        min_area: "float | None" = None,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.extract_contours`."""
-        return self.pipe(
-            self._continuation().extract_contours(
-                mode=mode, method=method, min_area=min_area
-            )
-        )
-
-    def extract_shape(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.extract_shape`."""
-        return self.pipe(self._continuation().extract_shape())
-
-    def flip(
-        self,
-        axes: "list[int]",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.flip`."""
-        return self.pipe(self._continuation().flip(axes=axes))
-
-    def flip_h(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.flip_h`."""
-        return self.pipe(self._continuation().flip_h())
-
-    def flip_v(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.flip_v`."""
-        return self.pipe(self._continuation().flip_v())
-
-    def grayscale(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.grayscale`."""
-        return self.pipe(self._continuation().grayscale())
-
-    def histogram(
-        self,
-        bins: "IntOrExpr | list[float]" = 256,
-        range: "tuple[float, float] | None" = None,
-        closed: "str" = "left",
-        output: "str" = "buckets",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.histogram`."""
-        return self.pipe(
-            self._continuation().histogram(
-                bins=bins, range=range, closed=closed, output=output
-            )
-        )
-
-    def letterbox(
-        self,
-        *,
-        height: "IntOrExpr",
-        width: "IntOrExpr",
-        value: "FloatOrExpr" = 0.0,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.letterbox`."""
-        return self.pipe(
-            self._continuation().letterbox(height=height, width=width, value=value)
-        )
-
-    def normalize(
-        self,
-        method: "str" = "minmax",
-        mean: "list[float] | None" = None,
-        std: "list[float] | None" = None,
-        out_dtype: "str | None" = None,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.normalize`."""
-        return self.pipe(
-            self._continuation().normalize(
-                method=method, mean=mean, std=std, out_dtype=out_dtype
-            )
-        )
-
-    def pad(
-        self,
-        *,
-        top: "IntOrExpr" = 0,
-        bottom: "IntOrExpr" = 0,
-        left: "IntOrExpr" = 0,
-        right: "IntOrExpr" = 0,
-        value: "FloatOrExpr" = 0.0,
-        mode: "str" = "constant",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.pad`."""
-        return self.pipe(
-            self._continuation().pad(
-                top=top, bottom=bottom, left=left, right=right, value=value, mode=mode
-            )
-        )
-
-    def pad_to_size(
-        self,
-        *,
-        height: "IntOrExpr",
-        width: "IntOrExpr",
-        position: "str" = "center",
-        value: "FloatOrExpr" = 0.0,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.pad_to_size`."""
-        return self.pipe(
-            self._continuation().pad_to_size(
-                height=height, width=width, position=position, value=value
-            )
-        )
-
-    def perceptual_hash(
-        self,
-        algorithm: "HashAlgorithm | str" = "perceptual",
-        hash_size: "int" = 64,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.perceptual_hash`."""
-        return self.pipe(
-            self._continuation().perceptual_hash(
-                algorithm=algorithm, hash_size=hash_size
-            )
-        )
-
-    def perimeter(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.perimeter`."""
-        return self.pipe(self._continuation().perimeter())
-
-    def rasterize(
-        self,
-        *,
-        width: "IntOrExpr | None" = None,
-        height: "IntOrExpr | None" = None,
-        shape: "'LazyPipelineExpr | None'" = None,
-        fill_value: "IntOrExpr" = 255,
-        background: "IntOrExpr" = 0,
-        anti_alias: "bool" = False,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.rasterize`."""
-        return self.pipe(
-            self._continuation().rasterize(
-                width=width,
-                height=height,
-                shape=shape,
-                fill_value=fill_value,
-                background=background,
-                anti_alias=anti_alias,
-            )
-        )
-
-    def reduce_argmax(
-        self,
-        axis: "int",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_argmax`."""
-        return self.pipe(self._continuation().reduce_argmax(axis=axis))
-
-    def reduce_argmin(
-        self,
-        axis: "int",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_argmin`."""
-        return self.pipe(self._continuation().reduce_argmin(axis=axis))
-
-    def reduce_max(
-        self,
-        axis: "int | None" = None,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_max`."""
-        return self.pipe(self._continuation().reduce_max(axis=axis))
-
-    def reduce_mean(
-        self,
-        axis: "int | None" = None,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_mean`."""
-        return self.pipe(self._continuation().reduce_mean(axis=axis))
-
-    def reduce_min(
-        self,
-        axis: "int | None" = None,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_min`."""
-        return self.pipe(self._continuation().reduce_min(axis=axis))
-
-    def reduce_percentile(
-        self,
-        q: "FloatOrExpr",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_percentile`."""
-        return self.pipe(self._continuation().reduce_percentile(q=q))
-
-    def reduce_popcount(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_popcount`."""
-        return self.pipe(self._continuation().reduce_popcount())
-
-    def reduce_std(
-        self,
-        axis: "int | None" = None,
-        ddof: "IntOrExpr" = 0,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_std`."""
-        return self.pipe(self._continuation().reduce_std(axis=axis, ddof=ddof))
-
-    def reduce_sum(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reduce_sum`."""
-        return self.pipe(self._continuation().reduce_sum())
-
-    def relu(self) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.relu`."""
-        return self.pipe(self._continuation().relu())
-
-    def reshape(
-        self,
-        shape: "list[int | pl.Expr]",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.reshape`."""
-        return self.pipe(self._continuation().reshape(shape=shape))
-
-    def resize(
-        self,
-        *,
-        height: "IntOrExpr",
-        width: "IntOrExpr",
-        filter: "str" = "lanczos3",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize`."""
-        return self.pipe(
-            self._continuation().resize(height=height, width=width, filter=filter)
-        )
-
-    def resize_max(
-        self,
-        max_size: "IntOrExpr",
-        *,
-        filter: "str" = "lanczos3",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_max`."""
-        return self.pipe(
-            self._continuation().resize_max(max_size=max_size, filter=filter)
-        )
-
-    def resize_min(
-        self,
-        min_size: "IntOrExpr",
-        *,
-        filter: "str" = "lanczos3",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_min`."""
-        return self.pipe(
-            self._continuation().resize_min(min_size=min_size, filter=filter)
-        )
-
-    def resize_scale(
-        self,
-        *,
-        scale: "FloatOrExpr | None" = None,
-        scale_x: "FloatOrExpr | None" = None,
-        scale_y: "FloatOrExpr | None" = None,
-        filter: "str" = "lanczos3",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_scale`."""
-        return self.pipe(
-            self._continuation().resize_scale(
-                scale=scale, scale_x=scale_x, scale_y=scale_y, filter=filter
-            )
-        )
-
-    def resize_to_height(
-        self,
-        height: "IntOrExpr",
-        *,
-        filter: "str" = "lanczos3",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_to_height`."""
-        return self.pipe(
-            self._continuation().resize_to_height(height=height, filter=filter)
-        )
-
-    def resize_to_width(
-        self,
-        width: "IntOrExpr",
-        *,
-        filter: "str" = "lanczos3",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.resize_to_width`."""
-        return self.pipe(
-            self._continuation().resize_to_width(width=width, filter=filter)
-        )
-
-    def rotate(
-        self,
-        angle: "FloatOrExpr",
-        *,
-        expand: "bool" = False,
-        interpolation: "str" = "bilinear",
-        border_value: "float" = 0.0,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.rotate`."""
-        return self.pipe(
-            self._continuation().rotate(
-                angle=angle,
-                expand=expand,
-                interpolation=interpolation,
-                border_value=border_value,
-            )
-        )
-
-    def rotate_and_scale(
-        self,
-        *,
-        angle: "float",
-        scale: "float" = 1.0,
-        center: "tuple[float, float] | None" = None,
-        output_size: "tuple[int, int] | None" = None,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.rotate_and_scale`."""
-        return self.pipe(
-            self._continuation().rotate_and_scale(
-                angle=angle, scale=scale, center=center, output_size=output_size
-            )
-        )
-
-    def scale(
-        self,
-        factor: "FloatOrExpr",
-        out_dtype: "str | None" = None,
-        preserve_dtype: bool = False,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.scale`."""
-        return self.pipe(
-            self._continuation().scale(
-                factor=factor, out_dtype=out_dtype, preserve_dtype=preserve_dtype
-            )
-        )
-
-    def scale_contour(
-        self,
-        *,
-        sx: "FloatOrExpr",
-        sy: "FloatOrExpr",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.scale_contour`."""
-        return self.pipe(self._continuation().scale_contour(sx=sx, sy=sy))
-
-    def shear(
-        self,
-        *,
-        sx: "float" = 0.0,
-        sy: "float" = 0.0,
-        output_size: "tuple[int, int] | None" = None,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.shear`."""
-        return self.pipe(
-            self._continuation().shear(sx=sx, sy=sy, output_size=output_size)
-        )
-
-    def simplify(
-        self,
-        *,
-        tolerance: "FloatOrExpr",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.simplify`."""
-        return self.pipe(self._continuation().simplify(tolerance=tolerance))
-
-    def threshold(
-        self,
-        value: "'IntOrExpr | FloatOrExpr'",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.threshold`."""
-        return self.pipe(self._continuation().threshold(value=value))
-
-    def translate(
-        self,
-        *,
-        dx: "FloatOrExpr",
-        dy: "FloatOrExpr",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.translate`."""
-        return self.pipe(self._continuation().translate(dx=dx, dy=dy))
-
-    def transpose(
-        self,
-        axes: "list[int]",
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.transpose`."""
-        return self.pipe(self._continuation().transpose(axes=axes))
-
-    def warp_affine(
-        self,
-        matrix: "list[float]",
-        output_size: "tuple[IntOrExpr, IntOrExpr]",
-        *,
-        interpolation: "str" = "bilinear",
-        border_value: "float" = 0.0,
-    ) -> "LazyPipelineExpr":
-        """Lazy counterpart of :meth:`polars_cv.Pipeline.warp_affine`."""
-        return self.pipe(
-            self._continuation().warp_affine(
-                matrix=matrix,
-                output_size=output_size,
-                interpolation=interpolation,
-                border_value=border_value,
-            )
-        )
-
     # --- Internal Helpers ---
 
     def _continuation(self) -> "Pipeline":
@@ -1883,3 +1036,87 @@ class LazyPipelineExpr:
         print("    df.with_columns(result=expr)")
         print("\nFor multi-output, use a dict:")
         print("    expr = node.sink({'alias1': 'numpy', 'alias2': 'png'})")
+
+
+# ---------------------------------------------------------------------------
+# Auto-generated Pipeline forwarders
+# ---------------------------------------------------------------------------
+#
+# Every chainable ``Pipeline`` operation is exposed on ``LazyPipelineExpr`` as a
+# thin forwarder that applies the op to a continuation pipeline (so build-time
+# domain validation runs against the upstream state) and pipes the result back.
+# Rather than hand-mirror ~70 method signatures — which drifted badly in the
+# past and needed a dedicated parity test to police — the forwarders are
+# generated once from ``Pipeline`` at import time, so each operation is defined a
+# single place. The committed ``lazy.pyi`` stub mirrors the generated surface for
+# static type checkers and IDEs; regenerate it with
+# ``python scripts/gen_lazy_stub.py`` whenever ``Pipeline`` changes.
+
+#: ``Pipeline`` methods that are intentionally NOT chainable lazy operations:
+#: ``source`` starts a chain rather than continuing one, and the rest are
+#: builder/planner introspection helpers.
+PIPELINE_ONLY_METHODS = frozenset(
+    {
+        "source",
+        "validate",
+        "has_source",
+        "to_graph",
+        "current_domain",
+        "output_dtype",
+        "output_encoding",
+    }
+)
+
+
+def _chainable_pipeline_ops() -> list[str]:
+    """Names of ``Pipeline`` methods that forward onto ``LazyPipelineExpr``."""
+    from polars_cv.pipeline import Pipeline
+
+    return sorted(
+        name
+        for name in dir(Pipeline)
+        if not name.startswith("_")
+        and name not in PIPELINE_ONLY_METHODS
+        and callable(getattr(Pipeline, name))
+    )
+
+
+def _make_forwarder(name: str) -> Any:
+    """Build a lazy forwarder for the chainable ``Pipeline`` method ``name``.
+
+    The returned function carries ``Pipeline``'s signature (so ``inspect``,
+    ``help`` and the parity test see the true parameters) but delegates the
+    keyword/positional handling to the wrapped ``Pipeline`` method at runtime.
+    """
+    import inspect
+
+    from polars_cv.pipeline import Pipeline
+
+    def forwarder(
+        self: "LazyPipelineExpr", *args: Any, **kwargs: Any
+    ) -> "LazyPipelineExpr":
+        return self.pipe(getattr(self._continuation(), name)(*args, **kwargs))
+
+    forwarder.__name__ = name
+    forwarder.__qualname__ = f"LazyPipelineExpr.{name}"
+    forwarder.__doc__ = f"Lazy counterpart of :meth:`polars_cv.Pipeline.{name}`."
+    forwarder.__signature__ = inspect.signature(getattr(Pipeline, name)).replace(
+        return_annotation="LazyPipelineExpr"
+    )
+    return forwarder
+
+
+def _install_pipeline_forwarders() -> None:
+    """Attach a forwarder for every chainable ``Pipeline`` op not already defined.
+
+    Methods explicitly defined on ``LazyPipelineExpr`` (the binary operators,
+    ``label_reduce``, ``apply_mask`` and friends) take precedence and are left
+    untouched.
+    """
+    for name in _chainable_pipeline_ops():
+        if name in vars(LazyPipelineExpr):
+            continue
+        setattr(LazyPipelineExpr, name, _make_forwarder(name))
+
+
+_install_pipeline_forwarders()

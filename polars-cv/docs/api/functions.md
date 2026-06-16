@@ -114,7 +114,7 @@ Supports PNG, JPEG, WebP, TIFF, BMP, GIF, VIEW protocol blobs, and numpy-sink st
 
 ### ColorSpace
 
-Color space identifiers for `cvt_color`.
+Color space identifiers for `convert_color`.
 
 ```python
 from polars_cv import ColorSpace

@@ -248,6 +248,11 @@ class TestConfusionAtThreshold:
     def test_confusion_counts(self, simple_detection_table: DetectionTable) -> None:
         """Verify TP/FP/FN counts at a specific threshold."""
         result = confusion_at_threshold(simple_detection_table, 0.7)
-        assert result["tp"] == 2
-        assert result["fp"] == 1
-        assert result["fn"] == 1  # 3 total GTs - 2 TPs
+        assert result.tp == 2
+        assert result.fp == 1
+        assert result.fn == 1  # 3 total GTs - 2 TPs
+        # Legacy mapping access remains available via to_dict().
+        assert result.to_dict() == {"tp": 2, "fp": 1, "fn": 1}
+        # Derived metrics: precision = 2/3, recall = 2/3.
+        assert result.precision == 2 / 3
+        assert result.recall == 2 / 3

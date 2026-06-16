@@ -15,21 +15,19 @@ constructing a full Pipeline. These use header-only decoding.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
-from polars.plugins import register_plugin_function
+
+from polars_cv._namespace import _PluginNamespace
 
 if TYPE_CHECKING:
     from polars_cv.lazy import LazyPipelineExpr
     from polars_cv.pipeline import Pipeline
 
-LIB_PATH = Path(__file__).parent
-
 
 @pl.api.register_expr_namespace("cv")
-class CvNamespace:
+class CvNamespace(_PluginNamespace):
     """
     Namespace for computer vision operations on Polars expressions.
 
@@ -42,15 +40,6 @@ class CvNamespace:
         >>> df.with_columns(w=pl.col("image").cv.width())
         >>> df.filter(pl.col("image").cv.height() > 1024)
     """
-
-    def __init__(self, expr: pl.Expr) -> None:
-        """
-        Initialize the namespace with an expression.
-
-        Args:
-            expr: The Polars expression to extend.
-        """
-        self._expr = expr
 
     def pipe(self, pipe: "Pipeline") -> "LazyPipelineExpr":
         """
@@ -84,12 +73,7 @@ class CvNamespace:
         Returns:
             UInt32 expression with the width of each image.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="image_width",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("image_width")
 
     def height(self) -> pl.Expr:
         """
@@ -102,12 +86,7 @@ class CvNamespace:
         Returns:
             UInt32 expression with the height of each image.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="image_height",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("image_height")
 
     def channels(self) -> pl.Expr:
         """
@@ -120,12 +99,7 @@ class CvNamespace:
         Returns:
             UInt32 expression with the channel count of each image.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="image_channels",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("image_channels")
 
     def image_dtype(self) -> pl.Expr:
         """
@@ -138,9 +112,4 @@ class CvNamespace:
         Returns:
             String expression with the dtype name of each image.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="image_dtype",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("image_dtype")

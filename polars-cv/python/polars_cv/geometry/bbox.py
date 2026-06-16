@@ -5,20 +5,15 @@ Provides the ``.bbox`` accessor for operations on ``List[BBOX_SCHEMA]`` columns.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import polars as pl
-from polars.plugins import register_plugin_function
 
-if TYPE_CHECKING:
-    pass
-
-LIB_PATH = Path(__file__).parent.parent
+from polars_cv._namespace import _PluginNamespace
 
 
 @pl.api.register_expr_namespace("bbox")
-class BBoxNamespace:
+class BBoxNamespace(_PluginNamespace):
     """Namespace for bounding-box operations on ``List[BBOX_SCHEMA]`` columns.
 
     Example::
@@ -33,9 +28,6 @@ class BBoxNamespace:
         )
     """
 
-    def __init__(self, expr: pl.Expr) -> None:
-        self._expr = expr
-
     def pairwise_iou(self, other: pl.Expr) -> pl.Expr:
         """Compute pairwise IoU matrix between two sets of bounding boxes.
 
@@ -45,12 +37,7 @@ class BBoxNamespace:
         Returns:
             ``List[List[Float64]]`` IoU matrix expression.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="bbox_pairwise_iou",
-            args=[self._expr, other],
-            is_elementwise=True,
-        )
+        return self._plugin("bbox_pairwise_iou", args=[other])
 
     def match_detections(
         self,
@@ -76,13 +63,11 @@ class BBoxNamespace:
         Returns:
             Struct expression matching ``MATCH_RESULT_SCHEMA``.
         """
-        args = [self._expr, other]
+        args = [other]
         if scores is not None:
             args.append(scores)
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="bbox_match_detections",
+        return self._plugin(
+            "bbox_match_detections",
             args=args,
             kwargs={"threshold": threshold, "strategy": strategy},
-            is_elementwise=True,
         )

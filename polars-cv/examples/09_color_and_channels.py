@@ -1,7 +1,7 @@
 """Color conversion, channel operations, and intensity adjustments.
 
 Demonstrates:
-- cvt_color / to_hsv / to_lab / to_bgr / to_ycbcr
+- convert_color / to_hsv / to_lab / to_bgr / to_ycbcr
 - channel_select / channel_swap
 - adjust_contrast / adjust_gamma / adjust_brightness / invert
 
