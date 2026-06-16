@@ -37,34 +37,34 @@ class TestContourExpressionParams:
 
     def test_normalize_rejects_expr_ref_width(self, square_contour: dict) -> None:
         with pytest.raises(TypeError, match="expression parameters"):
-            pl.col("c").contour.normalize(ref_width=pl.col("w"), ref_height=100)
+            pl.col("c").contour.normalize(width=pl.col("w"), height=100)
 
     def test_normalize_rejects_expr_ref_height(self, square_contour: dict) -> None:
         with pytest.raises(TypeError, match="expression parameters"):
-            pl.col("c").contour.normalize(ref_width=100, ref_height=pl.col("h"))
+            pl.col("c").contour.normalize(width=100, height=pl.col("h"))
 
     def test_normalize_rejects_both_expr(self, square_contour: dict) -> None:
         with pytest.raises(TypeError, match="expression parameters"):
-            pl.col("c").contour.normalize(ref_width=pl.col("w"), ref_height=pl.col("h"))
+            pl.col("c").contour.normalize(width=pl.col("w"), height=pl.col("h"))
 
     def test_normalize_accepts_literal_ints(self, square_contour: dict) -> None:
         """Sanity check: literal ints should not raise."""
         # Should not raise – just builds the expression, no execution needed
-        expr = pl.col("c").contour.normalize(ref_width=100, ref_height=200)
+        expr = pl.col("c").contour.normalize(width=100, height=200)
         assert expr is not None
 
     # --- to_absolute ---
 
     def test_to_absolute_rejects_expr_ref_width(self) -> None:
         with pytest.raises(TypeError, match="expression parameters"):
-            pl.col("c").contour.to_absolute(ref_width=pl.col("w"), ref_height=100)
+            pl.col("c").contour.to_absolute(width=pl.col("w"), height=100)
 
     def test_to_absolute_rejects_expr_ref_height(self) -> None:
         with pytest.raises(TypeError, match="expression parameters"):
-            pl.col("c").contour.to_absolute(ref_width=100, ref_height=pl.col("h"))
+            pl.col("c").contour.to_absolute(width=100, height=pl.col("h"))
 
     def test_to_absolute_accepts_literals(self) -> None:
-        expr = pl.col("c").contour.to_absolute(ref_width=640, ref_height=480)
+        expr = pl.col("c").contour.to_absolute(width=640, height=480)
         assert expr is not None
 
     # --- translate ---
@@ -108,28 +108,28 @@ class TestPointExpressionParams:
 
     def test_normalize_rejects_expr_ref_width(self) -> None:
         with pytest.raises(TypeError, match="pl.Expr"):
-            pl.col("p").point.normalize(ref_width=pl.col("w"), ref_height=100)
+            pl.col("p").point.normalize(width=pl.col("w"), height=100)
 
     def test_normalize_rejects_expr_ref_height(self) -> None:
         with pytest.raises(TypeError, match="pl.Expr"):
-            pl.col("p").point.normalize(ref_width=100, ref_height=pl.col("h"))
+            pl.col("p").point.normalize(width=100, height=pl.col("h"))
 
     def test_normalize_accepts_literals(self) -> None:
-        expr = pl.col("p").point.normalize(ref_width=640, ref_height=480)
+        expr = pl.col("p").point.normalize(width=640, height=480)
         assert expr is not None
 
     # --- to_absolute ---
 
     def test_to_absolute_rejects_expr_ref_width(self) -> None:
         with pytest.raises(TypeError, match="pl.Expr"):
-            pl.col("p").point.to_absolute(ref_width=pl.col("w"), ref_height=100)
+            pl.col("p").point.to_absolute(width=pl.col("w"), height=100)
 
     def test_to_absolute_rejects_expr_ref_height(self) -> None:
         with pytest.raises(TypeError, match="pl.Expr"):
-            pl.col("p").point.to_absolute(ref_width=100, ref_height=pl.col("h"))
+            pl.col("p").point.to_absolute(width=100, height=pl.col("h"))
 
     def test_to_absolute_accepts_literals(self) -> None:
-        expr = pl.col("p").point.to_absolute(ref_width=640, ref_height=480)
+        expr = pl.col("p").point.to_absolute(width=640, height=480)
         assert expr is not None
 
     # --- translate ---

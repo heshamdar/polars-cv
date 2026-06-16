@@ -6,21 +6,13 @@ This module provides the `.point` accessor for operations on point columns.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING
-
 import polars as pl
-from polars.plugins import register_plugin_function
 
-if TYPE_CHECKING:
-    pass
-
-# Path to the compiled Rust library
-LIB_PATH = Path(__file__).parent.parent
+from polars_cv._namespace import _PluginNamespace
 
 
 @pl.api.register_expr_namespace("point")
-class PointNamespace:
+class PointNamespace(_PluginNamespace):
     """
     Operations on point columns.
 
@@ -37,75 +29,60 @@ class PointNamespace:
         ... )
     """
 
-    def __init__(self, expr: pl.Expr) -> None:
-        """
-        Initialize the namespace.
-
-        Args:
-            expr: The Polars expression to operate on.
-        """
-        self._expr = expr
-
     # --- Coordinate Operations ---
 
     def normalize(
         self,
-        ref_width: int | float,
-        ref_height: int | float,
+        width: int | float,
+        height: int | float,
     ) -> pl.Expr:
         """
         Convert pixel coordinates to normalized [0,1] range.
 
         Args:
-            ref_width: Reference width for normalization.
-            ref_height: Reference height for normalization.
+            width: Reference width for normalization.
+            height: Reference height for normalization.
 
         Returns:
             Point with coordinates in [0,1] range.
         """
-        if isinstance(ref_width, pl.Expr) or isinstance(ref_height, pl.Expr):
+        if isinstance(width, pl.Expr) or isinstance(height, pl.Expr):
             raise TypeError(
                 "point.normalize() does not support pl.Expr arguments; pass literal int values"
             )
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_normalize",
-            args=[self._expr],
+        return self._plugin(
+            "point_normalize",
             kwargs={
-                "ref_width": float(ref_width),
-                "ref_height": float(ref_height),
+                "ref_width": float(width),
+                "ref_height": float(height),
             },
-            is_elementwise=True,
         )
 
     def to_absolute(
         self,
-        ref_width: int | float,
-        ref_height: int | float,
+        width: int | float,
+        height: int | float,
     ) -> pl.Expr:
         """
         Convert normalized coordinates to pixel coordinates.
 
         Args:
-            ref_width: Reference width for scaling.
-            ref_height: Reference height for scaling.
+            width: Reference width for scaling.
+            height: Reference height for scaling.
 
         Returns:
             Point with pixel coordinates.
         """
-        if isinstance(ref_width, pl.Expr) or isinstance(ref_height, pl.Expr):
+        if isinstance(width, pl.Expr) or isinstance(height, pl.Expr):
             raise TypeError(
                 "point.to_absolute() does not support pl.Expr arguments; pass literal int values"
             )
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_to_absolute",
-            args=[self._expr],
+        return self._plugin(
+            "point_to_absolute",
             kwargs={
-                "ref_width": float(ref_width),
-                "ref_height": float(ref_height),
+                "ref_width": float(width),
+                "ref_height": float(height),
             },
-            is_elementwise=True,
         )
 
     def translate(
@@ -127,15 +104,12 @@ class PointNamespace:
             raise TypeError(
                 "point.translate() does not support pl.Expr arguments; pass literal numeric values"
             )
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_translate",
-            args=[self._expr],
+        return self._plugin(
+            "point_translate",
             kwargs={
                 "dx": float(dx),
                 "dy": float(dy),
             },
-            is_elementwise=True,
         )
 
     def scale(
@@ -157,15 +131,12 @@ class PointNamespace:
             raise TypeError(
                 "point.scale() does not support pl.Expr arguments; pass literal numeric values"
             )
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_scale",
-            args=[self._expr],
+        return self._plugin(
+            "point_scale",
             kwargs={
                 "sx": float(sx),
                 "sy": float(sy),
             },
-            is_elementwise=True,
         )
 
     # --- Distance Operations ---
@@ -180,12 +151,7 @@ class PointNamespace:
         Returns:
             Float64 distance.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_distance",
-            args=[self._expr, other],
-            is_elementwise=True,
-        )
+        return self._plugin("point_distance", args=[other])
 
     def manhattan_distance(self, other: pl.Expr) -> pl.Expr:
         """
@@ -197,12 +163,7 @@ class PointNamespace:
         Returns:
             Float64 distance.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_manhattan_distance",
-            args=[self._expr, other],
-            is_elementwise=True,
-        )
+        return self._plugin("point_manhattan_distance", args=[other])
 
     def distance_to_contour(self, contour: pl.Expr) -> pl.Expr:
         """
@@ -222,12 +183,7 @@ class PointNamespace:
             ...     dist=pl.col("point").point.distance_to_contour(pl.col("polygon"))
             ... )
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_distance_to_contour",
-            args=[self._expr, contour],
-            is_elementwise=True,
-        )
+        return self._plugin("point_distance_to_contour", args=[contour])
 
     def signed_distance_to_contour(self, contour: pl.Expr) -> pl.Expr:
         """
@@ -247,12 +203,7 @@ class PointNamespace:
             ...     sdf=pl.col("point").point.signed_distance_to_contour(pl.col("polygon"))
             ... )
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_signed_distance_to_contour",
-            args=[self._expr, contour],
-            is_elementwise=True,
-        )
+        return self._plugin("point_signed_distance_to_contour", args=[contour])
 
     def nearest_point_on_contour(self, contour: pl.Expr) -> pl.Expr:
         """
@@ -271,12 +222,7 @@ class PointNamespace:
             ...     nearest=pl.col("point").point.nearest_point_on_contour(pl.col("polygon"))
             ... )
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_nearest_on_contour",
-            args=[self._expr, contour],
-            is_elementwise=True,
-        )
+        return self._plugin("point_nearest_on_contour", args=[contour])
 
     # --- Geometric Operations ---
 
@@ -301,12 +247,7 @@ class PointNamespace:
             ...     angle=pl.col("p1").point.angle_to(pl.col("p2"))
             ... )
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_angle_to",
-            args=[self._expr, other],
-            is_elementwise=True,
-        )
+        return self._plugin("point_angle_to", args=[other])
 
     def rotate(self, angle: float, *, origin: pl.Expr | None = None) -> pl.Expr:
         """
@@ -325,16 +266,11 @@ class PointNamespace:
             ...     rotated=pl.col("point").point.rotate(math.pi / 2)  # 90 degrees
             ... )
         """
-        args = [self._expr]
-        if origin is not None:
-            args.append(origin)
-
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_rotate",
+        args = [origin] if origin is not None else None
+        return self._plugin(
+            "point_rotate",
             args=args,
             kwargs={"angle": float(angle)},
-            is_elementwise=True,
         )
 
     def midpoint(self, other: pl.Expr) -> pl.Expr:
@@ -352,12 +288,7 @@ class PointNamespace:
             ...     mid=pl.col("p1").point.midpoint(pl.col("p2"))
             ... )
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_midpoint",
-            args=[self._expr, other],
-            is_elementwise=True,
-        )
+        return self._plugin("point_midpoint", args=[other])
 
     def interpolate(self, other: pl.Expr, t: float = 0.5) -> pl.Expr:
         """
@@ -376,13 +307,7 @@ class PointNamespace:
             ...     quarter=pl.col("p1").point.interpolate(pl.col("p2"), t=0.25)
             ... )
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_interpolate",
-            args=[self._expr, other],
-            kwargs={"t": float(t)},
-            is_elementwise=True,
-        )
+        return self._plugin("point_interpolate", args=[other], kwargs={"t": float(t)})
 
     def within_bbox(self, bbox: pl.Expr) -> pl.Expr:
         """
@@ -399,12 +324,7 @@ class PointNamespace:
             ...     inside=pl.col("point").point.within_bbox(pl.col("bbox"))
             ... )
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="point_within_bbox",
-            args=[self._expr, bbox],
-            is_elementwise=True,
-        )
+        return self._plugin("point_within_bbox", args=[bbox])
 
     # --- Extraction ---
 

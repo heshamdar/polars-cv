@@ -45,6 +45,7 @@ from .lazy import LazyPipelineExpr
 from .metrics import (
     BBoxMatcher,
     BootstrapResult,
+    ConfusionResult,
     ContourMatcher,
     DetectionTable,
     FROCResult,
@@ -393,6 +394,7 @@ __all__ = [
     "f1_at_threshold",
     "confusion_at_threshold",
     # Detection metrics — result types
+    "ConfusionResult",
     "FROCResult",
     "LROCResult",
     "PrecisionRecallResult",

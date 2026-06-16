@@ -6,21 +6,15 @@ This module provides the `.contour` accessor for operations on contour columns.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import polars as pl
-from polars.plugins import register_plugin_function
 
-if TYPE_CHECKING:
-    pass
-
-# Path to the compiled Rust library
-LIB_PATH = Path(__file__).parent.parent
+from polars_cv._namespace import _PluginNamespace
 
 
 @pl.api.register_expr_namespace("contour")
-class ContourNamespace:
+class ContourNamespace(_PluginNamespace):
     """
     Namespace for geometric operations on contour columns.
 
@@ -31,28 +25,19 @@ class ContourNamespace:
         ... )
     """
 
-    def __init__(self, expr: pl.Expr) -> None:
-        """
-        Initialize the namespace.
-
-        Args:
-            expr: The Polars expression to operate on.
-        """
-        self._expr = expr
-
     # --- Coordinate Operations ---
 
     def normalize(
         self,
-        ref_width: int | pl.Expr,
-        ref_height: int | pl.Expr,
+        width: int | pl.Expr,
+        height: int | pl.Expr,
     ) -> pl.Expr:
         """
         Convert pixel coordinates to normalized [0,1] range.
 
         Args:
-            ref_width: Reference width for normalization.
-            ref_height: Reference height for normalization.
+            width: Reference width for normalization.
+            height: Reference height for normalization.
 
         Returns:
             Contour with coordinates in [0,1] range.
@@ -60,51 +45,45 @@ class ContourNamespace:
         Raises:
             CoordinateRangeError: If any coordinate exceeds ref dimensions.
         """
-        if isinstance(ref_width, pl.Expr) or isinstance(ref_height, pl.Expr):
+        if isinstance(width, pl.Expr) or isinstance(height, pl.Expr):
             raise TypeError(
                 "contour normalize does not support expression parameters. "
-                "Pass literal int values for ref_width and ref_height."
+                "Pass literal int values for width and height."
             )
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_normalize",
-            args=[self._expr],
+        return self._plugin(
+            "contour_normalize",
             kwargs={
-                "ref_width": ref_width,
-                "ref_height": ref_height,
+                "ref_width": width,
+                "ref_height": height,
             },
-            is_elementwise=True,
         )
 
     def to_absolute(
         self,
-        ref_width: int | pl.Expr,
-        ref_height: int | pl.Expr,
+        width: int | pl.Expr,
+        height: int | pl.Expr,
     ) -> pl.Expr:
         """
         Convert normalized coordinates to pixel coordinates.
 
         Args:
-            ref_width: Reference width for scaling.
-            ref_height: Reference height for scaling.
+            width: Reference width for scaling.
+            height: Reference height for scaling.
 
         Returns:
             Contour with pixel coordinates.
         """
-        if isinstance(ref_width, pl.Expr) or isinstance(ref_height, pl.Expr):
+        if isinstance(width, pl.Expr) or isinstance(height, pl.Expr):
             raise TypeError(
                 "contour to_absolute does not support expression parameters. "
-                "Pass literal int values for ref_width and ref_height."
+                "Pass literal int values for width and height."
             )
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_to_absolute",
-            args=[self._expr],
+        return self._plugin(
+            "contour_to_absolute",
             kwargs={
-                "ref_width": ref_width,
-                "ref_height": ref_height,
+                "ref_width": width,
+                "ref_height": height,
             },
-            is_elementwise=True,
         )
 
     # --- Geometric Measures ---
@@ -121,12 +100,7 @@ class ContourNamespace:
             - Positive signed area = CCW
             - Negative signed area = CW
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_winding",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_winding")
 
     def area(self, *, signed: bool = False) -> pl.Expr:
         """
@@ -144,13 +118,7 @@ class ContourNamespace:
         Raises:
             OpenContourError: If contour is not closed.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_area",
-            args=[self._expr],
-            kwargs={"signed": signed},
-            is_elementwise=True,
-        )
+        return self._plugin("contour_area", kwargs={"signed": signed})
 
     def perimeter(self) -> pl.Expr:
         """
@@ -159,12 +127,7 @@ class ContourNamespace:
         Returns:
             Float64 perimeter value.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_perimeter",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_perimeter")
 
     def centroid(self) -> pl.Expr:
         """
@@ -173,12 +136,7 @@ class ContourNamespace:
         Returns:
             Point struct with x, y coordinates.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_centroid",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_centroid")
 
     def bounding_box(self) -> pl.Expr:
         """
@@ -187,12 +145,7 @@ class ContourNamespace:
         Returns:
             BBox struct with x, y, width, height.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_bbox",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_bbox")
 
     def convex_hull(self) -> pl.Expr:
         """
@@ -201,12 +154,7 @@ class ContourNamespace:
         Returns:
             New contour representing the convex hull.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_convex_hull",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_convex_hull")
 
     def is_convex(self) -> pl.Expr:
         """
@@ -215,12 +163,7 @@ class ContourNamespace:
         Returns:
             Boolean indicating convexity.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_is_convex",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_is_convex")
 
     # --- Transformations ---
 
@@ -231,12 +174,7 @@ class ContourNamespace:
         Returns:
             Contour with reversed point order.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_flip",
-            args=[self._expr],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_flip")
 
     def ensure_winding(self, direction: Literal["ccw", "cw"]) -> pl.Expr:
         """
@@ -250,13 +188,7 @@ class ContourNamespace:
         Returns:
             Contour with guaranteed winding direction.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_ensure_winding",
-            args=[self._expr],
-            kwargs={"direction": direction},
-            is_elementwise=True,
-        )
+        return self._plugin("contour_ensure_winding", kwargs={"direction": direction})
 
     def translate(
         self,
@@ -278,15 +210,12 @@ class ContourNamespace:
                 "contour translate does not support expression parameters. "
                 "Pass literal numeric values for dx and dy."
             )
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_translate",
-            args=[self._expr],
+        return self._plugin(
+            "contour_translate",
             kwargs={
                 "dx": dx,
                 "dy": dy,
             },
-            is_elementwise=True,
         )
 
     def scale(
@@ -315,16 +244,13 @@ class ContourNamespace:
                 "contour scale does not support expression parameters. "
                 "Pass literal numeric values for sx and sy."
             )
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_scale",
-            args=[self._expr],
+        return self._plugin(
+            "contour_scale",
             kwargs={
                 "sx": sx,
                 "sy": sy,
                 "origin": origin,
             },
-            is_elementwise=True,
         )
 
     def simplify(self, tolerance: float) -> pl.Expr:
@@ -337,13 +263,7 @@ class ContourNamespace:
         Returns:
             Simplified contour.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_simplify",
-            args=[self._expr],
-            kwargs={"tolerance": tolerance},
-            is_elementwise=True,
-        )
+        return self._plugin("contour_simplify", kwargs={"tolerance": tolerance})
 
     # --- Pairwise Operations ---
 
@@ -357,12 +277,7 @@ class ContourNamespace:
         Returns:
             Float64 IoU value in [0, 1].
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_iou",
-            args=[self._expr, other],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_iou", args=[other])
 
     def pairwise_iou(self, other: pl.Expr) -> pl.Expr:
         """
@@ -374,12 +289,7 @@ class ContourNamespace:
         Returns:
             A nested list (`List[List[Float64]]`) representing an N x M IoU matrix.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_pairwise_iou",
-            args=[self._expr, other],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_pairwise_iou", args=[other])
 
     def match_detections(
         self,
@@ -401,18 +311,16 @@ class ContourNamespace:
         Returns:
             A struct containing per-prediction match indices, IoUs, and TP/FP/FN counts.
         """
-        args = [self._expr, other]
+        args = [other]
         if scores is not None:
             args.append(scores)
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_match_detections",
+        return self._plugin(
+            "contour_match_detections",
             args=args,
             kwargs={
                 "threshold": threshold,
                 "strategy": strategy,
             },
-            is_elementwise=True,
         )
 
     def label_reduce(
@@ -443,15 +351,13 @@ class ContourNamespace:
             raise ValueError(msg)
         image_expr = image if image is not None else heatmap
         assert image_expr is not None
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_label_reduce",
-            args=[self._expr, image_expr],
+        return self._plugin(
+            "contour_label_reduce",
+            args=[image_expr],
             kwargs={
                 "reduction": reduction,
                 "region_mode": region_mode,
             },
-            is_elementwise=True,
         )
 
     def dice(self, other: pl.Expr) -> pl.Expr:
@@ -466,12 +372,7 @@ class ContourNamespace:
         Returns:
             Float64 Dice coefficient in [0, 1].
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_dice",
-            args=[self._expr, other],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_dice", args=[other])
 
     def hausdorff_distance(self, other: pl.Expr) -> pl.Expr:
         """
@@ -486,12 +387,7 @@ class ContourNamespace:
         Returns:
             Float64 Hausdorff distance.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_hausdorff",
-            args=[self._expr, other],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_hausdorff", args=[other])
 
     def contains_point(self, point: pl.Expr) -> pl.Expr:
         """
@@ -503,9 +399,4 @@ class ContourNamespace:
         Returns:
             Boolean indicating if point is inside contour.
         """
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="contour_contains_point",
-            args=[self._expr, point],
-            is_elementwise=True,
-        )
+        return self._plugin("contour_contains_point", args=[point])

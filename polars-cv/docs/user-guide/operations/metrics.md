@@ -120,7 +120,10 @@ print(result.sensitivity_at_fpf(0.5))
 from polars_cv.metrics import confusion_at_threshold
 
 counts = confusion_at_threshold(table, threshold=0.5)
-# {'tp': 10, 'fp': 3, 'fn': 2}
+# ConfusionResult(tp=10, fp=3, fn=2)
+counts.tp, counts.fp, counts.fn  # attribute access
+counts.precision, counts.recall, counts.f1  # derived metrics
+counts.to_dict()  # {'tp': 10, 'fp': 3, 'fn': 2}
 ```
 
 ## Bootstrap Confidence Intervals

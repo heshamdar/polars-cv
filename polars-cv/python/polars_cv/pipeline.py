@@ -671,7 +671,7 @@ class Pipeline:
         Reads ``output_channel_rule`` from the op contract (the single
         authority) rather than re-declaring alpha handling in Python. The op
         defaults to ``self._ops[-1]`` so its full parameter set (e.g. an erode
-        ``ksize``, a cvt_color target space) is available to resolve the rule:
+        ``ksize``, a convert_color target space) is available to resolve the rule:
 
         - ``preserve`` / ``n/a``: leave the channel hint unchanged.
         - ``unknown``: the effect is not knowable at plan time → drop the hint.
@@ -1605,7 +1605,7 @@ class Pipeline:
 
     # --- Color Space Conversion ---
 
-    def cvt_color(self, from_space: str, to_space: str) -> "Pipeline":
+    def convert_color(self, from_space: str, to_space: str) -> "Pipeline":
         """
         Convert between color spaces.
 
@@ -1620,10 +1620,10 @@ class Pipeline:
 
         Example:
             ```python
-            >>> pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+            >>> pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "cvt_color")
+        self._validate_domain(self.DOMAIN_BUFFER, "convert_color")
         # Validate enum values
         ColorSpace(from_space)
         ColorSpace(to_space)
@@ -1651,7 +1651,7 @@ class Pipeline:
         Returns:
             Self for chaining.
         """
-        return self.cvt_color("rgb", "hsv")
+        return self.convert_color("rgb", "hsv")
 
     def to_lab(self) -> "Pipeline":
         """Convert from RGB to CIE LAB color space.
@@ -1661,7 +1661,7 @@ class Pipeline:
         Returns:
             Self for chaining.
         """
-        return self.cvt_color("rgb", "lab")
+        return self.convert_color("rgb", "lab")
 
     def to_bgr(self) -> "Pipeline":
         """Convert from RGB to BGR channel order.
@@ -1669,7 +1669,7 @@ class Pipeline:
         Returns:
             Self for chaining.
         """
-        return self.cvt_color("rgb", "bgr")
+        return self.convert_color("rgb", "bgr")
 
     def to_ycbcr(self) -> "Pipeline":
         """Convert from RGB to YCbCr color space.
@@ -1677,7 +1677,7 @@ class Pipeline:
         Returns:
             Self for chaining.
         """
-        return self.cvt_color("rgb", "ycbcr")
+        return self.convert_color("rgb", "ycbcr")
 
     # --- Convolution / Filtering ---
 
@@ -1809,7 +1809,10 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            strength: Sharpening strength (default 1.0).
+            strength: Sharpening strength (default 1.0). Literal only — the
+                value is baked into the convolution kernel coefficients at
+                build time, so (like ``convolve2d``'s ``kernel``) it cannot be
+                a per-row Polars expression.
 
         Returns:
             Self for chaining.

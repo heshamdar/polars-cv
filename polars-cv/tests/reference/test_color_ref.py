@@ -67,7 +67,7 @@ class TestRgbBgr:
     def test_rgb_to_bgr(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB to BGR matches NumPy channel flip."""
         expected = rgb_image[:, :, ::-1].copy()
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "bgr")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "bgr")
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_array_equal(actual, expected)
 
@@ -76,8 +76,8 @@ class TestRgbBgr:
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .cvt_color("rgb", "bgr")
-            .cvt_color("bgr", "rgb")
+            .convert_color("rgb", "bgr")
+            .convert_color("bgr", "rgb")
         )
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_array_equal(actual, rgb_image)
@@ -110,7 +110,7 @@ class TestRgbHsv:
         bgr = rgb_image[:, :, ::-1].copy()
         expected = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
         actual = _run_pipe(pipe, rgb_png)
         # S and V channels: tight tolerance (±2)
         np.testing.assert_allclose(actual[:, :, 1], expected[:, :, 1], atol=2)
@@ -131,8 +131,8 @@ class TestRgbHsv:
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .cvt_color("rgb", "hsv")
-            .cvt_color("hsv", "rgb")
+            .convert_color("rgb", "hsv")
+            .convert_color("hsv", "rgb")
         )
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_allclose(actual, rgb_image, atol=8)
@@ -140,7 +140,7 @@ class TestRgbHsv:
     def test_to_hsv_convenience(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify to_hsv() matches cvt_color("rgb", "hsv")."""
         pipe_a = Pipeline().source("image_bytes").to_hsv()
-        pipe_b = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+        pipe_b = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
         actual_a = _run_pipe(pipe_a, rgb_png)
         actual_b = _run_pipe(pipe_b, rgb_png)
         np.testing.assert_array_equal(actual_a, actual_b)
@@ -149,7 +149,7 @@ class TestRgbHsv:
         """Verify pure red pixel converts to H=0, S=255, V=255."""
         img = np.array([[[255, 0, 0]]], dtype=np.uint8)
         png = _encode_png(img)
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
         actual = _run_pipe(pipe, png)
         # H=0, S=255, V=255 (OpenCV convention)
         assert actual[0, 0, 0] == 0  # Hue
@@ -175,8 +175,8 @@ class TestRgbYcbcr:
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .cvt_color("rgb", "ycbcr")
-            .cvt_color("ycbcr", "rgb")
+            .convert_color("rgb", "ycbcr")
+            .convert_color("ycbcr", "rgb")
         )
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_allclose(actual, rgb_image, atol=3)
@@ -185,7 +185,7 @@ class TestRgbYcbcr:
         """Verify Y channel follows BT.601 luma formula."""
         img = np.array([[[100, 150, 200]]], dtype=np.uint8)
         png = _encode_png(img)
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "ycbcr")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "ycbcr")
         actual = _run_pipe(pipe, png)
         # Y = 0.299*100 + 0.587*150 + 0.114*200 = 29.9 + 88.05 + 22.8 = 140.75
         y_expected = 0.299 * 100 + 0.587 * 150 + 0.114 * 200
@@ -194,7 +194,7 @@ class TestRgbYcbcr:
     def test_to_ycbcr_convenience(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify to_ycbcr() matches cvt_color("rgb", "ycbcr")."""
         pipe_a = Pipeline().source("image_bytes").to_ycbcr()
-        pipe_b = Pipeline().source("image_bytes").cvt_color("rgb", "ycbcr")
+        pipe_b = Pipeline().source("image_bytes").convert_color("rgb", "ycbcr")
         actual_a = _run_pipe(pipe_a, rgb_png)
         actual_b = _run_pipe(pipe_b, rgb_png)
         np.testing.assert_array_equal(actual_a, actual_b)
@@ -214,8 +214,8 @@ class TestRgbLab:
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .cvt_color("rgb", "lab")
-            .cvt_color("lab", "rgb")
+            .convert_color("rgb", "lab")
+            .convert_color("lab", "rgb")
         )
         actual = _run_pipe(pipe, png_bytes=rgb_png)
         # LAB round-trip stays in f32, compare in float space
@@ -223,7 +223,7 @@ class TestRgbLab:
 
     def test_lab_output_is_float(self, rgb_png: bytes) -> None:
         """Verify LAB conversion produces f32 output."""
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "lab")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "lab")
         df = pl.DataFrame({"img": [rgb_png]})
         result = df.select(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         out_struct = result.row(0)[0]
@@ -232,7 +232,7 @@ class TestRgbLab:
 
     def test_lab_range(self, rgb_png: bytes) -> None:
         """Verify L is in [0, 100] and a/b are in reasonable range."""
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "lab")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "lab")
         actual = _run_pipe(pipe, rgb_png)
         assert actual[:, :, 0].min() >= -1.0  # L (allow slight numerical noise)
         assert actual[:, :, 0].max() <= 101.0
@@ -245,7 +245,7 @@ class TestRgbLab:
         """Verify pure white = L=100, a=0, b=0."""
         img = np.array([[[255, 255, 255]]], dtype=np.uint8)
         png = _encode_png(img)
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "lab")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "lab")
         actual = _run_pipe(pipe, png)
         assert abs(actual[0, 0, 0] - 100.0) < 1.0
         assert abs(actual[0, 0, 1]) < 1.0
@@ -255,7 +255,7 @@ class TestRgbLab:
         """Verify pure black = L=0, a=0, b=0."""
         img = np.array([[[0, 0, 0]]], dtype=np.uint8)
         png = _encode_png(img)
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "lab")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "lab")
         actual = _run_pipe(pipe, png)
         assert abs(actual[0, 0, 0]) < 1.0
         assert abs(actual[0, 0, 1]) < 1.0
@@ -264,7 +264,7 @@ class TestRgbLab:
     def test_to_lab_convenience(self, rgb_png: bytes) -> None:
         """Verify to_lab() matches cvt_color("rgb", "lab")."""
         pipe_a = Pipeline().source("image_bytes").to_lab()
-        pipe_b = Pipeline().source("image_bytes").cvt_color("rgb", "lab")
+        pipe_b = Pipeline().source("image_bytes").convert_color("rgb", "lab")
         actual_a = _run_pipe(pipe_a, rgb_png)
         actual_b = _run_pipe(pipe_b, rgb_png)
         np.testing.assert_array_equal(actual_a, actual_b)
@@ -288,7 +288,7 @@ class TestRgbGray:
             + 0.114 * rgb_image[:, :, 2].astype(np.float64)
         ).astype(np.uint8)
 
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "gray")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "gray")
         actual = _run_pipe(pipe, rgb_png)
         # Allow ±1 for fixed-point rounding
         np.testing.assert_allclose(actual.squeeze(), expected, atol=1)
@@ -305,7 +305,7 @@ class TestEdgeCases:
 
     def test_noop_conversion(self, rgb_image: np.ndarray, rgb_png: bytes) -> None:
         """Verify RGB → RGB is identity."""
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "rgb")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "rgb")
         actual = _run_pipe(pipe, rgb_png)
         np.testing.assert_array_equal(actual, rgb_image)
 
@@ -313,7 +313,7 @@ class TestEdgeCases:
         """Verify saturated primary colors convert correctly to HSV."""
         primaries = np.array([[[255, 0, 0], [0, 255, 0], [0, 0, 255]]], dtype=np.uint8)
         png = _encode_png(primaries)
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
         actual = _run_pipe(pipe, png)
 
         # Red: H=0 (or 180 for wrap), S=255, V=255
@@ -335,23 +335,23 @@ class TestEdgeCases:
         """Verify pure gray (128,128,128) has S=0 in HSV."""
         img = np.array([[[128, 128, 128]]], dtype=np.uint8)
         png = _encode_png(img)
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
         actual = _run_pipe(pipe, png)
         assert actual[0, 0, 1] == 0  # Saturation = 0 for gray
 
     def test_invalid_color_space(self) -> None:
         """Verify invalid color space name raises ValueError."""
         with pytest.raises(ValueError, match="not a valid ColorSpace"):
-            Pipeline().source("image_bytes").cvt_color("rgb", "xyz")
+            Pipeline().source("image_bytes").convert_color("rgb", "xyz")
 
     def test_pipeline_dtype_tracking_lab(self) -> None:
         """Verify pipeline tracks f32 dtype after LAB conversion."""
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "lab")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "lab")
         assert pipe._output_dtype == "f32"
 
     def test_pipeline_dtype_tracking_hsv(self) -> None:
         """Verify pipeline preserves u8 dtype for HSV conversion."""
-        pipe = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+        pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
         # auto from image_bytes, preserved by cvt_color (non-LAB)
         assert pipe._output_dtype == "auto"
 
@@ -370,10 +370,10 @@ class TestCrossConversions:
         pipe_direct = (
             Pipeline()
             .source("image_bytes")
-            .cvt_color("rgb", "bgr")
-            .cvt_color("bgr", "hsv")
+            .convert_color("rgb", "bgr")
+            .convert_color("bgr", "hsv")
         )
-        pipe_via_rgb = Pipeline().source("image_bytes").cvt_color("rgb", "hsv")
+        pipe_via_rgb = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
         actual_direct = _run_pipe(pipe_direct, rgb_png)
         actual_via_rgb = _run_pipe(pipe_via_rgb, rgb_png)
         np.testing.assert_allclose(actual_direct, actual_via_rgb, atol=2)
@@ -387,9 +387,9 @@ class TestCrossConversions:
         pipe = (
             Pipeline()
             .source("image_bytes")
-            .cvt_color("rgb", "hsv")
-            .cvt_color("hsv", "ycbcr")
-            .cvt_color("ycbcr", "rgb")
+            .convert_color("rgb", "hsv")
+            .convert_color("hsv", "ycbcr")
+            .convert_color("ycbcr", "rgb")
         )
         pipe_ref = Pipeline().source("image_bytes")
         actual = _run_pipe(pipe, rgb_png)

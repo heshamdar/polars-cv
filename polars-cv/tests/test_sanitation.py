@@ -258,7 +258,7 @@ _SHAPE_PIPELINES = [
             .source("image_bytes")
             .assert_shape(channels=4)
             .resize(height=6, width=6)
-            .cvt_color("rgb", "gray")
+            .convert_color("rgb", "gray")
         ),
         "RGBA",
     ),
@@ -269,7 +269,7 @@ _SHAPE_PIPELINES = [
             .source("image_bytes")
             .assert_shape(channels=4)
             .resize(height=6, width=6)
-            .cvt_color("rgb", "hsv")
+            .convert_color("rgb", "hsv")
         ),
         "RGBA",
     ),
@@ -467,7 +467,7 @@ _OP_BUILDERS = {
         Pipeline().source("image_bytes").adjust_contrast(factor=1.2)
     ),
     "adjust_gamma": lambda: Pipeline().source("image_bytes").adjust_gamma(gamma=1.2),
-    "cvt_color": lambda: Pipeline().source("image_bytes").cvt_color("rgb", "hsv"),
+    "cvt_color": lambda: Pipeline().source("image_bytes").convert_color("rgb", "hsv"),
     "convolve2d": lambda: (
         Pipeline().source("image_bytes").convolve2d([0, 0, 0, 0, 1, 0, 0, 0, 0], 3)
     ),
@@ -676,39 +676,39 @@ def test_output_dtype_is_strategy_not_dtype_duplicate():
 # Pipeline <-> LazyPipelineExpr method parity
 # ---------------------------------------------------------------------------
 
-# Intentional asymmetries between the eager builder and the lazy expression.
-_PIPELINE_ONLY_METHODS = {
-    "source",  # sources are defined when the chain starts, not mid-chain
-    "validate",
-    "has_source",
-    "to_graph",
-    "current_domain",
-    "output_dtype",
-    "output_encoding",  # builder/planner introspection, not chainable ops
-}
-
 
 def test_lazy_pipeline_method_parity():
     """Every chainable Pipeline method must exist on LazyPipelineExpr with an
-    identical parameter list. Guards the wrapper set against drift when new
-    Pipeline methods are added (the gap had grown to ~50 missing methods,
-    including the entire resize family, before this guard existed)."""
+    identical parameter list.
+
+    The lazy forwarders are generated from Pipeline at import time
+    (``polars_cv.lazy._install_pipeline_forwarders``), so parity holds by
+    construction. This test guards that the generator stays wired up — and that
+    any explicitly hand-written lazy methods (binary ops, ``label_reduce``,
+    ``apply_mask``) keep signatures aligned with their Pipeline counterparts."""
     import inspect
 
-    from polars_cv.lazy import LazyPipelineExpr
+    from polars_cv.lazy import (
+        PIPELINE_ONLY_METHODS,
+        LazyPipelineExpr,
+        _chainable_pipeline_ops,
+    )
     from polars_cv.pipeline import Pipeline
 
+    # The single source of truth for the eager/lazy asymmetry lives in lazy.py.
     pipeline_methods = {
         name
         for name in dir(Pipeline)
         if not name.startswith("_") and callable(getattr(Pipeline, name))
     }
-    chainable = pipeline_methods - _PIPELINE_ONLY_METHODS
+    assert set(_chainable_pipeline_ops()) == pipeline_methods - PIPELINE_ONLY_METHODS
 
-    missing = sorted(n for n in chainable if not hasattr(LazyPipelineExpr, n))
+    missing = sorted(
+        n for n in _chainable_pipeline_ops() if not hasattr(LazyPipelineExpr, n)
+    )
     assert not missing, f"LazyPipelineExpr is missing Pipeline methods: {missing}"
 
-    for name in sorted(chainable):
+    for name in _chainable_pipeline_ops():
         p_sig = inspect.signature(getattr(Pipeline, name))
         l_sig = inspect.signature(getattr(LazyPipelineExpr, name))
         # Compare parameter names, kinds and defaults (skip `self`); string
@@ -722,3 +722,25 @@ def test_lazy_pipeline_method_parity():
         assert p_params == l_params, (
             f"Signature drift on '{name}':\n  Pipeline: {p_params}\n  Lazy:     {l_params}"
         )
+
+
+def test_lazy_stub_is_current():
+    """The committed ``lazy.pyi`` must match what ``gen_lazy_stub.py`` produces.
+
+    The stub is generated from the runtime ``LazyPipelineExpr`` so IDEs and type
+    checkers see the auto-generated forwarders. This guards against the stub
+    drifting after a Pipeline change without a regeneration."""
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "gen_lazy_stub.py"
+    spec = importlib.util.spec_from_file_location("gen_lazy_stub", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    stub_path = Path(module._STUB_PATH)
+    assert stub_path.exists(), "lazy.pyi is missing; run python scripts/gen_lazy_stub.py"
+    assert stub_path.read_text() == module.generate_stub(), (
+        "lazy.pyi is out of date. Run: python scripts/gen_lazy_stub.py"
+    )
