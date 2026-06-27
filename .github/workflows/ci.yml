@@ -95,7 +95,9 @@ jobs:
           # Exclude network-marked tests: they hit external services (httpbin.org)
           # and flake when those are down (e.g. HTTP 503), which with -x aborts the
           # whole suite. Run them out-of-band, not as a CI gate.
-          pytest tests/ -x -v --tb=short -m "not network"
+          # Exclude slow-marked tests (e.g. test_streaming_ooc.py): heavier,
+          # subprocess-based out-of-core verification not needed on every PR.
+          pytest tests/ -x -v --tb=short -m "not network and not slow"
 
   lint:
     name: Lint

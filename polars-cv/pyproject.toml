@@ -69,6 +69,7 @@ features = ["pyo3-extension"]
 [tool.pytest.ini_options]
 markers = [
     "network: mark a test that requires network access",
+    "slow: mark a test as slow (excluded from default CI run)",
 ]
 
 [tool.ruff]
