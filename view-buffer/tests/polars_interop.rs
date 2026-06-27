@@ -5,8 +5,8 @@
 
 #![cfg(feature = "polars_interop")]
 
-use polars_arrow::buffer::Buffer;
 use polars_arrow::datatypes::{ArrowDataType, Field};
+use polars_buffer::Buffer;
 use view_buffer::core::dtype::DType;
 use view_buffer::interop::polars::{
     dtype_from_polars, fixed_shape_from_type, is_type_potentially_contiguous, nesting_depth,

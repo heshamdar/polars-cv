@@ -121,7 +121,7 @@ fn extract_metadata(bytes: &[u8]) -> Option<ImageMeta> {
 fn image_width(inputs: &[Series]) -> PolarsResult<Series> {
     let ca = inputs[0].binary()?;
     let out: UInt32Chunked = ca
-        .into_iter()
+        .iter()
         .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.width)))
         .collect();
     Ok(out.with_name(ca.name().clone()).into_series())
@@ -132,7 +132,7 @@ fn image_width(inputs: &[Series]) -> PolarsResult<Series> {
 fn image_height(inputs: &[Series]) -> PolarsResult<Series> {
     let ca = inputs[0].binary()?;
     let out: UInt32Chunked = ca
-        .into_iter()
+        .iter()
         .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.height)))
         .collect();
     Ok(out.with_name(ca.name().clone()).into_series())
@@ -143,7 +143,7 @@ fn image_height(inputs: &[Series]) -> PolarsResult<Series> {
 fn image_channels(inputs: &[Series]) -> PolarsResult<Series> {
     let ca = inputs[0].binary()?;
     let out: UInt32Chunked = ca
-        .into_iter()
+        .iter()
         .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.channels)))
         .collect();
     Ok(out.with_name(ca.name().clone()).into_series())
@@ -154,7 +154,7 @@ fn image_channels(inputs: &[Series]) -> PolarsResult<Series> {
 fn image_dtype(inputs: &[Series]) -> PolarsResult<Series> {
     let ca = inputs[0].binary()?;
     let out: StringChunked = ca
-        .into_iter()
+        .iter()
         .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.dtype)))
         .collect();
     Ok(out.with_name(ca.name().clone()).into_series())

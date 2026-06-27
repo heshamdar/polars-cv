@@ -64,12 +64,12 @@ fn count_non_null(series: &Series) -> usize {
 pub(crate) fn get_binary_row_buffer(
     binary_ca: &BinaryChunked,
     row_idx: usize,
-) -> Option<(polars_arrow::buffer::Buffer<u8>, usize, usize)> {
+) -> Option<(polars_buffer::Buffer<u8>, usize, usize)> {
     // `get` returns `None` for null (or out-of-bounds) rows, so it doubles as the
     // null check — no need to materialise a validity mask for the whole column.
     let bytes = binary_ca.get(row_idx)?;
     let len = bytes.len();
-    let buffer = polars_arrow::buffer::Buffer::from(bytes.to_vec());
+    let buffer = polars_buffer::Buffer::from(bytes.to_vec());
     Some((buffer, 0, len))
 }
 /// Decode a binary source (blob or raw) with zero-copy when possible.
@@ -84,7 +84,7 @@ pub(crate) fn get_binary_row_buffer(
 /// * `source_format` - "blob" or "raw".
 /// * `dtype_str` - Required for "raw", ignored for "blob" (embedded in header).
 pub(crate) fn decode_binary_zero_copy(
-    buffer: polars_arrow::buffer::Buffer<u8>,
+    buffer: polars_buffer::Buffer<u8>,
     offset: usize,
     len: usize,
     source_format: &str,
@@ -114,7 +114,7 @@ pub(crate) fn decode_binary_zero_copy(
 /// the original buffer. If the blob has a non-contiguous layout (indicated
 /// by the flags field), the stored strides are preserved.
 fn decode_blob_zero_copy(
-    buffer: polars_arrow::buffer::Buffer<u8>,
+    buffer: polars_buffer::Buffer<u8>,
     base_offset: usize,
     total_len: usize,
 ) -> Result<ViewBuffer, String> {
@@ -364,7 +364,7 @@ fn get_array_row_buffer(
     arr_ca: &ArrayChunked,
     row_idx: usize,
     dtype: view_buffer::DType,
-) -> Option<(polars_arrow::buffer::Buffer<u8>, usize, usize)> {
+) -> Option<(polars_buffer::Buffer<u8>, usize, usize)> {
     let mut cumulative_len = 0;
     for chunk in arr_ca.downcast_iter() {
         let chunk_len = chunk.len();
@@ -381,7 +381,7 @@ fn get_fixed_size_list_buffer(
     chunk: &polars_arrow::array::FixedSizeListArray,
     local_idx: usize,
     dtype: view_buffer::DType,
-) -> Option<(polars_arrow::buffer::Buffer<u8>, usize, usize)> {
+) -> Option<(polars_buffer::Buffer<u8>, usize, usize)> {
     let size = chunk.size();
     let values = chunk.values();
     let (primitive_values, elements_per_row) = get_primitive_values(values.as_ref(), size)?;
@@ -408,7 +408,7 @@ fn get_primitive_values(
 fn get_primitive_buffer(
     array: &dyn polars_arrow::array::Array,
     dtype: view_buffer::DType,
-) -> Option<polars_arrow::buffer::Buffer<u8>> {
+) -> Option<polars_buffer::Buffer<u8>> {
     use polars_arrow::array::PrimitiveArray;
     macro_rules! try_get_buffer {
         ($array:expr, $type:ty) => {
@@ -421,7 +421,7 @@ fn get_primitive_buffer(
                         bytes.len() * std::mem::size_of::<$type>(),
                     )
                 };
-                return Some(polars_arrow::buffer::Buffer::from(u8_slice.to_vec()));
+                return Some(polars_buffer::Buffer::from(u8_slice.to_vec()));
             }
         };
     }
@@ -486,7 +486,10 @@ fn flatten_nested_series(series: &Series) -> Result<(Vec<usize>, Series), String
     let mut current = series.clone();
     while matches!(current.dtype(), DataType::List(_) | DataType::Array(_, _)) {
         current = current
-            .explode()
+            .explode(ExplodeOptions {
+                empty_as_null: false,
+                keep_nulls: true,
+            })
             .map_err(|e| format!("Explode error: {e}"))?;
     }
     Ok((shape, current))

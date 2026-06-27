@@ -81,7 +81,7 @@ pub fn dtype_to_string(dtype: VbDType) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct NumpyRowOutput {
     /// Raw array data as bytes (may be larger than needed for strided views).
-    pub data: polars_arrow::buffer::Buffer<u8>,
+    pub data: polars_buffer::Buffer<u8>,
     /// Data type name (e.g., "uint8", "float32").
     pub dtype: &'static str,
     /// Array shape dimensions.
@@ -169,7 +169,7 @@ fn build_data_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
 
     let n_rows = rows.len();
     let mut views: Vec<View> = Vec::with_capacity(n_rows);
-    let mut buffers: Vec<polars_arrow::buffer::Buffer<u8>> = Vec::new();
+    let mut buffers: Vec<polars_buffer::Buffer<u8>> = Vec::new();
     let mut validity_builder: Option<MutableBitmap> = None;
     let mut total_bytes_len: usize = 0;
     let mut total_buffer_len: usize = 0;
@@ -224,7 +224,7 @@ fn build_data_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
             views.into(),
             buffers.into_iter().collect(),
             validity,
-            total_bytes_len,
+            Some(total_bytes_len),
             total_buffer_len,
         )
     };

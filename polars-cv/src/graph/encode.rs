@@ -286,7 +286,7 @@ macro_rules! impl_typed_list_builder {
                 name,
                 rows.len(),
                 64,
-                <$polars_type>::get_dtype(),
+                <$polars_type>::get_static_dtype(),
             );
             for row in rows.iter() {
                 if let Some((typed_data, _shape)) = row {
