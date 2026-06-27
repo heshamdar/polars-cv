@@ -21,20 +21,23 @@ view-buffer = { path = "../view-buffer", default-features = false, features = [
     "serde",
 ] }
 
-# Polars plugin essentials - use pyo3 0.23 which is compatible with pyo3-polars 0.20
+# Polars plugin essentials - use pyo3 0.28 which is compatible with pyo3-polars 0.27
 # Note: dtype-i8/dtype-u8/dtype-i16/dtype-u16 required for Int8/UInt8/Int16/UInt16 Series
 # See: https://github.com/pola-rs/polars/issues/24171
-polars = { version = "0.46", default-features = false, features = [
+polars = { version = "0.54", default-features = false, features = [
     "dtype-array",
     "dtype-struct",
     "dtype-i8",
     "dtype-u8",
     "dtype-i16",
     "dtype-u16",
+    "object",
+    "strings",
 ] }
-polars-arrow = { version = "0.46" }
-pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
-pyo3-polars = { version = "0.20", features = ["derive"] }
+polars-arrow = { version = "0.54" }
+polars-buffer = { version = "0.54" }
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
+pyo3-polars = { version = "0.27", features = ["derive", "lazy"] }
 
 # Image encoding support
 image = "0.25"
@@ -61,4 +64,4 @@ pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py39"]
 
 [dev-dependencies]
 # For testing
-polars = { version = "0.46", features = ["dtype-array", "dtype-struct", "lazy"] }
+polars = { version = "0.54", features = ["dtype-array", "dtype-struct", "lazy", "object", "strings"] }

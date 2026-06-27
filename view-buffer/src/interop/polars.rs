@@ -6,7 +6,7 @@
 //!
 //! # Overview
 //!
-//! Polars stores data in chunked arrays backed by `polars_arrow::buffer::Buffer<T>`,
+//! Polars stores data in chunked arrays backed by `polars_buffer::Buffer<T>`,
 //! which is an `Arc`-backed buffer that can be cheaply cloned. This module provides:
 //!
 //! - [`PolarsBufferRef`]: A reference to a slice within a Polars buffer
@@ -33,7 +33,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::DType;
 
-use polars_arrow::buffer::Buffer;
+use polars_buffer::Buffer;
 
 /// Error type for Polars interop operations.
 #[derive(Debug, thiserror::Error)]

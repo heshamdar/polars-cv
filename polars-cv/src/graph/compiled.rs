@@ -1222,7 +1222,7 @@ impl CompiledGraph {
                 continue;
             };
             let remote: Vec<String> = ca
-                .into_iter()
+                .iter()
                 .flatten()
                 .filter(|p| crate::cloud::is_remote_path(p))
                 .map(str::to_string)

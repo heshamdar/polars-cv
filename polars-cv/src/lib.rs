@@ -471,7 +471,7 @@ fn known_ops() -> Vec<String> {
 /// domain knowledge that previously lived in parallel Python tables
 /// (`OPERATION_CONTRACTS` and `_OPERATION_OUTPUT_DOMAIN`).
 #[pyfunction]
-fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<PyObject> {
+fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
     let dto = resolve_op_from_json(op_json)?;
     let dict = pyo3::types::PyDict::new(py);
     dict.set_item("dtype_rule", dtype_rule_name(dto.output_dtype_rule()))?;
