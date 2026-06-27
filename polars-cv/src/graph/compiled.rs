@@ -282,12 +282,14 @@ impl CompiledGraph {
         let with_message = self.graph.on_error == RowErrorPolicy::NullWithMessage;
         if self.graph.is_single_output() && !with_message {
             let (_, spec) = &state.resolved_outputs[0];
-            let data = results.get("_output").unwrap();
+            // Take ownership of the row results so the encoder can move each
+            // row's bytes/buffers into Arrow instead of copying them.
+            let data = results.remove("_output").unwrap();
             build_series_from_spec(inputs[0].name().clone(), spec, data)
         } else {
             let mut fields: Vec<Series> = Vec::with_capacity(state.resolved_outputs.len() + 1);
             for (alias, spec) in &state.resolved_outputs {
-                let data = results.get(alias).unwrap();
+                let data = results.remove(alias).unwrap();
                 let field_series = build_series_from_spec(PlSmallStr::from_str(alias), spec, data)?;
                 fields.push(field_series);
             }

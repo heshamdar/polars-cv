@@ -233,6 +233,84 @@ fn build_data_column(rows: &[Option<NumpyRowOutput>]) -> PolarsResult<Series> {
     Ok(ca.into_series())
 }
 
+/// Build a `Binary` series from owned per-row blobs without copying the bytes
+/// into the Arrow buffer.
+///
+/// Each row's `Vec<u8>` (already materialised by `to_blob()` / image encode) is
+/// *moved* into a `polars_buffer::Buffer<u8>` and registered as a backing buffer
+/// of a `BinaryViewArray`, with a view pointing at it — the same zero-extra-copy
+/// registration `build_data_column` uses for the numpy `data` field. This
+/// replaces a `BinaryChunkedBuilder`, which copies every row's bytes a second
+/// time (on top of the inherent `to_blob()`/codec materialisation).
+///
+/// Values of 12 bytes or fewer are stored inline in the view (no buffer), which
+/// is also how Arrow's BinaryView format avoids tiny allocations.
+pub(crate) fn binary_view_series_from_rows(
+    name: PlSmallStr,
+    rows: impl ExactSizeIterator<Item = Option<Vec<u8>>>,
+) -> Series {
+    use polars_arrow::datatypes::ArrowDataType;
+
+    let n_rows = rows.len();
+    let mut views: Vec<View> = Vec::with_capacity(n_rows);
+    let mut buffers: Vec<polars_buffer::Buffer<u8>> = Vec::new();
+    let mut validity_builder: Option<MutableBitmap> = None;
+    let mut total_bytes_len: usize = 0;
+    let mut total_buffer_len: usize = 0;
+
+    for (idx, opt) in rows.enumerate() {
+        match opt {
+            Some(data) => {
+                let data_len = data.len();
+                total_bytes_len += data_len;
+
+                if data_len <= 12 {
+                    views.push(View::new_inline(data.as_slice()));
+                } else {
+                    let buffer_idx = buffers.len() as u32;
+                    total_buffer_len += data_len;
+                    // Build the view from the borrowed bytes first, then move the
+                    // Vec into a Buffer (Vec -> Buffer is a zero-copy handoff).
+                    let view = View::new_from_bytes(data.as_slice(), buffer_idx, 0);
+                    buffers.push(polars_buffer::Buffer::from(data));
+                    views.push(view);
+                }
+
+                if let Some(ref mut validity) = validity_builder {
+                    validity.push(true);
+                }
+            }
+            None => {
+                if validity_builder.is_none() {
+                    let mut bitmap = MutableBitmap::with_capacity(n_rows);
+                    for _ in 0..idx {
+                        bitmap.push(true);
+                    }
+                    validity_builder = Some(bitmap);
+                }
+                validity_builder.as_mut().unwrap().push(false);
+                views.push(View::default());
+            }
+        }
+    }
+
+    let validity = validity_builder.map(|v| v.into());
+
+    // Safety: views reference valid buffer indices and lengths built above.
+    let array = unsafe {
+        BinaryViewArrayGeneric::<[u8]>::new_unchecked(
+            ArrowDataType::BinaryView,
+            views.into(),
+            buffers.into_iter().collect(),
+            validity,
+            Some(total_bytes_len),
+            total_buffer_len,
+        )
+    };
+
+    BinaryChunked::with_chunk(name, array).into_series()
+}
+
 /// Build the 'dtype' column (String) from encoded rows.
 fn build_dtype_column(rows: &[Option<NumpyRowOutput>]) -> Series {
     let values: Vec<Option<&str>> = rows
