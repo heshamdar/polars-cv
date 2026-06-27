@@ -190,29 +190,47 @@ def numpy_from_struct(
         raise ValueError(msg)
     dtype = np.dtype(dtype_str)
 
-    if copy:
-        # Always copy: use frombuffer then reshape
-        arr = np.frombuffer(bytes(data), dtype=dtype, offset=offset).copy()
-        return arr.reshape(shape)
-    else:
-        # Zero-copy path: avoid bytes(data) which always copies.
-        # Use the buffer protocol directly when available.
-        buf = _as_buffer(data)
-
-        if strides is not None:
-            # Create strided numpy array view directly
-            arr = np.ndarray(
-                shape=shape,
-                dtype=dtype,
-                buffer=buf,
-                offset=offset,
-                strides=strides,
+    # Reconstruct the array honoring the byte strides/offset the sink reports.
+    # The numpy/torch sink can hand back a *non-contiguous* view of a shared
+    # buffer (transpose -> permuted strides, flip/rotate -> negative strides),
+    # so a plain frombuffer().reshape() would silently read the bytes in C-order
+    # and mislabel the layout. `np.lib.stride_tricks.as_strided` is used rather
+    # than `np.ndarray(buffer=..., strides=...)` because the latter rejects
+    # negative strides (it would break flips/rotates).
+    if strides is None:
+        # No stride metadata (older/dict callers): assume C-contiguous.
+        if copy:
+            return (
+                np.frombuffer(bytes(data), dtype=dtype, offset=offset)
+                .copy()
+                .reshape(shape)
             )
-            return arr
-        else:
-            # Contiguous path
-            arr = np.frombuffer(buf, dtype=dtype, offset=offset)
-            return arr.reshape(shape)
+        buf = _as_buffer(data)
+        return np.frombuffer(buf, dtype=dtype, offset=offset).reshape(shape)
+
+    itemsize = dtype.itemsize
+    if offset % itemsize != 0:
+        msg = (
+            f"Byte offset {offset} is not a multiple of itemsize {itemsize}; "
+            "cannot reconstruct a typed strided view from this struct."
+        )
+        raise ValueError(msg)
+    if len(strides) != len(shape):
+        msg = f"strides {strides} and shape {shape} have different rank"
+        raise ValueError(msg)
+
+    # `_as_buffer` avoids copying for the zero-copy path; for copy=True we read
+    # through the strided view once and materialise an independent array, so the
+    # transient view over the shared buffer is fine either way. as_strided does
+    # not bounds-check, but the sink returns the full backing buffer, so every
+    # accessed byte (including backwards for negative strides) lies within it.
+    backing = _as_buffer(data)
+    base = np.frombuffer(backing, dtype=dtype)
+    start = base[offset // itemsize :]
+    view = np.lib.stride_tricks.as_strided(start, shape=shape, strides=strides)
+    # copy=False returns the zero-copy view (kept alive by the backing buffer
+    # via the array's .base chain); copy=True returns an owned contiguous array.
+    return view.copy() if copy else view
 
 
 def _as_buffer(data: object) -> object:

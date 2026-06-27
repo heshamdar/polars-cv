@@ -138,23 +138,19 @@ def _numpy_struct_to_png(row: dict[str, Any]) -> bytes | None:
     Returns:
         PNG-encoded bytes, or ``None`` if fields are null.
     """
-    import numpy as np
-
     raw = row.get("data")
     dtype_str = row.get("dtype")
     shape_list = row.get("shape")
-    offset = row.get("offset", 0) or 0
 
     if raw is None or dtype_str is None or shape_list is None:
         return None
 
-    if isinstance(shape_list, pl.Series):
-        shape = tuple(int(x) for x in shape_list.to_list())
-    else:
-        shape = tuple(int(x) for x in shape_list)
+    from polars_cv import numpy_from_struct
 
-    dt = np.dtype(dtype_str)
-    arr = np.frombuffer(bytes(raw), dtype=dt, offset=int(offset)).reshape(shape)
+    # Delegate to numpy_from_struct so the byte strides/offset are honored:
+    # transposed/flipped struct outputs render in their true (permuted) layout
+    # instead of the raw C-order byte reading.
+    arr = numpy_from_struct(row, copy=True)
     return _ndarray_to_png(arr)
 
 

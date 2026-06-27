@@ -769,16 +769,17 @@ pub(crate) fn build_series_from_spec(
     }
     match (domain, format) {
         ("buffer", "numpy" | "torch") => {
-            // NOTE: keep the borrow + clone here. `build_numpy_series` decides
-            // zero-copy vs. materialise by the buffer's Arc strong-count; moving
-            // the sole reference in would flip non-contiguous (transposed/
-            // flipped/rotated) buffers onto the strided zero-copy path, which
-            // currently mis-encodes permuted strides. Cloning keeps the prior
-            // (correct) materialise-to-contiguous behaviour for this sink.
+            // Move the buffers in so each is the sole Arc owner: that lets
+            // `into_polars_buffer_strided` take the zero-copy *strided* branch
+            // for non-contiguous (transposed/flipped/rotated) outputs. The
+            // numpy/torch struct carries shape/strides/offset, and the Python
+            // consumers (`numpy_from_struct`, the struct->PNG helper) honor them
+            // via `np.lib.stride_tricks.as_strided`, so permuted layouts decode
+            // correctly without materialising to contiguous here.
             let buffers: Vec<Option<ViewBuffer>> = data
-                .iter()
+                .into_iter()
                 .map(|r| match r {
-                    RowResult::NumpyStruct(opt) => opt.clone(),
+                    RowResult::NumpyStruct(opt) => opt,
                     _ => None,
                 })
                 .collect();
