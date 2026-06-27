@@ -1,0 +1,142 @@
+[
+  {
+    "framework": "polars-cv-eager",
+    "operation": "heavy_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.24414697229995,
+    "throughput_images_per_second": 1228.7680538238706,
+    "latency_ms_per_image": 0.8138232409998334,
+    "peak_memory_mb": 572.1875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "imagenet_preprocess",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.29969470920000274,
+    "throughput_images_per_second": 1001.0186726379394,
+    "latency_ms_per_image": 0.9989823640000092,
+    "peak_memory_mb": 876.515625,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "light_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.29043910110008253,
+    "throughput_images_per_second": 1032.9187732082357,
+    "latency_ms_per_image": 0.9681303370002751,
+    "peak_memory_mb": 879.99609375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "medical_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.5792606317999798,
+    "throughput_images_per_second": 517.9015861440257,
+    "latency_ms_per_image": 1.9308687726665992,
+    "peak_memory_mb": 1131.6328125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-eager",
+    "operation": "medium_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.36533231260004867,
+    "throughput_images_per_second": 821.1701775430637,
+    "latency_ms_per_image": 1.2177743753334958,
+    "peak_memory_mb": 880.796875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "heavy_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.23275152140013233,
+    "throughput_images_per_second": 1288.9282020385085,
+    "latency_ms_per_image": 0.7758384046671079,
+    "peak_memory_mb": 556.03125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "imagenet_preprocess",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.17453771849995975,
+    "throughput_images_per_second": 1718.8261802566715,
+    "latency_ms_per_image": 0.5817923949998659,
+    "peak_memory_mb": 573.9609375,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "light_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.16204600469995967,
+    "throughput_images_per_second": 1851.326112948434,
+    "latency_ms_per_image": 0.5401533489998656,
+    "peak_memory_mb": 576.07421875,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "medical_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.38390503539994825,
+    "throughput_images_per_second": 781.4432537657734,
+    "latency_ms_per_image": 1.2796834513331607,
+    "peak_memory_mb": 795.9453125,
+    "gpu_mode": null
+  },
+  {
+    "framework": "polars-cv-streaming",
+    "operation": "medium_pipeline",
+    "image_count": 300,
+    "image_size": [
+      256,
+      256
+    ],
+    "total_time_seconds": 0.23726309769999715,
+    "throughput_images_per_second": 1264.4191317915327,
+    "latency_ms_per_image": 0.7908769923333239,
+    "peak_memory_mb": 575.09375,
+    "gpu_mode": null
+  }
+]

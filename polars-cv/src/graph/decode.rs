@@ -749,7 +749,7 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> RowResult {
 pub(crate) fn build_series_from_spec(
     name: PlSmallStr,
     spec: &OutputSpec,
-    data: &[RowResult],
+    data: Vec<RowResult>,
 ) -> PolarsResult<Series> {
     let format = spec.sink.format.as_str();
     let domain = spec.expected_domain.as_str();
@@ -769,6 +769,12 @@ pub(crate) fn build_series_from_spec(
     }
     match (domain, format) {
         ("buffer", "numpy" | "torch") => {
+            // NOTE: keep the borrow + clone here. `build_numpy_series` decides
+            // zero-copy vs. materialise by the buffer's Arc strong-count; moving
+            // the sole reference in would flip non-contiguous (transposed/
+            // flipped/rotated) buffers onto the strided zero-copy path, which
+            // currently mis-encodes permuted strides. Cloning keeps the prior
+            // (correct) materialise-to-contiguous behaviour for this sink.
             let buffers: Vec<Option<ViewBuffer>> = data
                 .iter()
                 .map(|r| match r {
@@ -779,24 +785,22 @@ pub(crate) fn build_series_from_spec(
             crate::output::build_numpy_series(name, buffers)
         }
         ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") | (_, "binary") => {
-            // Append borrowed slices straight into the builder — no per-row
-            // Vec<u8> clone before the Arrow copy.
-            let mut builder = BinaryChunkedBuilder::new(name, data.len());
-            for r in data {
-                match r {
-                    RowResult::Binary(Some(b)) => builder.append_value(b),
-                    _ => builder.append_null(),
-                }
-            }
-            Ok(builder.finish().into_series())
+            // Register each row's already-materialised bytes as a BinaryView
+            // backing buffer instead of copying them into a builder — see
+            // `crate::output::binary_view_series_from_rows`.
+            Ok(crate::output::binary_view_series_from_rows(
+                name,
+                data.into_iter().map(|r| match r {
+                    RowResult::Binary(b) => b,
+                    _ => None,
+                }),
+            ))
         }
         ("buffer", "list") => {
             let rows: Vec<TypedListRow> = data
-                .iter()
+                .into_iter()
                 .map(|r| match r {
-                    RowResult::TypedList(Some((typed_data, shape))) => {
-                        Some((typed_data.clone(), shape.clone()))
-                    }
+                    RowResult::TypedList(Some((typed_data, shape))) => Some((typed_data, shape)),
                     _ => None,
                 })
                 .collect();
@@ -810,11 +814,9 @@ pub(crate) fn build_series_from_spec(
         }
         ("buffer", "array") => {
             let rows: Vec<TypedListRow> = data
-                .iter()
+                .into_iter()
                 .map(|r| match r {
-                    RowResult::TypedArray(Some((typed_data, shape))) => {
-                        Some((typed_data.clone(), shape.clone()))
-                    }
+                    RowResult::TypedArray(Some((typed_data, shape))) => Some((typed_data, shape)),
                     _ => None,
                 })
                 .collect();
@@ -828,9 +830,9 @@ pub(crate) fn build_series_from_spec(
         }
         ("scalar", "native") => {
             let scalar_data: Vec<Option<f64>> = data
-                .iter()
+                .into_iter()
                 .map(|r| match r {
-                    RowResult::Scalar(s) => *s,
+                    RowResult::Scalar(s) => s,
                     _ => None,
                 })
                 .collect();
@@ -839,13 +841,12 @@ pub(crate) fn build_series_from_spec(
         }
         ("vector", "native" | "list") => {
             let rows: Vec<TypedListRow> = data
-                .iter()
+                .into_iter()
                 .map(|r| match r {
-                    RowResult::TypedList(Some((typed_data, shape))) => {
-                        Some((typed_data.clone(), shape.clone()))
-                    }
+                    RowResult::TypedList(Some((typed_data, shape))) => Some((typed_data, shape)),
                     RowResult::Vector(Some(vals)) => {
-                        Some((TypedBufferData::F64(vals.clone()), vec![vals.len()]))
+                        let len = vals.len();
+                        Some((TypedBufferData::F64(vals), vec![len]))
                     }
                     _ => None,
                 })
@@ -860,14 +861,13 @@ pub(crate) fn build_series_from_spec(
         }
         ("vector", "array") => {
             let rows: Vec<TypedListRow> = data
-                .iter()
+                .into_iter()
                 .map(|r| match r {
                     RowResult::TypedList(Some((typed_data, shape)))
-                    | RowResult::TypedArray(Some((typed_data, shape))) => {
-                        Some((typed_data.clone(), shape.clone()))
-                    }
+                    | RowResult::TypedArray(Some((typed_data, shape))) => Some((typed_data, shape)),
                     RowResult::Vector(Some(vals)) => {
-                        Some((TypedBufferData::F64(vals.clone()), vec![vals.len()]))
+                        let len = vals.len();
+                        Some((TypedBufferData::F64(vals), vec![len]))
                     }
                     _ => None,
                 })
@@ -892,16 +892,13 @@ pub(crate) fn build_series_from_spec(
             let contour_dtype = DataType::List(Box::new(contour_struct_dtype()));
             Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
         }
-        _ => {
-            let mut builder = BinaryChunkedBuilder::new(name, data.len());
-            for r in data {
-                match r {
-                    RowResult::Binary(Some(b)) => builder.append_value(b),
-                    _ => builder.append_null(),
-                }
-            }
-            Ok(builder.finish().into_series())
-        }
+        _ => Ok(crate::output::binary_view_series_from_rows(
+            name,
+            data.into_iter().map(|r| match r {
+                RowResult::Binary(b) => b,
+                _ => None,
+            }),
+        )),
     }
 }
 /// Apply a mask to a buffer.
