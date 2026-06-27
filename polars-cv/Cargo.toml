@@ -33,6 +33,10 @@ polars = { version = "0.54", default-features = false, features = [
     "dtype-u16",
     "object",
     "strings",
+    # Required to pull in the optional polars-time dependency: polars-expr's
+    # "strings" feature unconditionally imports polars_time::prelude::StringMethods
+    # without enabling polars-time itself (upstream feature-graph gap).
+    "dtype-datetime",
 ] }
 polars-arrow = { version = "0.54" }
 polars-buffer = { version = "0.54" }
@@ -64,4 +68,4 @@ pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py39"]
 
 [dev-dependencies]
 # For testing
-polars = { version = "0.54", features = ["dtype-array", "dtype-struct", "lazy", "object", "strings"] }
+polars = { version = "0.54", features = ["dtype-array", "dtype-struct", "lazy", "object", "strings", "dtype-datetime"] }
