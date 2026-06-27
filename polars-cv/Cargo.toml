@@ -36,7 +36,7 @@ polars = { version = "0.54", default-features = false, features = [
 ] }
 polars-arrow = { version = "0.54" }
 polars-buffer = { version = "0.54" }
-pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
+pyo3 = { version = "0.28" }
 pyo3-polars = { version = "0.27", features = ["derive", "lazy"] }
 
 # Image encoding support
