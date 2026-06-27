@@ -862,7 +862,11 @@ impl ViewBuffer {
                                 (full_buffer, shape, dtype)
                             } else {
                                 // Zero-copy slice using Buffer::sliced()
-                                (full_buffer.sliced(offset..offset + required_bytes), shape, dtype)
+                                (
+                                    full_buffer.sliced(offset..offset + required_bytes),
+                                    shape,
+                                    dtype,
+                                )
                             }
                         }
                         Err(arc) => {
