@@ -2,6 +2,8 @@
 name = "view-buffer"
 version = "0.10.0"
 edition = "2021"
+# Workspace floor (see rust-toolchain.toml): the polars 0.54 stack requires 1.96.
+rust-version = "1.96"
 authors = ["Your Name <your.email@example.com>"]
 description = "A zero-copy, stride-aware tensor orchestration framework for Rust."
 license = "MIT OR Apache-2.0"
