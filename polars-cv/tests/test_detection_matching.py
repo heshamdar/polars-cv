@@ -265,7 +265,7 @@ class TestPolarsNativeComposition:
             "image_id",
             pl.col("match").struct.field("gt_idx"),
             pl.col("scores"),
-        ).explode("gt_idx", "scores")
+        ).explode("gt_idx", "scores", empty_as_null=True)
 
         thresholds = pl.DataFrame({"threshold": [0.2, 0.8]})
         curve = (

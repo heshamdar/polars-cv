@@ -407,7 +407,7 @@ def _explode_match_to_detections(
             _scores=pl.col(scores_col),
             _det_ord=pl.int_ranges(0, pl.col(scores_col).list.len()),
         )
-        .explode("_scores", "_det_ord")
+        .explode("_scores", "_det_ord", empty_as_null=True)
         .with_columns(_det_ord=pl.col("_det_ord").cast(pl.UInt32))
     )
     match_pairs = (
@@ -417,7 +417,7 @@ def _explode_match_to_detections(
             _gt_idx=pl.col(gt_idx_col),
             _iou=pl.col(iou_col),
         )
-        .explode("_det_ord", "_gt_idx", "_iou")
+        .explode("_det_ord", "_gt_idx", "_iou", empty_as_null=True)
         .with_columns(_det_ord=pl.col("_det_ord").cast(pl.UInt32))
     )
     return det_base.join(match_pairs, on=[image_id_col, "_det_ord"], how="left").select(

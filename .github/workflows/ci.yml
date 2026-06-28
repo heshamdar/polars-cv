@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Allow the slow/OOC lane to be kicked manually and run on a weekly cadence.
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
 
 env:
   CARGO_TERM_COLOR: always
@@ -130,3 +134,55 @@ jobs:
           if [ -d "polars-cv" ]; then cd polars-cv; fi
           uvx ruff check python tests benchmarks
           uvx ruff format --check python tests benchmarks
+
+  slow-tests:
+    name: Slow / OOC tests
+    # Off the per-PR critical path: the slow-marked tests (e.g.
+    # test_streaming_ooc.py) spawn subprocesses for out-of-core verification.
+    # Run them on manual dispatch and the weekly schedule instead.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Determine package directory
+        id: package_dir
+        shell: bash
+        run: |
+          if [ -d "polars-cv" ]; then
+            echo "dir=polars-cv" >> $GITHUB_OUTPUT
+          else
+            echo "dir=." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        run: |
+          uv sync --group dev
+
+      - name: Build extension and run slow tests
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          maturin develop
+          # Only the slow-marked tests; still skip network ones.
+          pytest tests/ -v --tb=short -m "slow and not network"
