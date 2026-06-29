@@ -106,8 +106,10 @@ mod parity_tests {
     use crate::geometry::ops::{ApproxMethod, ExtractMode, GeometryOp};
     use crate::ops::binary::BinaryOp;
     use crate::ops::color::{ColorConvertOp, ColorSpace};
+    use crate::ops::complex::ComplexOp;
     use crate::ops::compute::ComputeOp;
     use crate::ops::filter::{BorderMode, ConvolveOp};
+    use crate::ops::spectral::SpectralOp;
     use crate::ops::histogram::{HistogramOp, HistogramOutput};
     use crate::ops::image::{FilterType, ImageOp, ImageOpKind};
     use crate::ops::phash::{HashAlgorithm, PerceptualHashOp};
@@ -275,6 +277,24 @@ mod parity_tests {
         let probe = [4usize, 4, 3];
         check(&BinaryOp::Add, &probe);
         check(&BinaryOp::Multiply, &probe);
+    }
+
+    #[test]
+    fn spectral_ops_match_infer_shape() {
+        let probe = [4usize, 4, 3];
+        check(&SpectralOp::Fft2, &probe);
+        check(&SpectralOp::Ifft2, &probe);
+        check(&SpectralOp::Dct2, &probe);
+        check(&SpectralOp::Idct2, &probe);
+    }
+
+    #[test]
+    fn complex_ops_match_infer_shape() {
+        let probe = [4usize, 4, 3];
+        check(&ComplexOp::Magnitude, &probe);
+        check(&ComplexOp::Phase, &probe);
+        check(&ComplexOp::Power, &probe);
+        check(&ComplexOp::Conj, &probe);
     }
 
     #[test]

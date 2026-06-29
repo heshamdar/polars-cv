@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use crate::geometry::ops::GeometryOp;
 use crate::ops::binary::BinaryOp;
 use crate::ops::color::ColorConvertOp;
+use crate::ops::complex::ComplexOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::filter::ConvolveOp;
+use crate::ops::spectral::SpectralOp;
 use crate::ops::histogram::HistogramOp;
 use crate::ops::image::ImageOp;
 use crate::ops::phash::PerceptualHashOp;
@@ -115,6 +117,27 @@ pub enum ViewDto {
     Color(ColorConvertOp),
     /// Generic 2D convolution with arbitrary kernel.
     Filter(ConvolveOp),
+    /// Frequency-domain transform (2D FFT/IFFT, 2D DCT/IDCT).
+    Spectral(SpectralOp),
+    /// Complex-buffer helper (magnitude/phase/power/conjugate).
+    Complex(ComplexOp),
+    /// Element-wise complex multiply with another complex buffer (by node ID).
+    /// Building block for FFT-based convolution and cross-correlation.
+    ComplexMul {
+        other_node_id: String,
+    },
+    /// Circular shift along axes (the `np.roll` primitive; backs fftshift).
+    Roll {
+        shifts: Vec<isize>,
+        axes: Vec<usize>,
+    },
+    /// Shift the zero-frequency component to the center of the spectrum
+    /// (`inverse = false`) or undo that shift (`inverse = true`). The per-axis
+    /// shift is half of each spatial dimension, computed at execution time from
+    /// the actual buffer shape.
+    Fftshift {
+        inverse: bool,
+    },
 }
 
 /// Padding mode for Pad operation.
@@ -184,6 +207,12 @@ impl ViewDto {
             ViewDto::Color(_) => Domain::Buffer,
             // Convolution works on buffers
             ViewDto::Filter(_) => Domain::Buffer,
+            // Spectral / complex / roll operations work on buffers
+            ViewDto::Spectral(_)
+            | ViewDto::Complex(_)
+            | ViewDto::ComplexMul { .. }
+            | ViewDto::Roll { .. }
+            | ViewDto::Fftshift { .. } => Domain::Buffer,
         }
     }
 
@@ -242,6 +271,12 @@ impl ViewDto {
             ViewDto::Color(_) => Domain::Buffer,
             // Convolution produces buffers
             ViewDto::Filter(_) => Domain::Buffer,
+            // Spectral / complex / roll operations produce buffers
+            ViewDto::Spectral(_)
+            | ViewDto::Complex(_)
+            | ViewDto::ComplexMul { .. }
+            | ViewDto::Roll { .. }
+            | ViewDto::Fftshift { .. } => Domain::Buffer,
         }
     }
 
@@ -264,6 +299,12 @@ impl ViewDto {
             ViewDto::Reduction(op) => op.output_dtype_rule(),
             ViewDto::Histogram(op) => op.output_dtype_rule(),
             ViewDto::Filter(op) => op.output_dtype_rule(),
+            ViewDto::Spectral(op) => op.output_dtype_rule(),
+            ViewDto::Complex(op) => op.output_dtype_rule(),
+            // Complex multiply yields a complex f32 buffer.
+            ViewDto::ComplexMul { .. } => OutputDTypeRule::Fixed(crate::core::dtype::DType::F32),
+            // Roll/fftshift only reorder elements; dtype is unchanged.
+            ViewDto::Roll { .. } | ViewDto::Fftshift { .. } => OutputDTypeRule::PreserveInput,
             // Color conversion preserves element dtype (routes through f32 internally).
             ViewDto::Color(_) => OutputDTypeRule::PreserveInput,
             // Mask application preserves the buffer dtype.
@@ -310,6 +351,12 @@ impl ViewDto {
             ViewDto::Histogram(op) => op.output_rank_rule(),
             ViewDto::Filter(op) => op.output_rank_rule(),
             ViewDto::Color(op) => op.output_rank_rule(),
+            ViewDto::Spectral(op) => op.output_rank_rule(),
+            ViewDto::Complex(op) => op.output_rank_rule(),
+            // Complex multiply, roll and fftshift preserve rank.
+            ViewDto::ComplexMul { .. } | ViewDto::Roll { .. } | ViewDto::Fftshift { .. } => {
+                OutputRankRule::PreserveRank
+            }
             // Mask application and materialize are shape-identity.
             ViewDto::ApplyMask { .. } | ViewDto::Materialize => OutputRankRule::PreserveRank,
             // Deferred resize/padding only change H/W, never the rank.
@@ -346,6 +393,12 @@ impl ViewDto {
             ViewDto::Histogram(op) => op.output_channel_rule(),
             ViewDto::Filter(op) => op.output_channel_rule(),
             ViewDto::Color(op) => op.output_channel_rule(),
+            ViewDto::Spectral(op) => op.output_channel_rule(),
+            ViewDto::Complex(op) => op.output_channel_rule(),
+            // Complex multiply keeps the 2 real/imag channels; roll/fftshift preserve channels.
+            ViewDto::ComplexMul { .. } | ViewDto::Roll { .. } | ViewDto::Fftshift { .. } => {
+                OutputChannelRule::PreserveChannels
+            }
             // Mask application and materialize preserve channels.
             ViewDto::ApplyMask { .. } | ViewDto::Materialize => OutputChannelRule::PreserveChannels,
             // Deferred resize/padding preserve the channel count.
@@ -395,6 +448,11 @@ impl ViewDto {
             ViewDto::ChannelMerge { .. } => "ChannelMerge",
             ViewDto::Color(_) => "ColorConvert",
             ViewDto::Filter(_) => "Convolve2D",
+            ViewDto::Spectral(op) => op.name(),
+            ViewDto::Complex(op) => op.name(),
+            ViewDto::ComplexMul { .. } => "ComplexMul",
+            ViewDto::Roll { .. } => "Roll",
+            ViewDto::Fftshift { .. } => "Fftshift",
         }
     }
 

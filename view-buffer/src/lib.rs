@@ -28,7 +28,7 @@ pub use core::layout::{ExternalLayout, LayoutFacts, LayoutReport};
 
 // Re-exports - Execution
 pub use execution::{
-    apply_channel_merge, apply_channel_swap, execute_plan, ExecutionPlan, PlanStep,
+    apply_channel_merge, apply_channel_swap, apply_roll, execute_plan, ExecutionPlan, PlanStep,
 };
 
 // Re-exports - Expression

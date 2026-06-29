@@ -1182,6 +1182,98 @@ impl CompiledGraph {
                                 let result = apply_convolve2d(current_buf, convolve_op);
                                 current_output = NodeOutput::from_buffer(result);
                             }
+                            ViewDto::Spectral(spectral_op) => {
+                                use view_buffer::ops::spectral::apply_spectral;
+                                current_output =
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                let current_buf = current_output.as_buffer().ok_or_else(|| {
+                                    format!(
+                                        "Spectral op requires Buffer, got {:?}",
+                                        current_output.domain()
+                                    )
+                                })?;
+                                let result = apply_spectral(current_buf, *spectral_op);
+                                current_output = NodeOutput::from_buffer(result);
+                            }
+                            ViewDto::Complex(complex_op) => {
+                                use view_buffer::ops::complex::apply_complex;
+                                current_output =
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                let current_buf = current_output.as_buffer().ok_or_else(|| {
+                                    format!(
+                                        "Complex op requires Buffer, got {:?}",
+                                        current_output.domain()
+                                    )
+                                })?;
+                                let result = apply_complex(current_buf, *complex_op);
+                                current_output = NodeOutput::from_buffer(result);
+                            }
+                            ViewDto::ComplexMul { other_node_id } => {
+                                use view_buffer::ops::complex::apply_complex_mul;
+                                current_output =
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                let current_buf = current_output.as_buffer().ok_or_else(|| {
+                                    format!(
+                                        "ComplexMul requires Buffer, got {:?}",
+                                        current_output.domain()
+                                    )
+                                })?;
+                                let other_output =
+                                    node_outputs.get(other_node_id).ok_or_else(|| {
+                                        format!(
+                                            "ComplexMul references unknown node '{other_node_id}'"
+                                        )
+                                    })?;
+                                let other_buf = other_output.as_buffer().ok_or_else(|| {
+                                    format!(
+                                        "ComplexMul other operand must be Buffer, got {:?}",
+                                        other_output.domain()
+                                    )
+                                })?;
+                                let result = apply_complex_mul(current_buf, other_buf);
+                                current_output = NodeOutput::from_buffer(result);
+                            }
+                            ViewDto::Roll { shifts, axes } => {
+                                current_output =
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                let current_buf = current_output.as_buffer().ok_or_else(|| {
+                                    format!(
+                                        "Roll requires Buffer, got {:?}",
+                                        current_output.domain()
+                                    )
+                                })?;
+                                let result = view_buffer::apply_roll(current_buf, shifts, axes);
+                                current_output = NodeOutput::from_buffer(result);
+                            }
+                            ViewDto::Fftshift { inverse } => {
+                                current_output =
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                let current_buf = current_output.as_buffer().ok_or_else(|| {
+                                    format!(
+                                        "Fftshift requires Buffer, got {:?}",
+                                        current_output.domain()
+                                    )
+                                })?;
+                                // Shift the two spatial axes by half their size. fftshift
+                                // moves the zero-frequency bin to the center (shift = dim/2);
+                                // ifftshift inverts it (shift = dim - dim/2), so both are exact
+                                // inverses for odd dimensions too.
+                                let shape = current_buf.shape();
+                                let mut shifts = Vec::new();
+                                let mut axes = Vec::new();
+                                for (axis, &dim) in shape.iter().enumerate().take(2) {
+                                    let half = (dim / 2) as isize;
+                                    let s = if *inverse {
+                                        dim as isize - half
+                                    } else {
+                                        half
+                                    };
+                                    shifts.push(s);
+                                    axes.push(axis);
+                                }
+                                let result = view_buffer::apply_roll(current_buf, &shifts, &axes);
+                                current_output = NodeOutput::from_buffer(result);
+                            }
                             ViewDto::Materialize => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;

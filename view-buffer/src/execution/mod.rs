@@ -9,4 +9,4 @@ pub mod plan;
 pub mod runner;
 
 pub use plan::{ExecutionPlan, PlanStep};
-pub use runner::{apply_channel_merge, apply_channel_swap, execute_plan};
+pub use runner::{apply_channel_merge, apply_channel_swap, apply_roll, execute_plan};

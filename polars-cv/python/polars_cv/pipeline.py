@@ -1741,6 +1741,166 @@ class Pipeline:
         new._update_output_dtype("convolve2d")
         return new
 
+    # --- Spectral / Frequency-Domain Analysis ---
+
+    def _append_simple_buffer_op(self, op_name: str) -> "Pipeline":
+        """Append a no-parameter buffer→buffer op and refresh schema hints."""
+        self._validate_domain(self.DOMAIN_BUFFER, op_name)
+        new = self._clone()
+        new._ops.append(OpSpec(op=op_name, params={}))
+        new._update_output_dtype(op_name)
+        new._update_shape_hints(op_name, {})
+        return new
+
+    def fft2(self) -> "Pipeline":
+        """
+        Forward 2D fast Fourier transform.
+
+        Maps a single-channel real image ``[H, W, 1]`` to a complex
+        ``[H, W, 2]`` ``f32`` buffer whose trailing axis holds ``[real, imag]``.
+        Call :meth:`grayscale` first for multi-channel images.
+
+        Domain: buffer → buffer (complex, 2 channels).
+
+        Compose with :meth:`complex_magnitude`/:meth:`complex_phase`/
+        :meth:`complex_power` (optionally after :meth:`fftshift`) to obtain the
+        magnitude, phase or power spectrum.
+
+        Example:
+            ```python
+            >>> # centered magnitude spectrum
+            >>> pipe = (
+            ...     Pipeline().source("image_bytes")
+            ...     .grayscale().fft2().fftshift().complex_magnitude()
+            ... )
+            ```
+        """
+        return self._append_simple_buffer_op("fft2")
+
+    def ifft2(self) -> "Pipeline":
+        """
+        Inverse 2D fast Fourier transform.
+
+        Takes a complex ``[H, W, 2]`` buffer and returns the real part of the
+        inverse transform as ``[H, W, 1]`` ``f32``.
+
+        Domain: buffer → buffer.
+        """
+        return self._append_simple_buffer_op("ifft2")
+
+    def dct2(self) -> "Pipeline":
+        """
+        Forward 2D discrete cosine transform (DCT-II), applied per channel.
+
+        A real-to-real transform (no complex representation needed), foundational
+        for energy-compaction / JPEG-style analysis. Output is ``f32``.
+
+        Domain: buffer → buffer.
+        """
+        return self._append_simple_buffer_op("dct2")
+
+    def idct2(self) -> "Pipeline":
+        """
+        Inverse 2D discrete cosine transform (DCT-III), applied per channel.
+
+        Inverts :meth:`dct2`. Output is ``f32``.
+
+        Domain: buffer → buffer.
+        """
+        return self._append_simple_buffer_op("idct2")
+
+    def complex_magnitude(self) -> "Pipeline":
+        """
+        Magnitude ``sqrt(re² + im²)`` of a complex ``[H, W, 2]`` buffer.
+
+        Produces the magnitude spectrum as real ``[H, W, 1]`` ``f32``. Typically
+        applied to the output of :meth:`fft2` (optionally after :meth:`fftshift`).
+
+        Domain: buffer → buffer.
+        """
+        return self._append_simple_buffer_op("complex_magnitude")
+
+    def complex_phase(self) -> "Pipeline":
+        """
+        Phase angle ``atan2(im, re)`` (radians) of a complex ``[H, W, 2]`` buffer.
+
+        Produces the phase spectrum as real ``[H, W, 1]`` ``f32``.
+
+        Domain: buffer → buffer.
+        """
+        return self._append_simple_buffer_op("complex_phase")
+
+    def complex_power(self) -> "Pipeline":
+        """
+        Power ``re² + im²`` of a complex ``[H, W, 2]`` buffer.
+
+        Produces the power spectrum as real ``[H, W, 1]`` ``f32``.
+
+        Domain: buffer → buffer.
+        """
+        return self._append_simple_buffer_op("complex_power")
+
+    def complex_conj(self) -> "Pipeline":
+        """
+        Complex conjugate ``(re, -im)`` of a complex ``[H, W, 2]`` buffer.
+
+        Returns a complex ``[H, W, 2]`` buffer. Used with
+        :meth:`~polars_cv.lazy.LazyPipelineExpr.complex_mul` for cross-correlation
+        (``fft2(a) · conj(fft2(b))``).
+
+        Domain: buffer → buffer.
+        """
+        return self._append_simple_buffer_op("complex_conj")
+
+    def roll(self, *, shifts: list[int], axes: list[int]) -> "Pipeline":
+        """
+        Circularly shift the buffer along the given axes (like ``numpy.roll``).
+
+        Domain: buffer → buffer.
+
+        Args:
+            shifts: Shift amount per axis (may be negative); wraps around.
+            axes: Axes to shift, paired positionally with ``shifts``.
+
+        Returns:
+            Self for chaining.
+        """
+        self._validate_domain(self.DOMAIN_BUFFER, "roll")
+        if len(shifts) != len(axes):
+            msg = f"roll shifts ({len(shifts)}) and axes ({len(axes)}) must have equal length"
+            raise ValueError(msg)
+        new = self._clone()
+        new._ops.append(
+            OpSpec(
+                op="roll",
+                params={
+                    "shifts": ParamValue(is_expr=False, value=list(shifts)),
+                    "axes": ParamValue(is_expr=False, value=list(axes)),
+                },
+            )
+        )
+        new._update_output_dtype("roll")
+        return new
+
+    def fftshift(self) -> "Pipeline":
+        """
+        Shift the zero-frequency component to the center of the spectrum.
+
+        Rolls each spatial axis by half its size (computed at execution time from
+        the actual dimensions). Inverted by :meth:`ifftshift`.
+
+        Domain: buffer → buffer.
+        """
+        return self._append_simple_buffer_op("fftshift")
+
+    def ifftshift(self) -> "Pipeline":
+        """
+        Inverse of :meth:`fftshift` (exact inverse for odd dimensions too).
+
+        Domain: buffer → buffer.
+        """
+        return self._append_simple_buffer_op("ifftshift")
+
     def sobel(self, *, axis: str = "x", ksize: int = 3) -> "Pipeline":
         """
         Sobel gradient operator.

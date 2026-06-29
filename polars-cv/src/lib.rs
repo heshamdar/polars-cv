@@ -250,6 +250,10 @@ fn parse_binary_op(name: &str) -> PyResult<view_buffer::BinaryOp> {
 /// list/array sink requires the user to supply an explicit dtype.
 #[pyfunction]
 fn binary_output_dtype(op_name: &str, left: &str, right: &str) -> PyResult<String> {
+    // Complex multiply is not a `BinaryOp`; it always yields a complex f32 buffer.
+    if op_name == "complex_mul" {
+        return Ok("f32".to_string());
+    }
     if left == "auto" || right == "auto" {
         return Ok("auto".to_string());
     }
