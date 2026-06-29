@@ -1263,11 +1263,7 @@ impl CompiledGraph {
                                 let mut axes = Vec::new();
                                 for (axis, &dim) in shape.iter().enumerate().take(2) {
                                     let half = (dim / 2) as isize;
-                                    let s = if *inverse {
-                                        dim as isize - half
-                                    } else {
-                                        half
-                                    };
+                                    let s = if *inverse { dim as isize - half } else { half };
                                     shifts.push(s);
                                     axes.push(axis);
                                 }

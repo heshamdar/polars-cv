@@ -37,7 +37,10 @@ pub enum ComplexOp {
 impl ComplexOp {
     /// Whether this op collapses the complex pair to a single real channel.
     fn is_reducing(&self) -> bool {
-        matches!(self, ComplexOp::Magnitude | ComplexOp::Phase | ComplexOp::Power)
+        matches!(
+            self,
+            ComplexOp::Magnitude | ComplexOp::Phase | ComplexOp::Power
+        )
     }
 }
 

@@ -132,6 +132,11 @@ class Pipeline:
             "channel_select",
             "channel_swap",
             "clamp",
+            "complex_conj",
+            "complex_magnitude",
+            "complex_mul",
+            "complex_phase",
+            "complex_power",
             "contour_area",
             "contour_bounding_box",
             "contour_centroid",
@@ -143,15 +148,21 @@ class Pipeline:
             "convolve2d",
             "crop",
             "cvt_color",
+            "dct2",
             "dilate",
             "divide",
             "equalize_histogram",
             "erode",
             "extract_contours",
             "extract_shape",
+            "fft2",
+            "fftshift",
             "flip",
             "grayscale",
             "histogram",
+            "idct2",
+            "ifft2",
+            "ifftshift",
             "invert",
             "label_reduce",
             "letterbox",
@@ -182,6 +193,7 @@ class Pipeline:
             "resize_scale",
             "resize_to_height",
             "resize_to_width",
+            "roll",
             "rotate",
             "scale",
             "subtract",
@@ -1743,13 +1755,13 @@ class Pipeline:
 
     # --- Spectral / Frequency-Domain Analysis ---
 
-    def _append_simple_buffer_op(self, op_name: str) -> "Pipeline":
+    def _append_simple_buffer_op(self, op: str) -> "Pipeline":
         """Append a no-parameter buffer→buffer op and refresh schema hints."""
-        self._validate_domain(self.DOMAIN_BUFFER, op_name)
+        self._validate_domain(self.DOMAIN_BUFFER, op)
         new = self._clone()
-        new._ops.append(OpSpec(op=op_name, params={}))
-        new._update_output_dtype(op_name)
-        new._update_shape_hints(op_name, {})
+        new._ops.append(OpSpec(op=op, params={}))
+        new._update_output_dtype(op)
+        new._update_shape_hints(op, {})
         return new
 
     def fft2(self) -> "Pipeline":
@@ -1775,7 +1787,7 @@ class Pipeline:
             ... )
             ```
         """
-        return self._append_simple_buffer_op("fft2")
+        return self._append_simple_buffer_op(op="fft2")
 
     def ifft2(self) -> "Pipeline":
         """
@@ -1786,7 +1798,7 @@ class Pipeline:
 
         Domain: buffer → buffer.
         """
-        return self._append_simple_buffer_op("ifft2")
+        return self._append_simple_buffer_op(op="ifft2")
 
     def dct2(self) -> "Pipeline":
         """
@@ -1797,7 +1809,7 @@ class Pipeline:
 
         Domain: buffer → buffer.
         """
-        return self._append_simple_buffer_op("dct2")
+        return self._append_simple_buffer_op(op="dct2")
 
     def idct2(self) -> "Pipeline":
         """
@@ -1807,7 +1819,7 @@ class Pipeline:
 
         Domain: buffer → buffer.
         """
-        return self._append_simple_buffer_op("idct2")
+        return self._append_simple_buffer_op(op="idct2")
 
     def complex_magnitude(self) -> "Pipeline":
         """
@@ -1818,7 +1830,7 @@ class Pipeline:
 
         Domain: buffer → buffer.
         """
-        return self._append_simple_buffer_op("complex_magnitude")
+        return self._append_simple_buffer_op(op="complex_magnitude")
 
     def complex_phase(self) -> "Pipeline":
         """
@@ -1828,7 +1840,7 @@ class Pipeline:
 
         Domain: buffer → buffer.
         """
-        return self._append_simple_buffer_op("complex_phase")
+        return self._append_simple_buffer_op(op="complex_phase")
 
     def complex_power(self) -> "Pipeline":
         """
@@ -1838,7 +1850,7 @@ class Pipeline:
 
         Domain: buffer → buffer.
         """
-        return self._append_simple_buffer_op("complex_power")
+        return self._append_simple_buffer_op(op="complex_power")
 
     def complex_conj(self) -> "Pipeline":
         """
@@ -1850,7 +1862,7 @@ class Pipeline:
 
         Domain: buffer → buffer.
         """
-        return self._append_simple_buffer_op("complex_conj")
+        return self._append_simple_buffer_op(op="complex_conj")
 
     def roll(self, *, shifts: list[int], axes: list[int]) -> "Pipeline":
         """
@@ -1891,7 +1903,7 @@ class Pipeline:
 
         Domain: buffer → buffer.
         """
-        return self._append_simple_buffer_op("fftshift")
+        return self._append_simple_buffer_op(op="fftshift")
 
     def ifftshift(self) -> "Pipeline":
         """
@@ -1899,7 +1911,7 @@ class Pipeline:
 
         Domain: buffer → buffer.
         """
-        return self._append_simple_buffer_op("ifftshift")
+        return self._append_simple_buffer_op(op="ifftshift")
 
     def sobel(self, *, axis: str = "x", ksize: int = 3) -> "Pipeline":
         """

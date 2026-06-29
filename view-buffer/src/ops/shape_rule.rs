@@ -109,11 +109,11 @@ mod parity_tests {
     use crate::ops::complex::ComplexOp;
     use crate::ops::compute::ComputeOp;
     use crate::ops::filter::{BorderMode, ConvolveOp};
-    use crate::ops::spectral::SpectralOp;
     use crate::ops::histogram::{HistogramOp, HistogramOutput};
     use crate::ops::image::{FilterType, ImageOp, ImageOpKind};
     use crate::ops::phash::{HashAlgorithm, PerceptualHashOp};
     use crate::ops::reduction::ReductionOp;
+    use crate::ops::spectral::SpectralOp;
     use crate::ops::traits::Op;
     use crate::ops::view::ViewOp;
 

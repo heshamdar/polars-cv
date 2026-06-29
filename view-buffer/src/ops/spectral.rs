@@ -155,9 +155,7 @@ pub fn apply_spectral(buf: &ViewBuffer, op: SpectralOp) -> ViewBuffer {
 /// Stub used when the `spectral` feature is disabled.
 #[cfg(not(feature = "spectral"))]
 pub fn apply_spectral(_buf: &ViewBuffer, _op: SpectralOp) -> ViewBuffer {
-    panic!(
-        "spectral operations require the 'spectral' feature (rustfft/rustdct) to be enabled"
-    );
+    panic!("spectral operations require the 'spectral' feature (rustfft/rustdct) to be enabled");
 }
 
 #[cfg(feature = "spectral")]
@@ -380,7 +378,8 @@ mod tests {
         }
         let buf = ViewBuffer::from_vec_with_shape(data, vec![4, 4, 1]);
         let spec = apply_spectral(&buf, SpectralOp::Fft2);
-        let mag = crate::ops::complex::apply_complex(&spec, crate::ops::complex::ComplexOp::Magnitude);
+        let mag =
+            crate::ops::complex::apply_complex(&spec, crate::ops::complex::ComplexOp::Magnitude);
         let m = mag.as_slice::<f32>();
         // Row 0 (DC in vertical), columns 1 and 3 carry the energy.
         assert!(m[1] > 1.0, "bin (0,1) should carry energy, got {}", m[1]);
