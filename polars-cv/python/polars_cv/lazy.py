@@ -628,6 +628,26 @@ class LazyPipelineExpr:
         """
         return self._binary_op("minimum", other)
 
+    def complex_mul(self, other: "LazyPipelineExpr") -> "LazyPipelineExpr":
+        """
+        Element-wise complex multiply with another complex ``[H, W, 2]`` buffer.
+
+        Both operands hold complex values as 2-channel ``[H, W, 2]`` ``f32``
+        buffers (the layout produced by :meth:`~polars_cv.pipeline.Pipeline.fft2`).
+        This is the frequency-domain building block for fast convolution
+        (``fft2(a).complex_mul(fft2(b))``) and cross-correlation
+        (``fft2(a).complex_mul(fft2(b).complex_conj())``) via the convolution
+        theorem; follow with
+        :meth:`~polars_cv.pipeline.Pipeline.ifft2` to return to the spatial domain.
+
+        Args:
+            other: LazyPipelineExpr producing a complex ``[H, W, 2]`` buffer.
+
+        Returns:
+            New LazyPipelineExpr with the complex multiply composed.
+        """
+        return self._binary_op("complex_mul", other)
+
     def apply_contour_mask(
         self,
         contour: "LazyPipelineExpr",

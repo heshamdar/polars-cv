@@ -524,6 +524,76 @@ pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
     }
 }
 
+/// Circularly shift a buffer along the given axes (the `np.roll` primitive).
+///
+/// `shifts[i]` is applied to `axes[i]`; positive shifts move elements toward
+/// higher indices, wrapping around. Axes not listed are unchanged. Output is a
+/// fresh contiguous buffer preserving dtype and shape. This is the foundation
+/// for `fftshift`/`ifftshift` (a roll by half of each spatial dimension).
+pub fn apply_roll(buf: &ViewBuffer, shifts: &[isize], axes: &[usize]) -> ViewBuffer {
+    let contig = buf.to_contiguous();
+    let shape = contig.shape().to_vec();
+    let ndim = shape.len();
+
+    // Per-axis normalized shift in [0, dim).
+    let mut shift_per_axis = vec![0isize; ndim];
+    for (&s, &ax) in shifts.iter().zip(axes.iter()) {
+        if ax < ndim && shape[ax] > 0 {
+            let d = shape[ax] as isize;
+            shift_per_axis[ax] = ((s % d) + d) % d;
+        }
+    }
+
+    // Row-major element strides.
+    let mut strides = vec![1usize; ndim];
+    for i in (0..ndim.saturating_sub(1)).rev() {
+        strides[i] = strides[i + 1] * shape[i + 1];
+    }
+
+    match contig.dtype() {
+        DType::U8 => roll_typed::<u8>(&contig, &shape, &shift_per_axis, &strides),
+        DType::I8 => roll_typed::<i8>(&contig, &shape, &shift_per_axis, &strides),
+        DType::U16 => roll_typed::<u16>(&contig, &shape, &shift_per_axis, &strides),
+        DType::I16 => roll_typed::<i16>(&contig, &shape, &shift_per_axis, &strides),
+        DType::U32 => roll_typed::<u32>(&contig, &shape, &shift_per_axis, &strides),
+        DType::I32 => roll_typed::<i32>(&contig, &shape, &shift_per_axis, &strides),
+        DType::U64 => roll_typed::<u64>(&contig, &shape, &shift_per_axis, &strides),
+        DType::I64 => roll_typed::<i64>(&contig, &shape, &shift_per_axis, &strides),
+        DType::F32 => roll_typed::<f32>(&contig, &shape, &shift_per_axis, &strides),
+        DType::F64 => roll_typed::<f64>(&contig, &shape, &shift_per_axis, &strides),
+    }
+}
+
+/// Dtype-generic circular shift over a contiguous buffer.
+fn roll_typed<T: crate::core::dtype::ViewType + Copy + Default>(
+    contig: &ViewBuffer,
+    shape: &[usize],
+    shift_per_axis: &[isize],
+    strides: &[usize],
+) -> ViewBuffer {
+    let ndim = shape.len();
+    let n: usize = shape.iter().product();
+    let src = contig.as_slice::<T>();
+    let mut out = vec![T::default(); n];
+    for (lin, dst) in out.iter_mut().enumerate() {
+        let mut rem = lin;
+        let mut src_lin = 0usize;
+        for d in 0..ndim {
+            let coord = rem / strides[d];
+            rem %= strides[d];
+            let sc = if shift_per_axis[d] != 0 {
+                let dim = shape[d] as isize;
+                (((coord as isize - shift_per_axis[d]) % dim + dim) % dim) as usize
+            } else {
+                coord
+            };
+            src_lin += sc * strides[d];
+        }
+        *dst = src[src_lin];
+    }
+    ViewBuffer::from_vec_with_shape(out, shape.to_vec())
+}
+
 /// Apply a scalar operation element-wise, honoring the float-promotion
 /// dtype contract (`OutputDTypeRule::PromoteToFloat`):
 ///

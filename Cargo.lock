@@ -4567,6 +4567,8 @@ dependencies = [
  "num-traits",
  "polars-arrow",
  "polars-buffer",
+ "rustdct",
+ "rustfft",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

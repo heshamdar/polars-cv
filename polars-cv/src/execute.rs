@@ -392,6 +392,11 @@ pub const KNOWN_OPS: &[&str] = &[
     "channel_select",
     "channel_swap",
     "clamp",
+    "complex_conj",
+    "complex_magnitude",
+    "complex_mul",
+    "complex_phase",
+    "complex_power",
     "contour_area",
     "contour_bounding_box",
     "contour_centroid",
@@ -408,15 +413,21 @@ pub const KNOWN_OPS: &[&str] = &[
     "convolve2d",
     "crop",
     "cvt_color",
+    "dct2",
     "dilate",
     "divide",
     "equalize_histogram",
     "erode",
     "extract_contours",
     "extract_shape",
+    "fft2",
+    "fftshift",
     "flip",
     "grayscale",
     "histogram",
+    "idct2",
+    "ifft2",
+    "ifftshift",
     "invert",
     "label_reduce",
     "letterbox",
@@ -447,6 +458,7 @@ pub const KNOWN_OPS: &[&str] = &[
     "resize_scale",
     "resize_to_height",
     "resize_to_width",
+    "roll",
     "rotate",
     "scale",
     "subtract",
@@ -1386,6 +1398,63 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 border,
             }))
         }
+
+        // Spectral / frequency-domain operations
+        "fft2" => {
+            use view_buffer::ops::spectral::SpectralOp;
+            Ok(ViewDto::Spectral(SpectralOp::Fft2))
+        }
+        "ifft2" => {
+            use view_buffer::ops::spectral::SpectralOp;
+            Ok(ViewDto::Spectral(SpectralOp::Ifft2))
+        }
+        "dct2" => {
+            use view_buffer::ops::spectral::SpectralOp;
+            Ok(ViewDto::Spectral(SpectralOp::Dct2))
+        }
+        "idct2" => {
+            use view_buffer::ops::spectral::SpectralOp;
+            Ok(ViewDto::Spectral(SpectralOp::Idct2))
+        }
+        "complex_magnitude" => {
+            use view_buffer::ops::complex::ComplexOp;
+            Ok(ViewDto::Complex(ComplexOp::Magnitude))
+        }
+        "complex_phase" => {
+            use view_buffer::ops::complex::ComplexOp;
+            Ok(ViewDto::Complex(ComplexOp::Phase))
+        }
+        "complex_power" => {
+            use view_buffer::ops::complex::ComplexOp;
+            Ok(ViewDto::Complex(ComplexOp::Power))
+        }
+        "complex_conj" => {
+            use view_buffer::ops::complex::ComplexOp;
+            Ok(ViewDto::Complex(ComplexOp::Conj))
+        }
+        "complex_mul" => {
+            let other_node_id = get_param(&op_spec.params, "other_node")?
+                .resolve_string()?
+                .to_string();
+            Ok(ViewDto::ComplexMul { other_node_id })
+        }
+        "roll" => {
+            // `shifts` may be negative, so read the raw JSON array as i64.
+            let shifts = match get_param(&op_spec.params, "shifts")? {
+                ParamValue::Literal {
+                    value: serde_json::Value::Array(arr),
+                } => arr
+                    .iter()
+                    .map(|v| v.as_i64().unwrap_or(0) as isize)
+                    .collect::<Vec<isize>>(),
+                _ => return Err(polars_err!(ComputeError: "roll requires 'shifts' as an array")),
+            };
+            let axes = get_param(&op_spec.params, "axes")?.as_int_list()?;
+            Ok(ViewDto::Roll { shifts, axes })
+        }
+        "fftshift" => Ok(ViewDto::Fftshift { inverse: false }),
+        "ifftshift" => Ok(ViewDto::Fftshift { inverse: true }),
+
         "erode" => {
             let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
             let iterations = op_spec

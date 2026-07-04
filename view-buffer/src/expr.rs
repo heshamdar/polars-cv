@@ -301,6 +301,16 @@ impl ViewExpr {
                     ),
                 })
             }
+            ViewDto::Spectral(_)
+            | ViewDto::Complex(_)
+            | ViewDto::ComplexMul { .. }
+            | ViewDto::Roll { .. }
+            | ViewDto::Fftshift { .. } => {
+                panic!(
+                    "Spectral/complex/roll operations cannot be applied via ViewExpr. \
+                     Use graph-level execution."
+                )
+            }
         }
     }
 
