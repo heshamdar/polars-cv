@@ -45,7 +45,7 @@ pub enum ImageOpKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum FilterType {
     Nearest,
@@ -53,6 +53,22 @@ pub enum FilterType {
     CatmullRom,
     Gaussian,
     Lanczos3,
+}
+
+// `Triangle` is surfaced under its API name "bilinear"; the parser-only
+// alias "triangle" is kept for backwards compatibility (see `ALIASES`).
+crate::naming::named_variants!(FilterType {
+    "nearest" => Nearest,
+    "bilinear" => Triangle,
+    "catmullrom" => CatmullRom,
+    "gaussian" => Gaussian,
+    "lanczos3" => Lanczos3,
+});
+
+impl FilterType {
+    /// Additional parser-accepted spellings, not surfaced as canonical names.
+    pub const ALIASES: &'static [(&'static str, FilterType)] =
+        &[("triangle", FilterType::Triangle)];
 }
 
 #[derive(Debug, Clone, PartialEq)]

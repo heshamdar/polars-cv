@@ -87,6 +87,14 @@ pub enum Domain {
     Any,
 }
 
+crate::naming::named_variants!(Domain {
+    "buffer" => Buffer,
+    "contour" => Contour,
+    "scalar" => Scalar,
+    "vector" => Vector,
+    "any" => Any,
+});
+
 impl Domain {
     /// Check if this domain can accept input from another domain.
     ///
@@ -97,13 +105,10 @@ impl Domain {
 
     /// Get a human-readable name for the domain.
     pub fn name(&self) -> &'static str {
-        match self {
-            Domain::Buffer => "buffer",
-            Domain::Contour => "contour",
-            Domain::Scalar => "scalar",
-            Domain::Vector => "vector",
-            Domain::Any => "any",
-        }
+        Self::NAMED
+            .iter()
+            .find_map(|(n, d)| (d == self).then_some(*n))
+            .expect("NAMED covers every Domain variant")
     }
 }
 

@@ -24,6 +24,12 @@ pub enum BorderMode {
     Reflect,
 }
 
+crate::naming::named_variants!(BorderMode {
+    "replicate" => Replicate,
+    "zero" => Zero,
+    "reflect" => Reflect,
+});
+
 /// Generic 2D convolution operation.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

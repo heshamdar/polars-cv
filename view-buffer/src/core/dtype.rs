@@ -19,6 +19,34 @@ pub enum DType {
     I64,
 }
 
+crate::naming::named_variants!(DType {
+    "u8" => U8,
+    "i8" => I8,
+    "u16" => U16,
+    "i16" => I16,
+    "u32" => U32,
+    "i32" => I32,
+    "u64" => U64,
+    "i64" => I64,
+    "f32" => F32,
+    "f64" => F64,
+});
+
+impl DType {
+    /// The canonical short name ("u8", "f32", …) of this dtype.
+    pub fn short_name(&self) -> &'static str {
+        Self::NAMED
+            .iter()
+            .find_map(|(n, d)| (d == self).then_some(*n))
+            .expect("NAMED covers every DType variant")
+    }
+
+    /// Parse a canonical short name back into a dtype.
+    pub fn from_short_name(s: &str) -> Option<Self> {
+        crate::naming::lookup(Self::NAMED, s)
+    }
+}
+
 /// Categories of data types that operations can accept as input.
 ///
 /// This enables operations to declare what types they can work with,

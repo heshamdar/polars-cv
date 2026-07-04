@@ -22,18 +22,25 @@ pub enum ColorSpace {
     Gray,
 }
 
+crate::naming::named_variants!(ColorSpace {
+    "rgb" => Rgb,
+    "bgr" => Bgr,
+    "hsv" => Hsv,
+    "lab" => Lab,
+    "ycbcr" => YCbCr,
+    "gray" => Gray,
+});
+
 impl ColorSpace {
-    /// Parse a color space from a string.
+    /// Additional parser-accepted spellings, not surfaced as canonical names.
+    pub const ALIASES: &'static [(&'static str, ColorSpace)] =
+        &[("grey", ColorSpace::Gray), ("grayscale", ColorSpace::Gray)];
+
+    /// Parse a color space from a string (case-insensitive; accepts aliases).
     pub fn from_str_name(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "rgb" => Some(Self::Rgb),
-            "bgr" => Some(Self::Bgr),
-            "hsv" => Some(Self::Hsv),
-            "lab" => Some(Self::Lab),
-            "ycbcr" => Some(Self::YCbCr),
-            "gray" | "grey" | "grayscale" => Some(Self::Gray),
-            _ => None,
-        }
+        let lower = s.to_lowercase();
+        crate::naming::lookup(Self::NAMED, &lower)
+            .or_else(|| crate::naming::lookup(Self::ALIASES, &lower))
     }
 
     /// Number of channels for this color space.

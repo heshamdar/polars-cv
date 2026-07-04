@@ -36,6 +36,20 @@ pub enum NormalizeMethod {
     },
 }
 
+impl NormalizeMethod {
+    /// Canonical Python-facing method names.
+    ///
+    /// `Preset` carries payload, so this enum cannot use the `named_variants!`
+    /// value table; the parser handles `preset` structurally (it needs the
+    /// `mean`/`std` parameters). The exhaustive match below still forces this
+    /// list to be revisited when a variant is added.
+    pub const NAMES: &'static [&'static str] = &["minmax", "zscore", "preset"];
+}
+
+const _: fn(&NormalizeMethod) = |m| match m {
+    NormalizeMethod::MinMax | NormalizeMethod::ZScore | NormalizeMethod::Preset { .. } => (),
+};
+
 /// Compute operations that process data element-wise or globally.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

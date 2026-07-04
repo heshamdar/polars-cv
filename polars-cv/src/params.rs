@@ -389,6 +389,159 @@ impl<'a> ParamCtx<'a> {
     }
 }
 
+/// Shared accessors for optional and enum-valued operation parameters.
+///
+/// These implement the **single parameter failure policy** for `resolve_op`:
+/// an *absent* optional parameter takes its documented default, while a
+/// parameter that is *present but invalid* — unknown enum string, wrong type,
+/// out-of-range value, or a per-row expression that fails to resolve — is
+/// always an error. Helpers never swallow a resolution error into a default
+/// (guarded by `execute::strict_param_tests`).
+pub mod get {
+    use super::{ParamCtx, ParamValue};
+    use polars::prelude::*;
+    use std::collections::HashMap;
+
+    type Params = HashMap<String, ParamValue>;
+
+    fn named(name: &str, e: PolarsError) -> PolarsError {
+        polars_err!(ComputeError: "parameter '{}': {}", name, e)
+    }
+
+    /// Optional boolean. Booleans are structural: only a literal
+    /// `true`/`false` is accepted — strings, numbers, and expressions error
+    /// instead of silently reading as `false`.
+    pub fn opt_bool(params: &Params, name: &str, default: bool) -> PolarsResult<bool> {
+        match params.get(name) {
+            None => Ok(default),
+            Some(ParamValue::Literal {
+                value: serde_json::Value::Bool(b),
+            }) => Ok(*b),
+            Some(other) => Err(polars_err!(ComputeError:
+                "parameter '{}' must be a boolean literal (true/false), got {:?}",
+                name, other
+            )),
+        }
+    }
+
+    /// Optional u32 with a default for absence.
+    pub fn opt_u32(
+        params: &Params,
+        name: &str,
+        default: u32,
+        row_idx: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<u32> {
+        params
+            .get(name)
+            .map(|p| p.resolve_u32(row_idx, ctx).map_err(|e| named(name, e)))
+            .transpose()
+            .map(|v| v.unwrap_or(default))
+    }
+
+    /// Optional usize where absence is meaningful (e.g. a reduction `axis`:
+    /// absent means "global"). Present-but-invalid still errors.
+    pub fn maybe_usize(
+        params: &Params,
+        name: &str,
+        row_idx: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<Option<usize>> {
+        params
+            .get(name)
+            .map(|p| p.resolve_usize(row_idx, ctx).map_err(|e| named(name, e)))
+            .transpose()
+    }
+
+    /// Optional f64 where absence is meaningful (e.g. `min_area`: absent
+    /// means "no filter"). Present-but-invalid still errors.
+    pub fn maybe_f64(
+        params: &Params,
+        name: &str,
+        row_idx: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<Option<f64>> {
+        params
+            .get(name)
+            .map(|p| p.resolve_f64(row_idx, ctx).map_err(|e| named(name, e)))
+            .transpose()
+    }
+
+    /// Optional f64 with a default for absence.
+    pub fn opt_f64(
+        params: &Params,
+        name: &str,
+        default: f64,
+        row_idx: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<f64> {
+        params
+            .get(name)
+            .map(|p| p.resolve_f64(row_idx, ctx).map_err(|e| named(name, e)))
+            .transpose()
+            .map(|v| v.unwrap_or(default))
+    }
+
+    /// Optional u8 with a default for absence; range-checked so 300 errors
+    /// instead of silently truncating.
+    pub fn opt_u8(
+        params: &Params,
+        name: &str,
+        default: u8,
+        row_idx: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<u8> {
+        match params.get(name) {
+            None => Ok(default),
+            Some(p) => {
+                let v = p.resolve_i64(row_idx, ctx).map_err(|e| named(name, e))?;
+                u8::try_from(v).map_err(|_| {
+                    polars_err!(ComputeError:
+                        "parameter '{}' must be in 0..=255, got {}", name, v)
+                })
+            }
+        }
+    }
+
+    /// Required enum-valued parameter, parsed against a canonical
+    /// `NAMED`-style table (plus parser-only aliases). Unknown values error
+    /// with the canonical names listed.
+    pub fn req_enum<T: Copy>(
+        params: &Params,
+        name: &str,
+        canonical: &[(&str, T)],
+        aliases: &[(&str, T)],
+    ) -> PolarsResult<T> {
+        let param = params
+            .get(name)
+            .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: {}", name))?;
+        let s = param.resolve_string().map_err(|e| named(name, e))?;
+        view_buffer::naming::lookup(canonical, s)
+            .or_else(|| view_buffer::naming::lookup(aliases, s))
+            .ok_or_else(|| {
+                polars_err!(ComputeError:
+                    "parameter '{}': unknown value '{}', expected one of {:?}",
+                    name, s, view_buffer::naming::names(canonical)
+                )
+            })
+    }
+
+    /// Optional enum-valued parameter with a default for absence.
+    pub fn opt_enum<T: Copy>(
+        params: &Params,
+        name: &str,
+        canonical: &[(&str, T)],
+        aliases: &[(&str, T)],
+        default: T,
+    ) -> PolarsResult<T> {
+        if params.contains_key(name) {
+            req_enum(params, name, canonical, aliases)
+        } else {
+            Ok(default)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -40,6 +40,19 @@ pub enum HistogramClosed {
     Right,
 }
 
+crate::naming::named_variants!(HistogramOutput {
+    "counts" => Counts,
+    "normalized" => Normalized,
+    "quantized" => Quantized,
+    "edges" => Edges,
+    "buckets" => Buckets,
+});
+
+crate::naming::named_variants!(HistogramClosed {
+    "left" => Left,
+    "right" => Right,
+});
+
 /// Histogram and quantization operations.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
