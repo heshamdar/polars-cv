@@ -1700,6 +1700,44 @@ mod tests {
         "column_bindings": {"n0": 0}
     }"#;
 
+    /// Pin the live decode path for `blob` and `raw` sources: both are decoded
+    /// by the zero-copy branch in `run_row_nodes` (`decode_binary_zero_copy`),
+    /// NOT by `execute::decode_source` — its blob/raw arms are deliberately
+    /// absent. This end-to-end test must keep passing when those dead arms are
+    /// deleted.
+    #[test]
+    fn blob_and_raw_sources_decode_via_zero_copy() {
+        // blob: f32 buffer round-trips through source(blob) → relu → sink(blob).
+        let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32, -2.0, 3.0], vec![3]);
+        let input = Series::new("b".into(), &[buf.to_blob()]);
+        let compiled = CompiledGraph::compile(SIMPLE_GRAPH, &[]).unwrap();
+        let out = compiled.execute(&[input]).unwrap();
+        let out_bytes = out.binary().unwrap().get(0).unwrap();
+        let decoded = ViewBuffer::from_blob(out_bytes).unwrap();
+        assert_eq!(decoded.as_slice::<f32>(), &[1.0, 0.0, 3.0]);
+
+        // raw: u8 bytes with an explicit dtype decode as a 1-D u8 buffer
+        // (relu then promotes to f32 per the scalar-op dtype contract).
+        const RAW_GRAPH: &str = r#"{
+            "nodes": {
+                "n0": {
+                    "source": {"format": "raw", "dtype": "u8"},
+                    "ops": [{"op": "relu"}]
+                }
+            },
+            "outputs": {
+                "_output": {"node": "n0", "sink": {"format": "blob"}}
+            },
+            "column_bindings": {"n0": 0}
+        }"#;
+        let input = Series::new("r".into(), &[vec![1u8, 2, 3]]);
+        let compiled = CompiledGraph::compile(RAW_GRAPH, &[]).unwrap();
+        let out = compiled.execute(&[input]).unwrap();
+        let out_bytes = out.binary().unwrap().get(0).unwrap();
+        let decoded = ViewBuffer::from_blob(out_bytes).unwrap();
+        assert_eq!(decoded.as_slice::<f32>(), &[1.0, 2.0, 3.0]);
+    }
+
     #[test]
     fn cache_hit_returns_same_compilation() {
         let names: Vec<String> = vec![];
