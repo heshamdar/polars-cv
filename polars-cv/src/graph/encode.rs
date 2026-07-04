@@ -261,22 +261,6 @@ fn build_nested_array_value(data: &[f64], shape: &[usize]) -> PolarsResult<AnyVa
         Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &inner_values, &inner_dtype, true)?;
     Ok(AnyValue::Array(series, outer_dim))
 }
-/// Extract buffer data as Vec<f64> with type dispatch.
-#[allow(dead_code)]
-fn extract_buffer_as_f64(buf: &view_buffer::ViewBuffer) -> Vec<f64> {
-    match buf.dtype() {
-        view_buffer::DType::U8 => buf.as_slice::<u8>().iter().map(|&v| v as f64).collect(),
-        view_buffer::DType::I8 => buf.as_slice::<i8>().iter().map(|&v| v as f64).collect(),
-        view_buffer::DType::U16 => buf.as_slice::<u16>().iter().map(|&v| v as f64).collect(),
-        view_buffer::DType::I16 => buf.as_slice::<i16>().iter().map(|&v| v as f64).collect(),
-        view_buffer::DType::U32 => buf.as_slice::<u32>().iter().map(|&v| v as f64).collect(),
-        view_buffer::DType::I32 => buf.as_slice::<i32>().iter().map(|&v| v as f64).collect(),
-        view_buffer::DType::U64 => buf.as_slice::<u64>().iter().map(|&v| v as f64).collect(),
-        view_buffer::DType::I64 => buf.as_slice::<i64>().iter().map(|&v| v as f64).collect(),
-        view_buffer::DType::F32 => buf.as_slice::<f32>().iter().map(|&v| v as f64).collect(),
-        view_buffer::DType::F64 => buf.as_slice::<f64>().to_vec(),
-    }
-}
 /// Helper type for list row data: (TypedBufferData, shape)
 pub(crate) type TypedListRow = Option<(TypedBufferData, Vec<usize>)>;
 macro_rules! impl_typed_list_builder {

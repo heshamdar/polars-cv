@@ -209,12 +209,9 @@ fn resolve_contour_dimensions(
     source: &SourceSpec,
     ctx: &ParamCtx,
 ) -> PolarsResult<(u32, u32)> {
-    // Check for shape_pipeline first (not yet implemented - just error)
-    if source.shape_pipeline.is_some() {
-        return Err(
-            polars_err!(ComputeError: "Shape inference from pipeline not yet implemented. Use explicit width/height."),
-        );
-    }
+    // shape_pipeline sources never reach this function: the graph executor
+    // resolves the referenced node's dimensions and calls
+    // `decode_contour_source_with_dims` instead (see compiled.rs).
 
     // Get explicit width and height
     let width = source
@@ -264,7 +261,13 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
     }
 }
 
-/// Decode the source bytes into a ViewBuffer.
+/// Decode image-format source bytes into a ViewBuffer.
+///
+/// Only `image_bytes` is handled here (`file_path` sources are rewritten to
+/// `image_bytes` after the file is read). `blob`/`raw` sources never reach
+/// this function: the graph executor decodes them zero-copy via
+/// `graph::decode::decode_binary_zero_copy` (pinned by the
+/// `blob_and_raw_sources_decode_via_zero_copy` test).
 pub fn decode_source(bytes: &[u8], source: &SourceSpec) -> PolarsResult<ViewBuffer> {
     match source.format.as_str() {
         "image_bytes" => {
@@ -288,46 +291,19 @@ pub fn decode_source(bytes: &[u8], source: &SourceSpec) -> PolarsResult<ViewBuff
             }
             Ok(buf)
         }
-        "blob" => {
-            // Decode from VIEW protocol
-            ViewBuffer::from_blob(bytes)
-                .map_err(|e| polars_err!(ComputeError: "Failed to decode blob: {:?}", e))
-        }
-        "raw" => {
-            // Raw bytes - need dtype from source spec
-            let dtype_str = source
-                .dtype
-                .as_ref()
-                .ok_or_else(|| polars_err!(ComputeError: "Raw source format requires dtype"))?;
-            let dtype = parse_dtype(dtype_str)?;
-
-            // For raw format, we need shape from shape_hints
-            // For now, treat as 1D array
-            let element_size = dtype.size_of();
-            let num_elements = bytes.len() / element_size;
-
-            Ok(ViewBuffer::from_raw_bytes(
-                bytes.to_vec(),
-                vec![num_elements],
-                dtype,
-            ))
-        }
         other => Err(polars_err!(ComputeError: "Unknown source format: {}", other)),
     }
 }
 
-/// Encode the result buffer to the sink format.
+/// Encode the result buffer to a binary sink format.
 ///
-/// Note: numpy/torch sinks are now handled by the output module for zero-copy support.
-/// This function handles png, jpeg, blob, and raw binary formats.
+/// Handles the byte-producing sinks only: `png`/`jpeg`/`webp`/`tiff`/`blob`.
+/// The other sink formats never reach this function — `numpy`/`torch` are
+/// encoded as zero-copy structs (`crate::output`) and `list`/`array` as typed
+/// nested values, both directly in `graph::encode::encode_node_output` (the
+/// sole caller).
 pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>> {
     match sink.format.as_str() {
-        "numpy" | "torch" => {
-            // numpy/torch now use struct-based output via crate::output module
-            // This path should not be reached in normal operation
-            Err(polars_err!(ComputeError:
-                "numpy/torch sinks should use output module for zero-copy struct encoding"))
-        }
         "blob" => {
             // VIEW protocol
             Ok(buffer.to_blob())
@@ -343,27 +319,6 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>
             .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e)),
         "tiff" => ImageAdapter::encode_tiff(buffer)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode TIFF: {:?}", e)),
-        "array" | "list" => {
-            // For array/list, we return raw bytes that Polars will interpret
-            // The actual type conversion happens in the output dtype
-            //
-            // Optimization: Check if already contiguous to avoid unnecessary copy
-            let num_elements: usize = buffer.shape().iter().product();
-            let data_len = num_elements * buffer.dtype().size_of();
-
-            if buffer.layout_facts().is_contiguous() {
-                // Already contiguous - avoid copy
-                let data_slice =
-                    unsafe { std::slice::from_raw_parts(buffer.as_ptr::<u8>(), data_len) };
-                Ok(data_slice.to_vec())
-            } else {
-                // Need to materialize to contiguous layout
-                let contig = buffer.to_contiguous();
-                let data_slice =
-                    unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), data_len) };
-                Ok(data_slice.to_vec())
-            }
-        }
         other => Err(polars_err!(ComputeError: "Unknown sink format: {}", other)),
     }
 }
@@ -1537,6 +1492,52 @@ mod known_ops_tests {
         let err = resolve_op(&op("definitely_not_a_real_op"), 0, &ctx)
             .expect_err("bogus op must not resolve");
         assert!(err.to_string().contains("Unknown operation"));
+    }
+
+    /// Reverse guard: every top-level match arm in `resolve_op` must be listed
+    /// in KNOWN_OPS, so a new arm cannot silently bypass the registry (the
+    /// forward direction is covered by `known_ops_all_resolve`).
+    ///
+    /// The scan reads this file's source between the `resolve_op` header and
+    /// its "Unknown operation" catch-all. Top-level arm patterns sit at one
+    /// match-nesting level (8-space indent under rustfmt, which CI enforces);
+    /// deeper string arms (e.g. normalize's method match) are excluded by the
+    /// indent check.
+    #[test]
+    fn resolve_op_arms_are_all_known_ops() {
+        let src = include_str!("execute.rs");
+        let start = src.find("pub fn resolve_op").expect("resolve_op not found");
+        let end = start
+            + src[start..]
+                .find("Unknown operation")
+                .expect("resolve_op catch-all not found");
+        let mut arm_names: Vec<&str> = Vec::new();
+        for line in src[start..end].lines() {
+            let trimmed = line.trim_start();
+            let indent = line.len() - trimmed.len();
+            if indent != 8 || !trimmed.starts_with('"') {
+                continue;
+            }
+            // Arm patterns look like `"name" => {` or `"a" | "b" => ...`;
+            // collect every string literal before the `=>`.
+            let pattern = trimmed.split("=>").next().unwrap_or(trimmed);
+            for (i, piece) in pattern.split('"').enumerate() {
+                if i % 2 == 1 {
+                    arm_names.push(piece);
+                }
+            }
+        }
+        assert!(
+            arm_names.len() >= 70,
+            "arm scan found only {} arms — the source scan has rotted, fix the test",
+            arm_names.len()
+        );
+        for name in &arm_names {
+            assert!(
+                KNOWN_OPS.contains(name),
+                "resolve_op has an arm for '{name}' that is missing from KNOWN_OPS"
+            );
+        }
     }
 
     /// KNOWN_OPS must be sorted and unique so the registry is easy to scan and
