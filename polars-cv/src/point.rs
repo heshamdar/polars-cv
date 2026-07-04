@@ -313,151 +313,6 @@ fn point_manhattan_distance(inputs: &[Series]) -> PolarsResult<Series> {
 // Point Plugin Functions - Point-to-Contour Operations
 // ============================================================================
 
-/// Parse a contour from a Polars value (re-use logic from contour module).
-fn parse_contour_for_point(
-    value: &AnyValue,
-) -> PolarsResult<view_buffer::geometry::contour::Contour> {
-    use polars_arrow::array::ListArray;
-
-    match value {
-        AnyValue::StructOwned(boxed) => {
-            let (values, fields) = boxed.as_ref();
-
-            for (i, field) in fields.iter().enumerate() {
-                if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
-                    if let Some(AnyValue::List(series)) = values.get(i) {
-                        let points = extract_points_from_series(series)?;
-                        return Ok(view_buffer::geometry::contour::Contour::new(points));
-                    }
-                }
-            }
-
-            // Try first list field
-            for av in values.iter() {
-                if let AnyValue::List(series) = av {
-                    let points = extract_points_from_series(series)?;
-                    return Ok(view_buffer::geometry::contour::Contour::new(points));
-                }
-            }
-
-            Err(polars_err!(ComputeError: "Contour struct missing exterior/points field"))
-        }
-        AnyValue::Struct(row_idx, struct_array, fields) => {
-            // Handle the non-owned struct variant
-            for (i, field) in fields.iter().enumerate() {
-                if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
-                    let column = struct_array.values()[i].clone();
-                    // Get the value at the row index from the list array
-                    let list_arr = column.as_any().downcast_ref::<ListArray<i64>>();
-                    if let Some(list_arr) = list_arr {
-                        let offsets = list_arr.offsets();
-                        let start = offsets[*row_idx] as usize;
-                        let end = offsets[*row_idx + 1] as usize;
-                        let values_arr = list_arr.values();
-
-                        // The values should be a struct array of points
-                        if let Some(struct_arr) = values_arr
-                            .as_any()
-                            .downcast_ref::<polars_arrow::array::StructArray>(
-                        ) {
-                            let points = extract_points_from_arrow_struct(struct_arr, start, end)?;
-                            return Ok(view_buffer::geometry::contour::Contour::new(points));
-                        }
-                    }
-                }
-            }
-            Err(polars_err!(ComputeError: "Contour struct missing exterior/points field"))
-        }
-        AnyValue::List(series) => {
-            let points = extract_points_from_series(series)?;
-            Ok(view_buffer::geometry::contour::Contour::new(points))
-        }
-        _ => Err(polars_err!(ComputeError: "Expected Struct or List for contour")),
-    }
-}
-
-/// Extract points from an Arrow StructArray slice.
-fn extract_points_from_arrow_struct(
-    struct_arr: &polars_arrow::array::StructArray,
-    start: usize,
-    end: usize,
-) -> PolarsResult<Vec<Point>> {
-    let mut points = Vec::with_capacity(end - start);
-    let values = struct_arr.values();
-
-    if values.len() < 2 {
-        return Err(polars_err!(ComputeError: "Point struct must have x and y fields"));
-    }
-
-    let x_arr = values[0].as_any().downcast_ref::<PrimitiveArray<f64>>();
-    let y_arr = values[1].as_any().downcast_ref::<PrimitiveArray<f64>>();
-
-    match (x_arr, y_arr) {
-        (Some(x), Some(y)) => {
-            for i in start..end {
-                let x_val = x.get(i).unwrap_or(0.0);
-                let y_val = y.get(i).unwrap_or(0.0);
-                points.push(Point::new(x_val, y_val));
-            }
-            Ok(points)
-        }
-        _ => Err(polars_err!(ComputeError: "Point x/y fields must be Float64")),
-    }
-}
-
-/// Extract points from a Series of point structs.
-fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
-    let len = series.len();
-    let mut points = Vec::with_capacity(len);
-
-    if let Ok(struct_ca) = series.struct_() {
-        let x_col = struct_ca
-            .field_by_name("x")
-            .or_else(|_| struct_ca.field_by_name("X"))
-            .map_err(|_| polars_err!(ComputeError: "Point struct missing 'x' field"))?;
-        let y_col = struct_ca
-            .field_by_name("y")
-            .or_else(|_| struct_ca.field_by_name("Y"))
-            .map_err(|_| polars_err!(ComputeError: "Point struct missing 'y' field"))?;
-
-        let x_ca = x_col
-            .f64()
-            .map_err(|_| polars_err!(ComputeError: "x field must be f64"))?;
-        let y_ca = y_col
-            .f64()
-            .map_err(|_| polars_err!(ComputeError: "y field must be f64"))?;
-
-        for i in 0..len {
-            let x = x_ca.get(i).unwrap_or(0.0);
-            let y = y_ca.get(i).unwrap_or(0.0);
-            points.push(Point::new(x, y));
-        }
-    } else {
-        for i in 0..len {
-            let value = series.get(i)?;
-            match value {
-                AnyValue::StructOwned(boxed) => {
-                    let (values, _) = boxed.as_ref();
-                    let x = values
-                        .first()
-                        .and_then(|v| v.try_extract::<f64>().ok())
-                        .unwrap_or(0.0);
-                    let y = values
-                        .get(1)
-                        .and_then(|v| v.try_extract::<f64>().ok())
-                        .unwrap_or(0.0);
-                    points.push(Point::new(x, y));
-                }
-                _ => {
-                    return Err(polars_err!(ComputeError: "Expected Struct for point"));
-                }
-            }
-        }
-    }
-
-    Ok(points)
-}
-
 /// Compute minimum distance from point to contour boundary.
 #[polars_expr(output_type=Float64)]
 fn point_distance_to_contour(inputs: &[Series]) -> PolarsResult<Series> {
@@ -474,7 +329,7 @@ fn point_distance_to_contour(inputs: &[Series]) -> PolarsResult<Series> {
             results.push(None);
         } else {
             let (px, py) = parse_point(&point_value)?;
-            let contour = parse_contour_for_point(&contour_value)?;
+            let contour = crate::contour::parse_contour(&contour_value)?;
             let point = Point::new(px, py);
             let dist = view_buffer::geometry::measures::distance_to_contour(&point, &contour);
             results.push(Some(dist));
@@ -504,7 +359,7 @@ fn point_signed_distance_to_contour(inputs: &[Series]) -> PolarsResult<Series> {
             results.push(None);
         } else {
             let (px, py) = parse_point(&point_value)?;
-            let contour = parse_contour_for_point(&contour_value)?;
+            let contour = crate::contour::parse_contour(&contour_value)?;
             let point = Point::new(px, py);
             let dist = view_buffer::geometry::measures::distance_to_contour(&point, &contour);
 
@@ -540,7 +395,7 @@ fn point_nearest_on_contour(inputs: &[Series]) -> PolarsResult<Series> {
             y_results.push(None);
         } else {
             let (px, py) = parse_point(&point_value)?;
-            let contour = parse_contour_for_point(&contour_value)?;
+            let contour = crate::contour::parse_contour(&contour_value)?;
             let point = Point::new(px, py);
 
             if let Some(nearest) =

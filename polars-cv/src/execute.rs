@@ -7,9 +7,9 @@ use polars::prelude::*;
 use std::collections::HashMap;
 
 use view_buffer::{
-    geometry::{rasterize::rasterize, Contour, Point},
-    AffineParams, BinaryOp, ComputeOp, DType, FilterType, GeometryOp, ImageAdapter, ImageOp,
-    ImageOpKind, InterpolationType, NormalizeMethod, ViewBuffer, ViewDto, ViewOp,
+    geometry::rasterize::rasterize, AffineParams, BinaryOp, ComputeOp, DType, FilterType,
+    GeometryOp, ImageAdapter, ImageOp, ImageOpKind, InterpolationType, NormalizeMethod, ViewBuffer,
+    ViewDto, ViewOp,
 };
 
 use crate::params::{get, ParamCtx, ParamValue};
@@ -79,8 +79,8 @@ pub fn decode_contour_source(
     source: &SourceSpec,
     ctx: &ParamCtx,
 ) -> PolarsResult<ViewBuffer> {
-    // Parse the contour from the struct
-    let contour = parse_contour_from_anyvalue(value)?;
+    // Parse via the plugin's single contour parser (contour.rs).
+    let contour = crate::contour::parse_contour(value)?;
 
     // Resolve dimensions
     let (width, height) = resolve_contour_dimensions(row_idx, source, ctx)?;
@@ -106,158 +106,13 @@ pub fn decode_contour_source_with_dims(
     fill_value: u8,
     background: u8,
 ) -> PolarsResult<ViewBuffer> {
-    // Parse the contour from the struct
-    let contour = parse_contour_from_anyvalue(value)?;
+    // Parse via the plugin's single contour parser (contour.rs).
+    let contour = crate::contour::parse_contour(value)?;
 
     // Rasterize the contour to a ViewBuffer
     Ok(rasterize(
         &contour, width, height, fill_value, background, false, // anti_alias not yet supported
     ))
-}
-
-/// Parse a contour from an AnyValue (struct or list).
-fn parse_contour_from_anyvalue(value: &AnyValue) -> PolarsResult<Contour> {
-    match value {
-        AnyValue::StructOwned(boxed) => {
-            let (values, fields) = boxed.as_ref();
-
-            // Find the exterior field
-            for (i, field) in fields.iter().enumerate() {
-                if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
-                    if let Some(AnyValue::List(series)) = values.get(i) {
-                        let points = extract_points_from_series(series)?;
-                        // Look for holes field
-                        let holes = extract_holes_from_struct(values, fields)?;
-                        return Ok(Contour::with_holes(points, holes));
-                    }
-                }
-            }
-
-            // If no named field found, try to use the first list field
-            for av in values.iter() {
-                if let AnyValue::List(series) = av {
-                    let points = extract_points_from_series(series)?;
-                    return Ok(Contour::new(points));
-                }
-            }
-
-            Err(polars_err!(ComputeError: "Could not find contour points in struct"))
-        }
-        AnyValue::Struct(idx, array, fields) => {
-            // Handle struct array reference - convert to owned for easier handling
-            let owned = value.clone().into_static();
-            if let AnyValue::StructOwned(boxed) = owned {
-                let (values, flds) = boxed.as_ref();
-                for (i, field) in flds.iter().enumerate() {
-                    if field.name().as_str() == "exterior" || field.name().as_str() == "points" {
-                        if let Some(AnyValue::List(series)) = values.get(i) {
-                            let points = extract_points_from_series(series)?;
-                            let holes = extract_holes_from_struct(values, flds)?;
-                            return Ok(Contour::with_holes(points, holes));
-                        }
-                    }
-                }
-            }
-            // Suppress unused variable warnings
-            let _ = (idx, array, fields);
-            Err(polars_err!(ComputeError: "Could not extract contour from struct array"))
-        }
-        _ => Err(polars_err!(ComputeError: "Expected Struct for contour, got {:?}", value.dtype())),
-    }
-}
-
-/// Extract holes from a struct's holes field.
-fn extract_holes_from_struct(
-    values: &[AnyValue],
-    fields: &[Field],
-) -> PolarsResult<Vec<Vec<Point>>> {
-    for (i, field) in fields.iter().enumerate() {
-        if field.name().as_str() == "holes" {
-            if let Some(AnyValue::List(holes_series)) = values.get(i) {
-                let mut holes = Vec::new();
-                for j in 0..holes_series.len() {
-                    if let Ok(AnyValue::List(hole_points_series)) = holes_series.get(j) {
-                        let points = extract_points_from_series(&hole_points_series)?;
-                        if !points.is_empty() {
-                            holes.push(points);
-                        }
-                    }
-                }
-                return Ok(holes);
-            }
-        }
-    }
-    Ok(Vec::new())
-}
-
-/// Extract points from a Series containing point structs.
-fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
-    let mut points = Vec::new();
-
-    for i in 0..series.len() {
-        let value = series.get(i)?;
-        match value {
-            AnyValue::StructOwned(boxed) => {
-                let (vals, flds) = boxed.as_ref();
-                let (mut x, mut y) = (0.0, 0.0);
-                for (j, fld) in flds.iter().enumerate() {
-                    match fld.name().as_str() {
-                        "x" => x = extract_f64(&vals[j])?,
-                        "y" => y = extract_f64(&vals[j])?,
-                        _ => {}
-                    }
-                }
-                points.push(Point::new(x, y));
-            }
-            AnyValue::Struct(idx, array, fields) => {
-                // Convert to owned for easier handling
-                let owned = value.clone().into_static();
-                if let AnyValue::StructOwned(boxed) = owned {
-                    let (vals, flds) = boxed.as_ref();
-                    let (mut x, mut y) = (0.0, 0.0);
-                    for (j, fld) in flds.iter().enumerate() {
-                        match fld.name().as_str() {
-                            "x" => x = extract_f64(&vals[j])?,
-                            "y" => y = extract_f64(&vals[j])?,
-                            _ => {}
-                        }
-                    }
-                    points.push(Point::new(x, y));
-                }
-                // Suppress unused variable warnings
-                let _ = (idx, array, fields);
-            }
-            AnyValue::Null => {
-                // Skip null points
-            }
-            _ => {
-                return Err(
-                    polars_err!(ComputeError: "Expected struct for point, got {:?}", value.dtype()),
-                );
-            }
-        }
-    }
-
-    Ok(points)
-}
-
-/// Extract f64 from various numeric AnyValue types.
-fn extract_f64(value: &AnyValue) -> PolarsResult<f64> {
-    match value {
-        AnyValue::Float64(v) => Ok(*v),
-        AnyValue::Float32(v) => Ok(*v as f64),
-        AnyValue::Int64(v) => Ok(*v as f64),
-        AnyValue::Int32(v) => Ok(*v as f64),
-        AnyValue::Int16(v) => Ok(*v as f64),
-        AnyValue::Int8(v) => Ok(*v as f64),
-        AnyValue::UInt64(v) => Ok(*v as f64),
-        AnyValue::UInt32(v) => Ok(*v as f64),
-        AnyValue::UInt16(v) => Ok(*v as f64),
-        AnyValue::UInt8(v) => Ok(*v as f64),
-        _ => {
-            Err(polars_err!(ComputeError: "Expected numeric value for coordinate, got {:?}", value))
-        }
-    }
 }
 
 /// Resolve contour dimensions from pipeline source spec.
