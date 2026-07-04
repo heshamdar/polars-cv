@@ -143,6 +143,19 @@ pub enum PadPosition {
     BottomRight,
 }
 
+crate::naming::named_variants!(PadMode {
+    "constant" => Constant,
+    "edge" => Edge,
+    "reflect" => Reflect,
+    "symmetric" => Symmetric,
+});
+
+crate::naming::named_variants!(PadPosition {
+    "center" => Center,
+    "top-left" => TopLeft,
+    "bottom-right" => BottomRight,
+});
+
 impl ViewDto {
     /// Get the input domain this operation expects.
     ///

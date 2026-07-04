@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 /// Operations have type-dependent semantics:
 /// - For `u8`/`u16`: Image-processing semantics (saturating, normalized)
 /// - For `f32`/`f64`: Standard numerical semantics
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum BinaryOp {
     /// Element-wise addition.

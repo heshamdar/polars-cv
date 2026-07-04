@@ -694,22 +694,13 @@ impl CompiledGraph {
                                 }
                                 let height = dims[0] as u32;
                                 let width = dims[1] as u32;
-                                let fill_value = spec
-                                    .params
-                                    .get("fill_value")
-                                    .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(255) as u8)
-                                    .unwrap_or(255);
-                                let background = spec
-                                    .params
-                                    .get("background")
-                                    .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(0) as u8)
-                                    .unwrap_or(0);
-                                let anti_alias = matches!(
-                                    spec.params.get("anti_alias"),
-                                    Some(ParamValue::Literal {
-                                        value: serde_json::Value::Bool(true)
-                                    })
-                                );
+                                let (fill_value, background, anti_alias) =
+                                    crate::execute::resolve_rasterize_style(
+                                        &spec.params,
+                                        row_idx,
+                                        ctx,
+                                    )
+                                    .map_err(|e| e.to_string())?;
                                 let geo_op = view_buffer::GeometryOp::Rasterize {
                                     width,
                                     height,
@@ -843,7 +834,7 @@ impl CompiledGraph {
                                     kind: ImageOpKind::Resize {
                                         width: new_width,
                                         height: new_height,
-                                        filter: filter.clone(),
+                                        filter: *filter,
                                     },
                                 }));
                             }
@@ -865,7 +856,7 @@ impl CompiledGraph {
                                     kind: ImageOpKind::Resize {
                                         width: new_width,
                                         height: *height,
-                                        filter: filter.clone(),
+                                        filter: *filter,
                                     },
                                 }));
                             }
@@ -887,7 +878,7 @@ impl CompiledGraph {
                                     kind: ImageOpKind::Resize {
                                         width: *width,
                                         height: new_height,
-                                        filter: filter.clone(),
+                                        filter: *filter,
                                     },
                                 }));
                             }
@@ -910,7 +901,7 @@ impl CompiledGraph {
                                     kind: ImageOpKind::Resize {
                                         width: new_width,
                                         height: new_height,
-                                        filter: filter.clone(),
+                                        filter: *filter,
                                     },
                                 }));
                             }
@@ -933,7 +924,7 @@ impl CompiledGraph {
                                     kind: ImageOpKind::Resize {
                                         width: new_width,
                                         height: new_height,
-                                        filter: filter.clone(),
+                                        filter: *filter,
                                     },
                                 }));
                             }

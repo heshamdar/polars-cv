@@ -37,21 +37,10 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 /// Canonical short name for a view-buffer `DType`.
 ///
-/// Matches the values of the Python `DType` enum so the two vocabularies line up.
+/// Delegates to `DType::NAMED` — the same table the Python `DType` enum
+/// mirrors — so the two vocabularies line up by construction.
 fn dtype_short_name(dt: view_buffer::DType) -> &'static str {
-    use view_buffer::DType;
-    match dt {
-        DType::U8 => "u8",
-        DType::I8 => "i8",
-        DType::U16 => "u16",
-        DType::I16 => "i16",
-        DType::U32 => "u32",
-        DType::I32 => "i32",
-        DType::U64 => "u64",
-        DType::I64 => "i64",
-        DType::F32 => "f32",
-        DType::F64 => "f64",
-    }
+    dt.short_name()
 }
 
 /// Parse a short dtype name back into a view-buffer `DType`.
@@ -60,24 +49,8 @@ fn dtype_short_name(dt: view_buffer::DType) -> &'static str {
 /// dtype strings into the `DType` the canonical [`OutputDTypeRule::resolve`]
 /// authority operates on.
 fn parse_dtype(s: &str) -> PyResult<view_buffer::DType> {
-    use view_buffer::DType;
-    Ok(match s {
-        "u8" => DType::U8,
-        "i8" => DType::I8,
-        "u16" => DType::U16,
-        "i16" => DType::I16,
-        "u32" => DType::U32,
-        "i32" => DType::I32,
-        "u64" => DType::U64,
-        "i64" => DType::I64,
-        "f32" => DType::F32,
-        "f64" => DType::F64,
-        other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "unknown dtype {other:?}"
-            )))
-        }
-    })
+    view_buffer::DType::from_short_name(s)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown dtype {s:?}")))
 }
 
 /// Canonical string for an output-dtype rule.
@@ -212,28 +185,11 @@ fn op_output_dtype(op_json: &str, input_dtype: &str) -> PyResult<String> {
 
 /// Map a Python-facing binary op name to its view-buffer `BinaryOp`.
 ///
-/// These are the same op strings the `Pipeline` emits (and `resolve_op`
-/// consumes); kept here so the planner's two-input dtype query does not need a
-/// full serialized op spec.
+/// Reads `execute::BINARY_OPS` — the same table `resolve_op` dispatches on —
+/// so the planner's two-input dtype query and the executor cannot drift.
 fn parse_binary_op(name: &str) -> PyResult<view_buffer::BinaryOp> {
-    use view_buffer::BinaryOp as B;
-    Ok(match name {
-        "add" => B::Add,
-        "subtract" => B::Subtract,
-        "multiply" => B::Multiply,
-        "blend" => B::Blend,
-        "divide" => B::Divide,
-        "ratio" => B::Ratio,
-        "maximum" => B::Maximum,
-        "minimum" => B::Minimum,
-        "bitwise_and" => B::BitwiseAnd,
-        "bitwise_or" => B::BitwiseOr,
-        "bitwise_xor" => B::BitwiseXor,
-        other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "unknown binary op {other:?}"
-            )))
-        }
+    view_buffer::naming::lookup(crate::execute::BINARY_OPS, name).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!("unknown binary op {name:?}"))
     })
 }
 
@@ -277,176 +233,48 @@ fn out_dtype_override(op_json: &str) -> PyResult<Option<view_buffer::DType>> {
 
 /// Return the string variants of a Rust enum, for Python<->Rust parity checks.
 ///
-/// Supports the enums that have a single canonical Rust definition the Python
-/// user-facing enum must mirror. `DType` and `Domain` are sourced from
-/// view-buffer (their `dtype_short_name` / `Domain::name`). Format enums are
-/// intentionally not exposed here: view-buffer's `SourceFormat`/`SinkFormat`
-/// use a different vocabulary than the graph's string formats, a divergence
-/// slated for consolidation rather than enforcement.
+/// Every enum's names come from its canonical `NAMED` table in view-buffer
+/// (see `view_buffer::naming`) — the same table the executor's parameter
+/// parser consumes — so the names surfaced to Python and the names the
+/// executor accepts cannot drift. Format enums are intentionally not exposed
+/// here: view-buffer's `SourceFormat`/`SinkFormat` use a different vocabulary
+/// than the graph's string formats, a divergence slated for consolidation
+/// rather than enforcement.
 #[pyfunction]
 fn enum_variants(name: &str) -> PyResult<Vec<String>> {
+    use view_buffer::geometry::ops::{ApproxMethod, ExtractMode};
+    use view_buffer::naming::names;
+    use view_buffer::ops::dto::{PadMode, PadPosition};
+    use view_buffer::ops::filter::BorderMode;
+    use view_buffer::ops::histogram::HistogramClosed;
     use view_buffer::ops::Domain;
-    use view_buffer::DType;
-    let variants: Vec<String> = match name {
-        "DType" => [
-            DType::U8,
-            DType::I8,
-            DType::U16,
-            DType::I16,
-            DType::U32,
-            DType::I32,
-            DType::U64,
-            DType::I64,
-            DType::F32,
-            DType::F64,
-        ]
-        .iter()
-        .map(|d| dtype_short_name(*d).to_string())
-        .collect(),
-        "Domain" => [
-            Domain::Buffer,
-            Domain::Contour,
-            Domain::Scalar,
-            Domain::Vector,
-            Domain::Any,
-        ]
-        .iter()
-        .map(|d| d.name().to_string())
-        .collect(),
-        // User-facing API enums. Each maps its variants through an exhaustive
-        // `match`, so adding a variant to the view-buffer enum is a compile error
-        // here until the canonical string is supplied — the Rust enum is the
-        // authority and the Python parity tests assert the surfaced set matches.
-        "NormalizeMethod" => {
-            use view_buffer::ops::NormalizeMethod as M;
-            [
-                M::MinMax,
-                M::ZScore,
-                M::Preset {
-                    mean: vec![],
-                    std: vec![],
-                },
-            ]
-            .iter()
-            .map(|m| {
-                match m {
-                    M::MinMax => "minmax",
-                    M::ZScore => "zscore",
-                    M::Preset { .. } => "preset",
-                }
-                .to_string()
-            })
-            .collect()
-        }
-        "ColorSpace" => {
-            use view_buffer::ops::ColorSpace as C;
-            [C::Rgb, C::Bgr, C::Hsv, C::Lab, C::YCbCr, C::Gray]
-                .iter()
-                .map(|c| {
-                    match c {
-                        C::Rgb => "rgb",
-                        C::Bgr => "bgr",
-                        C::Hsv => "hsv",
-                        C::Lab => "lab",
-                        C::YCbCr => "ycbcr",
-                        C::Gray => "gray",
-                    }
-                    .to_string()
-                })
-                .collect()
-        }
-        "HashAlgorithm" => {
-            use view_buffer::ops::HashAlgorithm as H;
-            [H::Average, H::Difference, H::Perceptual, H::Blockhash]
-                .iter()
-                .map(|h| {
-                    match h {
-                        H::Average => "average",
-                        H::Difference => "difference",
-                        H::Perceptual => "perceptual",
-                        H::Blockhash => "blockhash",
-                    }
-                    .to_string()
-                })
-                .collect()
-        }
-        "HistogramOutput" => {
-            use view_buffer::ops::HistogramOutput as H;
-            [H::Counts, H::Normalized, H::Quantized, H::Edges, H::Buckets]
-                .iter()
-                .map(|h| {
-                    match h {
-                        H::Counts => "counts",
-                        H::Normalized => "normalized",
-                        H::Quantized => "quantized",
-                        H::Edges => "edges",
-                        H::Buckets => "buckets",
-                    }
-                    .to_string()
-                })
-                .collect()
-        }
-        "PadMode" => {
-            use view_buffer::ops::dto::PadMode as P;
-            [P::Constant, P::Edge, P::Reflect, P::Symmetric]
-                .iter()
-                .map(|p| {
-                    match p {
-                        P::Constant => "constant",
-                        P::Edge => "edge",
-                        P::Reflect => "reflect",
-                        P::Symmetric => "symmetric",
-                    }
-                    .to_string()
-                })
-                .collect()
-        }
-        "PadPosition" => {
-            use view_buffer::ops::dto::PadPosition as P;
-            [P::Center, P::TopLeft, P::BottomRight]
-                .iter()
-                .map(|p| {
-                    match p {
-                        P::Center => "center",
-                        P::TopLeft => "top-left",
-                        P::BottomRight => "bottom-right",
-                    }
-                    .to_string()
-                })
-                .collect()
-        }
-        // FilterType: Rust's `Triangle` is surfaced as "bilinear" (its API name).
-        // Python deliberately exposes only a subset (nearest/bilinear/lanczos3);
-        // the parity test asserts Python ⊆ this set, not equality.
-        "FilterType" => {
-            use view_buffer::ops::FilterType as F;
-            [
-                F::Nearest,
-                F::Triangle,
-                F::CatmullRom,
-                F::Gaussian,
-                F::Lanczos3,
-            ]
-            .iter()
-            .map(|f| {
-                match f {
-                    F::Nearest => "nearest",
-                    F::Triangle => "bilinear",
-                    F::CatmullRom => "catmullrom",
-                    F::Gaussian => "gaussian",
-                    F::Lanczos3 => "lanczos3",
-                }
-                .to_string()
-            })
-            .collect()
-        }
+    use view_buffer::ops::{ColorSpace, FilterType, HashAlgorithm, HistogramOutput};
+    use view_buffer::{DType, InterpolationType};
+
+    let variants: Vec<&str> = match name {
+        "DType" => names(DType::NAMED),
+        "Domain" => names(Domain::NAMED),
+        "ColorSpace" => names(ColorSpace::NAMED),
+        "HashAlgorithm" => names(HashAlgorithm::NAMED),
+        "HistogramOutput" => names(HistogramOutput::NAMED),
+        "HistogramClosed" => names(HistogramClosed::NAMED),
+        "PadMode" => names(PadMode::NAMED),
+        "PadPosition" => names(PadPosition::NAMED),
+        "FilterType" => names(FilterType::NAMED),
+        "InterpolationType" => names(InterpolationType::NAMED),
+        "BorderMode" => names(BorderMode::NAMED),
+        "ExtractMode" => names(ExtractMode::NAMED),
+        "ApproxMethod" => names(ApproxMethod::NAMED),
+        // `Preset` carries payload, so NormalizeMethod exposes names only.
+        "NormalizeMethod" => view_buffer::ops::NormalizeMethod::NAMES.to_vec(),
+        "BinaryOp" => crate::execute::BINARY_OPS.iter().map(|(n, _)| *n).collect(),
         other => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "no canonical Rust enum named {other}"
             )))
         }
     };
-    Ok(variants)
+    Ok(variants.into_iter().map(str::to_string).collect())
 }
 
 /// Return the names of every operation the executor can resolve.

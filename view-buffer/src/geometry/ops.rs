@@ -136,6 +136,18 @@ pub enum ApproxMethod {
     Approx,
 }
 
+crate::naming::named_variants!(ExtractMode {
+    "external" => External,
+    "tree" => Tree,
+    "all" => All,
+});
+
+crate::naming::named_variants!(ApproxMethod {
+    "none" => None,
+    "simple" => Simple,
+    "approx" => Approx,
+});
+
 impl Op for GeometryOp {
     fn name(&self) -> &'static str {
         match self {

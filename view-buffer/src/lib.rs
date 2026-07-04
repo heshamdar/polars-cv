@@ -12,12 +12,14 @@
 //! - [`execution`] - Execution planning and running
 //! - [`protocol`] - Binary serialization format
 //! - [`interop`] - External library integrations (optional)
+//! - [`naming`] - Canonical name tables for user-facing enums
 
 pub mod core;
 pub mod execution;
 pub mod expr;
 pub mod geometry;
 pub mod interop;
+pub mod naming;
 pub mod ops;
 pub mod protocol;
 

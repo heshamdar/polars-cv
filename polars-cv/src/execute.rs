@@ -12,8 +12,65 @@ use view_buffer::{
     ImageOpKind, InterpolationType, NormalizeMethod, ViewBuffer, ViewDto, ViewOp,
 };
 
-use crate::params::{ParamCtx, ParamValue};
+use crate::params::{get, ParamCtx, ParamValue};
 use crate::pipeline::{OpSpec, SinkSpec, SourceSpec};
+use view_buffer::naming;
+
+/// The Python-facing name of every two-buffer binary operation.
+///
+/// Single authority consumed by `resolve_op` (one match arm for the whole
+/// family) and by `lib.rs::parse_binary_op` (the planner's two-input dtype
+/// query), so the two cannot drift.
+pub(crate) const BINARY_OPS: &[(&str, BinaryOp)] = &[
+    ("add", BinaryOp::Add),
+    ("subtract", BinaryOp::Subtract),
+    ("multiply", BinaryOp::Multiply),
+    ("divide", BinaryOp::Divide),
+    ("blend", BinaryOp::Blend),
+    ("ratio", BinaryOp::Ratio),
+    ("maximum", BinaryOp::Maximum),
+    ("minimum", BinaryOp::Minimum),
+    ("bitwise_and", BinaryOp::BitwiseAnd),
+    ("bitwise_or", BinaryOp::BitwiseOr),
+    ("bitwise_xor", BinaryOp::BitwiseXor),
+];
+
+/// Parse the optional `interpolation` parameter (shared by `rotate` and
+/// `warp_affine`; defaults to bilinear).
+fn resolve_interpolation(params: &HashMap<String, ParamValue>) -> PolarsResult<InterpolationType> {
+    get::opt_enum(
+        params,
+        "interpolation",
+        InterpolationType::NAMED,
+        &[],
+        InterpolationType::Bilinear,
+    )
+}
+
+/// Parse the optional `border_value` parameter (shared by `rotate` and
+/// `warp_affine`; defaults to 0.0).
+fn resolve_border_value(
+    params: &HashMap<String, ParamValue>,
+    row_idx: usize,
+    ctx: &ParamCtx,
+) -> PolarsResult<f64> {
+    get::opt_f64(params, "border_value", 0.0, row_idx, ctx)
+}
+
+/// Parse rasterize's optional style parameters `(fill_value, background,
+/// anti_alias)` — shared with the graph executor's rasterize-by-shape-ref
+/// path so the two sites cannot diverge.
+pub(crate) fn resolve_rasterize_style(
+    params: &HashMap<String, ParamValue>,
+    row_idx: usize,
+    ctx: &ParamCtx,
+) -> PolarsResult<(u8, u8, bool)> {
+    Ok((
+        get::opt_u8(params, "fill_value", 255, row_idx, ctx)?,
+        get::opt_u8(params, "background", 0, row_idx, ctx)?,
+        get::opt_bool(params, "anti_alias", false)?,
+    ))
+}
 
 /// Decode a contour source by parsing the struct and rasterizing to ViewBuffer.
 pub fn decode_contour_source(
@@ -507,7 +564,9 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                     NormalizeMethod::Preset { mean, std }
                 }
                 other => {
-                    return Err(polars_err!(ComputeError: "Unknown normalize method: {}", other))
+                    return Err(polars_err!(ComputeError:
+                        "parameter 'method': unknown value '{}', expected one of {:?}",
+                        other, NormalizeMethod::NAMES))
                 }
             };
             Ok(ViewDto::Compute(ComputeOp::Normalize(method)))
@@ -584,14 +643,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let left = get_param(&op_spec.params, "left")?.resolve_u32(row_idx, ctx)?;
             let right = get_param(&op_spec.params, "right")?.resolve_u32(row_idx, ctx)?;
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
-            let mode_str = get_param(&op_spec.params, "mode")?.resolve_string()?;
-            let mode = match mode_str {
-                "constant" => PadMode::Constant,
-                "edge" => PadMode::Edge,
-                "reflect" => PadMode::Reflect,
-                "symmetric" => PadMode::Symmetric,
-                other => return Err(polars_err!(ComputeError: "Unknown pad mode: {}", other)),
-            };
+            let mode = get::req_enum(&op_spec.params, "mode", PadMode::NAMED, &[])?;
 
             Ok(ViewDto::Pad {
                 top,
@@ -608,13 +660,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
             let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
-            let position_str = get_param(&op_spec.params, "position")?.resolve_string()?;
-            let position = match position_str {
-                "center" => PadPosition::Center,
-                "top-left" => PadPosition::TopLeft,
-                "bottom-right" => PadPosition::BottomRight,
-                other => return Err(polars_err!(ComputeError: "Unknown pad position: {}", other)),
-            };
+            let position = get::req_enum(&op_spec.params, "position", PadPosition::NAMED, &[])?;
 
             Ok(ViewDto::PadToSize {
                 height,
@@ -651,18 +697,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "rotate" => {
             let angle = get_param(&op_spec.params, "angle")?.resolve_f32(row_idx, ctx)?;
-            let expand = op_spec
-                .params
-                .get("expand")
-                .map(|p| {
-                    matches!(
-                        p,
-                        ParamValue::Literal {
-                            value: serde_json::Value::Bool(true)
-                        }
-                    )
-                })
-                .unwrap_or(false);
+            let expand = get::opt_bool(&op_spec.params, "expand", false)?;
 
             let normalized_angle = angle % 360.0;
             let normalized_angle = if normalized_angle < 0.0 {
@@ -690,32 +725,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 // Route arbitrary angles through AffineParams for unified code path.
                 // The affine matrix is built at execution time from the current
                 // buffer dimensions (handled by RotateToAffine).
-                let interp_str = op_spec
-                    .params
-                    .get("interpolation")
-                    .and_then(|p| match p {
-                        ParamValue::Literal { value } => value.as_str(),
-                        _ => None,
-                    })
-                    .unwrap_or("bilinear");
-                let interpolation = match interp_str {
-                    "nearest" => InterpolationType::Nearest,
-                    "bilinear" => InterpolationType::Bilinear,
-                    other => {
-                        return Err(polars_err!(
-                            ComputeError: "rotate: unknown interpolation '{}', expected 'nearest' or 'bilinear'",
-                            other
-                        ));
-                    }
-                };
-                let border_value = op_spec
-                    .params
-                    .get("border_value")
-                    .and_then(|p| match p {
-                        ParamValue::Literal { value } => value.as_f64(),
-                        _ => None,
-                    })
-                    .unwrap_or(0.0);
+                let interpolation = resolve_interpolation(&op_spec.params)?;
+                let border_value = resolve_border_value(&op_spec.params, row_idx, ctx)?;
 
                 Ok(ViewDto::Compute(ComputeOp::RotateAffine {
                     angle_deg: normalized_angle,
@@ -765,33 +776,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let output_width =
                 get_param(&op_spec.params, "output_width")?.resolve_u32(row_idx, ctx)?;
 
-            let interp_str = op_spec
-                .params
-                .get("interpolation")
-                .and_then(|p| match p {
-                    ParamValue::Literal { value } => value.as_str(),
-                    _ => None,
-                })
-                .unwrap_or("bilinear");
-            let interpolation = match interp_str {
-                "nearest" => InterpolationType::Nearest,
-                "bilinear" => InterpolationType::Bilinear,
-                other => {
-                    return Err(polars_err!(
-                        ComputeError: "warp_affine: unknown interpolation '{}', expected 'nearest' or 'bilinear'",
-                        other
-                    ));
-                }
-            };
-
-            let border_value = op_spec
-                .params
-                .get("border_value")
-                .and_then(|p| match p {
-                    ParamValue::Literal { value } => value.as_f64(),
-                    _ => None,
-                })
-                .unwrap_or(0.0);
+            let interpolation = resolve_interpolation(&op_spec.params)?;
+            let border_value = resolve_border_value(&op_spec.params, row_idx, ctx)?;
 
             Ok(ViewDto::Compute(ComputeOp::Affine(AffineParams {
                 matrix,
@@ -806,31 +792,17 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "perceptual_hash" => {
             use view_buffer::ops::phash::{HashAlgorithm, PerceptualHashOp};
 
-            let algorithm = op_spec
-                .params
-                .get("algorithm")
-                .and_then(|p| match p {
-                    ParamValue::Literal { value } => value.as_str(),
-                    _ => None,
-                })
-                .unwrap_or("perceptual");
-
-            let hash_algorithm = match algorithm {
-                "average" => HashAlgorithm::Average,
-                "difference" => HashAlgorithm::Difference,
-                "perceptual" => HashAlgorithm::Perceptual,
-                "blockhash" => HashAlgorithm::Blockhash,
-                _ => HashAlgorithm::Perceptual,
-            };
-
-            let hash_size = op_spec
-                .params
-                .get("hash_size")
-                .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(64) as u32)
-                .unwrap_or(64);
+            let algorithm = get::opt_enum(
+                &op_spec.params,
+                "algorithm",
+                HashAlgorithm::NAMED,
+                &[],
+                HashAlgorithm::Perceptual,
+            )?;
+            let hash_size = get::opt_u32(&op_spec.params, "hash_size", 64, row_idx, ctx)?;
 
             Ok(ViewDto::PerceptualHash(
-                PerceptualHashOp::new(hash_algorithm).with_hash_size(hash_size),
+                PerceptualHashOp::new(algorithm).with_hash_size(hash_size),
             ))
         }
 
@@ -838,28 +810,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "rasterize" => {
             let width = get_param(&op_spec.params, "width")?.resolve_usize(row_idx, ctx)? as u32;
             let height = get_param(&op_spec.params, "height")?.resolve_usize(row_idx, ctx)? as u32;
-            let fill_value = op_spec
-                .params
-                .get("fill_value")
-                .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(255) as u8)
-                .unwrap_or(255);
-            let background = op_spec
-                .params
-                .get("background")
-                .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(0) as u8)
-                .unwrap_or(0);
-            let anti_alias = op_spec
-                .params
-                .get("anti_alias")
-                .map(|p| {
-                    matches!(
-                        p,
-                        ParamValue::Literal {
-                            value: serde_json::Value::Bool(true)
-                        }
-                    )
-                })
-                .unwrap_or(false);
+            let (fill_value, background, anti_alias) =
+                resolve_rasterize_style(&op_spec.params, row_idx, ctx)?;
             Ok(ViewDto::Geometry(GeometryOp::Rasterize {
                 width,
                 height,
@@ -871,44 +823,21 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "extract_contours" => {
             use view_buffer::geometry::ops::{ApproxMethod, ExtractMode};
 
-            let mode = op_spec
-                .params
-                .get("mode")
-                .and_then(|p| match p {
-                    ParamValue::Literal {
-                        value: serde_json::Value::String(s),
-                    } => Some(s.as_str()),
-                    _ => None,
-                })
-                .map(|s| match s {
-                    "external" => ExtractMode::External,
-                    "tree" => ExtractMode::Tree,
-                    _ => ExtractMode::All,
-                })
-                .unwrap_or(ExtractMode::External);
-
-            let method = op_spec
-                .params
-                .get("method")
-                .and_then(|p| match p {
-                    ParamValue::Literal {
-                        value: serde_json::Value::String(s),
-                    } => Some(s.as_str()),
-                    _ => None,
-                })
-                .map(|s| match s {
-                    "none" => ApproxMethod::None,
-                    "approx" => ApproxMethod::Approx,
-                    _ => ApproxMethod::Simple,
-                })
-                .unwrap_or(ApproxMethod::Simple);
-
-            let min_area = op_spec.params.get("min_area").and_then(|p| match p {
-                ParamValue::Literal {
-                    value: serde_json::Value::Number(n),
-                } => n.as_f64(),
-                _ => None,
-            });
+            let mode = get::opt_enum(
+                &op_spec.params,
+                "mode",
+                ExtractMode::NAMED,
+                &[],
+                ExtractMode::External,
+            )?;
+            let method = get::opt_enum(
+                &op_spec.params,
+                "method",
+                ApproxMethod::NAMED,
+                &[],
+                ApproxMethod::Simple,
+            )?;
+            let min_area = get::maybe_f64(&op_spec.params, "min_area", row_idx, ctx)?;
 
             Ok(ViewDto::Geometry(GeometryOp::ExtractContours {
                 mode,
@@ -919,18 +848,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Geometry measure operations
         "contour_area" => {
-            let signed = op_spec
-                .params
-                .get("signed")
-                .map(|p| {
-                    matches!(
-                        p,
-                        ParamValue::Literal {
-                            value: serde_json::Value::Bool(true)
-                        }
-                    )
-                })
-                .unwrap_or(false);
+            let signed = get::opt_bool(&op_spec.params, "signed", false)?;
             Ok(ViewDto::Geometry(GeometryOp::Area { signed }))
         }
         "contour_perimeter" => Ok(ViewDto::Geometry(GeometryOp::Perimeter)),
@@ -977,105 +895,14 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             }))
         }
 
-        // Binary operations
-        "add" => {
+        // Binary operations (two-buffer): one arm for the whole family,
+        // dispatched through the BINARY_OPS name table.
+        name if naming::lookup(BINARY_OPS, name).is_some() => {
+            let op = naming::lookup(BINARY_OPS, name).expect("guard checked membership");
             let other_node_id = get_param(&op_spec.params, "other_node")?
                 .resolve_string()?
                 .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::Add,
-                other_node_id,
-            })
-        }
-        "subtract" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::Subtract,
-                other_node_id,
-            })
-        }
-        "multiply" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::Multiply,
-                other_node_id,
-            })
-        }
-        "divide" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::Divide,
-                other_node_id,
-            })
-        }
-        "blend" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::Blend,
-                other_node_id,
-            })
-        }
-        "ratio" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::Ratio,
-                other_node_id,
-            })
-        }
-        "maximum" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::Maximum,
-                other_node_id,
-            })
-        }
-        "minimum" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::Minimum,
-                other_node_id,
-            })
-        }
-        "bitwise_and" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::BitwiseAnd,
-                other_node_id,
-            })
-        }
-        "bitwise_or" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::BitwiseOr,
-                other_node_id,
-            })
-        }
-        "bitwise_xor" => {
-            let other_node_id = get_param(&op_spec.params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(ViewDto::Binary {
-                op: BinaryOp::BitwiseXor,
-                other_node_id,
-            })
+            Ok(ViewDto::Binary { op, other_node_id })
         }
 
         // Reduction operations
@@ -1091,39 +918,23 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "reduce_max" => {
             use view_buffer::ops::ReductionOp;
-            let axis = op_spec
-                .params
-                .get("axis")
-                .and_then(|p| p.resolve_usize(row_idx, ctx).ok());
+            let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
             Ok(ViewDto::Reduction(ReductionOp::Max { axis }))
         }
         "reduce_min" => {
             use view_buffer::ops::ReductionOp;
-            let axis = op_spec
-                .params
-                .get("axis")
-                .and_then(|p| p.resolve_usize(row_idx, ctx).ok());
+            let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
             Ok(ViewDto::Reduction(ReductionOp::Min { axis }))
         }
         "reduce_mean" => {
             use view_buffer::ops::ReductionOp;
-            let axis = op_spec
-                .params
-                .get("axis")
-                .and_then(|p| p.resolve_usize(row_idx, ctx).ok());
+            let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
             Ok(ViewDto::Reduction(ReductionOp::Mean { axis }))
         }
         "reduce_std" => {
             use view_buffer::ops::ReductionOp;
-            let axis = op_spec
-                .params
-                .get("axis")
-                .and_then(|p| p.resolve_usize(row_idx, ctx).ok());
-            let ddof = op_spec
-                .params
-                .get("ddof")
-                .map(|p| p.resolve_usize(row_idx, ctx).unwrap_or(0) as u8)
-                .unwrap_or(0);
+            let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
+            let ddof = get::opt_u8(&op_spec.params, "ddof", 0, row_idx, ctx)?;
             Ok(ViewDto::Reduction(ReductionOp::Std { axis, ddof }))
         }
         "reduce_percentile" => {
@@ -1195,32 +1006,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 (bins_param.resolve_usize(row_idx, ctx)?, None)
             };
 
-            // Parse closed mode
-            let closed_str = get_param(&op_spec.params, "closed")?.resolve_string()?;
-            let closed = match closed_str {
-                "left" => HistogramClosed::Left,
-                "right" => HistogramClosed::Right,
-                other => {
-                    return Err(
-                        polars_err!(ComputeError: "Unknown histogram closed mode: {}", other),
-                    )
-                }
-            };
-
-            // Parse output mode
-            let output_str = get_param(&op_spec.params, "output")?.resolve_string()?;
-            let output = match output_str {
-                "counts" => HistogramOutput::Counts,
-                "normalized" => HistogramOutput::Normalized,
-                "quantized" => HistogramOutput::Quantized,
-                "edges" => HistogramOutput::Edges,
-                "buckets" => HistogramOutput::Buckets,
-                other => {
-                    return Err(
-                        polars_err!(ComputeError: "Unknown histogram output mode: {}", other),
-                    )
-                }
-            };
+            let closed = get::req_enum(&op_spec.params, "closed", HistogramClosed::NAMED, &[])?;
+            let output = get::req_enum(&op_spec.params, "output", HistogramOutput::NAMED, &[])?;
 
             // Parse optional range
             let range = if op_spec.params.contains_key("range_min")
@@ -1264,11 +1051,16 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                     value: serde_json::Value::Array(arr),
                 } => arr
                     .iter()
-                    .map(|v| v.as_str().unwrap_or("").to_string())
-                    .collect(),
+                    .map(|v| {
+                        v.as_str().map(str::to_string).ok_or_else(|| {
+                            polars_err!(ComputeError:
+                                "parameter 'other_nodes' must be an array of node-ID strings, got {}", v)
+                        })
+                    })
+                    .collect::<PolarsResult<Vec<_>>>()?,
                 _ => {
                     return Err(
-                        polars_err!(ComputeError: "channel_merge other_nodes must be an array of node IDs"),
+                        polars_err!(ComputeError: "parameter 'other_nodes' must be an array of node IDs"),
                     )
                 }
             };
@@ -1292,10 +1084,16 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
             let from_str = get_param(&op_spec.params, "from_space")?.resolve_string()?;
             let to_str = get_param(&op_spec.params, "to_space")?.resolve_string()?;
-            let from = ColorSpace::from_str_name(from_str)
-                .ok_or_else(|| polars_err!(ComputeError: "Unknown color space: {}", from_str))?;
-            let to = ColorSpace::from_str_name(to_str)
-                .ok_or_else(|| polars_err!(ComputeError: "Unknown color space: {}", to_str))?;
+            let from = ColorSpace::from_str_name(from_str).ok_or_else(|| {
+                polars_err!(ComputeError:
+                    "parameter 'from_space': unknown color space '{}', expected one of {:?}",
+                    from_str, naming::names(ColorSpace::NAMED))
+            })?;
+            let to = ColorSpace::from_str_name(to_str).ok_or_else(|| {
+                polars_err!(ComputeError:
+                    "parameter 'to_space': unknown color space '{}', expected one of {:?}",
+                    to_str, naming::names(ColorSpace::NAMED))
+            })?;
             Ok(ViewDto::Color(ColorConvertOp { from, to }))
         }
 
@@ -1309,30 +1107,14 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                     || polars_err!(ComputeError: "convolve2d requires 'kernel' as array of floats"),
                 )?;
             let ksize = get_param(&op_spec.params, "ksize")?.resolve_usize(row_idx, ctx)?;
-            let normalize = op_spec
-                .params
-                .get("normalize")
-                .map(|p| {
-                    matches!(
-                        p,
-                        ParamValue::Literal {
-                            value: serde_json::Value::Bool(true)
-                        }
-                    )
-                })
-                .unwrap_or(false);
-            let border_str = op_spec
-                .params
-                .get("border")
-                .map(|p| p.resolve_string())
-                .transpose()?
-                .unwrap_or("replicate");
-            let border = match border_str {
-                "replicate" => BorderMode::Replicate,
-                "zero" => BorderMode::Zero,
-                "reflect" => BorderMode::Reflect,
-                other => return Err(polars_err!(ComputeError: "Unknown border mode: {}", other)),
-            };
+            let normalize = get::opt_bool(&op_spec.params, "normalize", false)?;
+            let border = get::opt_enum(
+                &op_spec.params,
+                "border",
+                BorderMode::NAMED,
+                &[],
+                BorderMode::Replicate,
+            )?;
 
             Ok(ViewDto::Filter(ConvolveOp {
                 kernel,
@@ -1343,24 +1125,14 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "erode" => {
             let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
-            let iterations = op_spec
-                .params
-                .get("iterations")
-                .map(|p| p.resolve_u32(row_idx, ctx))
-                .transpose()?
-                .unwrap_or(1);
+            let iterations = get::opt_u32(&op_spec.params, "iterations", 1, row_idx, ctx)?;
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Erode { ksize, iterations },
             }))
         }
         "dilate" => {
             let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
-            let iterations = op_spec
-                .params
-                .get("iterations")
-                .map(|p| p.resolve_u32(row_idx, ctx))
-                .transpose()?
-                .unwrap_or(1);
+            let iterations = get::opt_u32(&op_spec.params, "iterations", 1, row_idx, ctx)?;
             Ok(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Dilate { ksize, iterations },
             }))
@@ -1393,18 +1165,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let mask_node_id = get_param(&op_spec.params, "other_node")?
                 .resolve_string()?
                 .to_string();
-            let invert = op_spec
-                .params
-                .get("invert")
-                .map(|p| {
-                    matches!(
-                        p,
-                        ParamValue::Literal {
-                            value: serde_json::Value::Bool(true)
-                        }
-                    )
-                })
-                .unwrap_or(false);
+            let invert = get::opt_bool(&op_spec.params, "invert", false)?;
             Ok(ViewDto::ApplyMask {
                 mask_node_id,
                 invert,
@@ -1425,32 +1186,193 @@ fn get_param<'a>(
         .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: {}", name))
 }
 
-/// Parse a dtype string to DType.
+/// Parse a dtype string to DType (canonical short names from `DType::NAMED`).
 fn parse_dtype(s: &str) -> PolarsResult<DType> {
-    match s {
-        "u8" => Ok(DType::U8),
-        "i8" => Ok(DType::I8),
-        "u16" => Ok(DType::U16),
-        "i16" => Ok(DType::I16),
-        "u32" => Ok(DType::U32),
-        "i32" => Ok(DType::I32),
-        "u64" => Ok(DType::U64),
-        "i64" => Ok(DType::I64),
-        "f32" => Ok(DType::F32),
-        "f64" => Ok(DType::F64),
-        other => Err(polars_err!(ComputeError: "Unknown dtype: {}", other)),
-    }
+    DType::from_short_name(s).ok_or_else(|| {
+        polars_err!(ComputeError:
+            "Unknown dtype: {}, expected one of {:?}", s, naming::names(DType::NAMED))
+    })
 }
 
-/// Parse a filter type string.
+/// Parse a filter type string (canonical names from `FilterType::NAMED`,
+/// plus parser-only aliases).
 fn parse_filter(s: &str) -> PolarsResult<FilterType> {
-    match s {
-        "nearest" => Ok(FilterType::Nearest),
-        "bilinear" | "triangle" => Ok(FilterType::Triangle),
-        "lanczos3" => Ok(FilterType::Lanczos3),
-        "catmullrom" => Ok(FilterType::CatmullRom),
-        "gaussian" => Ok(FilterType::Gaussian),
-        other => Err(polars_err!(ComputeError: "Unknown filter type: {}", other)),
+    naming::lookup(FilterType::NAMED, s)
+        .or_else(|| naming::lookup(FilterType::ALIASES, s))
+        .ok_or_else(|| {
+            polars_err!(ComputeError:
+                "Unknown filter type: {}, expected one of {:?}",
+                s, naming::names(FilterType::NAMED))
+        })
+}
+
+#[cfg(test)]
+mod strict_param_tests {
+    //! One failure policy for operation parameters: an *absent* optional
+    //! parameter takes its documented default, but a parameter that is
+    //! *present and invalid* (unknown enum string, wrong type, out of range)
+    //! must be an error — never silently coerced to a default. These tests
+    //! pin that policy for every parameter that historically swallowed
+    //! errors.
+
+    use super::*;
+    use crate::params::ParamValue;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn op_with(name: &str, params: &[(&str, serde_json::Value)]) -> OpSpec {
+        OpSpec {
+            op: name.to_string(),
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), ParamValue::Literal { value: v.clone() }))
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    fn resolve_err(spec: &OpSpec) -> String {
+        resolve_op(spec, 0, &ParamCtx::empty())
+            .expect_err("invalid parameter must be rejected")
+            .to_string()
+    }
+
+    #[test]
+    fn perceptual_hash_unknown_algorithm_errors() {
+        let err = resolve_err(&op_with(
+            "perceptual_hash",
+            &[("algorithm", json!("phash"))],
+        ));
+        assert!(err.contains("algorithm"), "{err}");
+        assert!(
+            err.contains("perceptual"),
+            "error must list valid names: {err}"
+        );
+    }
+
+    #[test]
+    fn perceptual_hash_invalid_hash_size_errors() {
+        let err = resolve_err(&op_with(
+            "perceptual_hash",
+            &[("hash_size", json!("large"))],
+        ));
+        assert!(err.contains("hash_size"), "{err}");
+    }
+
+    #[test]
+    fn perceptual_hash_defaults_apply_when_params_absent() {
+        resolve_op(&op_with("perceptual_hash", &[]), 0, &ParamCtx::empty())
+            .expect("absent optional params must take their defaults");
+    }
+
+    #[test]
+    fn extract_contours_unknown_mode_errors() {
+        let err = resolve_err(&op_with("extract_contours", &[("mode", json!("outer"))]));
+        assert!(err.contains("mode"), "{err}");
+    }
+
+    #[test]
+    fn extract_contours_unknown_method_errors() {
+        let err = resolve_err(&op_with("extract_contours", &[("method", json!("fancy"))]));
+        assert!(err.contains("method"), "{err}");
+    }
+
+    #[test]
+    fn rasterize_invalid_fill_value_errors() {
+        let base = [("width", json!(8)), ("height", json!(8))];
+        let mut params = base.to_vec();
+        params.push(("fill_value", json!("red")));
+        let err = resolve_err(&op_with("rasterize", &params));
+        assert!(err.contains("fill_value"), "{err}");
+
+        let mut params = base.to_vec();
+        params.push(("fill_value", json!(300)));
+        let err = resolve_err(&op_with("rasterize", &params));
+        assert!(
+            err.contains("fill_value"),
+            "out-of-range u8 must error: {err}"
+        );
+
+        let mut params = base.to_vec();
+        params.push(("background", json!(-1)));
+        let err = resolve_err(&op_with("rasterize", &params));
+        assert!(err.contains("background"), "{err}");
+    }
+
+    #[test]
+    fn reduce_axis_invalid_value_errors() {
+        for op in ["reduce_max", "reduce_min", "reduce_mean"] {
+            let err = resolve_err(&op_with(op, &[("axis", json!("rows"))]));
+            assert!(err.contains("axis"), "{op}: {err}");
+            // Absent axis must still mean a global reduction, not an error.
+            resolve_op(&op_with(op, &[]), 0, &ParamCtx::empty())
+                .expect("absent axis means global reduction");
+        }
+    }
+
+    #[test]
+    fn reduce_std_invalid_ddof_errors() {
+        let err = resolve_err(&op_with("reduce_std", &[("ddof", json!("one"))]));
+        assert!(err.contains("ddof"), "{err}");
+        let err = resolve_err(&op_with("reduce_std", &[("ddof", json!(300))]));
+        assert!(err.contains("ddof"), "out-of-range u8 must error: {err}");
+    }
+
+    #[test]
+    fn bool_param_rejects_non_bool() {
+        // Booleans are structural literals: a string/number must error, not
+        // silently read as `false`.
+        #[allow(clippy::type_complexity)]
+        let cases: &[(&str, &str, &[(&str, serde_json::Value)])] = &[
+            ("rotate", "expand", &[("angle", json!(45.0))]),
+            (
+                "rasterize",
+                "anti_alias",
+                &[("width", json!(8)), ("height", json!(8))],
+            ),
+            ("contour_area", "signed", &[]),
+            (
+                "convolve2d",
+                "normalize",
+                &[("kernel", json!(vec![0.0; 9])), ("ksize", json!(3))],
+            ),
+            ("apply_mask", "invert", &[("other_node", json!("m"))]),
+        ];
+        for (op, bool_param, base) in cases {
+            let mut params = base.to_vec();
+            params.push((bool_param, json!("yes")));
+            let err = resolve_err(&op_with(op, &params));
+            assert!(err.contains(bool_param), "{op}.{bool_param}: {err}");
+        }
+    }
+
+    #[test]
+    fn channel_merge_rejects_non_string_node_ids() {
+        let err = resolve_err(&op_with("channel_merge", &[("other_nodes", json!([1, 2]))]));
+        assert!(err.contains("other_nodes"), "{err}");
+    }
+
+    #[test]
+    fn interpolation_shared_between_rotate_and_warp_affine() {
+        let rotate_err = resolve_err(&op_with(
+            "rotate",
+            &[("angle", json!(45.0)), ("interpolation", json!("cubic"))],
+        ));
+        let warp_err = resolve_err(&op_with(
+            "warp_affine",
+            &[
+                ("matrix", json!([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])),
+                ("output_height", json!(8)),
+                ("output_width", json!(8)),
+                ("interpolation", json!("cubic")),
+            ],
+        ));
+        for err in [&rotate_err, &warp_err] {
+            assert!(err.contains("interpolation"), "{err}");
+            assert!(
+                err.contains("nearest") && err.contains("bilinear"),
+                "error must list valid names: {err}"
+            );
+        }
     }
 }
 
@@ -1527,11 +1449,21 @@ mod known_ops_tests {
                 }
             }
         }
+        // Sanity floor so the scan can't silently rot to zero. The binary-op
+        // family dispatches through one BINARY_OPS-guarded arm (not string
+        // patterns), so the floor is below KNOWN_OPS.len().
         assert!(
-            arm_names.len() >= 70,
+            arm_names.len() >= 60,
             "arm scan found only {} arms — the source scan has rotted, fix the test",
             arm_names.len()
         );
+        // The guarded binary-op family must still be fully registered.
+        for (name, _) in BINARY_OPS {
+            assert!(
+                KNOWN_OPS.contains(name),
+                "BINARY_OPS entry '{name}' is missing from KNOWN_OPS"
+            );
+        }
         for name in &arm_names {
             assert!(
                 KNOWN_OPS.contains(name),

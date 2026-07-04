@@ -9,6 +9,11 @@ pub enum InterpolationType {
     Bilinear,
 }
 
+crate::naming::named_variants!(InterpolationType {
+    "nearest" => Nearest,
+    "bilinear" => Bilinear,
+});
+
 /// Parameters for a 2D affine warp operation.
 ///
 /// The matrix `[a, b, tx, c, d, ty]` is a **forward** mapping from source to

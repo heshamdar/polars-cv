@@ -44,6 +44,13 @@ pub enum HashAlgorithm {
     Blockhash,
 }
 
+crate::naming::named_variants!(HashAlgorithm {
+    "average" => Average,
+    "difference" => Difference,
+    "perceptual" => Perceptual,
+    "blockhash" => Blockhash,
+});
+
 /// Perceptual hashing operation.
 ///
 /// Computes a fixed-length perceptual hash of an image that can be used
