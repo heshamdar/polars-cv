@@ -190,11 +190,20 @@ pub struct ContourKwargs {
     pub region_mode: Option<String>,
 }
 
-/// Helper function to parse a contour from a Polars Struct value.
+/// Parse a contour from a Polars value.
 ///
-/// Contours are stored as a struct column matching the schema:
-/// {exterior: List[{x: f64, y: f64}], holes: List[List[{x: f64, y: f64}]]}
-fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
+/// The **single** Struct/List -> `Contour` parser for the whole plugin:
+/// the contour namespace, the point namespace (`point.rs`), and the contour
+/// source decoder (`execute.rs`) all route through it, so hole handling,
+/// accepted input forms, and error text cannot diverge between consumers
+/// (pinned by `parse_contour_tests` and `tests/test_contour_parsing.py`).
+///
+/// Accepted forms:
+/// - a struct matching `{exterior: List[{x, y}], holes: List[List[{x, y}]]}`
+///   (`points` is accepted as an alias for `exterior`; with neither present,
+///   the first list field is used as the exterior)
+/// - a bare `List[{x, y}]` (a simple contour without holes)
+pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
     match value {
         AnyValue::StructOwned(boxed) => {
             let (values, fields) = boxed.as_ref();
@@ -1749,4 +1758,84 @@ fn bbox_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResu
     }
 
     Series::from_any_values_and_dtype(pred_series.name().clone(), &rows, &match_dtype, true)
+}
+
+#[cfg(test)]
+mod parse_contour_tests {
+    //! `parse_contour` is the single Struct/List -> Contour parser for the
+    //! whole plugin (contour source decoding, point-namespace ops, and the
+    //! contour namespace itself route through it). These tests pin its full
+    //! contract so the consumers cannot re-diverge.
+
+    use super::*;
+
+    fn square_with_hole() -> Contour {
+        Contour::with_holes(
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 0.0),
+                Point::new(10.0, 10.0),
+                Point::new(0.0, 10.0),
+            ],
+            vec![vec![
+                Point::new(4.0, 4.0),
+                Point::new(6.0, 4.0),
+                Point::new(6.0, 6.0),
+                Point::new(4.0, 6.0),
+            ]],
+        )
+    }
+
+    #[test]
+    fn parse_contour_struct_with_holes_round_trips() {
+        let contour = square_with_hole();
+        let av = contour_to_anyvalue(&contour);
+        let parsed = parse_contour(&av).expect("round trip must parse");
+        assert_eq!(parsed.exterior, contour.exterior);
+        assert_eq!(parsed.holes, contour.holes);
+    }
+
+    #[test]
+    fn parse_contour_bare_list() {
+        // A bare List[{x, y}] (no wrapping struct) is a valid simple contour.
+        let av = contour_to_anyvalue(&square_with_hole());
+        let AnyValue::StructOwned(boxed) = av else {
+            panic!("contour_to_anyvalue must build a struct");
+        };
+        let (values, _) = *boxed;
+        let exterior_list = values[0].clone();
+        assert!(matches!(exterior_list, AnyValue::List(_)));
+        let parsed = parse_contour(&exterior_list).expect("bare list must parse");
+        assert_eq!(parsed.exterior.len(), 4);
+        assert!(parsed.holes.is_empty());
+    }
+
+    #[test]
+    fn parse_contour_points_field_alias() {
+        // "points" is accepted as an alias for "exterior".
+        let av = contour_to_anyvalue(&square_with_hole());
+        let AnyValue::StructOwned(boxed) = av else {
+            panic!("contour_to_anyvalue must build a struct");
+        };
+        let (values, mut fields) = *boxed;
+        fields[0] = Field::new(PlSmallStr::from_static("points"), fields[0].dtype().clone());
+        let renamed = AnyValue::StructOwned(Box::new((values, fields)));
+        let parsed = parse_contour(&renamed).expect("'points' alias must parse");
+        assert_eq!(parsed.exterior.len(), 4);
+    }
+
+    #[test]
+    fn parse_contour_missing_exterior_errors() {
+        // A struct with no list field cannot be a contour; the error names
+        // the expected fields (shared verbatim by every consumer).
+        let bogus = AnyValue::StructOwned(Box::new((
+            vec![AnyValue::Float64(1.0)],
+            vec![Field::new(
+                PlSmallStr::from_static("not_a_contour"),
+                DataType::Float64,
+            )],
+        )));
+        let err = parse_contour(&bogus).expect_err("must reject").to_string();
+        assert!(err.contains("exterior/points"), "{err}");
+    }
 }
