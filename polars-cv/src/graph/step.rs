@@ -125,20 +125,4 @@ impl GraphStep {
             }
         }
     }
-
-    /// The name of this step for error messages.
-    #[allow(dead_code)] // consumed by the op_schema FFI (next phase) and error paths
-    pub fn name(&self) -> &'static str {
-        match self {
-            GraphStep::Buffer(dto) => dto.name(),
-            GraphStep::Geometry(op) => op.name(),
-            GraphStep::Binary { op, .. } => op.name(),
-            GraphStep::Reduction(op) => op.name(),
-            GraphStep::Histogram(op) => op.name(),
-            GraphStep::ApplyMask { .. } => "ApplyMask",
-            GraphStep::ChannelMerge { .. } => "ChannelMerge",
-            GraphStep::ExtractShape => "ExtractShape",
-            GraphStep::LabelReduce { .. } => "LabelReduce",
-        }
-    }
 }
