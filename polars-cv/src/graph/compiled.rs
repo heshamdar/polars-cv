@@ -776,9 +776,23 @@ impl CompiledGraph {
                                     )
                                 })?;
                                 let result = reduction_op.execute(current_buf);
-                                current_output = match result.scalar_f64() {
-                                    Some(v) if result.shape() == [1] => NodeOutput::Scalar(v),
-                                    _ => NodeOutput::from_buffer(result),
+                                // The op's declared output domain (the same
+                                // authority the planner reads) decides scalar
+                                // vs buffer — not the result's shape, which is
+                                // also [1] for an axis reduction of a 1-D
+                                // buffer (a buffer-domain output).
+                                current_output = if reduction_op.output_domain()
+                                    == view_buffer::ops::Domain::Scalar
+                                {
+                                    let v = result.scalar_f64().ok_or_else(|| {
+                                        format!(
+                                            "Scalar reduction produced non-scalar shape {:?}",
+                                            result.shape()
+                                        )
+                                    })?;
+                                    NodeOutput::Scalar(v)
+                                } else {
+                                    NodeOutput::from_buffer(result)
                                 };
                             }
                             GraphStep::Histogram(histogram_op) => {
@@ -1460,6 +1474,50 @@ mod tests {
             &[Series::new("b".into(), &[mask_blob()]), cont_col],
         );
         assert_eq!(out.null_count(), 0);
+    }
+
+    /// An axis reduction over a 1-D buffer yields shape [1] but its declared
+    /// domain is Buffer — the executor must follow the op's output_domain()
+    /// (the planning authority), not sniff the [1] shape into a scalar.
+    #[test]
+    fn axis_reduction_of_1d_buffer_stays_buffer() {
+        let blob = ViewBuffer::from_vec_with_shape(vec![1.0f32, 5.0, 3.0], vec![3]).to_blob();
+        let no_names: Vec<String> = vec![];
+        let out = exec(
+            r#"{
+                "nodes": {"n0": {"source": {"format": "blob"},
+                                  "ops": [{"op": "reduce_max",
+                                           "axis": {"type": "literal", "value": 0}}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), &[blob])],
+        );
+        let buf = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        assert_eq!(buf.shape(), &[1], "axis reduction must stay a buffer");
+        assert_eq!(buf.as_slice::<f32>(), &[5.0]);
+    }
+
+    /// Percentile is a global scalar reduction end-to-end (regression for the
+    /// old DTO match that mislabeled it Buffer).
+    #[test]
+    fn percentile_reduction_is_scalar() {
+        let blob = ViewBuffer::from_vec_with_shape(vec![1.0f32, 2.0, 3.0, 4.0], vec![4]).to_blob();
+        let no_names: Vec<String> = vec![];
+        let out = exec(
+            r#"{
+                "nodes": {"n0": {"source": {"format": "blob"},
+                                  "ops": [{"op": "reduce_percentile",
+                                           "q": {"type": "literal", "value": 50.0}}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "scalar"}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), &[blob])],
+        );
+        assert_eq!(out.dtype(), &DataType::Float64);
+        assert!(out.f64().unwrap().get(0).is_some());
     }
 
     #[test]
