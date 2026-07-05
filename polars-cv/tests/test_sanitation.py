@@ -940,9 +940,7 @@ def test_every_op_append_updates_tracked_state() -> None:
     source = Path(pipeline_mod.__file__).read_text()
     tree = ast.parse(source)
     pipeline_cls = next(
-        n
-        for n in tree.body
-        if isinstance(n, ast.ClassDef) and n.name == "Pipeline"
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Pipeline"
     )
 
     def calls_in(node: ast.AST, attr: str) -> bool:
