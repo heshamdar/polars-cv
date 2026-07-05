@@ -11,7 +11,8 @@ use crate::ops::phash::PerceptualHashOp;
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::MemoryEffect;
 use crate::ops::{
-    ComputeOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op, ViewDto, ViewOp,
+    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op,
+    ViewDto, ViewOp,
 };
 
 /// A node in the expression graph.
@@ -40,6 +41,12 @@ pub enum ExprNode {
 
     /// Perceptual hash operation.
     PerceptualHash(PerceptualHashOp, Arc<ViewExpr>),
+
+    /// Color space conversion.
+    Color(ColorConvertOp, Arc<ViewExpr>),
+
+    /// 2D convolution.
+    Filter(ConvolveOp, Arc<ViewExpr>),
 
     /// Terminal sink specifying output format.
     Sink {
@@ -211,83 +218,25 @@ impl ViewExpr {
                 }
             },
             ViewDto::PerceptualHash(op) => self.perceptual_hash(op),
-            ViewDto::Geometry(_geom) => {
-                // Geometry operations are handled separately at the polars-cv level
-                // They operate on contour data, not on ViewBuffers directly
-                // The plugin layer converts between contour representation and buffer
-                self.clone()
+            ViewDto::Filter(op) => {
+                let new_shape = Op::infer_shape(&op, &[&self.shape]);
+                let new_strides = self.calc_strides(&op, &new_shape);
+                let new_dtype = op.infer_dtype(&[self.dtype]);
+                Arc::new(Self {
+                    shape: new_shape,
+                    strides: new_strides,
+                    dtype: new_dtype,
+                    node: ExprNode::Filter(op, self.clone()),
+                })
             }
-            ViewDto::Binary { .. } | ViewDto::ApplyMask { .. } => {
-                // Binary and ApplyMask operations are graph-level operations
-                // They require access to other nodes' buffers and are handled
-                // by the graph executor, not ViewExpr
-                panic!(
-                    "Binary and ApplyMask operations cannot be applied via ViewExpr. \
-                     Use graph-level execution to resolve node references."
-                )
-            }
-            ViewDto::Reduction(_) => {
-                // Reduction operations change domain from Buffer to Scalar
-                // They are handled by the graph executor to properly manage
-                // the domain transition
-                panic!(
-                    "Reduction operations cannot be applied via ViewExpr. \
-                     Use graph-level execution to handle domain transitions."
-                )
-            }
-            ViewDto::Histogram(_) => {
-                // Histogram operations change domain (counts/normalized/edges → Vector)
-                // or preserve it (quantized → Buffer)
-                // They are handled by the graph executor to properly manage
-                // the domain transition and output conversion
-                panic!(
-                    "Histogram operations cannot be applied via ViewExpr. \
-                     Use graph-level execution to handle domain transitions."
-                )
-            }
-            ViewDto::ExtractShape => {
-                // ExtractShape changes domain from Buffer to Vector
-                // It is handled by the graph executor
-                panic!(
-                    "ExtractShape cannot be applied via ViewExpr. \
-                     Use graph-level execution to handle domain transitions."
-                )
-            }
-            ViewDto::LabelReduce { .. } => {
-                panic!(
-                    "LabelReduce cannot be applied via ViewExpr. \
-                     Use graph-level execution to handle contour expression inputs."
-                )
-            }
-            ViewDto::ChannelMerge { .. } => {
-                panic!(
-                    "Channel merge is a graph-level operation (it reads other \
-                     nodes' buffers) and cannot be applied via ViewExpr."
-                )
-            }
-            ViewDto::Filter(_) => {
-                panic!(
-                    "Filter (convolution) operations cannot be applied via ViewExpr. \
-                     Use graph-level execution."
-                )
-            }
-            ViewDto::Color(ref op) => {
-                let new_shape = op.infer_shape(&self.shape);
-                let new_dtype = if op.promotes_to_float() {
-                    DType::F32
-                } else {
-                    self.dtype
-                };
+            ViewDto::Color(op) => {
+                let new_shape = ColorConvertOp::infer_shape(&op, &self.shape);
+                let new_dtype = Op::infer_dtype(&op, &[self.dtype]);
                 Arc::new(Self {
                     shape: new_shape,
                     strides: None, // Color conversion always allocates
                     dtype: new_dtype,
-                    node: ExprNode::Image(
-                        ImageOp {
-                            kind: ImageOpKind::Grayscale, // placeholder for planning
-                        },
-                        self.clone(),
-                    ),
+                    node: ExprNode::Color(op, self.clone()),
                 })
             }
         }
@@ -720,6 +669,8 @@ impl ViewExpr {
                 ExprNode::Compute(op.clone(), opt_children)
             }
             ExprNode::Image(op, child) => ExprNode::Image(op.clone(), child.optimize()),
+            ExprNode::Color(op, child) => ExprNode::Color(op.clone(), child.optimize()),
+            ExprNode::Filter(op, child) => ExprNode::Filter(op.clone(), child.optimize()),
             ExprNode::PerceptualHash(op, child) => {
                 ExprNode::PerceptualHash(op.clone(), child.optimize())
             }
@@ -876,6 +827,14 @@ impl ViewExpr {
                 info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 info.push_str(&child.explain_impl(depth + 1));
             }
+            ExprNode::Color(op, child) => {
+                info.push_str(&format!("{indent}  Op: {op:?}\n"));
+                info.push_str(&child.explain_impl(depth + 1));
+            }
+            ExprNode::Filter(op, child) => {
+                info.push_str(&format!("{indent}  Op: {op:?}\n"));
+                info.push_str(&child.explain_impl(depth + 1));
+            }
             ExprNode::Sink { format, input } => {
                 info.push_str(&format!("{indent}  Format: {format:?}\n"));
                 info.push_str(&input.explain_impl(depth + 1));
@@ -893,6 +852,8 @@ impl ViewExpr {
             ExprNode::Compute(_, _) => "Compute",
             ExprNode::Image(_, _) => "Image",
             ExprNode::PerceptualHash(_, _) => "PerceptualHash",
+            ExprNode::Color(_, _) => "Color",
+            ExprNode::Filter(_, _) => "Filter",
             ExprNode::Sink { .. } => "Sink",
         }
     }
@@ -973,6 +934,8 @@ impl ViewExpr {
                 .unwrap_or(DType::U8),
             ExprNode::Image(_, child) => child.get_source_dtype(),
             ExprNode::PerceptualHash(_, child) => child.get_source_dtype(),
+            ExprNode::Color(_, child) => child.get_source_dtype(),
+            ExprNode::Filter(_, child) => child.get_source_dtype(),
             ExprNode::Sink { input, .. } => input.get_source_dtype(),
         }
     }
@@ -1043,6 +1006,30 @@ impl ViewExpr {
                 dtype_flow.push(output_dtype);
             }
             ExprNode::PerceptualHash(op, child) => {
+                child.collect_costs(ops, dtype_flow);
+                let input_dtype = child.dtype;
+                let output_dtype = op.infer_dtype(&[input_dtype]);
+                ops.push(OpCostReport::with_dtype_change(
+                    op.name(),
+                    op.intrinsic_cost(),
+                    input_dtype,
+                    output_dtype,
+                ));
+                dtype_flow.push(output_dtype);
+            }
+            ExprNode::Color(op, child) => {
+                child.collect_costs(ops, dtype_flow);
+                let input_dtype = child.dtype;
+                let output_dtype = op.infer_dtype(&[input_dtype]);
+                ops.push(OpCostReport::with_dtype_change(
+                    Op::name(op),
+                    op.intrinsic_cost(),
+                    input_dtype,
+                    output_dtype,
+                ));
+                dtype_flow.push(output_dtype);
+            }
+            ExprNode::Filter(op, child) => {
                 child.collect_costs(ops, dtype_flow);
                 let input_dtype = child.dtype;
                 let output_dtype = op.infer_dtype(&[input_dtype]);
@@ -1204,6 +1191,22 @@ impl ViewExpr {
                 }
 
                 plan.steps.push(PlanStep::PerceptualHash(op.clone()));
+                plan
+            }
+            ExprNode::Color(op, child) => {
+                let mut plan = child.build_plan();
+                if plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous() {
+                    plan.steps.push(PlanStep::MaterializeContiguous);
+                }
+                plan.steps.push(PlanStep::Color(op.clone()));
+                plan
+            }
+            ExprNode::Filter(op, child) => {
+                let mut plan = child.build_plan();
+                if plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous() {
+                    plan.steps.push(PlanStep::MaterializeContiguous);
+                }
+                plan.steps.push(PlanStep::Filter(op.clone()));
                 plan
             }
             ExprNode::Sink { input, .. } => {

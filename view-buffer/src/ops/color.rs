@@ -4,8 +4,9 @@
 //! Follows OpenCV conventions for U8 ranges (e.g. H=[0,180] for HSV).
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::DType;
+use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -98,6 +99,55 @@ impl ColorConvertOp {
     pub fn output_channel_rule(&self) -> OutputChannelRule {
         OutputChannelRule::StripProcessRestore {
             color_channels: self.to.channels(),
+        }
+    }
+}
+
+impl Op for ColorConvertOp {
+    fn name(&self) -> &'static str {
+        "ColorConvert"
+    }
+
+    fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
+        ColorConvertOp::infer_shape(self, inputs[0])
+    }
+
+    fn output_rank_rule(&self) -> OutputRankRule {
+        ColorConvertOp::output_rank_rule(self)
+    }
+
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        ColorConvertOp::output_channel_rule(self)
+    }
+
+    fn infer_dtype(&self, inputs: &[DType]) -> DType {
+        Op::output_dtype_rule(self).resolve(inputs[0], None)
+    }
+
+    fn memory_effect(&self) -> MemoryEffect {
+        MemoryEffect::RequiresContiguous
+    }
+
+    fn infer_strides(
+        &self,
+        _input_shape: &[usize],
+        _input_strides: &[isize],
+    ) -> Option<Vec<isize>> {
+        None
+    }
+
+    fn accepted_input_dtypes(&self) -> DTypeCategory {
+        DTypeCategory::Numeric
+    }
+
+    /// Truthful dtype contract for `apply_color_convert`: conversions
+    /// involving Lab compute in float and stay float (integer inputs promote
+    /// to f32); every other conversion preserves the element dtype.
+    fn output_dtype_rule(&self) -> OutputDTypeRule {
+        if self.promotes_to_float() {
+            OutputDTypeRule::PromoteToFloat
+        } else {
+            OutputDTypeRule::PreserveInput
         }
     }
 }

@@ -25,7 +25,7 @@ use polars::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use view_buffer::geometry::label::{score_contours_on_buffer, LabelReduction, LabelRegionMode};
+use view_buffer::geometry::label::score_contours_on_buffer;
 use view_buffer::ops::NodeOutput;
 use view_buffer::{ViewBuffer, ViewDto, ViewExpr};
 
@@ -35,6 +35,8 @@ use crate::execute::{
 };
 use crate::params::{ParamCtx, ParamValue};
 use crate::pipeline::OpSpec;
+
+use super::step::GraphStep;
 
 use super::decode::{
     build_series_from_spec, decode_binary_zero_copy, decode_list_or_array_source,
@@ -52,8 +54,8 @@ struct GraphKwargsKey {
 
 /// A per-op resolver, fixed at graph-compile time.
 pub(crate) enum OpResolver {
-    /// All params literal: the `ViewDto` is resolved once and borrowed per row.
-    Static(ViewDto),
+    /// All params literal: the `GraphStep` is resolved once and borrowed per row.
+    Static(GraphStep),
     /// Has at least one dynamic (slot-bound) param: re-resolved per row with
     /// direct typed slot reads (no string-keyed lookups, no `AnyValue`).
     Dynamic(OpSpec),
@@ -66,7 +68,7 @@ pub(crate) enum OpResolver {
 
 /// One op of a node's chain, resolved for the current row.
 enum ResolvedStep<'a> {
-    Dto(Cow<'a, ViewDto>),
+    Step(Cow<'a, GraphStep>),
     RasterizeShapeRef {
         spec: &'a OpSpec,
         shape_node: &'a str,
@@ -81,8 +83,8 @@ pub struct CompiledGraph {
     graph: UnifiedGraph,
     /// Per-node op resolvers, aligned with each node's `ops`.
     resolvers: HashMap<String, Vec<OpResolver>>,
-    /// Expression column name → absolute input slot (for ops that carry the
-    /// column *name* through a view-buffer DTO, e.g. `label_reduce`).
+    /// Expression column name → absolute input slot (for steps that carry
+    /// the column *name*, e.g. `label_reduce`).
     name_to_slot: HashMap<String, usize>,
     /// Nodes whose source declared `on_error: "null"`: their decode errors
     /// become a null node output instead of failing the row.
@@ -635,11 +637,13 @@ impl CompiledGraph {
                     if let Some(resolvers) = self.resolvers.get(node_id) {
                         for resolver in resolvers {
                             match resolver {
-                                OpResolver::Static(dto) => {
-                                    dto_scratch.push(ResolvedStep::Dto(Cow::Borrowed(dto)))
+                                OpResolver::Static(step) => {
+                                    dto_scratch.push(ResolvedStep::Step(Cow::Borrowed(step)))
                                 }
                                 OpResolver::Dynamic(spec) => match resolve_op(spec, row_idx, ctx) {
-                                    Ok(dto) => dto_scratch.push(ResolvedStep::Dto(Cow::Owned(dto))),
+                                    Ok(step) => {
+                                        dto_scratch.push(ResolvedStep::Step(Cow::Owned(step)))
+                                    }
                                     Err(e) => return Err(format!("Op resolution error: {e}")),
                                 },
                                 OpResolver::RasterizeShapeRef { spec, shape_node } => dto_scratch
@@ -667,7 +671,7 @@ impl CompiledGraph {
                     }
                     let mut pending_buffer_ops: Vec<ViewDto> = Vec::new();
                     for step in dto_scratch.iter() {
-                        let view_dto = match step {
+                        let graph_step = match step {
                             ResolvedStep::RasterizeShapeRef { spec, shape_node } => {
                                 // Dimensions come from the referenced node's
                                 // buffer (already executed: it is upstream).
@@ -711,15 +715,15 @@ impl CompiledGraph {
                                 current_output = execute_geometry_op(current_output, &geo_op)?;
                                 continue;
                             }
-                            ResolvedStep::Dto(dto) => dto,
+                            ResolvedStep::Step(step) => step,
                         };
-                        match view_dto.as_ref() {
-                            ViewDto::Geometry(geo_op) => {
+                        match graph_step.as_ref() {
+                            GraphStep::Geometry(geo_op) => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 current_output = execute_geometry_op(current_output, geo_op)?;
                             }
-                            ViewDto::Binary { op, other_node_id } => {
+                            GraphStep::Binary { op, other } => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 let current_buf = current_output.as_buffer().ok_or_else(|| {
@@ -728,12 +732,9 @@ impl CompiledGraph {
                                         current_output.domain()
                                     )
                                 })?;
-                                let other_output =
-                                    node_outputs.get(other_node_id).ok_or_else(|| {
-                                        format!(
-                                            "Binary op references unknown node '{other_node_id}'"
-                                        )
-                                    })?;
+                                let other_output = node_outputs.get(other).ok_or_else(|| {
+                                    format!("Binary op references unknown node '{other}'")
+                                })?;
                                 let other_buf = other_output.as_buffer().ok_or_else(|| {
                                     format!(
                                         "Binary op other operand must be Buffer, got {:?}",
@@ -743,10 +744,7 @@ impl CompiledGraph {
                                 let result = op.execute(current_buf, other_buf);
                                 current_output = NodeOutput::from_buffer(result);
                             }
-                            ViewDto::ApplyMask {
-                                mask_node_id,
-                                invert,
-                            } => {
+                            GraphStep::ApplyMask { mask, invert } => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 let current_buf = current_output.as_buffer().ok_or_else(|| {
@@ -755,12 +753,9 @@ impl CompiledGraph {
                                         current_output.domain()
                                     )
                                 })?;
-                                let mask_output =
-                                    node_outputs.get(mask_node_id).ok_or_else(|| {
-                                        format!(
-                                            "ApplyMask references unknown node '{mask_node_id}'"
-                                        )
-                                    })?;
+                                let mask_output = node_outputs.get(mask).ok_or_else(|| {
+                                    format!("ApplyMask references unknown node '{mask}'")
+                                })?;
                                 let mask_buf = mask_output.as_buffer().ok_or_else(|| {
                                     format!(
                                         "ApplyMask mask must be Buffer, got {:?}",
@@ -771,7 +766,7 @@ impl CompiledGraph {
                                     view_buffer::apply_mask(current_buf, mask_buf, *invert);
                                 current_output = NodeOutput::from_buffer(result);
                             }
-                            ViewDto::Reduction(reduction_op) => {
+                            GraphStep::Reduction(reduction_op) => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 let current_buf = current_output.as_buffer().ok_or_else(|| {
@@ -786,7 +781,7 @@ impl CompiledGraph {
                                     _ => NodeOutput::from_buffer(result),
                                 };
                             }
-                            ViewDto::Histogram(histogram_op) => {
+                            GraphStep::Histogram(histogram_op) => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 let current_buf = current_output.as_buffer().ok_or_else(|| {
@@ -798,7 +793,7 @@ impl CompiledGraph {
                                 let result = histogram_op.execute(current_buf);
                                 current_output = NodeOutput::from_buffer(result);
                             }
-                            ViewDto::ExtractShape => {
+                            GraphStep::ExtractShape => {
                                 // Extract shape from buffer and return as vector
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
@@ -813,8 +808,8 @@ impl CompiledGraph {
                                 let shape_vec: Vec<f64> = shape.iter().map(|&d| d as f64).collect();
                                 current_output = NodeOutput::from_vector(shape_vec);
                             }
-                            ViewDto::LabelReduce {
-                                contours_expr,
+                            GraphStep::LabelReduce {
+                                contours_col,
                                 reduction,
                                 region_mode,
                             } => {
@@ -827,9 +822,9 @@ impl CompiledGraph {
                                     )
                                 })?;
                                 let slot =
-                                    self.name_to_slot.get(contours_expr).ok_or_else(|| {
+                                    self.name_to_slot.get(contours_col).ok_or_else(|| {
                                         format!(
-                                            "LabelReduce contour column '{contours_expr}' not found in expression inputs"
+                                            "LabelReduce contour column '{contours_col}' not found in expression inputs"
                                         )
                                     })?;
                                 let contour_col = ctx.col(*slot).map_err(|e| e.to_string())?;
@@ -845,35 +840,15 @@ impl CompiledGraph {
                                 let contours = parse_contour_list(&contour_value).map_err(|e| {
                                     format!("LabelReduce contour parsing failed: {e}")
                                 })?;
-                                let parsed_reduction = view_buffer::naming::lookup(
-                                    LabelReduction::NAMED,
-                                    reduction,
-                                )
-                                .ok_or_else(|| {
-                                    format!(
-                                        "Unsupported reduction '{reduction}'. Expected one of: {:?}",
-                                        view_buffer::naming::names(LabelReduction::NAMED)
-                                    )
-                                })?;
-                                let parsed_region_mode = view_buffer::naming::lookup(
-                                    LabelRegionMode::NAMED,
-                                    region_mode,
-                                )
-                                .ok_or_else(|| {
-                                    format!(
-                                        "Unsupported region_mode '{region_mode}'. Expected one of: {:?}",
-                                        view_buffer::naming::names(LabelRegionMode::NAMED)
-                                    )
-                                })?;
                                 let scores = score_contours_on_buffer(
                                     current_buf,
                                     &contours,
-                                    parsed_reduction,
-                                    parsed_region_mode,
+                                    *reduction,
+                                    *region_mode,
                                 )?;
                                 current_output = NodeOutput::from_vector(scores);
                             }
-                            ViewDto::ChannelMerge { other_node_ids } => {
+                            GraphStep::ChannelMerge { others } => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 let current_buf = current_output.as_buffer().ok_or_else(|| {
@@ -883,7 +858,7 @@ impl CompiledGraph {
                                     )
                                 })?;
                                 let mut all_bufs: Vec<&ViewBuffer> = vec![current_buf];
-                                for other_id in other_node_ids {
+                                for other_id in others {
                                     let other_output =
                                         node_outputs.get(other_id).ok_or_else(|| {
                                             format!("ChannelMerge: node '{other_id}' not found")
@@ -896,34 +871,10 @@ impl CompiledGraph {
                                 let result = view_buffer::apply_channel_merge(&all_bufs);
                                 current_output = NodeOutput::from_buffer(result);
                             }
-                            ViewDto::Color(color_op) => {
-                                use view_buffer::ops::color::apply_color_convert;
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ColorConvert requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let result = apply_color_convert(current_buf, color_op);
-                                current_output = NodeOutput::from_buffer(result);
-                            }
-                            ViewDto::Filter(convolve_op) => {
-                                use view_buffer::ops::filter::apply_convolve2d;
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "Convolve2D requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let result = apply_convolve2d(current_buf, convolve_op);
-                                current_output = NodeOutput::from_buffer(result);
-                            }
-                            _ => {
-                                pending_buffer_ops.push(view_dto.as_ref().clone());
+                            // Fusable single-buffer engine ops accumulate and
+                            // run as one ViewExpr chain at the next flush.
+                            GraphStep::Buffer(dto) => {
+                                pending_buffer_ops.push(dto.clone());
                             }
                         }
                     }
@@ -1316,6 +1267,199 @@ mod tests {
         let out_bytes = out.binary().unwrap().get(0).unwrap();
         let decoded = ViewBuffer::from_blob(out_bytes).unwrap();
         assert_eq!(decoded.as_slice::<f32>(), &[1.0, 2.0, 3.0]);
+    }
+
+    /// Completeness guard + execution coverage: every `GraphStep` variant
+    /// executes end-to-end through `CompiledGraph::execute`. The exhaustive
+    /// match in `assert_step_covered` makes adding a variant a compile error
+    /// until it is acknowledged (and given a graph below).
+    fn assert_step_covered(step: &GraphStep) {
+        match step {
+            GraphStep::Buffer(_)
+            | GraphStep::Binary { .. }
+            | GraphStep::ApplyMask { .. }
+            | GraphStep::ChannelMerge { .. }
+            | GraphStep::Geometry(_)
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => (),
+        }
+    }
+
+    fn exec(graph: &str, names: &[String], inputs: &[Series]) -> Series {
+        CompiledGraph::compile(graph, names)
+            .expect("graph must compile")
+            .execute(inputs)
+            .expect("graph must execute")
+    }
+
+    fn mask_blob() -> Vec<u8> {
+        // 4x4 single-channel u8 with a bright 2x2 block.
+        let mut data = vec![0u8; 16];
+        for y in 1..3 {
+            for x in 1..3 {
+                data[y * 4 + x] = 255;
+            }
+        }
+        ViewBuffer::from_vec_with_shape(data, vec![4, 4, 1]).to_blob()
+    }
+
+    #[test]
+    fn every_graph_step_variant_executes() {
+        let f32_blob =
+            ViewBuffer::from_vec_with_shape(vec![1.0f32, -2.0, 3.0, 4.0], vec![2, 2]).to_blob();
+        let no_names: Vec<String> = vec![];
+
+        // Buffer (relu executes via the fused ViewExpr run).
+        let step = resolve_op(
+            &OpSpec {
+                op: "relu".into(),
+                params: HashMap::new(),
+            },
+            0,
+            &ParamCtx::empty(),
+        )
+        .unwrap();
+        assert_step_covered(&step);
+        let out = exec(
+            SIMPLE_GRAPH,
+            &no_names,
+            &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
+        );
+        assert_eq!(out.null_count(), 0);
+
+        // Binary: n1 = n0 + n0.
+        let out = exec(
+            r#"{
+                "nodes": {
+                    "n0": {"source": {"format": "blob"}},
+                    "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                           "ops": [{"op": "add", "other_node": {"type": "literal", "value": "n0"}}]}
+                },
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
+        );
+        let doubled = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        assert_eq!(doubled.as_slice::<f32>(), &[2.0, -4.0, 6.0, 8.0]);
+
+        // ApplyMask: mask a buffer with itself (u8 mask semantics).
+        let out = exec(
+            r#"{
+                "nodes": {
+                    "n0": {"source": {"format": "blob"}},
+                    "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                           "ops": [{"op": "apply_mask", "other_node": {"type": "literal", "value": "n0"}}]}
+                },
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), &[mask_blob()])],
+        );
+        assert_eq!(out.null_count(), 0);
+
+        // ChannelMerge: [2,2] + [2,2] -> [2,2,2].
+        let single = ViewBuffer::from_vec_with_shape(vec![1u8, 2, 3, 4], vec![2, 2]).to_blob();
+        let out = exec(
+            r#"{
+                "nodes": {
+                    "n0": {"source": {"format": "blob"}},
+                    "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
+                           "ops": [{"op": "channel_merge", "other_nodes": {"type": "literal", "value": ["n0"]}}]}
+                },
+                "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), &[single])],
+        );
+        let merged = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        assert_eq!(merged.shape(), &[2, 2, 2]);
+
+        // Geometry: extract_contours from a binary mask (buffer -> contour).
+        let out = exec(
+            r#"{
+                "nodes": {"n0": {"source": {"format": "blob"},
+                                  "ops": [{"op": "extract_contours"}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "contour"}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), &[mask_blob()])],
+        );
+        assert_eq!(out.null_count(), 0);
+
+        // Reduction: global sum -> scalar.
+        let out = exec(
+            r#"{
+                "nodes": {"n0": {"source": {"format": "blob"},
+                                  "ops": [{"op": "reduce_sum"}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "scalar"}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
+        );
+        assert_eq!(out.f64().unwrap().get(0), Some(6.0));
+
+        // Histogram: counts buffer.
+        let out = exec(
+            r#"{
+                "nodes": {"n0": {"source": {"format": "blob"},
+                                  "ops": [{"op": "histogram",
+                                           "bins": {"type": "literal", "value": 4},
+                                           "closed": {"type": "literal", "value": "left"},
+                                           "output": {"type": "literal", "value": "counts"}}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
+        );
+        let counts = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        assert_eq!(counts.as_slice::<u64>().iter().sum::<u64>(), 4);
+
+        // ExtractShape: dimension vector.
+        let out = exec(
+            r#"{
+                "nodes": {"n0": {"source": {"format": "blob"},
+                                  "ops": [{"op": "extract_shape"}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "vector"}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
+        );
+        assert_eq!(out.null_count(), 0);
+
+        // LabelReduce: score one contour region from an expression column.
+        let contour = view_buffer::geometry::Contour::from_tuples(&[
+            (0.0, 0.0),
+            (3.0, 0.0),
+            (3.0, 3.0),
+            (0.0, 3.0),
+        ]);
+        let contour_av = crate::contour::contour_to_anyvalue(&contour);
+        let inner = Series::from_any_values("".into(), &[contour_av], false).unwrap();
+        let row = AnyValue::List(inner);
+        let cont_col = Series::from_any_values("cont".into(), &[row], false).unwrap();
+        let out = exec(
+            r#"{
+                "nodes": {"n0": {"source": {"format": "blob"},
+                                  "ops": [{"op": "label_reduce",
+                                           "contours": {"type": "expr", "col": "cont"},
+                                           "reduction": {"type": "literal", "value": "max"}}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "vector"}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &["cont".to_string()],
+            &[Series::new("b".into(), &[mask_blob()]), cont_col],
+        );
+        assert_eq!(out.null_count(), 0);
     }
 
     #[test]
