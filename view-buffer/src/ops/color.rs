@@ -201,7 +201,13 @@ fn split_alpha_typed<T: crate::core::dtype::ViewType + Default + Copy>(
 /// `([H, W, C], [H, W, 1])` -> `[H, W, C+1]`
 pub fn merge_alpha(color: &ViewBuffer, alpha: &ViewBuffer) -> ViewBuffer {
     let contig_color = color.to_contiguous();
-    let contig_alpha = alpha.to_contiguous();
+    // The conversion may have changed the color dtype while alpha kept the
+    // source's (u8 RGBA -> f32 Lab): align alpha before the typed merge,
+    // which reads both slices as the color's element type.
+    let mut contig_alpha = alpha.to_contiguous();
+    if contig_alpha.dtype() != contig_color.dtype() {
+        contig_alpha = contig_alpha.cast(contig_color.dtype());
+    }
     let shape = contig_color.shape();
     let (h, w) = (shape[0], shape[1]);
     let color_c = if shape.len() == 3 { shape[2] } else { 1 };
@@ -253,12 +259,22 @@ pub fn apply_color_convert(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer 
     let channels = if shape.len() == 3 { shape[2] } else { 1 };
     let has_alpha = matches!(channels, 2 | 4);
 
-    if has_alpha {
+    let result = if has_alpha {
         let (color_buf, alpha_buf) = split_alpha(buf);
         let converted = apply_color_convert_core(&color_buf, op);
         merge_alpha(&converted, &alpha_buf)
     } else {
         apply_color_convert_core(buf, op)
+    };
+
+    // Enforce the declared dtype contract at the single exit point: non-Lab
+    // conversions preserve the input element dtype. The core paths already
+    // cast back, but the alpha split/merge helpers work in u8/u16/f32 and
+    // would otherwise leak f32 for e.g. an RGBA f64 input.
+    if !op.promotes_to_float() && result.dtype() != buf.dtype() {
+        result.cast(buf.dtype())
+    } else {
+        result
     }
 }
 
@@ -883,11 +899,9 @@ mod tests {
             let op = ColorConvertOp { from, to };
             let channels = if from == ColorSpace::Gray { 1 } else { 3 };
             for dtype in [DType::U16, DType::I32, DType::F64] {
-                let src = ViewBuffer::from_vec_with_shape(
-                    vec![100u8; channels],
-                    vec![1, 1, channels],
-                )
-                .cast(dtype);
+                let src =
+                    ViewBuffer::from_vec_with_shape(vec![100u8; channels], vec![1, 1, channels])
+                        .cast(dtype);
                 let out = apply_color_convert(&src, &op);
                 assert_eq!(
                     out.dtype(),
@@ -904,6 +918,28 @@ mod tests {
         }
     }
 
+    /// The preserve contract holds through the alpha split/process/restore
+    /// path too (its helpers compute in u8/u16/f32 internally).
+    #[test]
+    fn test_alpha_path_preserves_dtype() {
+        let op = ColorConvertOp {
+            from: ColorSpace::Rgb,
+            to: ColorSpace::Hsv,
+        };
+        for dtype in [DType::U16, DType::F64] {
+            let src = ViewBuffer::from_vec_with_shape(vec![100u8, 150, 200, 255], vec![1, 1, 4])
+                .cast(dtype);
+            let out = apply_color_convert(&src, &op);
+            assert_eq!(out.shape(), &[1, 1, 4]);
+            assert_eq!(
+                out.dtype(),
+                dtype,
+                "alpha path must preserve {dtype:?}, got {:?}",
+                out.dtype()
+            );
+        }
+    }
+
     /// Lab-involving conversions are f32 for every input dtype, including f64.
     #[test]
     fn test_lab_is_f32_for_all_input_dtypes() {
@@ -912,10 +948,16 @@ mod tests {
             to: ColorSpace::Lab,
         };
         for dtype in [DType::U8, DType::U16, DType::F64] {
-            let src = ViewBuffer::from_vec_with_shape(vec![100u8, 150, 200], vec![1, 1, 3])
-                .cast(dtype);
+            let src =
+                ViewBuffer::from_vec_with_shape(vec![100u8, 150, 200], vec![1, 1, 3]).cast(dtype);
             let out = apply_color_convert(&src, &to_lab);
             assert_eq!(out.dtype(), DType::F32, "{dtype:?}->lab must yield f32");
         }
+
+        // With an alpha channel: LabA output stays f32 (alpha re-attached).
+        let rgba = ViewBuffer::from_vec_with_shape(vec![100u8, 150, 200, 255], vec![1, 1, 4]);
+        let out = apply_color_convert(&rgba, &to_lab);
+        assert_eq!(out.shape(), &[1, 1, 4]);
+        assert_eq!(out.dtype(), DType::F32, "u8 rgba->lab must yield f32 LabA");
     }
 }
