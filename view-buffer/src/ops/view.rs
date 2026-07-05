@@ -80,8 +80,10 @@ impl Op for ViewOp {
         match self {
             // Selecting a channel drops the trailing channel dimension.
             ViewOp::ChannelSelect { .. } => OutputRankRule::ReduceByOne,
-            // Reshape produces an arbitrary rank known only from its target.
-            ViewOp::Reshape(_) => OutputRankRule::Unknown,
+            // Reshape's rank is structural: the *count* of target dims is
+            // known at plan time even when individual entries are per-row
+            // expressions (bound to placeholder values for introspection).
+            ViewOp::Reshape(shape) => OutputRankRule::Fixed(shape.len()),
             // Transpose/flip/crop/rotate all keep the rank.
             ViewOp::Transpose(_)
             | ViewOp::Flip(_)

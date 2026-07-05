@@ -840,6 +840,22 @@ def test_pipeline_state_matches_batch_fold() -> None:
         .threshold(1)
         .extract_contours(),
         Pipeline().source("blob", dtype="u8").perceptual_hash(),
+        # Ops whose builders skipped the incremental schema call entirely
+        # (they append + update shape hints only) — regression coverage for
+        # the tracked-state == fold invariant on that path.
+        Pipeline().source("blob", dtype="u8").reshape([16]).cast("f32"),
+        Pipeline().source("blob", dtype="u8").flip([0]).transpose([1, 0, 2]),
+        Pipeline().source("blob", dtype="u8").crop(top=0, left=0, height=2, width=2),
+        Pipeline().source("blob", dtype="u8").pad(top=1, bottom=1, left=1, right=1),
+        Pipeline().source("blob", dtype="u8").pad_to_size(height=8, width=8),
+        Pipeline().source("blob", dtype="u8").letterbox(height=8, width=8),
+        Pipeline()
+        .source("blob", dtype="u8")
+        .grayscale()
+        .threshold(1)
+        .extract_contours()
+        .simplify(tolerance=0.5)
+        .convex_hull(),
     ]
     for pipe in corpus:
         folded = Pipeline._compute_output_domain_dtype_ndim(
@@ -884,6 +900,77 @@ def test_axis_reduction_ndim_decrements_exactly_once() -> None:
     assert pipe._expected_ndim == 2
     pipe = pipe.reduce_min(axis=0)
     assert pipe._expected_ndim == 1
+
+
+@plugin_required
+def test_reshape_rank_tracked_eagerly() -> None:
+    """Regression: reshape's builder skipped the incremental schema call, so
+    the eager pipeline kept the stale pre-reshape ndim while the lazy fold
+    saw the op — eager and lazy tracking disagreed. Reshape's rank is
+    structural (= len(shape)), so both paths now report it exactly."""
+    pipe = Pipeline().source("blob", dtype="u8")
+    pipe._expected_ndim = 3  # white-box: seed a known rank
+
+    flat = pipe.reshape([16])
+    assert flat._expected_ndim == 1
+
+    grid = pipe.reshape([2, 2, 2, 2])
+    assert grid._expected_ndim == 4
+
+    # Per-row expression entries do not hide the rank: it is the entry count.
+    dyn = pipe.reshape([pl.col("n"), 4])
+    assert dyn._expected_ndim == 2
+
+
+def test_every_op_append_updates_tracked_state() -> None:
+    """Ratchet: every Pipeline builder method that appends an OpSpec must run
+    the appended op through the op_schema authority (_update_output_dtype).
+    A method that skips the call leaves the eager tracked state stale while
+    the lazy fold sees the op — the eager/lazy drift class of bug.
+
+    Exception: _add_binary_op is an internal hook whose schema effect is
+    resolved by LazyPipelineExpr via binary_output_dtype (a two-input rule
+    op_schema cannot express).
+    """
+    import ast
+    from pathlib import Path
+
+    import polars_cv.pipeline as pipeline_mod
+
+    source = Path(pipeline_mod.__file__).read_text()
+    tree = ast.parse(source)
+    pipeline_cls = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "Pipeline"
+    )
+
+    def calls_in(node: ast.AST, attr: str) -> bool:
+        return any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == attr
+            for sub in ast.walk(node)
+        )
+
+    offenders = [
+        method.name
+        for method in pipeline_cls.body
+        if isinstance(method, ast.FunctionDef)
+        and method.name != "_add_binary_op"
+        and any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "append"
+            and isinstance(sub.func.value, ast.Attribute)
+            and sub.func.value.attr == "_ops"
+            for sub in ast.walk(method)
+        )
+        and not calls_in(method, "_update_output_dtype")
+    ]
+    assert not offenders, (
+        f"builder methods append an OpSpec without _update_output_dtype: {offenders}"
+    )
 
 
 def test_histogram_schema_declared_once() -> None:

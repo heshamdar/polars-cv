@@ -149,6 +149,18 @@ fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep
                 idx: placeholders.len(),
             };
             placeholders.push(Series::new("".into(), &[1_i64]));
+        } else if let ParamValue::Literal { value } = p {
+            // A literal may itself be a list of ParamValue dicts (reshape's
+            // shape). Neutralize any expression entries the same way so the
+            // op's structural schema (here: the target rank = entry count)
+            // is introspectable regardless of per-row dims.
+            if let Some(arr) = value.as_array_mut() {
+                for entry in arr.iter_mut() {
+                    if entry.get("type").and_then(|t| t.as_str()) == Some("expr") {
+                        *entry = serde_json::json!({"type": "literal", "value": 1});
+                    }
+                }
+            }
         }
     }
     let ctx = ParamCtx::from_inputs(&placeholders);
