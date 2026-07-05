@@ -13,43 +13,17 @@ and must continue to pass AFTER the optimization is implemented.
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
+from tests.conftest import make_test_png as create_test_png
+from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
     pass
-
-
-def create_test_png(
-    width: int = 10, height: int = 10, color: tuple[int, int, int] = (255, 0, 0)
-) -> bytes:
-    """
-    Create a test PNG image.
-
-    Args:
-        width: Image width.
-        height: Image height.
-        color: RGB color tuple.
-
-    Returns:
-        PNG bytes.
-    """
-    try:
-        from PIL import Image
-
-        img = Image.new("RGB", (width, height), color)
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        return buffer.getvalue()
-    except ImportError:
-        pytest.skip("PIL/Pillow required for this test")
-        return b""
 
 
 def get_shape(struct_val: dict) -> tuple[int, ...]:
@@ -70,21 +44,6 @@ def get_shape(struct_val: dict) -> tuple[int, ...]:
     if isinstance(shape_list, pl.Series):
         return tuple(int(x) for x in shape_list.to_list())
     return tuple(int(x) for x in shape_list)
-
-
-def _plugin_available() -> bool:
-    """Check if the compiled plugin is available."""
-    from pathlib import Path
-
-    lib_path = Path(__file__).parent.parent / "python" / "polars_cv"
-    so_files = list(lib_path.glob("*.so")) + list(lib_path.glob("*.pyd"))
-    return len(so_files) > 0
-
-
-plugin_required = pytest.mark.skipif(
-    not _plugin_available(),
-    reason="Requires compiled plugin (run maturin develop first)",
-)
 
 
 @plugin_required

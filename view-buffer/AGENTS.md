@@ -86,21 +86,25 @@ Each method appends a node. `plan()` compiles into `ExecutionPlan`, `execute()` 
 
 ### ViewDto (Data Transfer Object)
 
-Serializable enum bridging JSON graph (from Python) to operation execution:
+Serializable enum of exactly the operations `ViewExpr` can execute — every
+variant is buffer-in/buffer-out and Op-backed (contracts delegate through
+`as_op()`). Graph-level concerns (binary ops between nodes, masks, channel
+merge, geometry, reductions, histograms) live in polars-cv's `GraphStep`
+(`polars-cv/src/graph/step.rs`), not here:
 
 ```rust
 pub enum ViewDto {
-    Image(ImageOp),         // resize, blur, grayscale, threshold, canny, histogram_equalize
+    View(ViewOp),           // transpose, reshape, flip, crop, channel_select, pad, rotate90/180/270
     Compute(ComputeOp),     // cast, scale, normalize, clamp, relu, adjust_contrast, adjust_gamma, invert, affine, rotate_affine
-    View(ViewOp),           // transpose, reshape, flip, crop, channel_select
-    Binary(BinaryOp),       // add, subtract, multiply, blend, bitwise
-    Geometry(GeometryOp),   // extract_contours, rasterize, measures
-    ChannelSwap { order },  // reorder channels (allocating)
-    ChannelMerge { .. },    // merge single-channel buffers (allocating, graph-level)
+    Image(ImageOp),         // resize, blur, grayscale, threshold, canny, erode, dilate, morph_gradient, equalize
     Color(ColorConvertOp),  // RGB↔HSV, RGB↔LAB, RGB↔YCbCr, RGB↔BGR, RGB↔Gray
     Filter(ConvolveOp),     // 2D spatial convolution with border handling
+    PerceptualHash(PerceptualHashOp),
 }
 ```
+
+`tests/apply_op_coverage.rs` executes one probe per variant against its own
+contract and fails to compile when a variant is added without a probe.
 
 ### Operation Categories
 
@@ -172,9 +176,7 @@ Key implementation points:
 3. Add to `ViewDto` in `ops/dto.rs`
 4. Add builder method to `ViewExpr` in `expr.rs`
 5. Add execution logic in `execution/runner.rs`
-6. Wire into polars-cv: add to `resolve_op` in `polars-cv/src/execute.rs`
-
-See `.cursor/polars-cv-contribution-guide.md` for a full walkthrough.
+6. Wire into polars-cv: add to `resolve_op` in `polars-cv/src/execute.rs` (as `GraphStep::Buffer(dto)`)
 
 ## Feature Flags
 

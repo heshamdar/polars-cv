@@ -2,27 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
-import pytest
+
+from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
     pass
 
-
-def _plugin_available() -> bool:
-    """Check whether the compiled Rust plugin is available."""
-    lib_path = Path(__file__).parent.parent / "python" / "polars_cv"
-    so_files = list(lib_path.glob("*.so")) + list(lib_path.glob("*.pyd"))
-    return len(so_files) > 0
-
-
-plugin_required = pytest.mark.skipif(
-    not _plugin_available(),
-    reason="Requires compiled plugin (run maturin develop first)",
-)
 
 BBOX_SCHEMA = pl.Struct(
     [

@@ -854,7 +854,6 @@ def test_append_cost_is_linear(monkeypatch) -> None:
     """Appending N ops makes exactly N op_schema calls (no full replay)."""
     import polars_cv._lib as lib
 
-
     calls = {"n": 0}
     real = lib.op_schema
 
@@ -931,3 +930,39 @@ def test_enum_validation_uniform() -> None:
     for build, label in cases:
         with pytest.raises(ValueError, match=rf"Invalid {label} 'bogus'"):
             build()
+
+
+# ---------------------------------------------------------------------------
+# Test-suite conformance: shared fixtures live in conftest.py only
+# ---------------------------------------------------------------------------
+
+
+def _test_files() -> list:
+    from pathlib import Path
+
+    tests_dir = Path(__file__).parent
+    return [
+        p
+        for p in tests_dir.rglob("*.py")
+        if p.name != "conftest.py" and p.name != Path(__file__).name
+    ]
+
+
+def test_no_local_plugin_available_definitions() -> None:
+    """Plugin availability is checked in exactly one place (conftest.py).
+
+    Import ``plugin_required`` from ``tests.conftest`` instead of redefining
+    ``_plugin_available`` per file."""
+    offenders = [
+        str(p.name) for p in _test_files() if "def _plugin_available" in p.read_text()
+    ]
+    assert not offenders, f"local _plugin_available definitions in: {offenders}"
+
+
+def test_no_local_png_factories() -> None:
+    """PNG construction fixtures live in conftest.py only (create_test_png /
+    encode_png); test files must not define their own."""
+    offenders = [
+        str(p.name) for p in _test_files() if "def create_test_png" in p.read_text()
+    ]
+    assert not offenders, f"local create_test_png definitions in: {offenders}"

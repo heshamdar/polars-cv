@@ -102,8 +102,11 @@ class TestEnumValuesExecutable:
 
     @pytest.mark.parametrize("output", [o.value for o in HistogramOutput])
     def test_histogram_outputs(self, image_bytes: bytes, output: str) -> None:
-        pipe = Pipeline().source("image_bytes").grayscale().histogram(
-            bins=8, output=output
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=8, output=output)
         )
         # quantized stays an image buffer; buckets has a dedicated native
         # encoding; counts/normalized/edges are 1-D results read via the typed
@@ -120,8 +123,11 @@ class TestEnumValuesExecutable:
 
     @pytest.mark.parametrize("closed", ["left", "right"])
     def test_histogram_closed(self, image_bytes: bytes, closed: str) -> None:
-        pipe = Pipeline().source("image_bytes").grayscale().histogram(
-            bins=8, closed=closed, output="counts"
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=8, closed=closed, output="counts")
         )
         _run(pipe, "list", image_bytes)
 

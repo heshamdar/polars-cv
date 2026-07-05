@@ -12,28 +12,16 @@ exception is raised but pixels are wrong.
 from __future__ import annotations
 
 import io
-from pathlib import Path
 
 import numpy as np
 import polars as pl
-import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
+from tests.conftest import plugin_required
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _plugin_available() -> bool:
-    lib_path = Path(__file__).parent.parent / "python" / "polars_cv"
-    return bool(list(lib_path.glob("*.so")) + list(lib_path.glob("*.pyd")))
-
-
-plugin_required = pytest.mark.skipif(
-    not _plugin_available(),
-    reason="Requires compiled plugin (run maturin develop first)",
-)
 
 
 def _png(arr: np.ndarray) -> bytes:

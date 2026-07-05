@@ -95,8 +95,8 @@ Rust: view-buffer (the engine)
 ### Key Rust Modules
 
 **polars-cv/src/**
-- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `op_contract`/`op_output_dtype`/`enum_variants`/`known_ops` FFI the Python planner reads
-- `execute.rs` — `resolve_op()` dispatcher mapping `OpSpec` variants to view-buffer calls; owns the `KNOWN_OPS` registry
+- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `op_schema`/`op_contract`/`op_output_dtype`/`enum_variants`/`known_ops` FFI the Python planner reads
+- `execute.rs` — `resolve_op()` dispatcher mapping `OpSpec`s to `GraphStep`s (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants); owns the `KNOWN_OPS` registry
 - `graph/` — `UnifiedGraph` execution engine: `types.rs` (`UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowErrorPolicy`), `compiled.rs` (process-wide compiled-graph cache), source decoding (`decode.rs`), sink encoding (`encode.rs`)
 - `params.rs` — `ParamValue` resolving literals vs per-row Polars column values
 - `pipeline.rs` — serde types for the JSON graph spec crossing the plugin boundary
@@ -159,8 +159,16 @@ reads via `channel_rule`:
 
 ### Adding a New Operation
 
-1. Implement in **view-buffer** (`view-buffer/src/ops/`) — add to appropriate module and register in `ViewDto`.
-2. Add a dispatch arm in **polars-cv** `src/execute.rs` (`resolve_op()`).
+1. Implement in **view-buffer** (`view-buffer/src/ops/`) if it is a buffer→buffer
+   engine op — add to the appropriate module, give it truthful `Op` contracts
+   (shape/dtype/domain/channel rules), and register it in `ViewDto`
+   (`tests/apply_op_coverage.rs` requires a probe per variant). Graph-level
+   steps (node references, non-buffer outputs) become `GraphStep` variants in
+   `polars-cv/src/graph/step.rs` instead.
+2. Add a dispatch arm in **polars-cv** `src/execute.rs` (`resolve_op()`),
+   returning the `GraphStep`. The Python planner picks up the op's schema
+   effect automatically through the `op_schema` FFI — no Python-side schema
+   special cases.
 3. Add a method to `Pipeline` in `python/polars_cv/pipeline.py`. The matching
    `LazyPipelineExpr` method is generated automatically from `Pipeline` at import
    time (`python/polars_cv/lazy.py`) — do **not** hand-mirror it. If the op needs
