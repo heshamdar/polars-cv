@@ -746,3 +746,188 @@ def test_lazy_stub_is_current():
     assert stub_path.read_text() == module.generate_stub(), (
         "lazy.pyi is out of date. Run: python scripts/gen_lazy_stub.py"
     )
+
+
+# ---------------------------------------------------------------------------
+# op_schema: the single per-op schema authority (domain, dtype, ndim)
+# ---------------------------------------------------------------------------
+
+
+def _op_json(op: str, **params: object) -> str:
+    import json
+
+    spec: dict = {"op": op}
+    for k, v in params.items():
+        spec[k] = {"type": "literal", "value": v}
+    return json.dumps(spec)
+
+
+@plugin_required
+@pytest.mark.parametrize(
+    ("op_json", "state_in", "expected"),
+    [
+        # cast: dtype comes from the op's own target parameter.
+        (_op_json("cast", dtype="f32"), ("buffer", "u8", 3), ("buffer", "f32", 3)),
+        # histogram modes: quantized keeps a buffer; buckets are struct-encoded
+        # (dtype is an encoding concern -> "auto"); counts/normalized/edges are
+        # typed vectors.
+        (
+            _op_json("histogram", bins=8, closed="left", output="quantized"),
+            ("buffer", "u8", 3),
+            ("buffer", "u32", 3),
+        ),
+        (
+            _op_json("histogram", bins=8, closed="left", output="buckets"),
+            ("buffer", "u8", 3),
+            ("vector", "auto", 1),
+        ),
+        (
+            _op_json("histogram", bins=8, closed="left", output="counts"),
+            ("buffer", "u8", 3),
+            ("vector", "u64", 1),
+        ),
+        (
+            _op_json("histogram", bins=8, closed="left", output="normalized"),
+            ("buffer", "u8", 3),
+            ("vector", "f64", 1),
+        ),
+        (
+            _op_json("histogram", bins=8, closed="left", output="edges"),
+            ("buffer", "u8", 3),
+            ("vector", "f64", 1),
+        ),
+        # reductions: axis presence decides scalar-vs-buffer.
+        (_op_json("reduce_max", axis=0), ("buffer", "u8", 3), ("buffer", "u8", 2)),
+        (_op_json("reduce_max"), ("buffer", "u8", 3), ("scalar", "u8", 0)),
+        (_op_json("reduce_sum"), ("buffer", "u8", 3), ("scalar", "f64", 0)),
+        # domain transitions.
+        (_op_json("extract_shape"), ("buffer", "u8", 3), ("vector", "f64", 1)),
+        # extract_contours: contour coordinates are f64 by the geometry contract.
+        (_op_json("extract_contours"), ("buffer", "u8", 3), ("contour", "f64", None)),
+        (
+            _op_json("rasterize", width=8, height=8),
+            ("contour", "u8", None),
+            ("buffer", "u8", 3),
+        ),
+        # ordinary buffer op: rank/dtype preserved.
+        (_op_json("grayscale"), ("buffer", "u8", 3), ("buffer", "u8", 3)),
+    ],
+)
+def test_op_schema_authority(op_json, state_in, expected) -> None:
+    """``op_schema`` resolves the param-dependent schema cases in Rust —
+    including everything the Python planner used to special-case."""
+    import polars_cv._lib as lib
+
+    assert tuple(lib.op_schema(op_json, *state_in)) == expected
+
+
+@plugin_required
+def test_pipeline_state_matches_batch_fold() -> None:
+    """Incrementally tracked builder state equals the fold over op_schema
+    from the initial state — the two mechanisms share one authority."""
+    corpus = [
+        Pipeline().source("blob", dtype="u8").grayscale().threshold(128),
+        Pipeline().source("blob", dtype="u8").cast("f32").scale(2.0),
+        Pipeline()
+        .source("blob", dtype="u8")
+        .grayscale()
+        .histogram(bins=8, output="counts"),
+        Pipeline().source("blob", dtype="u8").reduce_max(axis=0),
+        Pipeline().source("blob", dtype="u8").reduce_sum(),
+        Pipeline()
+        .source("blob", dtype="u8")
+        .grayscale()
+        .threshold(1)
+        .extract_contours(),
+        Pipeline().source("blob", dtype="u8").perceptual_hash(),
+    ]
+    for pipe in corpus:
+        folded = Pipeline._compute_output_domain_dtype_ndim(
+            pipe._ops, initial_domain="buffer", initial_dtype="u8", initial_ndim=None
+        )
+        tracked = (pipe._current_domain, pipe._output_dtype, pipe._expected_ndim)
+        assert tracked == folded, f"state drift for {[o.op for o in pipe._ops]}"
+
+
+@plugin_required
+def test_append_cost_is_linear(monkeypatch) -> None:
+    """Appending N ops makes exactly N op_schema calls (no full replay)."""
+    import polars_cv._lib as lib
+
+
+    calls = {"n": 0}
+    real = lib.op_schema
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(lib, "op_schema", counting)
+
+    pipe = Pipeline().source("blob", dtype="u8")
+    n_ops = 6
+    for _ in range(n_ops // 2):
+        pipe = pipe.scale(2.0).relu()
+    assert len(pipe._ops) == n_ops
+    assert calls["n"] == n_ops, (
+        f"expected exactly {n_ops} op_schema calls, got {calls['n']} — "
+        "per-append tracking must not replay prior ops"
+    )
+
+
+@plugin_required
+def test_axis_reduction_ndim_decrements_exactly_once() -> None:
+    """Regression: the old full-replay tracking re-subtracted axis
+    reductions' ndim on every subsequent append."""
+    pipe = Pipeline().source("blob", dtype="u8")
+    pipe._expected_ndim = 3  # white-box: seed a known rank
+    pipe = pipe.reduce_max(axis=0)
+    assert pipe._expected_ndim == 2
+    pipe = pipe.reduce_min(axis=0)
+    assert pipe._expected_ndim == 1
+
+
+def test_histogram_schema_declared_once() -> None:
+    """Ratchet: histogram's mode->dtype mapping lives in Rust only. The
+    Python builder must not re-declare the u32/u64 result dtypes."""
+    from pathlib import Path
+
+    import polars_cv.pipeline as pipeline_mod
+
+    source = Path(pipeline_mod.__file__).read_text()
+    assert '"u32"' not in source, "histogram quantized dtype re-declared in Python"
+    assert '"u64"' not in source, "histogram counts dtype re-declared in Python"
+
+
+def test_enum_validation_uniform() -> None:
+    """Every enum-valued builder parameter fails with the uniform
+    ``Invalid <label> '<value>'. Valid: [...]`` error from _validate_enum."""
+    cases = [
+        (
+            lambda: Pipeline()
+            .source("blob", dtype="u8")
+            .resize(height=8, width=8, filter="bogus"),
+            "filter",
+        ),
+        (
+            lambda: Pipeline().source("blob", dtype="u8").normalize(method="bogus"),
+            "normalize method",
+        ),
+        (
+            lambda: Pipeline()
+            .source("blob", dtype="u8")
+            .perceptual_hash(algorithm="bogus"),
+            "algorithm",
+        ),
+        (
+            lambda: Pipeline()
+            .source("blob", dtype="u8")
+            .grayscale()
+            .histogram(output="bogus"),
+            "histogram output mode",
+        ),
+        (lambda: Pipeline().source("blob", dtype="u8").cast("bogus"), "dtype"),
+    ]
+    for build, label in cases:
+        with pytest.raises(ValueError, match=rf"Invalid {label} 'bogus'"):
+            build()

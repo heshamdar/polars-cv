@@ -511,7 +511,11 @@ impl ReductionOp {
             | ReductionOp::Max { axis: None }
             | ReductionOp::Min { axis: None }
             | ReductionOp::Std { axis: None, .. }
-            | ReductionOp::PopCount => Domain::Scalar,
+            | ReductionOp::PopCount
+            // Percentile has no axis form: always a global scalar. (The old
+            // DTO-level match mislabeled it Buffer; a Python special case
+            // papered over that until the authority moved here.)
+            | ReductionOp::Percentile { .. } => Domain::Scalar,
             _ => Domain::Buffer,
         }
     }

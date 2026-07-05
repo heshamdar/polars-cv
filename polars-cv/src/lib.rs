@@ -26,6 +26,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(op_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
+    m.add_function(wrap_pyfunction!(op_schema, m)?)?;
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
     Ok(())
@@ -124,6 +125,20 @@ fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep
     // `label_reduce.contours` carries the column *name* through the step and
     // stays unbound, exactly as in `graph::compiled::bind_graph_params`.
     let keep_named = op_spec.op == "label_reduce";
+    // rasterize-by-shape-reference carries no width/height (they come from
+    // another node's buffer at execution, via the RasterizeShapeRef
+    // resolver). Give introspection placeholder dims; the structural schema
+    // never depends on their values.
+    if op_spec.op == "rasterize" && op_spec.params.contains_key("shape_ref") {
+        for dim in ["width", "height"] {
+            op_spec
+                .params
+                .entry(dim.to_string())
+                .or_insert(ParamValue::Literal {
+                    value: serde_json::json!(1),
+                });
+        }
+    }
     let mut placeholders: Vec<Series> = Vec::new();
     for (pname, p) in op_spec.params.iter_mut() {
         if keep_named && pname == "contours" {
@@ -155,8 +170,18 @@ fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep
 /// `Configurable` rule, mirroring the configurable-output contract.
 #[pyfunction]
 fn op_output_dtype(op_json: &str, input_dtype: &str) -> PyResult<String> {
+    let step = resolve_op_from_json(op_json)?;
+    output_dtype_for(&step, op_json, input_dtype)
+}
+
+/// Shared dtype resolution for `op_output_dtype` and `op_schema`.
+fn output_dtype_for(
+    step: &crate::graph::step::GraphStep,
+    op_json: &str,
+    input_dtype: &str,
+) -> PyResult<String> {
     use view_buffer::OutputDTypeRule as R;
-    let dto = resolve_op_from_json(op_json)?;
+    let dto = step;
     let rule = dto.output_dtype_rule();
 
     // The out_dtype override is honored only for the configurable rule
@@ -181,6 +206,60 @@ fn op_output_dtype(op_json: &str, input_dtype: &str) -> PyResult<String> {
 
     let in_dt = parse_dtype(input_dtype)?;
     Ok(dtype_short_name(rule.resolve(in_dt, override_dt)).to_string())
+}
+
+/// Resolve one op's full schema effect: `(domain, dtype, ndim)`.
+///
+/// The single planning-time authority the Python `Pipeline` consults per
+/// appended op — including the param-dependent cases (`cast` target,
+/// `histogram` output mode, reduction `axis` presence) that previously lived
+/// as Python-side special cases. Inputs are the pipeline's current state;
+/// `"auto"` dtype and `None` ndim propagate where a rule cannot resolve them.
+///
+/// One deliberate special case: `histogram(output="buckets")` reports dtype
+/// `"auto"` — buckets are struct-encoded by the sink, so an element dtype is
+/// an encoding concern, not a schema one.
+#[pyfunction]
+#[pyo3(signature = (op_json, input_domain, input_dtype, input_ndim=None))]
+fn op_schema(
+    op_json: &str,
+    input_domain: &str,
+    input_dtype: &str,
+    input_ndim: Option<usize>,
+) -> PyResult<(String, String, Option<usize>)> {
+    use crate::graph::step::GraphStep;
+    use view_buffer::ops::{Domain, HistogramOutput, OutputRankRule};
+
+    let step = resolve_op_from_json(op_json)?;
+
+    let out_domain = step.output_domain();
+    let domain = if out_domain == Domain::Any {
+        input_domain.to_string()
+    } else {
+        out_domain.name().to_string()
+    };
+
+    let dtype = if matches!(&step, GraphStep::Histogram(op) if op.output == HistogramOutput::Buckets)
+    {
+        "auto".to_string()
+    } else {
+        output_dtype_for(&step, op_json, input_dtype)?
+    };
+
+    let ndim = match step.output_rank_rule() {
+        OutputRankRule::Fixed(n) => Some(n),
+        OutputRankRule::PreserveRank => input_ndim,
+        OutputRankRule::ReduceByOne => input_ndim.map(|n| n.saturating_sub(1).max(1)),
+        OutputRankRule::Unknown => None,
+    };
+    // Scalar/vector domains pin the dimensionality regardless of the rule.
+    let ndim = match domain.as_str() {
+        "scalar" => Some(0),
+        "vector" => Some(1),
+        _ => ndim,
+    };
+
+    Ok((domain, dtype, ndim))
 }
 
 /// Map a Python-facing binary op name to its view-buffer `BinaryOp`.
