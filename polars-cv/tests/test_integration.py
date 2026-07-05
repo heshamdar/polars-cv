@@ -7,124 +7,17 @@ using synthetic image data.
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
 
 from polars_cv import Pipeline
+from tests.conftest import make_test_png as create_test_png
+from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
     pass
-
-
-def create_test_png(
-    width: int = 10, height: int = 10, color: tuple = (255, 0, 0)
-) -> bytes:
-    """
-    Create a minimal test PNG image.
-
-    Args:
-        width: Image width.
-        height: Image height.
-        color: RGB color tuple.
-
-    Returns:
-        PNG bytes.
-    """
-    # We'll use a simple approach - create raw RGB data and use PNG encoding
-    # Since we don't have PIL in tests, we'll use a pre-generated minimal PNG
-    # or create one programmatically
-
-    # Minimal 1x1 red PNG for basic testing
-    if width == 1 and height == 1:
-        return bytes(
-            [
-                0x89,
-                0x50,
-                0x4E,
-                0x47,
-                0x0D,
-                0x0A,
-                0x1A,
-                0x0A,  # PNG signature
-                0x00,
-                0x00,
-                0x00,
-                0x0D,
-                0x49,
-                0x48,
-                0x44,
-                0x52,  # IHDR chunk
-                0x00,
-                0x00,
-                0x00,
-                0x01,
-                0x00,
-                0x00,
-                0x00,
-                0x01,  # 1x1
-                0x08,
-                0x02,
-                0x00,
-                0x00,
-                0x00,  # 8-bit RGB
-                0x90,
-                0x77,
-                0x53,
-                0xDE,  # CRC
-                0x00,
-                0x00,
-                0x00,
-                0x0C,
-                0x49,
-                0x44,
-                0x41,
-                0x54,  # IDAT chunk
-                0x08,
-                0xD7,
-                0x63,
-                0xF8,
-                0xCF,
-                0xC0,
-                0x00,
-                0x00,  # Compressed data
-                0x00,
-                0x03,
-                0x00,
-                0x01,  # Compressed data cont.
-                0x00,
-                0x18,
-                0xDD,
-                0x8D,
-                0xB4,  # CRC
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x49,
-                0x45,
-                0x4E,
-                0x44,  # IEND chunk
-                0xAE,
-                0x42,
-                0x60,
-                0x82,  # CRC
-            ]
-        )
-
-    # For larger images, we need PIL/Pillow
-    try:
-        from PIL import Image
-
-        img = Image.new("RGB", (width, height), color)
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        return buffer.getvalue()
-    except ImportError:
-        pytest.skip("PIL/Pillow required for this test")
-        return b""
 
 
 class TestPipelineBuilderIntegration:
@@ -198,22 +91,7 @@ class TestPolarsNamespace:
 
 
 # Check if plugin is available by checking if the .so file exists
-def _plugin_available() -> bool:
-    """Check if the compiled plugin is available."""
-    from pathlib import Path
-
-    lib_path = Path(__file__).parent.parent / "python" / "polars_cv"
-    so_files = list(lib_path.glob("*.so")) + list(lib_path.glob("*.pyd"))
-    return len(so_files) > 0
-
-
 # Mark tests with plugin_required marker for easy filtering
-plugin_required = pytest.mark.skipif(
-    not _plugin_available(),
-    reason="Requires compiled plugin (run maturin develop first)",
-)
-
-
 @plugin_required
 class TestPluginExecution:
     """Tests that require the compiled Rust plugin."""

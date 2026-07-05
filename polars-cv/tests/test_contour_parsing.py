@@ -116,13 +116,9 @@ class TestUniformParseErrors:
         bogus = {"not_a_contour": 1.0}
         errors: list[str] = []
 
-        df = pl.DataFrame(
-            {"pt": [{"x": 0.0, "y": 0.0}], "contour": [bogus]}
-        )
+        df = pl.DataFrame({"pt": [{"x": 0.0, "y": 0.0}], "contour": [bogus]})
         with pytest.raises(pl.exceptions.ComputeError) as exc_info:
-            df.with_columns(
-                d=pl.col("pt").point.distance_to_contour(pl.col("contour"))
-            )
+            df.with_columns(d=pl.col("pt").point.distance_to_contour(pl.col("contour")))
         errors.append(str(exc_info.value))
 
         df = pl.DataFrame({"contour": [bogus]})

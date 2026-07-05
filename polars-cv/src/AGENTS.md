@@ -27,12 +27,13 @@ maturin develop --release  # Builds cdylib and installs into .venv
 
 | File | Responsibility |
 |------|---------------|
-| `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, dtype helpers |
+| `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, and the planner-facing FFI (`op_schema`, `op_contract`, `op_output_dtype`, `enum_variants`, `known_ops`) |
 | `image_metadata.rs` | Header-only metadata plugin functions (`image_width`, `image_height`, `image_channels`, `image_dtype`) |
 | `graph/types.rs` | `UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowResult` — graph execution engine, `on_error` handling |
 | `graph/decode.rs` | Source decoding, `dtype_for_output` schema inference, reflect/symmetric padding |
 | `graph/encode.rs` | Output encoding, geometry op execution |
-| `execute.rs` | `resolve_op()` (op-spec to `ViewDto`), decode/encode helpers shared by graph execution |
+| `execute.rs` | `resolve_op()` (op-spec to `GraphStep`), decode/encode helpers shared by graph execution |
+| `graph/step.rs` | `GraphStep` — the plugin-level step vocabulary: `Buffer(ViewDto)` plus graph-only steps (binary, mask, merge, geometry, reduction, histogram, extract_shape, label_reduce); contract methods read by the FFI |
 | `pipeline.rs` | `SourceSpec`, `SinkSpec`, `OpSpec` serde types for JSON deserialization |
 | `params.rs` | `ParamValue` — literal vs expression parameter resolution |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
@@ -78,11 +79,15 @@ docs in `graph/compiled.rs` and `tests/test_graph_cache.py`.
 
 ### `resolve_op` — Operation Dispatcher
 
-Located in `execute.rs`. Maps operation name strings to `ViewDto` values:
+Located in `execute.rs`. Maps operation name strings to `GraphStep` values
+(`graph/step.rs`). Buffer ops wrap a view-buffer `ViewDto`
+(`GraphStep::Buffer`); steps that involve graph topology (node references,
+per-row expression columns) or non-buffer outputs are their own `GraphStep`
+variants and never enter view-buffer's vocabulary:
 
 ```rust
 match op_spec.op.as_str() {
-    "resize" => ViewDto::Image(ImageOp { kind: Resize { ... } }),
+    "resize" => ViewDto::Image(ImageOp { kind: Resize { ... } }).into(),
     "grayscale" | "normalize" | "threshold" => /* ... */,
     "channel_select" | "channel_swap" => /* ... */,
     "cvt_color" => ViewDto::Color(ColorConvertOp { ... }),
@@ -140,7 +145,7 @@ Key functions in `contour.rs`:
 
 ### `execute.rs`
 
-Current responsibilities: `resolve_op()`, `decode_source()`, `decode_contour_source()`, `encode_sink()`. These are shared utilities used by `graph/types.rs` and `graph/encode.rs`.
+Current responsibilities: `resolve_op()` (returns `GraphStep`), `decode_source()`, `decode_contour_source()`, `encode_sink()`. These are shared utilities used by `graph/types.rs` and `graph/encode.rs`.
 
 ### `pipeline.rs`
 
@@ -149,7 +154,7 @@ Contains serde types (`SourceSpec`, `SinkSpec`, `OpSpec`) for JSON deserializati
 ## Adding a New Operation (Rust Side)
 
 1. **`view-buffer`**: Implement the op — see [`view-buffer/AGENTS.md`](../../view-buffer/AGENTS.md)
-2. **`execute.rs` → `resolve_op()`**: Add a match arm mapping the operation name to `ViewDto`
+2. **`execute.rs` → `resolve_op()`**: Add a match arm mapping the operation name to a `GraphStep` (`GraphStep::Buffer(dto)` for engine ops)
 3. **Test**: Ensure the operation works end-to-end via Python tests
 
 ## Error Handling

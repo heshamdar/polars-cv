@@ -34,13 +34,41 @@ plugin_required = pytest.mark.skipif(
 )
 
 
+def make_test_png(
+    width: int = 10, height: int = 10, color: tuple[int, int, int] = (255, 0, 0)
+) -> bytes:
+    """
+    Create a test PNG image (module-level; importable by test files that
+    build images outside a fixture context).
+
+    Args:
+        width: Image width.
+        height: Image height.
+        color: RGB color tuple.
+
+    Returns:
+        PNG bytes.
+    """
+    try:
+        from PIL import Image
+
+        img = Image.new("RGB", (width, height), color)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except ImportError:
+        pytest.skip("PIL/Pillow required for this test")
+        return b""
+
+
 @pytest.fixture
 def create_test_png() -> Callable[[int, int, tuple[int, int, int]], bytes]:
     """
-    Factory for creating test PNG images.
+    Factory fixture for creating test PNG images.
 
     Returns:
-        A callable that creates PNG bytes for a given width, height, and color.
+        A callable that creates PNG bytes for a given width, height, and color
+        (default 100x100 gray, kept for existing fixture users).
     """
 
     def _create(
@@ -48,27 +76,7 @@ def create_test_png() -> Callable[[int, int, tuple[int, int, int]], bytes]:
         height: int = 100,
         color: tuple[int, int, int] = (128, 128, 128),
     ) -> bytes:
-        """
-        Create a test PNG image.
-
-        Args:
-            width: Image width.
-            height: Image height.
-            color: RGB color tuple.
-
-        Returns:
-            PNG bytes.
-        """
-        try:
-            from PIL import Image
-
-            img = Image.new("RGB", (width, height), color)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            return buf.getvalue()
-        except ImportError:
-            pytest.skip("PIL/Pillow required for this test")
-            return b""
+        return make_test_png(width, height, color)
 
     return _create
 

@@ -8,29 +8,13 @@ import math
 
 import numpy as np
 import polars as pl
-import pytest
 
 # Import the point namespace to register it
 import polars_cv.geometry.points  # noqa: F401
-
-
-def _plugin_available() -> bool:
-    """Check if the compiled plugin is available."""
-    try:
-        df = pl.DataFrame({"pt": [{"x": 1.0, "y": 2.0}]})
-        df.with_columns(translated=pl.col("pt").point.translate(1.0, 1.0))
-        return True
-    except Exception:
-        return False
+from tests.conftest import plugin_required
 
 
 # Mark all tests in this module as requiring the plugin
-plugin_required = pytest.mark.skipif(
-    not _plugin_available(),
-    reason="Requires compiled plugin (run maturin develop first)",
-)
-
-
 class TestPointTransforms:
     """Tests for point coordinate transformation operations."""
 

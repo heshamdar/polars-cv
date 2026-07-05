@@ -131,7 +131,6 @@ polars-cv/                          # Workspace root
 │   ├── examples/                   # Runnable demos (numbered, <500 lines each)
 │   ├── docs/                       # MkDocs user-guide documentation
 │   └── scripts/                    # Utility scripts
-└── .cursor/
     └── polars-cv-contribution-guide.md
 ```
 
@@ -139,7 +138,7 @@ polars-cv/                          # Workspace root
 
 | If you're... | Read these AGENTS.md files |
 |---|---|
-| Adding a new image operation | Root → Python API → Rust Plugin → view-buffer → `.cursor/polars-cv-contribution-guide.md` |
+| Adding a new image operation | Root → Python API → Rust Plugin → view-buffer |
 | Working on pipeline builder or lazy composition | Root → Python API |
 | Working on detection metrics | Root → Python API → Metrics |
 | Working on geometry (points, contours) | Root → Geometry |
@@ -161,10 +160,20 @@ cargo clippy --workspace           # Lint Rust
 
 ## Known Issues
 
-- **Inconsistent test fixtures:** Many test files redefine `_plugin_available()`, `plugin_required`, and PNG creation fixtures instead of using shared ones from `conftest.py`.
 - **f64 chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for f64 inputs (`view-buffer/src/expr.rs::extract_ops`).
 
 ## Recent Changes
+
+- **Schema authority consolidation:** each op's schema effect (domain, dtype,
+  ndim, channels) is declared once, on the op itself in Rust, and read by the
+  Python planner through the `op_schema`/`op_contract` FFI. The Python builder
+  tracks state incrementally (one `op_schema` call per appended op); the
+  planner contains no per-op special cases. Graph-level steps (`GraphStep` in
+  `polars-cv/src/graph/step.rs`) are separate from engine-executable ops
+  (`ViewDto` in view-buffer). Guarded by `tests/test_sanitation.py`.
+- **Test fixtures unified:** `plugin_required` and PNG factories live only in
+  `tests/conftest.py` (`make_test_png` for module-level use); meta-tests in
+  `test_sanitation.py` reject local redefinitions.
 
 - **Execution core rewrite:** the `vb_graph` plugin compiles graphs once into a process-wide cache (`graph/compiled.rs`: parsed spec, topo order, slot-bound params, pre-resolved static ops) — the streaming engine invokes the plugin per morsel, so repeat calls pay a hash lookup. Graph structure (output node refs, upstream wiring, source formats, encodings) is validated at compile time instead of failing late/silently.
 - **Per-row error policy:** `Pipeline.on_error("raise"|"null"|"null_with_message")` — failing rows null all outputs (optionally with a reserved `_error` message field) instead of failing the batch.

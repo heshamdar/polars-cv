@@ -154,8 +154,12 @@ class TestMyFeature:
         assert result["output"].dtype == pl.Struct(...)
 ```
 
-### Known Inconsistencies (Fix When Touching)
+### Shared Fixtures Are Mandatory
 
-1. **Duplicate `_plugin_available()` / `plugin_required`**: Some test files redefine these instead of importing from `conftest.py`. Use the shared one.
-2. **Duplicate fixture patterns**: Many files define their own PNG creation fixtures instead of using `create_test_png` / `encode_png` from conftest.
-3. **Inconsistent PIL/no-PIL approaches**: The conftest approach (PIL with graceful skip) is preferred.
+`plugin_required` and PNG construction live only in `conftest.py`. Import
+`plugin_required` from `tests.conftest`; inside fixtures use the
+`create_test_png` factory fixture, and for module-level helpers import
+`make_test_png` (`from tests.conftest import make_test_png`). Meta-tests in
+`test_sanitation.py` (`test_no_local_plugin_available_definitions`,
+`test_no_local_png_factories`) fail the suite if a test file redefines
+either.

@@ -142,7 +142,9 @@ pipe.resize(height=224, width=pl.col("target_w"))
    - Validate domain with `_validate_domain()`
    - Clone with `_clone()`
    - Append `OpSpec` with params wrapped in `ParamValue`
-   - Update dtype tracking with `_update_output_dtype()`
+   - Call `_update_output_dtype()` — one incremental `op_schema` FFI call
+     that updates the tracked domain, dtype, and ndim from the op's own Rust
+     contract. Never assign `_current_domain`/`_output_dtype` by hand.
    - Return new Pipeline
 
 2. **`lazy.py`**: Nothing to add for an ordinary op. `LazyPipelineExpr` generates a
@@ -153,13 +155,17 @@ pipe.resize(height=224, width=pl.col("target_w"))
    `LazyPipelineExpr`); the generator skips names already defined. After changing
    `Pipeline`, regenerate the type stub with `python scripts/gen_lazy_stub.py`.
 
-3. **Schema inference**: nothing to add in `_types.py`. The op's domain, dtype,
-   rank and channel effects are read at planning time from its view-buffer
-   `ViewDto` contract via `_lib.op_contract` / `_lib.op_output_dtype`, so make
-   sure the op exposes the right contract on the Rust side (next step).
+3. **Schema inference**: nothing to add in `_types.py` or the planner. The
+   op's domain, dtype, rank and channel effects are read at planning time from
+   its Rust contract via `_lib.op_schema` (and `_lib.op_contract` for
+   channels/rank detail), so make sure the op declares the right contract on
+   the Rust side (next step). Do not add per-op special cases in Python —
+   `test_op_schema_authority` and the batch-fold conformance tests in
+   `test_sanitation.py` guard this.
 
-4. **Rust side**: Map the operation name in `resolve_op` and give it a `ViewDto`
-   contract — see [`polars-cv/src/AGENTS.md`](../../src/AGENTS.md)
+4. **Rust side**: Map the operation name in `resolve_op` to a `GraphStep`
+   (buffer ops wrap a view-buffer `ViewDto`; graph-level steps get their own
+   variant) — see [`polars-cv/src/AGENTS.md`](../../src/AGENTS.md)
 
 ### Affine Pipeline Fusion
 
@@ -182,7 +188,7 @@ Fusible operations:
 ## Common Pitfalls
 
 - **Don't mutate Pipeline in place.** Always use `_clone()` then modify the clone. The immutable pattern is intentional.
-- **Give new ops a correct view-buffer `ViewDto` contract.** Schema inference
+- **Give new ops a correct Rust contract (`ViewDto` op / `GraphStep`).** Schema inference
   reads dtype/domain/rank/channel from it at planning time; a wrong or missing
   contract makes planned and executed schemas diverge (caught by the
   plan==exec tests in `test_sanitation.py`).
