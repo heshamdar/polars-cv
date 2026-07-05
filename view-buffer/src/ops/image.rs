@@ -1,5 +1,6 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::cost::OpCost;
+use crate::ops::pad::{PadMode, PadPosition};
 use crate::ops::shape_rule::OutputChannelRule;
 use crate::ops::traits::{MemoryEffect, Op};
 
@@ -43,6 +44,134 @@ pub enum ImageOpKind {
     MorphGradient {
         ksize: u32,
     },
+    /// Resize by scale factors — output dimensions derive from the input
+    /// shape via [`ImageOpKind::output_hw`].
+    ResizeScale {
+        scale_x: f32,
+        scale_y: f32,
+        filter: FilterType,
+    },
+    /// Resize to a target height, preserving aspect ratio.
+    ResizeToHeight {
+        height: u32,
+        filter: FilterType,
+    },
+    /// Resize to a target width, preserving aspect ratio.
+    ResizeToWidth {
+        width: u32,
+        filter: FilterType,
+    },
+    /// Resize so the longer side equals `max_size`, preserving aspect ratio.
+    ResizeMax {
+        max_size: u32,
+        filter: FilterType,
+    },
+    /// Resize so the shorter side equals `min_size`, preserving aspect ratio.
+    ResizeMin {
+        min_size: u32,
+        filter: FilterType,
+    },
+    /// Pad with per-side amounts and a border mode.
+    Pad {
+        top: u32,
+        bottom: u32,
+        left: u32,
+        right: u32,
+        value: f32,
+        mode: PadMode,
+    },
+    /// Constant-pad to an exact size at a position (saturating: an input
+    /// larger than the target is left unpadded on that axis).
+    PadToSize {
+        height: u32,
+        width: u32,
+        position: PadPosition,
+        value: f32,
+    },
+    /// Letterbox: aspect-preserving resize, then center constant-pad to the
+    /// exact target size.
+    Letterbox {
+        height: u32,
+        width: u32,
+        value: f32,
+        filter: FilterType,
+    },
+    /// Reorder the channels of an `[H, W, C]` buffer (allocating).
+    ChannelSwap {
+        order: Vec<usize>,
+    },
+}
+
+impl ImageOpKind {
+    /// The output `(height, width)` this op produces for an `in_h × in_w`
+    /// input.
+    ///
+    /// The **single authority** for geometric output dimensions, shared by
+    /// [`Op::infer_shape`] (planning) and the execution runner, so planned
+    /// and executed dimensions cannot diverge. Returns `None` for kinds that
+    /// preserve the input dimensions.
+    pub fn output_hw(&self, in_h: usize, in_w: usize) -> Option<(usize, usize)> {
+        match self {
+            ImageOpKind::Resize { width, height, .. } => Some((*height as usize, *width as usize)),
+            ImageOpKind::ResizeScale {
+                scale_x, scale_y, ..
+            } => Some((
+                (in_h as f32 * scale_y).round() as usize,
+                (in_w as f32 * scale_x).round() as usize,
+            )),
+            ImageOpKind::ResizeToHeight { height, .. } => {
+                let aspect = in_w as f32 / in_h as f32;
+                Some((*height as usize, (*height as f32 * aspect).round() as usize))
+            }
+            ImageOpKind::ResizeToWidth { width, .. } => {
+                let aspect = in_h as f32 / in_w as f32;
+                Some(((*width as f32 * aspect).round() as usize, *width as usize))
+            }
+            ImageOpKind::ResizeMax { max_size, .. } => {
+                let scale = *max_size as f32 / in_h.max(in_w) as f32;
+                Some((
+                    (in_h as f32 * scale).round() as usize,
+                    (in_w as f32 * scale).round() as usize,
+                ))
+            }
+            ImageOpKind::ResizeMin { min_size, .. } => {
+                let scale = *min_size as f32 / in_h.min(in_w) as f32;
+                Some((
+                    (in_h as f32 * scale).round() as usize,
+                    (in_w as f32 * scale).round() as usize,
+                ))
+            }
+            ImageOpKind::Pad {
+                top,
+                bottom,
+                left,
+                right,
+                ..
+            } => Some((
+                in_h + *top as usize + *bottom as usize,
+                in_w + *left as usize + *right as usize,
+            )),
+            ImageOpKind::PadToSize { height, width, .. } => {
+                Some((in_h.max(*height as usize), in_w.max(*width as usize)))
+            }
+            ImageOpKind::Letterbox { height, width, .. } => {
+                Some((*height as usize, *width as usize))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Aspect-preserving fit of an `in_h × in_w` image inside `height × width`
+/// (the intermediate resize dimensions of [`ImageOpKind::Letterbox`]).
+pub fn letterbox_fit(in_h: usize, in_w: usize, height: u32, width: u32) -> (usize, usize) {
+    let scale_h = height as f32 / in_h as f32;
+    let scale_w = width as f32 / in_w as f32;
+    let scale = scale_h.min(scale_w);
+    (
+        (in_h as f32 * scale).round() as usize,
+        (in_w as f32 * scale).round() as usize,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -89,6 +218,15 @@ impl Op for ImageOp {
             ImageOpKind::Erode { .. } => "Erode",
             ImageOpKind::Dilate { .. } => "Dilate",
             ImageOpKind::MorphGradient { .. } => "MorphGradient",
+            ImageOpKind::ResizeScale { .. } => "ResizeScale",
+            ImageOpKind::ResizeToHeight { .. } => "ResizeToHeight",
+            ImageOpKind::ResizeToWidth { .. } => "ResizeToWidth",
+            ImageOpKind::ResizeMax { .. } => "ResizeMax",
+            ImageOpKind::ResizeMin { .. } => "ResizeMin",
+            ImageOpKind::Pad { .. } => "Pad",
+            ImageOpKind::PadToSize { .. } => "PadToSize",
+            ImageOpKind::Letterbox { .. } => "Letterbox",
+            ImageOpKind::ChannelSwap { .. } => "ChannelSwap",
         }
     }
 
@@ -105,14 +243,27 @@ impl Op for ImageOp {
                 // 2D input stays 2D (already single-channel by definition)
                 s
             }
-            ImageOpKind::Resize { width, height, .. } => {
+            // Every geometric kind takes its output H/W from output_hw — the
+            // same authority the runner executes with.
+            ImageOpKind::Resize { .. }
+            | ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::Letterbox { .. } => {
                 let mut s = input_shape.to_vec();
                 if s.len() >= 2 {
-                    s[0] = *height as usize;
-                    s[1] = *width as usize;
+                    if let Some((h, w)) = self.kind.output_hw(s[0], s[1]) {
+                        s[0] = h;
+                        s[1] = w;
+                    }
                 }
                 s
             }
+            ImageOpKind::ChannelSwap { .. } => input_shape.to_vec(),
             ImageOpKind::Canny { .. } => {
                 // Output is single-channel binary edge map
                 if input_shape.len() == 3 {
@@ -140,7 +291,16 @@ impl Op for ImageOp {
             | ImageOpKind::HistogramEqualize
             | ImageOpKind::Erode { .. }
             | ImageOpKind::Dilate { .. }
-            | ImageOpKind::MorphGradient { .. } => OutputChannelRule::PreserveChannels,
+            | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::Letterbox { .. }
+            | ImageOpKind::ChannelSwap { .. } => OutputChannelRule::PreserveChannels,
         }
     }
 
@@ -162,6 +322,15 @@ impl Op for ImageOp {
             ImageOpKind::Erode { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::Dilate { .. } => MemoryEffect::RequiresContiguous,
             ImageOpKind::MorphGradient { .. } => MemoryEffect::RequiresContiguous,
+            ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::Letterbox { .. }
+            | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresContiguous,
         }
     }
 
@@ -186,6 +355,15 @@ impl Op for ImageOp {
             ImageOpKind::Erode { .. } => None,
             ImageOpKind::Dilate { .. } => None,
             ImageOpKind::MorphGradient { .. } => None,
+            ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::Letterbox { .. }
+            | ImageOpKind::ChannelSwap { .. } => None,
         }
     }
 
@@ -216,6 +394,17 @@ impl Op for ImageOp {
             ImageOpKind::Erode { .. } => None,
             ImageOpKind::Dilate { .. } => None,
             ImageOpKind::MorphGradient { .. } => None,
+            // Deferred resizes route through the same resize kernel; padding
+            // and channel reorder are dtype-generic.
+            ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::Letterbox { .. }
+            | ImageOpKind::ChannelSwap { .. } => None,
         }
     }
 
@@ -237,6 +426,17 @@ impl Op for ImageOp {
             ImageOpKind::Erode { .. } => OutputDTypeRule::PreserveInput,
             ImageOpKind::Dilate { .. } => OutputDTypeRule::PreserveInput,
             ImageOpKind::MorphGradient { .. } => OutputDTypeRule::PreserveInput,
+            // Geometric transforms and channel reorder preserve element dtype
+            // (padding is dtype-generic for all ten dtypes).
+            ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::Letterbox { .. }
+            | ImageOpKind::ChannelSwap { .. } => OutputDTypeRule::PreserveInput,
         }
     }
 }

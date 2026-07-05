@@ -41,6 +41,7 @@
 
 pub mod contour;
 pub mod extract;
+pub mod label;
 pub mod measures;
 pub mod ops;
 pub mod pairwise;
@@ -50,4 +51,5 @@ pub mod transforms;
 
 // Re-exports
 pub use contour::{BoundingBox, Contour, Point, Winding};
+pub use label::{score_contours_on_buffer, LabelReduction, LabelRegionMode};
 pub use ops::GeometryOp;

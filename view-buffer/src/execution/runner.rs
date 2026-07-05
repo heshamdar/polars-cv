@@ -1522,6 +1522,61 @@ fn apply_image_dispatch(work_buf: ViewBuffer, op: ImageOp) -> ViewBuffer {
                 }
             }
         }
+        // Deferred resizes: dimensions come from output_hw — the same
+        // authority infer_shape declared at plan time — then the shared
+        // resize kernel runs.
+        ref kind @ (ImageOpKind::ResizeScale { .. }
+        | ImageOpKind::ResizeToHeight { .. }
+        | ImageOpKind::ResizeToWidth { .. }
+        | ImageOpKind::ResizeMax { .. }
+        | ImageOpKind::ResizeMin { .. }) => {
+            let shape = work_buf.shape();
+            let (h, w) = kind
+                .output_hw(shape[0], shape[1])
+                .expect("deferred resize kinds always produce output dims");
+            let filter = match kind {
+                ImageOpKind::ResizeScale { filter, .. }
+                | ImageOpKind::ResizeToHeight { filter, .. }
+                | ImageOpKind::ResizeToWidth { filter, .. }
+                | ImageOpKind::ResizeMax { filter, .. }
+                | ImageOpKind::ResizeMin { filter, .. } => *filter,
+                _ => unreachable!(),
+            };
+            resize_strided(work_buf, w as u32, h as u32, filter)
+        }
+        ImageOpKind::Pad {
+            top,
+            bottom,
+            left,
+            right,
+            value,
+            mode,
+        } => crate::ops::pad::pad(&work_buf, top, bottom, left, right, value, mode),
+        ImageOpKind::PadToSize {
+            height,
+            width,
+            position,
+            value,
+        } => crate::ops::pad::pad_to_size(&work_buf, height, width, position, value),
+        ImageOpKind::Letterbox {
+            height,
+            width,
+            value,
+            filter,
+        } => {
+            let shape = work_buf.shape();
+            let (fit_h, fit_w) =
+                crate::ops::image::letterbox_fit(shape[0], shape[1], height, width);
+            let resized = resize_strided(work_buf, fit_w as u32, fit_h as u32, filter);
+            crate::ops::pad::pad_to_size(
+                &resized,
+                height,
+                width,
+                crate::ops::pad::PadPosition::Center,
+                value,
+            )
+        }
+        ImageOpKind::ChannelSwap { ref order } => apply_channel_swap(&work_buf, order),
     }
 }
 

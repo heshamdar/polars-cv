@@ -186,7 +186,20 @@ impl ViewExpr {
                 }),
                 ImageOpKind::Erode { .. }
                 | ImageOpKind::Dilate { .. }
-                | ImageOpKind::MorphGradient { .. } => {
+                | ImageOpKind::MorphGradient { .. }
+                // Deferred resizes, padding, letterbox and channel reorder:
+                // dtype-preserving allocating ops whose output shape comes
+                // from infer_shape (backed by ImageOpKind::output_hw, the
+                // same authority the runner executes with).
+                | ImageOpKind::ResizeScale { .. }
+                | ImageOpKind::ResizeToHeight { .. }
+                | ImageOpKind::ResizeToWidth { .. }
+                | ImageOpKind::ResizeMax { .. }
+                | ImageOpKind::ResizeMin { .. }
+                | ImageOpKind::Pad { .. }
+                | ImageOpKind::PadToSize { .. }
+                | ImageOpKind::Letterbox { .. }
+                | ImageOpKind::ChannelSwap { .. } => {
                     let new_shape = img.infer_shape(&[&self.shape]);
                     let new_strides = self.calc_strides(&img, &new_shape);
                     Arc::new(Self {
@@ -198,10 +211,6 @@ impl ViewExpr {
                 }
             },
             ViewDto::PerceptualHash(op) => self.perceptual_hash(op),
-            ViewDto::Materialize => {
-                // Explicit materialization handled by Planner
-                self.clone()
-            }
             ViewDto::Geometry(_geom) => {
                 // Geometry operations are handled separately at the polars-cv level
                 // They operate on contour data, not on ViewBuffers directly
@@ -236,26 +245,6 @@ impl ViewExpr {
                      Use graph-level execution to handle domain transitions."
                 )
             }
-            ViewDto::ResizeScale { .. }
-            | ViewDto::ResizeToHeight { .. }
-            | ViewDto::ResizeToWidth { .. }
-            | ViewDto::ResizeMax { .. }
-            | ViewDto::ResizeMin { .. } => {
-                // Deferred resize operations need access to input buffer dimensions
-                // They are handled by the graph executor
-                panic!(
-                    "Deferred resize operations cannot be applied via ViewExpr. \
-                     Use graph-level execution to compute dimensions."
-                )
-            }
-            ViewDto::Pad { .. } | ViewDto::PadToSize { .. } | ViewDto::Letterbox { .. } => {
-                // Padding operations are handled by the graph executor
-                // to support constant padding and dimension computation
-                panic!(
-                    "Padding operations cannot be applied via ViewExpr. \
-                     Use graph-level execution."
-                )
-            }
             ViewDto::ExtractShape => {
                 // ExtractShape changes domain from Buffer to Vector
                 // It is handled by the graph executor
@@ -270,10 +259,10 @@ impl ViewExpr {
                      Use graph-level execution to handle contour expression inputs."
                 )
             }
-            ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => {
+            ViewDto::ChannelMerge { .. } => {
                 panic!(
-                    "Channel merge/swap operations cannot be applied via ViewExpr. \
-                     Use graph-level execution."
+                    "Channel merge is a graph-level operation (it reads other \
+                     nodes' buffers) and cannot be applied via ViewExpr."
                 )
             }
             ViewDto::Filter(_) => {

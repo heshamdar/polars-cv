@@ -38,7 +38,7 @@ pub use expr::{PipelineCostReport, ViewExpr};
 
 // Re-exports - Ops
 pub use ops::{
-    BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType, ImageOp, ImageOpKind,
+    apply_mask, BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType, ImageOp, ImageOpKind,
     NormalizeMethod, Op, OpCost, OpCostReport, OutputChannelRule, OutputRankRule, PlaceholderMeta,
     SinkFormat, SourceFormat, ValidationError, ViewDto, ViewOp,
 };
