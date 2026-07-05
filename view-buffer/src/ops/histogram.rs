@@ -9,6 +9,7 @@ use crate::ops::cost::OpCost;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
+use crate::ops::Domain;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -296,6 +297,20 @@ impl HistogramOp {
                 }
                 ViewBuffer::from_vec_with_shape(buckets, vec![num_bins, 4])
             }
+        }
+    }
+}
+
+impl HistogramOp {
+    /// The domain of this histogram's result: `Quantized` maps pixels in
+    /// place (buffer); every other output mode yields a 1-D vector.
+    ///
+    /// Lives here, next to the op, as the single authority the graph layer
+    /// reads (formerly duplicated in the DTO's output_domain match).
+    pub fn output_domain(&self) -> Domain {
+        match self.output {
+            HistogramOutput::Quantized => Domain::Buffer,
+            _ => Domain::Vector,
         }
     }
 }

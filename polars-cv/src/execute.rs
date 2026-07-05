@@ -12,8 +12,10 @@ use view_buffer::{
     ViewDto, ViewOp,
 };
 
+use crate::graph::step::GraphStep;
 use crate::params::{get, ParamCtx, ParamValue};
 use crate::pipeline::{OpSpec, SinkSpec, SourceSpec};
+use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::naming;
 
 /// The Python-facing name of every two-buffer binary operation.
@@ -322,13 +324,23 @@ pub const KNOWN_OPS: &[&str] = &[
     "warp_affine",
 ];
 
-/// Resolve an operation specification to a ViewDto.
-pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<ViewDto> {
+/// A fusable single-buffer engine op, as a resolved step.
+fn buffer_step(dto: ViewDto) -> PolarsResult<GraphStep> {
+    Ok(GraphStep::Buffer(dto))
+}
+
+/// Resolve an operation specification to a [`GraphStep`].
+///
+/// Single-buffer ops become `GraphStep::Buffer(ViewDto)` (executed via the
+/// engine's `ViewExpr`); multi-input and domain-changing ops become typed
+/// graph-level steps. Node references and expression column names enter the
+/// step here — they never reach the engine's `ViewDto`.
+pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
     match op_spec.op.as_str() {
         // View operations
         "transpose" => {
             let axes = get_param(&op_spec.params, "axes")?.as_int_list()?;
-            Ok(ViewDto::View(ViewOp::Transpose(axes)))
+            buffer_step(ViewDto::View(ViewOp::Transpose(axes)))
         }
         "reshape" => {
             let shape_params = get_param(&op_spec.params, "shape")?.as_param_list()?;
@@ -336,11 +348,11 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 .iter()
                 .map(|p| p.resolve_usize(row_idx, ctx))
                 .collect::<PolarsResult<_>>()?;
-            Ok(ViewDto::View(ViewOp::Reshape(shape)))
+            buffer_step(ViewDto::View(ViewOp::Reshape(shape)))
         }
         "flip" => {
             let axes = get_param(&op_spec.params, "axes")?.as_int_list()?;
-            Ok(ViewDto::View(ViewOp::Flip(axes)))
+            buffer_step(ViewDto::View(ViewOp::Flip(axes)))
         }
         "crop" => {
             // Allow negative values for top/left and clamp to 0
@@ -383,18 +395,18 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 _ => vec![usize::MAX, usize::MAX, usize::MAX], // Full extent
             };
 
-            Ok(ViewDto::View(ViewOp::Crop { start, end }))
+            buffer_step(ViewDto::View(ViewOp::Crop { start, end }))
         }
 
         // Compute operations
         "cast" => {
             let dtype_str = get_param(&op_spec.params, "dtype")?.resolve_string()?;
             let dtype = parse_dtype(dtype_str)?;
-            Ok(ViewDto::Compute(ComputeOp::Cast(dtype)))
+            buffer_step(ViewDto::Compute(ComputeOp::Cast(dtype)))
         }
         "scale" => {
             let factor = get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, ctx)?;
-            Ok(ViewDto::Compute(ComputeOp::Scale(factor)))
+            buffer_step(ViewDto::Compute(ComputeOp::Scale(factor)))
         }
         "normalize" => {
             let method_str = get_param(&op_spec.params, "method")?.resolve_string()?;
@@ -424,14 +436,14 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                         other, NormalizeMethod::NAMES))
                 }
             };
-            Ok(ViewDto::Compute(ComputeOp::Normalize(method)))
+            buffer_step(ViewDto::Compute(ComputeOp::Normalize(method)))
         }
         "clamp" => {
             let min = get_param(&op_spec.params, "min")?.resolve_f32(row_idx, ctx)?;
             let max = get_param(&op_spec.params, "max")?.resolve_f32(row_idx, ctx)?;
-            Ok(ViewDto::Compute(ComputeOp::Clamp { min, max }))
+            buffer_step(ViewDto::Compute(ComputeOp::Clamp { min, max }))
         }
-        "relu" => Ok(ViewDto::Compute(ComputeOp::Relu)),
+        "relu" => buffer_step(ViewDto::Compute(ComputeOp::Relu)),
 
         // Image operations
         "resize" => {
@@ -440,7 +452,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Resize {
                     width,
                     height,
@@ -454,7 +466,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeScale {
                     scale_x,
                     scale_y,
@@ -467,7 +479,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeToHeight { height, filter },
             }))
         }
@@ -476,7 +488,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeToWidth { width, filter },
             }))
         }
@@ -485,7 +497,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeMax { max_size, filter },
             }))
         }
@@ -494,7 +506,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeMin { min_size, filter },
             }))
         }
@@ -510,7 +522,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
             let mode = get::req_enum(&op_spec.params, "mode", PadMode::NAMED, &[])?;
 
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Pad {
                     top,
                     bottom,
@@ -529,7 +541,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
             let position = get::req_enum(&op_spec.params, "position", PadPosition::NAMED, &[])?;
 
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::PadToSize {
                     height,
                     width,
@@ -552,7 +564,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 FilterType::ALIASES,
                 FilterType::Lanczos3,
             )?;
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Letterbox {
                     height,
                     width,
@@ -561,18 +573,18 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 },
             }))
         }
-        "grayscale" => Ok(ViewDto::Image(ImageOp {
+        "grayscale" => buffer_step(ViewDto::Image(ImageOp {
             kind: ImageOpKind::Grayscale,
         })),
         "threshold" => {
             let value = get_param(&op_spec.params, "value")?.resolve_f64(row_idx, ctx)?;
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Threshold(value),
             }))
         }
         "blur" => {
             let sigma = get_param(&op_spec.params, "sigma")?.resolve_f32(row_idx, ctx)?;
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Blur { sigma },
             }))
         }
@@ -589,14 +601,14 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
             const EPSILON: f32 = 0.001;
             if (normalized_angle - 90.0).abs() < EPSILON {
-                Ok(ViewDto::View(ViewOp::Rotate90))
+                buffer_step(ViewDto::View(ViewOp::Rotate90))
             } else if (normalized_angle - 180.0).abs() < EPSILON {
-                Ok(ViewDto::View(ViewOp::Rotate180))
+                buffer_step(ViewDto::View(ViewOp::Rotate180))
             } else if (normalized_angle - 270.0).abs() < EPSILON {
-                Ok(ViewDto::View(ViewOp::Rotate270))
+                buffer_step(ViewDto::View(ViewOp::Rotate270))
             } else if normalized_angle.abs() < EPSILON || (normalized_angle - 360.0).abs() < EPSILON
             {
-                Ok(ViewDto::Compute(ComputeOp::RotateAffine {
+                buffer_step(ViewDto::Compute(ComputeOp::RotateAffine {
                     angle_deg: 0.0,
                     expand: false,
                     interpolation: InterpolationType::Bilinear,
@@ -609,7 +621,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 let interpolation = resolve_interpolation(&op_spec.params)?;
                 let border_value = resolve_border_value(&op_spec.params, row_idx, ctx)?;
 
-                Ok(ViewDto::Compute(ComputeOp::RotateAffine {
+                buffer_step(ViewDto::Compute(ComputeOp::RotateAffine {
                     angle_deg: normalized_angle,
                     expand,
                     interpolation,
@@ -660,7 +672,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let interpolation = resolve_interpolation(&op_spec.params)?;
             let border_value = resolve_border_value(&op_spec.params, row_idx, ctx)?;
 
-            Ok(ViewDto::Compute(ComputeOp::Affine(AffineParams {
+            buffer_step(ViewDto::Compute(ComputeOp::Affine(AffineParams {
                 matrix,
                 output_height,
                 output_width,
@@ -682,7 +694,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             )?;
             let hash_size = get::opt_u32(&op_spec.params, "hash_size", 64, row_idx, ctx)?;
 
-            Ok(ViewDto::PerceptualHash(
+            buffer_step(ViewDto::PerceptualHash(
                 PerceptualHashOp::new(algorithm).with_hash_size(hash_size),
             ))
         }
@@ -693,7 +705,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let height = get_param(&op_spec.params, "height")?.resolve_usize(row_idx, ctx)? as u32;
             let (fill_value, background, anti_alias) =
                 resolve_rasterize_style(&op_spec.params, row_idx, ctx)?;
-            Ok(ViewDto::Geometry(GeometryOp::Rasterize {
+            Ok(GraphStep::Geometry(GeometryOp::Rasterize {
                 width,
                 height,
                 fill_value,
@@ -720,7 +732,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             )?;
             let min_area = get::maybe_f64(&op_spec.params, "min_area", row_idx, ctx)?;
 
-            Ok(ViewDto::Geometry(GeometryOp::ExtractContours {
+            Ok(GraphStep::Geometry(GeometryOp::ExtractContours {
                 mode,
                 method,
                 min_area,
@@ -730,39 +742,39 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         // Geometry measure operations
         "contour_area" => {
             let signed = get::opt_bool(&op_spec.params, "signed", false)?;
-            Ok(ViewDto::Geometry(GeometryOp::Area { signed }))
+            Ok(GraphStep::Geometry(GeometryOp::Area { signed }))
         }
-        "contour_perimeter" => Ok(ViewDto::Geometry(GeometryOp::Perimeter)),
-        "contour_centroid" => Ok(ViewDto::Geometry(GeometryOp::Centroid)),
-        "contour_bounding_box" => Ok(ViewDto::Geometry(GeometryOp::BoundingBox)),
-        "contour_winding" => Ok(ViewDto::Geometry(GeometryOp::Winding)),
-        "contour_is_convex" => Ok(ViewDto::Geometry(GeometryOp::IsConvex)),
-        "contour_convex_hull" => Ok(ViewDto::Geometry(GeometryOp::ConvexHull)),
+        "contour_perimeter" => Ok(GraphStep::Geometry(GeometryOp::Perimeter)),
+        "contour_centroid" => Ok(GraphStep::Geometry(GeometryOp::Centroid)),
+        "contour_bounding_box" => Ok(GraphStep::Geometry(GeometryOp::BoundingBox)),
+        "contour_winding" => Ok(GraphStep::Geometry(GeometryOp::Winding)),
+        "contour_is_convex" => Ok(GraphStep::Geometry(GeometryOp::IsConvex)),
+        "contour_convex_hull" => Ok(GraphStep::Geometry(GeometryOp::ConvexHull)),
 
         // Geometry transforms
         "contour_translate" => {
             let dx = get_param(&op_spec.params, "dx")?.resolve_f64(row_idx, ctx)?;
             let dy = get_param(&op_spec.params, "dy")?.resolve_f64(row_idx, ctx)?;
-            Ok(ViewDto::Geometry(GeometryOp::Translate { dx, dy }))
+            Ok(GraphStep::Geometry(GeometryOp::Translate { dx, dy }))
         }
         "contour_scale" => {
             let sx = get_param(&op_spec.params, "sx")?.resolve_f64(row_idx, ctx)?;
             let sy = get_param(&op_spec.params, "sy")?.resolve_f64(row_idx, ctx)?;
-            Ok(ViewDto::Geometry(GeometryOp::Scale {
+            Ok(GraphStep::Geometry(GeometryOp::Scale {
                 sx,
                 sy,
                 origin: view_buffer::geometry::ops::ScaleOrigin::Centroid,
             }))
         }
-        "contour_flip" => Ok(ViewDto::Geometry(GeometryOp::Flip)),
+        "contour_flip" => Ok(GraphStep::Geometry(GeometryOp::Flip)),
         "contour_simplify" => {
             let tolerance = get_param(&op_spec.params, "tolerance")?.resolve_f64(row_idx, ctx)?;
-            Ok(ViewDto::Geometry(GeometryOp::Simplify { tolerance }))
+            Ok(GraphStep::Geometry(GeometryOp::Simplify { tolerance }))
         }
         "contour_normalize" => {
             let ref_width = get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, ctx)?;
             let ref_height = get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, ctx)?;
-            Ok(ViewDto::Geometry(GeometryOp::Normalize {
+            Ok(GraphStep::Geometry(GeometryOp::Normalize {
                 ref_width,
                 ref_height,
             }))
@@ -770,7 +782,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "contour_to_absolute" => {
             let ref_width = get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, ctx)?;
             let ref_height = get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, ctx)?;
-            Ok(ViewDto::Geometry(GeometryOp::ToAbsolute {
+            Ok(GraphStep::Geometry(GeometryOp::ToAbsolute {
                 ref_width,
                 ref_height,
             }))
@@ -783,67 +795,70 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let other_node_id = get_param(&op_spec.params, "other_node")?
                 .resolve_string()?
                 .to_string();
-            Ok(ViewDto::Binary { op, other_node_id })
+            Ok(GraphStep::Binary {
+                op,
+                other: other_node_id,
+            })
         }
 
         // Reduction operations
         "reduce_sum" => {
             use view_buffer::ops::ReductionOp;
             // Global reduction: axis = None means reduce entire array to scalar
-            Ok(ViewDto::Reduction(ReductionOp::Sum { axis: None }))
+            Ok(GraphStep::Reduction(ReductionOp::Sum { axis: None }))
         }
         "reduce_popcount" => {
             use view_buffer::ops::ReductionOp;
             // Count set bits across entire buffer (for Hamming distance)
-            Ok(ViewDto::Reduction(ReductionOp::PopCount))
+            Ok(GraphStep::Reduction(ReductionOp::PopCount))
         }
         "reduce_max" => {
             use view_buffer::ops::ReductionOp;
             let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
-            Ok(ViewDto::Reduction(ReductionOp::Max { axis }))
+            Ok(GraphStep::Reduction(ReductionOp::Max { axis }))
         }
         "reduce_min" => {
             use view_buffer::ops::ReductionOp;
             let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
-            Ok(ViewDto::Reduction(ReductionOp::Min { axis }))
+            Ok(GraphStep::Reduction(ReductionOp::Min { axis }))
         }
         "reduce_mean" => {
             use view_buffer::ops::ReductionOp;
             let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
-            Ok(ViewDto::Reduction(ReductionOp::Mean { axis }))
+            Ok(GraphStep::Reduction(ReductionOp::Mean { axis }))
         }
         "reduce_std" => {
             use view_buffer::ops::ReductionOp;
             let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
             let ddof = get::opt_u8(&op_spec.params, "ddof", 0, row_idx, ctx)?;
-            Ok(ViewDto::Reduction(ReductionOp::Std { axis, ddof }))
+            Ok(GraphStep::Reduction(ReductionOp::Std { axis, ddof }))
         }
         "reduce_percentile" => {
             use view_buffer::ops::ReductionOp;
             let q = get_param(&op_spec.params, "q")?.resolve_f64(row_idx, ctx)?;
-            Ok(ViewDto::Reduction(ReductionOp::Percentile { q }))
+            Ok(GraphStep::Reduction(ReductionOp::Percentile { q }))
         }
         "reduce_argmax" => {
             use view_buffer::ops::ReductionOp;
             let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, ctx)?;
-            Ok(ViewDto::Reduction(ReductionOp::ArgMax { axis }))
+            Ok(GraphStep::Reduction(ReductionOp::ArgMax { axis }))
         }
         "reduce_argmin" => {
             use view_buffer::ops::ReductionOp;
             let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, ctx)?;
-            Ok(ViewDto::Reduction(ReductionOp::ArgMin { axis }))
+            Ok(GraphStep::Reduction(ReductionOp::ArgMin { axis }))
         }
         "extract_shape" => {
             // Extract shape returns buffer dimensions as a vector
-            Ok(ViewDto::ExtractShape)
+            Ok(GraphStep::ExtractShape)
         }
         "label_reduce" => {
             let contours_param = get_param(&op_spec.params, "contours")?;
-            // The contour column is referenced by *name* inside the ViewDto
-            // (a view-buffer type), so graph compilation deliberately leaves
-            // this param unbound; the executor maps the name to its input
-            // slot via `CompiledGraph::name_to_slot`.
-            let contours_expr = match contours_param {
+            // The contour column is referenced by *name* inside the step, so
+            // graph compilation deliberately leaves this param unbound; the
+            // executor maps the name to its input slot via
+            // `CompiledGraph::name_to_slot`.
+            let contours_col = match contours_param {
                 ParamValue::Expr { col: Some(col), .. } => col.clone(),
                 ParamValue::Expr { col: None, .. } => {
                     return Err(polars_err!(
@@ -856,22 +871,24 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                     ))
                 }
             };
-            let reduction = op_spec
-                .params
-                .get("reduction")
-                .map(|p| p.resolve_string())
-                .transpose()?
-                .unwrap_or("max");
-            let region_mode = op_spec
-                .params
-                .get("region_mode")
-                .map(|p| p.resolve_string())
-                .transpose()?
-                .unwrap_or("interior");
-            Ok(ViewDto::LabelReduce {
-                contours_expr,
-                reduction: reduction.to_string(),
-                region_mode: region_mode.to_string(),
+            let reduction = get::opt_enum(
+                &op_spec.params,
+                "reduction",
+                LabelReduction::NAMED,
+                &[],
+                LabelReduction::Max,
+            )?;
+            let region_mode = get::opt_enum(
+                &op_spec.params,
+                "region_mode",
+                LabelRegionMode::NAMED,
+                &[],
+                LabelRegionMode::Interior,
+            )?;
+            Ok(GraphStep::LabelReduce {
+                contours_col,
+                reduction,
+                region_mode,
             })
         }
 
@@ -913,17 +930,17 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 op = op.with_range(min, max);
             }
 
-            Ok(ViewDto::Histogram(op))
+            Ok(GraphStep::Histogram(op))
         }
 
         // Channel operations
         "channel_select" => {
             let index = get_param(&op_spec.params, "index")?.resolve_usize(row_idx, ctx)?;
-            Ok(ViewDto::View(ViewOp::ChannelSelect { index }))
+            buffer_step(ViewDto::View(ViewOp::ChannelSelect { index }))
         }
         "channel_swap" => {
             let order = get_param(&op_spec.params, "order")?.as_int_list()?;
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ChannelSwap { order },
             }))
         }
@@ -947,19 +964,21 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                     )
                 }
             };
-            Ok(ViewDto::ChannelMerge { other_node_ids })
+            Ok(GraphStep::ChannelMerge {
+                others: other_node_ids,
+            })
         }
 
         // Intensity operations
         "adjust_contrast" => {
             let factor = get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, ctx)?;
-            Ok(ViewDto::Compute(ComputeOp::AdjustContrast(factor)))
+            buffer_step(ViewDto::Compute(ComputeOp::AdjustContrast(factor)))
         }
         "adjust_gamma" => {
             let gamma = get_param(&op_spec.params, "gamma")?.resolve_f32(row_idx, ctx)?;
-            Ok(ViewDto::Compute(ComputeOp::AdjustGamma(gamma)))
+            buffer_step(ViewDto::Compute(ComputeOp::AdjustGamma(gamma)))
         }
-        "invert" => Ok(ViewDto::Compute(ComputeOp::Invert)),
+        "invert" => buffer_step(ViewDto::Compute(ComputeOp::Invert)),
 
         // Color space conversion
         "cvt_color" => {
@@ -977,7 +996,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                     "parameter 'to_space': unknown color space '{}', expected one of {:?}",
                     to_str, naming::names(ColorSpace::NAMED))
             })?;
-            Ok(ViewDto::Color(ColorConvertOp { from, to }))
+            buffer_step(ViewDto::Color(ColorConvertOp { from, to }))
         }
 
         // Convolution / filter operations
@@ -999,7 +1018,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 BorderMode::Replicate,
             )?;
 
-            Ok(ViewDto::Filter(ConvolveOp {
+            buffer_step(ViewDto::Filter(ConvolveOp {
                 kernel,
                 ksize,
                 normalize,
@@ -1009,20 +1028,20 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "erode" => {
             let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
             let iterations = get::opt_u32(&op_spec.params, "iterations", 1, row_idx, ctx)?;
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Erode { ksize, iterations },
             }))
         }
         "dilate" => {
             let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
             let iterations = get::opt_u32(&op_spec.params, "iterations", 1, row_idx, ctx)?;
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Dilate { ksize, iterations },
             }))
         }
         "morphology_gradient" => {
             let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::MorphGradient { ksize },
             }))
         }
@@ -1032,14 +1051,14 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 get_param(&op_spec.params, "low_threshold")?.resolve_f32(row_idx, ctx)?;
             let high_threshold =
                 get_param(&op_spec.params, "high_threshold")?.resolve_f32(row_idx, ctx)?;
-            Ok(ViewDto::Image(ImageOp {
+            buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Canny {
                     low_threshold,
                     high_threshold,
                 },
             }))
         }
-        "equalize_histogram" => Ok(ViewDto::Image(ImageOp {
+        "equalize_histogram" => buffer_step(ViewDto::Image(ImageOp {
             kind: ImageOpKind::HistogramEqualize,
         })),
 
@@ -1049,8 +1068,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 .resolve_string()?
                 .to_string();
             let invert = get::opt_bool(&op_spec.params, "invert", false)?;
-            Ok(ViewDto::ApplyMask {
-                mask_node_id,
+            Ok(GraphStep::ApplyMask {
+                mask: mask_node_id,
                 invert,
             })
         }

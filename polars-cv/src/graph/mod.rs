@@ -11,6 +11,7 @@ pub(crate) mod types;
 
 #[path = "compiled.rs"]
 pub(crate) mod compiled;
+pub(crate) mod step;
 
 #[path = "decode.rs"]
 pub(crate) mod decode;

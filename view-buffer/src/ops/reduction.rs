@@ -9,6 +9,7 @@ use crate::ops::cost::OpCost;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
+use crate::ops::Domain;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -494,6 +495,25 @@ impl ReductionOp {
         }
 
         ViewBuffer::from_vec_with_shape(output, out_shape)
+    }
+}
+
+impl ReductionOp {
+    /// The domain of this reduction's result: global reductions (no axis)
+    /// collapse to a scalar; axis reductions keep a (smaller) buffer.
+    ///
+    /// Lives here, next to the op, as the single authority the graph layer
+    /// reads (formerly duplicated in the DTO's output_domain match).
+    pub fn output_domain(&self) -> Domain {
+        match self {
+            ReductionOp::Sum { axis: None }
+            | ReductionOp::Mean { axis: None }
+            | ReductionOp::Max { axis: None }
+            | ReductionOp::Min { axis: None }
+            | ReductionOp::Std { axis: None, .. }
+            | ReductionOp::PopCount => Domain::Scalar,
+            _ => Domain::Buffer,
+        }
     }
 }
 

@@ -4,6 +4,8 @@ use crate::core::buffer::ViewBuffer;
 use crate::execution::runner::{
     apply_compute_inner, apply_image_inner, apply_perceptual_hash, apply_view,
 };
+use crate::ops::color::{apply_color_convert, ColorConvertOp};
+use crate::ops::filter::{apply_convolve2d, ConvolveOp};
 use crate::ops::phash::PerceptualHashOp;
 use crate::ops::{ComputeOp, ImageOp, ViewOp};
 
@@ -14,6 +16,10 @@ pub enum PlanStep {
     Compute(ComputeOp),
     Image(ImageOp),
     PerceptualHash(PerceptualHashOp),
+    /// Color space conversion.
+    Color(ColorConvertOp),
+    /// 2D convolution.
+    Filter(ConvolveOp),
     /// Ensure the buffer is contiguous before passing to the next op.
     MaterializeContiguous,
 }
@@ -43,6 +49,8 @@ pub(crate) fn apply_step(buf: ViewBuffer, step: PlanStep) -> ViewBuffer {
         PlanStep::Compute(op) => apply_compute_inner(buf, op),
         PlanStep::Image(op) => apply_image_inner(buf, op),
         PlanStep::PerceptualHash(op) => apply_perceptual_hash(buf, op),
+        PlanStep::Color(op) => apply_color_convert(&buf, &op),
+        PlanStep::Filter(op) => apply_convolve2d(&buf, &op),
         PlanStep::MaterializeContiguous => buf.to_contiguous(),
     }
 }

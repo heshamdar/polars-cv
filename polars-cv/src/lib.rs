@@ -114,14 +114,14 @@ fn channel_rule_name(rule: view_buffer::OutputChannelRule) -> String {
 /// dimensional parameter, so the placeholder is sound and lets introspection
 /// work on the same live op specs the planner sees (which routinely carry
 /// expression params) rather than only literal-only ops.
-fn resolve_op_from_json(op_json: &str) -> PyResult<view_buffer::ViewDto> {
+fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep> {
     use crate::params::{ParamCtx, ParamValue};
 
     let mut op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
     // Bind each expression param to a placeholder slot holding `1_i64`,
     // mirroring what graph compilation does with the real input columns.
-    // `label_reduce.contours` carries the column *name* through the DTO and
+    // `label_reduce.contours` carries the column *name* through the step and
     // stays unbound, exactly as in `graph::compiled::bind_graph_params`.
     let keep_named = op_spec.op == "label_reduce";
     let mut placeholders: Vec<Series> = Vec::new();
