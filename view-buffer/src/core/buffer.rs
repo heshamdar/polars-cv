@@ -707,6 +707,30 @@ impl ViewBuffer {
         }
     }
 
+    /// Read a single-element buffer's value as `f64`, whatever its dtype.
+    ///
+    /// The dtype-dispatched counterpart of `as_slice::<T>()[0]` for callers
+    /// that treat one-element results as scalars (e.g. global reductions).
+    /// Returns `None` when the buffer does not hold exactly one element.
+    pub fn scalar_f64(&self) -> Option<f64> {
+        if self.layout.shape.iter().product::<usize>() != 1 {
+            return None;
+        }
+        let contig = self.to_contiguous();
+        Some(match contig.dtype() {
+            DType::U8 => contig.as_slice::<u8>()[0] as f64,
+            DType::I8 => contig.as_slice::<i8>()[0] as f64,
+            DType::U16 => contig.as_slice::<u16>()[0] as f64,
+            DType::I16 => contig.as_slice::<i16>()[0] as f64,
+            DType::U32 => contig.as_slice::<u32>()[0] as f64,
+            DType::I32 => contig.as_slice::<i32>()[0] as f64,
+            DType::U64 => contig.as_slice::<u64>()[0] as f64,
+            DType::I64 => contig.as_slice::<i64>()[0] as f64,
+            DType::F32 => contig.as_slice::<f32>()[0] as f64,
+            DType::F64 => contig.as_slice::<f64>()[0],
+        })
+    }
+
     /// Returns a unique identifier for the underlying storage.
     /// Used for zero-copy verification in tests.
     pub fn storage_id(&self) -> usize {

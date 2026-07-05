@@ -159,78 +159,119 @@ mod parity_tests {
         }
     }
 
+    /// One probe instance per `ImageOpKind` variant.
+    ///
+    /// The exhaustive match in `_assert_image_kind_probed` makes adding a
+    /// variant a compile error until it is acknowledged there — and the
+    /// comment on that match directs the author to add a probe here, so a
+    /// new kind cannot ship without parity coverage.
+    fn image_kind_probes() -> Vec<ImageOpKind> {
+        use FilterType::Nearest;
+        vec![
+            ImageOpKind::Threshold(128.0),
+            ImageOpKind::Resize {
+                width: 8,
+                height: 8,
+                filter: Nearest,
+            },
+            ImageOpKind::Blur { sigma: 1.0 },
+            ImageOpKind::Grayscale,
+            ImageOpKind::Canny {
+                low_threshold: 50.0,
+                high_threshold: 150.0,
+            },
+            ImageOpKind::HistogramEqualize,
+            // Morphological ops preserve channels — the case where the old
+            // Python contract (drop→1ch) disagreed with execution.
+            ImageOpKind::Erode {
+                ksize: 3,
+                iterations: 1,
+            },
+            ImageOpKind::Dilate {
+                ksize: 3,
+                iterations: 1,
+            },
+            ImageOpKind::MorphGradient { ksize: 3 },
+            ImageOpKind::ResizeScale {
+                scale_x: 0.5,
+                scale_y: 2.0,
+                filter: Nearest,
+            },
+            ImageOpKind::ResizeToHeight {
+                height: 8,
+                filter: Nearest,
+            },
+            ImageOpKind::ResizeToWidth {
+                width: 3,
+                filter: Nearest,
+            },
+            ImageOpKind::ResizeMax {
+                max_size: 12,
+                filter: Nearest,
+            },
+            ImageOpKind::ResizeMin {
+                min_size: 2,
+                filter: Nearest,
+            },
+            ImageOpKind::Pad {
+                top: 1,
+                bottom: 2,
+                left: 3,
+                right: 4,
+                value: 0.0,
+                mode: crate::ops::pad::PadMode::Constant,
+            },
+            ImageOpKind::PadToSize {
+                height: 8,
+                width: 8,
+                position: crate::ops::pad::PadPosition::Center,
+                value: 0.0,
+            },
+            ImageOpKind::Letterbox {
+                height: 8,
+                width: 8,
+                value: 0.0,
+                filter: Nearest,
+            },
+            ImageOpKind::ChannelSwap {
+                order: vec![2, 1, 0],
+            },
+        ]
+    }
+
+    /// Completeness guard: adding an `ImageOpKind` variant fails to compile
+    /// here until it is listed — add a matching probe to
+    /// `image_kind_probes()` at the same time.
+    fn _assert_image_kind_probed(kind: &ImageOpKind) {
+        match kind {
+            ImageOpKind::Threshold(_)
+            | ImageOpKind::Resize { .. }
+            | ImageOpKind::Blur { .. }
+            | ImageOpKind::Grayscale
+            | ImageOpKind::Canny { .. }
+            | ImageOpKind::HistogramEqualize
+            | ImageOpKind::Erode { .. }
+            | ImageOpKind::Dilate { .. }
+            | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::Letterbox { .. }
+            | ImageOpKind::ChannelSwap { .. } => (),
+        }
+    }
+
     #[test]
     fn image_ops_match_infer_shape() {
-        let probe = [4usize, 4, 3];
-        check(
-            &ImageOp {
-                kind: ImageOpKind::Threshold(128.0),
-            },
-            &probe,
-        );
-        check(
-            &ImageOp {
-                kind: ImageOpKind::Resize {
-                    width: 8,
-                    height: 8,
-                    filter: FilterType::Nearest,
-                },
-            },
-            &probe,
-        );
-        check(
-            &ImageOp {
-                kind: ImageOpKind::Blur { sigma: 1.0 },
-            },
-            &probe,
-        );
-        check(
-            &ImageOp {
-                kind: ImageOpKind::Grayscale,
-            },
-            &probe,
-        );
-        check(
-            &ImageOp {
-                kind: ImageOpKind::Canny {
-                    low_threshold: 50.0,
-                    high_threshold: 150.0,
-                },
-            },
-            &probe,
-        );
-        check(
-            &ImageOp {
-                kind: ImageOpKind::HistogramEqualize,
-            },
-            &probe,
-        );
-        // Morphological ops preserve channels — the case where the old Python
-        // contract (drop→1ch) disagreed with execution. Lock in the truth.
-        check(
-            &ImageOp {
-                kind: ImageOpKind::Erode {
-                    ksize: 3,
-                    iterations: 1,
-                },
-            },
-            &probe,
-        );
-        check(
-            &ImageOp {
-                kind: ImageOpKind::Dilate {
-                    ksize: 3,
-                    iterations: 1,
-                },
-            },
-            &probe,
-        );
-        check(
-            &ImageOp {
-                kind: ImageOpKind::MorphGradient { ksize: 3 },
-            },
-            &probe,
-        );
+        // A non-square probe so H/W math errors cannot cancel out.
+        let probe = [4usize, 6, 3];
+        for kind in image_kind_probes() {
+            check(&ImageOp { kind }, &probe);
+        }
     }
 
     #[test]

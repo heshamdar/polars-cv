@@ -42,63 +42,9 @@ pub enum ViewDto {
     Reduction(ReductionOp),
     /// Histogram operation - computes bin counts, normalized histogram, quantized image, or edges.
     Histogram(HistogramOp),
-    /// Resize by scale factor - dimensions computed at runtime.
-    ResizeScale {
-        scale_x: f32,
-        scale_y: f32,
-        filter: crate::ops::image::FilterType,
-    },
-    /// Resize to target height, preserving aspect ratio - width computed at runtime.
-    ResizeToHeight {
-        height: u32,
-        filter: crate::ops::image::FilterType,
-    },
-    /// Resize to target width, preserving aspect ratio - height computed at runtime.
-    ResizeToWidth {
-        width: u32,
-        filter: crate::ops::image::FilterType,
-    },
-    /// Resize so max dimension equals target, preserving aspect ratio.
-    ResizeMax {
-        max_size: u32,
-        filter: crate::ops::image::FilterType,
-    },
-    /// Resize so min dimension equals target, preserving aspect ratio.
-    ResizeMin {
-        min_size: u32,
-        filter: crate::ops::image::FilterType,
-    },
-    /// Pad with specified amounts and mode.
-    Pad {
-        top: u32,
-        bottom: u32,
-        left: u32,
-        right: u32,
-        value: f32,
-        mode: PadMode,
-    },
-    /// Pad to exact size with positioning - dimensions computed at runtime.
-    PadToSize {
-        height: u32,
-        width: u32,
-        position: PadPosition,
-        value: f32,
-    },
-    /// Letterbox: resize maintaining aspect ratio, then pad to exact size.
-    Letterbox {
-        height: u32,
-        width: u32,
-        value: f32,
-    },
-    // Helper for plugins to request materialization explicitly
-    Materialize,
     /// Extract the shape of the buffer as a vector [height, width, channels].
     /// Returns a Vector domain output with dimension values.
     ExtractShape,
-    /// Reorder channels in a [H, W, C] buffer. Allocating (copies data).
-    ChannelSwap {
-        order: Vec<usize>,
-    },
     /// Merge multiple single-channel [H, W] buffers into a [H, W, C] buffer.
     /// Other buffers are referenced by node IDs for graph execution.
     ChannelMerge {
@@ -117,44 +63,9 @@ pub enum ViewDto {
     Filter(ConvolveOp),
 }
 
-/// Padding mode for Pad operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum PadMode {
-    /// Fill with constant value.
-    Constant,
-    /// Replicate edge values.
-    Edge,
-    /// Reflect without edge.
-    Reflect,
-    /// Reflect with edge.
-    Symmetric,
-}
-
-/// Position for PadToSize operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum PadPosition {
-    /// Center content in padded area.
-    Center,
-    /// Place at top-left corner.
-    TopLeft,
-    /// Place at bottom-right corner.
-    BottomRight,
-}
-
-crate::naming::named_variants!(PadMode {
-    "constant" => Constant,
-    "edge" => Edge,
-    "reflect" => Reflect,
-    "symmetric" => Symmetric,
-});
-
-crate::naming::named_variants!(PadPosition {
-    "center" => Center,
-    "top-left" => TopLeft,
-    "bottom-right" => BottomRight,
-});
+// PadMode/PadPosition live with the padding kernels; re-exported here
+// for the existing `ops::dto::PadMode` import paths.
+pub use crate::ops::pad::{PadMode, PadPosition};
 
 impl ViewDto {
     /// Get the input domain this operation expects.
@@ -176,23 +87,11 @@ impl ViewDto {
             ViewDto::Reduction(_) => Domain::Buffer,
             // Histogram operations work on buffers
             ViewDto::Histogram(_) => Domain::Buffer,
-            // Deferred resize operations work on buffers
-            ViewDto::ResizeScale { .. }
-            | ViewDto::ResizeToHeight { .. }
-            | ViewDto::ResizeToWidth { .. }
-            | ViewDto::ResizeMax { .. }
-            | ViewDto::ResizeMin { .. } => Domain::Buffer,
-            // Padding operations work on buffers
-            ViewDto::Pad { .. } | ViewDto::PadToSize { .. } | ViewDto::Letterbox { .. } => {
-                Domain::Buffer
-            }
-            // Materialize accepts any domain
-            ViewDto::Materialize => Domain::Any,
             // ExtractShape works on buffers
             ViewDto::ExtractShape => Domain::Buffer,
             ViewDto::LabelReduce { .. } => Domain::Buffer,
-            // Channel operations work on buffers
-            ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => Domain::Buffer,
+            // Channel merge works on buffers
+            ViewDto::ChannelMerge { .. } => Domain::Buffer,
             // Color conversion works on buffers
             ViewDto::Color(_) => Domain::Buffer,
             // Convolution works on buffers
@@ -234,23 +133,11 @@ impl ViewDto {
                 HistogramOutput::Quantized => Domain::Buffer,
                 _ => Domain::Vector,
             },
-            // Deferred resize operations produce buffers
-            ViewDto::ResizeScale { .. }
-            | ViewDto::ResizeToHeight { .. }
-            | ViewDto::ResizeToWidth { .. }
-            | ViewDto::ResizeMax { .. }
-            | ViewDto::ResizeMin { .. } => Domain::Buffer,
-            // Padding operations produce buffers
-            ViewDto::Pad { .. } | ViewDto::PadToSize { .. } | ViewDto::Letterbox { .. } => {
-                Domain::Buffer
-            }
-            // Materialize preserves domain
-            ViewDto::Materialize => Domain::Any,
             // ExtractShape produces a vector of dimension values
             ViewDto::ExtractShape => Domain::Vector,
             ViewDto::LabelReduce { .. } => Domain::Vector,
-            // Channel operations produce buffers
-            ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => Domain::Buffer,
+            // Channel merge produces buffers
+            ViewDto::ChannelMerge { .. } => Domain::Buffer,
             // Color conversion produces buffers
             ViewDto::Color(_) => Domain::Buffer,
             // Convolution produces buffers
@@ -281,24 +168,10 @@ impl ViewDto {
             ViewDto::Color(_) => OutputDTypeRule::PreserveInput,
             // Mask application preserves the buffer dtype.
             ViewDto::ApplyMask { .. } => OutputDTypeRule::PreserveInput,
-            // Deferred resize variants only change dimensions, not dtype.
-            ViewDto::ResizeScale { .. }
-            | ViewDto::ResizeToHeight { .. }
-            | ViewDto::ResizeToWidth { .. }
-            | ViewDto::ResizeMax { .. }
-            | ViewDto::ResizeMin { .. } => OutputDTypeRule::PreserveInput,
-            // Padding preserves dtype.
-            ViewDto::Pad { .. } | ViewDto::PadToSize { .. } | ViewDto::Letterbox { .. } => {
-                OutputDTypeRule::PreserveInput
-            }
-            // Materialize is a no-op for dtype.
-            ViewDto::Materialize => OutputDTypeRule::PreserveInput,
             // ExtractShape yields dimension values as f64.
             ViewDto::ExtractShape => OutputDTypeRule::ForceF64,
-            // Channel reorder/merge preserve element dtype.
-            ViewDto::ChannelSwap { .. } | ViewDto::ChannelMerge { .. } => {
-                OutputDTypeRule::PreserveInput
-            }
+            // Channel merge preserves element dtype.
+            ViewDto::ChannelMerge { .. } => OutputDTypeRule::PreserveInput,
             // LabelReduce yields f64 region measures.
             ViewDto::LabelReduce { .. } => OutputDTypeRule::ForceF64,
         }
@@ -323,19 +196,9 @@ impl ViewDto {
             ViewDto::Histogram(op) => op.output_rank_rule(),
             ViewDto::Filter(op) => op.output_rank_rule(),
             ViewDto::Color(op) => op.output_rank_rule(),
-            // Mask application and materialize are shape-identity.
-            ViewDto::ApplyMask { .. } | ViewDto::Materialize => OutputRankRule::PreserveRank,
-            // Deferred resize/padding only change H/W, never the rank.
-            ViewDto::ResizeScale { .. }
-            | ViewDto::ResizeToHeight { .. }
-            | ViewDto::ResizeToWidth { .. }
-            | ViewDto::ResizeMax { .. }
-            | ViewDto::ResizeMin { .. }
-            | ViewDto::Pad { .. }
-            | ViewDto::PadToSize { .. }
-            | ViewDto::Letterbox { .. } => OutputRankRule::PreserveRank,
-            // Channel reorder keeps rank; merge always yields an [H, W, C] image.
-            ViewDto::ChannelSwap { .. } => OutputRankRule::PreserveRank,
+            // Mask application is shape-identity.
+            ViewDto::ApplyMask { .. } => OutputRankRule::PreserveRank,
+            // Channel merge always yields an [H, W, C] image.
             ViewDto::ChannelMerge { .. } => OutputRankRule::Fixed(3),
             // ExtractShape and LabelReduce emit 1-D vectors.
             ViewDto::ExtractShape | ViewDto::LabelReduce { .. } => OutputRankRule::Fixed(1),
@@ -359,20 +222,10 @@ impl ViewDto {
             ViewDto::Histogram(op) => op.output_channel_rule(),
             ViewDto::Filter(op) => op.output_channel_rule(),
             ViewDto::Color(op) => op.output_channel_rule(),
-            // Mask application and materialize preserve channels.
-            ViewDto::ApplyMask { .. } | ViewDto::Materialize => OutputChannelRule::PreserveChannels,
-            // Deferred resize/padding preserve the channel count.
-            ViewDto::ResizeScale { .. }
-            | ViewDto::ResizeToHeight { .. }
-            | ViewDto::ResizeToWidth { .. }
-            | ViewDto::ResizeMax { .. }
-            | ViewDto::ResizeMin { .. }
-            | ViewDto::Pad { .. }
-            | ViewDto::PadToSize { .. }
-            | ViewDto::Letterbox { .. } => OutputChannelRule::PreserveChannels,
-            // Channel reorder preserves the count; merge produces one channel
-            // per merged single-channel input (this buffer + the others).
-            ViewDto::ChannelSwap { .. } => OutputChannelRule::PreserveChannels,
+            // Mask application preserves channels.
+            ViewDto::ApplyMask { .. } => OutputChannelRule::PreserveChannels,
+            // Channel merge produces one channel per merged single-channel
+            // input (this buffer + the others).
             ViewDto::ChannelMerge { other_node_ids } => {
                 OutputChannelRule::Fixed(other_node_ids.len() + 1)
             }
@@ -393,18 +246,8 @@ impl ViewDto {
             ViewDto::ApplyMask { .. } => "ApplyMask",
             ViewDto::Reduction(op) => op.name(),
             ViewDto::Histogram(op) => op.name(),
-            ViewDto::ResizeScale { .. } => "ResizeScale",
-            ViewDto::ResizeToHeight { .. } => "ResizeToHeight",
-            ViewDto::ResizeToWidth { .. } => "ResizeToWidth",
-            ViewDto::ResizeMax { .. } => "ResizeMax",
-            ViewDto::ResizeMin { .. } => "ResizeMin",
-            ViewDto::Pad { .. } => "Pad",
-            ViewDto::PadToSize { .. } => "PadToSize",
-            ViewDto::Letterbox { .. } => "Letterbox",
-            ViewDto::Materialize => "Materialize",
             ViewDto::ExtractShape => "ExtractShape",
             ViewDto::LabelReduce { .. } => "LabelReduce",
-            ViewDto::ChannelSwap { .. } => "ChannelSwap",
             ViewDto::ChannelMerge { .. } => "ChannelMerge",
             ViewDto::Color(_) => "ColorConvert",
             ViewDto::Filter(_) => "Convolve2D",

@@ -55,7 +55,6 @@ fn test_plan_execution_from_json() {
     let ops = vec![
         ViewDto::Compute(ComputeOp::Scale(2.0)),
         ViewDto::Compute(ComputeOp::Relu),
-        ViewDto::Materialize,
     ];
 
     // Simulate JSON Transport

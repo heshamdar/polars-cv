@@ -454,39 +454,49 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::ResizeScale {
-                scale_x,
-                scale_y,
-                filter,
-            })
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::ResizeScale {
+                    scale_x,
+                    scale_y,
+                    filter,
+                },
+            }))
         }
         "resize_to_height" => {
             let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::ResizeToHeight { height, filter })
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::ResizeToHeight { height, filter },
+            }))
         }
         "resize_to_width" => {
             let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::ResizeToWidth { width, filter })
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::ResizeToWidth { width, filter },
+            }))
         }
         "resize_max" => {
             let max_size = get_param(&op_spec.params, "max_size")?.resolve_u32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::ResizeMax { max_size, filter })
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::ResizeMax { max_size, filter },
+            }))
         }
         "resize_min" => {
             let min_size = get_param(&op_spec.params, "min_size")?.resolve_u32(row_idx, ctx)?;
             let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
             let filter = parse_filter(filter_str)?;
 
-            Ok(ViewDto::ResizeMin { min_size, filter })
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::ResizeMin { min_size, filter },
+            }))
         }
 
         // Padding operations
@@ -500,14 +510,16 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
             let mode = get::req_enum(&op_spec.params, "mode", PadMode::NAMED, &[])?;
 
-            Ok(ViewDto::Pad {
-                top,
-                bottom,
-                left,
-                right,
-                value,
-                mode,
-            })
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::Pad {
+                    top,
+                    bottom,
+                    left,
+                    right,
+                    value,
+                    mode,
+                },
+            }))
         }
         "pad_to_size" => {
             use view_buffer::ops::dto::PadPosition;
@@ -517,23 +529,37 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
             let position = get::req_enum(&op_spec.params, "position", PadPosition::NAMED, &[])?;
 
-            Ok(ViewDto::PadToSize {
-                height,
-                width,
-                position,
-                value,
-            })
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::PadToSize {
+                    height,
+                    width,
+                    position,
+                    value,
+                },
+            }))
         }
         "letterbox" => {
             let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
             let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
 
-            Ok(ViewDto::Letterbox {
-                height,
-                width,
-                value,
-            })
+            // Letterbox has always resized with lanczos3; kept as the default
+            // (now overridable per-op if the builder ever exposes it).
+            let filter = get::opt_enum(
+                &op_spec.params,
+                "filter",
+                FilterType::NAMED,
+                FilterType::ALIASES,
+                FilterType::Lanczos3,
+            )?;
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::Letterbox {
+                    height,
+                    width,
+                    value,
+                    filter,
+                },
+            }))
         }
         "grayscale" => Ok(ViewDto::Image(ImageOp {
             kind: ImageOpKind::Grayscale,
@@ -897,7 +923,9 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "channel_swap" => {
             let order = get_param(&op_spec.params, "order")?.as_int_list()?;
-            Ok(ViewDto::ChannelSwap { order })
+            Ok(ViewDto::Image(ImageOp {
+                kind: ImageOpKind::ChannelSwap { order },
+            }))
         }
         "channel_merge" => {
             let other_nodes_param = get_param(&op_spec.params, "other_nodes")?;

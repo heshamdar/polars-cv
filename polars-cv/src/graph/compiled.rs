@@ -25,9 +25,9 @@ use polars::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use view_buffer::geometry::{measures, predicates, Contour};
+use view_buffer::geometry::label::{score_contours_on_buffer, LabelReduction, LabelRegionMode};
 use view_buffer::ops::NodeOutput;
-use view_buffer::{ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
 use crate::execute::{
@@ -37,8 +37,8 @@ use crate::params::{ParamCtx, ParamValue};
 use crate::pipeline::OpSpec;
 
 use super::decode::{
-    apply_mask, build_series_from_spec, decode_binary_zero_copy, decode_list_or_array_source,
-    get_binary_row_buffer, null_row_result_for_spec, pad_buffer,
+    build_series_from_spec, decode_binary_zero_copy, decode_list_or_array_source,
+    get_binary_row_buffer, null_row_result_for_spec,
 };
 use super::encode::{encode_node_output, execute_geometry_op};
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
@@ -767,11 +767,11 @@ impl CompiledGraph {
                                         mask_output.domain()
                                     )
                                 })?;
-                                let result = apply_mask(current_buf, mask_buf, *invert);
+                                let result =
+                                    view_buffer::apply_mask(current_buf, mask_buf, *invert);
                                 current_output = NodeOutput::from_buffer(result);
                             }
                             ViewDto::Reduction(reduction_op) => {
-                                use view_buffer::DType;
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                                 let current_buf = current_output.as_buffer().ok_or_else(|| {
@@ -781,24 +781,10 @@ impl CompiledGraph {
                                     )
                                 })?;
                                 let result = reduction_op.execute(current_buf);
-                                if result.shape() == [1] {
-                                    // Extract scalar value based on actual dtype
-                                    let scalar_val = match result.dtype() {
-                                        DType::U8 => result.as_slice::<u8>()[0] as f64,
-                                        DType::I8 => result.as_slice::<i8>()[0] as f64,
-                                        DType::U16 => result.as_slice::<u16>()[0] as f64,
-                                        DType::I16 => result.as_slice::<i16>()[0] as f64,
-                                        DType::U32 => result.as_slice::<u32>()[0] as f64,
-                                        DType::I32 => result.as_slice::<i32>()[0] as f64,
-                                        DType::U64 => result.as_slice::<u64>()[0] as f64,
-                                        DType::I64 => result.as_slice::<i64>()[0] as f64,
-                                        DType::F32 => result.as_slice::<f32>()[0] as f64,
-                                        DType::F64 => result.as_slice::<f64>()[0],
-                                    };
-                                    current_output = NodeOutput::Scalar(scalar_val);
-                                } else {
-                                    current_output = NodeOutput::from_buffer(result);
-                                }
+                                current_output = match result.scalar_f64() {
+                                    Some(v) if result.shape() == [1] => NodeOutput::Scalar(v),
+                                    _ => NodeOutput::from_buffer(result),
+                                };
                             }
                             ViewDto::Histogram(histogram_op) => {
                                 current_output =
@@ -810,243 +796,6 @@ impl CompiledGraph {
                                     )
                                 })?;
                                 let result = histogram_op.execute(current_buf);
-                                current_output = NodeOutput::from_buffer(result);
-                            }
-                            ViewDto::ResizeScale {
-                                scale_x,
-                                scale_y,
-                                filter,
-                            } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ResizeScale requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let shape = current_buf.shape();
-                                let input_height = shape[0] as f32;
-                                let input_width = shape[1] as f32;
-                                let new_height = (input_height * scale_y).round() as u32;
-                                let new_width = (input_width * scale_x).round() as u32;
-                                pending_buffer_ops.push(ViewDto::Image(ImageOp {
-                                    kind: ImageOpKind::Resize {
-                                        width: new_width,
-                                        height: new_height,
-                                        filter: *filter,
-                                    },
-                                }));
-                            }
-                            ViewDto::ResizeToHeight { height, filter } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ResizeToHeight requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let shape = current_buf.shape();
-                                let input_height = shape[0] as f32;
-                                let input_width = shape[1] as f32;
-                                let aspect = input_width / input_height;
-                                let new_width = (*height as f32 * aspect).round() as u32;
-                                pending_buffer_ops.push(ViewDto::Image(ImageOp {
-                                    kind: ImageOpKind::Resize {
-                                        width: new_width,
-                                        height: *height,
-                                        filter: *filter,
-                                    },
-                                }));
-                            }
-                            ViewDto::ResizeToWidth { width, filter } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ResizeToWidth requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let shape = current_buf.shape();
-                                let input_height = shape[0] as f32;
-                                let input_width = shape[1] as f32;
-                                let aspect = input_height / input_width;
-                                let new_height = (*width as f32 * aspect).round() as u32;
-                                pending_buffer_ops.push(ViewDto::Image(ImageOp {
-                                    kind: ImageOpKind::Resize {
-                                        width: *width,
-                                        height: new_height,
-                                        filter: *filter,
-                                    },
-                                }));
-                            }
-                            ViewDto::ResizeMax { max_size, filter } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ResizeMax requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let shape = current_buf.shape();
-                                let input_height = shape[0] as f32;
-                                let input_width = shape[1] as f32;
-                                let scale = *max_size as f32 / input_height.max(input_width);
-                                let new_height = (input_height * scale).round() as u32;
-                                let new_width = (input_width * scale).round() as u32;
-                                pending_buffer_ops.push(ViewDto::Image(ImageOp {
-                                    kind: ImageOpKind::Resize {
-                                        width: new_width,
-                                        height: new_height,
-                                        filter: *filter,
-                                    },
-                                }));
-                            }
-                            ViewDto::ResizeMin { min_size, filter } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ResizeMin requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let shape = current_buf.shape();
-                                let input_height = shape[0] as f32;
-                                let input_width = shape[1] as f32;
-                                let scale = *min_size as f32 / input_height.min(input_width);
-                                let new_height = (input_height * scale).round() as u32;
-                                let new_width = (input_width * scale).round() as u32;
-                                pending_buffer_ops.push(ViewDto::Image(ImageOp {
-                                    kind: ImageOpKind::Resize {
-                                        width: new_width,
-                                        height: new_height,
-                                        filter: *filter,
-                                    },
-                                }));
-                            }
-                            ViewDto::Pad {
-                                top,
-                                bottom,
-                                left,
-                                right,
-                                value,
-                                mode,
-                            } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "Pad requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let result = pad_buffer(
-                                    current_buf,
-                                    *top,
-                                    *bottom,
-                                    *left,
-                                    *right,
-                                    *value,
-                                    *mode,
-                                );
-                                current_output = NodeOutput::from_buffer(result);
-                            }
-                            ViewDto::PadToSize {
-                                height,
-                                width,
-                                position,
-                                value,
-                            } => {
-                                use view_buffer::ops::dto::{PadMode, PadPosition};
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "PadToSize requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let shape = current_buf.shape();
-                                let current_h = shape[0] as u32;
-                                let current_w = shape[1] as u32;
-                                let pad_h = height.saturating_sub(current_h);
-                                let pad_w = width.saturating_sub(current_w);
-                                let (top, bottom, left, right) = match position {
-                                    PadPosition::Center => {
-                                        let t = pad_h / 2;
-                                        let b = pad_h - t;
-                                        let l = pad_w / 2;
-                                        let r = pad_w - l;
-                                        (t, b, l, r)
-                                    }
-                                    PadPosition::TopLeft => (0, pad_h, 0, pad_w),
-                                    PadPosition::BottomRight => (pad_h, 0, pad_w, 0),
-                                };
-                                let result = pad_buffer(
-                                    current_buf,
-                                    top,
-                                    bottom,
-                                    left,
-                                    right,
-                                    *value,
-                                    PadMode::Constant,
-                                );
-                                current_output = NodeOutput::from_buffer(result);
-                            }
-                            ViewDto::Letterbox {
-                                height,
-                                width,
-                                value,
-                            } => {
-                                use view_buffer::ops::dto::PadMode;
-                                use view_buffer::FilterType;
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "Letterbox requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let shape = current_buf.shape();
-                                let input_h = shape[0] as f32;
-                                let input_w = shape[1] as f32;
-                                let scale_h = *height as f32 / input_h;
-                                let scale_w = *width as f32 / input_w;
-                                let scale = scale_h.min(scale_w);
-                                let resized_h = (input_h * scale).round() as u32;
-                                let resized_w = (input_w * scale).round() as u32;
-                                pending_buffer_ops.push(ViewDto::Image(ImageOp {
-                                    kind: ImageOpKind::Resize {
-                                        width: resized_w,
-                                        height: resized_h,
-                                        filter: FilterType::Lanczos3,
-                                    },
-                                }));
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let resized = current_output.as_buffer().ok_or_else(|| {
-                                    "Letterbox: resized buffer expected".to_string()
-                                })?;
-                                let pad_h = height.saturating_sub(resized_h);
-                                let pad_w = width.saturating_sub(resized_w);
-                                let top = pad_h / 2;
-                                let bottom = pad_h - top;
-                                let left = pad_w / 2;
-                                let right = pad_w - left;
-                                let result = pad_buffer(
-                                    resized,
-                                    top,
-                                    bottom,
-                                    left,
-                                    right,
-                                    *value,
-                                    PadMode::Constant,
-                                );
                                 current_output = NodeOutput::from_buffer(result);
                             }
                             ViewDto::ExtractShape => {
@@ -1096,33 +845,33 @@ impl CompiledGraph {
                                 let contours = parse_contour_list(&contour_value).map_err(|e| {
                                     format!("LabelReduce contour parsing failed: {e}")
                                 })?;
-                                let parsed_reduction = parse_label_reduction(reduction)?;
-                                let parsed_region_mode = parse_label_region_mode(region_mode)?;
-                                let grid = buffer_to_grid(current_buf)?;
-                                let scores: Vec<f64> = contours
-                                    .iter()
-                                    .map(|contour| {
-                                        contour_score_on_grid(
-                                            contour,
-                                            &grid,
-                                            parsed_reduction,
-                                            parsed_region_mode,
-                                        )
-                                    })
-                                    .collect();
-                                current_output = NodeOutput::from_vector(scores);
-                            }
-                            ViewDto::ChannelSwap { order } => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
+                                let parsed_reduction = view_buffer::naming::lookup(
+                                    LabelReduction::NAMED,
+                                    reduction,
+                                )
+                                .ok_or_else(|| {
                                     format!(
-                                        "ChannelSwap requires Buffer, got {:?}",
-                                        current_output.domain()
+                                        "Unsupported reduction '{reduction}'. Expected one of: {:?}",
+                                        view_buffer::naming::names(LabelReduction::NAMED)
                                     )
                                 })?;
-                                let result = view_buffer::apply_channel_swap(current_buf, order);
-                                current_output = NodeOutput::from_buffer(result);
+                                let parsed_region_mode = view_buffer::naming::lookup(
+                                    LabelRegionMode::NAMED,
+                                    region_mode,
+                                )
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Unsupported region_mode '{region_mode}'. Expected one of: {:?}",
+                                        view_buffer::naming::names(LabelRegionMode::NAMED)
+                                    )
+                                })?;
+                                let scores = score_contours_on_buffer(
+                                    current_buf,
+                                    &contours,
+                                    parsed_reduction,
+                                    parsed_region_mode,
+                                )?;
+                                current_output = NodeOutput::from_vector(scores);
                             }
                             ViewDto::ChannelMerge { other_node_ids } => {
                                 current_output =
@@ -1172,10 +921,6 @@ impl CompiledGraph {
                                 })?;
                                 let result = apply_convolve2d(current_buf, convolve_op);
                                 current_output = NodeOutput::from_buffer(result);
-                            }
-                            ViewDto::Materialize => {
-                                current_output =
-                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
                             }
                             _ => {
                                 pending_buffer_ops.push(view_dto.as_ref().clone());
@@ -1480,24 +1225,6 @@ pub(crate) fn get_or_compile(
     Ok(compiled)
 }
 
-// ============================================================================
-// label_reduce helpers (used only by the executor)
-// ============================================================================
-
-#[derive(Clone, Copy)]
-enum LabelReduction {
-    Max,
-    Mean,
-    Sum,
-}
-
-#[derive(Clone, Copy)]
-enum LabelRegionMode {
-    Interior,
-    Boundary,
-    Bbox,
-}
-
 /// Validate that a buffer output's dtype matches the planned expected_dtype
 /// (inferred by the Python planner from the op's view-buffer contract).
 /// "auto" is resolved elsewhere and skipped here.
@@ -1521,144 +1248,6 @@ fn validate_output_dtype(
         }
     }
     Ok(())
-}
-
-fn parse_label_reduction(value: &str) -> Result<LabelReduction, String> {
-    match value {
-        "max" => Ok(LabelReduction::Max),
-        "mean" => Ok(LabelReduction::Mean),
-        "sum" => Ok(LabelReduction::Sum),
-        other => Err(format!(
-            "Unsupported reduction '{other}'. Expected one of: max, mean, sum"
-        )),
-    }
-}
-
-fn parse_label_region_mode(value: &str) -> Result<LabelRegionMode, String> {
-    match value {
-        "interior" => Ok(LabelRegionMode::Interior),
-        "boundary" => Ok(LabelRegionMode::Boundary),
-        "bbox" => Ok(LabelRegionMode::Bbox),
-        other => Err(format!(
-            "Unsupported region_mode '{other}'. Expected one of: interior, boundary, bbox"
-        )),
-    }
-}
-
-fn buffer_to_grid(buffer: &ViewBuffer) -> Result<Vec<Vec<f64>>, String> {
-    let shape = buffer.shape();
-    if shape.len() < 2 {
-        return Err(format!(
-            "label_reduce requires at least 2D buffer input, got shape {:?}",
-            shape
-        ));
-    }
-    let height = shape[0];
-    let width = shape[1];
-    let channels = if shape.len() > 2 { shape[2] } else { 1 };
-    if channels != 1 {
-        return Err(format!(
-            "label_reduce currently requires a single-channel buffer, got {channels} channels"
-        ));
-    }
-    let contig = buffer.to_contiguous();
-
-    /// Read the (y, x) grid values out of one concrete element type.
-    macro_rules! fill_grid {
-        ($t:ty) => {{
-            let data = contig.as_slice::<$t>();
-            let mut grid = vec![vec![0.0; width]; height];
-            for y in 0..height {
-                for x in 0..width {
-                    grid[y][x] = data[y * width + x] as f64;
-                }
-            }
-            grid
-        }};
-    }
-    let grid = match contig.dtype() {
-        view_buffer::DType::U8 => fill_grid!(u8),
-        view_buffer::DType::I8 => fill_grid!(i8),
-        view_buffer::DType::U16 => fill_grid!(u16),
-        view_buffer::DType::I16 => fill_grid!(i16),
-        view_buffer::DType::U32 => fill_grid!(u32),
-        view_buffer::DType::I32 => fill_grid!(i32),
-        view_buffer::DType::U64 => fill_grid!(u64),
-        view_buffer::DType::I64 => fill_grid!(i64),
-        view_buffer::DType::F32 => fill_grid!(f32),
-        view_buffer::DType::F64 => fill_grid!(f64),
-    };
-    Ok(grid)
-}
-
-fn contour_score_on_grid(
-    contour: &Contour,
-    grid: &[Vec<f64>],
-    reduction: LabelReduction,
-    region_mode: LabelRegionMode,
-) -> f64 {
-    let height = grid.len();
-    if height == 0 {
-        return 0.0;
-    }
-    let width = grid[0].len();
-    if width == 0 {
-        return 0.0;
-    }
-    let Some(bbox) = contour.bounding_box() else {
-        return 0.0;
-    };
-
-    let x0 = bbox.x.floor().max(0.0) as usize;
-    let y0 = bbox.y.floor().max(0.0) as usize;
-    let x1 = (bbox.x + bbox.width).ceil().min(width as f64).max(0.0) as usize;
-    let y1 = (bbox.y + bbox.height).ceil().min(height as f64).max(0.0) as usize;
-    if x0 >= x1 || y0 >= y1 {
-        return 0.0;
-    }
-
-    let mut acc = 0.0;
-    let mut max_val = f64::NEG_INFINITY;
-    let mut count = 0usize;
-    for (y, row) in grid.iter().enumerate().skip(y0).take(y1 - y0) {
-        for (x, value) in row.iter().enumerate().skip(x0).take(x1 - x0) {
-            let include = match region_mode {
-                LabelRegionMode::Bbox => true,
-                LabelRegionMode::Interior => {
-                    predicates::contains_point(contour, x as f64 + 0.5, y as f64 + 0.5)
-                }
-                LabelRegionMode::Boundary => {
-                    predicates::point_in_contour(
-                        &view_buffer::geometry::Point::new(x as f64 + 0.5, y as f64 + 0.5),
-                        contour,
-                    ) >= 0
-                }
-            };
-            if include {
-                let val = *value;
-                acc += val;
-                max_val = max_val.max(val);
-                count += 1;
-            }
-        }
-    }
-    if count == 0 {
-        // Centroid fallback: sub-pixel contours have an empty rasterized
-        // interior.  Sample the grid at the contour centroid instead so
-        // that single-pixel detections receive their actual pixel value.
-        let c = measures::centroid(contour);
-        let cx = c.x.floor() as usize;
-        let cy = c.y.floor() as usize;
-        if cy < height && cx < width {
-            return grid[cy][cx];
-        }
-        return 0.0;
-    }
-    match reduction {
-        LabelReduction::Max => max_val,
-        LabelReduction::Mean => acc / count as f64,
-        LabelReduction::Sum => acc,
-    }
 }
 
 #[cfg(test)]
