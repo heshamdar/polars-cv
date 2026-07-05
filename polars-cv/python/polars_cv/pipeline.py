@@ -327,23 +327,6 @@ class Pipeline:
         new._on_error = policy
         return new
 
-    def _source_equal(self, other: "Pipeline") -> bool:
-        """
-        Check if two pipelines have equivalent sources.
-
-        Used by CSE optimization to determine if pipelines can share
-        a common prefix.
-
-        Args:
-            other: Another Pipeline to compare with.
-
-        Returns:
-            True if both pipelines have the same source specification.
-        """
-        if self._source is None or other._source is None:
-            return self._source is None and other._source is None
-        return self._source == other._source
-
     def _validate_domain(self, expected: str, op_name: str) -> None:
         """
         Validate that the current domain matches the expected domain.
@@ -946,6 +929,7 @@ class Pipeline:
                 params={"axes": ParamValue(is_expr=False, value=axes)},
             )
         )
+        new._update_output_dtype("transpose")
         return new
 
     def reshape(self, shape: list[int | pl.Expr]) -> "Pipeline":
@@ -972,6 +956,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_output_dtype("reshape")
         new._update_shape_hints("reshape", new._ops[-1].params)
         return new
 
@@ -992,6 +977,7 @@ class Pipeline:
                 params={"axes": ParamValue(is_expr=False, value=axes)},
             )
         )
+        new._update_output_dtype("flip")
         return new
 
     def flip_h(self) -> "Pipeline":
@@ -1040,6 +1026,7 @@ class Pipeline:
             params["width"] = new._track_expr(width)
 
         new._ops.append(OpSpec(op="crop", params=params))
+        new._update_output_dtype("crop")
         new._update_shape_hints("crop", new._ops[-1].params)
         return new
 
@@ -2277,6 +2264,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_output_dtype("pad")
         new._update_shape_hints("pad", new._ops[-1].params)
         return new
 
@@ -2334,6 +2322,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_output_dtype("pad_to_size")
         new._update_shape_hints("pad_to_size", new._ops[-1].params)
         return new
 
@@ -2381,6 +2370,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_output_dtype("letterbox")
         new._update_shape_hints("letterbox", new._ops[-1].params)
         return new
 
@@ -3313,6 +3303,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_output_dtype("contour_translate")
         return new
 
     def scale_contour(
@@ -3347,6 +3338,7 @@ class Pipeline:
                 },
             )
         )
+        new._update_output_dtype("contour_scale")
         return new
 
     def simplify(self, *, tolerance: FloatOrExpr) -> "Pipeline":
@@ -3372,6 +3364,7 @@ class Pipeline:
                 params={"tolerance": new._track_expr(tolerance)},
             )
         )
+        new._update_output_dtype("contour_simplify")
         return new
 
     def convex_hull(self) -> "Pipeline":
@@ -3389,6 +3382,7 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_CONTOUR, "convex_hull")
         new = self._clone()
         new._ops.append(OpSpec(op="contour_convex_hull", params={}))
+        new._update_output_dtype("contour_convex_hull")
         return new
 
     # --- Validation ---

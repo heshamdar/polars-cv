@@ -33,7 +33,8 @@ pub enum OutputRankRule {
     ReduceByOne,
     /// Output is always exactly this rank, regardless of input.
     Fixed(usize),
-    /// Rank is not knowable at plan time from the rule alone (e.g. `reshape`).
+    /// Rank is not knowable at plan time from the rule alone (e.g. an op
+    /// whose output rank depends on runtime data rather than its parameters).
     Unknown,
 }
 
