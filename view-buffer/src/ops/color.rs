@@ -141,9 +141,10 @@ impl Op for ColorConvertOp {
     }
 
     /// Truthful dtype contract for `apply_color_convert`: conversions
-    /// involving Lab compute in f32 and stay f32 for every input dtype
-    /// (`from_rgb_f32` produces f32 and only non-Lab u8 inputs are cast
-    /// back); every other conversion preserves the element dtype.
+    /// involving Lab compute in f32 and stay f32 for every input dtype;
+    /// every other conversion preserves the element dtype (the math may
+    /// run in f32 internally, but the result is cast back to the input
+    /// dtype for all inputs, not just u8).
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         if self.promotes_to_float() {
             OutputDTypeRule::Fixed(DType::F32)
@@ -293,9 +294,10 @@ fn apply_color_convert_core(buf: &ViewBuffer, op: &ColorConvertOp) -> ViewBuffer
     let rgb_f32 = to_rgb_f32(buf, op.from);
     let result = from_rgb_f32(&rgb_f32, op.to);
 
-    // If the input was u8 and the target doesn't require float, cast back to u8
-    if buf.dtype() == DType::U8 && !op.promotes_to_float() {
-        result.cast(DType::U8)
+    // Non-Lab conversions preserve the element dtype (the declared
+    // PreserveInput contract): the math runs in f32, then casts back.
+    if buf.dtype() != DType::F32 && !op.promotes_to_float() {
+        result.cast(buf.dtype())
     } else {
         result
     }
@@ -370,7 +372,13 @@ fn rgb_to_gray(buf: &ViewBuffer) -> ViewBuffer {
             for pix in src.chunks_exact(3) {
                 out.push(0.299 * pix[0] + 0.587 * pix[1] + 0.114 * pix[2]);
             }
-            ViewBuffer::from_vec_with_shape(out, vec![h, w, 1])
+            let gray = ViewBuffer::from_vec_with_shape(out, vec![h, w, 1]);
+            // Preserve the element dtype (math runs in f32, then casts back).
+            if buf.dtype() != DType::F32 {
+                gray.cast(buf.dtype())
+            } else {
+                gray
+            }
         }
     }
 }
@@ -400,7 +408,13 @@ fn gray_to_rgb(buf: &ViewBuffer) -> ViewBuffer {
                 out.push(val);
                 out.push(val);
             }
-            ViewBuffer::from_vec_with_shape(out, vec![h, w, 3])
+            let rgb = ViewBuffer::from_vec_with_shape(out, vec![h, w, 3]);
+            // Preserve the element dtype (replication itself is lossless).
+            if buf.dtype() != DType::F32 {
+                rgb.cast(buf.dtype())
+            } else {
+                rgb
+            }
         }
     }
 }
@@ -853,5 +867,55 @@ mod tests {
         };
         let result = apply_color_convert(&rgb, &op);
         assert_eq!(result.as_slice::<u8>(), rgb.as_slice::<u8>());
+    }
+
+    /// Non-Lab conversions must honor the PreserveInput contract for EVERY
+    /// input dtype, not just u8 — execution matches `output_dtype_rule`.
+    #[test]
+    fn test_non_lab_conversions_preserve_dtype() {
+        let cases = [
+            (ColorSpace::Rgb, ColorSpace::Hsv),
+            (ColorSpace::Rgb, ColorSpace::YCbCr),
+            (ColorSpace::Rgb, ColorSpace::Gray),
+            (ColorSpace::Gray, ColorSpace::Rgb),
+        ];
+        for (from, to) in cases {
+            let op = ColorConvertOp { from, to };
+            let channels = if from == ColorSpace::Gray { 1 } else { 3 };
+            for dtype in [DType::U16, DType::I32, DType::F64] {
+                let src = ViewBuffer::from_vec_with_shape(
+                    vec![100u8; channels],
+                    vec![1, 1, channels],
+                )
+                .cast(dtype);
+                let out = apply_color_convert(&src, &op);
+                assert_eq!(
+                    out.dtype(),
+                    dtype,
+                    "{from:?}->{to:?} must preserve {dtype:?}, got {:?}",
+                    out.dtype()
+                );
+                assert_eq!(
+                    out.dtype(),
+                    op.infer_dtype(&[src.dtype()]),
+                    "{from:?}->{to:?} execution dtype diverges from the contract"
+                );
+            }
+        }
+    }
+
+    /// Lab-involving conversions are f32 for every input dtype, including f64.
+    #[test]
+    fn test_lab_is_f32_for_all_input_dtypes() {
+        let to_lab = ColorConvertOp {
+            from: ColorSpace::Rgb,
+            to: ColorSpace::Lab,
+        };
+        for dtype in [DType::U8, DType::U16, DType::F64] {
+            let src = ViewBuffer::from_vec_with_shape(vec![100u8, 150, 200], vec![1, 1, 3])
+                .cast(dtype);
+            let out = apply_color_convert(&src, &to_lab);
+            assert_eq!(out.dtype(), DType::F32, "{dtype:?}->lab must yield f32");
+        }
     }
 }
