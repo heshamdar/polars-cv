@@ -66,6 +66,20 @@ def _rotation_matrix(
     return [cos_a, -sin_a, tx, sin_a, cos_a, ty]
 
 
+def _validate_enum(value: str, enum_cls: type, label: str):
+    """Validate a string against a user-facing enum with a uniform error.
+
+    The single validation shape for every enum-valued builder parameter:
+    ``Invalid <label> '<value>'. Valid: [...]``.
+    """
+    try:
+        return enum_cls(value)
+    except ValueError as e:
+        valid = [v.value for v in enum_cls]
+        msg = f"Invalid {label} '{value}'. Valid: {valid}"
+        raise ValueError(msg) from e
+
+
 class Pipeline:
     """
     Modular pipeline builder for image and array operations.
@@ -219,140 +233,25 @@ class Pipeline:
         initial_ndim: int | None = None,
     ) -> tuple[str, str, int | None]:
         """
-        Compute the output domain, dtype, and ndim after applying operations.
+        Fold every operation's schema effect over an initial state.
 
-        Every op's domain, dtype and rank come from view-buffer's per-op contract
-        (``op_contract`` / ``op_output_dtype``) — the single authority. A few
-        param-dependent cases (cast, histogram, axis reductions) are handled as
-        special cases on top of those results.
+        Each op's (domain, dtype, ndim) effect comes from the single Rust
+        authority ``op_schema`` — including the param-dependent cases (cast
+        target, histogram output mode, reduction axis presence) that used to
+        be re-implemented here as Python special cases.
 
-        Args:
-            ops: Sequence of operations to analyze.
-            initial_domain: Starting domain (default: buffer for image sources).
-            initial_dtype: Starting dtype (default: u8 for image sources).
-            initial_ndim: Starting number of dimensions.
-
-        Returns:
-            Tuple of (output_domain, output_dtype, output_ndim) after all operations.
+        Used by lazy continuations, which seed the fold with the upstream
+        node's state; incremental per-append tracking uses the same authority
+        via ``_update_output_dtype``, so the two cannot diverge (guarded by
+        ``test_pipeline_state_matches_batch_fold``).
         """
-        domain = initial_domain
-        dtype = initial_dtype
-        ndim = initial_ndim
+        from polars_cv._lib import op_schema
 
-        from polars_cv._lib import op_contract, op_output_dtype
-
+        domain, dtype, ndim = initial_domain, initial_dtype, initial_ndim
         for op_spec in ops:
-            op_name = op_spec.op
-            op_json = json.dumps(op_spec.to_dict())
-            # The single authority for this op's schema effect: output domain,
-            # dtype rule, rank rule and channel rule all come from view-buffer's
-            # ViewDto contract, so no Python table re-declares them.
-            rust = op_contract(op_json)
-
-            # --- Domain (view-buffer authority) ---
-            # ``any`` is view-buffer's identity domain (materialize); it leaves
-            # the pipeline domain unchanged.
-            if rust["output_domain"] != "any":
-                domain = rust["output_domain"]
-
-            # --- Dtype (resolved by view-buffer's output_dtype_rule) ---
-            # Save the input dtype so axis-based reductions that PRESERVE can
-            # fall back to it rather than a global default.
-            pre_dtype = dtype
-            dtype = op_output_dtype(op_json, dtype)
-
-            # Param-dependent override: cast uses the explicit dtype param
-            if op_name == "cast":
-                dtype_param = op_spec.params.get("dtype")
-                if dtype_param and not dtype_param.is_expr:
-                    dtype = dtype_param.value
-
-            # Param-dependent override: histogram mode determines dtype & ndim
-            if op_name == "histogram":
-                mode_param = op_spec.params.get("output")
-                if mode_param and not mode_param.is_expr:
-                    mode = mode_param.value
-                    if mode == "quantized":
-                        domain = Pipeline.DOMAIN_BUFFER
-                        dtype = "u32"
-                        # ndim remains same – skip generic ndim logic below
-                        continue
-                    elif mode == "buckets":
-                        # Buckets are a vector-domain output; their struct schema
-                        # is selected by the sink encoding, not the domain.
-                        domain = Pipeline.DOMAIN_VECTOR
-                        # dtype is structurally defined by the native encoder
-                        dtype = "auto"
-                        ndim = 1
-                        continue
-                    elif mode == "counts":
-                        dtype = "u64"
-                        ndim = 1
-                    else:  # NORMALIZED or EDGES
-                        dtype = "f64"
-                        ndim = 1
-                else:
-                    # Default mode is buckets -> ndim=1
-                    domain = Pipeline.DOMAIN_VECTOR
-                    dtype = "auto"
-                    ndim = 1
-                continue  # ndim already set; skip generic ndim logic
-
-            # --- Ndim ---
-            # Axis-based reductions: check for axis param to decide between
-            # REDUCE_ONE (axis given) and TO_ZERO (global).
-            if op_name in (
-                "reduce_max",
-                "reduce_min",
-                "reduce_mean",
-                "reduce_std",
-                "reduce_argmax",
-                "reduce_argmin",
-            ):
-                axis_param = op_spec.params.get("axis")
-                if (
-                    axis_param
-                    and not axis_param.is_expr
-                    and axis_param.value is not None
-                ):
-                    # Axis reduction: keeps buffer domain, reduces ndim by 1.
-                    # reduce_max/reduce_min preserve the input dtype (view-buffer's
-                    # rule already does this; kept explicit for clarity).
-                    if op_name in ("reduce_max", "reduce_min"):
-                        dtype = pre_dtype
-                    domain = Pipeline.DOMAIN_BUFFER
-                    if ndim is not None:
-                        ndim = max(0, ndim - 1)
-                    continue
-                else:
-                    # Global reduction -> scalar
-                    domain = Pipeline.DOMAIN_SCALAR
-                    ndim = 0
-                    continue
-
-            # Global reductions that always reduce to scalar
-            if op_name in ("reduce_sum", "reduce_popcount", "reduce_percentile"):
-                domain = Pipeline.DOMAIN_SCALAR
-                ndim = 0
-                continue
-
-            # Generic ndim from the Rust rank rule (single authority). For
-            # buffer-domain ops this is the rank; scalar/vector domains are then
-            # overridden by the domain sync below (0 / 1).
-            rank_rule = rust["rank_rule"]
-            if rank_rule.startswith("fixed:"):
-                ndim = int(rank_rule.split(":", 1)[1])
-            elif rank_rule == "reduce_one":
-                if ndim is not None:
-                    ndim = max(0, ndim - 1)
-            # "preserve" / "unknown" → ndim unchanged
-
-            # Sync ndim with domain for scalar/vector domains
-            if domain == Pipeline.DOMAIN_SCALAR:
-                ndim = 0
-            elif domain == Pipeline.DOMAIN_VECTOR:
-                ndim = 1
-
+            domain, dtype, ndim = op_schema(
+                json.dumps(op_spec.to_dict()), domain, dtype, ndim
+            )
         return domain, dtype, ndim
 
     def _track_expr(self, value: IntOrExpr | FloatOrExpr) -> ParamValue:
@@ -507,20 +406,31 @@ class Pipeline:
 
     def _update_output_dtype(self, op_name: str) -> None:
         """
-        Update the output dtype based on the operation being added.
+        Apply the just-appended operation's schema effect (domain, dtype,
+        ndim) to the pipeline's tracked state.
+
+        Incremental: exactly one ``op_schema`` FFI call per appended op (the
+        old implementation replayed every prior op from the already-evolved
+        state — O(n²) FFI calls, and a latent non-idempotency for axis
+        reductions' ndim). Domain now comes from the same single authority
+        as dtype and ndim; builder methods no longer assign
+        ``_current_domain`` by hand.
 
         Args:
-            op_name: Name of the operation being added.
+            op_name: Name of the operation being added (for error context).
         """
-        # Re-compute from all operations to handle parameter-dependent dtypes like cast
-        _, self._output_dtype, self._expected_ndim = (
-            self._compute_output_domain_dtype_ndim(
-                self._ops,
-                initial_domain=self._current_domain,
-                initial_dtype=self._output_dtype,
-                initial_ndim=self._expected_ndim,
-            )
+        from polars_cv._lib import op_schema
+
+        last = self._ops[-1]
+        domain, dtype, ndim = op_schema(
+            json.dumps(last.to_dict()),
+            self._current_domain,
+            self._output_dtype,
+            self._expected_ndim,
         )
+        self._current_domain = domain
+        self._output_dtype = dtype
+        self._expected_ndim = ndim
 
     def _update_shape_hints(
         self,
@@ -831,12 +741,7 @@ class Pipeline:
         from polars_cv.lazy import LazyPipelineExpr
 
         new = self._clone()
-        try:
-            fmt = SourceFormat(format)
-        except ValueError as e:
-            valid = [f.value for f in SourceFormat]
-            msg = f"Invalid source format '{format}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        fmt = _validate_enum(format, SourceFormat, "source format")
 
         if on_error not in ("raise", "null"):
             msg = f"on_error must be 'raise' or 'null', got '{on_error}'"
@@ -855,12 +760,7 @@ class Pipeline:
 
         dtype_enum = None
         if dtype is not None:
-            try:
-                dtype_enum = DType(dtype)
-            except ValueError as e:
-                valid = [d.value for d in DType]
-                msg = f"Invalid dtype '{dtype}'. Valid: {valid}"
-                raise ValueError(msg) from e
+            dtype_enum = _validate_enum(dtype, DType, "dtype")
 
         # RAW format always requires dtype (no type metadata in raw bytes)
         # LIST and ARRAY can auto-infer dtype from Polars column type
@@ -1160,12 +1060,7 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "cast")
         new = self._clone()
-        try:
-            dtype_enum = DType(dtype)
-        except ValueError as e:
-            valid = [d.value for d in DType]
-            msg = f"Invalid dtype '{dtype}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        dtype_enum = _validate_enum(dtype, DType, "dtype")
 
         new._ops.append(
             OpSpec(
@@ -1246,12 +1141,7 @@ class Pipeline:
 
         # Add out_dtype if specified
         if out_dtype is not None:
-            try:
-                out_dtype_enum = OutputDType(out_dtype)
-            except ValueError as e:
-                valid = [d.value for d in OutputDType]
-                msg = f"Invalid out_dtype '{out_dtype}'. Valid: {valid}"
-                raise ValueError(msg) from e
+            out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
             params["out_dtype"] = ParamValue(is_expr=False, value=out_dtype_enum.value)
 
         new._ops.append(OpSpec(op="scale", params=params))
@@ -1301,12 +1191,7 @@ class Pipeline:
             ... )
         """
         new = self._clone()
-        try:
-            method_enum = NormalizeMethod(method)
-        except ValueError as e:
-            valid = [m.value for m in NormalizeMethod]
-            msg = f"Invalid normalize method '{method}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        method_enum = _validate_enum(method, NormalizeMethod, "normalize method")
 
         params: dict[str, ParamValue] = {
             "method": ParamValue(is_expr=False, value=method_enum.value),
@@ -1328,12 +1213,7 @@ class Pipeline:
 
         # Add out_dtype if specified
         if out_dtype is not None:
-            try:
-                out_dtype_enum = OutputDType(out_dtype)
-            except ValueError as e:
-                valid = [d.value for d in OutputDType]
-                msg = f"Invalid out_dtype '{out_dtype}'. Valid: {valid}"
-                raise ValueError(msg) from e
+            out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
             params["out_dtype"] = ParamValue(is_expr=False, value=out_dtype_enum.value)
 
         new._ops.append(OpSpec(op="normalize", params=params))
@@ -1385,12 +1265,7 @@ class Pipeline:
 
         # Add out_dtype if specified
         if out_dtype is not None:
-            try:
-                out_dtype_enum = OutputDType(out_dtype)
-            except ValueError as e:
-                valid = [d.value for d in OutputDType]
-                msg = f"Invalid out_dtype '{out_dtype}'. Valid: {valid}"
-                raise ValueError(msg) from e
+            out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
             params["out_dtype"] = ParamValue(is_expr=False, value=out_dtype_enum.value)
 
         new._ops.append(OpSpec(op="clamp", params=params))
@@ -1637,11 +1512,7 @@ class Pipeline:
                 },
             )
         )
-        # LAB conversions promote to f32; others preserve dtype
-        if from_space == "lab" or to_space == "lab":
-            new._output_dtype = "f32"
-        else:
-            new._update_output_dtype("cvt_color")
+        new._update_output_dtype("cvt_color")
         new._update_shape_hints("cvt_color", new._ops[-1].params)
         return new
 
@@ -2079,12 +1950,7 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize")
         new = self._clone()
-        try:
-            filter_enum = FilterType(filter)
-        except ValueError as e:
-            valid = [f.value for f in FilterType]
-            msg = f"Invalid filter '{filter}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
@@ -2157,12 +2023,7 @@ class Pipeline:
             raise ValueError(msg)
 
         new = self._clone()
-        try:
-            filter_enum = FilterType(filter)
-        except ValueError as e:
-            valid = [f.value for f in FilterType]
-            msg = f"Invalid filter '{filter}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
@@ -2208,12 +2069,7 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize_to_height")
         new = self._clone()
-        try:
-            filter_enum = FilterType(filter)
-        except ValueError as e:
-            valid = [f.value for f in FilterType]
-            msg = f"Invalid filter '{filter}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
@@ -2258,12 +2114,7 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize_to_width")
         new = self._clone()
-        try:
-            filter_enum = FilterType(filter)
-        except ValueError as e:
-            valid = [f.value for f in FilterType]
-            msg = f"Invalid filter '{filter}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
@@ -2309,12 +2160,7 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize_max")
         new = self._clone()
-        try:
-            filter_enum = FilterType(filter)
-        except ValueError as e:
-            valid = [f.value for f in FilterType]
-            msg = f"Invalid filter '{filter}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
@@ -2360,12 +2206,7 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize_min")
         new = self._clone()
-        try:
-            filter_enum = FilterType(filter)
-        except ValueError as e:
-            valid = [f.value for f in FilterType]
-            msg = f"Invalid filter '{filter}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
@@ -2420,12 +2261,7 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "pad")
 
-        try:
-            mode_enum = PadMode(mode)
-        except ValueError as e:
-            valid = [m.value for m in PadMode]
-            msg = f"Invalid pad mode '{mode}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        mode_enum = _validate_enum(mode, PadMode, "pad mode")
 
         new = self._clone()
         new._ops.append(
@@ -2484,12 +2320,7 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "pad_to_size")
 
-        try:
-            pos_enum = PadPosition(position)
-        except ValueError as e:
-            valid = [p.value for p in PadPosition]
-            msg = f"Invalid position '{position}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        pos_enum = _validate_enum(position, PadPosition, "position")
 
         new = self._clone()
         new._ops.append(
@@ -2851,12 +2682,7 @@ class Pipeline:
 
         # Convert string to enum if needed
         if isinstance(algorithm, str):
-            try:
-                algorithm = HashAlgorithm(algorithm)
-            except ValueError as e:
-                valid = [h.value for h in HashAlgorithm]
-                msg = f"Invalid algorithm '{algorithm}'. Valid: {valid}"
-                raise ValueError(msg) from e
+            algorithm = _validate_enum(algorithm, HashAlgorithm, "algorithm")
 
         if hash_size <= 0:
             msg = "hash_size must be a positive integer"
@@ -2873,7 +2699,6 @@ class Pipeline:
             )
         )
         # Transition to vector domain (fixed-length output)
-        new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("perceptual_hash")
         return new
 
@@ -2956,9 +2781,7 @@ class Pipeline:
             new._shape_hints.width = w if w and not w.is_expr else None
 
         new._ops.append(OpSpec(op="rasterize", params=params))
-        new._current_domain = self.DOMAIN_BUFFER
-        # Rasterize produces a single-channel u8 mask
-        new._output_dtype = "u8"
+        new._update_output_dtype("rasterize")
         new._shape_hints.channels = ParamValue(is_expr=False, value=1)
         return new
 
@@ -2991,7 +2814,7 @@ class Pipeline:
             params["min_area"] = ParamValue(is_expr=False, value=min_area)
 
         new._ops.append(OpSpec(op="extract_contours", params=params))
-        new._current_domain = self.DOMAIN_CONTOUR
+        new._update_output_dtype("extract_contours")
         return new
 
     # --- Buffer Reduction Operations (buffer → scalar) ---
@@ -3005,7 +2828,6 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_BUFFER, "reduce_sum")
         new = self._clone()
         new._ops.append(OpSpec(op="reduce_sum", params={}))
-        new._current_domain = self.DOMAIN_SCALAR
         new._update_output_dtype("reduce_sum")
         return new
 
@@ -3029,7 +2851,6 @@ class Pipeline:
                 params={"q": new._track_expr(q)},
             )
         )
-        new._current_domain = self.DOMAIN_SCALAR
         new._update_output_dtype("reduce_percentile")
         return new
 
@@ -3042,7 +2863,6 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_BUFFER, "reduce_popcount")
         new = self._clone()
         new._ops.append(OpSpec(op="reduce_popcount", params={}))
-        new._current_domain = self.DOMAIN_SCALAR
         new._update_output_dtype("reduce_popcount")
         return new
 
@@ -3083,9 +2903,6 @@ class Pipeline:
         if axis is not None:
             params["axis"] = ParamValue(is_expr=False, value=axis)
         new._ops.append(OpSpec(op="reduce_max", params=params))
-        if axis is None:
-            new._current_domain = self.DOMAIN_SCALAR
-        # axis reduction keeps buffer domain with reduced shape
         new._update_output_dtype("reduce_max")
         return new
 
@@ -3126,8 +2943,6 @@ class Pipeline:
         if axis is not None:
             params["axis"] = ParamValue(is_expr=False, value=axis)
         new._ops.append(OpSpec(op="reduce_min", params=params))
-        if axis is None:
-            new._current_domain = self.DOMAIN_SCALAR
         new._update_output_dtype("reduce_min")
         return new
 
@@ -3148,8 +2963,6 @@ class Pipeline:
         if axis is not None:
             params["axis"] = ParamValue(is_expr=False, value=axis)
         new._ops.append(OpSpec(op="reduce_mean", params=params))
-        if axis is None:
-            new._current_domain = self.DOMAIN_SCALAR
         new._update_output_dtype("reduce_mean")
         return new
 
@@ -3195,8 +3008,6 @@ class Pipeline:
         if axis is not None:
             params["axis"] = ParamValue(is_expr=False, value=axis)
         new._ops.append(OpSpec(op="reduce_std", params=params))
-        if axis is None:
-            new._current_domain = self.DOMAIN_SCALAR
         new._update_output_dtype("reduce_std")
         return new
 
@@ -3279,7 +3090,6 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_BUFFER, "extract_shape")
         new = self._clone()
         new._ops.append(OpSpec(op="extract_shape", params={}))
-        new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("extract_shape")
         return new
 
@@ -3336,7 +3146,6 @@ class Pipeline:
                 },
             )
         )
-        new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("label_reduce")
         return new
 
@@ -3365,12 +3174,7 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_BUFFER, "histogram")
 
         # Validate output mode
-        try:
-            output_mode = HistogramOutput(output)
-        except ValueError as e:
-            valid = [o.value for o in HistogramOutput]
-            msg = f"Invalid histogram output mode '{output}'. Valid: {valid}"
-            raise ValueError(msg) from e
+        output_mode = _validate_enum(output, HistogramOutput, "histogram output mode")
 
         if closed not in ("left", "right"):
             msg = f"Invalid closed mode '{closed}'. Valid: ['left', 'right']"
@@ -3395,25 +3199,7 @@ class Pipeline:
             params["range_max"] = ParamValue(is_expr=False, value=range[1])
 
         new._ops.append(OpSpec(op="histogram", params=params))
-
-        # Domain transition depends on output mode
-        if output_mode == HistogramOutput.QUANTIZED:
-            # Quantized preserves the buffer domain
-            new._current_domain = self.DOMAIN_BUFFER
-            new._output_dtype = "u32"
-        elif output_mode == HistogramOutput.BUCKETS:
-            # Buckets are a vector-domain output; the bucket-struct schema is
-            # selected by the sink encoding (see output_encoding), not the domain.
-            new._current_domain = self.DOMAIN_VECTOR
-            new._output_dtype = "auto"
-        else:
-            # All other modes return a vector
-            new._current_domain = self.DOMAIN_VECTOR
-            if output_mode == HistogramOutput.COUNTS:
-                new._output_dtype = "u64"
-            else:  # normalized or edges
-                new._output_dtype = "f64"
-
+        new._update_output_dtype("histogram")
         return new
 
     # --- Contour Measure Operations (contour → scalar/vector) ---
@@ -3441,7 +3227,6 @@ class Pipeline:
                 params={"signed": ParamValue(is_expr=False, value=signed)},
             )
         )
-        new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("contour_area")
         return new
 
@@ -3460,7 +3245,6 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_CONTOUR, "perimeter")
         new = self._clone()
         new._ops.append(OpSpec(op="contour_perimeter", params={}))
-        new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("contour_perimeter")
         return new
 
@@ -3479,7 +3263,6 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_CONTOUR, "centroid")
         new = self._clone()
         new._ops.append(OpSpec(op="contour_centroid", params={}))
-        new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("contour_centroid")
         return new
 
@@ -3498,7 +3281,6 @@ class Pipeline:
         self._validate_domain(self.DOMAIN_CONTOUR, "bounding_box")
         new = self._clone()
         new._ops.append(OpSpec(op="contour_bounding_box", params={}))
-        new._current_domain = self.DOMAIN_VECTOR
         new._update_output_dtype("contour_bounding_box")
         return new
 

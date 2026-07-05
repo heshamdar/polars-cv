@@ -141,11 +141,12 @@ impl Op for ColorConvertOp {
     }
 
     /// Truthful dtype contract for `apply_color_convert`: conversions
-    /// involving Lab compute in float and stay float (integer inputs promote
-    /// to f32); every other conversion preserves the element dtype.
+    /// involving Lab compute in f32 and stay f32 for every input dtype
+    /// (`from_rgb_f32` produces f32 and only non-Lab u8 inputs are cast
+    /// back); every other conversion preserves the element dtype.
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         if self.promotes_to_float() {
-            OutputDTypeRule::PromoteToFloat
+            OutputDTypeRule::Fixed(DType::F32)
         } else {
             OutputDTypeRule::PreserveInput
         }
