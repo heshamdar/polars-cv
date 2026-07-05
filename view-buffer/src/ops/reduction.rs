@@ -357,6 +357,10 @@ impl ReductionOp {
         let mut out_shape: Vec<usize> = shape.to_vec();
         let axis_size = out_shape.remove(axis);
 
+        // Coordinate mapping must run over the REAL remaining dims (possibly
+        // none, for a 1-D input); the [1] clamp below only pads the returned
+        // buffer's shape.
+        let coord_shape = out_shape.clone();
         if out_shape.is_empty() {
             out_shape.push(1);
         }
@@ -373,7 +377,7 @@ impl ReductionOp {
         let mut in_coords = vec![0usize; shape.len()];
 
         for (out_idx, out) in output.iter_mut().enumerate() {
-            let out_coords = linear_to_coords(out_idx, &out_shape);
+            let out_coords = linear_to_coords(out_idx, &coord_shape);
 
             // Build full input coordinates from output coordinates with axis slot
             for (i, &c) in out_coords.iter().enumerate() {
@@ -406,6 +410,10 @@ impl ReductionOp {
         let mut out_shape: Vec<usize> = shape.to_vec();
         let axis_size = out_shape.remove(axis);
 
+        // Coordinate mapping must run over the REAL remaining dims (possibly
+        // none, for a 1-D input); the [1] clamp below only pads the returned
+        // buffer's shape.
+        let coord_shape = out_shape.clone();
         if out_shape.is_empty() {
             out_shape.push(1);
         }
@@ -420,7 +428,7 @@ impl ReductionOp {
         let mut in_coords = vec![0usize; shape.len()];
 
         for (out_idx, out) in output.iter_mut().enumerate() {
-            let out_coords = linear_to_coords(out_idx, &out_shape);
+            let out_coords = linear_to_coords(out_idx, &coord_shape);
 
             for (i, &c) in out_coords.iter().enumerate() {
                 let target = if i < axis { i } else { i + 1 };
@@ -449,6 +457,10 @@ impl ReductionOp {
         let mut out_shape: Vec<usize> = shape.to_vec();
         let axis_size = out_shape.remove(axis);
 
+        // Coordinate mapping must run over the REAL remaining dims (possibly
+        // none, for a 1-D input); the [1] clamp below only pads the returned
+        // buffer's shape.
+        let coord_shape = out_shape.clone();
         if out_shape.is_empty() {
             out_shape.push(1);
         }
@@ -462,7 +474,7 @@ impl ReductionOp {
         let mut in_coords = vec![0usize; shape.len()];
 
         for (out_idx, out) in output.iter_mut().enumerate() {
-            let out_coords = linear_to_coords(out_idx, &out_shape);
+            let out_coords = linear_to_coords(out_idx, &coord_shape);
 
             // Build full coordinates from output coords
             for (i, &c) in out_coords.iter().enumerate() {
@@ -687,6 +699,36 @@ mod tests {
         let op = ReductionOp::Max { axis: None };
         let result = op.execute(&buffer);
         assert_eq!(result.as_slice::<u8>()[0], 9);
+    }
+
+    #[test]
+    fn test_axis_reduction_of_1d_input() {
+        // Regression: reducing a 1-D buffer along axis 0 panicked — the [1]
+        // shape clamp fed the coordinate mapping a phantom dimension. The
+        // result is a rank-1 single-slot buffer, per ReduceByOne's clamp.
+        let buffer = ViewBuffer::from_vec_with_shape(vec![1.0f32, 5.0, 3.0], vec![3]);
+        for (op, expected) in [
+            (ReductionOp::Max { axis: Some(0) }, 5.0f32),
+            (ReductionOp::Min { axis: Some(0) }, 1.0),
+        ] {
+            let result = op.execute(&buffer);
+            assert_eq!(result.shape(), &[1]);
+            assert_eq!(result.as_slice::<f32>(), &[expected]);
+        }
+
+        // Sum/Mean compute in f64 along an axis.
+        for (op, expected) in [
+            (ReductionOp::Sum { axis: Some(0) }, 9.0f64),
+            (ReductionOp::Mean { axis: Some(0) }, 3.0),
+        ] {
+            let result = op.execute(&buffer);
+            assert_eq!(result.shape(), &[1]);
+            assert!((result.as_slice::<f64>()[0] - expected).abs() < 1e-10);
+        }
+
+        let argmax = ReductionOp::ArgMax { axis: 0 }.execute(&buffer);
+        assert_eq!(argmax.shape(), &[1]);
+        assert_eq!(argmax.as_slice::<i64>(), &[1]);
     }
 
     #[test]
