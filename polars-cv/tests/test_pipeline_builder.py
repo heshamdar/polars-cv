@@ -115,3 +115,47 @@ class TestPipelineRepr:
         assert "source" in repr_str
         assert "resize" in repr_str
         assert "sink" not in repr_str
+
+
+class TestToGraphPreservesPlannedState:
+    """to_graph() must carry the pipeline's incrementally tracked
+    domain/dtype/ndim into the graph node, not re-derive them by folding
+    all ops on top of the already-final state (which double-applies ops).
+    """
+
+    def test_axis_reduction_ndim_preserved(self) -> None:
+        """A single axis reduction: ndim 3 -> 2 must survive to_graph."""
+        pipe = Pipeline().source("image_bytes", dtype="u8").reduce_max(axis=0)
+        assert pipe._expected_ndim == 2
+
+        graph = pipe.to_graph(pl.col("img"))
+        node = graph._nodes["_node_0"]
+        assert node.pipeline._expected_ndim == pipe._expected_ndim
+        assert node.pipeline._output_dtype == pipe._output_dtype
+        assert node.pipeline._current_domain == pipe._current_domain
+
+    def test_double_axis_reduction_ndim_preserved(self) -> None:
+        """Two axis reductions: ndim 3 -> 2 -> 1; re-folding from the final
+        state would try to reduce below rank 0."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes", dtype="u8")
+            .reduce_max(axis=0)
+            .reduce_max(axis=0)
+        )
+        assert pipe._expected_ndim == 1
+
+        graph = pipe.to_graph(pl.col("img"))
+        node = graph._nodes["_node_0"]
+        assert node.pipeline._expected_ndim == pipe._expected_ndim
+        assert node.pipeline._output_dtype == pipe._output_dtype
+        assert node.pipeline._current_domain == pipe._current_domain
+
+    def test_plain_image_pipeline_state_preserved(self) -> None:
+        """Non-reducing pipeline: state must match exactly too."""
+        pipe = Pipeline().source("image_bytes").resize(height=32, width=32).grayscale()
+        graph = pipe.to_graph(pl.col("img"))
+        node = graph._nodes["_node_0"]
+        assert node.pipeline._expected_ndim == pipe._expected_ndim
+        assert node.pipeline._output_dtype == pipe._output_dtype
+        assert node.pipeline._current_domain == pipe._current_domain

@@ -351,3 +351,223 @@ class TestAffineFusion:
         fused = spec["ops"][0]
         assert fused["output_height"]["value"] == 224
         assert fused["output_width"]["value"] == 224
+
+
+def _expected_rotate_affine(
+    angle_deg: float, ih: int, iw: int, *, expand: bool = False
+) -> tuple[list[float], int, int]:
+    """Reference rotate->warp_affine conversion for a known input shape.
+
+    Mirrors the documented conversion: rotation about the input center,
+    translated to the output center, with the output size either kept or
+    expanded to the rotated bounding box.
+    """
+    import math
+
+    rad = math.radians(angle_deg % 360)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    cx, cy = iw / 2.0, ih / 2.0
+    if expand:
+        new_w = round(iw * abs(cos_a) + ih * abs(sin_a))
+        new_h = round(ih * abs(cos_a) + iw * abs(sin_a))
+    else:
+        new_w, new_h = iw, ih
+    new_cx, new_cy = new_w / 2.0, new_h / 2.0
+    tx = -cx * cos_a - cy * (-sin_a) + new_cx
+    ty = -cx * sin_a - cy * cos_a + new_cy
+    return [cos_a, -sin_a, tx, sin_a, cos_a, ty], new_h, new_w
+
+
+def _compose(first: list[float], second: list[float]) -> list[float]:
+    """Compose two 2x3 affine matrices (second applied after first)."""
+    a1, b1, tx1, c1, d1, ty1 = first
+    a2, b2, tx2, c2, d2, ty2 = second
+    return [
+        a2 * a1 + b2 * c1,
+        a2 * b1 + b2 * d1,
+        a2 * tx1 + b2 * ty1 + tx2,
+        c2 * a1 + d2 * c1,
+        c2 * b1 + d2 * d1,
+        c2 * tx1 + d2 * ty1 + ty2,
+    ]
+
+
+IDENTITY = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+
+
+class TestAffineFusionPositionalShape:
+    """Rotate->affine conversion must use the shape ENTERING the rotate op.
+
+    Regression tests for the bug where ``_try_convert_rotate_to_affine``
+    read the pipeline's final ``_shape_hints`` (the shape after ALL ops)
+    instead of the shape at the rotate's position, silently producing a
+    wrong rotation center / output size whenever a shape-changing op
+    followed the rotate.
+    """
+
+    def test_rotate_fused_with_following_affine_uses_input_shape(self) -> None:
+        """Rotate before a warp_affine converts with its own input dims."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=100, width=100)
+            .rotate(45)
+            .warp_affine(matrix=IDENTITY, output_size=(50, 50))
+        )
+        spec = pipe._to_spec_dict()
+        # resize stays, rotate+warp_affine fuse into one
+        assert [op["op"] for op in spec["ops"]] == ["resize", "warp_affine"]
+        fused = spec["ops"][1]
+        expected_matrix, _, _ = _expected_rotate_affine(45, ih=100, iw=100)
+        expected = _compose(expected_matrix, IDENTITY)
+        for got, want in zip(fused["matrix"]["value"], expected):
+            assert abs(got - want) < 1e-9
+        # Output dims come from the LAST op in the fused run
+        assert fused["output_height"]["value"] == 50
+        assert fused["output_width"]["value"] == 50
+
+    def test_expand_rotate_fused_uses_input_shape(self) -> None:
+        """rotate(expand=True) converts with pre-rotate dims, not post."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=100, width=100)
+            .rotate(45, expand=True)
+            .warp_affine(matrix=IDENTITY, output_size=(200, 200))
+        )
+        spec = pipe._to_spec_dict()
+        assert [op["op"] for op in spec["ops"]] == ["resize", "warp_affine"]
+        fused = spec["ops"][1]
+        expected_matrix, _, _ = _expected_rotate_affine(45, ih=100, iw=100, expand=True)
+        expected = _compose(expected_matrix, IDENTITY)
+        for got, want in zip(fused["matrix"]["value"], expected):
+            assert abs(got - want) < 1e-9
+        assert fused["output_height"]["value"] == 200
+        assert fused["output_width"]["value"] == 200
+
+    def test_two_rotates_fuse_with_positional_shapes(self) -> None:
+        """Adjacent static rotates still fuse, each at its own input shape."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=100, width=100)
+            .rotate(30)
+            .rotate(15)
+        )
+        spec = pipe._to_spec_dict()
+        assert [op["op"] for op in spec["ops"]] == ["resize", "warp_affine"]
+        fused = spec["ops"][1]
+        m1, _, _ = _expected_rotate_affine(30, ih=100, iw=100)
+        m2, _, _ = _expected_rotate_affine(15, ih=100, iw=100)
+        expected = _compose(m1, m2)
+        for got, want in zip(fused["matrix"]["value"], expected):
+            assert abs(got - want) < 1e-9
+
+    def test_mid_chain_assert_shape_feeds_conversion(self) -> None:
+        """assert_shape() hints at the rotate's position drive conversion."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .assert_shape(height=80, width=60)
+            .rotate(45)
+            .warp_affine(matrix=IDENTITY, output_size=(50, 50))
+        )
+        spec = pipe._to_spec_dict()
+        assert [op["op"] for op in spec["ops"]] == ["warp_affine"]
+        fused = spec["ops"][0]
+        expected_matrix, _, _ = _expected_rotate_affine(45, ih=80, iw=60)
+        expected = _compose(expected_matrix, IDENTITY)
+        for got, want in zip(fused["matrix"]["value"], expected):
+            assert abs(got - want) < 1e-9
+
+    def test_lone_rotate_is_not_converted(self) -> None:
+        """A rotate with no adjacent affine op stays a runtime rotate.
+
+        The runtime rotate computes its matrix from actual buffer
+        dimensions; converting a lone rotate trades that for plan-time
+        hints with zero fusion benefit.
+        """
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=100, width=100)
+            .rotate(45)
+            .grayscale()
+        )
+        spec = pipe._to_spec_dict()
+        assert [op["op"] for op in spec["ops"]] == ["resize", "rotate", "grayscale"]
+
+    def test_rotate_followed_by_resize_is_not_converted(self) -> None:
+        """The original corruption trigger: shape-changing op after rotate."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=100, width=100)
+            .rotate(45)
+            .resize(height=50, width=50)
+        )
+        spec = pipe._to_spec_dict()
+        assert [op["op"] for op in spec["ops"]] == ["resize", "rotate", "resize"]
+
+    def test_unknown_input_shape_blocks_conversion(self) -> None:
+        """Rotate with unknown input dims must not convert, even when the
+        FINAL pipeline shape is known (that was the bug's other face)."""
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize_scale(scale=0.5)
+            .rotate(45)
+            .warp_affine(matrix=IDENTITY, output_size=(50, 50))
+        )
+        spec = pipe._to_spec_dict()
+        assert [op["op"] for op in spec["ops"]] == [
+            "resize_scale",
+            "rotate",
+            "warp_affine",
+        ]
+
+
+class TestRotateShapeHintTracking:
+    """Shape-hint tracking for rotates whose effect is not plan-time known."""
+
+    def test_expr_angle_expand_clears_hints(self) -> None:
+        """Expression angle + expand=True -> output dims unknowable."""
+        import polars as pl
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=100, width=100)
+            .rotate(pl.col("angle"), expand=True)
+        )
+        assert pipe._shape_hints.height is None
+        assert pipe._shape_hints.width is None
+
+    def test_expr_angle_non_square_clears_hints(self) -> None:
+        """Expression angle on a non-square image: 90/270 would swap H/W,
+        other angles keep them -> unknowable at plan time."""
+        import polars as pl
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=100, width=50)
+            .rotate(pl.col("angle"))
+        )
+        assert pipe._shape_hints.height is None
+        assert pipe._shape_hints.width is None
+
+    def test_expr_angle_square_non_expand_keeps_hints(self) -> None:
+        """Square image, no expand: any angle keeps HxW."""
+        import polars as pl
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=100, width=100)
+            .rotate(pl.col("angle"))
+        )
+        assert pipe._shape_hints.height is not None
+        assert pipe._shape_hints.height.value == 100
+        assert pipe._shape_hints.width is not None
+        assert pipe._shape_hints.width.value == 100

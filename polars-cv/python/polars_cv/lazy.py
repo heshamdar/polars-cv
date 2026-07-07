@@ -173,8 +173,10 @@ class LazyPipelineExpr:
             import copy as _copy
 
             new_pipeline._shape_hints = _copy.deepcopy(self._pipeline._shape_hints)
-            for op_spec in new_pipeline._ops:
-                new_pipeline._update_shape_hints(op_spec.op, op_spec.params, op_spec)
+            for op_idx, op_spec in enumerate(new_pipeline._ops):
+                new_pipeline._update_shape_hints(
+                    op_spec.op, op_spec.params, op_spec, op_index=op_idx
+                )
             for dim in ("height", "width", "channels", "batch"):
                 inner_value = getattr(pipeline._shape_hints, dim)
                 if inner_value is not None:
@@ -195,6 +197,10 @@ class LazyPipelineExpr:
                 initial_dtype=upstream_dtype,
                 initial_ndim=upstream_ndim,
             )
+            # A continuation's pre-op state IS the upstream node's output
+            # state — batch re-folds (CSE prefixes) must seed from it.
+            new_pipeline._initial_output_dtype = upstream_dtype
+            new_pipeline._initial_expected_ndim = upstream_ndim
 
             # Ops referencing other nodes (rasterize(shape=...)) make those
             # nodes upstream dependencies so they execute first.
