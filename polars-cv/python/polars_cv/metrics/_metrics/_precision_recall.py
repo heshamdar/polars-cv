@@ -377,7 +377,9 @@ def _eleven_point_ap(curve: pl.DataFrame) -> float:
 
     Cross-joins the 11 recall thresholds with the PR curve, filters to
     recall >= threshold, and takes max precision per threshold -- all as
-    a single Polars lazy plan.
+    a single Polars lazy plan. Thresholds beyond the curve's maximum
+    recall have no qualifying point and contribute a precision of 0; the
+    average is always taken over all 11 thresholds.
 
     Args:
         curve: PR curve DataFrame with ``recall`` and ``precision``.
@@ -389,7 +391,7 @@ def _eleven_point_ap(curve: pl.DataFrame) -> float:
         return 0.0
 
     thresholds = pl.DataFrame({"t": [i / 10.0 for i in range(11)]})
-    result = (
+    per_threshold = (
         thresholds.lazy()
         .join(
             curve.lazy().select(
@@ -401,7 +403,11 @@ def _eleven_point_ap(curve: pl.DataFrame) -> float:
         .filter(pl.col("recall") >= pl.col("t"))
         .group_by("t")
         .agg(max_p=pl.col("precision").max())
-        .select(pl.col("max_p").mean())
+    )
+    result = (
+        thresholds.lazy()
+        .join(per_threshold, on="t", how="left")
+        .select(pl.col("max_p").fill_null(0.0).mean())
         .collect(engine="streaming")
     )
     return float(result.item())

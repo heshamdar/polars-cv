@@ -756,3 +756,148 @@ class TestSourceFormatDetection:
         schema = {"col": pl.String}
         with pytest.raises(ValueError, match="unsupported dtype"):
             _detect_source_info(schema, "col")
+
+
+# ---------------------------------------------------------------------------
+# VOC 11-point AP: unreachable recall thresholds must count as zero
+# ---------------------------------------------------------------------------
+
+
+class TestElevenPointApDenominator:
+    """VOC 11-point AP is (1/11) * sum over t in {0.0,...,1.0} of
+    max{precision : recall >= t}, where thresholds beyond the curve's max
+    recall contribute 0 -- they must not be dropped from the average.
+    """
+
+    def test_unreachable_thresholds_count_as_zero(self) -> None:
+        from polars_cv.metrics._metrics._precision_recall import _eleven_point_ap
+
+        # Max recall 0.5: thresholds 0.0..0.5 (6 of them) see max precision
+        # 1.0; thresholds 0.6..1.0 (5 of them) have no point -> 0.
+        curve = pl.DataFrame(
+            {
+                "score": [0.9, 0.8],
+                "recall": [0.5, 0.5],
+                "precision": [1.0, 0.5],
+            }
+        )
+        ap = _eleven_point_ap(curve)
+        assert ap == pytest.approx(6.0 / 11.0, abs=1e-9)
+
+    def test_full_recall_curve_unchanged(self) -> None:
+        from polars_cv.metrics._metrics._precision_recall import _eleven_point_ap
+
+        # Recall reaches 1.0 with precision 1.0 everywhere -> AP 1.0.
+        curve = pl.DataFrame(
+            {
+                "score": [0.9, 0.8],
+                "recall": [0.5, 1.0],
+                "precision": [1.0, 1.0],
+            }
+        )
+        ap = _eleven_point_ap(curve)
+        assert ap == pytest.approx(1.0, abs=1e-9)
+
+    def test_integration_via_average_precision(self) -> None:
+        from polars_cv.metrics import average_precision
+
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["img1", "img1"],
+                COL_CLASS_ID: [DEFAULT_CLASS, DEFAULT_CLASS],
+                COL_SCORE: [0.9, 0.8],
+                COL_IS_TP: [True, False],
+                COL_GT_IDX: [0, None],
+                COL_IOU: [0.9, 0.0],
+                COL_DET_IDX: [0, 1],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["img1"],
+                COL_CLASS_ID: [DEFAULT_CLASS],
+                COL_N_GTS: [2],
+                COL_WEIGHT: [1.0],
+                COL_GT_LABEL: [True],
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        # Curve: (R=0.5, P=1.0), (R=0.5, P=0.5); max recall 0.5.
+        ap = average_precision(table, interpolation="11_point")
+        assert ap == pytest.approx(6.0 / 11.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_pr_auc: replicates must use the same AP estimator as the point
+# ---------------------------------------------------------------------------
+
+
+class TestBootstrapPrAucEstimatorConsistency:
+    """The point estimate uses envelope (all-points) AP; each bootstrap
+    replicate must apply the same monotone precision envelope, otherwise
+    the CI is computed on a systematically lower estimator than the point.
+    """
+
+    @staticmethod
+    def _dipping_table() -> DetectionTable:
+        # TP(0.9), FP(0.8), TP(0.7) over 2 GTs in ONE image:
+        # raw precision [1.0, 0.5, 0.667] dips; the envelope lifts the
+        # middle point, so raw trapezoid != envelope AP.
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["img1", "img1", "img1"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 3,
+                COL_SCORE: [0.9, 0.8, 0.7],
+                COL_IS_TP: [True, False, True],
+                COL_GT_IDX: [0, None, 1],
+                COL_IOU: [0.9, 0.0, 0.8],
+                COL_DET_IDX: [0, 1, 2],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["img1"],
+                COL_CLASS_ID: [DEFAULT_CLASS],
+                COL_N_GTS: [2],
+                COL_WEIGHT: [1.0],
+                COL_GT_LABEL: [True],
+            }
+        )
+        return DetectionTable.from_matched(det_df, meta_df)
+
+    def test_identity_replicates_equal_point_estimate(self) -> None:
+        """With a single image, every bootstrap sample IS the full sample,
+        so every replicate value must equal the point estimate."""
+        from polars_cv.metrics._bootstrap import bootstrap_pr_auc
+
+        table = self._dipping_table()
+        result = bootstrap_pr_auc(table, n_bootstrap=8, seed=7)
+
+        assert len(result.distribution) == 8
+        for value in result.distribution:
+            assert value == pytest.approx(result.point_estimate, abs=1e-9)
+
+    def test_ci_brackets_point_estimate(self) -> None:
+        from polars_cv.metrics._bootstrap import bootstrap_pr_auc
+
+        table = self._dipping_table()
+        result = bootstrap_pr_auc(table, n_bootstrap=8, seed=7)
+        assert result.ci_lower <= result.point_estimate <= result.ci_upper
