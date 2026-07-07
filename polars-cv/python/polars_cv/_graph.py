@@ -372,12 +372,27 @@ class PipelineGraph:
         shared_pipeline._shape_hints = template_node.pipeline._shape_hints
         shared_pipeline._ops = list(prefix_ops)  # Copy the prefix ops
         shared_pipeline._expr_refs = template_node.pipeline._expr_refs.copy()
+        shared_pipeline._initial_output_dtype = (
+            template_node.pipeline._initial_output_dtype
+        )
+        shared_pipeline._initial_expected_ndim = (
+            template_node.pipeline._initial_expected_ndim
+        )
+        # The prefix ops keep their original indices, so their entering-hints
+        # snapshots carry over directly (affine fusion reads them).
+        shared_pipeline._hint_snapshots = {
+            i: v
+            for i, v in template_node.pipeline._hint_snapshots.items()
+            if i < len(prefix_ops)
+        }
 
-        # Compute the correct domain and dtype for the prefix operations
-        # This ensures static type inference matches runtime behavior
+        # Compute the correct domain and dtype for the prefix operations.
+        # The fold starts at op 0, so it is seeded with the template's
+        # post-source (pre-op) state, not its final tracked state.
         domain, dtype, ndim = Pipeline._compute_output_domain_dtype_ndim(
             prefix_ops,
-            initial_ndim=template_node.pipeline._expected_ndim,
+            initial_dtype=template_node.pipeline._initial_output_dtype,
+            initial_ndim=template_node.pipeline._initial_expected_ndim,
         )
         shared_pipeline._current_domain = domain
         shared_pipeline._output_dtype = dtype
@@ -409,6 +424,16 @@ class PipelineGraph:
         """
         # Remove the prefix operations from this node's pipeline
         node.pipeline._ops = node.pipeline._ops[prefix_len:]
+        # Re-key the entering-hints snapshots to the shifted op indices.
+        node.pipeline._hint_snapshots = {
+            i - prefix_len: v
+            for i, v in node.pipeline._hint_snapshots.items()
+            if i >= prefix_len
+        }
+        # The node's pre-op state is now the shared node's output state.
+        shared_pipeline = self._nodes[shared_id].pipeline
+        node.pipeline._initial_output_dtype = shared_pipeline._output_dtype
+        node.pipeline._initial_expected_ndim = shared_pipeline._expected_ndim
 
         # Set the shared node as upstream
         if not node.upstream:

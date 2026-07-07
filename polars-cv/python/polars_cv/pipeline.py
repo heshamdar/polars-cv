@@ -218,6 +218,17 @@ class Pipeline:
         self._output_dtype: str = "auto"
         # Number of dimensions tracking
         self._expected_ndim: int | None = None
+        # Post-source state (before any op), captured by source(). Batch
+        # re-folds over the op list (to_graph, CSE prefixes) must seed from
+        # here — seeding from the final state double-applies every op.
+        self._initial_output_dtype: str = "auto"
+        self._initial_expected_ndim: int | None = None
+        # Height/width hints as they were ENTERING each op, keyed by op
+        # index. Affine fusion reads these so a rotate converts with the
+        # shape at its own position, not the pipeline's final shape.
+        self._hint_snapshots: dict[
+            int, tuple[ParamValue | None, ParamValue | None]
+        ] = {}
         # Per-row error policy for the executed graph ("raise" by default).
         self._on_error: str = "raise"
         # LazyPipelineExpr nodes referenced by ops (e.g. rasterize(shape=...));
@@ -281,6 +292,9 @@ class Pipeline:
         new._expr_refs = self._expr_refs.copy()
         new._current_domain = self._current_domain
         new._output_dtype = self._output_dtype
+        new._initial_output_dtype = self._initial_output_dtype
+        new._initial_expected_ndim = self._initial_expected_ndim
+        new._hint_snapshots = dict(self._hint_snapshots)
         new._expected_ndim = self._expected_ndim
         new._on_error = self._on_error
         new._shape_refs = self._shape_refs.copy()
@@ -420,6 +434,7 @@ class Pipeline:
         op_name: str,
         params: dict[str, ParamValue],
         op_spec: "OpSpec | None" = None,
+        op_index: int | None = None,
     ) -> None:
         """
         Update shape hints based on the operation being added.
@@ -434,7 +449,22 @@ class Pipeline:
             op_spec: The op spec the channel rule should be resolved for.
                 Defaults to the most recently appended op; continuation
                 replays (``LazyPipelineExpr.pipe``) pass each op explicitly.
+            op_index: Index of the op these hints are updated for. Defaults
+                to the most recently appended op; continuation replays pass
+                the index explicitly because ``_ops`` is already fully
+                populated while they replay.
         """
+        # Record the hints ENTERING this op (before the update below) so
+        # affine fusion can convert a rotate with the shape at its own
+        # position. Any assert_shape() between ops is naturally captured:
+        # it mutated _shape_hints before this append.
+        idx = op_index if op_index is not None else len(self._ops) - 1
+        if idx >= 0:
+            self._hint_snapshots[idx] = (
+                copy.deepcopy(self._shape_hints.height),
+                copy.deepcopy(self._shape_hints.width),
+            )
+
         # --- Height / Width updates ---
         if op_name == "resize":
             h = params.get("height")
@@ -532,9 +562,9 @@ class Pipeline:
         elif op_name == "rotate":
             angle = params.get("angle")
             expand = params.get("expand")
+            is_expand = bool(expand and not expand.is_expr and expand.value)
             if angle and not angle.is_expr:
                 norm_angle = angle.value % 360
-                is_expand = expand and not expand.is_expr and expand.value
                 if is_expand:
                     self._compute_rotate_expand_shape(norm_angle)
                 else:
@@ -543,6 +573,24 @@ class Pipeline:
                         w = self._shape_hints.width
                         self._shape_hints.height = w
                         self._shape_hints.width = h
+            else:
+                # Expression angle: the output dims depend on the runtime
+                # value (90/270 swap H and W, expand grows to the rotated
+                # bounding box), so they are unknowable at plan time. The
+                # one safe case is a known square image without expand —
+                # any angle keeps H x W there.
+                h = self._shape_hints.height
+                w = self._shape_hints.width
+                square = (
+                    h is not None
+                    and w is not None
+                    and not h.is_expr
+                    and not w.is_expr
+                    and h.value == w.value
+                )
+                if is_expand or not square:
+                    self._shape_hints.height = None
+                    self._shape_hints.width = None
         elif op_name == "warp_affine":
             h = params.get("output_height")
             w = params.get("output_width")
@@ -870,6 +918,12 @@ class Pipeline:
                     # Mark as "auto" so Rust resolves from input_fields
                     new._output_dtype = "auto"
                     new._expected_ndim = None
+
+        # Snapshot the post-source state: batch re-folds over the op list
+        # (to_graph, CSE prefixes) seed from these, never from the final
+        # per-op-tracked values.
+        new._initial_output_dtype = new._output_dtype
+        new._initial_expected_ndim = new._expected_ndim
 
         return new
 
@@ -3481,14 +3535,25 @@ class Pipeline:
         sub._shape_hints = self._shape_hints
         sub._ops = self._ops[start_op:end_op]
         sub._expr_refs = self._expr_refs.copy()
+        sub._initial_output_dtype = self._initial_output_dtype
+        sub._initial_expected_ndim = self._initial_expected_ndim
+        # Re-key the entering-hints snapshots to the sliced op indices so
+        # affine fusion in the sub-pipeline still sees per-position shapes.
+        sub._hint_snapshots = {
+            i - start_op: v
+            for i, v in self._hint_snapshots.items()
+            if start_op <= i < end_op
+        }
 
-        # Compute the correct domain and dtype for this subset of operations
-        # We need to compute from the beginning up to end_op to get correct state
+        # Compute the correct domain and dtype for this subset of operations.
+        # The fold covers ops[0:end_op], so it must be seeded with the
+        # post-source (pre-op) state — seeding with the pipeline's final
+        # state would apply every op a second time.
         ops_to_compute = self._ops[0:end_op]
         domain, dtype, ndim = Pipeline._compute_output_domain_dtype_ndim(
             ops_to_compute,
-            initial_dtype=self._output_dtype,
-            initial_ndim=self._expected_ndim,
+            initial_dtype=self._initial_output_dtype,
+            initial_ndim=self._initial_expected_ndim,
         )
         sub._current_domain = domain
         sub._output_dtype = dtype
@@ -3521,6 +3586,12 @@ class Pipeline:
             params[key] = ParamValue(is_expr=False, value=value)
 
         self._ops.append(OpSpec(op=op, params=params))
+        # Binary ops are elementwise: H/W hints pass through unchanged, but
+        # the entering-hints snapshot must still exist for this position.
+        self._hint_snapshots[len(self._ops) - 1] = (
+            copy.deepcopy(self._shape_hints.height),
+            copy.deepcopy(self._shape_hints.width),
+        )
 
     def _fuse_affine_ops(self, ops: list[OpSpec]) -> list[OpSpec]:
         """Compose consecutive affine-compatible ops into a single ``warp_affine``.
@@ -3546,7 +3617,7 @@ class Pipeline:
         result: list[OpSpec] = []
         i = 0
         while i < len(ops):
-            converted = self._try_convert_rotate_to_affine(ops[i])
+            converted = self._try_convert_rotate_to_affine(ops[i], op_index=i)
             if converted is None:
                 result.append(ops[i])
                 i += 1
@@ -3555,22 +3626,33 @@ class Pipeline:
             acc = converted
             j = i + 1
             while j < len(ops):
-                next_converted = self._try_convert_rotate_to_affine(ops[j])
+                next_converted = self._try_convert_rotate_to_affine(ops[j], op_index=j)
                 if next_converted is None:
                     break
                 acc = self._compose_affine_ops(acc, next_converted)
                 j += 1
-            result.append(acc)
+            if j == i + 1:
+                # Run of one: nothing to fuse with. Keep the original op —
+                # a lone runtime rotate computes its matrix from the actual
+                # buffer dimensions, which beats baking in plan-time hints.
+                result.append(ops[i])
+            else:
+                result.append(acc)
             i = j
 
         return result
 
-    def _try_convert_rotate_to_affine(self, op: OpSpec) -> OpSpec | None:
+    def _try_convert_rotate_to_affine(self, op: OpSpec, op_index: int) -> OpSpec | None:
         """Convert an op to a ``warp_affine`` ``OpSpec`` if it is fusible.
 
         Returns the op unchanged if it is already ``warp_affine``, converts
         ``rotate`` with a static arbitrary angle to ``warp_affine``, or
         returns ``None`` if the op is not affine-compatible.
+
+        The conversion bakes the rotation center and output size into the
+        matrix, so it uses the H/W hints ENTERING the op at ``op_index``
+        (recorded when the op was appended) — never the pipeline's final
+        hints, which reflect the shape after ALL ops.
         """
         if op.op == "warp_affine":
             return op
@@ -3600,8 +3682,7 @@ class Pipeline:
         expand_pv = op.params.get("expand")
         expand = bool(expand_pv and not expand_pv.is_expr and expand_pv.value)
 
-        h_pv = self._shape_hints.height
-        w_pv = self._shape_hints.width
+        h_pv, w_pv = self._hint_snapshots.get(op_index, (None, None))
         if h_pv is None or w_pv is None or h_pv.is_expr or w_pv.is_expr:
             return None
 
