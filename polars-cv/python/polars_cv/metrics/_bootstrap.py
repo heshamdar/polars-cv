@@ -171,7 +171,8 @@ def bootstrap_pr_auc(
     )
 
     # Compute PR curve per bootstrap: sort by score, cumulative TP/FP, then
-    # trapezoidal AUC via diff + product.
+    # the same monotone precision envelope average_precision applies (the
+    # point estimate's estimator), then trapezoidal AUC via diff + product.
     pr_per_boot = (
         expanded.sort("bootstrap_id", COL_SCORE, descending=[False, True])
         .with_columns(
@@ -183,6 +184,16 @@ def bootstrap_pr_auc(
             precision=pl.col("cum_tp")
             / (pl.col("cum_tp") + pl.col("cum_fp")).cast(pl.Float64),
             recall=pl.col("cum_tp").cast(pl.Float64) / pl.col("total_gts"),
+        )
+        # Monotone decreasing envelope per replicate (reverse, cum_max,
+        # reverse back) — mirrors `_all_points_ap` so every replicate uses
+        # the same estimator as the point estimate.
+        .with_columns(
+            precision=pl.col("precision")
+            .reverse()
+            .cum_max()
+            .reverse()
+            .over("bootstrap_id"),
         )
     )
 
