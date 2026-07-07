@@ -988,9 +988,11 @@ def test_enum_validation_uniform() -> None:
     ``Invalid <label> '<value>'. Valid: [...]`` error from _validate_enum."""
     cases = [
         (
-            lambda: Pipeline()
-            .source("blob", dtype="u8")
-            .resize(height=8, width=8, filter="bogus"),
+            lambda: (
+                Pipeline()
+                .source("blob", dtype="u8")
+                .resize(height=8, width=8, filter="bogus")
+            ),
             "filter",
         ),
         (
@@ -998,16 +1000,18 @@ def test_enum_validation_uniform() -> None:
             "normalize method",
         ),
         (
-            lambda: Pipeline()
-            .source("blob", dtype="u8")
-            .perceptual_hash(algorithm="bogus"),
+            lambda: (
+                Pipeline().source("blob", dtype="u8").perceptual_hash(algorithm="bogus")
+            ),
             "algorithm",
         ),
         (
-            lambda: Pipeline()
-            .source("blob", dtype="u8")
-            .grayscale()
-            .histogram(output="bogus"),
+            lambda: (
+                Pipeline()
+                .source("blob", dtype="u8")
+                .grayscale()
+                .histogram(output="bogus")
+            ),
             "histogram output mode",
         ),
         (lambda: Pipeline().source("blob", dtype="u8").cast("bogus"), "dtype"),
