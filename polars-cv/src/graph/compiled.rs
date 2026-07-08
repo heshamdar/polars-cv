@@ -542,11 +542,13 @@ impl CompiledGraph {
                                                 }
                                             }
                                         } else {
-                                            // cloud::read_file handles both bare
-                                            // paths and file:// URLs (which
-                                            // std::fs::read would reject with
-                                            // ENOENT, scheme and all).
-                                            owned_bytes = crate::cloud::read_file(path, None)
+                                            // Already known non-remote: read the
+                                            // literal path, stripping only a
+                                            // file:// prefix. (Routing through
+                                            // the general read_file would
+                                            // re-parse a bare colon-bearing
+                                            // filename as a bogus cloud URL.)
+                                            owned_bytes = crate::cloud::read_local_path(path)
                                                 .map_err(|e| {
                                                     format!(
                                                         "Failed to read local file '{path}': {e}"

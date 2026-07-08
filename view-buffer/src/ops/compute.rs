@@ -176,7 +176,11 @@ impl Op for ComputeOp {
         OpCost::Allocating
     }
 
-    fn infer_strides(&self, _input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>> {
+    fn infer_strides(
+        &self,
+        _input_shape: &[usize],
+        _input_strides: &[isize],
+    ) -> Option<Vec<isize>> {
         // `memory_effect` describes the INPUT side (whether the kernel can
         // consume a strided view without a materialize step). The output
         // side is different: every compute kernel either writes a fresh
@@ -184,13 +188,14 @@ impl Op for ComputeOp {
         // so the output layout is contiguous regardless of input strides —
         // and the element size may change (integer gamma -> f32), which
         // input byte strides can never describe.
-        match self {
-            // A same-dtype cast is an identity clone that genuinely keeps
-            // the input layout. The builder refines the cross-dtype case
-            // (which materializes contiguous); dtype is not visible here.
-            ComputeOp::Cast(_) => Some(input_strides.to_vec()),
-            _ => None,
-        }
+        //
+        // `Cast` is the one op whose same-dtype case preserves the input
+        // layout, but that decision needs the source and target dtypes,
+        // which are not visible here — so `Cast`'s strides are computed in
+        // the `ViewExpr::cast` builder directly and never routed through
+        // this method. Returning contiguous (None) for every variant keeps
+        // this a truthful, dtype-agnostic default.
+        None
     }
 
     fn validate(
