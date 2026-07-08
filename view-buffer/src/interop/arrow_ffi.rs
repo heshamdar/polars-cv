@@ -234,12 +234,13 @@ impl ViewBuffer {
     /// This is a lower-level constructor used for FFI import.
     pub fn from_raw_bytes(data: Vec<u8>, shape: Vec<usize>, dtype: DType) -> Self {
         use crate::core::buffer::BufferStorage;
+        use crate::core::bytes::AlignedBytes;
         use crate::core::layout::Layout;
         use std::sync::Arc;
 
         let layout = Layout::new_contiguous(shape, dtype);
         Self {
-            data: BufferStorage::Rust(Arc::new(data)),
+            data: BufferStorage::Rust(Arc::new(AlignedBytes::from(data))),
             layout,
         }
     }

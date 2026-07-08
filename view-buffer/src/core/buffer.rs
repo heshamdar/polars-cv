@@ -26,7 +26,7 @@
 //!
 //! ## Storage Types
 //!
-//! - **Rust storage** (`Arc<Vec<u8>>`): Zero-copy requires sole ownership (refcount == 1)
+//! - **Rust storage** (`Arc<AlignedBytes>`): Zero-copy requires sole ownership (refcount == 1)
 //! - **PolarsArrow storage**: Always zero-copy via `Buffer::sliced()`
 //! - **Arrow storage**: Not currently supported for zero-copy transfer
 
@@ -34,6 +34,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+use crate::core::bytes::AlignedBytes;
 use crate::core::dtype::{DType, ViewType};
 use crate::core::layout::{ExternalLayout, Layout, LayoutFacts, LayoutReport};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
@@ -109,8 +110,10 @@ impl Default for SlicePolicy {
 /// Storage backend for ViewBuffer data.
 #[derive(Debug, Clone)]
 pub enum BufferStorage {
-    /// Owned Rust Vec wrapped in Arc for cheap cloning.
-    Rust(Arc<Vec<u8>>),
+    /// Owned bytes wrapped in Arc for cheap cloning. The storage records
+    /// the alignment of the original (typically typed-Vec) allocation so
+    /// dropping deallocates with the layout it was allocated with.
+    Rust(Arc<AlignedBytes>),
     /// Arrow buffer for zero-copy interop.
     #[cfg(feature = "arrow_interop")]
     Arrow(arrow::buffer::Buffer),
@@ -181,22 +184,11 @@ impl ViewBuffer {
         let dtype = T::DTYPE;
         let layout = Layout::new_contiguous(shape, dtype);
 
-        // SAFETY:
-        // 1. T is Copy, so no Drop glue is needed.
-        // 2. Alignment: The allocation is created by Vec<T>, so it is aligned for T.
-        //    Converting to Vec<u8> (align 1) is safe.
-        //    We must ensure we don't re-interpret these bytes as a type with higher
-        //    alignment requirements than T later without checking (enforced by as_ptr check).
-        let data_bytes = unsafe {
-            let mut v_clone = std::mem::ManuallyDrop::new(data);
-            let ptr = v_clone.as_mut_ptr() as *mut u8;
-            let len = v_clone.len() * std::mem::size_of::<T>();
-            let cap = v_clone.capacity() * std::mem::size_of::<T>();
-            Vec::from_raw_parts(ptr, len, cap)
-        };
-
+        // AlignedBytes takes over the typed allocation and deallocates it
+        // with T's alignment — reinterpreting it as a Vec<u8> (align 1)
+        // would be dealloc-layout UB.
         Self {
-            data: BufferStorage::Rust(Arc::new(data_bytes)),
+            data: BufferStorage::Rust(Arc::new(AlignedBytes::from_typed_vec(data))),
             layout,
         }
     }
@@ -224,38 +216,23 @@ impl ViewBuffer {
             "Alignment must be >= type alignment"
         );
 
-        let len_bytes = std::mem::size_of_val(data);
-        let alloc_layout = std::alloc::Layout::from_size_align(len_bytes, alignment)
-            .expect("Invalid layout parameters");
-
-        // Allocate aligned memory
-        let aligned_ptr = unsafe { std::alloc::alloc(alloc_layout) };
-        if aligned_ptr.is_null() {
-            std::alloc::handle_alloc_error(alloc_layout);
-        }
-
-        // Copy data to aligned buffer
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, aligned_ptr, len_bytes);
-        }
-
-        // Copy to a standard Vec for safe deallocation. Vec<u8> uses align=1 for
-        // dealloc, which differs from our custom alignment. Using from_raw_parts
-        // directly would be UB. The copy is the cost of correctness; for truly
-        // zero-copy aligned storage, a custom allocator would be needed.
-        let aligned_vec = unsafe {
-            let slice = std::slice::from_raw_parts(aligned_ptr, len_bytes);
-            let v = slice.to_vec();
-            std::alloc::dealloc(aligned_ptr, alloc_layout);
-            v
+        // SAFETY: any T: ViewType is plain-old-data, so its bytes can be
+        // viewed as a u8 slice.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
         };
+        // AlignedBytes records the custom alignment and deallocates with
+        // the same layout, so the aligned allocation is kept as-is — the
+        // returned buffer really is `alignment`-aligned (the previous
+        // implementation had to copy into a plain Vec and lost it).
+        let aligned = AlignedBytes::copy_from_slice_aligned(bytes, alignment);
 
         let shape = vec![data.len()];
         let dtype = T::DTYPE;
         let layout = Layout::new_contiguous(shape, dtype);
 
         Self {
-            data: BufferStorage::Rust(Arc::new(aligned_vec)),
+            data: BufferStorage::Rust(Arc::new(aligned)),
             layout,
         }
     }
@@ -287,16 +264,8 @@ impl ViewBuffer {
         let dtype = T::DTYPE;
         let layout = Layout::new_contiguous(shape, dtype);
 
-        let data_bytes = unsafe {
-            let mut v_clone = std::mem::ManuallyDrop::new(data);
-            let ptr = v_clone.as_mut_ptr() as *mut u8;
-            let len = v_clone.len() * std::mem::size_of::<T>();
-            let cap = v_clone.capacity() * std::mem::size_of::<T>();
-            Vec::from_raw_parts(ptr, len, cap)
-        };
-
         Self {
-            data: BufferStorage::Rust(Arc::new(data_bytes)),
+            data: BufferStorage::Rust(Arc::new(AlignedBytes::from_typed_vec(data))),
             layout,
         }
     }
@@ -784,8 +753,11 @@ impl ViewBuffer {
         // Only Rust storage can be unwrapped
         match self.data {
             BufferStorage::Rust(arc) => {
-                // Try to unwrap the Arc - only succeeds if refcount == 1
-                Arc::try_unwrap(arc).ok()
+                // Try to unwrap the Arc - only succeeds if refcount == 1.
+                // into_vec is zero-copy for byte-aligned allocations and
+                // copies otherwise (a Vec<u8> may not own an allocation
+                // with a different alignment).
+                Arc::try_unwrap(arc).ok().map(AlignedBytes::into_vec)
             }
             #[cfg(feature = "arrow_interop")]
             BufferStorage::Arrow(_) => None,
@@ -880,9 +852,15 @@ impl ViewBuffer {
                 if should_zero_copy {
                     // Try to unwrap the Arc - should succeed since we checked refcount
                     match Arc::try_unwrap(arc) {
-                        Ok(full_vec) => {
-                            let full_buffer = polars_buffer::Buffer::from(full_vec);
-                            if offset == 0 && required_bytes == full_buffer.len() {
+                        Ok(bytes) => {
+                            // from_owner keeps AlignedBytes alive as the
+                            // buffer's owner, so the allocation is freed
+                            // with its original alignment — handing the
+                            // raw Vec to polars would move the dealloc
+                            // mismatch there.
+                            let full_len = bytes.len();
+                            let full_buffer = polars_buffer::Buffer::from_owner(bytes);
+                            if offset == 0 && required_bytes == full_len {
                                 (full_buffer, shape, dtype)
                             } else {
                                 // Zero-copy slice using Buffer::sliced()
@@ -1044,8 +1022,11 @@ impl ViewBuffer {
                 if should_zero_copy {
                     // Try to unwrap the Arc and return full buffer with stride info
                     match Arc::try_unwrap(arc) {
-                        Ok(full_vec) => {
-                            let full_buffer = polars_buffer::Buffer::from(full_vec);
+                        Ok(bytes) => {
+                            // Keep AlignedBytes as the owner so the
+                            // allocation is freed with its original
+                            // alignment.
+                            let full_buffer = polars_buffer::Buffer::from_owner(bytes);
                             (full_buffer, shape, strides, offset, dtype)
                         }
                         Err(arc) => {
@@ -1425,7 +1406,7 @@ impl ViewBuffer {
         };
 
         Ok(ViewBuffer {
-            data: BufferStorage::Rust(Arc::new(vec_data)),
+            data: BufferStorage::Rust(Arc::new(AlignedBytes::from(vec_data))),
             layout,
         })
     }
@@ -1588,7 +1569,7 @@ impl ViewBuffer {
 
             let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
             Self {
-                data: BufferStorage::Rust(Arc::new(new_data)),
+                data: BufferStorage::Rust(Arc::new(AlignedBytes::from(new_data))),
                 layout: new_layout,
             }
         } else {
@@ -1627,7 +1608,7 @@ impl ViewBuffer {
 
             let new_layout = Layout::new_contiguous(self.layout.shape.clone(), self.dtype());
             Self {
-                data: BufferStorage::Rust(Arc::new(new_data)),
+                data: BufferStorage::Rust(Arc::new(AlignedBytes::from(new_data))),
                 layout: new_layout,
             }
         }
@@ -1851,16 +1832,10 @@ fn finish_fused_output(acc: Vec<f32>, shape: Vec<usize>, out_dtype: DType) -> Vi
     }
     match out_dtype {
         DType::F32 => {
-            // Reuse the accumulator allocation: transmute Vec<f32> to bytes.
-            let byte_data = unsafe {
-                let mut acc = std::mem::ManuallyDrop::new(acc);
-                let ptr = acc.as_mut_ptr() as *mut u8;
-                let len = acc.len() * 4;
-                let cap = acc.capacity() * 4;
-                Vec::from_raw_parts(ptr, len, cap)
-            };
+            // Reuse the accumulator allocation: AlignedBytes takes it over
+            // and deallocates with f32 alignment.
             ViewBuffer {
-                data: BufferStorage::Rust(Arc::new(byte_data)),
+                data: BufferStorage::Rust(Arc::new(AlignedBytes::from_typed_vec(acc))),
                 layout: Layout::new_contiguous(shape, DType::F32),
             }
         }
