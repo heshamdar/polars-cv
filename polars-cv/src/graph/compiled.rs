@@ -542,9 +542,16 @@ impl CompiledGraph {
                                                 }
                                             }
                                         } else {
-                                            owned_bytes = std::fs::read(path).map_err(|e| {
-                                                format!("Failed to read local file '{path}': {e}")
-                                            })?;
+                                            // cloud::read_file handles both bare
+                                            // paths and file:// URLs (which
+                                            // std::fs::read would reject with
+                                            // ENOENT, scheme and all).
+                                            owned_bytes = crate::cloud::read_file(path, None)
+                                                .map_err(|e| {
+                                                    format!(
+                                                        "Failed to read local file '{path}': {e}"
+                                                    )
+                                                })?;
                                             owned_bytes.as_slice()
                                         };
                                         // file_path contents decode like image bytes.

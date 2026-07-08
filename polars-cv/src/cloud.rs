@@ -8,9 +8,13 @@
 //! - HTTP/HTTPS URLs (http://, https://)
 //!
 //! Credentials are resolved using the default chain:
-//! 1. Anonymous access (for public buckets)
+//! 1. Explicit credentials passed via `CloudOptions`
 //! 2. Environment variables (AWS_ACCESS_KEY_ID, GOOGLE_APPLICATION_CREDENTIALS, etc.)
 //! 3. Instance metadata / IAM roles
+//!
+//! Anonymous access to public buckets is opt-in: set
+//! `CloudOptions { anonymous: Some(true), .. }` to skip request signing
+//! (supported for S3, GCS, and Azure).
 
 use object_store::aws::AmazonS3Builder;
 use object_store::azure::MicrosoftAzureBuilder;
@@ -59,7 +63,8 @@ pub struct CloudOptions {
     pub azure_storage_account: Option<String>,
     /// Azure storage access key
     pub azure_storage_access_key: Option<String>,
-    /// Whether to allow anonymous access (default: true for first attempt)
+    /// Skip request signing for public buckets (opt-in; default: signed
+    /// requests using the credential chain)
     pub anonymous: Option<bool>,
 }
 
@@ -190,8 +195,9 @@ fn read_gcs(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudE
         if let Some(key_path) = &opts.gcs_service_account_key {
             builder = builder.with_service_account_path(key_path);
         }
-        // Note: GCS builder doesn't have anonymous_credentials method in this version
-        // Anonymous access is the default when no credentials are provided
+        if opts.anonymous == Some(true) {
+            builder = builder.with_skip_signature(true);
+        }
     }
 
     let store = builder
