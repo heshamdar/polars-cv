@@ -153,3 +153,26 @@ class TestRemotePrefetch:
         for i in (0, 31, 63):
             expected = 4 + (i % 8)
             assert numpy_from_struct(out["out"][i]).shape == (expected, expected, 1)
+
+
+@plugin_required
+class TestLocalFileUrls:
+    """`file://` URLs are documented as a supported file_path scheme; the
+    executor's local branch must strip the scheme rather than handing the
+    whole URL to the filesystem (which fails with 'No such file')."""
+
+    def test_file_scheme_url_decodes(self, tmp_path) -> None:
+        local = tmp_path / "img.png"
+        local.write_bytes(_png(6, 4, 77))
+        df = pl.DataFrame({"paths": [f"file://{local}"]})
+        pipe = Pipeline().source("file_path").grayscale()
+        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+        assert numpy_from_struct(out["out"][0]).shape == (4, 6, 1)
+
+    def test_bare_local_path_still_works(self, tmp_path) -> None:
+        local = tmp_path / "img.png"
+        local.write_bytes(_png(6, 4, 77))
+        df = pl.DataFrame({"paths": [str(local)]})
+        pipe = Pipeline().source("file_path").grayscale()
+        out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
+        assert numpy_from_struct(out["out"][0]).shape == (4, 6, 1)
