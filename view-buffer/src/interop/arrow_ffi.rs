@@ -144,9 +144,17 @@ impl FromArrowFFI for ViewBuffer {
             }
         };
 
+        // Null values live in a separate validity bitmap; the data buffer
+        // holds arbitrary bytes at null slots, so importing them would
+        // produce garbage values silently.
+        if data.null_count() > 0 {
+            return Err(ArrowFFIError::ExportFailed(
+                "Arrow arrays with nulls are not supported".into(),
+            ));
+        }
+
         // Get the buffer and copy to owned Vec
         // For primitive arrays without nulls, buffer[0] contains the data.
-        // If there's a null bitmap (which we don't support), buffer[0] is bitmap and [1] is data.
         let len = data.len();
         let byte_len = len * element_size;
 
@@ -159,16 +167,24 @@ impl FromArrowFFI for ViewBuffer {
             ));
         }
 
+        // A sliced array shares its parent's buffer and addresses it
+        // through the logical offset — the data starts `offset` elements
+        // into the buffer, not at byte 0.
+        let start_byte = data.offset() * element_size;
+        let end_byte = start_byte
+            .checked_add(byte_len)
+            .ok_or_else(|| ArrowFFIError::ExportFailed("Array length overflow".into()))?;
+
         let buffer = &data.buffers()[0]; // Data buffer for primitive arrays without nulls
-        if buffer.len() < byte_len {
+        if buffer.len() < end_byte {
             return Err(ArrowFFIError::ExportFailed(format!(
-                "Buffer too small: {} < {byte_len}",
+                "Buffer too small: {} < {end_byte}",
                 buffer.len()
             )));
         }
 
         // Copy to owned buffer
-        let slice = std::slice::from_raw_parts(buffer.as_ptr(), byte_len);
+        let slice = std::slice::from_raw_parts(buffer.as_ptr().add(start_byte), byte_len);
         let vec_data = slice.to_vec();
 
         Ok(ViewBuffer::from_raw_bytes(vec_data, vec![len], dtype))
@@ -266,6 +282,37 @@ mod tests {
 
         assert_eq!(recovered.shape(), &[5]);
         assert_eq!(recovered.dtype(), DType::U8);
+    }
+
+    #[test]
+    fn test_arrow_ffi_import_respects_offset() {
+        use arrow::array::{Array, Int32Array};
+
+        let arr = Int32Array::from(vec![10, 20, 30, 40, 50]);
+        // Slice at the ArrayData level: keeps the shared buffer and sets
+        // the logical offset — exactly what a foreign FFI producer (e.g.
+        // Arrow C++) hands over for a sliced array.
+        let data = arr.to_data().slice(2, 3); // values [30, 40, 50]
+        assert_eq!(data.offset(), 2, "test requires a non-zero offset");
+
+        let (array, schema) = arrow::ffi::to_ffi(&data).expect("FFI export failed");
+        let recovered =
+            unsafe { ViewBuffer::from_arrow_ffi(array, &schema).expect("FFI import failed") };
+
+        assert_eq!(recovered.shape(), &[3]);
+        assert_eq!(recovered.dtype(), DType::I32);
+        assert_eq!(recovered.to_contiguous().as_slice::<i32>(), &[30, 40, 50]);
+    }
+
+    #[test]
+    fn test_arrow_ffi_import_rejects_nulls() {
+        use arrow::array::{Array, Int32Array};
+
+        let arr = Int32Array::from(vec![Some(1), None, Some(3)]);
+        let data = arr.to_data();
+        let (array, schema) = arrow::ffi::to_ffi(&data).expect("FFI export failed");
+        let res = unsafe { ViewBuffer::from_arrow_ffi(array, &schema) };
+        assert!(res.is_err(), "arrays with nulls must be rejected: {res:?}");
     }
 
     #[test]
