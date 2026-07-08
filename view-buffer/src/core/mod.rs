@@ -7,9 +7,11 @@
 //! - [`ViewBuffer`], [`BufferStorage`], [`BufferError`] - Buffer storage and views
 
 pub mod buffer;
+pub mod bytes;
 pub mod dtype;
 pub mod layout;
 
 pub use buffer::{BufferError, BufferStorage, ViewBuffer};
+pub use bytes::AlignedBytes;
 pub use dtype::{DType, ViewType};
 pub use layout::{ExternalLayout, Layout, LayoutFacts, LayoutReport};
