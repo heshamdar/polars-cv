@@ -351,18 +351,10 @@ fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f32) -> ViewBuffer {
     let count = contig.layout.num_elements();
     let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
 
-    let is_integer = matches!(
-        input_dtype,
-        DType::U8
-            | DType::U16
-            | DType::I8
-            | DType::I16
-            | DType::U32
-            | DType::I32
-            | DType::U64
-            | DType::I64
-    );
-    let max_val: f32 = if is_integer { 255.0 } else { 1.0 };
+    // Normalize by the input dtype's value range (255 for u8, 65535 for
+    // u16, ...; 1.0 for floats). A hardcoded 255 would clamp every u16+
+    // pixel above 255 to the ceiling and flatten the image to a constant.
+    let max_val: f32 = input_dtype.norm_range_max_f32();
 
     let new_data: Vec<f32> = src
         .iter()
@@ -1220,11 +1212,10 @@ fn threshold_generic(buf: ViewBuffer, thresh: f64) -> ViewBuffer {
                 new_data.extend_from_slice(&thresholded);
             }
 
-            return ViewBuffer::from_vec(new_data).reshape(vec![
-                view.height as usize,
-                view.width as usize,
-                1,
-            ]);
+            // Threshold's shape contract is rank-preserving: a [H, W]
+            // input yields [H, W], a [H, W, 1] input yields [H, W, 1].
+            let out_shape = buf.shape().to_vec();
+            return ViewBuffer::from_vec(new_data).reshape(out_shape);
         }
 
         // Fallback contiguous u8 path
