@@ -115,6 +115,27 @@ fn read_local_file(path: &str) -> Result<Vec<u8>, CloudError> {
     std::fs::read(Path::new(path)).map_err(|e| CloudError::ReadError(e.to_string()))
 }
 
+/// Read a path already known to be local (not a remote/cloud URL).
+///
+/// Strips a `file://` prefix if present, otherwise reads the literal path.
+/// Unlike [`read_file`], this never treats the path as a cloud URL, so a
+/// bare local filename that happens to contain a colon (e.g. `img:2.png`,
+/// legal on Unix) is read as-is rather than being mis-parsed as a URL with
+/// scheme `img`.
+pub fn read_local_path(path: &str) -> Result<Vec<u8>, CloudError> {
+    if let Some(rest) = path.strip_prefix("file://") {
+        // Parse so percent-encoding and the `file://host/path` form resolve
+        // to a real filesystem path, matching read_file's `file` arm.
+        match Url::parse(path) {
+            Ok(url) => read_local_file(url.path()),
+            // Malformed file:// URL — fall back to the literal remainder.
+            Err(_) => read_local_file(rest),
+        }
+    } else {
+        read_local_file(path)
+    }
+}
+
 /// Get or create a tokio runtime for async operations.
 ///
 /// Reuses a thread-local runtime to avoid the overhead of creating a new
@@ -425,6 +446,35 @@ mod tests {
 
         // Cleanup
         std::fs::remove_file(test_path).ok();
+    }
+
+    #[test]
+    fn test_read_local_path_variants() {
+        let dir = std::env::temp_dir().join("polars_cv_local_path_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Bare path.
+        let bare = dir.join("plain.txt");
+        std::fs::write(&bare, b"bare").unwrap();
+        assert_eq!(
+            read_local_path(bare.to_str().unwrap()).unwrap(),
+            b"bare".to_vec()
+        );
+
+        // file:// URL for the same path.
+        let file_url = format!("file://{}", bare.to_str().unwrap());
+        assert_eq!(read_local_path(&file_url).unwrap(), b"bare".to_vec());
+
+        // Bare filename containing a colon (legal on Unix): must be read
+        // literally, not mis-parsed as a URL with scheme before the colon.
+        let colon = dir.join("frame:2.txt");
+        std::fs::write(&colon, b"colon").unwrap();
+        assert_eq!(
+            read_local_path(colon.to_str().unwrap()).unwrap(),
+            b"colon".to_vec()
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Integration test for HTTP - requires network access
