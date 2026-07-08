@@ -177,10 +177,19 @@ impl Op for ComputeOp {
     }
 
     fn infer_strides(&self, _input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>> {
-        match self.memory_effect() {
-            MemoryEffect::StridePreserving => Some(input_strides.to_vec()),
-            MemoryEffect::RequiresContiguous => None,
-            MemoryEffect::View => unreachable!(),
+        // `memory_effect` describes the INPUT side (whether the kernel can
+        // consume a strided view without a materialize step). The output
+        // side is different: every compute kernel either writes a fresh
+        // contiguous buffer or mutates an already-contiguous one in place,
+        // so the output layout is contiguous regardless of input strides —
+        // and the element size may change (integer gamma -> f32), which
+        // input byte strides can never describe.
+        match self {
+            // A same-dtype cast is an identity clone that genuinely keeps
+            // the input layout. The builder refines the cross-dtype case
+            // (which materializes contiguous); dtype is not visible here.
+            ComputeOp::Cast(_) => Some(input_strides.to_vec()),
+            _ => None,
         }
     }
 

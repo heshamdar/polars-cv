@@ -339,32 +339,16 @@ impl Op for ImageOp {
         OpCost::Allocating
     }
 
-    fn infer_strides(&self, _input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>> {
-        match &self.kind {
-            // Threshold preserves shape and strides
-            ImageOpKind::Threshold(_) => Some(input_strides.to_vec()),
-            // Grayscale changes shape (3 channels -> 1 channel) and always produces
-            // contiguous output, so return None to trigger contiguous stride calculation
-            ImageOpKind::Grayscale => None,
-            // Resize changes shape and produces contiguous output
-            ImageOpKind::Resize { .. } => None,
-            // Blur preserves shape but produces contiguous output
-            ImageOpKind::Blur { .. } => None,
-            ImageOpKind::Canny { .. } => None,
-            ImageOpKind::HistogramEqualize => None,
-            ImageOpKind::Erode { .. } => None,
-            ImageOpKind::Dilate { .. } => None,
-            ImageOpKind::MorphGradient { .. } => None,
-            ImageOpKind::ResizeScale { .. }
-            | ImageOpKind::ResizeToHeight { .. }
-            | ImageOpKind::ResizeToWidth { .. }
-            | ImageOpKind::ResizeMax { .. }
-            | ImageOpKind::ResizeMin { .. }
-            | ImageOpKind::Pad { .. }
-            | ImageOpKind::PadToSize { .. }
-            | ImageOpKind::Letterbox { .. }
-            | ImageOpKind::ChannelSwap { .. } => None,
-        }
+    fn infer_strides(
+        &self,
+        _input_shape: &[usize],
+        _input_strides: &[isize],
+    ) -> Option<Vec<isize>> {
+        // Every image kernel materializes a fresh contiguous buffer —
+        // including Threshold, which can consume strided u8 input (hence
+        // its StridePreserving memory_effect) but always writes a new
+        // contiguous u8 mask, changing the element size for non-u8 input.
+        None
     }
 
     // --- Dtype Contract Methods ---

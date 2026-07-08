@@ -351,37 +351,16 @@ impl ViewExpr {
         let op = ComputeOp::Cast(target);
         let new_shape = op.infer_shape(&[&self.shape]);
 
-        // Stride Preserving: Strides match input (in elements).
-        // But stride bytes change if element size changes!
-        // calc_strides needs to account for this scaling.
-        // Current op.infer_strides for StridePreserving just copies input bytes strides.
-        // This is WRONG if dtype size changes.
-        // We need to re-scale strides based on ratio of type sizes.
-
-        let new_strides = if let Some(input_strides) = &self.strides {
-            let src_size = self.dtype.size_of();
-            let dst_size = target.size_of();
-            if src_size == dst_size {
-                Some(input_strides.clone())
-            } else {
-                // Check if all strides are divisible
-                // We use i64 to prevent overflow during intermediate mult and handle negative strides
-                let valid = input_strides
-                    .iter()
-                    .all(|&s| (s as i64 * dst_size as i64) % src_size as i64 == 0);
-                if valid {
-                    Some(
-                        input_strides
-                            .iter()
-                            .map(|&s| ((s as i64 * dst_size as i64) / src_size as i64) as isize)
-                            .collect(),
-                    )
-                } else {
-                    None // Should not happen for aligned buffers
-                }
-            }
+        // A same-dtype cast is an identity clone: the buffer (and its
+        // strides) pass through untouched. Any real cast materializes a
+        // fresh contiguous buffer in the target dtype, so input strides —
+        // whatever their element size — never describe the output.
+        let new_strides = if target == self.dtype {
+            self.strides.clone()
         } else {
-            None
+            self.strides
+                .as_ref()
+                .map(|_| Layout::new_contiguous(new_shape.clone(), target).strides)
         };
 
         Arc::new(Self {
@@ -408,8 +387,7 @@ impl ViewExpr {
     pub fn scale(self: &Arc<Self>, factor: f32) -> Arc<Self> {
         let op = ComputeOp::Scale(factor);
         let new_shape = self.shape.clone();
-        // StridePreserving, same dtype -> same strides
-        let new_strides = self.strides.clone();
+        let new_strides = self.calc_strides(&op, &new_shape);
         let new_dtype = op.infer_dtype(&[self.dtype]);
 
         Arc::new(Self {
@@ -423,22 +401,24 @@ impl ViewExpr {
     pub fn relu(self: &Arc<Self>) -> Arc<Self> {
         let op = ComputeOp::Relu;
         let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
-            strides: self.strides.clone(),
+            strides: new_strides,
             dtype: new_dtype,
         })
     }
 
     pub fn fused(self: &Arc<Self>, kernel: FusedKernel) -> Arc<Self> {
         let op = ComputeOp::Fused(kernel);
-        // Fused preserves strides and shape
+        // Fused kernels preserve shape but write a fresh contiguous buffer.
         let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
-            strides: self.strides.clone(),
+            strides: new_strides,
             dtype: new_dtype,
         })
     }
@@ -463,10 +443,11 @@ impl ViewExpr {
     pub fn clamp(self: &Arc<Self>, min: f32, max: f32) -> Arc<Self> {
         let op = ComputeOp::Clamp { min, max };
         let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
-            strides: self.strides.clone(),
+            strides: new_strides,
             dtype: new_dtype,
         })
     }
@@ -488,10 +469,11 @@ impl ViewExpr {
     pub fn adjust_gamma(self: &Arc<Self>, gamma: f32) -> Arc<Self> {
         let op = ComputeOp::AdjustGamma(gamma);
         let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
-            strides: self.strides.clone(),
+            strides: new_strides,
             dtype: new_dtype,
         })
     }
@@ -500,10 +482,11 @@ impl ViewExpr {
     pub fn invert(self: &Arc<Self>) -> Arc<Self> {
         let op = ComputeOp::Invert;
         let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
-            strides: self.strides.clone(),
+            strides: new_strides,
             dtype: new_dtype,
         })
     }
@@ -561,16 +544,10 @@ impl ViewExpr {
         let op = ImageOp {
             kind: ImageOpKind::Threshold(value),
         };
-        // Output U8, Input might be U8. StridePreserving.
-        // If input was U8, strides preserved.
-        let new_strides = if self.dtype == DType::U8 {
-            self.strides.clone()
-        } else {
-            // If casting occurred (implicit or explicit in op logic), strides might scale.
-            // Threshold op usually implies U8->U8 or similar.
-            // Assuming U8->U8 for now.
-            self.strides.clone()
-        };
+        // The kernel always materializes a fresh contiguous u8 mask, so
+        // the output strides are contiguous u8 strides — never the input's
+        // (whose element size may differ and which may be non-contiguous).
+        let new_strides = self.calc_strides(&op, &self.shape);
 
         Arc::new(Self {
             node: ExprNode::Image(op, self.clone()),
@@ -1276,14 +1253,11 @@ fn extract_ops(
             true
         }
         // Gamma is scan-free and lowers exactly to its unfused formula:
-        // `((x / max).clamp(0, 1)).powf(g) * max`, max = 255 for integer
-        // inputs, 1 for float inputs (matching `apply_adjust_gamma`).
+        // `((x / max).clamp(0, 1)).powf(g) * max`, max = the input dtype's
+        // value range for integers, 1 for float inputs (matching
+        // `apply_adjust_gamma` via the same `norm_range_max_f32`).
         ComputeOp::AdjustGamma(g) if promote_family_fusable => {
-            let max_val: f32 = if input_dtype == DType::F32 {
-                1.0
-            } else {
-                255.0
-            };
+            let max_val: f32 = input_dtype.norm_range_max_f32();
             if max_val != 1.0 {
                 list.push(ScalarOp::Div(max_val));
             }

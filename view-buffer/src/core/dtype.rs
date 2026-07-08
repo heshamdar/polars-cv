@@ -153,6 +153,23 @@ impl DType {
             DType::U64 | DType::I64 | DType::F64 => 8,
         }
     }
+
+    /// The normalization ceiling range-mapping ops (gamma) use for this
+    /// dtype: the maximum representable value for integers (as f32,
+    /// approximate for the 64-bit types), 1.0 for floats.
+    pub fn norm_range_max_f32(&self) -> f32 {
+        match self {
+            DType::U8 => u8::MAX as f32,
+            DType::I8 => i8::MAX as f32,
+            DType::U16 => u16::MAX as f32,
+            DType::I16 => i16::MAX as f32,
+            DType::U32 => u32::MAX as f32,
+            DType::I32 => i32::MAX as f32,
+            DType::U64 => u64::MAX as f32,
+            DType::I64 => i64::MAX as f32,
+            DType::F32 | DType::F64 => 1.0,
+        }
+    }
 }
 
 /// Trait to map Rust types to DType enum.
