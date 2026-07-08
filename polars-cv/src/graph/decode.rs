@@ -172,29 +172,67 @@ fn decode_blob_zero_copy(
     let expected_data_len = num_elements
         .checked_mul(dtype.size_of())
         .ok_or_else(|| "Data length overflow: buffer too large".to_string())?;
-    if data_offset + expected_data_len > total_len {
+    // Every header field is untrusted input: the additions must be checked,
+    // or a near-usize::MAX data_offset wraps below total_len and defeats the
+    // truncation check (panicking in debug, mis-slicing in release).
+    let data_end = data_offset
+        .checked_add(expected_data_len)
+        .ok_or_else(|| "Blob data offset overflow".to_string())?;
+    if data_end > total_len {
         return Err(
             format!(
                 "Blob data truncated: offset={data_offset}, expected={expected_data_len}, total={total_len}"
             ),
         );
     }
+    let abs_data_offset = base_offset
+        .checked_add(data_offset)
+        .ok_or_else(|| "Blob data offset overflow".to_string())?;
 
     // If flags indicate contiguous (1) or strides were not stored, use contiguous layout.
     // Otherwise preserve the stored strides for non-contiguous views.
     if flags == 1 || strides.is_empty() {
         Ok(ViewBuffer::from_polars_buffer_slice(
             buffer,
-            base_offset + data_offset,
+            abs_data_offset,
             expected_data_len,
             shape,
             dtype,
         ))
     } else {
+        // Stored strides are untrusted too. The strided window is every
+        // byte from data_offset to the end of the blob (a padded layout may
+        // legitimately span more than num_elements * size), and every
+        // element the (shape, strides) pair can address must fall inside it.
+        let window_len = total_len - data_offset;
+        if num_elements > 0 {
+            let mut min_reach: i128 = 0;
+            let mut max_reach: i128 = 0;
+            for (&dim, &stride) in shape.iter().zip(strides.iter()) {
+                let reach = (dim as i128 - 1) * stride as i128;
+                if reach >= 0 {
+                    max_reach += reach;
+                } else {
+                    min_reach += reach;
+                }
+            }
+            if min_reach < 0 {
+                return Err(format!(
+                    "Blob strides reach below the data start: shape={shape:?}, strides={strides:?}"
+                ));
+            }
+            let span_end = max_reach + dtype.size_of() as i128;
+            if span_end > window_len as i128 {
+                return Err(format!(
+                    "Blob strides reach outside the data: shape={shape:?}, \
+                     strides={strides:?}, span={span_end}, available={window_len}"
+                ));
+            }
+        }
         Ok(ViewBuffer::from_polars_buffer_slice_with_strides(
             buffer,
-            base_offset + data_offset,
-            expected_data_len,
+            abs_data_offset,
+            window_len,
             shape,
             strides,
             dtype,
@@ -900,5 +938,126 @@ pub(crate) fn build_series_from_spec(
                 _ => None,
             }),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_binary_zero_copy;
+    use view_buffer::protocol::HEADER_SIZE;
+
+    /// Build a VIEW-protocol blob byte-by-byte so malformed headers can be
+    /// crafted (the writer API always emits valid contiguous blobs).
+    fn craft_blob(
+        dtype_code: u8,
+        data_offset: u64,
+        flags: u64,
+        shape: &[u64],
+        strides: &[i64],
+        data: &[u8],
+    ) -> Vec<u8> {
+        let rank = shape.len();
+        assert_eq!(rank, strides.len());
+        let mut v = vec![0u8; HEADER_SIZE];
+        v[0..4].copy_from_slice(b"VIEW");
+        v[4..6].copy_from_slice(&1u16.to_le_bytes());
+        v[6] = dtype_code;
+        v[7] = rank as u8;
+        v[8..16].copy_from_slice(&data_offset.to_le_bytes());
+        v[16..24].copy_from_slice(&flags.to_le_bytes());
+        for dim in shape {
+            v.extend_from_slice(&dim.to_le_bytes());
+        }
+        for s in strides {
+            v.extend_from_slice(&s.to_le_bytes());
+        }
+        v.extend_from_slice(data);
+        v
+    }
+
+    fn decode(blob: Vec<u8>) -> Result<view_buffer::ViewBuffer, String> {
+        let len = blob.len();
+        let buffer = polars_buffer::Buffer::from(blob);
+        decode_binary_zero_copy(buffer, 0, len, "blob", None)
+    }
+
+    /// data_offset for a blob whose payload directly follows shape+strides.
+    fn payload_offset(rank: usize) -> u64 {
+        (HEADER_SIZE + rank * 16) as u64
+    }
+
+    #[test]
+    fn valid_contiguous_blob_decodes() {
+        let blob = craft_blob(
+            1, // u8
+            payload_offset(1),
+            1, // contiguous
+            &[4],
+            &[1],
+            &[10, 20, 30, 40],
+        );
+        let buf = decode(blob).expect("valid blob must decode");
+        assert_eq!(buf.shape(), &[4]);
+        assert_eq!(buf.to_contiguous().as_slice::<u8>(), &[10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn huge_data_offset_is_rejected_not_wrapped() {
+        // data_offset near usize::MAX: the truncation check
+        // `data_offset + expected_data_len > total_len` must not overflow
+        // (wrap) into acceptance — it must return a clean error.
+        let blob = craft_blob(1, u64::MAX - 2, 1, &[4], &[1], &[10, 20, 30, 40]);
+        let res = decode(blob);
+        assert!(res.is_err(), "wrapping offset must be rejected: {res:?}");
+    }
+
+    #[test]
+    fn data_offset_past_end_is_rejected() {
+        let blob = craft_blob(1, 10_000, 1, &[4], &[1], &[10, 20, 30, 40]);
+        assert!(decode(blob).is_err());
+    }
+
+    #[test]
+    fn hostile_strides_beyond_window_are_rejected() {
+        // 4x4 u8 with a row stride pointing 1 MB past the payload: the
+        // strided view would read far outside the blob.
+        let data = [0u8; 16];
+        let blob = craft_blob(1, payload_offset(2), 0, &[4, 4], &[1_000_000, 1], &data);
+        assert!(decode(blob).is_err());
+    }
+
+    #[test]
+    fn negative_stride_reach_below_window_is_rejected() {
+        // A negative row stride from element 0 reaches below the payload
+        // start.
+        let data = [0u8; 16];
+        let blob = craft_blob(1, payload_offset(2), 0, &[4, 4], &[-16, 1], &data);
+        assert!(decode(blob).is_err());
+    }
+
+    #[test]
+    fn valid_strided_blob_decodes() {
+        // Column-major 2x2 u8: element (i, j) at byte i*1 + j*2.
+        let blob = craft_blob(1, payload_offset(2), 0, &[2, 2], &[1, 2], &[10, 20, 30, 40]);
+        let buf = decode(blob).expect("in-window strided blob must decode");
+        assert_eq!(buf.shape(), &[2, 2]);
+        assert_eq!(buf.to_contiguous().as_slice::<u8>(), &[10, 30, 20, 40]);
+    }
+
+    #[test]
+    fn strided_span_larger_than_logical_size_is_accepted_when_in_window() {
+        // A padded row layout: 2x2 u8 with row stride 3 over 7 bytes of
+        // payload — spans more than the 4 logical bytes but stays inside
+        // the blob.
+        let blob = craft_blob(
+            1,
+            payload_offset(2),
+            0,
+            &[2, 2],
+            &[3, 1],
+            &[10, 20, 99, 30, 40, 99, 99],
+        );
+        let buf = decode(blob).expect("padded strided blob must decode");
+        assert_eq!(buf.to_contiguous().as_slice::<u8>(), &[10, 20, 30, 40]);
     }
 }
