@@ -5,6 +5,50 @@ All notable changes to **polars-cv** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-07-10
+
+### Added
+
+- **`file://` URLs in the local read path** — `source("file_path")` now decodes
+  `file://` URIs, not just bare local paths, routing local reads through the
+  same `cloud::read_file` entry point as remote schemes.
+
+### Changed
+
+- **Cloud access is signed by default, anonymous is opt-in** — GCS now honors
+  `CloudOptions(anonymous=True)` (via `with_skip_signature`) like S3 and Azure.
+  The previously documented "anonymous-first" credential chain — which no
+  provider actually implemented — is gone; requests are signed unless you
+  explicitly opt into anonymous access.
+
+### Fixed
+
+- **Blob header validation** — untrusted `blob` VIEW-protocol headers are now
+  validated with checked arithmetic and stride-span checks, rejecting malformed
+  inputs instead of risking overflow.
+- **Arrow C-Data import** — the array offset is respected and null-bearing
+  arrays are rejected on import, fixing silently wrong reads of sliced/offset
+  Arrow buffers.
+- **Buffer deallocation** — owned buffers are freed with their original
+  alignment, fixing a mismatched-layout deallocation.
+- **Materializing kernels** now declare contiguous output, and `gamma`'s integer
+  range is corrected.
+- **Metrics** — the VOC 11-point AP denominator and the bootstrap PR-AUC
+  estimator mismatch are fixed.
+- **Panics eliminated** — axis reductions over 1-D buffers, and the
+  `u8` RGBA→Lab alpha color path (which also now preserves dtype) no longer
+  panic.
+- **Rotation fusion** uses position-correct shapes, and batch re-folds seed from
+  the post-source state.
+- Colon-bearing local paths are read literally, and a dead `Cast` stride arm was
+  removed.
+- **Builds on current stable Rust** — the transitive `ethnum` dependency is
+  pinned to 1.5.3, which drops the `TryFromIntError` transmute that failed to
+  compile (`E0512`) on newer `rustc`. The stack builds cleanly against polars
+  0.54.4 / pyo3-polars 0.27 / pyo3 0.28.
+
+---
+
 ## [0.10.0] — 2026-06-13
 
 ### Added
@@ -64,4 +108,5 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.11.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.11.0
 [0.10.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.10.0
