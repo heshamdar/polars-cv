@@ -302,10 +302,13 @@ class CloudOptions:
     Cloud storage options for file_path sources.
 
     Used to configure credentials and access options for cloud storage providers.
-    When not provided, the default credential chain is used:
-    1. Anonymous access (for public buckets)
-    2. Environment variables (AWS_ACCESS_KEY_ID, GOOGLE_APPLICATION_CREDENTIALS, etc.)
-    3. Instance metadata / IAM roles
+    Remote requests are signed by default, using the provider's standard
+    credential chain when explicit keys are not supplied:
+    1. Environment variables (AWS_ACCESS_KEY_ID, GOOGLE_APPLICATION_CREDENTIALS, etc.)
+    2. Instance metadata / IAM roles
+
+    To read public buckets without credentials, opt into anonymous access
+    explicitly with ``anonymous=True`` (honored for S3, GCS, and Azure).
 
     Attributes:
         aws_region: AWS region (e.g., "us-east-1").
@@ -315,7 +318,8 @@ class CloudOptions:
         gcs_service_account_key: Path to GCS service account key file.
         azure_storage_account: Azure storage account name.
         azure_storage_access_key: Azure storage access key.
-        anonymous: Whether to use anonymous access (default: None, auto-detect).
+        anonymous: Set to True to opt into unsigned/anonymous access for public
+            buckets. Default None signs requests using the credential chain above.
     """
 
     aws_region: str | None = None

@@ -1,6 +1,6 @@
 [package]
 name = "polars-cv"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 # Bumped by the polars 0.54 upgrade: polars-ooc needs cold_path/atomic_try_update,
 # stabilized in Rust 1.96. cargo errors clearly on older toolchains instead of E0658.

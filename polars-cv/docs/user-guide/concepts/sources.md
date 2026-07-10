@@ -84,7 +84,8 @@ pipe = Pipeline().source("image_bytes").resize(height=224, width=224).cast("f32"
 
 ## `file_path` and Cloud Access
 
-`file_path` supports local paths and remote URIs (for example `s3://`, `gs://`, `az://`, `http://`).
+`file_path` supports local paths (bare or `file://` URIs) and remote URIs (for
+example `s3://`, `gs://`, `az://`, `http://`).
 Use `CloudOptions` when credentials or provider settings are needed:
 
 ```python
@@ -98,6 +99,10 @@ options = CloudOptions(
 
 pipe = Pipeline().source("file_path", cloud_options=options)
 ```
+
+Remote requests are **signed by default**. To read from a public bucket without
+credentials, opt into anonymous access explicitly with
+`CloudOptions(anonymous=True)` (honored for S3, GCS, and Azure).
 
 ## Contour Source and Shape Inference
 
