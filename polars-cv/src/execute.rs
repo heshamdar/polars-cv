@@ -265,15 +265,10 @@ pub const KNOWN_OPS: &[&str] = &[
     "contour_bounding_box",
     "contour_centroid",
     "contour_convex_hull",
-    "contour_flip",
-    "contour_is_convex",
-    "contour_normalize",
     "contour_perimeter",
     "contour_scale",
     "contour_simplify",
-    "contour_to_absolute",
     "contour_translate",
-    "contour_winding",
     "convolve2d",
     "crop",
     "cvt_color",
@@ -747,8 +742,6 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "contour_perimeter" => Ok(GraphStep::Geometry(GeometryOp::Perimeter)),
         "contour_centroid" => Ok(GraphStep::Geometry(GeometryOp::Centroid)),
         "contour_bounding_box" => Ok(GraphStep::Geometry(GeometryOp::BoundingBox)),
-        "contour_winding" => Ok(GraphStep::Geometry(GeometryOp::Winding)),
-        "contour_is_convex" => Ok(GraphStep::Geometry(GeometryOp::IsConvex)),
         "contour_convex_hull" => Ok(GraphStep::Geometry(GeometryOp::ConvexHull)),
 
         // Geometry transforms
@@ -766,26 +759,9 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 origin: view_buffer::geometry::ops::ScaleOrigin::Centroid,
             }))
         }
-        "contour_flip" => Ok(GraphStep::Geometry(GeometryOp::Flip)),
         "contour_simplify" => {
             let tolerance = get_param(&op_spec.params, "tolerance")?.resolve_f64(row_idx, ctx)?;
             Ok(GraphStep::Geometry(GeometryOp::Simplify { tolerance }))
-        }
-        "contour_normalize" => {
-            let ref_width = get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, ctx)?;
-            let ref_height = get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, ctx)?;
-            Ok(GraphStep::Geometry(GeometryOp::Normalize {
-                ref_width,
-                ref_height,
-            }))
-        }
-        "contour_to_absolute" => {
-            let ref_width = get_param(&op_spec.params, "ref_width")?.resolve_f64(row_idx, ctx)?;
-            let ref_height = get_param(&op_spec.params, "ref_height")?.resolve_f64(row_idx, ctx)?;
-            Ok(GraphStep::Geometry(GeometryOp::ToAbsolute {
-                ref_width,
-                ref_height,
-            }))
         }
 
         // Binary operations (two-buffer): one arm for the whole family,

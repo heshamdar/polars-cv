@@ -326,6 +326,103 @@ def test_registry_parity_pipeline_ops_are_executable():
     assert not missing, f"Pipeline ops with no Rust executor arm: {sorted(missing)}"
 
 
+@plugin_required
+def test_registry_parity_all_rust_ops_are_reachable():
+    """Every op the Rust executor knows must be reachable from the Python API.
+
+    The forward test guards ``OP_NAMES ⊆ known_ops()``. This is the reverse
+    direction: ``known_ops() ⊆ OP_NAMES``. Together they pin an exact equality,
+    so a Rust ``resolve_op`` arm registered in ``KNOWN_OPS`` cannot sit
+    unreachable from any ``Pipeline``/lazy builder (the gap that hid
+    ``channel_merge`` and the graph-path contour ops before this suite existed).
+
+    Graph geometry ops are exposed via the ``Pipeline`` builders; the separate
+    ``.contour``/``.point``/``.bbox`` namespace plugins do NOT go through
+    ``vb_graph``/``known_ops()`` and so are (correctly) not part of this set.
+    """
+    rust_ops = _known_ops_from_rust()
+    if rust_ops is None:
+        pytest.skip("_lib.known_ops() not implemented yet (Phase 3)")
+    pipeline_ops = set(Pipeline.OP_NAMES)
+    unreachable = rust_ops - pipeline_ops
+    assert not unreachable, (
+        "Rust ops in KNOWN_OPS with no Python builder that emits them "
+        f"(dead or unconnected graph path): {sorted(unreachable)}"
+    )
+
+
+def _rust_src_dir():
+    """The crate ``src/`` dir in a source checkout, or None (installed wheel)."""
+    from pathlib import Path
+
+    # python/polars_cv/__init__.py -> ../../src
+    src = Path(polars_cv.__file__).resolve().parent.parent.parent / "src"
+    return src if (src / "lib.rs").exists() else None
+
+
+def test_namespace_plugin_symbols_are_registered():
+    """Every ``_plugin("name")`` call resolves to a registered Rust expr symbol.
+
+    The ``.contour``/``.point``/``.bbox``/``.cv`` namespace accessors call
+    individually-registered ``#[polars_expr]`` functions by name (bypassing the
+    ``vb_graph``/``known_ops()`` graph path, so the registry-parity tests don't
+    cover them). A typo or a rename on either side — e.g. ``contour_bbox`` vs
+    ``contour_bounding_box`` — currently only fails at execution time. This scans
+    both sides from source and pins them together.
+    """
+    import re
+    from pathlib import Path
+
+    src = _rust_src_dir()
+    if src is None:
+        pytest.skip("Rust sources not available (installed wheel)")
+
+    pkg = Path(polars_cv.__file__).parent
+    called: set[str] = set()
+    for py in pkg.rglob("*.py"):
+        called |= set(re.findall(r'_plugin\(\s*"([a-z_0-9]+)"', py.read_text()))
+    assert called, "no _plugin(...) calls found — scan is broken"
+
+    registered: set[str] = set()
+    for rs in ("contour.rs", "point.rs", "image_metadata.rs"):
+        text = (src / rs).read_text()
+        # `#[polars_expr(...)]` immediately precedes `pub fn <name>` / `fn <name>`.
+        registered |= set(
+            re.findall(r"#\[polars_expr[^\]]*\]\s*(?:pub\s+)?fn\s+([a-z_0-9]+)", text)
+        )
+    assert registered, "no #[polars_expr] fns found — scan is broken"
+
+    missing = sorted(called - registered)
+    assert not missing, (
+        "namespace _plugin() names with no matching #[polars_expr] Rust symbol "
+        f"(typo or rename): {missing}"
+    )
+
+
+def test_lib_module_registration_matches_required_hooks():
+    """The introspection FFI registered in ``#[pymodule]`` equals the hooks list.
+
+    ``_REQUIRED_LIB_HOOKS`` is hand-maintained (the parity tests skip on any
+    missing hook). This pins it to the actual ``wrap_pyfunction!`` registrations
+    in ``lib.rs`` so the two cannot drift — e.g. dropping ``op_output_dtype``
+    from the module must also drop it from the hooks list, and vice versa.
+    """
+    import re
+
+    src = _rust_src_dir()
+    if src is None:
+        pytest.skip("Rust sources not available (installed wheel)")
+
+    text = (src / "lib.rs").read_text()
+    registered = set(re.findall(r"wrap_pyfunction!\(\s*([a-z_0-9]+)\s*,", text))
+    assert registered, "no wrap_pyfunction! registrations found — scan is broken"
+    assert registered == set(_REQUIRED_LIB_HOOKS), (
+        "introspection FFI drift between lib.rs #[pymodule] and _REQUIRED_LIB_HOOKS: "
+        f"in lib.rs only={sorted(registered - set(_REQUIRED_LIB_HOOKS))} "
+        f"in hooks only={sorted(set(_REQUIRED_LIB_HOOKS) - registered)}"
+    )
+
+
 def _emitted_op_names_from_source():
     """Op names actually emitted by the Python builders, scanned from source.
 
@@ -378,7 +475,7 @@ def test_registry_parity_no_dead_contracts():
 
 _REQUIRED_LIB_HOOKS = (
     "op_contract",
-    "op_output_dtype",
+    "op_schema",
     "binary_output_dtype",
     "known_ops",
     "enum_variants",

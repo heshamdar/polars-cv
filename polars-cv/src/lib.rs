@@ -23,7 +23,6 @@ use serde::Deserialize;
 #[pymodule]
 #[pyo3(name = "_lib")]
 fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(op_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(op_schema, m)?)?;
@@ -104,7 +103,7 @@ fn channel_rule_name(rule: view_buffer::OutputChannelRule) -> String {
 
 /// Resolve one serialized op spec to its `ViewDto`, mapping errors to Python.
 ///
-/// Shared by `op_output_dtype` and `op_contract` so neither re-implements the
+/// Shared by `op_schema` and `op_contract` so neither re-implements the
 /// deserialize → resolve path.
 ///
 /// Expression parameters (dynamic, per-row values like a column-driven resize
@@ -168,7 +167,7 @@ fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
 }
 
-/// Resolve the concrete output dtype of one op given its input dtype.
+/// Shared dtype resolution for `op_schema` (and, transitively, `op_contract`).
 ///
 /// This is the single authority the Python schema layer defers to instead of
 /// re-applying a parallel dtype rule: it composes view-buffer's
@@ -180,13 +179,6 @@ fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep
 /// propagate `"auto"`; fixed/configurable rules resolve to their concrete
 /// dtype. An `out_dtype` literal parameter overrides the result only for the
 /// `Configurable` rule, mirroring the configurable-output contract.
-#[pyfunction]
-fn op_output_dtype(op_json: &str, input_dtype: &str) -> PyResult<String> {
-    let step = resolve_op_from_json(op_json)?;
-    output_dtype_for(&step, op_json, input_dtype)
-}
-
-/// Shared dtype resolution for `op_output_dtype` and `op_schema`.
 fn output_dtype_for(
     step: &crate::graph::step::GraphStep,
     op_json: &str,
@@ -286,7 +278,7 @@ fn parse_binary_op(name: &str) -> PyResult<view_buffer::BinaryOp> {
 
 /// Resolve the output dtype of a binary op given *both* operand dtypes.
 ///
-/// This is the two-input analogue of [`op_output_dtype`]. Binary ops promote
+/// This is the two-input analogue of [`output_dtype_for`]. Binary ops promote
 /// across both operands (and Divide/Ratio further promote to float for true
 /// division), so the planner cannot reuse the single-input rule — it defers to
 /// view-buffer's [`BinaryOp::output_dtype`] authority, the same one execution
