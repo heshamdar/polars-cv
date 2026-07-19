@@ -16,35 +16,6 @@ use super::encode::{
 };
 use super::types::{OutputSpec, RowResult, TypedBufferData};
 
-/// Compute valid (non-null) row indices for a series.
-///
-/// Uses the validity bitmap for efficient null checking.
-/// Returns a vector of indices where the value is not null.
-///
-/// This is useful for batch processing optimization where you want to
-/// skip null rows entirely rather than checking per-row.
-#[allow(dead_code)]
-fn compute_valid_indices(series: &Series) -> Vec<usize> {
-    let null_mask = series.is_null();
-    (0..series.len())
-        .filter(|&i| !null_mask.get(i).unwrap_or(true))
-        .collect()
-}
-/// Compute null mask as a boolean vector.
-///
-/// `true` at index i means the value at i is null.
-#[allow(dead_code)]
-fn compute_null_mask(series: &Series) -> Vec<bool> {
-    let null_mask = series.is_null();
-    (0..series.len())
-        .map(|i| null_mask.get(i).unwrap_or(true))
-        .collect()
-}
-/// Count non-null values in a series.
-#[allow(dead_code)]
-fn count_non_null(series: &Series) -> usize {
-    series.len() - series.null_count()
-}
 /// Extract binary data from a BinaryChunked at a specific row.
 ///
 /// Returns the data as a polars-arrow buffer (involves copy for BinaryViewArray).

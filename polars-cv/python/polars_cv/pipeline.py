@@ -143,6 +143,7 @@ class Pipeline:
             "blur",
             "canny",
             "cast",
+            "channel_merge",
             "channel_select",
             "channel_swap",
             "clamp",
@@ -3592,6 +3593,36 @@ class Pipeline:
             copy.deepcopy(self._shape_hints.height),
             copy.deepcopy(self._shape_hints.width),
         )
+
+    def _add_channel_merge(self, other_node_ids: list[str]) -> None:
+        """
+        Add a ``channel_merge`` op referencing other buffer nodes.
+
+        Stacks this pipeline's single-channel ``[H, W]`` buffer with the
+        single-channel buffers produced by ``other_node_ids`` along a new
+        channel axis, yielding ``[H, W, C]`` (``C = len(other_node_ids) + 1``).
+        Used internally by :meth:`LazyPipelineExpr.channel_merge`.
+
+        Args:
+            other_node_ids: Node IDs of the other single-channel operands.
+        """
+        self._ops.append(
+            OpSpec(
+                op="channel_merge",
+                params={
+                    "other_nodes": ParamValue(is_expr=False, value=other_node_ids),
+                },
+            )
+        )
+        # Rank ([H, W] → [H, W, C]) and channel count change; both are sourced
+        # from the Rust contract (op_schema for domain/dtype/ndim, the channel
+        # rule for the channel hint) rather than re-declared here.
+        self._update_output_dtype("channel_merge")
+        self._hint_snapshots[len(self._ops) - 1] = (
+            copy.deepcopy(self._shape_hints.height),
+            copy.deepcopy(self._shape_hints.width),
+        )
+        self._update_channels_from_rule()
 
     def _fuse_affine_ops(self, ops: list[OpSpec]) -> list[OpSpec]:
         """Compose consecutive affine-compatible ops into a single ``warp_affine``.

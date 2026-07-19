@@ -148,16 +148,6 @@ pub(crate) fn execute_geometry_op(
                 .collect();
             Ok(NodeOutput::from_contours(scaled))
         }
-        GeometryOp::Flip => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Flip requires Contour input".to_string())?;
-            let flipped: Vec<Contour> = contours
-                .iter()
-                .map(view_buffer::geometry::transforms::flip)
-                .collect();
-            Ok(NodeOutput::from_contours(flipped))
-        }
         GeometryOp::Simplify { tolerance } => {
             let contours = input
                 .as_contours()
@@ -178,88 +168,28 @@ pub(crate) fn execute_geometry_op(
                 .collect();
             Ok(NodeOutput::from_contours(hulls))
         }
-        GeometryOp::Normalize {
-            ref_width,
-            ref_height,
-        } => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "Normalize requires Contour input".to_string())?;
-            let normalized: Vec<Contour> = contours
-                .iter()
-                .map(|c| view_buffer::geometry::transforms::normalize(c, *ref_width, *ref_height))
-                .collect();
-            Ok(NodeOutput::from_contours(normalized))
-        }
-        GeometryOp::ToAbsolute {
-            ref_width,
-            ref_height,
-        } => {
-            let contours = input
-                .as_contours()
-                .ok_or_else(|| "ToAbsolute requires Contour input".to_string())?;
-            let absolute: Vec<Contour> = contours
-                .iter()
-                .map(|c| view_buffer::geometry::transforms::to_absolute(c, *ref_width, *ref_height))
-                .collect();
-            Ok(NodeOutput::from_contours(absolute))
-        }
-        _ => Err(format!(
-            "Geometry operation {} not yet implemented for typed execution",
+        // Contour transforms/measures/predicates that the graph path does not
+        // execute. Their user-facing behaviour is served by the dedicated
+        // `.contour` namespace (`src/contour.rs`), which calls the view-buffer
+        // geometry helpers directly rather than through `GeometryOp`. This arm is
+        // written out explicitly (rather than a catch-all `_`) so the match stays
+        // exhaustive: adding a new `GeometryOp` variant is a compile error here
+        // until it is either implemented above or classified as unsupported.
+        GeometryOp::Winding
+        | GeometryOp::IsConvex
+        | GeometryOp::Flip
+        | GeometryOp::Normalize { .. }
+        | GeometryOp::ToAbsolute { .. }
+        | GeometryOp::EnsureWinding { .. }
+        | GeometryOp::ContainsPoint { .. }
+        | GeometryOp::IoU
+        | GeometryOp::Dice
+        | GeometryOp::HausdorffDistance => Err(format!(
+            "Geometry operation {} is not supported in the pipeline graph; \
+             use the .contour namespace accessor instead",
             op.name()
         )),
     }
-}
-/// Build a nested Array AnyValue from flat data and shape.
-///
-/// For shape [2, 3], builds Array[Array[f64, 3], 2] structure.
-#[allow(dead_code)]
-fn build_nested_array_value(data: &[f64], shape: &[usize]) -> PolarsResult<AnyValue<'static>> {
-    if shape.is_empty() {
-        return Ok(if data.is_empty() {
-            AnyValue::Null
-        } else {
-            AnyValue::Float64(data[0])
-        });
-    }
-    if shape.len() == 1 {
-        let width = shape[0];
-        if data.len() != width {
-            return Err(polars_err!(
-                ComputeError : "Data length {} doesn't match shape {:?}", data.len(),
-                shape
-            ));
-        }
-        let values: Vec<AnyValue<'static>> = data.iter().map(|&v| AnyValue::Float64(v)).collect();
-        let inner_dtype = DataType::Float64;
-        let series =
-            Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &values, &inner_dtype, true)?;
-        return Ok(AnyValue::Array(series, width));
-    }
-    let outer_dim = shape[0];
-    let inner_shape = &shape[1..];
-    let inner_size: usize = inner_shape.iter().product();
-    if data.len() != outer_dim * inner_size {
-        return Err(polars_err!(
-            ComputeError : "Data length {} doesn't match shape {:?}", data.len(),
-            shape
-        ));
-    }
-    let mut inner_values: Vec<AnyValue<'static>> = Vec::with_capacity(outer_dim);
-    for i in 0..outer_dim {
-        let start = i * inner_size;
-        let end = start + inner_size;
-        let inner_data = &data[start..end];
-        let inner_val = build_nested_array_value(inner_data, inner_shape)?;
-        inner_values.push(inner_val);
-    }
-    let mut inner_dtype = DataType::Float64;
-    for &dim in inner_shape.iter().rev() {
-        inner_dtype = DataType::Array(Box::new(inner_dtype), dim);
-    }
-    let series =
-        Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &inner_values, &inner_dtype, true)?;
-    Ok(AnyValue::Array(series, outer_dim))
 }
 /// Helper type for list row data: (TypedBufferData, shape)
 pub(crate) type TypedListRow = Option<(TypedBufferData, Vec<usize>)>;
@@ -812,6 +742,112 @@ pub(crate) fn default_dtype() -> String {
 #[cfg(test)]
 mod tests {
     use super::super::types::UnifiedGraph;
+    use super::execute_geometry_op;
+
+    /// Structural coverage: every geometry op the graph builder can construct
+    /// via `resolve_op` must be executable by `execute_geometry_op` — none may
+    /// fall through to the "not supported in the pipeline graph" arm. This is
+    /// the geometry analog of view-buffer's `apply_op_coverage` probe: it pins
+    /// the class of bug where a `resolve_op` arm builds a `GeometryOp` variant
+    /// that `execute_geometry_op` never handles (e.g. the former
+    /// `Winding`/`IsConvex` gap that resolved but errored at runtime).
+    ///
+    /// The `probe_params` table is asserted to list *exactly* the geometry ops
+    /// `resolve_op` produces, so registering a new graph geometry op without a
+    /// probe here fails the test rather than silently escaping coverage.
+    #[test]
+    fn every_graph_geometry_op_executes() {
+        use crate::execute::{resolve_op, KNOWN_OPS};
+        use crate::graph::step::GraphStep;
+        use crate::params::{ParamCtx, ParamValue};
+        use crate::pipeline::OpSpec;
+        use serde_json::json;
+        use std::collections::{BTreeSet, HashMap};
+        use view_buffer::geometry::Contour;
+        use view_buffer::ops::{Domain, NodeOutput};
+        use view_buffer::ViewBuffer;
+
+        // Representative params for every geometry-producing op.
+        fn probe_params(op: &str) -> Option<Vec<(&'static str, serde_json::Value)>> {
+            Some(match op {
+                "contour_area" => vec![],
+                "contour_perimeter" => vec![],
+                "contour_centroid" => vec![],
+                "contour_bounding_box" => vec![],
+                "contour_convex_hull" => vec![],
+                "contour_translate" => vec![("dx", json!(1.0)), ("dy", json!(2.0))],
+                "contour_scale" => vec![("sx", json!(2.0)), ("sy", json!(2.0))],
+                "contour_simplify" => vec![("tolerance", json!(0.5))],
+                "extract_contours" => vec![],
+                "rasterize" => vec![("width", json!(8)), ("height", json!(8))],
+                _ => return None,
+            })
+        }
+
+        let sample_contours = || {
+            NodeOutput::from_contours(vec![Contour::from_tuples(&[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+            ])])
+        };
+        let sample_buffer = || {
+            NodeOutput::from_buffer(ViewBuffer::from_vec_with_shape(
+                vec![0u8, 255, 255, 0],
+                vec![2, 2, 1],
+            ))
+        };
+
+        let mut executed: BTreeSet<&str> = BTreeSet::new();
+        for &op_name in KNOWN_OPS {
+            let params: HashMap<String, ParamValue> = probe_params(op_name)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), ParamValue::Literal { value: v }))
+                .collect();
+            let spec = OpSpec {
+                op: op_name.to_string(),
+                params,
+            };
+            // Non-geometry ops may need params we didn't supply — not our concern.
+            let step = match resolve_op(&spec, 0, &ParamCtx::empty()) {
+                Ok(step) => step,
+                Err(_) => continue,
+            };
+            let GraphStep::Geometry(geo) = step else {
+                continue;
+            };
+            executed.insert(op_name);
+
+            let input = if geo.input_domain() == Domain::Buffer {
+                sample_buffer()
+            } else {
+                sample_contours()
+            };
+            if let Err(err) = execute_geometry_op(input, &geo) {
+                assert!(
+                    !err.contains("not supported in the pipeline graph"),
+                    "graph op '{op_name}' resolves to GeometryOp::{geo:?} but \
+                     execute_geometry_op has no arm for it: {err}"
+                );
+            }
+        }
+
+        // Ratchet: the probe table must match exactly the geometry ops that
+        // `resolve_op` actually produces, so a newly-registered graph geometry
+        // op cannot be added without a probe (and a removed one cannot leave a
+        // stale probe behind).
+        let probed: BTreeSet<&str> = KNOWN_OPS
+            .iter()
+            .copied()
+            .filter(|n| probe_params(n).is_some())
+            .collect();
+        assert_eq!(
+            probed, executed,
+            "geometry probe table out of sync with the graph's geometry ops"
+        );
+    }
 
     #[test]
     fn test_parse_unified_single_output() {
@@ -880,24 +916,5 @@ mod tests {
         let b_pos = order.iter().position(|x| x == "b").unwrap();
         let a_pos = order.iter().position(|x| x == "a").unwrap();
         assert!(b_pos > a_pos);
-    }
-    #[test]
-    fn test_output_node_ids() {
-        let json = r#"{
-            "nodes": {
-                "a": {"source": {"format": "image_bytes"}, "ops": []},
-                "b": {"source": {"format": "image_bytes"}, "ops": []}
-            },
-            "outputs": {
-                "out1": {"node": "a", "sink": {"format": "numpy"}},
-                "out2": {"node": "b", "sink": {"format": "png"}}
-            },
-            "column_bindings": {"a": 0, "b": 1}
-        }"#;
-        let graph = UnifiedGraph::from_json(json).unwrap();
-        let output_ids = graph.output_node_ids();
-        assert_eq!(output_ids.len(), 2);
-        assert!(output_ids.contains("a"));
-        assert!(output_ids.contains("b"));
     }
 }

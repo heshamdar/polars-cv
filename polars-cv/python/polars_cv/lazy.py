@@ -360,6 +360,46 @@ class LazyPipelineExpr:
             upstream=[self, mask],
         )
 
+    def channel_merge(self, *others: "LazyPipelineExpr") -> "LazyPipelineExpr":
+        """
+        Merge single-channel buffers into one multi-channel image.
+
+        Stacks this expression's ``[H, W]`` buffer with each ``others`` buffer
+        along a new channel axis, producing ``[H, W, C]`` where
+        ``C = len(others) + 1``. Each operand must be a single-channel ``[H, W]``
+        buffer (e.g. produced by :meth:`Pipeline.channel_select`) with matching
+        height and width. This is the inverse of ``channel_select``.
+
+        Args:
+            others: One or more single-channel LazyPipelineExpr operands, in
+                channel order after this one.
+
+        Returns:
+            New LazyPipelineExpr producing the merged multi-channel image.
+
+        Example:
+            ```python
+            >>> sel = lambda i: pl.col("img").cv.pipe(
+            ...     Pipeline().source("image_bytes").channel_select(index=i)
+            ... )
+            >>> merged = sel(2).channel_merge(sel(1), sel(0))  # RGB -> BGR
+            ```
+        """
+        if not others:
+            raise ValueError(
+                "channel_merge requires at least one other channel expression"
+            )
+
+        new_pipeline = self._pipeline._clone()
+        new_pipeline._add_channel_merge([o._node_id for o in others])
+
+        return LazyPipelineExpr(
+            column=self._column,
+            pipeline=new_pipeline,
+            node_id=_generate_node_id(),
+            upstream=[self, *others],
+        )
+
     def label_reduce(
         self,
         *,

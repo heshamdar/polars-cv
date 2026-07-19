@@ -1,8 +1,10 @@
 """
-Tests for previously unexposed operations: maximum, minimum, histogram.
+Tests for operations wired straight through to the engine: maximum, minimum,
+histogram, and channel_merge.
 
-These operations exist in view-buffer but lacked Python bindings.
-This test file validates the Python API and behavior against NumPy reference.
+Each exercises a Python builder that maps onto a view-buffer / graph operation,
+validating the Python API and behavior against a NumPy reference so the
+Python↔Rust wiring stays honest.
 """
 
 from __future__ import annotations
@@ -666,3 +668,56 @@ class TestHistogramPolarsCV:
         assert buckets[1]["upper_edge"] == 50.0
         assert buckets[1]["count"] == 2
         assert buckets[1]["normalized"] == 0.5
+
+
+@plugin_required
+class TestChannelMergePolarsCV:
+    """channel_merge stacks single-channel buffers into a multi-channel image.
+
+    It is the inverse of channel_select and the multi-input counterpart exposed
+    on LazyPipelineExpr (like apply_mask). These tests verify the Python API is
+    correctly wired to the Rust GraphStep::ChannelMerge executor.
+    """
+
+    def test_channel_merge_reconstructs_image(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """Splitting an RGB image and re-merging in order returns the original."""
+        from polars_cv import Pipeline, numpy_from_struct
+
+        img, _ = sample_images  # (100, 100, 3) uint8
+        df = pl.DataFrame({"img": [encode_png(img)]})
+
+        base = Pipeline().source("image_bytes")
+
+        def sel(index: int) -> pl.Expr:
+            return pl.col("img").cv.pipe(base.channel_select(index=index))
+
+        result = df.select(out=sel(0).channel_merge(sel(1), sel(2)).sink("numpy"))
+        actual = numpy_from_struct(result.row(0)[0])
+
+        assert actual.shape == img.shape
+        np.testing.assert_array_equal(actual, img)
+
+    def test_channel_merge_reorders_channels(
+        self,
+        sample_images: tuple[np.ndarray, np.ndarray],
+        encode_png: Callable[[np.ndarray], bytes],
+    ) -> None:
+        """Merging in reversed channel order yields a BGR image (like channel_swap)."""
+        from polars_cv import Pipeline, numpy_from_struct
+
+        img, _ = sample_images
+        df = pl.DataFrame({"img": [encode_png(img)]})
+
+        base = Pipeline().source("image_bytes")
+
+        def sel(index: int) -> pl.Expr:
+            return pl.col("img").cv.pipe(base.channel_select(index=index))
+
+        result = df.select(out=sel(2).channel_merge(sel(1), sel(0)).sink("numpy"))
+        actual = numpy_from_struct(result.row(0)[0])
+
+        np.testing.assert_array_equal(actual, img[:, :, ::-1])

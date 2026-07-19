@@ -90,9 +90,6 @@ pub struct NumpyRowOutput {
     pub strides: Vec<i64>,
     /// Byte offset into data buffer.
     pub offset: u64,
-    /// Whether this was zero-copy (for testing/debugging).
-    #[allow(dead_code)]
-    pub was_zero_copy: bool,
 }
 
 impl NumpyRowOutput {
@@ -101,7 +98,6 @@ impl NumpyRowOutput {
     /// Uses zero-copy ownership transfer when possible, including for
     /// non-contiguous strided buffers by preserving stride information.
     pub fn from_buffer(buffer: ViewBuffer) -> Self {
-        let was_zero_copy = buffer.can_zero_copy_strided();
         let (data, shape, strides, offset, dtype) = buffer.into_polars_buffer_strided();
 
         Self {
@@ -110,7 +106,6 @@ impl NumpyRowOutput {
             shape: shape.into_iter().map(|d| d as u64).collect(),
             strides: strides.into_iter().map(|s| s as i64).collect(),
             offset: offset as u64,
-            was_zero_copy,
         }
     }
 }
@@ -401,17 +396,6 @@ fn build_offset_column(rows: &[Option<NumpyRowOutput>]) -> Series {
 
     UInt64Chunked::from_iter_options(PlSmallStr::from_static("offset"), values.into_iter())
         .into_series()
-}
-
-/// Check if any rows used zero-copy transfer.
-///
-/// Useful for testing to verify zero-copy behavior.
-#[allow(dead_code)]
-pub fn count_zero_copy_rows(rows: &[Option<NumpyRowOutput>]) -> usize {
-    rows.iter()
-        .filter_map(|opt| opt.as_ref())
-        .filter(|r| r.was_zero_copy)
-        .count()
 }
 
 #[cfg(test)]

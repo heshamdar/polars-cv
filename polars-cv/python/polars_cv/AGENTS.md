@@ -92,7 +92,7 @@ When `.sink()` is called, a `PipelineGraph` is built:
 
 Every operation's schema effect — output domain, dtype, rank (ndim) and channel
 count — comes from view-buffer's per-op `ViewDto` contract, surfaced to Python
-through `_lib.op_contract(op_json)` and `_lib.op_output_dtype(op_json, in_dtype)`.
+through `_lib.op_contract(op_json)` and `_lib.op_schema(op_json, domain, dtype, ndim)`.
 The Python planner (`_compute_output_domain_dtype_ndim` / `_update_channels_from_rule`)
 **reads** these rules; it does not re-declare them. There is no Python contract
 table to keep in sync.
@@ -100,7 +100,7 @@ table to keep in sync.
 The contract fields read by the planner are:
 - `output_domain` — buffer / scalar / vector / contour (`any` = identity, leaves
   the domain unchanged)
-- `dtype_rule` — resolved to a concrete dtype by `op_output_dtype`
+- `dtype_rule` — resolved to a concrete dtype by `op_schema`
 - `rank_rule` — `fixed:N`, `reduce_one`, `preserve`, or `unknown`
 - `channel_rule` — drives planning-time channel inference
 

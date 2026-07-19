@@ -141,11 +141,6 @@ impl UnifiedGraph {
     pub fn is_single_output(&self) -> bool {
         self.outputs.len() == 1 && self.outputs.contains_key("_output")
     }
-    /// Get all output node IDs.
-    #[allow(dead_code)]
-    pub fn output_node_ids(&self) -> HashSet<String> {
-        self.outputs.values().map(|s| s.node.clone()).collect()
-    }
     /// Get cached topological order.
     /// The order is computed once during parsing and reused for all executions.
     pub(crate) fn topological_order(&self) -> &[String] {
@@ -222,16 +217,6 @@ impl TypedBufferData {
             TypedBufferData::F32(v) => v.len(),
             TypedBufferData::F64(v) => v.len(),
         }
-    }
-    /// Extract typed data from a ViewBuffer, preserving its dtype.
-    ///
-    /// The buffer is made contiguous if it isn't already. If the caller
-    /// has already ensured contiguity (e.g. via `to_contiguous()`), use
-    /// `from_contiguous_buffer` instead to avoid redundant work.
-    #[allow(dead_code)]
-    pub(crate) fn from_buffer(buf: &ViewBuffer) -> Self {
-        let contig = buf.to_contiguous();
-        Self::from_contiguous_buffer(&contig)
     }
     /// Extract typed data from a buffer that is already contiguous.
     ///
