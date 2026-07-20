@@ -42,6 +42,25 @@ from tests.conftest import plugin_required
 # ---------------------------------------------------------------------------
 
 
+def _lib():
+    """The compiled ``_lib`` submodule, importing it on demand (or ``None``).
+
+    ``polars_cv._lib`` is a compiled submodule that ``polars_cv/__init__`` does
+    not eagerly import, so ``_lib()`` is ``None`` until
+    some other code triggers the import. Going through an explicit
+    ``import polars_cv._lib`` makes these introspection tests behave identically
+    whether run in isolation or after other tests — no order-dependent false
+    skips (nor a false "compiled _lib missing" failure). Returns ``None`` only
+    when the plugin genuinely isn't built.
+    """
+    try:
+        import polars_cv._lib as lib
+
+        return lib
+    except ImportError:
+        return None
+
+
 def _png(
     width: int = 8, height: int = 8, color=(128, 64, 32), mode: str = "RGB"
 ) -> bytes:
@@ -308,7 +327,7 @@ def test_plan_equals_exec_shape(label, build, mode):
 
 def _known_ops_from_rust():
     """Op names the Rust executor accepts, or None if the hook isn't built yet."""
-    lib = getattr(polars_cv, "_lib", None)
+    lib = _lib()
     fn = getattr(lib, "known_ops", None) if lib is not None else None
     return set(fn()) if callable(fn) else None
 
@@ -360,15 +379,21 @@ def _rust_src_dir():
     return src if (src / "lib.rs").exists() else None
 
 
-def test_namespace_plugin_symbols_are_registered():
-    """Every ``_plugin("name")`` call resolves to a registered Rust expr symbol.
+def test_namespace_plugin_symbols_match_registrations():
+    """The namespace plugin surface is connected in BOTH directions.
 
     The ``.contour``/``.point``/``.bbox``/``.cv`` namespace accessors call
     individually-registered ``#[polars_expr]`` functions by name (bypassing the
     ``vb_graph``/``known_ops()`` graph path, so the registry-parity tests don't
-    cover them). A typo or a rename on either side — e.g. ``contour_bbox`` vs
-    ``contour_bounding_box`` — currently only fails at execution time. This scans
-    both sides from source and pins them together.
+    cover them). Both directions are pinned, mirroring the graph-path guarantee:
+
+    - Forward: every ``_plugin("name")`` call resolves to a registered Rust
+      symbol — a typo or rename (e.g. ``contour_bbox`` vs
+      ``contour_bounding_box``) fails here instead of only at execution time.
+    - Reverse: every registered namespace ``#[polars_expr]`` symbol is actually
+      reached by a ``_plugin(...)`` call — a Rust namespace function left
+      unconnected to the Python API (the same orphan class the graph-path
+      reverse-parity test guards) fails here.
     """
     import re
     from pathlib import Path
@@ -380,6 +405,7 @@ def test_namespace_plugin_symbols_are_registered():
     pkg = Path(polars_cv.__file__).parent
     called: set[str] = set()
     for py in pkg.rglob("*.py"):
+        # `\s*` spans the newline for multi-line `_plugin(\n  "name", ...)` calls.
         called |= set(re.findall(r'_plugin\(\s*"([a-z_0-9]+)"', py.read_text()))
     assert called, "no _plugin(...) calls found — scan is broken"
 
@@ -396,6 +422,11 @@ def test_namespace_plugin_symbols_are_registered():
     assert not missing, (
         "namespace _plugin() names with no matching #[polars_expr] Rust symbol "
         f"(typo or rename): {missing}"
+    )
+    unreached = sorted(registered - called)
+    assert not unreached, (
+        "registered #[polars_expr] namespace symbols with no _plugin() caller "
+        f"(dead or unconnected namespace path): {unreached}"
     )
 
 
@@ -462,7 +493,7 @@ def test_registry_parity_no_dead_contracts():
     """Ops the Pipeline never emits are not executable (B2: sobel/laplacian/sharpen)."""
     import json
 
-    lib = getattr(polars_cv, "_lib", None)
+    lib = _lib()
     contract_fn = getattr(lib, "op_contract", None) if lib is not None else None
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not implemented yet (Phase 1/3)")
@@ -492,7 +523,7 @@ def test_lib_introspection_api_is_present():
     ``#[pymodule]``), not a not-yet-implemented feature — so this guard turns it
     into a hard failure instead of a silent skip.
     """
-    lib = getattr(polars_cv, "_lib", None)
+    lib = _lib()
     assert lib is not None, "compiled _lib missing despite the plugin .so being present"
     missing = [
         name for name in _REQUIRED_LIB_HOOKS if not callable(getattr(lib, name, None))
@@ -605,7 +636,7 @@ def test_planner_domain_is_sourced_from_rust(op_name):
     """
     import json
 
-    contract_fn = getattr(getattr(polars_cv, "_lib", None), "op_contract", None)
+    contract_fn = getattr(_lib(), "op_contract", None)
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not built")
 
@@ -628,7 +659,7 @@ def test_contract_exposes_rank_and_channel_rules(op_name):
     re-declaring its own ndim/alpha rules."""
     import json
 
-    contract_fn = getattr(getattr(polars_cv, "_lib", None), "op_contract", None)
+    contract_fn = getattr(_lib(), "op_contract", None)
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not built")
 
@@ -650,7 +681,7 @@ def test_contract_exposes_rank_and_channel_rules(op_name):
 
 
 def _rust_enum_variants(enum_name):
-    fn = getattr(getattr(polars_cv, "_lib", None), "enum_variants", None)
+    fn = getattr(_lib(), "enum_variants", None)
     return set(fn(enum_name)) if callable(fn) else None
 
 
