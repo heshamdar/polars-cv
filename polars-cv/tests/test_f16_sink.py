@@ -51,9 +51,11 @@ class TestF16SinkExecution:
 
         df = self._buffer_df()
         pipe = Pipeline().source("list", dtype="f32")
-        out = df.lazy().with_columns(
-            out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16")
-        ).collect()
+        out = (
+            df.lazy()
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16"))
+            .collect()
+        )
         arr = numpy_from_struct(out["out"][0])
         assert arr.dtype == np.float16
         assert arr.shape == (2, 2, 1)
@@ -66,12 +68,42 @@ class TestF16SinkExecution:
 
         df = self._buffer_df()
         pipe = Pipeline().source("list", dtype="f32")
-        f32 = df.lazy().with_columns(
-            out=pl.col("x").cv.pipe(pipe).sink("numpy")
-        ).collect()
-        f16 = df.lazy().with_columns(
-            out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16")
-        ).collect()
+        f32 = (
+            df.lazy()
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .collect()
+        )
+        f16 = (
+            df.lazy()
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16"))
+            .collect()
+        )
         a32 = numpy_from_struct(f32["out"][0])
         a16 = numpy_from_struct(f16["out"][0])
         assert a16.nbytes * 2 == a32.nbytes
+
+    def test_f16_from_strided_buffer(self) -> None:
+        # A transpose yields a non-contiguous (permuted-stride) buffer; the f16
+        # downcast must materialize its logical (transposed) layout correctly.
+        from polars_cv import numpy_from_struct
+
+        img = [[[0.0], [1.0]], [[2.0], [3.0]]]  # [2, 2, 1]
+        df = pl.DataFrame(
+            {"x": [img]}, schema={"x": pl.List(pl.List(pl.List(pl.Float64)))}
+        )
+        pipe = Pipeline().source("list", dtype="f32").transpose([1, 0, 2])
+        f32 = (
+            df.lazy()
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .collect()
+        )
+        f16 = (
+            df.lazy()
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy", dtype="f16"))
+            .collect()
+        )
+        a32 = numpy_from_struct(f32["out"][0])
+        a16 = numpy_from_struct(f16["out"][0])
+        assert a16.dtype == np.float16
+        assert a16.shape == a32.shape
+        np.testing.assert_array_equal(a16.astype(np.float32), a32)

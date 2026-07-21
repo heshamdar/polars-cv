@@ -338,7 +338,16 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             buffer_step(ViewDto::View(ViewOp::Transpose(axes)))
         }
         "reshape" => {
-            let shape_params = get_param(&op_spec.params, "shape")?.as_param_list()?;
+            // Borrow the compiled `List` on the hot path; parse once otherwise.
+            let shape_param = get_param(&op_spec.params, "shape")?;
+            let owned_shape;
+            let shape_params: &[ParamValue] = match shape_param.as_param_slice() {
+                Some(slice) => slice,
+                None => {
+                    owned_shape = shape_param.as_param_list()?;
+                    &owned_shape
+                }
+            };
             let shape: Vec<usize> = shape_params
                 .iter()
                 .map(|p| p.resolve_usize(row_idx, ctx))
@@ -636,8 +645,18 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         // Affine warp operation
         "warp_affine" => {
             // Each matrix element is its own ParamValue so any of the six can be
-            // a per-row expression (a different affine per row in one call).
-            let matrix_params = get_param(&op_spec.params, "matrix")?.as_param_list()?;
+            // a per-row expression (a different affine per row in one call). The
+            // compiled graph pre-parses this into a `List`, borrowed here with no
+            // per-row allocation; the JSON-introspection path parses once.
+            let matrix_param = get_param(&op_spec.params, "matrix")?;
+            let owned_matrix;
+            let matrix_params: &[ParamValue] = match matrix_param.as_param_slice() {
+                Some(slice) => slice,
+                None => {
+                    owned_matrix = matrix_param.as_param_list()?;
+                    &owned_matrix
+                }
+            };
             if matrix_params.len() != 6 {
                 return Err(polars_err!(
                     ComputeError: "warp_affine: matrix must have exactly 6 elements, got {}",
@@ -834,7 +853,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                         ComputeError: "label_reduce requires a contour expression with a column key"
                     ))
                 }
-                ParamValue::Literal { .. } | ParamValue::Slot { .. } => {
+                ParamValue::Literal { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => {
                     return Err(polars_err!(
                         ComputeError: "label_reduce contours parameter must be a Polars expression"
                     ))

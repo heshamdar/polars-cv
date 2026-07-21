@@ -485,3 +485,32 @@ class TestNormalizeOutDtypeContract:
         out = lf.collect()
         assert planned == out["out"].dtype
         assert self._inner_dtype(out["out"].dtype) == pl.Float32
+
+    def test_preset_method_honors_out_dtype(self) -> None:
+        # The contract must hold for the preset method too (3-channel HWC).
+        hwc = {"x": [[[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]]]}  # [1, 2, 3]
+        schema = {"x": pl.List(pl.List(pl.List(pl.Float64)))}
+        df = pl.DataFrame(hwc, schema=schema)
+        pipe = (
+            Pipeline()
+            .source("list", dtype="f32")
+            .normalize(
+                method="preset",
+                mean=[0.0, 0.0, 0.0],
+                std=[1.0, 1.0, 1.0],
+                out_dtype="f64",
+            )
+        )
+        lf = df.lazy().with_columns(out=pl.col("x").cv.pipe(pipe).sink("list"))
+        planned = lf.collect_schema()["out"]
+        out = lf.collect()
+        assert planned == out["out"].dtype
+        assert self._inner_dtype(out["out"].dtype) == pl.Float64
+
+    def test_out_dtype_preserve_rejected(self) -> None:
+        # "preserve" is advertised by OutputDType but ill-defined for normalize;
+        # it must be rejected cleanly, not fail opaquely at plan build.
+        with pytest.raises(ValueError, match="preserve"):
+            Pipeline().source("list", dtype="f32").normalize(
+                method="minmax", out_dtype="preserve"
+            )

@@ -1045,11 +1045,11 @@ fn bind_graph_params(
 
 /// Rewrite one `Expr` param to its bound `Slot` form (literals untouched).
 ///
-/// Recurses into nested param *lists*: a `Literal` whose JSON value is an array
-/// of serialized `ParamValue`s (a `warp_affine` matrix, a `reshape` shape) may
-/// itself contain per-row expressions. Those are bound in place — the bound
-/// `Slot` round-trips through serde back into the enclosing JSON so
-/// `as_param_list` re-materializes them as slots, not unbound expressions.
+/// A `Literal` whose JSON value is an array of serialized `ParamValue`s (a
+/// `warp_affine` matrix, a `reshape` shape) is parsed once here into a
+/// [`ParamValue::List`] with each element bound — so per-row resolution reads the
+/// already-bound elements directly instead of re-deserializing the JSON every
+/// row. Plain literal arrays (mean/std floats, flip axes) are left as-is.
 fn bind_param(p: &mut ParamValue, name_to_slot: &HashMap<String, usize>) -> PolarsResult<()> {
     match p {
         ParamValue::Expr { col, .. } => {
@@ -1064,28 +1064,33 @@ fn bind_param(p: &mut ParamValue, name_to_slot: &HashMap<String, usize>) -> Pola
             *p = ParamValue::Slot { idx: *idx };
         }
         ParamValue::Literal { value } => {
-            if let Some(arr) = value.as_array_mut() {
-                for elem in arr.iter_mut() {
-                    // Only recurse into elements that are themselves serialized
-                    // ParamValues (a `type` tag of literal/expr/slot). Plain
-                    // literal arrays (mean/std floats, flip axes) are untouched.
-                    let is_param_value = elem
-                        .get("type")
-                        .and_then(|t| t.as_str())
-                        .is_some_and(|t| matches!(t, "literal" | "expr" | "slot"));
-                    if !is_param_value {
-                        continue;
-                    }
-                    let mut nested: ParamValue = serde_json::from_value(elem.clone())
-                        .map_err(|e| polars_err!(ComputeError: "invalid nested param: {e}"))?;
-                    bind_param(&mut nested, name_to_slot)?;
-                    *elem = serde_json::to_value(&nested).map_err(
-                        |e| polars_err!(ComputeError: "failed to rebind nested param: {e}"),
-                    )?;
+            // A nested param list serializes its elements as ParamValue dicts
+            // (a `type` tag). Detect that shape (not a plain scalar array) and
+            // hoist it into a pre-parsed, bound `List`.
+            let is_nested_param_list = value.as_array().is_some_and(|arr| {
+                arr.iter().any(|e| e.get("type").is_some())
+                    && arr.iter().all(|e| {
+                        e.get("type")
+                            .and_then(|t| t.as_str())
+                            .is_some_and(|t| matches!(t, "literal" | "expr" | "slot"))
+                    })
+            });
+            if is_nested_param_list {
+                let arr = value.as_array().expect("checked is_array above");
+                let mut items: Vec<ParamValue> = arr
+                    .iter()
+                    .map(|elem| {
+                        serde_json::from_value(elem.clone())
+                            .map_err(|e| polars_err!(ComputeError: "invalid nested param: {e}"))
+                    })
+                    .collect::<PolarsResult<_>>()?;
+                for item in items.iter_mut() {
+                    bind_param(item, name_to_slot)?;
                 }
+                *p = ParamValue::List(items);
             }
         }
-        ParamValue::Slot { .. } => {}
+        ParamValue::Slot { .. } | ParamValue::List(_) => {}
     }
     Ok(())
 }

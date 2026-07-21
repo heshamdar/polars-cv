@@ -43,20 +43,26 @@ pub enum ParamValue {
 
     /// A compile-time-bound reference to an input column by index.
     ///
-    /// Produced from `Expr` by graph compilation
+    /// Never serialized — produced from `Expr` by graph compilation
     /// (`graph::compiled::CompiledGraph`). The index points into the plugin's
     /// input series slice (source columns first, expression columns after).
-    ///
-    /// It is not part of the wire format the Python planner emits, but it *is*
-    /// serializable: nested param lists (e.g. a `warp_affine` matrix whose
-    /// elements are per-row expressions) are bound in place inside their
-    /// enclosing `Literal` JSON, so the bound `Slot` must round-trip through
-    /// serde when `as_param_list` re-materializes those elements at execution.
-    #[serde(rename = "slot")]
+    #[serde(skip)]
     Slot {
         /// Absolute index into the plugin input series.
         idx: usize,
     },
+
+    /// A pre-parsed, already-bound nested parameter list.
+    ///
+    /// Never serialized — produced by graph compilation from a `Literal` whose
+    /// JSON value is an array of `ParamValue` dicts (a `warp_affine` matrix, a
+    /// `reshape` shape). Parsing and slot-binding happen once at compile time so
+    /// per-row resolution reads the already-bound elements directly (via
+    /// [`ParamValue::as_param_slice`]) instead of re-deserializing the JSON every
+    /// row. The introspection path (`op_schema`) does not compile the graph and
+    /// keeps the `Literal` JSON form, so `as_param_list` handles both.
+    #[serde(skip)]
+    List(Vec<ParamValue>),
 }
 
 /// Whether a serialized `Literal` value hides a nested dynamic param.
@@ -89,6 +95,8 @@ impl ParamValue {
     pub fn is_literal(&self) -> bool {
         match self {
             ParamValue::Literal { value } => !json_has_dynamic_param(value),
+            // A compiled nested list is literal iff every element is.
+            ParamValue::List(items) => items.iter().all(ParamValue::is_literal),
             ParamValue::Expr { .. } | ParamValue::Slot { .. } => false,
         }
     }
@@ -101,6 +109,9 @@ impl ParamValue {
                 "Internal error: unbound expression parameter (col: {:?}); \
                  the graph must be compiled before execution",
                 col
+            )),
+            ParamValue::List(_) => Err(polars_err!(ComputeError:
+                "Internal error: a nested list parameter cannot be resolved as a scalar"
             )),
             ParamValue::Literal { .. } => {
                 unreachable!("slot_col called on literal")
@@ -157,15 +168,33 @@ impl ParamValue {
             ParamValue::Literal { value } => value.as_str().ok_or_else(
                 || polars_err!(ComputeError: "Expected string literal, got {:?}", value),
             ),
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } => {
+            ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => {
                 Err(polars_err!(ComputeError: "String parameters cannot be expressions"))
             }
         }
     }
 
-    /// Get literal value as a list of ParamValue (for reshape).
+    /// The already-bound elements of a compiled nested list, if this is one.
+    ///
+    /// The zero-copy fast path for per-row resolution: a `List` (produced once at
+    /// compile time) is iterated directly, no per-row JSON parse or allocation.
+    /// Returns `None` for the `Literal` JSON form (the introspection path), whose
+    /// caller falls back to [`ParamValue::as_param_list`].
+    pub fn as_param_slice(&self) -> Option<&[ParamValue]> {
+        match self {
+            ParamValue::List(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    /// Get value as an owned list of ParamValue (for reshape / warp_affine).
+    ///
+    /// Handles both the compiled `List` form and the `Literal` JSON-array form
+    /// (used by the un-compiled introspection path). Prefer [`as_param_slice`]
+    /// on the per-row hot path to avoid the allocation.
     pub fn as_param_list(&self) -> PolarsResult<Vec<ParamValue>> {
         match self {
+            ParamValue::List(items) => Ok(items.clone()),
             ParamValue::Literal { value } => {
                 let arr = value.as_array().ok_or_else(
                     || polars_err!(ComputeError: "Expected array literal, got {:?}", value),
@@ -208,7 +237,7 @@ impl ParamValue {
                     })
                     .collect()
             }
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } => {
+            ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => {
                 Err(polars_err!(ComputeError: "Axes parameters cannot be expressions"))
             }
         }
@@ -223,7 +252,7 @@ impl ParamValue {
                     .map(|v| v.as_f64().map(|f| f as f32))
                     .collect::<Option<Vec<f32>>>()
             }
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } => None,
+            ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => None,
         }
     }
 
@@ -234,7 +263,7 @@ impl ParamValue {
                 let arr = value.as_array()?;
                 arr.iter().map(|v| v.as_f64()).collect::<Option<Vec<f64>>>()
             }
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } => None,
+            ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => None,
         }
     }
 }
@@ -711,15 +740,32 @@ mod tests {
     }
 
     #[test]
-    fn test_slot_serializes_and_round_trips() {
-        // Slot is produced by compilation, but it must round-trip through serde:
-        // nested param lists (e.g. a warp_affine matrix with per-row exprs) are
-        // bound in place inside their enclosing Literal JSON, so a bound Slot has
-        // to serialize and deserialize back to the same Slot.
-        let param = ParamValue::Slot { idx: 3 };
-        let json = serde_json::to_string(&param).expect("Slot must serialize");
-        assert_eq!(json, r#"{"type":"slot","idx":3}"#);
-        let back: ParamValue = serde_json::from_str(&json).expect("Slot must deserialize");
-        assert!(matches!(back, ParamValue::Slot { idx: 3 }));
+    fn test_slot_and_list_are_not_serialized() {
+        // Slot and List are compile-time-only forms produced by graph
+        // compilation; they never appear in the wire format and must not
+        // serialize into something that round-trips as a resolvable param.
+        assert!(serde_json::to_string(&ParamValue::Slot { idx: 3 }).is_err());
+        assert!(serde_json::to_string(&ParamValue::List(vec![])).is_err());
+    }
+
+    #[test]
+    fn test_param_list_slice_and_owned() {
+        // A compiled List is borrowed via as_param_slice (hot path) and cloned
+        // via as_param_list; the Literal JSON form has no slice but parses.
+        let list = ParamValue::List(vec![
+            ParamValue::Literal {
+                value: serde_json::json!(1.0),
+            },
+            ParamValue::Slot { idx: 2 },
+        ]);
+        assert_eq!(list.as_param_slice().map(|s| s.len()), Some(2));
+        assert_eq!(list.as_param_list().unwrap().len(), 2);
+        assert!(!list.is_literal()); // contains a Slot
+
+        let json_form = ParamValue::Literal {
+            value: serde_json::json!([{"type": "literal", "value": 1.0}]),
+        };
+        assert!(json_form.as_param_slice().is_none());
+        assert_eq!(json_form.as_param_list().unwrap().len(), 1);
     }
 }

@@ -1355,9 +1355,20 @@ class Pipeline:
             msg = "mean/std parameters are only valid for method='preset'"
             raise ValueError(msg)
 
-        # Add out_dtype if specified
+        # Add out_dtype if specified. Normalization computes in f32 and casts the
+        # result to this dtype at execution (so plan == production). "preserve" is
+        # not meaningful here — normalization inherently produces floats and has
+        # no input dtype to preserve — so reject it explicitly rather than let it
+        # fail opaquely at plan build (parse_dtype has no "preserve").
         if out_dtype is not None:
             out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
+            if out_dtype_enum == OutputDType.PRESERVE:
+                msg = (
+                    "normalize does not support out_dtype='preserve' (normalization "
+                    "produces floats and has no input dtype to preserve); use "
+                    "'f32', 'f64', or 'u8'."
+                )
+                raise ValueError(msg)
             params["out_dtype"] = ParamValue(is_expr=False, value=out_dtype_enum.value)
 
         new._ops.append(OpSpec(op="normalize", params=params))
