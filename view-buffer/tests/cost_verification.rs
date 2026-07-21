@@ -76,7 +76,7 @@ fn test_compute_ops_declare_allocating() {
         ComputeOp::Cast(DType::F32),
         ComputeOp::Scale(2.0),
         ComputeOp::Relu,
-        ComputeOp::Normalize(NormalizeMethod::MinMax),
+        ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32),
         ComputeOp::Clamp { min: 0.0, max: 1.0 },
     ];
 
@@ -195,7 +195,10 @@ fn test_normalize_preserves_dtype() {
     assert_eq!(original.dtype(), DType::F32);
 
     let expr = ViewExpr::new_source(original);
-    let normalized = expr.normalize(NormalizeMethod::MinMax).plan().execute();
+    let normalized = expr
+        .normalize(NormalizeMethod::MinMax, DType::F32)
+        .plan()
+        .execute();
     assert_eq!(
         normalized.dtype(),
         DType::F32,
@@ -218,7 +221,7 @@ fn test_cast_changes_dtype() {
 #[test]
 fn test_normalize_validation_accepts_2d() {
     let buf_2d = make_2d_buffer(); // [10, 10] F32
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
+    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
     let result = op.validate(&[buf_2d.shape()], &[buf_2d.dtype()]);
     assert!(result.is_ok(), "Normalize should accept 2D F32 buffer");
 }
@@ -233,7 +236,7 @@ fn test_normalize_validation_accepts_hw1() {
         .plan()
         .execute();
 
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
+    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
     let result = op.validate(&[buf_hw1.shape()], &[buf_hw1.dtype()]);
     assert!(result.is_ok(), "Normalize should accept HW1 F32 buffer");
 }
@@ -248,7 +251,7 @@ fn test_normalize_validation_rejects_hwc() {
         .plan()
         .execute();
 
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
+    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
     let result = op.validate(&[buf_hwc.shape()], &[buf_hwc.dtype()]);
     assert!(
         result.is_err(),
@@ -260,7 +263,7 @@ fn test_normalize_validation_rejects_hwc() {
 fn test_normalize_validation_accepts_all_numeric_types() {
     // With the dtype promotion system, normalize now accepts all numeric types
     // and handles casting internally. This test verifies that behavior.
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
+    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
 
     // Test that all numeric types are accepted
     let numeric_dtypes = [

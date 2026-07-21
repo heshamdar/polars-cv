@@ -65,7 +65,13 @@ pub enum ComputeOp {
     /// Apply a fused kernel of scalar operations.
     Fused(FusedKernel),
     /// Normalize data - requires full buffer scan. Only supports 2D-like shapes (HW or HW1).
-    Normalize(NormalizeMethod),
+    ///
+    /// Computation always happens in f32; the second field is the configured
+    /// output dtype (the `Configurable(F32)` rule's resolved target). Execution
+    /// casts the f32 result to it so the produced dtype matches the planner's
+    /// `output_dtype_rule().resolve(input, out_dtype)` — see the dtype-contract
+    /// tests. Defaults to `F32` when no `out_dtype` is requested.
+    Normalize(NormalizeMethod, DType),
     /// Clamp values to [min, max] range.
     Clamp { min: f32, max: f32 },
     /// Adjust contrast: `(pixel - mean) * factor + mean`.
@@ -94,7 +100,7 @@ impl Op for ComputeOp {
             ComputeOp::Scale(_) => "Scale",
             ComputeOp::Relu => "Relu",
             ComputeOp::Fused(_) => "Fused",
-            ComputeOp::Normalize(_) => "Normalize",
+            ComputeOp::Normalize(..) => "Normalize",
             ComputeOp::Clamp { .. } => "Clamp",
             ComputeOp::AdjustContrast(_) => "AdjustContrast",
             ComputeOp::AdjustGamma(_) => "AdjustGamma",
@@ -140,7 +146,9 @@ impl Op for ComputeOp {
     fn infer_dtype(&self, inputs: &[DType]) -> DType {
         match self {
             ComputeOp::Cast(target) => *target,
-            ComputeOp::Normalize(_) => self.output_dtype_rule().resolve(inputs[0], None),
+            // The configured out_dtype is the resolved `Configurable(F32)`
+            // target; execution casts the f32 result to it (see apply_normalize).
+            ComputeOp::Normalize(_, out_dtype) => *out_dtype,
             ComputeOp::Scale(_) => self.output_dtype_rule().resolve(inputs[0], None),
             ComputeOp::Relu => self.output_dtype_rule().resolve(inputs[0], None),
             ComputeOp::Clamp { .. } => self.output_dtype_rule().resolve(inputs[0], None),
@@ -167,7 +175,7 @@ impl Op for ComputeOp {
             ComputeOp::Invert => MemoryEffect::StridePreserving,
             ComputeOp::Affine(_) => MemoryEffect::RequiresContiguous,
             ComputeOp::RotateAffine { .. } => MemoryEffect::RequiresContiguous,
-            ComputeOp::Normalize(_) => MemoryEffect::RequiresContiguous,
+            ComputeOp::Normalize(..) => MemoryEffect::RequiresContiguous,
             ComputeOp::AdjustContrast(_) => MemoryEffect::RequiresContiguous,
         }
     }
@@ -204,7 +212,7 @@ impl Op for ComputeOp {
         input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
         match self {
-            ComputeOp::Normalize(method) => {
+            ComputeOp::Normalize(method, _) => {
                 let shape = input_shapes[0];
 
                 match method {
@@ -247,7 +255,7 @@ impl Op for ComputeOp {
 
     fn accepted_input_dtypes(&self) -> DTypeCategory {
         match self {
-            ComputeOp::Normalize(_)
+            ComputeOp::Normalize(..)
             | ComputeOp::Scale(_)
             | ComputeOp::Clamp { .. }
             | ComputeOp::Relu
@@ -263,7 +271,7 @@ impl Op for ComputeOp {
 
     fn working_dtype(&self) -> Option<DType> {
         match self {
-            ComputeOp::Normalize(_) => Some(DType::F32),
+            ComputeOp::Normalize(..) => Some(DType::F32),
             ComputeOp::Scale(_) => Some(DType::F32),
             ComputeOp::Clamp { .. } => Some(DType::F32),
             ComputeOp::Relu => Some(DType::F32),
@@ -276,7 +284,7 @@ impl Op for ComputeOp {
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self {
-            ComputeOp::Normalize(_) => OutputDTypeRule::Configurable(DType::F32),
+            ComputeOp::Normalize(..) => OutputDTypeRule::Configurable(DType::F32),
             ComputeOp::Scale(_) => OutputDTypeRule::PromoteToFloat,
             ComputeOp::Clamp { .. } => OutputDTypeRule::PromoteToFloat,
             ComputeOp::Relu => OutputDTypeRule::PromoteToFloat,

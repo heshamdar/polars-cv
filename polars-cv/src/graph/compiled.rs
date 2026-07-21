@@ -1044,17 +1044,48 @@ fn bind_graph_params(
 }
 
 /// Rewrite one `Expr` param to its bound `Slot` form (literals untouched).
+///
+/// Recurses into nested param *lists*: a `Literal` whose JSON value is an array
+/// of serialized `ParamValue`s (a `warp_affine` matrix, a `reshape` shape) may
+/// itself contain per-row expressions. Those are bound in place — the bound
+/// `Slot` round-trips through serde back into the enclosing JSON so
+/// `as_param_list` re-materializes them as slots, not unbound expressions.
 fn bind_param(p: &mut ParamValue, name_to_slot: &HashMap<String, usize>) -> PolarsResult<()> {
-    if let ParamValue::Expr { col, .. } = p {
-        let name = col
-            .as_deref()
-            .ok_or_else(|| polars_err!(ComputeError: "Expression parameter missing column name"))?;
-        let idx = name_to_slot.get(name).ok_or_else(|| {
-            polars_err!(ComputeError:
-                "Column '{}' not found in expression inputs", name
-            )
-        })?;
-        *p = ParamValue::Slot { idx: *idx };
+    match p {
+        ParamValue::Expr { col, .. } => {
+            let name = col.as_deref().ok_or_else(
+                || polars_err!(ComputeError: "Expression parameter missing column name"),
+            )?;
+            let idx = name_to_slot.get(name).ok_or_else(|| {
+                polars_err!(ComputeError:
+                    "Column '{}' not found in expression inputs", name
+                )
+            })?;
+            *p = ParamValue::Slot { idx: *idx };
+        }
+        ParamValue::Literal { value } => {
+            if let Some(arr) = value.as_array_mut() {
+                for elem in arr.iter_mut() {
+                    // Only recurse into elements that are themselves serialized
+                    // ParamValues (a `type` tag of literal/expr/slot). Plain
+                    // literal arrays (mean/std floats, flip axes) are untouched.
+                    let is_param_value = elem
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .is_some_and(|t| matches!(t, "literal" | "expr" | "slot"));
+                    if !is_param_value {
+                        continue;
+                    }
+                    let mut nested: ParamValue = serde_json::from_value(elem.clone())
+                        .map_err(|e| polars_err!(ComputeError: "invalid nested param: {e}"))?;
+                    bind_param(&mut nested, name_to_slot)?;
+                    *elem = serde_json::to_value(&nested).map_err(
+                        |e| polars_err!(ComputeError: "failed to rebind nested param: {e}"),
+                    )?;
+                }
+            }
+        }
+        ParamValue::Slot { .. } => {}
     }
     Ok(())
 }

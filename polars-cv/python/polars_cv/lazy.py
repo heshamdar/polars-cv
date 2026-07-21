@@ -63,6 +63,33 @@ def _require_concrete_sink_dtype(
     raise ValueError(msg)
 
 
+def _validate_sink_dtype(fmt: str, kwargs: dict[str, Any]) -> None:
+    """Validate the optional ``dtype`` kwarg on a ``numpy``/``torch`` sink.
+
+    Only ``"f16"`` is accepted: the engine has no native f16 dtype, so f16 is
+    produced purely as an encode-time downcast at the sink boundary (halving the
+    output-tensor bytes / H2D transfer). Every other output dtype is expressible
+    with a pipeline ``.cast()``, which runs through the real cast op so the
+    planned and produced dtypes stay identical — the sink dtype deliberately does
+    *not* duplicate that path.
+    """
+    dtype = kwargs.get("dtype")
+    if dtype is None:
+        return
+    if fmt not in ("numpy", "torch"):
+        msg = (
+            f"sink dtype is only supported for 'numpy'/'torch' sinks, got '{fmt}'. "
+            "For other sinks, cast inside the pipeline with .cast(...)."
+        )
+        raise ValueError(msg)
+    if dtype not in ("f16", "float16"):
+        msg = (
+            f"numpy/torch sink dtype only supports 'f16' (got '{dtype}'). "
+            "Use .cast(...) in the pipeline for other output dtypes."
+        )
+        raise ValueError(msg)
+
+
 class LazyPipelineExpr:
     """
     Lazy pipeline expression for composed operations.
@@ -236,7 +263,12 @@ class LazyPipelineExpr:
             format: Output format string (e.g., "numpy", "png") or a dict
                     mapping aliases to formats for multi-output.
             return_expr: If True (default), return a pl.Expr. If False, return the PipelineGraph.
-            kwargs: Parameters for the sink (e.g., quality for jpeg).
+            kwargs: Parameters for the sink. ``quality`` for jpeg/webp;
+                    ``shape`` for the array sink; ``dtype="f16"`` for the
+                    numpy/torch sink to downcast the output tensor to half
+                    precision at the encode boundary (halving the tensor bytes
+                    and H2D transfer). ``dtype`` only accepts ``"f16"`` — cast
+                    inside the pipeline for other dtypes.
 
         Returns:
             A Polars expression (or PipelineGraph if return_expr=False).
@@ -266,6 +298,9 @@ class LazyPipelineExpr:
             # Validate array sinks in multi-output
 
             for alias, fmt_str in format.items():
+                # A sink dtype (f16) in multi-output applies to the shared kwargs;
+                # validate it against each alias's format.
+                _validate_sink_dtype(fmt_str, kwargs)
                 # Typed list/array sinks must know their element dtype at plan time.
                 node = self._find_node_by_alias(alias, all_nodes)
                 if node is not None:
@@ -295,6 +330,7 @@ class LazyPipelineExpr:
             graph.set_multi_output(format, **kwargs)
         else:
             # Single output mode
+            _validate_sink_dtype(format, kwargs)
             # Typed list/array sinks must know their element dtype at plan time.
             _require_concrete_sink_dtype(self._pipeline, format)
 

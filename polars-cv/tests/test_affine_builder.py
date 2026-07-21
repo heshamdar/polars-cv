@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from polars_cv import Pipeline
+from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
     pass
@@ -50,7 +51,16 @@ class TestWarpAffinePipelineBuilder:
             )
         )
         op = pipe._ops[0]
-        assert op.params["matrix"].value == [1.0, 0.0, 50.0, 0.0, 1.0, 30.0]
+        # Each matrix element is tracked as its own ParamValue dict so it can be
+        # a per-row expression; literal floats round-trip through the value key.
+        assert [m["value"] for m in op.params["matrix"].value] == [
+            1.0,
+            0.0,
+            50.0,
+            0.0,
+            1.0,
+            30.0,
+        ]
         assert op.params["output_height"].value == 224
         assert op.params["output_width"].value == 224
 
@@ -168,7 +178,7 @@ class TestShearPipelineBuilder:
         assert len(pipe._ops) == 1
         assert pipe._ops[0].op == "warp_affine"
         matrix = pipe._ops[0].params["matrix"].value
-        assert matrix == [1.0, 0.2, 0.0, 0.0, 1.0, 0.0]
+        assert [m["value"] for m in matrix] == [1.0, 0.2, 0.0, 0.0, 1.0, 0.0]
 
     def test_shear_requires_output_size(self) -> None:
         """Shear requires output_size."""
@@ -183,7 +193,7 @@ class TestShearPipelineBuilder:
             .source("image_bytes")
             .shear(sx=0.3, sy=0.1, output_size=(200, 200))
         )
-        matrix = pipe._ops[0].params["matrix"].value
+        matrix = [m["value"] for m in pipe._ops[0].params["matrix"].value]
         assert matrix == [1.0, 0.3, 0.0, 0.1, 1.0, 0.0]
 
     def test_shear_domain_validation(self) -> None:
@@ -237,7 +247,7 @@ class TestRotateAndScalePipelineBuilder:
                 output_size=(100, 100),
             )
         )
-        matrix = pipe._ops[0].params["matrix"].value
+        matrix = [m["value"] for m in pipe._ops[0].params["matrix"].value]
         rad = math.radians(90.0)
         cos_a = math.cos(rad) * 1.0
         sin_a = math.sin(rad) * 1.0
@@ -260,7 +270,7 @@ class TestRotateAndScalePipelineBuilder:
                 output_size=(200, 200),
             )
         )
-        matrix = pipe._ops[0].params["matrix"].value
+        matrix = [m["value"] for m in pipe._ops[0].params["matrix"].value]
         # At angle=0 and scale=2: matrix should be [2, 0, -50, 0, 2, -50]
         assert abs(matrix[0] - 2.0) < 1e-10
         assert abs(matrix[4] - 2.0) < 1e-10
@@ -291,8 +301,9 @@ class TestAffineFusion:
         assert len(spec["ops"]) == 1
         fused = spec["ops"][0]
         assert fused["op"] == "warp_affine"
-        # OpSpec.to_dict() serializes params at top-level
-        fused_matrix = fused["matrix"]["value"]
+        # OpSpec.to_dict() serializes params at top-level; matrix elements are
+        # per-element ParamValue dicts.
+        fused_matrix = [m["value"] for m in fused["matrix"]["value"]]
         assert abs(fused_matrix[2] - 40.0) < 1e-10
         assert abs(fused_matrix[5] - 60.0) < 1e-10
 
@@ -420,7 +431,9 @@ class TestAffineFusionPositionalShape:
         fused = spec["ops"][1]
         expected_matrix, _, _ = _expected_rotate_affine(45, ih=100, iw=100)
         expected = _compose(expected_matrix, IDENTITY)
-        for got, want in zip(fused["matrix"]["value"], expected):
+        for got, want in zip(
+            [m["value"] for m in fused["matrix"]["value"]], expected
+        ):
             assert abs(got - want) < 1e-9
         # Output dims come from the LAST op in the fused run
         assert fused["output_height"]["value"] == 50
@@ -440,7 +453,9 @@ class TestAffineFusionPositionalShape:
         fused = spec["ops"][1]
         expected_matrix, _, _ = _expected_rotate_affine(45, ih=100, iw=100, expand=True)
         expected = _compose(expected_matrix, IDENTITY)
-        for got, want in zip(fused["matrix"]["value"], expected):
+        for got, want in zip(
+            [m["value"] for m in fused["matrix"]["value"]], expected
+        ):
             assert abs(got - want) < 1e-9
         assert fused["output_height"]["value"] == 200
         assert fused["output_width"]["value"] == 200
@@ -460,7 +475,9 @@ class TestAffineFusionPositionalShape:
         m1, _, _ = _expected_rotate_affine(30, ih=100, iw=100)
         m2, _, _ = _expected_rotate_affine(15, ih=100, iw=100)
         expected = _compose(m1, m2)
-        for got, want in zip(fused["matrix"]["value"], expected):
+        for got, want in zip(
+            [m["value"] for m in fused["matrix"]["value"]], expected
+        ):
             assert abs(got - want) < 1e-9
 
     def test_mid_chain_assert_shape_feeds_conversion(self) -> None:
@@ -477,7 +494,9 @@ class TestAffineFusionPositionalShape:
         fused = spec["ops"][0]
         expected_matrix, _, _ = _expected_rotate_affine(45, ih=80, iw=60)
         expected = _compose(expected_matrix, IDENTITY)
-        for got, want in zip(fused["matrix"]["value"], expected):
+        for got, want in zip(
+            [m["value"] for m in fused["matrix"]["value"]], expected
+        ):
             assert abs(got - want) < 1e-9
 
     def test_lone_rotate_is_not_converted(self) -> None:
@@ -571,3 +590,106 @@ class TestRotateShapeHintTracking:
         assert pipe._shape_hints.height.value == 100
         assert pipe._shape_hints.width is not None
         assert pipe._shape_hints.width.value == 100
+
+
+class TestPerRowAffineParams:
+    """Per-row expression params on warp_affine and shear (builder-level).
+
+    Enables per-sample random affine/shear in a single batched call.
+    """
+
+    def test_warp_affine_accepts_expr_matrix_elements(self) -> None:
+        import polars as pl
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .warp_affine(
+                matrix=[
+                    pl.col("a"),
+                    pl.col("b"),
+                    pl.col("tx"),
+                    pl.col("c"),
+                    pl.col("d"),
+                    pl.col("ty"),
+                ],
+                output_size=(64, 64),
+            )
+        )
+        assert pipe._ops[-1].op == "warp_affine"
+        # Matrix is serialized as a list of 6 per-element ParamValue dicts.
+        matrix_param = pipe._ops[-1].params["matrix"]
+        assert isinstance(matrix_param.value, list)
+        assert len(matrix_param.value) == 6
+
+    def test_warp_affine_mixed_literal_and_expr_matrix(self) -> None:
+        import polars as pl
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .warp_affine(
+                matrix=[1.0, pl.col("b"), 0.0, 0.0, 1.0, pl.col("ty")],
+                output_size=(64, 64),
+            )
+        )
+        assert len(pipe._ops[-1].params["matrix"].value) == 6
+
+    def test_warp_affine_still_rejects_wrong_length(self) -> None:
+        import polars as pl
+
+        pipe = Pipeline().source("image_bytes")
+        with pytest.raises(ValueError, match="6 elements"):
+            pipe.warp_affine(matrix=[pl.col("a"), 1.0], output_size=(10, 10))
+
+    def test_shear_accepts_expr_factors(self) -> None:
+        import polars as pl
+
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .shear(sx=pl.col("shear_x"), output_size=(64, 64))
+        )
+        # shear delegates to warp_affine; the matrix carries the expr element.
+        assert pipe._ops[-1].op == "warp_affine"
+        assert len(pipe._ops[-1].params["matrix"].value) == 6
+
+
+@plugin_required
+class TestPerRowAffineExecution:
+    """Per-row affine matrix resolves to a different transform per row."""
+
+    def test_per_row_translation_differs(self) -> None:
+        import numpy as np
+        import polars as pl
+
+        from polars_cv import numpy_from_struct
+
+        # A [4, 4, 1] gradient buffer, two identical rows but different tx.
+        img = [[[float(r * 4 + c)] for c in range(4)] for r in range(4)]
+        df = pl.DataFrame(
+            {
+                "x": [img, img],
+                "tx": [0.0, 2.0],
+            },
+            schema={
+                "x": pl.List(pl.List(pl.List(pl.Float64))),
+                "tx": pl.Float64,
+            },
+        )
+        pipe = (
+            Pipeline()
+            .source("list", dtype="f32")
+            .warp_affine(
+                matrix=[1.0, 0.0, pl.col("tx"), 0.0, 1.0, 0.0],
+                output_size=(4, 4),
+                interpolation="nearest",
+            )
+        )
+        out = df.lazy().with_columns(
+            out=pl.col("x").cv.pipe(pipe).sink("numpy")
+        ).collect()
+        a = numpy_from_struct(out["out"][0])
+        b = numpy_from_struct(out["out"][1])
+        # Different per-row tx => different outputs (a horizontal shift).
+        assert not np.array_equal(a, b)

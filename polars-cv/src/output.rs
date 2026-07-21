@@ -108,6 +108,40 @@ impl NumpyRowOutput {
             offset: offset as u64,
         }
     }
+
+    /// Create a half-precision (`float16`) row by downcasting from float.
+    ///
+    /// The engine has no native f16 dtype, so this is the encode-time downcast
+    /// backing `.sink("numpy"|"torch", dtype="f16")`: the buffer is cast to a
+    /// contiguous f32 and each element converted to IEEE-754 half. The result is
+    /// C-contiguous (offset 0, 2-byte strides), halving the output-tensor bytes
+    /// and H2D transfer. `numpy_from_struct` already understands `"float16"`.
+    pub fn from_buffer_f16(buffer: ViewBuffer) -> Self {
+        let f32_buf = buffer.cast(VbDType::F32).to_contiguous();
+        let dims: Vec<usize> = f32_buf.shape().to_vec();
+        let f32_slice = f32_buf.as_slice::<f32>();
+
+        let mut bytes: Vec<u8> = Vec::with_capacity(f32_slice.len() * 2);
+        for &v in f32_slice {
+            bytes.extend_from_slice(&half::f16::from_f32(v).to_le_bytes());
+        }
+
+        // Row-major contiguous byte strides for 2-byte (f16) elements.
+        let mut strides = vec![0i64; dims.len()];
+        let mut acc: i64 = 2;
+        for i in (0..dims.len()).rev() {
+            strides[i] = acc;
+            acc *= dims[i] as i64;
+        }
+
+        Self {
+            data: polars_buffer::Buffer::from(bytes),
+            dtype: "float16",
+            shape: dims.into_iter().map(|d| d as u64).collect(),
+            strides,
+            offset: 0,
+        }
+    }
 }
 
 /// Build a numpy output Series from multiple rows.
@@ -121,13 +155,30 @@ impl NumpyRowOutput {
 ///
 /// # Returns
 /// A Series with dtype Struct{data: Binary, dtype: String, shape: List[UInt64], strides: List[Int64], offset: UInt64}
-pub fn build_numpy_series(name: PlSmallStr, rows: Vec<Option<ViewBuffer>>) -> PolarsResult<Series> {
+pub fn build_numpy_series(
+    name: PlSmallStr,
+    rows: Vec<Option<ViewBuffer>>,
+    out_dtype: Option<&str>,
+) -> PolarsResult<Series> {
     let len = rows.len();
+
+    // `out_dtype == "f16"` requests a half-precision downcast at the encode
+    // boundary (the engine has no native f16 dtype). Any other value is a bug —
+    // the Python sink guard only forwards "f16" — so treat it as native.
+    let as_f16 = matches!(out_dtype, Some("f16") | Some("float16"));
 
     // Convert each row to NumpyRowOutput
     let encoded: Vec<Option<NumpyRowOutput>> = rows
         .into_iter()
-        .map(|opt| opt.map(NumpyRowOutput::from_buffer))
+        .map(|opt| {
+            opt.map(|b| {
+                if as_f16 {
+                    NumpyRowOutput::from_buffer_f16(b)
+                } else {
+                    NumpyRowOutput::from_buffer(b)
+                }
+            })
+        })
         .collect();
 
     // Build all five columns
@@ -448,6 +499,29 @@ mod tests {
     }
 
     #[test]
+    fn test_numpy_row_output_f16_downcast() {
+        // A float buffer downcast to f16: 2 bytes/element, "float16", contiguous.
+        let buffer = ViewBuffer::from_vec(vec![0.0f32, 1.0, 2.0, 3.0]).reshape(vec![2, 2]);
+
+        let output = NumpyRowOutput::from_buffer_f16(buffer);
+
+        assert_eq!(output.dtype, "float16");
+        assert_eq!(output.shape, vec![2, 2]);
+        assert_eq!(output.offset, 0);
+        // 4 elements * 2 bytes.
+        assert_eq!(output.data.len(), 8);
+        // Row-major f16 strides: [row=2*2 bytes, col=2 bytes].
+        assert_eq!(output.strides, vec![4, 2]);
+        // First element round-trips through half.
+        let first =
+            half::f16::from_le_bytes([output.data.as_slice()[0], output.data.as_slice()[1]]);
+        assert_eq!(first.to_f32(), 0.0);
+        let second =
+            half::f16::from_le_bytes([output.data.as_slice()[2], output.data.as_slice()[3]]);
+        assert_eq!(second.to_f32(), 1.0);
+    }
+
+    #[test]
     fn test_build_numpy_series_with_data() {
         let buf1 = ViewBuffer::from_vec(vec![1u8, 2, 3, 4]).reshape(vec![2, 2]);
         let buf2 = ViewBuffer::from_vec(vec![5u8, 6, 7, 8, 9, 10]).reshape(vec![2, 3]);
@@ -455,6 +529,7 @@ mod tests {
         let series = build_numpy_series(
             PlSmallStr::from_static("output"),
             vec![Some(buf1), None, Some(buf2)],
+            None,
         )
         .unwrap();
 

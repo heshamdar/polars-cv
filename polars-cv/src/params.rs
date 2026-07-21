@@ -43,21 +43,54 @@ pub enum ParamValue {
 
     /// A compile-time-bound reference to an input column by index.
     ///
-    /// Never serialized — produced from `Expr` by graph compilation
+    /// Produced from `Expr` by graph compilation
     /// (`graph::compiled::CompiledGraph`). The index points into the plugin's
     /// input series slice (source columns first, expression columns after).
-    #[serde(skip)]
+    ///
+    /// It is not part of the wire format the Python planner emits, but it *is*
+    /// serializable: nested param lists (e.g. a `warp_affine` matrix whose
+    /// elements are per-row expressions) are bound in place inside their
+    /// enclosing `Literal` JSON, so the bound `Slot` must round-trip through
+    /// serde when `as_param_list` re-materializes those elements at execution.
+    #[serde(rename = "slot")]
     Slot {
         /// Absolute index into the plugin input series.
         idx: usize,
     },
 }
 
+/// Whether a serialized `Literal` value hides a nested dynamic param.
+///
+/// Nested param lists serialize their elements as `ParamValue` dicts
+/// (`{"type": "literal"|"expr"|"slot", ...}`). A top-level literal array (mean/std
+/// floats, flip axes) has plain scalar elements and is never dynamic; an array of
+/// param dicts is dynamic if any element is an `expr`/`slot` (recursively).
+fn json_has_dynamic_param(value: &serde_json::Value) -> bool {
+    let Some(arr) = value.as_array() else {
+        return false;
+    };
+    arr.iter()
+        .any(|elem| match elem.get("type").and_then(|t| t.as_str()) {
+            Some("expr") | Some("slot") => true,
+            Some("literal") => elem.get("value").is_some_and(json_has_dynamic_param),
+            _ => false,
+        })
+}
+
 impl ParamValue {
-    /// Check if this is a literal value.
-    /// Used for optimization when all parameters are known at planning time.
+    /// Check if this parameter is fully literal (statically resolvable).
+    ///
+    /// Used to decide whether an op can be resolved once at compile time with an
+    /// empty context. A top-level `Literal` is *not* fully literal if it wraps a
+    /// nested param list (a `warp_affine` matrix, a `reshape` shape) whose
+    /// elements include a per-row expression / bound slot — such an op must
+    /// re-resolve per row, so misclassifying it as static would resolve a slot
+    /// against the empty compile-time context.
     pub fn is_literal(&self) -> bool {
-        matches!(self, ParamValue::Literal { .. })
+        match self {
+            ParamValue::Literal { value } => !json_has_dynamic_param(value),
+            ParamValue::Expr { .. } | ParamValue::Slot { .. } => false,
+        }
     }
 
     /// Look up this param's bound column in the context.
@@ -556,6 +589,52 @@ mod tests {
     }
 
     #[test]
+    fn nested_param_list_all_literal_is_literal() {
+        // A warp_affine-style matrix of literal elements is fully literal.
+        let param = ParamValue::Literal {
+            value: serde_json::json!([
+                {"type": "literal", "value": 1.0},
+                {"type": "literal", "value": 0.0},
+            ]),
+        };
+        assert!(param.is_literal());
+    }
+
+    #[test]
+    fn nested_param_list_with_expr_is_dynamic() {
+        // A per-row (expr) element must make the whole param non-literal, so the
+        // op is not statically resolved against the empty compile-time context.
+        let param = ParamValue::Literal {
+            value: serde_json::json!([
+                {"type": "literal", "value": 1.0},
+                {"type": "expr", "col": "tx"},
+            ]),
+        };
+        assert!(!param.is_literal());
+    }
+
+    #[test]
+    fn nested_param_list_with_slot_is_dynamic() {
+        // After binding, the dynamic element is a Slot; still non-literal.
+        let param = ParamValue::Literal {
+            value: serde_json::json!([
+                {"type": "literal", "value": 1.0},
+                {"type": "slot", "idx": 1},
+            ]),
+        };
+        assert!(!param.is_literal());
+    }
+
+    #[test]
+    fn plain_literal_array_is_literal() {
+        // A normalize mean/std or flip-axes array of plain scalars is literal.
+        let param = ParamValue::Literal {
+            value: serde_json::json!([0.485, 0.456, 0.406]),
+        };
+        assert!(param.is_literal());
+    }
+
+    #[test]
     fn test_literal_f64() {
         let param = ParamValue::Literal {
             value: serde_json::json!(1.5),
@@ -632,10 +711,15 @@ mod tests {
     }
 
     #[test]
-    fn test_slot_is_not_serialized() {
-        // Slot is a compile-time-only form; serializing it must not produce
-        // something that round-trips as a resolvable param.
+    fn test_slot_serializes_and_round_trips() {
+        // Slot is produced by compilation, but it must round-trip through serde:
+        // nested param lists (e.g. a warp_affine matrix with per-row exprs) are
+        // bound in place inside their enclosing Literal JSON, so a bound Slot has
+        // to serialize and deserialize back to the same Slot.
         let param = ParamValue::Slot { idx: 3 };
-        assert!(serde_json::to_string(&param).is_err());
+        let json = serde_json::to_string(&param).expect("Slot must serialize");
+        assert_eq!(json, r#"{"type":"slot","idx":3}"#);
+        let back: ParamValue = serde_json::from_str(&json).expect("Slot must deserialize");
+        assert!(matches!(back, ParamValue::Slot { idx: 3 }));
     }
 }

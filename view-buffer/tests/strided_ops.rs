@@ -166,7 +166,7 @@ fn test_normalize_on_transposed_buffer() {
 
     // Normalize should work on transposed buffer via ndarray
     let normalized = ViewExpr::new_source(transposed)
-        .normalize(NormalizeMethod::MinMax)
+        .normalize(NormalizeMethod::MinMax, view_buffer::DType::F32)
         .plan()
         .execute();
 
@@ -188,7 +188,7 @@ fn test_normalize_on_flipped_buffer() {
     assert_zero_copy(&buf, &flipped);
 
     let normalized = ViewExpr::new_source(flipped)
-        .normalize(NormalizeMethod::ZScore)
+        .normalize(NormalizeMethod::ZScore, view_buffer::DType::F32)
         .plan()
         .execute();
 

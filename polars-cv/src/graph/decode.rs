@@ -792,7 +792,7 @@ pub(crate) fn build_series_from_spec(
                     _ => None,
                 })
                 .collect();
-            crate::output::build_numpy_series(name, buffers)
+            crate::output::build_numpy_series(name, buffers, spec.sink.out_dtype.as_deref())
         }
         ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") | (_, "binary") => {
             // Register each row's already-materialised bytes as a BinaryView
