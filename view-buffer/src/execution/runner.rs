@@ -140,7 +140,7 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
                 buf.apply_fused_kernel(kernel)
             }
         }
-        ComputeOp::Normalize(ref method) => apply_normalize(&buf, method),
+        ComputeOp::Normalize(ref method, out_dtype) => apply_normalize(&buf, method, out_dtype),
         ComputeOp::Clamp { min, max } => apply_scalar_owned_with(
             buf,
             move |x: f32| x.clamp(min, max),
@@ -149,6 +149,27 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
         ComputeOp::AdjustContrast(factor) => apply_adjust_contrast(&buf, factor),
         ComputeOp::AdjustGamma(gamma) => apply_adjust_gamma(&buf, gamma),
         ComputeOp::Invert => apply_invert(&buf),
+    }
+}
+
+/// Apply normalization and cast the f32 result to the configured output dtype.
+///
+/// Normalization always computes in f32 (see [`apply_normalize_f32`]); the
+/// `out_dtype` is the target the planner resolved from the `Configurable(F32)`
+/// rule. Casting here is what keeps the produced dtype equal to the planned
+/// dtype — without it the planner could declare, say, `u8` while execution
+/// emitted `f32` (a plan/execution contract violation guarded by the
+/// dtype-contract tests).
+fn apply_normalize(
+    buf: &ViewBuffer,
+    method: &crate::ops::NormalizeMethod,
+    out_dtype: DType,
+) -> ViewBuffer {
+    let normalized = apply_normalize_f32(buf, method);
+    if out_dtype == DType::F32 {
+        normalized
+    } else {
+        normalized.cast(out_dtype)
     }
 }
 
@@ -161,7 +182,7 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
 /// - **Constant array (min == max)**: Returns 0.0 for all elements (MinMax) or 0.0 (ZScore)
 /// - **NaN values**: Propagated according to IEEE 754 semantics
 /// - **Inf values**: Handled naturally by min/max/mean calculations
-fn apply_normalize(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> ViewBuffer {
+fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> ViewBuffer {
     use crate::ops::NormalizeMethod;
 
     // Cast to f32 working dtype if needed (dtype promotion)

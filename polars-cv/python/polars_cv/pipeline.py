@@ -66,6 +66,37 @@ def _rotation_matrix(
     return [cos_a, -sin_a, tx, sin_a, cos_a, ty]
 
 
+def _matrix_param_from_floats(values: "list[float]") -> "ParamValue":
+    """Build a ``warp_affine`` ``matrix`` param from six literal floats.
+
+    Matrix elements are serialized as individual ``ParamValue`` dicts so any of
+    them may be a per-row expression; a fully-literal matrix (fusion output,
+    converted-rotate matrix) still goes through the same per-element shape.
+    """
+    return ParamValue(
+        is_expr=False,
+        value=[{"type": "literal", "value": float(v)} for v in values],
+    )
+
+
+def _literal_matrix_values(matrix_param: "ParamValue") -> "list[float] | None":
+    """Return the six literal floats of a ``warp_affine`` matrix param.
+
+    Returns ``None`` when any element is a per-row expression — such a matrix is
+    only resolvable at execution, so it cannot participate in plan-time affine
+    fusion (matrix composition needs concrete numbers).
+    """
+    elements = matrix_param.value
+    if not isinstance(elements, list):
+        return None
+    out: list[float] = []
+    for elem in elements:
+        if not isinstance(elem, dict) or elem.get("type") != "literal":
+            return None
+        out.append(float(elem["value"]))
+    return out
+
+
 def _validate_enum(value: str, enum_cls: type, label: str):
     """Validate a string against a user-facing enum with a uniform error.
 
@@ -928,6 +959,72 @@ class Pipeline:
 
         return new
 
+    def thumbnail(self, max_size: int) -> "Pipeline":
+        """
+        Decode only a downscaled *thumbnail* of an image source.
+
+        Explicit, chainable form of ``source(..., decode_max_size=...)``: it
+        asserts the pipeline needs at most ``max_size`` pixels on the decoded
+        image's long side, so JPEG decoding uses IDCT scaling (1/8, 1/4 or 1/2)
+        to skip work — a large CPU and memory win. The decoded long side never
+        drops below ``min(max_size, original)``, so a downstream resize down to
+        ``max_size`` never upscales. Non-JPEG formats (PNG, …) ignore the
+        assertion and decode at full size.
+
+        This is the cheap front of a *decode-aware curation* pass: decode a
+        thumbnail, compute a cheap signal (perceptual hash, mean, blur/quality
+        score), filter on it, and only full-decode the survivors in a second
+        pass. A scaled decode followed by a resize is not bit-identical to a full
+        decode then the same resize (different resampling path) — hence the
+        explicit opt-in.
+
+        Must be called after ``source(...)`` on an ``image_bytes``/``file_path``
+        source.
+
+        Domain: buffer -> buffer (source assertion; does not add an op).
+
+        Args:
+            max_size: Maximum pixels on the decoded long side. Positive int.
+
+        Returns:
+            A new Pipeline whose source carries the decode-scale assertion.
+
+        Raises:
+            ValueError: If there is no source, the source is not an image
+                source, or ``max_size`` is not a positive int.
+
+        Example:
+            ```python
+            >>> # Cheap perceptual-hash over thumbnails for dedup/curation
+            >>> pipe = (
+            ...     Pipeline().source("image_bytes").thumbnail(64).perceptual_hash()
+            ... )
+            ```
+        """
+        import dataclasses
+
+        from polars_cv._types import SourceFormat
+
+        if self._source is None:
+            msg = "thumbnail() requires a source; call .source(...) first"
+            raise ValueError(msg)
+        if self._source.format not in (
+            SourceFormat.IMAGE_BYTES,
+            SourceFormat.FILE_PATH,
+        ):
+            msg = (
+                "thumbnail() only applies to 'image_bytes'/'file_path' sources, "
+                f"got '{self._source.format.value}'"
+            )
+            raise ValueError(msg)
+        if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size <= 0:
+            msg = f"max_size must be a positive int, got {max_size!r}"
+            raise ValueError(msg)
+
+        new = self._clone()
+        new._source = dataclasses.replace(new._source, decode_max_size=max_size)
+        return new
+
     # --- Shape Assertions (optional, helps planner) ---
 
     def assert_shape(
@@ -1216,7 +1313,12 @@ class Pipeline:
             std: Per-channel standard deviation values. Required when
                 ``method="preset"``. Common preset: ``[0.229, 0.224, 0.225]``
                 (ImageNet).
-            out_dtype: Output type (default "f32").
+            out_dtype: Output dtype (default f32). Normalization always computes
+                in f32; the result is then cast to this dtype at execution, so
+                the produced dtype always matches the planned dtype. Accepts
+                ``"f32"``/``"f64"``/``"u8"``. For half precision use the sink
+                dtype instead — ``.sink("numpy", dtype="f16")`` — since the engine
+                has no native f16 type.
 
         Returns:
             Self for chaining.
@@ -2557,7 +2659,7 @@ class Pipeline:
 
     def warp_affine(
         self,
-        matrix: list[float],
+        matrix: list[FloatOrExpr],
         output_size: tuple[IntOrExpr, IntOrExpr],
         *,
         interpolation: str = "bilinear",
@@ -2577,8 +2679,11 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            matrix: Six-element list representing the 2x3 affine matrix
-                ``[a, b, tx, c, d, ty]`` (forward mapping).
+            matrix: Six-element sequence representing the 2x3 affine matrix
+                ``[a, b, tx, c, d, ty]`` (forward mapping). **Each element may be
+                a literal float or a Polars expression**, so a batch can apply a
+                different (e.g. random) affine per row in one call — the matrix is
+                resolved per row at execution.
             output_size: ``(height, width)`` of the output image. Each element
                 accepts a Polars expression for per-row dynamic values.
             interpolation: Interpolation method -- ``"bilinear"`` (default)
@@ -2598,19 +2703,33 @@ class Pipeline:
             ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],
             ...     output_size=(224, 224),
             ... )
+            >>>
+            >>> # Per-sample random affine: each row uses its own matrix columns
+            >>> pipe = Pipeline().source("image_bytes").warp_affine(
+            ...     matrix=[pl.col("a"), pl.col("b"), pl.col("tx"),
+            ...             pl.col("c"), pl.col("d"), pl.col("ty")],
+            ...     output_size=(224, 224),
+            ... )
             ```
         """
+        matrix = list(matrix)
         if len(matrix) != 6:
             msg = f"Affine matrix must have 6 elements, got {len(matrix)}"
             raise ValueError(msg)
         self._validate_domain(self.DOMAIN_BUFFER, "warp_affine")
         new = self._clone()
         h, w = output_size
+        # Track each matrix element independently so any of them can be a per-row
+        # expression (resolved element-by-element in Rust via as_param_list).
+        matrix_params = [new._track_expr(m) for m in matrix]
         new._ops.append(
             OpSpec(
                 op="warp_affine",
                 params={
-                    "matrix": ParamValue(is_expr=False, value=matrix),
+                    "matrix": ParamValue(
+                        is_expr=False,
+                        value=[p.to_dict() for p in matrix_params],
+                    ),
                     "output_height": new._track_expr(h),
                     "output_width": new._track_expr(w),
                     "interpolation": ParamValue(is_expr=False, value=interpolation),
@@ -2625,9 +2744,9 @@ class Pipeline:
     def shear(
         self,
         *,
-        sx: float = 0.0,
-        sy: float = 0.0,
-        output_size: tuple[int, int] | None = None,
+        sx: FloatOrExpr = 0.0,
+        sy: FloatOrExpr = 0.0,
+        output_size: tuple[IntOrExpr, IntOrExpr] | None = None,
     ) -> "Pipeline":
         """
         Apply a shear transformation.
@@ -2638,8 +2757,8 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            sx: Horizontal shear factor.
-            sy: Vertical shear factor.
+            sx: Horizontal shear factor (literal or per-row Polars expression).
+            sy: Vertical shear factor (literal or per-row Polars expression).
             output_size: ``(height, width)`` of the output. Required
                 (auto-sizing not yet implemented).
 
@@ -2652,13 +2771,20 @@ class Pipeline:
         Example:
             ```python
             >>> pipe = Pipeline().source("image_bytes").shear(sx=0.2, output_size=(100, 100))
+            >>>
+            >>> # Per-sample random shear from a column
+            >>> pipe = Pipeline().source("image_bytes").shear(
+            ...     sx=pl.col("shear_x"), output_size=(100, 100)
+            ... )
             ```
         """
         # TODO: auto-compute output_size from input shape + shear if not provided
         if output_size is None:
             msg = "output_size is required for shear (auto-size not yet implemented)"
             raise ValueError(msg)
-        matrix = [1.0, sx, 0.0, sy, 1.0, 0.0]
+        # sx/sy may be per-row expressions; warp_affine tracks each matrix
+        # element independently, so the shear matrix passes them through.
+        matrix: list[FloatOrExpr] = [1.0, sx, 0.0, sy, 1.0, 0.0]
         return self.warp_affine(matrix, output_size)
 
     def rotate_and_scale(
@@ -3686,6 +3812,10 @@ class Pipeline:
         hints, which reflect the shape after ALL ops.
         """
         if op.op == "warp_affine":
+            # A per-row (expression) matrix can't be composed at plan time, so it
+            # is not fusable — leave it to resolve per row at execution.
+            if _literal_matrix_values(op.params["matrix"]) is None:
+                return None
             return op
 
         if op.op != "rotate":
@@ -3740,7 +3870,7 @@ class Pipeline:
         return OpSpec(
             op="warp_affine",
             params={
-                "matrix": ParamValue(is_expr=False, value=matrix),
+                "matrix": _matrix_param_from_floats(matrix),
                 "output_height": ParamValue(is_expr=False, value=new_h),
                 "output_width": ParamValue(is_expr=False, value=new_w),
                 "interpolation": interpolation
@@ -3764,8 +3894,11 @@ class Pipeline:
         Returns:
             A single fused ``OpSpec``.
         """
-        m1 = first.params["matrix"].value
-        m2 = second.params["matrix"].value
+        # Both matrices are literal here: `_try_convert_rotate_to_affine` only
+        # admits an op for fusion when its matrix has no per-row expression.
+        m1 = _literal_matrix_values(first.params["matrix"])
+        m2 = _literal_matrix_values(second.params["matrix"])
+        assert m1 is not None and m2 is not None, "fusion requires literal matrices"
         a1, b1, tx1, c1, d1, ty1 = m1
         a2, b2, tx2, c2, d2, ty2 = m2
 
@@ -3780,7 +3913,7 @@ class Pipeline:
         return OpSpec(
             op="warp_affine",
             params={
-                "matrix": ParamValue(is_expr=False, value=fused_matrix),
+                "matrix": _matrix_param_from_floats(fused_matrix),
                 "output_height": second.params["output_height"],
                 "output_width": second.params["output_width"],
                 "interpolation": second.params["interpolation"],

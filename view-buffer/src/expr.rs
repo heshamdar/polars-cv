@@ -154,7 +154,7 @@ impl ViewExpr {
                 ComputeOp::Scale(f) => self.scale(f),
                 ComputeOp::Relu => self.relu(),
                 ComputeOp::Fused(kernel) => self.fused(kernel),
-                ComputeOp::Normalize(method) => self.normalize(method),
+                ComputeOp::Normalize(method, out_dtype) => self.normalize(method, out_dtype),
                 ComputeOp::Clamp { min, max } => self.clamp(min, max),
                 ComputeOp::AdjustContrast(factor) => self.adjust_contrast(factor),
                 ComputeOp::AdjustGamma(gamma) => self.adjust_gamma(gamma),
@@ -423,10 +423,13 @@ impl ViewExpr {
         })
     }
 
-    /// Normalize data using the specified method.
-    /// Only supports 2D (HW) or single-channel (HW1) shapes with F32 dtype.
-    pub fn normalize(self: &Arc<Self>, method: NormalizeMethod) -> Arc<Self> {
-        let op = ComputeOp::Normalize(method);
+    /// Normalize data using the specified method, emitting `out_dtype`.
+    ///
+    /// Only supports 2D (HW) or single-channel (HW1) shapes. Computation is in
+    /// f32; pass `DType::F32` for the default float output, or another dtype to
+    /// have the normalized result cast to it (the `Configurable` output rule).
+    pub fn normalize(self: &Arc<Self>, method: NormalizeMethod, out_dtype: DType) -> Arc<Self> {
+        let op = ComputeOp::Normalize(method, out_dtype);
         let new_shape = op.infer_shape(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
 

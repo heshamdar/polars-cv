@@ -72,6 +72,12 @@ pub struct SinkSpec {
     /// Output shape (for array format).
     #[serde(default)]
     pub shape: Option<Vec<usize>>,
+    /// Output element dtype for the `numpy`/`torch` sink. Currently only
+    /// `"f16"` is meaningful: the buffer (which the engine has no f16 dtype for)
+    /// is downcast from float to half at encode time. `None` keeps the buffer's
+    /// native dtype. Accepts the wire key `dtype` (the user-facing sink kwarg).
+    #[serde(default, alias = "dtype")]
+    pub out_dtype: Option<String>,
 }
 
 fn default_quality() -> u8 {

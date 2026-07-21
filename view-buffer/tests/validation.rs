@@ -76,7 +76,7 @@ fn test_is_integer_dtype() {
 
 #[test]
 fn test_normalize_validates_shape() {
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
+    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
 
     // Valid shapes
     assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
@@ -91,7 +91,7 @@ fn test_normalize_validates_shape() {
 
 #[test]
 fn test_normalize_accepts_all_numeric_dtypes() {
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
+    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
 
     // With dtype promotion, all numeric types are valid
     // The operation internally casts to f32 for computation
@@ -105,7 +105,7 @@ fn test_normalize_accepts_all_numeric_dtypes() {
 
 #[test]
 fn test_normalize_error_message_contains_shape() {
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
+    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
     let result = op.validate(&[&[10, 10, 3]], &[DType::F32]);
 
     let err = result.unwrap_err();
@@ -122,7 +122,7 @@ fn test_normalize_error_message_contains_shape() {
 fn test_normalize_dtype_promotion_behavior() {
     // With dtype promotion, normalize accepts all numeric types
     // This test verifies the working dtype is used correctly
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax);
+    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
 
     // All numeric types should be accepted - the operation handles casting internally
     assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok());
@@ -152,7 +152,7 @@ fn test_other_compute_ops_have_no_validation() {
 
 #[test]
 fn test_zscore_normalize_validates_same_as_minmax() {
-    let op = ComputeOp::Normalize(NormalizeMethod::ZScore);
+    let op = ComputeOp::Normalize(NormalizeMethod::ZScore, DType::F32);
 
     // Should have same requirements as MinMax
     // With dtype promotion, all numeric types are accepted

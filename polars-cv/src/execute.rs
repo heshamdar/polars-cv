@@ -431,7 +431,15 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                         other, NormalizeMethod::NAMES))
                 }
             };
-            buffer_step(ViewDto::Compute(ComputeOp::Normalize(method)))
+            // Honor the configured output dtype so the produced buffer matches
+            // the planner's `Configurable(F32)` resolution (default f32). Without
+            // this, `normalize(out_dtype=...)` planned one dtype and executed
+            // another — a plan/execution contract violation.
+            let out_dtype = match op_spec.params.get("out_dtype") {
+                Some(p) => parse_dtype(p.resolve_string()?)?,
+                None => DType::F32,
+            };
+            buffer_step(ViewDto::Compute(ComputeOp::Normalize(method, out_dtype)))
         }
         "clamp" => {
             let min = get_param(&op_spec.params, "min")?.resolve_f32(row_idx, ctx)?;
@@ -627,34 +635,19 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Affine warp operation
         "warp_affine" => {
-            let matrix_val = get_param(&op_spec.params, "matrix")?;
-            let matrix_vec: Vec<f64> = match matrix_val {
-                ParamValue::Literal { value } => {
-                    value
-                        .as_array()
-                        .ok_or_else(|| {
-                            polars_err!(ComputeError: "warp_affine: matrix must be an array")
-                        })?
-                        .iter()
-                        .map(|v| {
-                            v.as_f64().ok_or_else(|| {
-                                polars_err!(ComputeError: "warp_affine: matrix elements must be numbers")
-                            })
-                        })
-                        .collect::<PolarsResult<Vec<f64>>>()?
-                }
-                _ => {
-                    return Err(polars_err!(
-                        ComputeError: "warp_affine: matrix must be a literal array"
-                    ));
-                }
-            };
-            if matrix_vec.len() != 6 {
+            // Each matrix element is its own ParamValue so any of the six can be
+            // a per-row expression (a different affine per row in one call).
+            let matrix_params = get_param(&op_spec.params, "matrix")?.as_param_list()?;
+            if matrix_params.len() != 6 {
                 return Err(polars_err!(
                     ComputeError: "warp_affine: matrix must have exactly 6 elements, got {}",
-                    matrix_vec.len()
+                    matrix_params.len()
                 ));
             }
+            let matrix_vec: Vec<f64> = matrix_params
+                .iter()
+                .map(|p| p.resolve_f64(row_idx, ctx))
+                .collect::<PolarsResult<Vec<f64>>>()?;
             let matrix: [f64; 6] = matrix_vec
                 .try_into()
                 .map_err(|_| polars_err!(ComputeError: "warp_affine: matrix conversion failed"))?;
@@ -1235,10 +1228,20 @@ mod strict_param_tests {
             "rotate",
             &[("angle", json!(45.0)), ("interpolation", json!("cubic"))],
         ));
+        // The matrix is a list of per-element ParamValue dicts (each element may
+        // be a per-row expression), matching what the Python planner emits.
+        let ident = json!([
+            {"type": "literal", "value": 1.0},
+            {"type": "literal", "value": 0.0},
+            {"type": "literal", "value": 0.0},
+            {"type": "literal", "value": 0.0},
+            {"type": "literal", "value": 1.0},
+            {"type": "literal", "value": 0.0},
+        ]);
         let warp_err = resolve_err(&op_with(
             "warp_affine",
             &[
-                ("matrix", json!([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])),
+                ("matrix", ident),
                 ("output_height", json!(8)),
                 ("output_width", json!(8)),
                 ("interpolation", json!("cubic")),

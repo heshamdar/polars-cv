@@ -422,3 +422,66 @@ class TestF64ScalarOpsEndToEnd:
         out = self._run(lambda p: p.adjust_contrast(factor=1.0))
         # factor=1.0 is the identity: (x - mean) * 1 + mean == x.
         assert out["out"][0][0][0][0] == self.PRECISE
+
+
+@plugin_required
+class TestNormalizeOutDtypeContract:
+    """normalize(out_dtype=...) must satisfy plan == production.
+
+    Regression guard for the one op with a ``Configurable`` dtype rule: the
+    planner honored ``out_dtype`` (declaring, e.g., u8) but execution built
+    ``Normalize`` with no dtype and always produced f32, so any ``out_dtype`` !=
+    f32 tripped the runtime guard ("planned <X> but execution produced Float32").
+    Execution now casts the f32 result to the configured dtype, so plan == exec.
+    This closes the hole in the dtype-contract suite (it never exercised the
+    ``out_dtype`` path).
+    """
+
+    # 3-D [H, W, 1] single-channel buffer so min/max normalize applies.
+    HW1_F32 = {
+        "x": [[[[0.0], [85.0]], [[170.0], [255.0]]]],
+    }
+    SCHEMA = {"x": pl.List(pl.List(pl.List(pl.Float64)))}
+
+    def _run(self, out_dtype: str) -> pl.DataFrame:
+        df = pl.DataFrame(self.HW1_F32, schema=self.SCHEMA)
+        pipe = (
+            Pipeline()
+            .source("list", dtype="f32")
+            .normalize(method="minmax", out_dtype=out_dtype)
+        )
+        lf = df.lazy().with_columns(out=pl.col("x").cv.pipe(pipe).sink("list"))
+        planned = lf.collect_schema()["out"]
+        out = lf.collect()
+        assert planned == out["out"].dtype, (
+            f"plan != exec for normalize(out_dtype={out_dtype!r}): "
+            f"planned {planned}, produced {out['out'].dtype}"
+        )
+        return out
+
+    def _inner_dtype(self, dt: pl.DataType) -> pl.DataType:
+        while isinstance(dt, pl.List):
+            dt = dt.inner
+        return dt
+
+    def test_default_is_f32(self) -> None:
+        out = self._run("f32")
+        assert self._inner_dtype(out["out"].dtype) == pl.Float32
+
+    def test_out_dtype_f64(self) -> None:
+        out = self._run("f64")
+        assert self._inner_dtype(out["out"].dtype) == pl.Float64
+
+    def test_out_dtype_u8(self) -> None:
+        out = self._run("u8")
+        assert self._inner_dtype(out["out"].dtype) == pl.UInt8
+
+    def test_out_dtype_none_matches_default(self) -> None:
+        # No out_dtype at all must also be consistent (f32).
+        df = pl.DataFrame(self.HW1_F32, schema=self.SCHEMA)
+        pipe = Pipeline().source("list", dtype="f32").normalize(method="minmax")
+        lf = df.lazy().with_columns(out=pl.col("x").cv.pipe(pipe).sink("list"))
+        planned = lf.collect_schema()["out"]
+        out = lf.collect()
+        assert planned == out["out"].dtype
+        assert self._inner_dtype(out["out"].dtype) == pl.Float32
