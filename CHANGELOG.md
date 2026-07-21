@@ -5,6 +5,43 @@ All notable changes to **polars-cv** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **f16 tensor output** — `.sink("numpy"|"torch", dtype="f16")` downcasts the
+  output to half precision at the encode boundary, halving the output-tensor
+  bytes and host→device transfer. (The engine has no native f16 dtype; only the
+  sink container is f16.)
+- **Per-row affine/shear parameters** — `warp_affine(matrix=...)` accepts a
+  per-element mix of literals and Polars expressions, and `shear(sx=..., sy=...)`
+  accepts expressions, so a batch can apply a different (e.g. random) affine or
+  shear per row in one call.
+- **`Pipeline.thumbnail(max_size)`** — explicit, chainable form of the existing
+  JPEG IDCT-scaled decode (`source(..., decode_max_size=...)`), for cheap
+  decode-aware curation passes.
+- **Single-threaded execution warning** — a one-time notice when a large batch
+  runs single-threaded under the in-memory engine, pointing to
+  `engine="streaming"`. Silence with `POLARS_CV_SILENCE_ENGINE_WARNING=1`;
+  tune with `POLARS_CV_ENGINE_WARN_ROWS`.
+
+### Changed
+
+- **`warp_affine` `matrix` wire format** — the serialized `matrix` parameter is
+  now an array of per-element `ParamValue` entries (each may be a literal or an
+  expression) rather than a raw float array. This is an internal graph-JSON
+  change; pipelines built through the Python API are unaffected. A persisted or
+  hand-written graph using the old raw-float `matrix` array must be regenerated.
+
+### Fixed
+
+- **`normalize(out_dtype=...)` planned vs. produced dtype** — the planner
+  honored `out_dtype` but execution always produced f32, so any `out_dtype`
+  other than f32 tripped the dtype-contract guard. Normalization now casts its
+  f32 result to the requested dtype, so `normalize(out_dtype="u8"|"f64")` works
+  and the planned dtype always matches the produced dtype. (`out_dtype="preserve"`
+  is rejected with a clear message — it is not meaningful for normalization.)
+
 ## [0.11.0] — 2026-07-10
 
 ### Added

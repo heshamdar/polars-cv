@@ -431,9 +431,7 @@ class TestAffineFusionPositionalShape:
         fused = spec["ops"][1]
         expected_matrix, _, _ = _expected_rotate_affine(45, ih=100, iw=100)
         expected = _compose(expected_matrix, IDENTITY)
-        for got, want in zip(
-            [m["value"] for m in fused["matrix"]["value"]], expected
-        ):
+        for got, want in zip([m["value"] for m in fused["matrix"]["value"]], expected):
             assert abs(got - want) < 1e-9
         # Output dims come from the LAST op in the fused run
         assert fused["output_height"]["value"] == 50
@@ -453,9 +451,7 @@ class TestAffineFusionPositionalShape:
         fused = spec["ops"][1]
         expected_matrix, _, _ = _expected_rotate_affine(45, ih=100, iw=100, expand=True)
         expected = _compose(expected_matrix, IDENTITY)
-        for got, want in zip(
-            [m["value"] for m in fused["matrix"]["value"]], expected
-        ):
+        for got, want in zip([m["value"] for m in fused["matrix"]["value"]], expected):
             assert abs(got - want) < 1e-9
         assert fused["output_height"]["value"] == 200
         assert fused["output_width"]["value"] == 200
@@ -475,9 +471,7 @@ class TestAffineFusionPositionalShape:
         m1, _, _ = _expected_rotate_affine(30, ih=100, iw=100)
         m2, _, _ = _expected_rotate_affine(15, ih=100, iw=100)
         expected = _compose(m1, m2)
-        for got, want in zip(
-            [m["value"] for m in fused["matrix"]["value"]], expected
-        ):
+        for got, want in zip([m["value"] for m in fused["matrix"]["value"]], expected):
             assert abs(got - want) < 1e-9
 
     def test_mid_chain_assert_shape_feeds_conversion(self) -> None:
@@ -494,9 +488,7 @@ class TestAffineFusionPositionalShape:
         fused = spec["ops"][0]
         expected_matrix, _, _ = _expected_rotate_affine(45, ih=80, iw=60)
         expected = _compose(expected_matrix, IDENTITY)
-        for got, want in zip(
-            [m["value"] for m in fused["matrix"]["value"]], expected
-        ):
+        for got, want in zip([m["value"] for m in fused["matrix"]["value"]], expected):
             assert abs(got - want) < 1e-9
 
     def test_lone_rotate_is_not_converted(self) -> None:
@@ -686,10 +678,66 @@ class TestPerRowAffineExecution:
                 interpolation="nearest",
             )
         )
-        out = df.lazy().with_columns(
-            out=pl.col("x").cv.pipe(pipe).sink("numpy")
-        ).collect()
+        out = (
+            df.lazy()
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .collect()
+        )
         a = numpy_from_struct(out["out"][0])
         b = numpy_from_struct(out["out"][1])
         # Different per-row tx => different outputs (a horizontal shift).
         assert not np.array_equal(a, b)
+
+    def test_per_row_shear_differs(self) -> None:
+        import numpy as np
+        import polars as pl
+
+        from polars_cv import numpy_from_struct
+
+        img = [[[float(r * 4 + c)] for c in range(4)] for r in range(4)]
+        df = pl.DataFrame(
+            {"x": [img, img], "sx": [0.0, 0.8]},
+            schema={
+                "x": pl.List(pl.List(pl.List(pl.Float64))),
+                "sx": pl.Float64,
+            },
+        )
+        pipe = (
+            Pipeline()
+            .source("list", dtype="f32")
+            .shear(sx=pl.col("sx"), output_size=(4, 4))
+        )
+        out = (
+            df.lazy()
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .collect()
+        )
+        a = numpy_from_struct(out["out"][0])  # sx=0 -> identity
+        b = numpy_from_struct(out["out"][1])  # sx=0.8 -> sheared
+        assert not np.array_equal(a, b)
+
+    def test_per_row_reshape_expr(self) -> None:
+        # Regression: nested per-row params (reshape shape) must bind. Before the
+        # recursive param binding this errored at compile ("unbound expression
+        # parameter") because the op was misclassified as static.
+        import numpy as np
+        import polars as pl
+
+        from polars_cv import numpy_from_struct
+
+        flat = [float(i) for i in range(6)]
+        df = pl.DataFrame(
+            {"x": [flat], "h": [2], "w": [3]},
+            schema={"x": pl.List(pl.Float64), "h": pl.Int64, "w": pl.Int64},
+        )
+        pipe = (
+            Pipeline().source("list", dtype="f32").reshape([pl.col("h"), pl.col("w")])
+        )
+        out = (
+            df.lazy()
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+            .collect()
+        )
+        arr = numpy_from_struct(out["out"][0])
+        assert arr.shape == (2, 3)
+        np.testing.assert_array_equal(arr.astype(np.float64).ravel(), flat)
