@@ -180,12 +180,18 @@ Fusible operations:
 
 **Not fusible:** `rotate()` with an expression-based angle, or with a fast-path angle (90/180/270 use zero-copy `ViewOp` and cannot be represented as an affine matrix).
 
-### Shape Hints for Rotation
+### Shape Hints (single authority: view-buffer `infer_shape`)
 
-`_update_shape_hints()` handles rotation dimensions:
-- **Static 90/270 with expand=False:** H and W are swapped
-- **Static angle with expand=True:** Output dimensions computed by `_compute_rotate_expand_shape()` using the rotated bounding box formula
-- **Expression-based angle:** Shape hints set to `None` (unknown at planning time)
+`_update_shape_hints()` no longer re-derives any per-dimension geometry in
+Python. It reads the op's view-buffer `infer_shape` through the `op_infer_shape`
+FFI (`_update_hw_from_infer_shape`), the same authority execution uses, so the
+tracked H/W can never drift from what the op actually produces. Unknowns
+propagate automatically: an unknown input dim or a per-row expression param
+yields a `None` output dim. This covers every op uniformly — including rotation
+(static 90/270 swap, static-angle expand bounding box, and expression-angle
+"unknown", all computed by the Rust `RotateAffine`/`Rotate90` `infer_shape`).
+Channels stay with `_update_channels_from_rule` (the channel rule); rank stays
+with `op_schema`.
 
 ## Common Pitfalls
 

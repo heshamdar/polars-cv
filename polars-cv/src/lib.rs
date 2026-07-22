@@ -27,6 +27,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(op_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(op_infer_shape, m)?)?;
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
     Ok(())
@@ -116,6 +117,19 @@ fn channel_rule_name(rule: view_buffer::OutputChannelRule) -> String {
 /// work on the same live op specs the planner sees (which routinely carry
 /// expression params) rather than only literal-only ops.
 pub(crate) fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep> {
+    // Structural schema (domain/dtype/rank/channel rules) never depends on the
+    // concrete value of a dimensional param, so any placeholder works here.
+    resolve_op_from_json_probe(op_json, 1)
+}
+
+/// Like [`resolve_op_from_json`] but binds each expression param to a specific
+/// `probe` value instead of `1`. Used by `op_infer_shape` to detect which
+/// output dimensions depend on a per-row expression (they vary across probes)
+/// versus which are fixed by literal params (identical across probes).
+pub(crate) fn resolve_op_from_json_probe(
+    op_json: &str,
+    probe: i64,
+) -> PyResult<crate::graph::step::GraphStep> {
     use crate::params::{ParamCtx, ParamValue};
 
     let mut op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
@@ -148,7 +162,7 @@ pub(crate) fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step
             *p = ParamValue::Slot {
                 idx: placeholders.len(),
             };
-            placeholders.push(Series::new("".into(), &[1_i64]));
+            placeholders.push(Series::new("".into(), &[probe]));
         } else if let ParamValue::Literal { value } = p {
             // A literal may itself be a list of ParamValue dicts (reshape's
             // shape). Neutralize any expression entries the same way so the
@@ -157,7 +171,7 @@ pub(crate) fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step
             if let Some(arr) = value.as_array_mut() {
                 for entry in arr.iter_mut() {
                     if entry.get("type").and_then(|t| t.as_str()) == Some("expr") {
-                        *entry = serde_json::json!({"type": "literal", "value": 1});
+                        *entry = serde_json::json!({"type": "literal", "value": probe});
                     }
                 }
             }
@@ -166,6 +180,62 @@ pub(crate) fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step
     let ctx = ParamCtx::from_inputs(&placeholders);
     crate::execute::resolve_op(&op_spec, 0, &ctx)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
+}
+
+/// Plan-time output shape for a single-buffer op — the single authority for
+/// per-dimension H/W geometry the Python planner reads instead of re-deriving.
+///
+/// `input_dims` carries the current per-dimension sizes, each `None` when the
+/// dimension is unknown at plan time. The returned dims propagate unknowns: a
+/// dimension is `Some(n)` only when it is identical across every probe (fixed by
+/// literal params and known input dims) and `None` when it varies (it depends on
+/// an unknown input dim or a per-row expression param).
+///
+/// The probe set includes 90-degree multiples so a discontinuous shape function
+/// — rotate's zero-copy 90/180/270 fast path swaps H and W — is correctly seen
+/// as unknown for an expression angle over a non-square image, while a literal
+/// angle still resolves to its exact branch.
+#[pyfunction]
+fn op_infer_shape(op_json: &str, input_dims: Vec<Option<i64>>) -> PyResult<Vec<Option<i64>>> {
+    const PROBES: [i64; 4] = [7, 13, 90, 180];
+    let runs: Vec<Vec<i64>> = PROBES
+        .iter()
+        .map(|&p| infer_shape_probe(op_json, &input_dims, p))
+        .collect::<PyResult<_>>()?;
+    let first = &runs[0];
+    // Rank is structural (never data-dependent), so it must be stable across
+    // probes; a variation signals a contract bug rather than an unknown.
+    if runs.iter().any(|r| r.len() != first.len()) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "op_infer_shape: output rank varied across shape probes",
+        ));
+    }
+    Ok((0..first.len())
+        .map(|i| {
+            let v = first[i];
+            runs.iter().all(|r| r[i] == v).then_some(v)
+        })
+        .collect())
+}
+
+/// One probe of [`op_infer_shape`]: resolve the op with expression params bound
+/// to `probe`, substitute each unknown input dim with `probe`, and run the op's
+/// `infer_shape`.
+fn infer_shape_probe(op_json: &str, input_dims: &[Option<i64>], probe: i64) -> PyResult<Vec<i64>> {
+    use crate::graph::step::GraphStep;
+
+    let step = resolve_op_from_json_probe(op_json, probe)?;
+    let GraphStep::Buffer(dto) = step else {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "op_infer_shape: only single-buffer ops have an inferable shape",
+        ));
+    };
+    let input_shape: Vec<usize> = input_dims
+        .iter()
+        .map(|d| d.unwrap_or(probe).max(1) as usize)
+        .collect();
+    let out = dto.as_op().infer_shape(&[input_shape.as_slice()]);
+    Ok(out.iter().map(|&x| x as i64).collect())
 }
 
 /// Shared dtype resolution for `op_schema` (and, transitively, `op_contract`).

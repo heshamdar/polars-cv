@@ -13,6 +13,8 @@ across representative shapes.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import polars as pl
 
@@ -81,3 +83,53 @@ class TestPlanMatchesDataSources:
         df = pl.DataFrame({"x": [img]})
         out = _assert_plan_matches_data(df, pl.col("x").cv.pipe(pipe).sink("list"))
         assert out == pl.List(pl.List(pl.UInt8))
+
+
+@plugin_required
+class TestOpInferShapeAuthority:
+    """op_infer_shape is the single geometry authority: literal params/known
+    dims give exact output dims; expression params/unknown dims propagate to
+    None. Probing includes 90-degree multiples so rotate's discontinuous fast
+    path (90/180/270 swap H/W) is detected."""
+
+    @staticmethod
+    def _op_json(pipe: Pipeline) -> str:
+        return json.dumps(pipe._ops[-1].to_dict())
+
+    def test_resize_literal_dims_are_known(self) -> None:
+        from polars_cv._lib import op_infer_shape
+
+        j = self._op_json(
+            Pipeline().source("image_bytes").resize(height=224, width=100)
+        )
+        assert op_infer_shape(j, [None, None, None]) == [224, 100, None]
+
+    def test_resize_expression_dim_is_unknown(self) -> None:
+        from polars_cv._lib import op_infer_shape
+
+        j = self._op_json(
+            Pipeline().source("image_bytes").resize(height=pl.col("h"), width=100)
+        )
+        assert op_infer_shape(j, [None, None, 3]) == [None, 100, 3]
+
+    def test_pad_adds_known_borders(self) -> None:
+        from polars_cv._lib import op_infer_shape
+
+        j = self._op_json(
+            Pipeline().source("image_bytes").pad(top=1, bottom=2, left=3, right=4)
+        )
+        assert op_infer_shape(j, [10, 10, 3]) == [13, 17, 3]
+
+    def test_literal_90_rotate_swaps_hw(self) -> None:
+        from polars_cv._lib import op_infer_shape
+
+        j = self._op_json(Pipeline().source("image_bytes").rotate(90))
+        assert op_infer_shape(j, [100, 50, 3]) == [50, 100, 3]
+
+    def test_expression_angle_rotate_is_unknown(self) -> None:
+        # A per-row angle could be a 90-multiple (H/W swap) at runtime, so the
+        # spatial dims are unknown at plan time even on a known image.
+        from polars_cv._lib import op_infer_shape
+
+        j = self._op_json(Pipeline().source("image_bytes").rotate(pl.col("a")))
+        assert op_infer_shape(j, [100, 50, 3]) == [None, None, 3]
