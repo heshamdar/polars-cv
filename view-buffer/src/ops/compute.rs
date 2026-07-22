@@ -4,6 +4,7 @@ use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::affine::{AffineParams, InterpolationType};
 use crate::ops::cost::OpCost;
 use crate::ops::scalar::FusedKernel;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::{is_2d_like, ValidationError};
 
@@ -280,6 +281,17 @@ impl Op for ComputeOp {
             ComputeOp::Invert => None,
             _ => None,
         }
+    }
+
+    fn output_rank_rule(&self) -> OutputRankRule {
+        // Every compute kind is element-wise or a geometric H/W warp
+        // (affine/rotate) — the rank is always preserved.
+        OutputRankRule::PreserveRank
+    }
+
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        // Compute kinds operate per element and never add or drop channels.
+        OutputChannelRule::PreserveChannels
     }
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {

@@ -570,6 +570,35 @@ def test_binary_output_dtype_authority():
     assert binary_output_dtype("add", "u8", "auto") == "auto"
 
 
+def test_op_schema_rules_are_required_not_defaulted():
+    """The three structural schema rules are REQUIRED trait methods (no default
+    body). An op that omits one is a compile error, so a new op cannot silently
+    inherit ``PreserveRank``/``PreserveChannels``/``PreserveInput`` and lie about
+    its structure — contract by the type system, not convention. This ratchets
+    against re-adding a default body to ``view-buffer``'s ``Op`` trait.
+    """
+    import re
+
+    src = _rust_src_dir()
+    if src is None:
+        pytest.skip("Rust sources not available (installed wheel)")
+    traits = src.parent.parent / "view-buffer" / "src" / "ops" / "traits.rs"
+    if not traits.exists():
+        pytest.skip("view-buffer sources not available")
+    text = traits.read_text()
+    for rule, ret in (
+        ("output_rank_rule", "OutputRankRule"),
+        ("output_channel_rule", "OutputChannelRule"),
+        ("output_dtype_rule", "OutputDTypeRule"),
+    ):
+        required = re.search(rf"fn {rule}\(&self\) -> {ret};", text)
+        defaulted = re.search(rf"fn {rule}\(&self\) -> {ret}\s*\{{", text)
+        assert required is not None and defaulted is None, (
+            f"Op::{rule} must be a required trait method with no default body "
+            "so ops cannot inherit a silent, possibly-wrong structural default"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 2b. Contract authority (A1/A10) — the planner reads view-buffer's per-op
 # contract (dtype, domain, rank, channel) instead of re-declaring it in Python.
