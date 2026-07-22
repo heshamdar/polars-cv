@@ -271,42 +271,6 @@ impl Op for GeometryOp {
         }
     }
 
-    fn infer_dtype(&self, _inputs: &[DType]) -> DType {
-        match self {
-            // Scalar measures are float
-            GeometryOp::Area { .. }
-            | GeometryOp::Perimeter
-            | GeometryOp::IoU
-            | GeometryOp::Dice
-            | GeometryOp::HausdorffDistance => DType::F64,
-
-            // Centroid, BoundingBox are float
-            GeometryOp::Centroid | GeometryOp::BoundingBox => DType::F64,
-
-            // Boolean results
-            GeometryOp::IsConvex | GeometryOp::ContainsPoint { .. } => DType::U8,
-
-            // Winding direction (0 = CCW, 1 = CW)
-            GeometryOp::Winding => DType::U8,
-
-            // Contour transforms preserve F64 coordinates
-            GeometryOp::Translate { .. }
-            | GeometryOp::Scale { .. }
-            | GeometryOp::Flip
-            | GeometryOp::EnsureWinding { .. }
-            | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull
-            | GeometryOp::Normalize { .. }
-            | GeometryOp::ToAbsolute { .. } => DType::F64,
-
-            // Rasterize produces U8 mask
-            GeometryOp::Rasterize { .. } => DType::U8,
-
-            // ExtractContours produces F64 coordinates
-            GeometryOp::ExtractContours { .. } => DType::F64,
-        }
-    }
-
     fn memory_effect(&self) -> MemoryEffect {
         match self {
             // In-place transformations could be view-like but we allocate for safety

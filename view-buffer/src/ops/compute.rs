@@ -144,27 +144,6 @@ impl Op for ComputeOp {
         }
     }
 
-    fn infer_dtype(&self, inputs: &[DType]) -> DType {
-        match self {
-            ComputeOp::Cast(target) => *target,
-            // The configured out_dtype is the resolved `Configurable(F32)`
-            // target; execution casts the f32 result to it (see apply_normalize).
-            ComputeOp::Normalize(_, out_dtype) => *out_dtype,
-            ComputeOp::Scale(_) => self.output_dtype_rule().resolve(inputs[0], None),
-            ComputeOp::Relu => self.output_dtype_rule().resolve(inputs[0], None),
-            ComputeOp::Clamp { .. } => self.output_dtype_rule().resolve(inputs[0], None),
-            ComputeOp::AdjustContrast(_) => self.output_dtype_rule().resolve(inputs[0], None),
-            ComputeOp::AdjustGamma(_) => self.output_dtype_rule().resolve(inputs[0], None),
-            ComputeOp::Invert => inputs[0],
-            ComputeOp::Affine(_) => inputs[0],
-            ComputeOp::RotateAffine { .. } => inputs[0],
-            // The kernel computes in f32 and converts to its pinned output
-            // dtype in the same pass (set to the unfused chain's planned
-            // dtype at fusion time).
-            ComputeOp::Fused(k) => k.out_dtype,
-        }
-    }
-
     fn memory_effect(&self) -> MemoryEffect {
         match self {
             ComputeOp::Cast(_) => MemoryEffect::StridePreserving,
@@ -296,7 +275,10 @@ impl Op for ComputeOp {
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self {
-            ComputeOp::Normalize(..) => OutputDTypeRule::Configurable(DType::F32),
+            // The op is constructed with its output dtype already resolved
+            // (`out_dtype`, defaulting to F32), so the rule is that concrete
+            // dtype — no separate override pass is needed once the op exists.
+            ComputeOp::Normalize(_, out_dtype) => OutputDTypeRule::Fixed(*out_dtype),
             ComputeOp::Scale(_) => OutputDTypeRule::PromoteToFloat,
             ComputeOp::Clamp { .. } => OutputDTypeRule::PromoteToFloat,
             ComputeOp::Relu => OutputDTypeRule::PromoteToFloat,

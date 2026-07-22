@@ -120,10 +120,6 @@ impl Op for ColorConvertOp {
         ColorConvertOp::output_channel_rule(self)
     }
 
-    fn infer_dtype(&self, inputs: &[DType]) -> DType {
-        Op::output_dtype_rule(self).resolve(inputs[0], None)
-    }
-
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::RequiresContiguous
     }
@@ -911,7 +907,7 @@ mod tests {
                 );
                 assert_eq!(
                     out.dtype(),
-                    op.infer_dtype(&[src.dtype()]),
+                    op.resolve_output_dtype(src.dtype(), None),
                     "{from:?}->{to:?} execution dtype diverges from the contract"
                 );
             }

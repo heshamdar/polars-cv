@@ -69,12 +69,6 @@ pub trait Op {
     /// Required (no default): every op must state its channel transform.
     fn output_channel_rule(&self) -> OutputChannelRule;
 
-    /// Infers the output dtype given input dtypes.
-    ///
-    /// This is the legacy method. For new operations, prefer implementing
-    /// `output_dtype_rule()` and using `resolve_output_dtype()` instead.
-    fn infer_dtype(&self, inputs: &[DType]) -> DType;
-
     /// Returns the legacy memory effect. Prefer `intrinsic_cost()`.
     fn memory_effect(&self) -> MemoryEffect;
 

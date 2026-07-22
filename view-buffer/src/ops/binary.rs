@@ -486,17 +486,6 @@ impl Op for BinaryOp {
         }
     }
 
-    fn infer_dtype(&self, inputs: &[DType]) -> DType {
-        // Delegate to the single output-dtype authority so plan-time and
-        // exec-time dtypes are computed by exactly one rule (true division for
-        // Divide/Ratio, standard promotion otherwise).
-        if inputs.len() >= 2 {
-            self.output_dtype(inputs[0], inputs[1])
-        } else {
-            inputs[0]
-        }
-    }
-
     fn memory_effect(&self) -> MemoryEffect {
         // Binary ops require contiguous input for efficient SIMD
         MemoryEffect::RequiresContiguous
