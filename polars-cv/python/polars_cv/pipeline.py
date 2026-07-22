@@ -476,9 +476,10 @@ class Pipeline:
         """
         Update shape hints based on the operation being added.
 
-        Height/width updates are handled per-op. Channel updates are driven
-        by the operation's view-buffer channel rule via
-        :meth:`_update_channels_from_rule`.
+        Height/width come from the op's view-buffer ``infer_shape`` (via
+        ``op_infer_shape``) — the single geometry authority — and channels from
+        its channel rule via :meth:`_update_channels_from_rule`. No shape math
+        is re-implemented in Python.
 
         Args:
             op_name: Name of the operation.
@@ -502,143 +503,18 @@ class Pipeline:
                 copy.deepcopy(self._shape_hints.width),
             )
 
-        # --- Height / Width updates ---
-        if op_name == "resize":
-            h = params.get("height")
-            w = params.get("width")
-            if h and not h.is_expr:
-                self._shape_hints.height = h
-            else:
-                self._shape_hints.height = None
-            if w and not w.is_expr:
-                self._shape_hints.width = w
-            else:
-                self._shape_hints.width = None
-        elif op_name == "resize_to_height":
-            h = params.get("height")
-            if h and not h.is_expr:
-                self._shape_hints.height = h
-            else:
-                self._shape_hints.height = None
-            self._shape_hints.width = None
-        elif op_name == "resize_to_width":
-            w = params.get("width")
-            if w and not w.is_expr:
-                self._shape_hints.width = w
-            else:
-                self._shape_hints.width = None
-            self._shape_hints.height = None
-        elif op_name in ("resize_scale", "resize_max", "resize_min"):
-            self._shape_hints.height = None
-            self._shape_hints.width = None
-        elif op_name == "pad":
-            if (
-                self._shape_hints.height
-                and not self._shape_hints.height.is_expr
-                and self._shape_hints.width
-                and not self._shape_hints.width.is_expr
-            ):
-                top = params.get("top")
-                bottom = params.get("bottom")
-                left = params.get("left")
-                right = params.get("right")
-
-                if (
-                    top
-                    and not top.is_expr
-                    and bottom
-                    and not bottom.is_expr
-                    and left
-                    and not left.is_expr
-                    and right
-                    and not right.is_expr
-                ):
-                    self._shape_hints.height = ParamValue(
-                        is_expr=False,
-                        value=self._shape_hints.height.value + top.value + bottom.value,
-                    )
-                    self._shape_hints.width = ParamValue(
-                        is_expr=False,
-                        value=self._shape_hints.width.value + left.value + right.value,
-                    )
-        elif op_name in ("pad_to_size", "letterbox"):
-            h = params.get("height")
-            w = params.get("width")
-            if h and not h.is_expr:
-                self._shape_hints.height = h
-            if w and not w.is_expr:
-                self._shape_hints.width = w
-        elif op_name == "crop":
-            h = params.get("height")
-            w = params.get("width")
-            if h and not h.is_expr:
-                self._shape_hints.height = h
-            if w and not w.is_expr:
-                self._shape_hints.width = w
-        elif op_name == "reshape":
-            shape_val = params.get("shape")
-            if shape_val and not shape_val.is_expr:
-                shape_list = shape_val.value
-                if len(shape_list) >= 2:
-                    h_dict = shape_list[0]
-                    w_dict = shape_list[1]
-                    if h_dict["type"] == "literal":
-                        self._shape_hints.height = ParamValue(
-                            is_expr=False, value=h_dict["value"]
-                        )
-                    if w_dict["type"] == "literal":
-                        self._shape_hints.width = ParamValue(
-                            is_expr=False, value=w_dict["value"]
-                        )
-                    if len(shape_list) >= 3:
-                        c_dict = shape_list[2]
-                        if c_dict["type"] == "literal":
-                            self._shape_hints.channels = ParamValue(
-                                is_expr=False, value=c_dict["value"]
-                            )
-        elif op_name == "rotate":
-            angle = params.get("angle")
-            expand = params.get("expand")
-            is_expand = bool(expand and not expand.is_expr and expand.value)
-            if angle and not angle.is_expr:
-                norm_angle = angle.value % 360
-                if is_expand:
-                    self._compute_rotate_expand_shape(norm_angle)
-                else:
-                    if norm_angle in (90, 270):
-                        h = self._shape_hints.height
-                        w = self._shape_hints.width
-                        self._shape_hints.height = w
-                        self._shape_hints.width = h
-            else:
-                # Expression angle: the output dims depend on the runtime
-                # value (90/270 swap H and W, expand grows to the rotated
-                # bounding box), so they are unknowable at plan time. The
-                # one safe case is a known square image without expand —
-                # any angle keeps H x W there.
-                h = self._shape_hints.height
-                w = self._shape_hints.width
-                square = (
-                    h is not None
-                    and w is not None
-                    and not h.is_expr
-                    and not w.is_expr
-                    and h.value == w.value
-                )
-                if is_expand or not square:
-                    self._shape_hints.height = None
-                    self._shape_hints.width = None
-        elif op_name == "warp_affine":
-            h = params.get("output_height")
-            w = params.get("output_width")
-            if h and not h.is_expr:
-                self._shape_hints.height = h
-            else:
-                self._shape_hints.height = None
-            if w and not w.is_expr:
-                self._shape_hints.width = w
-            else:
-                self._shape_hints.width = None
+        # --- Height / Width: the op's view-buffer infer_shape is the
+        # single authority, read via op_infer_shape. Unknown input dims
+        # and per-row expression params propagate to unknown (None) output
+        # dims; the previous hand-written per-op geometry (and the rotate
+        # bounding-box math) is gone. ---
+        spec = (
+            op_spec
+            if op_spec is not None
+            else (self._ops[idx] if 0 <= idx < len(self._ops) else None)
+        )
+        if spec is not None:
+            self._update_hw_from_infer_shape(spec)
 
         # --- Channel updates driven by the Rust channel rule ---
         self._update_channels_from_rule(op_spec)
@@ -684,30 +560,57 @@ class Pipeline:
             else:
                 self._shape_hints.channels = None
 
-    def _compute_rotate_expand_shape(self, norm_angle: float) -> None:
-        """Compute output dimensions for ``rotate(expand=True)``.
+    def _current_input_dims(self, ndim: int) -> list[int | None]:
+        """The current per-dimension sizes as ``op_infer_shape`` input.
 
-        When the angle is known at planning time, the bounding box of the
-        rotated rectangle can be computed exactly.
-
-        Args:
-            norm_angle: Rotation angle in degrees, normalised to ``[0, 360)``.
+        Length ``ndim``; each entry is the known size or ``None`` (unknown /
+        expression). The tracked hints hold H (dim 0), W (dim 1), C (dim 2);
+        higher dims are unknown.
         """
-        h = self._shape_hints.height
-        w = self._shape_hints.width
-        if h is None or w is None or h.is_expr or w.is_expr:
-            self._shape_hints.height = None
-            self._shape_hints.width = None
+        dims: list[int | None] = [None] * ndim
+        h, w, c = (
+            self._shape_hints.height,
+            self._shape_hints.width,
+            self._shape_hints.channels,
+        )
+        if ndim >= 1 and h is not None and not h.is_expr:
+            dims[0] = int(h.value)
+        if ndim >= 2 and w is not None and not w.is_expr:
+            dims[1] = int(w.value)
+        if ndim >= 3 and c is not None and not c.is_expr:
+            dims[2] = int(c.value)
+        return dims
+
+    def _update_hw_from_infer_shape(self, spec: "OpSpec") -> None:
+        """Set H/W hints from the op's view-buffer ``infer_shape`` (single
+        authority), replacing the old per-op geometry.
+
+        Reads ``op_infer_shape`` — which propagates unknowns (an unknown input
+        dim or a per-row expression param yields a ``None`` output dim) — and
+        maps the leading two output dims onto the H/W hints. Channels stay with
+        :meth:`_update_channels_from_rule`; rank stays with ``op_schema``.
+        """
+        ndim = self._expected_ndim
+        if ndim is None or ndim < 1:
+            # Rank unknown → per-dim H/W not tracked here.
+            return
+        from polars_cv._lib import op_infer_shape
+
+        dims = self._current_input_dims(ndim)
+        try:
+            out = op_infer_shape(json.dumps(spec.to_dict()), dims)
+        except ValueError:
+            # Not a single-buffer op (e.g. a domain-changing step) — it has no
+            # inferable H/W here; leave the hints for the domain logic.
             return
 
-        ih, iw = int(h.value), int(w.value)
-        rad = math.radians(norm_angle)
-        cos_a = abs(math.cos(rad))
-        sin_a = abs(math.sin(rad))
-        new_w = round(iw * cos_a + ih * sin_a)
-        new_h = round(ih * cos_a + iw * sin_a)
-        self._shape_hints.height = ParamValue(is_expr=False, value=new_h)
-        self._shape_hints.width = ParamValue(is_expr=False, value=new_w)
+        def _dim(i: int) -> "ParamValue | None":
+            if i < len(out) and out[i] is not None:
+                return ParamValue(is_expr=False, value=int(out[i]))
+            return None
+
+        self._shape_hints.height = _dim(0)
+        self._shape_hints.width = _dim(1)
 
     # --- Source (required, starts the chain) ---
 

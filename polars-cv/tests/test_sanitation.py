@@ -507,6 +507,7 @@ def test_registry_parity_no_dead_contracts():
 _REQUIRED_LIB_HOOKS = (
     "op_contract",
     "op_schema",
+    "op_infer_shape",
     "binary_output_dtype",
     "known_ops",
     "enum_variants",
