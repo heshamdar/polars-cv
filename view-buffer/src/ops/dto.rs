@@ -5,7 +5,6 @@ use crate::ops::color::ColorConvertOp;
 use crate::ops::compute::ComputeOp;
 use crate::ops::filter::ConvolveOp;
 use crate::ops::image::ImageOp;
-use crate::ops::phash::PerceptualHashOp;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::Op;
 use crate::ops::view::ViewOp;
@@ -32,8 +31,6 @@ pub enum ViewDto {
     Color(ColorConvertOp),
     /// Generic 2D convolution with arbitrary kernel.
     Filter(ConvolveOp),
-    /// Perceptual hash — computes an image fingerprint buffer.
-    PerceptualHash(PerceptualHashOp),
 }
 
 // PadMode/PadPosition live with the padding kernels; re-exported here
@@ -51,7 +48,6 @@ impl ViewDto {
             ViewDto::Image(op) => op,
             ViewDto::Color(op) => op,
             ViewDto::Filter(op) => op,
-            ViewDto::PerceptualHash(op) => op,
         }
     }
 

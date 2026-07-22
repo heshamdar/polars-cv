@@ -508,8 +508,12 @@ class TestConvolveValidation:
             Pipeline().source("image_bytes").convolve2d([1.0, 2.0], 3)
 
     def test_invalid_border_mode(self) -> None:
-        """Invalid border mode should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown border"):
+        """Invalid border mode should raise ValueError.
+
+        Uses the uniform ``_validate_enum`` message now that ``convolve2d``
+        validates ``border`` against the view-buffer ``BorderMode`` authority
+        (matching every other enum-valued parameter)."""
+        with pytest.raises(ValueError, match="Invalid border mode"):
             Pipeline().source("image_bytes").convolve2d([1.0] * 9, 3, border="invalid")
 
     def test_sobel_invalid_ksize(self) -> None:

@@ -66,6 +66,16 @@ def create_gradient_image(
 class TestPerceptualHashPipeline:
     """Tests for perceptual hash pipeline integration."""
 
+    def test_phash_produces_vector_domain(self) -> None:
+        """perceptual_hash transitions the pipeline to the ``vector`` domain.
+
+        The domain is sourced from the op's Rust contract
+        (``GraphStep::PerceptualHash`` → ``Domain::Vector``) via ``op_schema``,
+        matching its sibling vector producer ``histogram`` — not the old
+        buffer-domain ``ViewDto`` path. Guards the promotion done in this pass."""
+        pipe = Pipeline().source("image_bytes").perceptual_hash()
+        assert pipe.current_domain() == "vector"
+
     def test_basic_phash_pipeline(self) -> None:
         """Test basic perceptual hash pipeline execution."""
         # Create test image

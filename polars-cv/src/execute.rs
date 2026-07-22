@@ -688,7 +688,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             })))
         }
 
-        // Perceptual hash operation
+        // Perceptual hash operation — a graph-level vector producer (image
+        // buffer → 1-D u8 fingerprint), executed via `apply_perceptual_hash`.
         "perceptual_hash" => {
             use view_buffer::ops::phash::{HashAlgorithm, PerceptualHashOp};
 
@@ -699,9 +700,11 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 &[],
                 HashAlgorithm::Perceptual,
             )?;
-            let hash_size = get::opt_u32(&op_spec.params, "hash_size", 64, row_idx, ctx)?;
+            // `hash_size` fixes the output vector length, so it is a structural
+            // (literal-only) param — reject a bound expression slot.
+            let hash_size = get::opt_u32_literal(&op_spec.params, "hash_size", 64)?;
 
-            buffer_step(ViewDto::PerceptualHash(
+            Ok(GraphStep::PerceptualHash(
                 PerceptualHashOp::new(algorithm).with_hash_size(hash_size),
             ))
         }
@@ -802,22 +805,24 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "reduce_max" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
+            // `axis` is structural — it fixes the output rank at plan time, so
+            // it must be a literal (a bound expression slot is rejected).
+            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?;
             Ok(GraphStep::Reduction(ReductionOp::Max { axis }))
         }
         "reduce_min" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
+            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?;
             Ok(GraphStep::Reduction(ReductionOp::Min { axis }))
         }
         "reduce_mean" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
+            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?;
             Ok(GraphStep::Reduction(ReductionOp::Mean { axis }))
         }
         "reduce_std" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get::maybe_usize(&op_spec.params, "axis", row_idx, ctx)?;
+            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?;
             let ddof = get::opt_u8(&op_spec.params, "ddof", 0, row_idx, ctx)?;
             Ok(GraphStep::Reduction(ReductionOp::Std { axis, ddof }))
         }
@@ -828,12 +833,14 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "reduce_argmax" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, ctx)?;
+            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?
+                .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: axis"))?;
             Ok(GraphStep::Reduction(ReductionOp::ArgMax { axis }))
         }
         "reduce_argmin" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get_param(&op_spec.params, "axis")?.resolve_usize(row_idx, ctx)?;
+            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?
+                .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: axis"))?;
             Ok(GraphStep::Reduction(ReductionOp::ArgMin { axis }))
         }
         "extract_shape" => {

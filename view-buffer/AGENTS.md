@@ -89,8 +89,9 @@ Each method appends a node. `plan()` compiles into `ExecutionPlan`, `execute()` 
 Serializable enum of exactly the operations `ViewExpr` can execute — every
 variant is buffer-in/buffer-out and Op-backed (contracts delegate through
 `as_op()`). Graph-level concerns (binary ops between nodes, masks, channel
-merge, geometry, reductions, histograms) live in polars-cv's `GraphStep`
-(`polars-cv/src/graph/step.rs`), not here:
+merge, geometry, reductions, histograms, perceptual hash) live in polars-cv's
+`GraphStep` (`polars-cv/src/graph/step.rs`), not here — including anything that
+changes the data domain (e.g. `perceptual_hash` → `vector`):
 
 ```rust
 pub enum ViewDto {
@@ -99,7 +100,6 @@ pub enum ViewDto {
     Image(ImageOp),         // resize, blur, grayscale, threshold, canny, erode, dilate, morph_gradient, equalize
     Color(ColorConvertOp),  // RGB↔HSV, RGB↔LAB, RGB↔YCbCr, RGB↔BGR, RGB↔Gray
     Filter(ConvolveOp),     // 2D spatial convolution with border handling
-    PerceptualHash(PerceptualHashOp),
 }
 ```
 

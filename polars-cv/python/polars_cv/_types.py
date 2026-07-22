@@ -190,6 +190,61 @@ class PadPosition(str, Enum):
     BOTTOM_RIGHT = "bottom-right"
 
 
+class BorderMode(str, Enum):
+    """
+    Border-handling mode for 2D convolution (``convolve2d``).
+
+    Mirrors view-buffer's ``BorderMode`` authority:
+    - REPLICATE: Replicate the nearest edge pixel.
+    - ZERO: Treat out-of-bounds pixels as zero.
+    - REFLECT: Reflect pixels around the edge (dcba|abcd|dcba).
+    """
+
+    REPLICATE = "replicate"
+    ZERO = "zero"
+    REFLECT = "reflect"
+
+
+class HistogramClosed(str, Enum):
+    """
+    Interval inclusiveness for histogram binning.
+
+    Mirrors view-buffer's ``HistogramClosed`` authority:
+    - LEFT: Intervals are left-closed ``[a, b)``.
+    - RIGHT: Intervals are right-closed ``(a, b]``.
+    """
+
+    LEFT = "left"
+    RIGHT = "right"
+
+
+class LabelReduction(str, Enum):
+    """
+    Reduction over a contour region's pixel values (``label_reduce``).
+
+    Mirrors view-buffer's ``LabelReduction`` authority.
+    """
+
+    MAX = "max"
+    MEAN = "mean"
+    SUM = "sum"
+
+
+class LabelRegionMode(str, Enum):
+    """
+    Region selection for ``label_reduce``.
+
+    Mirrors view-buffer's ``LabelRegionMode`` authority:
+    - INTERIOR: Pixels strictly inside the contour polygon.
+    - BOUNDARY: Interior pixels plus pixels on the contour boundary.
+    - BBOX: All pixels within the bounding box.
+    """
+
+    INTERIOR = "interior"
+    BOUNDARY = "boundary"
+    BBOX = "bbox"
+
+
 class Domain(str, Enum):
     """
     Data domain for typed pipeline nodes.
@@ -216,6 +271,21 @@ class ParamValue:
 
     is_expr: bool
     value: Any  # The literal value or expression
+
+    def __post_init__(self) -> None:
+        # A literal parameter can never hold a Polars expression. Structural
+        # params (enum tags, axes, kernel shapes, hash_size) are built as
+        # literals precisely because they fix the plan-time schema; routing an
+        # expression to one lands here with a clear error instead of failing
+        # opaquely later at JSON serialization. Dynamic params must set
+        # ``is_expr=True`` (see :meth:`from_arg` / ``Pipeline._track_expr``).
+        if not self.is_expr and isinstance(self.value, pl.Expr):
+            msg = (
+                "This parameter is structural (it fixes the output shape/rank "
+                "at planning time) and must be a literal, not a Polars "
+                "expression."
+            )
+            raise TypeError(msg)
 
     def __eq__(self, other: object) -> bool:
         """Compare two ParamValues for equality."""

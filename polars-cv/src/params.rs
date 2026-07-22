@@ -33,12 +33,6 @@ pub enum ParamValue {
         /// Column name to resolve.
         #[serde(default)]
         col: Option<String>,
-        /// Serialized expression (for complex expressions).
-        #[serde(default)]
-        expr_serialized: Option<String>,
-        /// String representation (fallback).
-        #[serde(default)]
-        expr_str: Option<String>,
     },
 
     /// A compile-time-bound reference to an input column by index.
@@ -483,18 +477,63 @@ pub mod get {
             .map(|v| v.unwrap_or(default))
     }
 
-    /// Optional usize where absence is meaningful (e.g. a reduction `axis`:
-    /// absent means "global"). Present-but-invalid still errors.
-    pub fn maybe_usize(
-        params: &Params,
-        name: &str,
-        row_idx: usize,
-        ctx: &ParamCtx,
-    ) -> PolarsResult<Option<usize>> {
-        params
-            .get(name)
-            .map(|p| p.resolve_usize(row_idx, ctx).map_err(|e| named(name, e)))
-            .transpose()
+    /// Optional u32 for a **structural** parameter that fixes the output
+    /// shape/length (e.g. `perceptual_hash(hash_size)`). Literal-only: a bound
+    /// expression `Slot` (or any non-literal form) errors, because letting the
+    /// value vary per row would desync the plan-time schema from the data.
+    pub fn opt_u32_literal(params: &Params, name: &str, default: u32) -> PolarsResult<u32> {
+        match params.get(name) {
+            None => Ok(default),
+            Some(ParamValue::Literal { value }) => {
+                let v = value.as_i64().ok_or_else(|| {
+                    named(
+                        name,
+                        polars_err!(ComputeError: "expected an integer literal, got {:?}", value),
+                    )
+                })?;
+                u32::try_from(v).map_err(|_| {
+                    named(
+                        name,
+                        polars_err!(ComputeError: "value {} out of range for u32", v),
+                    )
+                })
+            }
+            Some(_) => Err(structural_literal_only(name)),
+        }
+    }
+
+    /// Optional usize structural parameter where absence is meaningful (e.g. a
+    /// reduction `axis`: absent = "global"). Literal-only: the axis fixes the
+    /// output rank at plan time, so a bound expression `Slot` errors rather
+    /// than silently changing rank per row.
+    pub fn maybe_usize_literal(params: &Params, name: &str) -> PolarsResult<Option<usize>> {
+        match params.get(name) {
+            None => Ok(None),
+            Some(ParamValue::Literal { value }) => {
+                let v = value.as_i64().ok_or_else(|| {
+                    named(
+                        name,
+                        polars_err!(ComputeError: "expected an integer literal, got {:?}", value),
+                    )
+                })?;
+                if v < 0 {
+                    return Err(named(
+                        name,
+                        polars_err!(ComputeError: "value {} cannot be negative", v),
+                    ));
+                }
+                Ok(Some(v as usize))
+            }
+            Some(_) => Err(structural_literal_only(name)),
+        }
+    }
+
+    /// The uniform error for a structural parameter given a per-row expression.
+    fn structural_literal_only(name: &str) -> PolarsError {
+        polars_err!(ComputeError:
+            "parameter '{}' is structural (it fixes the output shape/rank at \
+             planning time) and must be a literal, not a per-row expression",
+            name)
     }
 
     /// Optional f64 where absence is meaningful (e.g. `min_area`: absent
@@ -677,11 +716,59 @@ mod tests {
     fn test_unbound_expr_is_internal_error() {
         let param = ParamValue::Expr {
             col: Some("h".to_string()),
-            expr_serialized: None,
-            expr_str: None,
         };
         let err = param.resolve_i64(0, &ParamCtx::empty()).unwrap_err();
         assert!(err.to_string().contains("unbound expression parameter"));
+    }
+
+    #[test]
+    fn test_structural_literal_resolvers_reject_bound_slots() {
+        use super::get;
+        use std::collections::HashMap;
+
+        // A structural param that reached the resolver as a bound expression
+        // slot (or the wire `Expr` form) must error — letting it vary per row
+        // would desync the plan-time schema from the data.
+        for bad in [ParamValue::Slot { idx: 0 }, ParamValue::Expr { col: None }] {
+            let mut params: HashMap<String, ParamValue> = HashMap::new();
+            params.insert("axis".into(), bad.clone());
+            let err = get::maybe_usize_literal(&params, "axis").unwrap_err();
+            assert!(err.to_string().contains("structural"), "got: {err}");
+
+            let mut params2: HashMap<String, ParamValue> = HashMap::new();
+            params2.insert("hash_size".into(), bad);
+            let err = get::opt_u32_literal(&params2, "hash_size", 64).unwrap_err();
+            assert!(err.to_string().contains("structural"), "got: {err}");
+        }
+
+        // A literal still resolves normally, and absence yields the default.
+        let mut lit: HashMap<String, ParamValue> = HashMap::new();
+        lit.insert(
+            "axis".into(),
+            ParamValue::Literal {
+                value: serde_json::json!(2),
+            },
+        );
+        assert_eq!(get::maybe_usize_literal(&lit, "axis").unwrap(), Some(2));
+        assert_eq!(
+            get::opt_u32_literal(&HashMap::new(), "hash_size", 64).unwrap(),
+            64
+        );
+    }
+
+    #[test]
+    fn test_expr_wire_form_is_exactly_type_and_col() {
+        // The `Expr` wire form carries only `col` — vestigial serialization
+        // fields (expr_serialized/expr_str) were removed. Pin the shape so they
+        // cannot silently return and desync the Python `to_dict` emitter.
+        let json = serde_json::to_value(&ParamValue::Expr {
+            col: Some("h".to_string()),
+        })
+        .unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("expr"));
+        assert_eq!(obj.get("col").and_then(|v| v.as_str()), Some("h"));
+        assert_eq!(obj.len(), 2, "expr wire form must be exactly {{type, col}}");
     }
 
     #[test]
