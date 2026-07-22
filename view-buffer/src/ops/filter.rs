@@ -7,6 +7,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::cost::OpCost;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
@@ -84,6 +85,17 @@ impl Op for ConvolveOp {
 
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         OutputDTypeRule::PromoteToFloat
+    }
+
+    fn output_rank_rule(&self) -> OutputRankRule {
+        // 2D convolution keeps [H, W, C].
+        OutputRankRule::PreserveRank
+    }
+
+    fn output_channel_rule(&self) -> OutputChannelRule {
+        // The kernel is applied independently to every channel (including any
+        // alpha), so the channel count is unchanged.
+        OutputChannelRule::PreserveChannels
     }
 }
 

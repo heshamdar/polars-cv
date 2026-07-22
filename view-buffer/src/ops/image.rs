@@ -1,7 +1,7 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::cost::OpCost;
 use crate::ops::pad::{PadMode, PadPosition};
-use crate::ops::shape_rule::OutputChannelRule;
+use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
@@ -228,6 +228,13 @@ impl Op for ImageOp {
             ImageOpKind::Letterbox { .. } => "Letterbox",
             ImageOpKind::ChannelSwap { .. } => "ChannelSwap",
         }
+    }
+
+    fn output_rank_rule(&self) -> OutputRankRule {
+        // Every image kind preserves rank: resize/blur/pad/threshold/morph keep
+        // [H, W, C]; grayscale/canny keep the rank and set the channel dim via
+        // the channel rule; channel_swap permutes within the channel dim.
+        OutputRankRule::PreserveRank
     }
 
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {

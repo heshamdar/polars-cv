@@ -55,10 +55,9 @@ pub trait Op {
     /// input shape. `infer_shape` stays the concrete authority; the two are
     /// bound by a parity test so they cannot diverge.
     ///
-    /// Default: [`OutputRankRule::PreserveRank`].
-    fn output_rank_rule(&self) -> OutputRankRule {
-        OutputRankRule::PreserveRank
-    }
+    /// Required (no default): every op must state its rank transform so a new
+    /// op cannot silently inherit `PreserveRank` and lie about its structure.
+    fn output_rank_rule(&self) -> OutputRankRule;
 
     /// Declares how this operation transforms the input *channel count* (the
     /// trailing dimension of an `[H, W, C]` buffer).
@@ -67,10 +66,8 @@ pub trait Op {
     /// [`infer_shape`](Op::infer_shape) for the channel dimension. Replaces the
     /// Python-side alpha/channel contract as the single authority.
     ///
-    /// Default: [`OutputChannelRule::PreserveChannels`].
-    fn output_channel_rule(&self) -> OutputChannelRule {
-        OutputChannelRule::PreserveChannels
-    }
+    /// Required (no default): every op must state its channel transform.
+    fn output_channel_rule(&self) -> OutputChannelRule;
 
     /// Infers the output dtype given input dtypes.
     ///
@@ -138,10 +135,9 @@ pub trait Op {
     /// - Have a configurable output dtype
     /// - Promote integers to floats
     ///
-    /// Default: PreserveInput.
-    fn output_dtype_rule(&self) -> OutputDTypeRule {
-        OutputDTypeRule::PreserveInput
-    }
+    /// Required (no default): every op must state its dtype rule so a new op
+    /// cannot silently inherit `PreserveInput` and mis-report its output dtype.
+    fn output_dtype_rule(&self) -> OutputDTypeRule;
 
     /// Resolves the actual output dtype given input dtype and optional override.
     ///

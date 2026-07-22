@@ -1,6 +1,6 @@
 //! View operations that perform zero-copy transformations.
 
-use crate::core::dtype::DType;
+use crate::core::dtype::{DType, OutputDTypeRule};
 use crate::ops::cost::OpCost;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
@@ -108,6 +108,12 @@ impl Op for ViewOp {
                 OutputChannelRule::PreserveChannels
             }
         }
+    }
+
+    fn output_dtype_rule(&self) -> OutputDTypeRule {
+        // View ops (transpose, reshape, flip, crop, channel_select, rotate90)
+        // only rearrange existing elements — the dtype is always preserved.
+        OutputDTypeRule::PreserveInput
     }
 
     fn infer_dtype(&self, inputs: &[DType]) -> DType {
