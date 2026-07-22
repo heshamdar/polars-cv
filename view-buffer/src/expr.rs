@@ -216,7 +216,7 @@ impl ViewExpr {
             ViewDto::Filter(op) => {
                 let new_shape = Op::infer_shape(&op, &[&self.shape]);
                 let new_strides = self.calc_strides(&op, &new_shape);
-                let new_dtype = op.infer_dtype(&[self.dtype]);
+                let new_dtype = op.resolve_output_dtype(self.dtype, None);
                 Arc::new(Self {
                     shape: new_shape,
                     strides: new_strides,
@@ -226,7 +226,7 @@ impl ViewExpr {
             }
             ViewDto::Color(op) => {
                 let new_shape = ColorConvertOp::infer_shape(&op, &self.shape);
-                let new_dtype = Op::infer_dtype(&op, &[self.dtype]);
+                let new_dtype = Op::resolve_output_dtype(&op, self.dtype, None);
                 Arc::new(Self {
                     shape: new_shape,
                     strides: None, // Color conversion always allocates
@@ -247,7 +247,7 @@ impl ViewExpr {
             // (either because it requires contiguous input, or because it allocates a new buffer).
             // Calculate contiguous strides for the new shape.
             if res.is_none() {
-                let new_dtype = op.infer_dtype(&[self.dtype]);
+                let new_dtype = op.resolve_output_dtype(self.dtype, None);
                 let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
                 return Some(l.strides);
             }
@@ -260,7 +260,7 @@ impl ViewExpr {
             if effect == MemoryEffect::RequiresContiguous
                 || op.intrinsic_cost() == crate::ops::OpCost::Allocating
             {
-                let new_dtype = op.infer_dtype(&[self.dtype]);
+                let new_dtype = op.resolve_output_dtype(self.dtype, None);
                 let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
                 return Some(l.strides);
             }
@@ -383,7 +383,7 @@ impl ViewExpr {
         let op = ComputeOp::Scale(factor);
         let new_shape = self.shape.clone();
         let new_strides = self.calc_strides(&op, &new_shape);
-        let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_dtype = op.resolve_output_dtype(self.dtype, None);
 
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -395,7 +395,7 @@ impl ViewExpr {
 
     pub fn relu(self: &Arc<Self>) -> Arc<Self> {
         let op = ComputeOp::Relu;
-        let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_dtype = op.resolve_output_dtype(self.dtype, None);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -408,7 +408,7 @@ impl ViewExpr {
     pub fn fused(self: &Arc<Self>, kernel: FusedKernel) -> Arc<Self> {
         let op = ComputeOp::Fused(kernel);
         // Fused kernels preserve shape but write a fresh contiguous buffer.
-        let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_dtype = op.resolve_output_dtype(self.dtype, None);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -428,7 +428,7 @@ impl ViewExpr {
         let new_shape = op.infer_shape(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
 
-        let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_dtype = op.resolve_output_dtype(self.dtype, None);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: new_shape,
@@ -440,7 +440,7 @@ impl ViewExpr {
     /// Clamp values to [min, max] range.
     pub fn clamp(self: &Arc<Self>, min: f32, max: f32) -> Arc<Self> {
         let op = ComputeOp::Clamp { min, max };
-        let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_dtype = op.resolve_output_dtype(self.dtype, None);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -454,7 +454,7 @@ impl ViewExpr {
     pub fn adjust_contrast(self: &Arc<Self>, factor: f32) -> Arc<Self> {
         let op = ComputeOp::AdjustContrast(factor);
         let new_strides = self.calc_strides(&op, &self.shape);
-        let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_dtype = op.resolve_output_dtype(self.dtype, None);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
@@ -466,7 +466,7 @@ impl ViewExpr {
     /// Adjust gamma (power-law transformation).
     pub fn adjust_gamma(self: &Arc<Self>, gamma: f32) -> Arc<Self> {
         let op = ComputeOp::AdjustGamma(gamma);
-        let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_dtype = op.resolve_output_dtype(self.dtype, None);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -479,7 +479,7 @@ impl ViewExpr {
     /// Invert pixel values: `max_val - pixel`.
     pub fn invert(self: &Arc<Self>) -> Arc<Self> {
         let op = ComputeOp::Invert;
-        let new_dtype = op.infer_dtype(&[self.dtype]);
+        let new_dtype = op.resolve_output_dtype(self.dtype, None);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -915,7 +915,7 @@ impl ViewExpr {
                     child.collect_costs(ops, dtype_flow);
                 }
                 let input_dtype = children.first().map(|c| c.dtype).unwrap_or(DType::U8);
-                let output_dtype = op.infer_dtype(&[input_dtype]);
+                let output_dtype = op.resolve_output_dtype(input_dtype, None);
 
                 let report = if let ComputeOp::Fused(kernel) = op {
                     // Create detailed fused operation report
@@ -938,7 +938,7 @@ impl ViewExpr {
             ExprNode::Image(op, child) => {
                 child.collect_costs(ops, dtype_flow);
                 let input_dtype = child.dtype;
-                let output_dtype = op.infer_dtype(&[input_dtype]);
+                let output_dtype = op.resolve_output_dtype(input_dtype, None);
                 if input_dtype != output_dtype {
                     ops.push(OpCostReport::with_dtype_change(
                         op.name(),
@@ -958,7 +958,7 @@ impl ViewExpr {
             ExprNode::Color(op, child) => {
                 child.collect_costs(ops, dtype_flow);
                 let input_dtype = child.dtype;
-                let output_dtype = op.infer_dtype(&[input_dtype]);
+                let output_dtype = op.resolve_output_dtype(input_dtype, None);
                 ops.push(OpCostReport::with_dtype_change(
                     Op::name(op),
                     op.intrinsic_cost(),
@@ -970,7 +970,7 @@ impl ViewExpr {
             ExprNode::Filter(op, child) => {
                 child.collect_costs(ops, dtype_flow);
                 let input_dtype = child.dtype;
-                let output_dtype = op.infer_dtype(&[input_dtype]);
+                let output_dtype = op.resolve_output_dtype(input_dtype, None);
                 ops.push(OpCostReport::with_dtype_change(
                     op.name(),
                     op.intrinsic_cost(),

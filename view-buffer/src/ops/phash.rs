@@ -201,11 +201,6 @@ impl Op for PerceptualHashOp {
         OutputChannelRule::NotApplicable
     }
 
-    fn infer_dtype(&self, _inputs: &[DType]) -> DType {
-        // Hash is always output as u8 bytes
-        DType::U8
-    }
-
     fn memory_effect(&self) -> MemoryEffect {
         // Hashing requires the full image to be loaded
         MemoryEffect::RequiresContiguous

@@ -311,11 +311,6 @@ impl Op for ImageOp {
         }
     }
 
-    fn infer_dtype(&self, inputs: &[DType]) -> DType {
-        // Delegate to output_dtype_rule so there is a single source of truth.
-        self.output_dtype_rule().resolve(inputs[0], None)
-    }
-
     fn memory_effect(&self) -> MemoryEffect {
         match &self.kind {
             ImageOpKind::Threshold(_) => MemoryEffect::StridePreserving,

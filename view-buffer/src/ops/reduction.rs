@@ -601,18 +601,6 @@ impl Op for ReductionOp {
         OutputChannelRule::NotApplicable
     }
 
-    fn infer_dtype(&self, inputs: &[DType]) -> DType {
-        match self {
-            ReductionOp::Mean { .. } | ReductionOp::Std { .. } => DType::F64,
-            ReductionOp::Sum { axis: None } => DType::F64,
-            ReductionOp::Sum { axis: Some(_) } => DType::F64,
-            ReductionOp::ArgMax { .. } | ReductionOp::ArgMin { .. } => DType::I64,
-            // PopCount and Percentile return f64
-            ReductionOp::PopCount | ReductionOp::Percentile { .. } => DType::F64,
-            _ => inputs[0],
-        }
-    }
-
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::RequiresContiguous
     }

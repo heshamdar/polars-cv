@@ -353,16 +353,6 @@ impl Op for HistogramOp {
         OutputChannelRule::NotApplicable
     }
 
-    fn infer_dtype(&self, _inputs: &[DType]) -> DType {
-        match self.output {
-            HistogramOutput::Counts => DType::U64,
-            HistogramOutput::Normalized => DType::F64,
-            HistogramOutput::Quantized => DType::U32,
-            HistogramOutput::Edges => DType::F64,
-            HistogramOutput::Buckets => DType::F64,
-        }
-    }
-
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::RequiresContiguous
     }

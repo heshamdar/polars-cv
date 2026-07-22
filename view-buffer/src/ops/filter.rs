@@ -55,10 +55,6 @@ impl Op for ConvolveOp {
         inputs[0].to_vec()
     }
 
-    fn infer_dtype(&self, inputs: &[DType]) -> DType {
-        self.output_dtype_rule().resolve(inputs[0], None)
-    }
-
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::RequiresContiguous
     }
