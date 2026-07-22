@@ -621,6 +621,7 @@ _OP_BUILDERS = {
         Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
     ),
     "flip": lambda: Pipeline().source("image_bytes").flip([0]),
+    "perceptual_hash": lambda: Pipeline().source("image_bytes").perceptual_hash(),
 }
 
 
@@ -731,6 +732,10 @@ def test_enum_parity_domain():
         "HistogramOutput",
         "PadMode",
         "PadPosition",
+        "BorderMode",
+        "HistogramClosed",
+        "LabelReduction",
+        "LabelRegionMode",
     ],
 )
 def test_enum_parity_api_enums(enum_name):
@@ -812,8 +817,8 @@ def test_lazy_pipeline_method_parity():
     The lazy forwarders are generated from Pipeline at import time
     (``polars_cv.lazy._install_pipeline_forwarders``), so parity holds by
     construction. This test guards that the generator stays wired up — and that
-    any explicitly hand-written lazy methods (binary ops, ``label_reduce``,
-    ``apply_mask``) keep signatures aligned with their Pipeline counterparts."""
+    any explicitly hand-written lazy methods (binary ops, ``apply_mask``,
+    ``channel_merge``) keep signatures aligned with their Pipeline counterparts."""
     import inspect
 
     from polars_cv.lazy import (
@@ -873,6 +878,81 @@ def test_lazy_stub_is_current():
     )
     assert stub_path.read_text() == module.generate_stub(), (
         "lazy.pyi is out of date. Run: python scripts/gen_lazy_stub.py"
+    )
+
+
+def test_source_modifiers_are_not_generated_lazy_forwarders():
+    """A Pipeline method that mutates ``_source`` must be Pipeline-only.
+
+    ``_install_pipeline_forwarders`` generates a lazy forwarder for every
+    chainable Pipeline op, running it on a *sourceless* continuation
+    (``_continuation()`` returns ``Pipeline()`` with ``_source is None``). A
+    source-modifier (``source``, ``thumbnail``) would therefore unconditionally
+    raise "requires a source" as a lazy method — a latent, always-failing
+    forwarder. Such methods must live in ``PIPELINE_ONLY_METHODS`` so no
+    forwarder is generated. This pins the fix for ``thumbnail`` and catches any
+    future source-mutating builder that forgets the exclusion."""
+    import inspect
+    import re
+
+    from polars_cv.lazy import PIPELINE_ONLY_METHODS
+    from polars_cv.pipeline import Pipeline
+
+    # `._source =` assignment, but not the `._source ==`/`is None` comparisons.
+    assigns_source = re.compile(r"\._source\s*=(?!=)")
+    offenders = []
+    for name in dir(Pipeline):
+        if name.startswith("_"):
+            continue
+        method = getattr(Pipeline, name)
+        if not callable(method):
+            continue
+        try:
+            src = inspect.getsource(method)
+        except (OSError, TypeError):
+            continue
+        if assigns_source.search(src) and name not in PIPELINE_ONLY_METHODS:
+            offenders.append(name)
+    assert not offenders, (
+        "source-mutating Pipeline methods must be in PIPELINE_ONLY_METHODS "
+        f"(else they generate always-failing lazy forwarders): {offenders}"
+    )
+
+
+def test_explicit_lazy_methods_take_a_lazy_operand():
+    """A hand-written lazy method is only justified when its Pipeline
+    counterpart takes a ``LazyPipelineExpr`` operand (a binary op, mask/merge).
+
+    Ordinary ops must be generated, not hand-mirrored: the ``label_reduce``
+    regression (a redundant explicit copy whose docstring drifted) is exactly
+    what this guards against. For every method explicitly defined on
+    ``LazyPipelineExpr`` that ALSO exists as a chainable Pipeline op, the
+    Pipeline signature must reference ``LazyPipelineExpr`` in a parameter
+    annotation (the bespoke-lazy exception); otherwise it should be deleted and
+    left to the generator."""
+    import inspect
+
+    from polars_cv.lazy import LazyPipelineExpr, _chainable_pipeline_ops
+    from polars_cv.pipeline import Pipeline
+
+    chainable = set(_chainable_pipeline_ops())
+    offenders = []
+    for name, member in vars(LazyPipelineExpr).items():
+        if name.startswith("_") or not callable(member):
+            continue
+        if getattr(member, "__polars_cv_generated__", False):
+            continue  # auto-generated forwarder — the desired path
+        if name not in chainable:
+            continue  # lazy-only method (merge_pipe, statistics_lazy, …) — fine
+        p_sig = inspect.signature(getattr(Pipeline, name))
+        takes_lazy_operand = any(
+            "LazyPipelineExpr" in str(p.annotation) for p in p_sig.parameters.values()
+        )
+        if not takes_lazy_operand:
+            offenders.append(name)
+    assert not offenders, (
+        "explicit LazyPipelineExpr methods without a LazyPipelineExpr operand "
+        f"should be deleted and generated instead: {offenders}"
     )
 
 

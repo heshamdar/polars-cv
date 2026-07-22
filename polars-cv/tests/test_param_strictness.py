@@ -84,21 +84,12 @@ class TestEnumValuesExecutable:
 
     @pytest.mark.parametrize("algorithm", [a.value for a in HashAlgorithm])
     def test_hash_algorithms(self, image_bytes: bytes, algorithm: str) -> None:
-        # A hash is not directly sinkable today: the eager builder tracks
-        # vector domain (rejecting blob/numpy sinks and even a chained
-        # reduce_popcount), while execution produces a byte buffer (rejecting
-        # the native sink) — and the lazy continuation path derives *buffer*
-        # domain from the Rust contract, disagreeing with the eager builder.
-        # Known plan!=exec/domain-tracking gap; consume the hash the way
-        # hamming_distance does (lazy continuation into a scalar) until the
-        # domain authority is unified.
-        df = pl.DataFrame({"image": [image_bytes]})
-        hashed = pl.col("image").cv.pipe(
-            Pipeline().source("image_bytes").perceptual_hash(algorithm=algorithm)
-        )
-        expr = hashed.pipe(Pipeline().reduce_popcount()).sink("native")
-        out = df.with_columns(result=expr)["result"]
-        assert out.null_count() == 0
+        # perceptual_hash now produces the `vector` domain from its Rust
+        # contract (GraphStep::PerceptualHash), agreeing between the eager
+        # builder and the lazy continuation, so the 1-D u8 fingerprint sinks
+        # directly through the typed "list" sink.
+        pipe = Pipeline().source("image_bytes").perceptual_hash(algorithm=algorithm)
+        _run(pipe, "list", image_bytes)
 
     @pytest.mark.parametrize("output", [o.value for o in HistogramOutput])
     def test_histogram_outputs(self, image_bytes: bytes, output: str) -> None:
@@ -218,3 +209,77 @@ class TestParamPolicyRatchet:
             "resolve_op swallows a parameter resolution error into a default; "
             "use params::get::opt_* instead"
         )
+
+
+@plugin_required
+class TestFillRangeParamsAcceptExpressions:
+    """Numeric fill/range params flow through Rust's expression-capable
+    resolvers, so the Python builders must accept a ``pl.Expr`` end-to-end
+    (aligning with ``pad(value)`` / ``histogram(bins)``)."""
+
+    @pytest.fixture()
+    def image_bytes(self, create_test_png: "Callable") -> bytes:
+        return create_test_png(16, 12)
+
+    def test_rotate_border_value_accepts_expr(self, image_bytes: bytes) -> None:
+        df = pl.DataFrame({"image": [image_bytes], "bg": [128.0]})
+        pipe = Pipeline().source("image_bytes").rotate(30, border_value=pl.col("bg"))
+        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        assert out["r"].null_count() == 0
+
+    def test_warp_affine_border_value_accepts_expr(self, image_bytes: bytes) -> None:
+        df = pl.DataFrame({"image": [image_bytes], "bg": [64.0]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .warp_affine(
+                matrix=[1.0, 0.0, 2.0, 0.0, 1.0, 3.0],
+                output_size=(16, 12),
+                border_value=pl.col("bg"),
+            )
+        )
+        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        assert out["r"].null_count() == 0
+
+    def test_histogram_range_accepts_expr(self, image_bytes: bytes) -> None:
+        df = pl.DataFrame({"image": [image_bytes], "lo": [0.0], "hi": [255.0]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .histogram(bins=8, range=(pl.col("lo"), pl.col("hi")), output="counts")
+        )
+        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))
+        assert out["r"].null_count() == 0
+
+    def test_extract_contours_min_area_accepts_expr(self, image_bytes: bytes) -> None:
+        df = pl.DataFrame({"image": [image_bytes], "area": [1.0]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .extract_contours(min_area=pl.col("area"))
+        )
+        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("native"))
+        # Contour extraction may legitimately yield empty rows; just assert the
+        # expression-backed threshold executed without error.
+        assert out.height == 1
+
+
+class TestStructuralParamsRejectExpressions:
+    """Structural params fix output shape/rank at planning time and must be
+    literals. Passing a ``pl.Expr`` is rejected at build time (the Rust
+    resolver also rejects a bound slot, as defense-in-depth)."""
+
+    def test_reduce_axis_rejects_expr(self) -> None:
+        with pytest.raises(TypeError, match="structural"):
+            Pipeline().source("image_bytes").reduce_max(axis=pl.col("ax"))
+
+    def test_reduce_argmax_axis_rejects_expr(self) -> None:
+        with pytest.raises(TypeError, match="structural"):
+            Pipeline().source("image_bytes").reduce_argmax(axis=pl.col("ax"))
+
+    def test_perceptual_hash_size_rejects_expr(self) -> None:
+        with pytest.raises(TypeError, match="structural"):
+            Pipeline().source("image_bytes").perceptual_hash(hash_size=pl.col("hs"))

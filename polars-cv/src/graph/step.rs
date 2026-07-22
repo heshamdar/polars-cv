@@ -14,6 +14,7 @@
 
 use view_buffer::core::dtype::OutputDTypeRule;
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
+use view_buffer::ops::phash::PerceptualHashOp;
 use view_buffer::ops::{Domain, OutputChannelRule, OutputRankRule};
 use view_buffer::ops::{HistogramOp, ReductionOp};
 use view_buffer::{BinaryOp, GeometryOp, Op, ViewDto};
@@ -36,6 +37,8 @@ pub(crate) enum GraphStep {
     Reduction(ReductionOp),
     /// Histogram: quantized → buffer, other modes → vector.
     Histogram(HistogramOp),
+    /// Perceptual hash: image buffer → 1-D u8 fingerprint (vector domain).
+    PerceptualHash(PerceptualHashOp),
     /// Read the buffer's dimensions as a vector.
     ExtractShape,
     /// Score contour regions (from an expression column) over the buffer.
@@ -57,6 +60,7 @@ impl GraphStep {
             | GraphStep::ChannelMerge { .. }
             | GraphStep::Reduction(_)
             | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_)
             | GraphStep::ExtractShape
             | GraphStep::LabelReduce { .. } => Domain::Buffer,
         }
@@ -72,7 +76,10 @@ impl GraphStep {
             GraphStep::Binary { .. }
             | GraphStep::ApplyMask { .. }
             | GraphStep::ChannelMerge { .. } => Domain::Buffer,
-            GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => Domain::Vector,
+            // Perceptual hash produces a fixed-length 1-D fingerprint.
+            GraphStep::PerceptualHash(_)
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => Domain::Vector,
         }
     }
 
@@ -84,6 +91,7 @@ impl GraphStep {
             GraphStep::Binary { op, .. } => op.output_dtype_rule(),
             GraphStep::Reduction(op) => op.output_dtype_rule(),
             GraphStep::Histogram(op) => op.output_dtype_rule(),
+            GraphStep::PerceptualHash(op) => op.output_dtype_rule(),
             // Mask blending and channel merge preserve the buffer dtype.
             GraphStep::ApplyMask { .. } | GraphStep::ChannelMerge { .. } => {
                 OutputDTypeRule::PreserveInput
@@ -101,6 +109,7 @@ impl GraphStep {
             GraphStep::Binary { op, .. } => op.output_rank_rule(),
             GraphStep::Reduction(op) => op.output_rank_rule(),
             GraphStep::Histogram(op) => op.output_rank_rule(),
+            GraphStep::PerceptualHash(op) => op.output_rank_rule(),
             GraphStep::ApplyMask { .. } => OutputRankRule::PreserveRank,
             // Merge always yields an [H, W, C] image.
             GraphStep::ChannelMerge { .. } => OutputRankRule::Fixed(3),
@@ -117,6 +126,7 @@ impl GraphStep {
             GraphStep::Binary { op, .. } => op.output_channel_rule(),
             GraphStep::Reduction(op) => op.output_channel_rule(),
             GraphStep::Histogram(op) => op.output_channel_rule(),
+            GraphStep::PerceptualHash(op) => op.output_channel_rule(),
             GraphStep::ApplyMask { .. } => OutputChannelRule::PreserveChannels,
             // One channel per merged single-channel input (this + others).
             GraphStep::ChannelMerge { others } => OutputChannelRule::Fixed(others.len() + 1),

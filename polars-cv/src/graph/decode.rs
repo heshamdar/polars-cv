@@ -679,7 +679,11 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
         }
         ("scalar", "native") => Ok(DataType::Float64),
         ("vector", "native" | "list") => {
-            let inner = dtype_str_to_polars(&spec.expected_dtype);
+            // Reject an unresolved "auto" element dtype the same way the
+            // buffer/list and array arms do, instead of silently mapping it to
+            // U8 — a plan/data divergence if a vector output ever reached the
+            // sink still "auto". (Today vector dtypes are always concrete.)
+            let inner = list_array_inner_dtype(&spec.expected_dtype, "list")?;
             if let Some(ref shape) = spec.expected_shape {
                 let mut dtype = inner;
                 for _ in 0..shape.len() {

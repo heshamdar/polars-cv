@@ -134,7 +134,9 @@ pipe.resize(height=224, width=pl.col("target_w"))
 
 `ParamValue` wraps this distinction. Expression params are tracked in `_expr_columns` and passed to Rust as additional input columns.
 
-**Dynamic parameter coverage:** Most numeric parameters accept `IntOrExpr` / `FloatOrExpr`. This includes: resize dimensions, crop offsets, pad values, rotate angle, blur sigma, threshold value, canny thresholds, contrast/gamma/brightness factors, morphology ksize/iterations, channel_select index, convolve2d ksize, warp_affine output_size, rasterize fill_value/background, reduce_percentile q, reduce_std ddof. Structural parameters (matrix, kernel, axes, enum values) remain static only.
+**Dynamic parameter coverage:** Most numeric parameters accept `IntOrExpr` / `FloatOrExpr`. This includes: resize dimensions, crop offsets, pad values, rotate angle and `border_value`, warp_affine `border_value`, blur sigma, threshold value, canny thresholds, contrast/gamma/brightness factors, morphology ksize/iterations, channel_select index, convolve2d ksize, warp_affine output_size, rasterize fill_value/background, histogram `range_min`/`range_max`, extract_contours `min_area`, reduce_percentile q, reduce_std ddof. Fill/range params go through `_track_expr` just like their analogues (`pad(value)`, `histogram(bins)`).
+
+**Structural parameters are literal-only and enforced on both sides.** Matrix, kernel, axis lists, enum tags, reduction `axis`, and `perceptual_hash(hash_size)` fix the plan-time schema (rank/length), so they must be literals. A literal `ParamValue` can never hold a `pl.Expr` — `ParamValue.__post_init__` (`_types.py`) rejects it with a clear "structural" error, and the Rust resolvers (`params::get::maybe_usize_literal` / `opt_u32_literal`) reject a bound expression slot as defense-in-depth. Guarded by `TestStructuralParamsRejectExpressions` / `TestFillRangeParamsAcceptExpressions` in `test_param_strictness.py` and `test_structural_literal_resolvers_reject_bound_slots` in `params.rs`.
 
 ## Adding a New Operation (Python Side)
 

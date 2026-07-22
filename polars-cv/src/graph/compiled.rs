@@ -816,6 +816,27 @@ impl CompiledGraph {
                                 let result = histogram_op.execute(current_buf);
                                 current_output = NodeOutput::from_buffer(result);
                             }
+                            GraphStep::PerceptualHash(phash_op) => {
+                                current_output =
+                                    flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
+                                let current_buf = current_output.as_buffer().ok_or_else(|| {
+                                    format!(
+                                        "PerceptualHash requires Buffer, got {:?}",
+                                        current_output.domain()
+                                    )
+                                })?;
+                                // `apply_perceptual_hash` converts to u8 image
+                                // format before hashing and returns a 1-D u8
+                                // buffer. Like the histogram vector modes, the
+                                // result rides as a Buffer at runtime; the
+                                // planned `vector` domain (OutputSpec) selects
+                                // the List encoding at sink time.
+                                let result = view_buffer::execution::runner::apply_perceptual_hash(
+                                    (**current_buf).clone(),
+                                    phash_op.clone(),
+                                );
+                                current_output = NodeOutput::from_buffer(result);
+                            }
                             GraphStep::ExtractShape => {
                                 // Extract shape from buffer and return as vector
                                 current_output =
@@ -1245,6 +1266,12 @@ fn validate_output_dtype(
     spec: &OutputSpec,
     output: &NodeOutput,
 ) -> Result<(), String> {
+    // Dtype: planned dtype must match the produced dtype. (A runtime rank guard
+    // was evaluated here too, but "planned rank == produced rank" is not an
+    // invariant the planner currently maintains for list/array/raw sources — it
+    // defaults their rank and the sink legitimately follows the decoded shape —
+    // so a hard rank assertion produced false positives. Enforcing rank would
+    // require fixing planner rank-tracking per source type first.)
     if spec.expected_dtype != "auto" {
         if let Some(buf) = output.as_buffer() {
             if let Ok(expected) = super::decode::parse_dtype_str(&spec.expected_dtype) {
@@ -1343,6 +1370,7 @@ mod tests {
             | GraphStep::Geometry(_)
             | GraphStep::Reduction(_)
             | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_)
             | GraphStep::ExtractShape
             | GraphStep::LabelReduce { .. } => (),
         }
@@ -1483,6 +1511,25 @@ mod tests {
         );
         let counts = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
         assert_eq!(counts.as_slice::<u64>().iter().sum::<u64>(), 4);
+
+        // PerceptualHash: image buffer -> 1-D u8 fingerprint. The step produces
+        // a Buffer node output (u8, so the typed list/array sinks preserve
+        // UInt8); serialize it via blob here to prove the variant executes.
+        let out = exec(
+            r#"{
+                "nodes": {"n0": {"source": {"format": "blob"},
+                                  "ops": [{"op": "perceptual_hash",
+                                           "algorithm": {"type": "literal", "value": "average"},
+                                           "hash_size": {"type": "literal", "value": 64}}]}},
+                "outputs": {"_output": {"node": "n0", "sink": {"format": "blob"}}},
+                "column_bindings": {"n0": 0}
+            }"#,
+            &no_names,
+            &[Series::new("b".into(), std::slice::from_ref(&f32_blob))],
+        );
+        let hash_buf = ViewBuffer::from_blob(out.binary().unwrap().get(0).unwrap()).unwrap();
+        assert_eq!(hash_buf.dtype(), view_buffer::DType::U8);
+        assert_eq!(hash_buf.shape(), &[8]);
 
         // ExtractShape: dimension vector.
         let out = exec(

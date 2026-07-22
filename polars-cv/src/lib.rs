@@ -326,6 +326,7 @@ fn out_dtype_override(op_json: &str) -> PyResult<Option<view_buffer::DType>> {
 /// rather than enforcement.
 #[pyfunction]
 fn enum_variants(name: &str) -> PyResult<Vec<String>> {
+    use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
     use view_buffer::geometry::ops::{ApproxMethod, ExtractMode};
     use view_buffer::naming::names;
     use view_buffer::ops::dto::{PadMode, PadPosition};
@@ -347,6 +348,8 @@ fn enum_variants(name: &str) -> PyResult<Vec<String>> {
         "FilterType" => names(FilterType::NAMED),
         "InterpolationType" => names(InterpolationType::NAMED),
         "BorderMode" => names(BorderMode::NAMED),
+        "LabelReduction" => names(LabelReduction::NAMED),
+        "LabelRegionMode" => names(LabelRegionMode::NAMED),
         "ExtractMode" => names(ExtractMode::NAMED),
         "ApproxMethod" => names(ApproxMethod::NAMED),
         // `Preset` carries payload, so NormalizeMethod exposes names only.

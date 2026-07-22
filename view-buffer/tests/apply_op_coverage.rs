@@ -7,11 +7,10 @@
 //! `output_dtype_rule`). The exhaustive match in `assert_probed` makes adding
 //! a `ViewDto` variant a compile error until a probe exists here.
 
-#![cfg(all(feature = "image_interop", feature = "perceptual_hash"))]
+#![cfg(feature = "image_interop")]
 
 use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
 use view_buffer::ops::filter::{BorderMode, ConvolveOp};
-use view_buffer::ops::phash::{HashAlgorithm, PerceptualHashOp};
 use view_buffer::{
     ComputeOp, DType, FilterType, ImageOp, ImageOpKind, ViewBuffer, ViewDto, ViewExpr, ViewOp,
 };
@@ -38,7 +37,6 @@ fn view_dto_probes() -> Vec<ViewDto> {
             normalize: false,
             border: BorderMode::Replicate,
         }),
-        ViewDto::PerceptualHash(PerceptualHashOp::new(HashAlgorithm::Average)),
     ]
 }
 
@@ -50,8 +48,7 @@ fn assert_probed(dto: &ViewDto) {
         | ViewDto::Compute(_)
         | ViewDto::Image(_)
         | ViewDto::Color(_)
-        | ViewDto::Filter(_)
-        | ViewDto::PerceptualHash(_) => (),
+        | ViewDto::Filter(_) => (),
     }
 }
 

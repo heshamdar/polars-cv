@@ -16,14 +16,18 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._types import (
+    BorderMode,
     CloudOptions,
     ColorSpace,
     DType,
     FilterType,
     FloatOrExpr,
     HashAlgorithm,
+    HistogramClosed,
     HistogramOutput,
     IntOrExpr,
+    LabelReduction,
+    LabelRegionMode,
     NormalizeMethod,
     OpSpec,
     OutputDType,
@@ -1767,9 +1771,7 @@ class Pipeline:
                     f"kernel length {len(kernel)} doesn't match ksize²={ksize * ksize}"
                 )
                 raise ValueError(msg)
-        if border not in ("replicate", "zero", "reflect"):
-            msg = f"Unknown border mode: {border!r}. Use 'replicate', 'zero', or 'reflect'."
-            raise ValueError(msg)
+        border_mode = _validate_enum(border, BorderMode, "border mode")
 
         new = self._clone()
         new._ops.append(
@@ -1779,7 +1781,7 @@ class Pipeline:
                     "kernel": ParamValue(is_expr=False, value=kernel),
                     "ksize": new._track_expr(ksize),
                     "normalize": ParamValue(is_expr=False, value=normalize),
-                    "border": ParamValue(is_expr=False, value=border),
+                    "border": ParamValue(is_expr=False, value=border_mode.value),
                 },
             )
         )
@@ -2623,7 +2625,7 @@ class Pipeline:
         *,
         expand: bool = False,
         interpolation: str = "bilinear",
-        border_value: float = 0.0,
+        border_value: FloatOrExpr = 0.0,
     ) -> "Pipeline":
         """
         Rotate image by specified angle.
@@ -2678,7 +2680,7 @@ class Pipeline:
             "angle": new._track_expr(angle),
             "expand": ParamValue(is_expr=False, value=expand),
             "interpolation": ParamValue(is_expr=False, value=interpolation),
-            "border_value": ParamValue(is_expr=False, value=border_value),
+            "border_value": new._track_expr(border_value),
         }
         new._ops.append(OpSpec(op="rotate", params=params))
         new._update_output_dtype("rotate")
@@ -2693,7 +2695,7 @@ class Pipeline:
         output_size: tuple[IntOrExpr, IntOrExpr],
         *,
         interpolation: str = "bilinear",
-        border_value: float = 0.0,
+        border_value: FloatOrExpr = 0.0,
     ) -> "Pipeline":
         """
         Apply a 2x3 affine transformation matrix.
@@ -2763,7 +2765,7 @@ class Pipeline:
                     "output_height": new._track_expr(h),
                     "output_width": new._track_expr(w),
                     "interpolation": ParamValue(is_expr=False, value=interpolation),
-                    "border_value": ParamValue(is_expr=False, value=border_value),
+                    "border_value": new._track_expr(border_value),
                 },
             )
         )
@@ -2885,6 +2887,12 @@ class Pipeline:
         if isinstance(algorithm, str):
             algorithm = _validate_enum(algorithm, HashAlgorithm, "algorithm")
 
+        if isinstance(hash_size, pl.Expr):
+            msg = (
+                "hash_size is structural (it fixes the output vector length at "
+                "planning time) and must be a literal, not a Polars expression."
+            )
+            raise TypeError(msg)
         if hash_size <= 0:
             msg = "hash_size must be a positive integer"
             raise ValueError(msg)
@@ -2899,7 +2907,9 @@ class Pipeline:
                 },
             )
         )
-        # Transition to vector domain (fixed-length output)
+        # Transitions to the vector domain (fixed-length 1-D u8 fingerprint).
+        # The domain comes from the op's Rust contract (GraphStep::PerceptualHash
+        # → Domain::Vector), read via op_schema — not assigned here.
         new._update_output_dtype("perceptual_hash")
         return new
 
@@ -2991,7 +3001,7 @@ class Pipeline:
         *,
         mode: str = "external",
         method: str = "simple",
-        min_area: float | None = None,
+        min_area: FloatOrExpr | None = None,
     ) -> "Pipeline":
         """
         Extract contours from binary mask.
@@ -2999,7 +3009,8 @@ class Pipeline:
         Args:
             mode: "external" (outer only), "tree" (full hierarchy), "all".
             method: "simple" (remove redundant), "none" (all points), "approx".
-            min_area: Filter small contours.
+            min_area: Filter small contours. Accepts a Polars expression for
+                per-row dynamic thresholds.
 
         Domain transition: buffer → contour
         """
@@ -3012,7 +3023,7 @@ class Pipeline:
         }
 
         if min_area is not None:
-            params["min_area"] = ParamValue(is_expr=False, value=min_area)
+            params["min_area"] = new._track_expr(min_area)
 
         new._ops.append(OpSpec(op="extract_contours", params=params))
         new._update_output_dtype("extract_contours")
@@ -3329,12 +3340,8 @@ class Pipeline:
         if not isinstance(contours, pl.Expr):
             msg = "`contours` must be a Polars expression"
             raise TypeError(msg)
-        if reduction not in {"max", "mean", "sum"}:
-            msg = f"Invalid reduction '{reduction}'. Expected one of: max, mean, sum"
-            raise ValueError(msg)
-        if region_mode not in {"interior", "boundary", "bbox"}:
-            msg = f"Invalid region_mode '{region_mode}'. Expected one of: interior, boundary, bbox"
-            raise ValueError(msg)
+        reduction_mode = _validate_enum(reduction, LabelReduction, "reduction")
+        region = _validate_enum(region_mode, LabelRegionMode, "region_mode")
 
         new = self._clone()
         new._ops.append(
@@ -3342,8 +3349,8 @@ class Pipeline:
                 op="label_reduce",
                 params={
                     "contours": new._track_expr(contours),
-                    "reduction": ParamValue(is_expr=False, value=reduction),
-                    "region_mode": ParamValue(is_expr=False, value=region_mode),
+                    "reduction": ParamValue(is_expr=False, value=reduction_mode.value),
+                    "region_mode": ParamValue(is_expr=False, value=region.value),
                 },
             )
         )
@@ -3353,7 +3360,7 @@ class Pipeline:
     def histogram(
         self,
         bins: IntOrExpr | list[float] = 256,
-        range: tuple[float, float] | None = None,
+        range: tuple[FloatOrExpr, FloatOrExpr] | None = None,
         closed: str = "left",
         output: str = "buckets",
     ) -> "Pipeline":
@@ -3376,10 +3383,7 @@ class Pipeline:
 
         # Validate output mode
         output_mode = _validate_enum(output, HistogramOutput, "histogram output mode")
-
-        if closed not in ("left", "right"):
-            msg = f"Invalid closed mode '{closed}'. Valid: ['left', 'right']"
-            raise ValueError(msg)
+        closed_mode = _validate_enum(closed, HistogramClosed, "closed mode")
 
         new = self._clone()
 
@@ -3391,13 +3395,13 @@ class Pipeline:
 
         params: dict[str, ParamValue] = {
             "bins": bins_param,
-            "closed": ParamValue(is_expr=False, value=closed),
+            "closed": ParamValue(is_expr=False, value=closed_mode.value),
             "output": ParamValue(is_expr=False, value=output_mode.value),
         }
 
         if range is not None:
-            params["range_min"] = ParamValue(is_expr=False, value=range[0])
-            params["range_max"] = ParamValue(is_expr=False, value=range[1])
+            params["range_min"] = new._track_expr(range[0])
+            params["range_max"] = new._track_expr(range[1])
 
         new._ops.append(OpSpec(op="histogram", params=params))
         new._update_output_dtype("histogram")
@@ -3957,6 +3961,13 @@ class Pipeline:
 
         Used for graph serialization where sink is handled separately.
         Applies affine fusion optimization before serialization.
+
+        The node-level ``domain``/``output_dtype`` are Python-side
+        visualization metadata (consumed by ``_graph_viz.parse_logical_graph``
+        for intermediate nodes, which the terminal-only ``OutputSpec`` cannot
+        supply). Rust's ``GraphNode`` deliberately ignores them and computes
+        its own schema from the ops; both are derived from the same
+        ``op_schema`` authority, so they cannot drift.
 
         Returns:
             Dictionary with source, shape_hints, ops, domain, and output_dtype.
