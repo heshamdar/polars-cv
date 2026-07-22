@@ -921,9 +921,12 @@ class Pipeline:
             )
             # Set dtype and ndim based on source format
             if fmt == SourceFormat.RAW:
-                # Raw bytes always require explicit dtype (validated above)
+                # Raw bytes always require explicit dtype (validated above).
+                # Raw decodes to a flat 1-D buffer (decode.rs), so rank 1 is a
+                # true known value — never guess 3. reshape()/assert_shape()
+                # lifts the rank when the caller needs a higher-rank sink.
                 assert dtype_enum is not None
-                new._expected_ndim = 3
+                new._expected_ndim = 1
                 new._output_dtype = dtype_enum.value
             elif fmt == SourceFormat.BLOB:
                 # Blob is self-describing; dtype/ndim unknown until runtime.
@@ -947,9 +950,12 @@ class Pipeline:
                 # For list/array sources, infer dtype and ndim from the
                 # Polars column at planning time when not explicitly given.
                 if dtype_enum is not None:
-                    # User provided explicit dtype — use it, default ndim=3
+                    # User provided explicit dtype — use it. Rank stays unknown
+                    # here and is derived from the polars column's true nesting
+                    # depth at plan-time-with-input (resolved_output_specs),
+                    # never guessed as 3. (Consistent with the no-dtype branch.)
                     new._output_dtype = dtype_enum.value
-                    new._expected_ndim = 3
+                    new._expected_ndim = None
                 else:
                     # Mark as "auto" so Rust resolves from input_fields
                     new._output_dtype = "auto"
