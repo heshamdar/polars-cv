@@ -370,7 +370,7 @@ impl CompiledGraph {
         self.run_row_nodes(state, row_idx, node_outputs, dto_scratch)?;
         for (alias, spec) in &state.resolved_outputs {
             if let Some(output) = node_outputs.get(&spec.node) {
-                validate_output_dtype(alias, spec, output)?;
+                validate_output_schema(alias, spec, output)?;
                 match encode_node_output(output, spec) {
                     Ok(encoded) => {
                         let row_result = match encoded {
@@ -1155,11 +1155,46 @@ pub(crate) fn resolved_output_specs(
                 _ => spec.expected_dtype = inferred_dtype_str.to_string(),
             }
         }
+        // Output rank was left unknown by the Python planner (source rank was
+        // not known at build time — a list/array column). The true source rank
+        // is the input nesting depth; derive the OUTPUT rank by folding the
+        // output node's op rank rules from it, rather than assigning the input
+        // depth directly (which would be wrong after a rank-changing op such as
+        // channel_select). Reuses the same OutputRankRule authority as op_schema.
         if spec.expected_ndim.is_none() && ndim > 0 {
-            spec.expected_ndim = Some(ndim);
+            spec.expected_ndim = fold_output_rank(graph, &spec.node, ndim);
         }
     }
     specs
+}
+
+/// Derive a node's output rank by folding each op's `OutputRankRule` from a
+/// concrete source rank. Walks the primary upstream lineage to the root source
+/// node (whose input rank is the given `source_rank`). Returns `None` if any op
+/// declares an `Unknown` rank rule — the rank genuinely stays unknown.
+fn fold_output_rank(graph: &UnifiedGraph, node_id: &str, source_rank: usize) -> Option<usize> {
+    use view_buffer::ops::OutputRankRule;
+
+    let node = graph.nodes.get(node_id)?;
+    // The rank entering this node's ops: the primary upstream's output rank, or
+    // the source rank for a root node. Multi-input steps (binary/merge) pin
+    // rank via a Fixed rule, so following the first upstream is sufficient for
+    // the pure Preserve/ReduceByOne lineages that reach this unknown-rank path.
+    let mut rank = match node.upstream.first() {
+        Some(up) => fold_output_rank(graph, up, source_rank)?,
+        None => source_rank,
+    };
+    for op in &node.ops {
+        let op_json = serde_json::to_string(op).ok()?;
+        let step = crate::resolve_op_from_json(&op_json).ok()?;
+        rank = match step.output_rank_rule() {
+            OutputRankRule::PreserveRank => rank,
+            OutputRankRule::ReduceByOne => rank.saturating_sub(1).max(1),
+            OutputRankRule::Fixed(n) => n,
+            OutputRankRule::Unknown => return None,
+        };
+    }
+    Some(rank)
 }
 
 /// Recursively peel List/Array nesting to find the leaf dtype and depth.
@@ -1258,31 +1293,62 @@ pub(crate) fn get_or_compile(
     Ok(compiled)
 }
 
-/// Validate that a buffer output's dtype matches the planned expected_dtype
-/// (inferred by the Python planner from the op's view-buffer contract).
-/// "auto" is resolved elsewhere and skipped here.
-fn validate_output_dtype(
+/// Validate that a buffer output's produced schema matches the plan.
+///
+/// This is the runtime `plan == data` guard: the schema the Python planner
+/// inferred from the ops' view-buffer contracts (dtype, rank, per-dim shape)
+/// must equal what execution actually produced. A divergence is a contract bug
+/// (a rule that lies about its transform, or a source that guessed), not a data
+/// condition — so it hard-errors.
+///
+/// Only known facts are checked (`"auto"`/`None` = genuinely unknown, skipped).
+/// Restricted to buffer-domain outputs without a re-encoding: vector/scalar/
+/// contour outputs ride a raw buffer whose rank differs from the logical one
+/// (e.g. histogram buckets = `[n, fields]` behind a rank-1 vector), so their raw
+/// buffer shape is intentionally not the planned schema.
+fn validate_output_schema(
     alias: &str,
     spec: &OutputSpec,
     output: &NodeOutput,
 ) -> Result<(), String> {
-    // Dtype: planned dtype must match the produced dtype. (A runtime rank guard
-    // was evaluated here too, but "planned rank == produced rank" is not an
-    // invariant the planner currently maintains for list/array/raw sources — it
-    // defaults their rank and the sink legitimately follows the decoded shape —
-    // so a hard rank assertion produced false positives. Enforcing rank would
-    // require fixing planner rank-tracking per source type first.)
+    let Some(buf) = output.as_buffer() else {
+        return Ok(());
+    };
+
+    // Dtype: planned dtype must match the produced dtype.
     if spec.expected_dtype != "auto" {
-        if let Some(buf) = output.as_buffer() {
-            if let Ok(expected) = super::decode::parse_dtype_str(&spec.expected_dtype) {
-                let actual = buf.dtype();
-                if actual != expected {
-                    return Err(format!(
-                        "Output '{alias}': planned dtype {expected:?} but execution \
-                         produced {actual:?}. This indicates a mismatch between \
-                         the planner's view-buffer contract and the Rust implementation."
-                    ));
-                }
+        if let Ok(expected) = super::decode::parse_dtype_str(&spec.expected_dtype) {
+            let actual = buf.dtype();
+            if actual != expected {
+                return Err(format!(
+                    "Output '{alias}': planned dtype {expected:?} but execution \
+                     produced {actual:?}. This indicates a mismatch between the \
+                     planner's view-buffer contract and the Rust implementation."
+                ));
+            }
+        }
+    }
+
+    // Rank + per-dim shape, for plain buffer outputs only.
+    if spec.expected_domain.as_str() == "buffer" && spec.expected_encoding.is_none() {
+        let actual_shape = buf.shape();
+        if let Some(expected_ndim) = spec.expected_ndim {
+            if actual_shape.len() != expected_ndim {
+                return Err(format!(
+                    "Output '{alias}': planned rank {expected_ndim} but execution \
+                     produced a {}-D buffer (shape {actual_shape:?}). The planner's \
+                     rank contract disagrees with the Rust implementation.",
+                    actual_shape.len()
+                ));
+            }
+        }
+        if let Some(expected_shape) = spec.expected_shape.as_ref() {
+            if actual_shape != expected_shape.as_slice() {
+                return Err(format!(
+                    "Output '{alias}': planned shape {expected_shape:?} but execution \
+                     produced {actual_shape:?}. The planner's shape contract disagrees \
+                     with the Rust implementation."
+                ));
             }
         }
     }

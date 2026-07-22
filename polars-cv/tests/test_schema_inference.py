@@ -75,7 +75,12 @@ class TestListSinkInference:
         assert result_dtype == pl.List(pl.List(pl.Int64))
 
     def test_explicit_dtype_overrides_auto(self):
-        """When dtype is explicitly given, it overrides auto-inference."""
+        """Explicit dtype overrides auto-inference; rank still comes from the
+        input column, not a guess.
+
+        The column is List(List(Float64)) (rank 2), so the plan is rank 2
+        regardless of whether dtype was passed — matching the no-dtype tests
+        above (previously this path guessed rank 3, diverging from the data)."""
         data = np.random.rand(2, 4, 4).astype(np.float64)
         col = _make_list_column(data)
         df = pl.DataFrame({"data": col})
@@ -85,7 +90,7 @@ class TestListSinkInference:
             df.lazy().select(pl.col("data").cv.pipe(pipe).sink("list")).collect_schema()
         )
         result_dtype = schema["data"]
-        assert result_dtype == pl.List(pl.List(pl.List(pl.UInt8)))
+        assert result_dtype == pl.List(pl.List(pl.UInt8))
 
     def test_normalize_overrides_to_f32(self):
         """List(List(Int64)) → normalize → list sink → List(List(Float32))."""

@@ -115,7 +115,7 @@ fn channel_rule_name(rule: view_buffer::OutputChannelRule) -> String {
 /// dimensional parameter, so the placeholder is sound and lets introspection
 /// work on the same live op specs the planner sees (which routinely carry
 /// expression params) rather than only literal-only ops.
-fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep> {
+pub(crate) fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep> {
     use crate::params::{ParamCtx, ParamValue};
 
     let mut op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
