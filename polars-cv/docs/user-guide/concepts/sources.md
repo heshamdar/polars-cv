@@ -104,6 +104,34 @@ Remote requests are **signed by default**. To read from a public bucket without
 credentials, opt into anonymous access explicitly with
 `CloudOptions(anonymous=True)` (honored for S3, GCS, and Azure).
 
+### Passing arbitrary backend options
+
+`CloudOptions` exposes named fields for the common credentials, but any option
+the underlying `object_store` backend understands can be supplied through
+`storage_options`, keyed by that backend's native config names. Keys in
+`storage_options` win over the named fields on collision.
+
+```python
+CloudOptions(storage_options={"aws_endpoint": "https://minio.local:9000"})
+CloudOptions(storage_options={"google_application_credentials": "/path/adc.json"})
+```
+
+### GCS authentication matrix
+
+| How | Option |
+| --- | --- |
+| Service-account JSON file | `gcs_service_account_key="/path/sa.json"` (or `storage_options={"google_service_account": ...}`) |
+| Inline service-account JSON | `storage_options={"google_service_account_key": inline_json}` |
+| Application Default Credentials file | `storage_options={"google_application_credentials": "/path/adc.json"}` |
+| Pre-obtained OAuth access token | `gcs_bearer_token=token` |
+| Public bucket | `anonymous=True` |
+
+Federated ADC (type `external_account_authorized_user`, e.g. credentials
+brokered through an external identity provider) cannot be parsed by
+`object_store`. Mint an access token out of band — for example with
+`gcloud auth application-default print-access-token` — and pass it via
+`gcs_bearer_token`. Tokens are short-lived (~1 hour), so obtain one per job.
+
 ## Contour Source and Shape Inference
 
 The `contour` source rasterizes contour structs to binary mask buffers. You can specify dimensions explicitly or infer them from another pipeline expression.

@@ -8,21 +8,34 @@
 //! - HTTP/HTTPS URLs (http://, https://)
 //!
 //! Credentials are resolved using the default chain:
-//! 1. Explicit credentials passed via `CloudOptions`
+//! 1. Explicit options passed via `CloudOptions` (see below)
 //! 2. Environment variables (AWS_ACCESS_KEY_ID, GOOGLE_APPLICATION_CREDENTIALS, etc.)
 //! 3. Instance metadata / IAM roles
 //!
-//! Anonymous access to public buckets is opt-in: set
-//! `CloudOptions { anonymous: Some(true), .. }` to skip request signing
-//! (supported for S3, GCS, and Azure).
+//! `CloudOptions.config` is a generic pass-through map keyed by
+//! `object_store`'s own configuration keys (e.g. `aws_region`,
+//! `google_service_account`, `google_application_credentials`,
+//! `azure_storage_account_name`). Each entry is forwarded verbatim to the
+//! backend builder via `with_config`, so any option the underlying
+//! `object_store` backend understands is available without bespoke plumbing.
+//!
+//! Two keys are reserved and handled explicitly rather than passed through:
+//! - `anonymous` → skip request signing for public buckets (S3, GCS, Azure).
+//! - `bearer_token` → install a pre-obtained OAuth access token as a static
+//!   GCS credential. This is the escape hatch for credential types
+//!   `object_store` cannot parse natively (e.g. workforce/federated
+//!   `external_account_authorized_user` Application Default Credentials): mint
+//!   a token out of band and hand it over directly.
 
-use object_store::aws::AmazonS3Builder;
-use object_store::azure::MicrosoftAzureBuilder;
-use object_store::gcp::GoogleCloudStorageBuilder;
+use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
+use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
+use object_store::gcp::{GcpCredential, GoogleCloudStorageBuilder, GoogleConfigKey};
 use object_store::path::Path as ObjectPath;
-use object_store::ObjectStore;
+use object_store::{ObjectStore, StaticCredentialProvider};
 use std::collections::HashMap;
 use std::path::Path;
+use std::str::FromStr;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use url::Url;
@@ -47,40 +60,67 @@ pub enum CloudError {
 }
 
 /// Cloud storage options for explicit credential configuration.
+///
+/// `config` holds pass-through options keyed by `object_store`'s native
+/// configuration keys; the reserved `anonymous` and `bearer_token` inputs are
+/// lifted out into their own fields (see the module docs).
 #[derive(Debug, Clone, Default)]
 pub struct CloudOptions {
-    /// AWS region (e.g., "us-east-1")
-    pub aws_region: Option<String>,
-    /// AWS access key ID
-    pub aws_access_key_id: Option<String>,
-    /// AWS secret access key
-    pub aws_secret_access_key: Option<String>,
-    /// AWS session token (for temporary credentials)
-    pub aws_session_token: Option<String>,
-    /// GCS service account key path
-    pub gcs_service_account_key: Option<String>,
-    /// Azure storage account name
-    pub azure_storage_account: Option<String>,
-    /// Azure storage access key
-    pub azure_storage_access_key: Option<String>,
+    /// Options forwarded verbatim to the backend builder via `with_config`,
+    /// keyed by `object_store`'s native config keys.
+    pub config: HashMap<String, String>,
+    /// Pre-obtained OAuth bearer token, installed as a static GCS credential.
+    pub bearer_token: Option<String>,
     /// Skip request signing for public buckets (opt-in; default: signed
-    /// requests using the credential chain)
+    /// requests using the credential chain).
     pub anonymous: Option<bool>,
 }
 
 impl CloudOptions {
-    /// Create options from a HashMap (for Python interop).
-    #[allow(dead_code)]
+    /// Create options from the wire map (string key/value pairs from Python).
+    ///
+    /// Most keys pass straight through to `config` using `object_store`'s
+    /// native names. Two keys are reserved (`anonymous`, `bearer_token`), and a
+    /// handful of historical polars-cv field names are translated to their
+    /// canonical `object_store` equivalents for backwards compatibility. When a
+    /// legacy name and its canonical name are both present, the explicit
+    /// canonical value wins.
     pub fn from_map(map: &HashMap<String, String>) -> Self {
+        let mut config: HashMap<String, String> = HashMap::new();
+
+        // Pass 1: legacy field names -> canonical keys (lower precedence).
+        for (k, v) in map {
+            let canonical = match k.as_str() {
+                // Historically a *path* to a service-account JSON file.
+                "gcs_service_account_key" => "google_service_account",
+                "azure_storage_account" => "azure_storage_account_name",
+                "azure_storage_access_key" => "azure_storage_account_key",
+                _ => continue,
+            };
+            config.insert(canonical.to_string(), v.clone());
+        }
+
+        // Pass 2: reserved keys + verbatim pass-through (higher precedence, so
+        // an explicit canonical key overrides a legacy alias from pass 1).
+        let mut bearer_token = None;
+        let mut anonymous = None;
+        for (k, v) in map {
+            match k.as_str() {
+                "anonymous" => anonymous = Some(v == "true"),
+                "bearer_token" => bearer_token = Some(v.clone()),
+                "gcs_service_account_key"
+                | "azure_storage_account"
+                | "azure_storage_access_key" => {} // already translated in pass 1
+                _ => {
+                    config.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
         CloudOptions {
-            aws_region: map.get("aws_region").cloned(),
-            aws_access_key_id: map.get("aws_access_key_id").cloned(),
-            aws_secret_access_key: map.get("aws_secret_access_key").cloned(),
-            aws_session_token: map.get("aws_session_token").cloned(),
-            gcs_service_account_key: map.get("gcs_service_account_key").cloned(),
-            azure_storage_account: map.get("azure_storage_account").cloned(),
-            azure_storage_access_key: map.get("azure_storage_access_key").cloned(),
-            anonymous: map.get("anonymous").map(|s| s == "true"),
+            config,
+            bearer_token,
+            anonymous,
         }
     }
 }
@@ -164,17 +204,11 @@ fn read_s3(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudEr
     let mut builder = AmazonS3Builder::new().with_bucket_name(bucket);
 
     if let Some(opts) = options {
-        if let Some(region) = &opts.aws_region {
-            builder = builder.with_region(region);
-        }
-        if let Some(key_id) = &opts.aws_access_key_id {
-            builder = builder.with_access_key_id(key_id);
-        }
-        if let Some(secret) = &opts.aws_secret_access_key {
-            builder = builder.with_secret_access_key(secret);
-        }
-        if let Some(token) = &opts.aws_session_token {
-            builder = builder.with_token(token);
+        for (k, v) in &opts.config {
+            let key = AmazonS3ConfigKey::from_str(k).map_err(|e| {
+                CloudError::StoreError(format!("unknown S3 storage option '{k}': {e}"))
+            })?;
+            builder = builder.with_config(key, v);
         }
         if opts.anonymous == Some(true) {
             builder = builder.with_skip_signature(true);
@@ -213,8 +247,19 @@ fn read_gcs(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudE
     let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(bucket);
 
     if let Some(opts) = options {
-        if let Some(key_path) = &opts.gcs_service_account_key {
-            builder = builder.with_service_account_path(key_path);
+        for (k, v) in &opts.config {
+            let key = GoogleConfigKey::from_str(k).map_err(|e| {
+                CloudError::StoreError(format!("unknown GCS storage option '{k}': {e}"))
+            })?;
+            builder = builder.with_config(key, v);
+        }
+        // A pre-obtained OAuth token bypasses object_store's credential loader,
+        // which cannot parse federated `external_account_authorized_user` ADC.
+        if let Some(token) = &opts.bearer_token {
+            let provider = StaticCredentialProvider::new(GcpCredential {
+                bearer: token.clone(),
+            });
+            builder = builder.with_credentials(Arc::new(provider));
         }
         if opts.anonymous == Some(true) {
             builder = builder.with_skip_signature(true);
@@ -253,11 +298,11 @@ fn read_azure(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, Clou
     let mut builder = MicrosoftAzureBuilder::new().with_container_name(container);
 
     if let Some(opts) = options {
-        if let Some(account) = &opts.azure_storage_account {
-            builder = builder.with_account(account);
-        }
-        if let Some(key) = &opts.azure_storage_access_key {
-            builder = builder.with_access_key(key);
+        for (k, v) in &opts.config {
+            let key = AzureConfigKey::from_str(k).map_err(|e| {
+                CloudError::StoreError(format!("unknown Azure storage option '{k}': {e}"))
+            })?;
+            builder = builder.with_config(key, v);
         }
         if opts.anonymous == Some(true) {
             builder = builder.with_skip_signature(true);
@@ -475,6 +520,93 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn test_from_map_passthrough() {
+        // Native object_store keys flow straight into `config`.
+        let opts = CloudOptions::from_map(&map(&[
+            ("aws_region", "eu-west-1"),
+            ("google_application_credentials", "/adc.json"),
+        ]));
+        assert_eq!(opts.config.get("aws_region").unwrap(), "eu-west-1");
+        assert_eq!(
+            opts.config.get("google_application_credentials").unwrap(),
+            "/adc.json"
+        );
+        assert!(opts.bearer_token.is_none());
+        assert!(opts.anonymous.is_none());
+    }
+
+    #[test]
+    fn test_from_map_reserved_keys() {
+        let opts = CloudOptions::from_map(&map(&[
+            ("anonymous", "true"),
+            ("bearer_token", "ya29.token"),
+        ]));
+        assert_eq!(opts.anonymous, Some(true));
+        assert_eq!(opts.bearer_token.as_deref(), Some("ya29.token"));
+        // Reserved keys are lifted out, not forwarded to the backend config.
+        assert!(!opts.config.contains_key("anonymous"));
+        assert!(!opts.config.contains_key("bearer_token"));
+    }
+
+    #[test]
+    fn test_from_map_legacy_aliases() {
+        let opts = CloudOptions::from_map(&map(&[
+            ("gcs_service_account_key", "/sa.json"),
+            ("azure_storage_account", "acct"),
+            ("azure_storage_access_key", "secret"),
+        ]));
+        // Legacy names are translated to canonical object_store keys.
+        assert_eq!(
+            opts.config.get("google_service_account").unwrap(),
+            "/sa.json"
+        );
+        assert_eq!(
+            opts.config.get("azure_storage_account_name").unwrap(),
+            "acct"
+        );
+        assert_eq!(
+            opts.config.get("azure_storage_account_key").unwrap(),
+            "secret"
+        );
+        assert!(!opts.config.contains_key("gcs_service_account_key"));
+    }
+
+    #[test]
+    fn test_from_map_explicit_key_overrides_legacy_alias() {
+        // When both a legacy alias and its canonical key are supplied, the
+        // explicit canonical value wins regardless of map iteration order.
+        let opts = CloudOptions::from_map(&map(&[
+            ("gcs_service_account_key", "/legacy.json"),
+            ("google_service_account", "/explicit.json"),
+        ]));
+        assert_eq!(
+            opts.config.get("google_service_account").unwrap(),
+            "/explicit.json"
+        );
+    }
+
+    #[test]
+    fn test_unknown_gcs_option_errors() {
+        // An unrecognized key should fail loudly at build time rather than be
+        // silently dropped.
+        let opts = CloudOptions::from_map(&map(&[("not_a_real_key", "x")]));
+        let url = Url::parse("gs://bucket/obj.png").unwrap();
+        let err = read_gcs(&url, Some(&opts)).unwrap_err();
+        assert!(
+            matches!(err, CloudError::StoreError(_)),
+            "expected StoreError, got {err:?}"
+        );
+        assert!(err.to_string().contains("not_a_real_key"));
     }
 
     // Integration test for HTTP - requires network access

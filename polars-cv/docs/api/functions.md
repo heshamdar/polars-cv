@@ -129,7 +129,12 @@ ColorSpace.GRAY
 
 ### CloudOptions
 
-Configuration for cloud storage access.
+Configuration for cloud storage access. Named fields cover the common
+credentials; `storage_options` forwards arbitrary options to the underlying
+`object_store` backend using its native config keys (winning over named fields
+on collision); `gcs_bearer_token` supplies a pre-obtained GCS OAuth access
+token for credential types object_store cannot load natively (e.g. federated
+`external_account_authorized_user` ADC).
 
 ```python
 from polars_cv import CloudOptions
@@ -139,6 +144,14 @@ options = CloudOptions(
     aws_access_key_id="...",
     aws_secret_access_key="...",
 )
+
+# GCS via an Application Default Credentials file:
+options = CloudOptions(
+    storage_options={"google_application_credentials": "/path/adc.json"}
+)
+
+# GCS via a pre-minted OAuth access token (federated / brokered credentials):
+options = CloudOptions(gcs_bearer_token=token)
 
 pipe = Pipeline().source("file_path", cloud_options=options)
 ```

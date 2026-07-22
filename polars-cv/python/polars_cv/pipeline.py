@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -890,15 +891,26 @@ class Pipeline:
                 if isinstance(cloud_options, CloudOptions):
                     cloud_opts = cloud_options
                 elif isinstance(cloud_options, dict):
-                    # Convert dict to CloudOptions, handling type conversions
-                    opts_dict = dict(cloud_options)
+                    # Convert dict to CloudOptions. Keys matching a named field
+                    # map directly; any other key is treated as an object_store
+                    # pass-through option and routed into ``storage_options``.
+                    known_fields = set(CloudOptions.__dataclass_fields__)
+                    opts_dict: dict[str, Any] = {}
+                    passthrough: dict[str, str] = {}
+                    for key, value in cloud_options.items():
+                        if key in known_fields:
+                            opts_dict[key] = value
+                        else:
+                            passthrough[key] = value
                     # Convert "anonymous" from string if present
-                    if "anonymous" in opts_dict and isinstance(
-                        opts_dict["anonymous"], str
-                    ):
+                    if isinstance(opts_dict.get("anonymous"), str):
                         opts_dict["anonymous"] = (
                             opts_dict["anonymous"].lower() == "true"
                         )
+                    if passthrough:
+                        merged = dict(opts_dict.get("storage_options") or {})
+                        merged.update(passthrough)
+                        opts_dict["storage_options"] = merged
                     cloud_opts = CloudOptions(**opts_dict)
                 else:
                     msg = (
@@ -906,6 +918,13 @@ class Pipeline:
                         f"got {type(cloud_options)}"
                     )
                     raise TypeError(msg)
+            elif cloud_options is not None:
+                warnings.warn(
+                    f"cloud_options is only applied to 'file_path' sources; "
+                    f"ignoring it for '{fmt.value}' source.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
             new._source = SourceSpec(
                 format=fmt,

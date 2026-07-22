@@ -310,6 +310,28 @@ class CloudOptions:
     To read public buckets without credentials, opt into anonymous access
     explicitly with ``anonymous=True`` (honored for S3, GCS, and Azure).
 
+    For anything beyond the named fields below, use ``storage_options`` to pass
+    arbitrary configuration straight through to the underlying ``object_store``
+    backend, keyed by its native config names. For example, GCS understands
+    ``google_service_account`` (path to a service-account JSON file),
+    ``google_service_account_key`` (inline service-account JSON), and
+    ``google_application_credentials`` (path to an Application Default
+    Credentials file); S3 understands ``aws_endpoint``, ``aws_virtual_hosted_style_request``,
+    and so on. Keys in ``storage_options`` win over the named fields on collision.
+
+    Federated Google credentials (workforce/workload identity, i.e. ADC of type
+    ``external_account_authorized_user``) cannot be parsed by ``object_store``.
+    Mint an OAuth access token out of band and pass it via ``gcs_bearer_token``::
+
+        import subprocess
+        tok = subprocess.check_output(
+            ["gcloud", "auth", "application-default", "print-access-token"]
+        ).decode().strip()
+        opts = CloudOptions(gcs_bearer_token=tok)
+
+    (equivalently, ``google.auth.default()`` then ``credentials.token`` after a
+    refresh). Access tokens are short-lived (~1 hour), so mint one per job.
+
     Attributes:
         aws_region: AWS region (e.g., "us-east-1").
         aws_access_key_id: AWS access key ID.
@@ -318,6 +340,10 @@ class CloudOptions:
         gcs_service_account_key: Path to GCS service account key file.
         azure_storage_account: Azure storage account name.
         azure_storage_access_key: Azure storage access key.
+        gcs_bearer_token: Pre-obtained GCS OAuth access token (bearer). Escape
+            hatch for credential types object_store cannot load natively.
+        storage_options: Extra options forwarded verbatim to the object_store
+            backend, keyed by its native config names. Wins over named fields.
         anonymous: Set to True to opt into unsigned/anonymous access for public
             buckets. Default None signs requests using the credential chain above.
     """
@@ -330,6 +356,9 @@ class CloudOptions:
     azure_storage_account: str | None = None
     azure_storage_access_key: str | None = None
     anonymous: bool | None = None
+    # New fields appended after `anonymous` to preserve positional construction.
+    gcs_bearer_token: str | None = None
+    storage_options: dict[str, str] | None = None
 
     # Fields that contain sensitive credential data and should be masked
     _SENSITIVE_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -338,6 +367,7 @@ class CloudOptions:
             "aws_access_key_id",
             "aws_session_token",
             "azure_storage_access_key",
+            "gcs_bearer_token",
         }
     )
 
@@ -352,7 +382,7 @@ class CloudOptions:
             "gcs_service_account_key",
             "azure_storage_account",
             "azure_storage_access_key",
-            "anonymous",
+            "gcs_bearer_token",
         ]:
             value = getattr(self, field_name)
             if value is not None:
@@ -360,11 +390,22 @@ class CloudOptions:
                     parts.append(f"{field_name}='***'")
                 else:
                     parts.append(f"{field_name}={value!r}")
+        # Pass-through options may carry secrets (inline keys, SAS tokens); show
+        # only the key names with masked values.
+        if self.storage_options:
+            masked = ", ".join(f"{k!r}: '***'" for k in self.storage_options)
+            parts.append(f"storage_options={{{masked}}}")
+        if self.anonymous is not None:
+            parts.append(f"anonymous={self.anonymous!r}")
         return f"CloudOptions({', '.join(parts)})"
 
     def to_dict(self) -> dict[str, str]:
         """
         Serialize to dictionary for JSON encoding.
+
+        Named fields are emitted first, then ``storage_options`` is merged in
+        (overriding any collisions), matching the precedence documented on the
+        class.
 
         Returns:
             Dictionary with non-None credential fields.
@@ -384,8 +425,13 @@ class CloudOptions:
             result["azure_storage_account"] = self.azure_storage_account
         if self.azure_storage_access_key is not None:
             result["azure_storage_access_key"] = self.azure_storage_access_key
+        if self.gcs_bearer_token is not None:
+            result["bearer_token"] = self.gcs_bearer_token
         if self.anonymous is not None:
             result["anonymous"] = str(self.anonymous).lower()
+        if self.storage_options:
+            for key, value in self.storage_options.items():
+                result[key] = str(value)
         return result
 
 
