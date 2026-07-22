@@ -68,6 +68,38 @@ export AZURE_STORAGE_ACCOUNT=your_account
 export AZURE_STORAGE_ACCESS_KEY=your_key
 ```
 
+Instead of (or in addition to) environment variables, credentials can be
+passed explicitly with `CloudOptions` on a `file_path` source. Named fields
+cover the common cases, and `storage_options` forwards any option straight
+through to the underlying `object_store` backend using its native config keys:
+
+```python
+import polars_cv as cv
+
+# GCS service-account JSON file path, inline JSON, or an ADC file.
+cv.CloudOptions(gcs_service_account_key="/path/to/service-account.json")
+cv.CloudOptions(storage_options={"google_service_account_key": inline_json})
+cv.CloudOptions(storage_options={"google_application_credentials": "/path/adc.json"})
+```
+
+**Federated / brokered Google credentials (workforce & workload identity).**
+Application Default Credentials of type `external_account_authorized_user`
+(e.g. tokens brokered through an external identity provider) cannot be parsed
+by `object_store`. Mint an OAuth access token out of band and pass it as a
+bearer token:
+
+```python
+import subprocess
+import polars_cv as cv
+
+token = subprocess.check_output(
+    ["gcloud", "auth", "application-default", "print-access-token"]
+).decode().strip()
+opts = cv.CloudOptions(gcs_bearer_token=token)
+```
+
+Access tokens are short-lived (~1 hour), so obtain one per job.
+
 ### For Documentation (development only)
 
 When working in the project repository, install the docs dependency group:

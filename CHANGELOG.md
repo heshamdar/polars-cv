@@ -24,6 +24,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   runs single-threaded under the in-memory engine, pointing to
   `engine="streaming"`. Silence with `POLARS_CV_SILENCE_ENGINE_WARNING=1`;
   tune with `POLARS_CV_ENGINE_WARN_ROWS`.
+- **`CloudOptions.storage_options` pass-through** — arbitrary cloud options are
+  now forwarded verbatim to the underlying `object_store` backend using its
+  native config keys (e.g. `google_service_account_key`,
+  `google_application_credentials`, `aws_endpoint`), so any option the backend
+  understands is available without new plumbing. Keys in `storage_options` win
+  over the named `CloudOptions` fields on collision. This replaces the previous
+  fixed allow-list, which silently dropped unrecognized keys.
+- **`CloudOptions.gcs_bearer_token`** — supply a pre-obtained GCS OAuth access
+  token directly. This unblocks federated/brokered Google credentials (ADC of
+  type `external_account_authorized_user`) that `object_store` cannot parse
+  natively: mint a token out of band (e.g.
+  `gcloud auth application-default print-access-token`) and pass it in.
 
 ### Changed
 
@@ -35,6 +47,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`cloud_options` on non-`file_path` sources** — passing `cloud_options` to a
+  source format that ignores it (e.g. `image_bytes`) now emits a `UserWarning`
+  instead of silently dropping the credentials.
 - **`normalize(out_dtype=...)` planned vs. produced dtype** — the planner
   honored `out_dtype` but execution always produced f32, so any `out_dtype`
   other than f32 tripped the dtype-contract guard. Normalization now casts its

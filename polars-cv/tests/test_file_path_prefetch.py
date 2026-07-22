@@ -87,6 +87,68 @@ class TestCloudOptionsRoundTrip:
             "anonymous": "true",
         }
 
+    def test_storage_options_passthrough_serialized(self) -> None:
+        opts = CloudOptions(
+            storage_options={
+                "google_application_credentials": "/adc.json",
+                "google_service_account_key": '{"type": "service_account"}',
+            }
+        )
+        pipe = Pipeline().source("file_path", cloud_options=opts).grayscale()
+        spec = json.loads(pipe._to_json())
+        assert spec["source"]["cloud_options"] == {
+            "google_application_credentials": "/adc.json",
+            "google_service_account_key": '{"type": "service_account"}',
+        }
+
+    def test_gcs_bearer_token_maps_to_reserved_key(self) -> None:
+        opts = CloudOptions(gcs_bearer_token="ya29.token")
+        pipe = Pipeline().source("file_path", cloud_options=opts).grayscale()
+        spec = json.loads(pipe._to_json())
+        assert spec["source"]["cloud_options"] == {"bearer_token": "ya29.token"}
+
+    def test_storage_options_override_named_fields(self) -> None:
+        # storage_options wins over a colliding named field.
+        opts = CloudOptions(
+            aws_region="eu-west-1", storage_options={"aws_region": "us-east-1"}
+        )
+        assert opts.to_dict()["aws_region"] == "us-east-1"
+
+    def test_dict_unknown_keys_route_to_storage_options(self) -> None:
+        # A plain dict with non-field keys must not raise; unknown keys flow
+        # through to object_store as pass-through storage options.
+        pipe = Pipeline().source(
+            "file_path",
+            cloud_options={
+                "google_application_credentials": "/adc.json",
+                "anonymous": "true",
+            },
+        )
+        spec = json.loads(pipe._to_json())
+        assert spec["source"]["cloud_options"] == {
+            "google_application_credentials": "/adc.json",
+            "anonymous": "true",
+        }
+
+    def test_repr_masks_sensitive_and_passthrough(self) -> None:
+        opts = CloudOptions(
+            gcs_bearer_token="ya29.secret",
+            aws_secret_access_key="shh",
+            storage_options={"google_service_account_key": '{"private_key": "x"}'},
+        )
+        text = repr(opts)
+        assert "ya29.secret" not in text
+        assert "shh" not in text
+        assert "private_key" not in text
+        # Key names are still visible for debuggability.
+        assert "gcs_bearer_token='***'" in text
+        assert "google_service_account_key" in text
+
+    def test_cloud_options_on_non_file_path_source_warns(self) -> None:
+        opts = CloudOptions(aws_region="eu-west-1")
+        with pytest.warns(UserWarning, match="only applied to 'file_path'"):
+            Pipeline().source("image_bytes", cloud_options=opts)
+
 
 @plugin_required
 class TestRemotePrefetch:
