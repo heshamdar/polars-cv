@@ -1043,7 +1043,9 @@ fn bind_graph_params(
     Ok(())
 }
 
-/// Rewrite one `Expr` param to its bound `Slot` form (literals untouched).
+/// Bind one parameter for execution: an `Expr` becomes its input `Slot`, and a
+/// nested param list becomes a pre-parsed, bound `List`. Scalar literals and
+/// plain scalar arrays are left untouched.
 ///
 /// A `Literal` whose JSON value is an array of serialized `ParamValue`s (a
 /// `warp_affine` matrix, a `reshape` shape) is parsed once here into a
