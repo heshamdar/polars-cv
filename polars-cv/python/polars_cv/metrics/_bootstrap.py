@@ -158,7 +158,16 @@ def bootstrap_pr_auc(
         .agg(total_gts=pl.col(COL_N_GTS).sum().cast(pl.Float64))
     )
 
-    # Join samples with detections
+    # Join samples with detections. The per-bootstrap total_gts is joined in
+    # here too, *before* the sort below: every operation after the sort
+    # (cum_sum, the precision envelope, the trapezoid shift) depends on rows
+    # staying in sorted-by-score order within each bootstrap group, and a
+    # `join` does not preserve row order — its parallel execution reorders
+    # rows differently depending on the runtime thread count. A join placed
+    # between the sort and those windowed ops therefore scrambles the curve
+    # nondeterministically across platforms (e.g. it silently yielded
+    # negative AUCs on macOS CI). Keeping the sort as the last row-reordering
+    # step guarantees a stable, correct curve everywhere.
     det_df = table.detections.collect(engine="streaming")
     expanded = (
         samples_df.lazy()
@@ -168,6 +177,7 @@ def bootstrap_pr_auc(
             how="left",
         )
         .drop_nulls(COL_SCORE)
+        .join(boot_gts, on="bootstrap_id", how="left")
     )
 
     # Compute PR curve per bootstrap: sort by score, cumulative TP/FP, then
@@ -179,7 +189,6 @@ def bootstrap_pr_auc(
             cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum().over("bootstrap_id"),
             cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum().over("bootstrap_id"),
         )
-        .join(boot_gts, on="bootstrap_id", how="left")
         .with_columns(
             precision=pl.col("cum_tp")
             / (pl.col("cum_tp") + pl.col("cum_fp")).cast(pl.Float64),
