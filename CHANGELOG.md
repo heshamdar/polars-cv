@@ -7,6 +7,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **GCS `gcs_bearer_token` no longer defeated by unparseable ambient
+  credentials** — bumped `object_store` to 0.13. In 0.12 the GCS builder read
+  and parsed Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`
+  or the well-known `~/.config/gcloud/application_default_credentials.json`)
+  inside `build()` *unconditionally*, before honoring an explicitly supplied
+  credential provider. So when the ambient ADC was a federated
+  `external_account_authorized_user` credential — exactly the case
+  `gcs_bearer_token` exists to work around — `build()` failed on the ADC parse
+  and the bearer token was never consulted. object_store 0.13 skips the ADC
+  read whenever an explicit credential (or service account) is configured,
+  restoring the intended escape-hatch behavior. The bump also dedupes
+  `object_store` to a single version, since polars 0.54 already pulls 0.13.
+
 ## [0.12.0] — 2026-07-23
 
 ### Added

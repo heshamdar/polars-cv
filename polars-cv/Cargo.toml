@@ -61,7 +61,15 @@ half = "2"
 thiserror = "1.0"
 
 # Cloud storage support (S3, GCS, Azure)
-object_store = { version = "0.12", features = ["aws", "gcp", "azure"] }
+# NOTE: 0.13+ is required. In object_store 0.12 the GCS builder unconditionally
+# reads and parses Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS
+# or the well-known gcloud file) inside build(), *before* honoring an explicit
+# credential provider. That makes the `gcs_bearer_token` escape hatch fail when
+# the ambient ADC is a federated `external_account_authorized_user` credential
+# object_store cannot parse. 0.13 guards the read behind
+# `service_account_credentials.is_none() && self.credentials.is_none()`. Also
+# dedupes with polars 0.54, which already pulls object_store 0.13.
+object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 url = { version = "2" }
 
