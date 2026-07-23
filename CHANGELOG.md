@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-07-23
+
 ### Added
 
 - **f16 tensor output** — `.sink("numpy"|"torch", dtype="f16")` downcasts the
@@ -160,5 +162,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.12.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.12.0
 [0.11.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.11.0
 [0.10.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.10.0

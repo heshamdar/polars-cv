@@ -40,20 +40,27 @@ Install benchmark dependencies:
 
 ```bash
 cd polars-cv
-uv pip install -e ".[bench]"
+uv sync --group bench
 
-# Or with pip
-pip install -e ".[bench]"
+# Or with pip (>= 25.1, which understands dependency groups)
+pip install -e . --group bench
 ```
+
+> **Note:** the benchmark dependencies (torch, torchvision, …) live in a
+> `[dependency-groups]` group named `bench`, **not** a
+> `[project.optional-dependencies]` extra — so `pip install ".[bench]"` matches
+> no extra and installs nothing. Because `bench` is not a default group, prefix
+> the commands below with `uv run --no-sync` (or activate `.venv` and call
+> `python` directly), otherwise `uv run` re-syncs and drops the group.
 
 ## Quick Start
 
 ```bash
 # Run all benchmarks with defaults
-uv run python -m benchmarks.run_benchmarks
+uv run --no-sync python -m benchmarks.run_benchmarks
 
 # List available frameworks
-uv run python -m benchmarks.run_benchmarks --list-frameworks
+uv run --no-sync python -m benchmarks.run_benchmarks --list-frameworks
 ```
 
 ## Usage
