@@ -73,23 +73,27 @@ benchmarks/
 ```bash
 cd polars-cv
 
-# Install benchmark dependencies
-uv pip install -e ".[bench]"
+# Install benchmark dependencies (bench is a [dependency-groups] group, NOT a
+# [project.optional-dependencies] extra — `pip install ".[bench]"` installs
+# nothing). Because bench is not a default group, run with `uv run --no-sync`
+# below so uv does not re-sync and drop torch/torchvision.
+uv sync --group bench
 
-# Run all benchmarks
-uv run python benchmarks/run_benchmarks.py
+# Run all benchmarks (must be `-m benchmarks.run_benchmarks`, not the script
+# path, or the `benchmarks` package will not import)
+uv run --no-sync python -m benchmarks.run_benchmarks
 
 # Run specific scenario
-uv run python benchmarks/run_benchmarks.py --scenario single_ops
+uv run --no-sync python -m benchmarks.run_benchmarks --scenario single_ops
 
-# Run specific frameworks
-uv run python benchmarks/run_benchmarks.py --frameworks polars-cv-eager opencv
+# Run specific frameworks (comma-separated)
+uv run --no-sync python -m benchmarks.run_benchmarks --frameworks polars-cv-eager,opencv
 
 # With validation (compare outputs against OpenCV reference)
-uv run python benchmarks/run_benchmarks.py --validate
+uv run --no-sync python -m benchmarks.run_benchmarks --validate
 
-# Custom sizes and counts
-uv run python benchmarks/run_benchmarks.py --counts 100 500 --sizes 256 512 1024
+# Custom sizes and counts (comma-separated)
+uv run --no-sync python -m benchmarks.run_benchmarks --counts 100,500 --sizes 256,512,1024
 ```
 
 ## Architecture
