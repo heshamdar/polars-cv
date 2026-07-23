@@ -31,7 +31,7 @@ use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
 use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
 use object_store::gcp::{GcpCredential, GoogleCloudStorageBuilder, GoogleConfigKey};
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, StaticCredentialProvider};
+use object_store::{ObjectStoreExt, StaticCredentialProvider};
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
@@ -234,16 +234,19 @@ fn read_s3(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudEr
     })
 }
 
-/// Read a file from Google Cloud Storage.
-fn read_gcs(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
-    let bucket = url
-        .host_str()
-        .ok_or_else(|| CloudError::UrlParse("Missing bucket name in GCS URL".to_string()))?;
-    let key = url.path().trim_start_matches('/');
-
-    let runtime = get_runtime()?;
-
-    // Build GCS client
+/// Construct a GCS store from a bucket and options.
+///
+/// Split out of [`read_gcs`] so the credential-resolution path can be tested
+/// without a network `get`. Note that `object_store`'s builder only reads and
+/// parses Application Default Credentials (the well-known gcloud file or a
+/// `google_application_credentials` path) when *no* explicit credential provider
+/// has been installed — so a supplied `bearer_token` must short-circuit the ADC
+/// parse rather than fail alongside it. object_store 0.13+ enforces this
+/// ordering; 0.12 did not (see the dependency note in Cargo.toml).
+fn build_gcs_store(
+    bucket: &str,
+    options: Option<&CloudOptions>,
+) -> Result<object_store::gcp::GoogleCloudStorage, CloudError> {
     let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(bucket);
 
     if let Some(opts) = options {
@@ -266,9 +269,21 @@ fn read_gcs(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudE
         }
     }
 
-    let store = builder
+    builder
         .build()
-        .map_err(|e| CloudError::StoreError(e.to_string()))?;
+        .map_err(|e| CloudError::StoreError(e.to_string()))
+}
+
+/// Read a file from Google Cloud Storage.
+fn read_gcs(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
+    let bucket = url
+        .host_str()
+        .ok_or_else(|| CloudError::UrlParse("Missing bucket name in GCS URL".to_string()))?;
+    let key = url.path().trim_start_matches('/');
+
+    let runtime = get_runtime()?;
+
+    let store = build_gcs_store(bucket, options)?;
 
     let path = ObjectPath::from(key);
     runtime.block_on(async {
@@ -607,6 +622,55 @@ mod tests {
             "expected StoreError, got {err:?}"
         );
         assert!(err.to_string().contains("not_a_real_key"));
+    }
+
+    #[test]
+    fn test_bearer_token_bypasses_unparseable_adc() {
+        // Regression: a supplied `bearer_token` must let the GCS store build
+        // even when the ambient Application Default Credentials are a federated
+        // `external_account_authorized_user` file that object_store cannot parse.
+        // In object_store 0.12 `build()` parsed ADC unconditionally and failed
+        // here before honoring the static credential; 0.13 skips the ADC parse
+        // whenever an explicit credential provider is installed.
+        //
+        // We point `google_application_credentials` at a poisoned file (rather
+        // than touching the process-global HOME env) so the test is hermetic and
+        // parallel-safe.
+        let dir = std::env::temp_dir().join(format!("pcv_adc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let adc = dir.join("application_default_credentials.json");
+        std::fs::write(
+            &adc,
+            r#"{"type": "external_account_authorized_user", "audience": "x", "refresh_token": "y"}"#,
+        )
+        .unwrap();
+
+        let opts = CloudOptions::from_map(&map(&[
+            ("google_application_credentials", adc.to_str().unwrap()),
+            ("bearer_token", "ya29.fake-token"),
+        ]));
+
+        // With the bearer token installed, building must succeed despite the
+        // unparseable ADC file. Under object_store 0.12 this returned Err.
+        let built = build_gcs_store("bucket", Some(&opts));
+        assert!(
+            built.is_ok(),
+            "bearer_token should bypass unparseable ADC, got {built:?}"
+        );
+
+        // Sanity check the other direction: without the escape hatch, the same
+        // poisoned ADC makes the build fail on the credential decode.
+        let opts_no_token = CloudOptions::from_map(&map(&[(
+            "google_application_credentials",
+            adc.to_str().unwrap(),
+        )]));
+        let built_no_token = build_gcs_store("bucket", Some(&opts_no_token));
+        assert!(
+            built_no_token.is_err(),
+            "poisoned ADC without a bearer token should fail to build"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Integration test for HTTP - requires network access
