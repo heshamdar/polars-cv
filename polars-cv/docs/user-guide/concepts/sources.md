@@ -19,6 +19,21 @@ bytes_pipe = Pipeline().source("image_bytes")
 path_pipe = Pipeline().source("file_path")
 ```
 
+### Scaled Decoding: `decode_max_size`
+
+Both image sources accept `decode_max_size=<n>`, asserting the pipeline needs at
+most `n` pixels on the decoded long side. JPEG decoding then uses IDCT scaling
+(1/8, 1/4, 1/2) to skip work — a large CPU and memory saving for curation passes.
+Non-JPEG formats ignore the assertion and decode at full size.
+
+```python
+pipe = Pipeline().source("file_path", decode_max_size=256)
+```
+
+The chainable [`thumbnail(max_size)`](../operations/image-ops.md#thumbnail) method
+is the explicit equivalent. Because a scaled decode + resize is not bit-identical
+to a full decode + the same resize, this is an opt-in.
+
 ### Error Handling
 
 By default, a failure while producing a row raises and aborts the whole query.

@@ -68,10 +68,13 @@ If you use `sink("list")` or `sink("array")`, dtype must be known at planning ti
 
 | Format | Output Type | Description |
 |--------|------------|-------------|
-| `numpy` | Binary | NumPy-compatible bytes |
+| `numpy` | Struct | NumPy-compatible zero-copy struct (`{data, dtype, shape, strides, offset}`); `dtype="f16"` downcasts |
+| `torch` | Struct | PyTorch-compatible zero-copy struct; `dtype="f16"` downcasts |
 | `png` | Binary | PNG bytes |
 | `jpeg` | Binary | JPEG bytes |
+| `webp` | Binary | WebP bytes |
 | `tiff` | Binary | TIFF bytes with LZW compression (supports floating-point) |
+| `blob` | Binary | Self-describing VIEW binary protocol |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
 | `native` | Varies | Native Python type (for scalars/vectors) |

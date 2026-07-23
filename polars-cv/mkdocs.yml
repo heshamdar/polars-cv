@@ -79,6 +79,7 @@ nav:
       - Pipelines: user-guide/concepts/pipelines.md
       - Sources: user-guide/concepts/sources.md
       - Domains: user-guide/concepts/domains.md
+      - Streaming & Scaling: user-guide/concepts/streaming.md
     - Operations:
       - Image Operations: user-guide/operations/image-ops.md
       - Geometry: user-guide/operations/geometry.md

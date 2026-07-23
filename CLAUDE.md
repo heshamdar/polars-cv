@@ -37,6 +37,10 @@ uv run pytest tests/ -k "test_resize"          # Single test by name
 python scripts/test_multiple_python.py --all   # Test across Python 3.10–3.13
 ```
 
+Tests are marked with `network` (needs network access) and `slow` (excluded from
+the default lane). CI runs `pytest -m "not network and not slow"` on every push
+and a separate `-m "slow and not network"` lane on a schedule.
+
 Rust unit tests (run from the workspace root or with `-p` flag):
 ```bash
 cargo test -p view-buffer --all-features   # view-buffer engine tests
@@ -46,10 +50,22 @@ cargo test -p polars-cv                    # Rust plugin tests
 ### Lint & Format
 
 ```bash
-uv run ruff check python/        # Python lint
-uv run ruff format python/       # Python format
+uvx ruff check python tests benchmarks         # Python lint (matches CI)
+uvx ruff format python tests benchmarks        # Python format
 cargo fmt --all -- --check       # Rust format check
 cargo clippy --all-targets --all-features -- -D warnings  # Rust lint
+```
+
+A [pre-commit](https://pre-commit.com/) config (`.pre-commit-config.yaml`) wires
+these up; `pre-commit>=4.5.1` is in the dev group. Install hooks with
+`uv run pre-commit install`.
+
+### Docs
+
+```bash
+uv sync --group docs             # Install docs dependencies
+uv run mkdocs serve              # Live-preview the MkDocs site locally
+uv run mkdocs build --strict     # Build the site (fails on broken links/nav)
 ```
 
 ---
@@ -89,6 +105,9 @@ Rust: view-buffer (the engine)
 | `expressions.py` | `CvNamespace` — the `.cv` accessor registered on Polars Series/Expr |
 | `_types.py` | Core type definitions: `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `Domain`, `DType` |
 | `_graph.py` | `PipelineGraph` / `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
+| `_namespace.py` | Shared base for the `.cv`/`.point`/`.contour`/`.bbox` expression namespaces (plugin-registration boilerplate) |
+| `display.py` | `show_images()` — notebook rendering of image columns |
+| `_graph_viz.py` | Graph visualization (networkx/graphviz/pydot) |
 | `geometry/` | Point/contour/bbox schemas and Polars expression namespaces |
 | `metrics/` | Detection metrics (PR curves, AP, FROC, LROC, bootstrap, AUC) |
 
@@ -97,19 +116,24 @@ Rust: view-buffer (the engine)
 **polars-cv/src/**
 - `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `op_schema`/`op_contract`/`op_output_dtype`/`enum_variants`/`known_ops` FFI the Python planner reads
 - `execute.rs` — `resolve_op()` dispatcher mapping `OpSpec`s to `GraphStep`s (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants); owns the `KNOWN_OPS` registry
-- `graph/` — `UnifiedGraph` execution engine: `types.rs` (`UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowErrorPolicy`), `compiled.rs` (process-wide compiled-graph cache), source decoding (`decode.rs`), sink encoding (`encode.rs`)
+- `graph/` — `UnifiedGraph` execution engine: `types.rs` (`UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowErrorPolicy`), `compiled.rs` (process-wide compiled-graph cache), `step.rs` (`GraphStep` — the plugin-level step vocabulary), source decoding (`decode.rs`), sink encoding (`encode.rs`)
 - `params.rs` — `ParamValue` resolving literals vs per-row Polars column values
 - `pipeline.rs` — serde types for the JSON graph spec crossing the plugin boundary
 - `cloud.rs` — remote/cloud source I/O (`file_path` decode, `cloud_options`, concurrent prefetch)
 - `image_metadata.rs` — header-only metadata plugin functions (`.cv.width()`/`height()`/`channels()`/`image_dtype()`)
 - `output.rs` — zero-copy numpy/torch struct output encoding
+- `engine_warning.rs` — one-time single-threaded-batch warning (points users to `engine="streaming"`)
 - `contour.rs`, `point.rs` — standalone plugin functions for geometry namespaces
 
-**view-buffer/src/**
+**view-buffer/src/** (see `view-buffer/AGENTS.md` for the full module tree)
 - `core/` — `ViewBuffer` (strided N-D array), `DType`, `Layout`
-- `ops/` — operation definitions organized by category (`image.rs`, `color.rs`, `compute.rs`, `filter.rs`, `view.rs`, `binary.rs`, `reduction.rs`, `histogram.rs`)
+- `ops/` — operation definitions by category (`image.rs`, `color.rs`, `compute.rs`, `scalar.rs`, `filter.rs`, `affine.rs`, `view.rs`, `binary.rs`, `reduction.rs`, `histogram.rs`, `phash.rs`, `pad.rs`, `mask.rs`), plus `shape_rule.rs` (the plan-time rank/channel authority), `validation.rs`, `cost.rs`, `traits.rs`, `io.rs`
 - `ops/dto.rs` — `ViewDto` enum: the serializable bridge between JSON and Rust op code
 - `expr.rs` — `ViewExpr` lazy builder with `.plan()` / `.execute()`
+- `execution/` — `ExecutionPlan`, runner, kernel fusion
+- `geometry/` — contour extraction, rasterization, measures, pairwise matching, transforms
+- `interop/` — zero-copy Arrow, ndarray, `image`, and Polars-arrow integration
+- `protocol.rs` — VIEW binary protocol (header + data serialization)
 
 ---
 

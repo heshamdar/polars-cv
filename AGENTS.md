@@ -128,11 +128,14 @@ polars-cv/                          # Workspace root
 │   │   └── AGENTS.md
 │   ├── benchmarks/                 # Benchmark suite
 │   │   └── AGENTS.md
-│   ├── examples/                   # Runnable demos (numbered, <500 lines each)
+│   ├── examples/                   # Runnable demos (13 numbered 01–13 + detection_data.py)
 │   ├── docs/                       # MkDocs user-guide documentation
-│   └── scripts/                    # Utility scripts
-    └── polars-cv-contribution-guide.md
+│   └── scripts/                    # Utility scripts (gen_lazy_stub.py, test_multiple_python.py)
+└── CHANGELOG.md                    # Keep-a-Changelog release history
 ```
+
+See root [`CONTRIBUTING.md`](CONTRIBUTING.md) for the release process and CI, and
+[`README.docker.md`](README.docker.md) for the Docker build environment.
 
 ## Task Routing
 
@@ -162,25 +165,44 @@ cargo clippy --workspace           # Lint Rust
 
 - **f64 chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for f64 inputs (`view-buffer/src/expr.rs::extract_ops`).
 
-## Recent Changes
+## Release History
 
-- **Schema authority consolidation:** each op's schema effect (domain, dtype,
-  ndim, channels) is declared once, on the op itself in Rust, and read by the
-  Python planner through the `op_schema`/`op_contract` FFI. The Python builder
-  tracks state incrementally (one `op_schema` call per appended op); the
-  planner contains no per-op special cases. Graph-level steps (`GraphStep` in
-  `polars-cv/src/graph/step.rs`) are separate from engine-executable ops
-  (`ViewDto` in view-buffer). Guarded by `tests/test_sanitation.py`.
-- **Test fixtures unified:** `plugin_required` and PNG factories live only in
-  `tests/conftest.py` (`make_test_png` for module-level use); meta-tests in
-  `test_sanitation.py` reject local redefinitions.
+Per-release changes (added/changed/fixed/performance) are tracked in
+[`CHANGELOG.md`](CHANGELOG.md) — consult it rather than duplicating a running log
+here.
 
-- **Execution core rewrite:** the `vb_graph` plugin compiles graphs once into a process-wide cache (`graph/compiled.rs`: parsed spec, topo order, slot-bound params, pre-resolved static ops) — the streaming engine invokes the plugin per morsel, so repeat calls pay a hash lookup. Graph structure (output node refs, upstream wiring, source formats, encodings) is validated at compile time instead of failing late/silently.
-- **Per-row error policy:** `Pipeline.on_error("raise"|"null"|"null_with_message")` — failing rows null all outputs (optionally with a reserved `_error` message field) instead of failing the batch.
-- **Kernel fusion extended:** casts fold into the FusedKernel (any-numeric read → f32 ops → out-dtype write), plus AdjustGamma/Invert lowerings; `u8 → cast(f32) → scale → clamp → relu` is one pass. The f64 scalar contract is now honored at runtime (f64 in → f64 out).
-- **I/O:** remote `file_path` sources prefetch concurrently per batch (`cloud_options` now round-trips); JPEG sources accept an explicit `decode_max_size` assertion for IDCT-scaled decoding.
-- **Lazy parity:** `LazyPipelineExpr` mirrors every chainable `Pipeline` method (drift-guarded by `test_lazy_pipeline_method_parity`), shape hints replay through `.pipe()` continuations, and `rasterize(shape=<expr>)` shape references are implemented end-to-end.
-- **Rotation/affine unification:** `rotate()` with arbitrary angles now routes through `ComputeOp::RotateAffine` → `AffineParams::from_rotation()` → `apply_affine_warp()`, sharing the affine transform code path. `ImageOpKind::Rotate` has been removed. Zero-copy fast paths (90/180/270) are preserved via `ViewOp`. `rotate()` now accepts `interpolation` and `border_value` parameters. Affine fusion supports `rotate` → `warp_affine` chains.
-- **Schema authority unified in view-buffer:** the Python planner no longer keeps a parallel contract table. Per-op output domain, dtype, rank, and channel count are read from view-buffer's declarative rules (`op_contract`/`op_output_dtype` over `OutputChannelRule`/`OutputRankRule` in `view-buffer/src/ops/shape_rule.rs`); `_update_channels_from_rule()` derives channels (e.g. `Fixed(1)` for grayscale/canny, alpha-aware `StripProcessRestore` for color ops). The old `OPERATION_CONTRACTS`/`AlphaMode`/`NdimEffect` tables were removed. `rotate(expand=True)` computes output dimensions at planning time for static angles.
-- **Dynamic parameter support:** Extended to cover morphology ksize/iterations, channel_select index, convolve2d ksize, pad value, warp_affine output_size, rasterize fill_value/background, reduce_percentile q, reduce_std ddof.
-- **Benchmarks expanded:** 20 single-op benchmarks (up from 8), covering rotation, morphology, intensity adjustments, edge detection, padding, sharpening, and histogram equalization.
+## Durable Architecture Notes
+
+These are the load-bearing design decisions worth internalizing before making
+changes; they explain *why* the code is shaped the way it is.
+
+- **Single schema authority (view-buffer).** Each op's schema effect — output
+  domain, dtype, rank, and channel count — is declared once, on the op itself in
+  Rust (`OutputRankRule`/`OutputChannelRule` in
+  `view-buffer/src/ops/shape_rule.rs`), and read by the Python planner through the
+  `op_schema`/`op_contract`/`op_output_dtype` FFI. The planner contains no per-op
+  special cases and no parallel contract table. Planning-time schema must equal
+  execution-time schema; guarded by `tests/test_sanitation.py`.
+- **Graph steps vs engine ops.** Graph-level steps (`GraphStep` in
+  `polars-cv/src/graph/step.rs`: binary ops, masks, geometry, reductions,
+  histograms, perceptual hash) are separate from engine-executable buffer ops
+  (`ViewDto` in view-buffer). Anything that changes the data domain lives in
+  `GraphStep`.
+- **Compiled-graph cache.** The `vb_graph` plugin compiles each graph once into a
+  process-wide cache (`graph/compiled.rs`: parsed spec, topo order, slot-bound
+  params, pre-resolved static ops). The streaming engine invokes the plugin per
+  morsel, so repeat calls pay only a hash lookup, and graph structure is validated
+  at compile time instead of failing late.
+- **Kernel fusion.** Consecutive scalar compute ops (scale/relu/clamp/gamma/invert)
+  plus casts fold into one `FusedKernel` pass (any-numeric read → f32 ops →
+  out-dtype write). `out_dtype` is pinned to what the unfused chain would produce,
+  so fusion never changes the planned schema. f64 promote-family inputs stay
+  unfused (see Known Issues).
+- **Rotation/affine unification.** `rotate()` with arbitrary angles routes through
+  `ComputeOp::RotateAffine` → `AffineParams::from_rotation()` → `apply_affine_warp()`,
+  sharing the affine code path; 90/180/270 stay zero-copy via `ViewOp`. Consecutive
+  affine ops fuse into a single matrix at planning time.
+- **Lazy parity.** `LazyPipelineExpr` generates a forwarder for every chainable
+  `Pipeline` method at import time (drift-guarded by
+  `test_lazy_pipeline_method_parity`); the type stub is regenerated via
+  `scripts/gen_lazy_stub.py` and guarded by `test_lazy_stub_is_current`.
