@@ -343,10 +343,21 @@ Pipeline().source("image_bytes").warp_affine(
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `matrix` | Six-element `[a, b, tx, c, d, ty]` forward-mapping matrix | — |
+| `matrix` | Six-element `[a, b, tx, c, d, ty]` forward-mapping matrix; each element may be a literal or a per-row Polars expression | — |
 | `output_size` | `(height, width)` of the output | — |
 | `interpolation` | `"bilinear"` or `"nearest"` | `"bilinear"` |
 | `border_value` | Fill value for out-of-bounds pixels | `0.0` |
+
+Because each matrix element accepts an expression, a batch can apply a different
+(e.g. random) affine per row in a single call:
+
+```python
+Pipeline().source("image_bytes").warp_affine(
+    matrix=[pl.col("a"), pl.col("b"), pl.col("tx"),
+            pl.col("c"), pl.col("d"), pl.col("ty")],
+    output_size=(224, 224),
+)
+```
 
 ### Shear
 
@@ -439,6 +450,25 @@ Pipeline().source("image_bytes").resize_min(min_size=128)
 
 All resize variants accept Polars expressions for per-row dynamic sizes.
 
+## Thumbnail
+
+Decode only a downscaled *thumbnail* of an image source. This is the explicit,
+chainable form of `source(..., decode_max_size=...)`: it asserts the pipeline needs
+at most `max_size` pixels on the decoded long side, so JPEG decoding uses IDCT
+scaling (1/8, 1/4, 1/2) to skip work — a large CPU and memory win. Non-JPEG formats
+(PNG, …) ignore the assertion and decode at full size.
+
+```python
+# Cheap decode for a curation pass
+Pipeline().source("file_path").thumbnail(256).perceptual_hash()
+```
+
+Must be called right after `source(...)` on an `image_bytes`/`file_path` source. A
+scaled decode followed by a resize is **not** bit-identical to a full decode then
+the same resize (different resampling path), so it is an explicit opt-in. See
+[Streaming & Scaling](../concepts/streaming.md#cheaper-decoding-for-curation-passes)
+for the two-pass curation pattern.
+
 ## Shape Assertion
 
 Provide shape hints for the pipeline planner. Useful for asserting known dimensions when the source has unknown shape.
@@ -481,7 +511,8 @@ pipe = Pipeline().source("image_bytes").crop(
 | Pad | `top`, `bottom`, `left`, `right`, `value` |
 | Pad to size / Letterbox | `height`, `width`, `value` |
 | Rotate | `angle` |
-| Warp affine | `output_size` (height and width) |
+| Warp affine | `matrix` (each of the 6 elements, per-row), `output_size` (height and width), `border_value` |
+| Shear | `sx`, `sy` |
 | Scale / Clamp | `factor`, `min_val`, `max_val` |
 | Threshold | `value` |
 | Blur | `sigma` |
@@ -496,7 +527,7 @@ pipe = Pipeline().source("image_bytes").crop(
 
 **Planning-time implications:** When a shape-affecting parameter is an expression (e.g., `resize(height=pl.col("h"))`), the pipeline planner cannot determine the output dimensions at planning time. Shape hints will be `None` for those dimensions.
 
-**Structural parameters** like `matrix` (affine), `kernel` (convolution), `axes` (transpose/flip), and enum values like `interpolation`, `mode`, `border` remain static only.
+**Structural parameters** like `kernel` (convolution), `axes` (transpose/flip), and enum values like `interpolation`, `mode`, `border` remain static only. (The affine `matrix` is an exception: although structural in shape, each of its six elements may be a per-row expression, so a batch can apply a different affine per row.)
 
 ## Next Steps
 

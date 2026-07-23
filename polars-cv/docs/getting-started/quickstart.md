@@ -86,14 +86,33 @@ result = df.with_columns(
 
 | Format | Description | Use Case |
 |--------|-------------|----------|
-| `numpy` | NumPy-compatible bytes | NumPy, OpenCV, Scikit-image |
-| `torch` | PyTorch-compatible bytes | PyTorch DataLoaders |
+| `numpy` | NumPy-compatible struct | NumPy, OpenCV, Scikit-image |
+| `torch` | PyTorch-compatible struct | PyTorch DataLoaders |
 | `png` | Re-encode as PNG bytes | Storage, display |
 | `jpeg` | Re-encode as JPEG bytes | Web usage |
 | `webp` | Re-encode as WebP bytes | Web usage (smaller files) |
 | `tiff` | Re-encode as TIFF bytes | Scientific imaging |
+| `blob` | Self-describing VIEW binary | Round-tripping buffers between pipelines |
 | `list` | Polars nested List | Internal Polars analysis |
+| `array` | Fixed-size Polars Array | Fixed-shape tensors |
 | `native` | Python primitive | Scalars (Area, Mean) |
+
+The `numpy` and `torch` sinks accept `dtype="f16"` to downcast the output tensor
+to half precision at the encode boundary — halving the output bytes and
+host→device transfer. (The engine has no native f16 dtype; only the sink container
+is f16.)
+
+```python
+# Half-precision output tensor
+result = df.with_columns(
+    processed=pl.col("image").cv.pipe(pipe).sink("torch", dtype="f16")
+)
+```
+
+!!! tip
+    A plain `with_columns`/`.select` runs the plugin single-threaded. For large
+    workloads, run through the streaming engine — see
+    [Streaming & Scaling](../user-guide/concepts/streaming.md).
 
 ## Reading from Files
 
