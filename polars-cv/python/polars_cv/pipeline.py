@@ -807,9 +807,13 @@ class Pipeline:
                 on_error=on_error,
             )
         else:
-            # Handle cloud_options for file_path format
+            # Handle cloud_options for file_path format (and "auto", which can
+            # resolve to file_path from a String column at runtime).
             cloud_opts = None
-            if fmt == SourceFormat.FILE_PATH and cloud_options is not None:
+            if (
+                fmt in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
+                and cloud_options is not None
+            ):
                 if isinstance(cloud_options, CloudOptions):
                     cloud_opts = cloud_options
                 elif isinstance(cloud_options, dict):
@@ -842,7 +846,7 @@ class Pipeline:
                     raise TypeError(msg)
             elif cloud_options is not None:
                 warnings.warn(
-                    f"cloud_options is only applied to 'file_path' sources; "
+                    f"cloud_options is only applied to 'file_path'/'auto' sources; "
                     f"ignoring it for '{fmt.value}' source.",
                     UserWarning,
                     stacklevel=2,

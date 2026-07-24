@@ -110,6 +110,12 @@ struct ExecState<'a> {
     /// into per-batch latency; per-path errors surface at their row so the
     /// usual error policies apply.
     prefetched: HashMap<String, HashMap<String, Result<Vec<u8>, String>>>,
+    /// Concrete decode path for each `"auto"` source node, resolved once per
+    /// batch from the input column dtype (node_id → resolved format). The dtype
+    /// is constant across rows, so this avoids re-resolving per row; a
+    /// resolution error is stored and surfaced at its row so the usual error
+    /// policies apply. Non-auto nodes are absent.
+    resolved_auto_formats: HashMap<String, Result<&'static str, String>>,
 }
 
 /// Maximum concurrent remote fetches during source prefetch.
@@ -255,6 +261,7 @@ impl CompiledGraph {
             ctx: ParamCtx::from_inputs(inputs),
             resolved_outputs: resolved_output_specs(&self.graph, inputs.first().map(|s| s.dtype())),
             prefetched: self.prefetch_remote_sources(inputs),
+            resolved_auto_formats: self.resolve_auto_source_formats(inputs),
         };
 
         let mut results: HashMap<String, Vec<RowResult>> = HashMap::new();
@@ -435,10 +442,15 @@ impl CompiledGraph {
                             .copied()
                             .unwrap_or(0);
                         let input_series = &inputs[col_idx];
-                        // Resolve an `"auto"` source to a concrete decode path
-                        // from the column dtype (constant across rows).
+                        // An `"auto"` source was resolved to a concrete decode
+                        // path once per batch (see `resolve_auto_source_formats`);
+                        // reuse that result here.
                         let source_format = if node.source.format == "auto" {
-                            resolve_auto_format(input_series)?
+                            match state.resolved_auto_formats.get(node_id) {
+                                Some(Ok(fmt)) => *fmt,
+                                Some(Err(e)) => return Err(e.clone()),
+                                None => node.source.format.as_str(),
+                            }
                         } else {
                             node.source.format.as_str()
                         };
@@ -947,19 +959,49 @@ impl CompiledGraph {
         Ok(())
     }
 
+    /// Resolve each `"auto"` source node's concrete decode path once per batch.
+    ///
+    /// The decode path depends only on the bound input column's dtype, which is
+    /// constant across rows, so resolving here (rather than per row) avoids
+    /// repeated work — including the O(n) magic-byte scan for `Binary` columns.
+    /// Errors are stored per node and re-surfaced at their row so the batch's
+    /// row-error policy still applies.
+    fn resolve_auto_source_formats(
+        &self,
+        inputs: &[Series],
+    ) -> HashMap<String, Result<&'static str, String>> {
+        let mut resolved = HashMap::new();
+        for (node_id, node) in &self.graph.nodes {
+            if node.source.format != "auto" {
+                continue;
+            }
+            let Some(col_idx) = self.graph.column_bindings.get(node_id) else {
+                continue;
+            };
+            let Some(series) = inputs.get(*col_idx) else {
+                continue;
+            };
+            resolved.insert(node_id.clone(), resolve_auto_format(series));
+        }
+        resolved
+    }
+
     /// Concurrently fetch every remote `file_path` source in this batch.
     ///
     /// Per-call (per morsel) and derived only from this batch's path values —
     /// nothing here is cached on the compiled graph. Distinct paths are
     /// fetched once; wrong-dtype columns are skipped so the row loop reports
-    /// them with its usual error message.
+    /// them with its usual error message. `"auto"` nodes are included too: an
+    /// auto source over a `String` column resolves to `file_path`, and the
+    /// `series.str()` check below naturally skips auto nodes bound to any other
+    /// column type.
     fn prefetch_remote_sources(
         &self,
         inputs: &[Series],
     ) -> HashMap<String, HashMap<String, Result<Vec<u8>, String>>> {
         let mut prefetched = HashMap::new();
         for (node_id, node) in &self.graph.nodes {
-            if node.source.format != "file_path" {
+            if node.source.format != "file_path" && node.source.format != "auto" {
                 continue;
             }
             let Some(col_idx) = self.graph.column_bindings.get(node_id) else {

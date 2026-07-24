@@ -174,6 +174,59 @@ class TestAutoSource:
         exp_res = df.with_columns(out=pl.col("vals").cv.pipe(explicit).sink("blob"))
         assert auto_res["out"][0] == exp_res["out"][0]
 
+    def test_auto_list_sink_over_list_column(self) -> None:
+        # A typed `list` sink over an auto source must plan (dtype/ndim resolve
+        # from the List column at runtime), matching an explicit `list` source.
+        df = pl.DataFrame(
+            {"vals": [[1.0, 2.0, 3.0, 4.0]]},
+            schema={"vals": pl.List(pl.Float32)},
+        )
+        auto = Pipeline().source("auto")
+        explicit = Pipeline().source("list")
+
+        auto_res = df.with_columns(out=pl.col("vals").cv.pipe(auto).sink("list"))
+        exp_res = df.with_columns(out=pl.col("vals").cv.pipe(explicit).sink("list"))
+        assert auto_res["out"].dtype == exp_res["out"].dtype
+        assert auto_res["out"][0].to_list() == exp_res["out"][0].to_list()
+
+    def test_auto_array_sink_over_array_column(self) -> None:
+        df = pl.DataFrame(
+            {"vals": [[1.0, 2.0, 3.0, 4.0]]},
+            schema={"vals": pl.Array(pl.Float32, 4)},
+        )
+        auto = Pipeline().source("auto")
+        explicit = Pipeline().source("array")
+
+        # array sink needs a deterministic shape (independent of source format).
+        auto_res = df.with_columns(
+            out=pl.col("vals").cv.pipe(auto).sink("array", shape=[4])
+        )
+        exp_res = df.with_columns(
+            out=pl.col("vals").cv.pipe(explicit).sink("array", shape=[4])
+        )
+        assert auto_res["out"].dtype == exp_res["out"].dtype
+
+    def test_auto_image_list_sink_still_requires_dtype(self) -> None:
+        # An auto source over a Binary image column cannot resolve the element
+        # dtype at plan time, so a typed `list` sink must still error clearly —
+        # deferred to Rust's schema resolution.
+        png = create_test_png(4, 4)
+        df = pl.DataFrame({"img": [png]})
+
+        pipe = Pipeline().source("auto")
+        with pytest.raises(Exception, match="dtype|auto"):
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("list"))
+
+    def test_auto_image_list_sink_with_explicit_dtype(self) -> None:
+        # Supplying an explicit dtype lets the typed `list` sink plan over an
+        # auto image source (previously the ndim guard rejected this).
+        png = create_test_png(4, 4)
+        df = pl.DataFrame({"img": [png]})
+
+        pipe = Pipeline().source("auto", dtype="u8")
+        result = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("list"))
+        assert "out" in result.columns
+
     def test_auto_blob_roundtrip(self) -> None:
         """A VIEW-blob Binary column routes through the blob decoder."""
         png = create_test_png(8, 8)

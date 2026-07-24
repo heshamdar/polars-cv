@@ -46,9 +46,19 @@ def _require_concrete_sink_dtype(
 
     from polars_cv._types import SourceFormat
 
+    # LIST/ARRAY sources resolve their leaf dtype from the Polars column at
+    # plan-time-with-input (Rust `resolved_output_specs`). "auto" may resolve to
+    # a List/Array column the same way, so defer to that runtime resolution — a
+    # Binary/image column under "auto" still surfaces a clear error there
+    # (`list_array_inner_dtype`) rather than here.
     source_resolves_dtype = (
         pipeline._source is not None
-        and pipeline._source.format in (SourceFormat.LIST, SourceFormat.ARRAY)
+        and pipeline._source.format
+        in (
+            SourceFormat.LIST,
+            SourceFormat.ARRAY,
+            SourceFormat.AUTO,
+        )
     )
     if source_resolves_dtype:
         return
@@ -314,7 +324,11 @@ class LazyPipelineExpr:
                         source_can_resolve = (
                             node._pipeline._source is not None
                             and node._pipeline._source.format
-                            in (SourceFormat.LIST, SourceFormat.ARRAY)
+                            in (
+                                SourceFormat.LIST,
+                                SourceFormat.ARRAY,
+                                SourceFormat.AUTO,
+                            )
                         )
                         if not source_can_resolve:
                             msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
@@ -345,10 +359,14 @@ class LazyPipelineExpr:
             # it from the Polars column type (list/array sources).
             if format == "list":
                 if self._pipeline._expected_ndim is None:
+                    # LIST/ARRAY sources resolve ndim from the Polars column at
+                    # plan-time-with-input; "auto" defers to that same runtime
+                    # resolution (a Binary/image column then errors on its
+                    # unresolved element dtype rather than on ndim).
                     source_can_resolve = (
                         self._pipeline._source is not None
                         and self._pipeline._source.format
-                        in (SourceFormat.LIST, SourceFormat.ARRAY)
+                        in (SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO)
                     )
                     if not source_can_resolve:
                         msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
