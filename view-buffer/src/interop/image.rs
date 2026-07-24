@@ -452,13 +452,20 @@ impl ImageAdapter {
     /// Convert ViewBuffer -> DynamicImage.
     ///
     /// This is useful for interoperating with the image crate's APIs.
-    /// The buffer must have U8 dtype and be in `[H, W, C]` where C is 1, 2, 3, or 4,
-    /// or `[H, W]` (treated as single-channel).
+    /// The buffer must have U8 or U16 dtype and be in `[H, W, C]` where C is 1,
+    /// 2, 3, or 4, or `[H, W]` (treated as single-channel). U8 buffers produce
+    /// 8-bit `DynamicImage` variants; U16 buffers produce 16-bit variants (so a
+    /// 16-bit buffer round-trips to a 16-bit PNG).
     pub fn to_dynamic_image(buffer: &ViewBuffer) -> Result<DynamicImage, image::ImageError> {
-        if buffer.dtype() != DType::U8 {
+        let dtype = buffer.dtype();
+        if dtype != DType::U8 && dtype != DType::U16 {
             return Err(image::ImageError::Parameter(
                 image::error::ParameterError::from_kind(image::error::ParameterErrorKind::Generic(
-                    "Image export requires U8 dtype".to_string(),
+                    format!(
+                        "Image export requires U8 or U16 dtype, got {dtype:?}. \
+                         Cast to an integer dtype first (e.g. `.cast(\"u8\")` or \
+                         `.cast(\"u16\")`), or sink to TIFF to preserve float data."
+                    ),
                 )),
             ));
         }
@@ -482,9 +489,6 @@ impl ImageAdapter {
 
         let (h, w) = (shape[0] as u32, shape[1] as u32);
         let contiguous = buffer.to_contiguous();
-        let slice = unsafe {
-            std::slice::from_raw_parts(contiguous.as_ptr::<u8>(), contiguous.layout.num_elements())
-        };
 
         let make_err = |label: &str| {
             image::ImageError::Parameter(image::error::ParameterError::from_kind(
@@ -494,26 +498,64 @@ impl ImageAdapter {
             ))
         };
 
-        match channels {
-            4 => {
-                let img_buf = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
-                    .ok_or_else(|| make_err("RGBA"))?;
-                Ok(DynamicImage::ImageRgba8(img_buf))
-            }
-            3 => {
-                let img_buf = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
-                    .ok_or_else(|| make_err("RGB"))?;
-                Ok(DynamicImage::ImageRgb8(img_buf))
-            }
-            2 => {
-                let img_buf = ImageBuffer::<LumaA<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
-                    .ok_or_else(|| make_err("LumaA"))?;
-                Ok(DynamicImage::ImageLumaA8(img_buf))
+        match dtype {
+            DType::U8 => {
+                let slice = contiguous.as_slice::<u8>();
+                match channels {
+                    4 => {
+                        let img_buf =
+                            ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
+                                .ok_or_else(|| make_err("RGBA"))?;
+                        Ok(DynamicImage::ImageRgba8(img_buf))
+                    }
+                    3 => {
+                        let img_buf =
+                            ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
+                                .ok_or_else(|| make_err("RGB"))?;
+                        Ok(DynamicImage::ImageRgb8(img_buf))
+                    }
+                    2 => {
+                        let img_buf =
+                            ImageBuffer::<LumaA<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
+                                .ok_or_else(|| make_err("LumaA"))?;
+                        Ok(DynamicImage::ImageLumaA8(img_buf))
+                    }
+                    _ => {
+                        let img_buf =
+                            ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
+                                .ok_or_else(|| make_err("Luma"))?;
+                        Ok(DynamicImage::ImageLuma8(img_buf))
+                    }
+                }
             }
             _ => {
-                let img_buf = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(w, h, slice.to_vec())
-                    .ok_or_else(|| make_err("Luma"))?;
-                Ok(DynamicImage::ImageLuma8(img_buf))
+                let slice = contiguous.as_slice::<u16>();
+                match channels {
+                    4 => {
+                        let img_buf =
+                            ImageBuffer::<Rgba<u16>, Vec<u16>>::from_raw(w, h, slice.to_vec())
+                                .ok_or_else(|| make_err("RGBA16"))?;
+                        Ok(DynamicImage::ImageRgba16(img_buf))
+                    }
+                    3 => {
+                        let img_buf =
+                            ImageBuffer::<Rgb<u16>, Vec<u16>>::from_raw(w, h, slice.to_vec())
+                                .ok_or_else(|| make_err("RGB16"))?;
+                        Ok(DynamicImage::ImageRgb16(img_buf))
+                    }
+                    2 => {
+                        let img_buf =
+                            ImageBuffer::<LumaA<u16>, Vec<u16>>::from_raw(w, h, slice.to_vec())
+                                .ok_or_else(|| make_err("LumaA16"))?;
+                        Ok(DynamicImage::ImageLumaA16(img_buf))
+                    }
+                    _ => {
+                        let img_buf =
+                            ImageBuffer::<Luma<u16>, Vec<u16>>::from_raw(w, h, slice.to_vec())
+                                .ok_or_else(|| make_err("Luma16"))?;
+                        Ok(DynamicImage::ImageLuma16(img_buf))
+                    }
+                }
             }
         }
     }
@@ -533,6 +575,54 @@ mod tests {
 
         let decoded = ImageAdapter::decode(&encoded).unwrap();
         assert_eq!(decoded.shape(), &[2, 2, 3]);
+    }
+
+    #[test]
+    fn test_u16_png_round_trip_gray() {
+        // 16-bit grayscale values that would be clipped/lost at 8 bits.
+        let original_data: Vec<u16> = vec![65535, 30000, 12345, 1];
+        let tb = ViewBuffer::from_vec(original_data.clone()).reshape(vec![2, 2, 1]);
+
+        let encoded = ImageAdapter::encode(&tb, image::ImageFormat::Png).unwrap();
+        assert!(!encoded.is_empty());
+
+        let decoded = ImageAdapter::decode(&encoded).unwrap();
+        assert_eq!(decoded.shape(), &[2, 2, 1]);
+        assert_eq!(decoded.dtype(), DType::U16);
+        assert_eq!(decoded.as_slice::<u16>(), &original_data);
+    }
+
+    #[test]
+    fn test_u16_png_round_trip_rgb() {
+        // Distinct 16-bit values across an RGB image.
+        let original_data: Vec<u16> = vec![
+            65535, 0, 30000, // px (0,0)
+            12345, 54321, 100, // px (0,1)
+            1, 2, 3, // px (1,0)
+            40000, 41000, 42000, // px (1,1)
+        ];
+        let tb = ViewBuffer::from_vec(original_data.clone()).reshape(vec![2, 2, 3]);
+
+        let encoded = ImageAdapter::encode(&tb, image::ImageFormat::Png).unwrap();
+        assert!(!encoded.is_empty());
+
+        let decoded = ImageAdapter::decode(&encoded).unwrap();
+        assert_eq!(decoded.shape(), &[2, 2, 3]);
+        assert_eq!(decoded.dtype(), DType::U16);
+        assert_eq!(decoded.as_slice::<u16>(), &original_data);
+    }
+
+    #[test]
+    fn test_to_dynamic_image_rejects_float_with_actionable_error() {
+        let data: Vec<f32> = vec![1.0, 0.5, 0.25, 0.125];
+        let tb = ViewBuffer::from_vec(data).reshape(vec![2, 2, 1]);
+
+        let err = ImageAdapter::to_dynamic_image(&tb).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("U8 or U16") && msg.contains("cast"),
+            "unexpected error message: {msg}"
+        );
     }
 
     #[test]

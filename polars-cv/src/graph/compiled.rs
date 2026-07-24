@@ -435,7 +435,13 @@ impl CompiledGraph {
                             .copied()
                             .unwrap_or(0);
                         let input_series = &inputs[col_idx];
-                        let source_format = node.source.format.as_str();
+                        // Resolve an `"auto"` source to a concrete decode path
+                        // from the column dtype (constant across rows).
+                        let source_format = if node.source.format == "auto" {
+                            resolve_auto_format(input_series)?
+                        } else {
+                            node.source.format.as_str()
+                        };
                         if source_format == "contour" {
                             match input_series.get(row_idx) {
                                 Ok(value) if !value.is_null() => {
@@ -569,7 +575,7 @@ impl CompiledGraph {
                                     None => Ok(None),
                                 }
                             }
-                        } else if node.source.format == "list" || node.source.format == "array" {
+                        } else if source_format == "list" || source_format == "array" {
                             if input_series.dtype() == &DataType::Null {
                                 Ok(None)
                             } else {
@@ -598,7 +604,6 @@ impl CompiledGraph {
                                     ));
                                 }
                             };
-                            let source_format = node.source.format.as_str();
                             if source_format == "blob" || source_format == "raw" {
                                 if let Some((buffer, offset, len)) =
                                     get_binary_row_buffer(input_ca, row_idx)
@@ -618,10 +623,22 @@ impl CompiledGraph {
                                 }
                             } else {
                                 match input_ca.get(row_idx) {
-                                    Some(bytes) => match decode_source(bytes, &node.source) {
-                                        Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                        Err(e) => Err(format!("Decode error: {e}")),
-                                    },
+                                    Some(bytes) => {
+                                        // `source_format` may have been resolved
+                                        // from `"auto"`; decode with the concrete
+                                        // format so `decode_source` routes it.
+                                        let decode_spec = if node.source.format == "auto" {
+                                            let mut s = node.source.clone();
+                                            s.format = source_format.to_string();
+                                            std::borrow::Cow::Owned(s)
+                                        } else {
+                                            std::borrow::Cow::Borrowed(&node.source)
+                                        };
+                                        match decode_source(bytes, &decode_spec) {
+                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                            Err(e) => Err(format!("Decode error: {e}")),
+                                        }
+                                    }
                                     None => Ok(None),
                                 }
                             }
@@ -980,6 +997,7 @@ impl CompiledGraph {
 /// source dispatch and `decode_source`.
 const KNOWN_SOURCE_FORMATS: &[&str] = &[
     "array",
+    "auto",
     "blob",
     "contour",
     "file_path",
@@ -987,6 +1005,41 @@ const KNOWN_SOURCE_FORMATS: &[&str] = &[
     "list",
     "raw",
 ];
+
+/// Resolve an `"auto"` source format to a concrete decode path from the input
+/// column's Polars dtype. The dtype is constant across rows, so the resolution
+/// is stable per node. `Binary` columns are sniffed for the VIEW protocol magic
+/// to tell self-describing blobs apart from encoded image bytes (the image
+/// decoder auto-detects PNG/JPEG/TIFF internally, so `"image_bytes"` covers all
+/// non-VIEW binary).
+fn resolve_auto_format(series: &Series) -> Result<&'static str, String> {
+    match series.dtype() {
+        DataType::String => Ok("file_path"),
+        DataType::List(_) => Ok("list"),
+        DataType::Array(_, _) => Ok("array"),
+        DataType::Binary => {
+            // Inspect the first present row: blobs carry the magic, images don't.
+            if let Ok(ca) = series.binary() {
+                for i in 0..ca.len() {
+                    if let Some(bytes) = ca.get(i) {
+                        return if bytes.starts_with(&view_buffer::protocol::MAGIC_BYTES) {
+                            Ok("blob")
+                        } else {
+                            Ok("image_bytes")
+                        };
+                    }
+                }
+            }
+            // All-null column: default to image bytes (decode yields null rows).
+            Ok("image_bytes")
+        }
+        other => Err(format!(
+            "auto source cannot infer a decode path for column dtype {other:?}; \
+             specify an explicit source format (e.g. source(\"image_bytes\"), \
+             source(\"list\"), source(\"blob\"))."
+        )),
+    }
+}
 
 /// Validate the structural invariants the executor relies on, at compile time.
 ///

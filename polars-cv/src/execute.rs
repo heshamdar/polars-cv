@@ -225,12 +225,30 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>
         "png" => ImageAdapter::encode(buffer, image::ImageFormat::Png)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode PNG: {:?}", e)),
         "jpeg" => {
+            if buffer.dtype() != DType::U8 {
+                return Err(polars_err!(
+                    ComputeError:
+                    "JPEG is an 8-bit format but the image is {:?}; cast to u8 first \
+                     (.cast(\"u8\")) or sink to PNG/TIFF to preserve higher bit depth.",
+                    buffer.dtype()
+                ));
+            }
             let quality = sink.quality;
             ImageAdapter::encode_jpeg(buffer, quality)
                 .map_err(|e| polars_err!(ComputeError: "Failed to encode JPEG: {:?}", e))
         }
-        "webp" => ImageAdapter::encode(buffer, image::ImageFormat::WebP)
-            .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e)),
+        "webp" => {
+            if buffer.dtype() != DType::U8 {
+                return Err(polars_err!(
+                    ComputeError:
+                    "WebP is an 8-bit format but the image is {:?}; cast to u8 first \
+                     (.cast(\"u8\")) or sink to PNG/TIFF to preserve higher bit depth.",
+                    buffer.dtype()
+                ));
+            }
+            ImageAdapter::encode(buffer, image::ImageFormat::WebP)
+                .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e))
+        }
         "tiff" => ImageAdapter::encode_tiff(buffer)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode TIFF: {:?}", e)),
         other => Err(polars_err!(ComputeError: "Unknown sink format: {}", other)),

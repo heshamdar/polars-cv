@@ -616,7 +616,7 @@ class Pipeline:
 
     def source(
         self,
-        format: str = "image_bytes",
+        format: str = "auto",
         *,
         dtype: str | None = None,
         # Contour source parameters
@@ -637,6 +637,14 @@ class Pipeline:
         """
         Define the input source format.
 
+        The default ``"auto"`` infers the decode path from the column's Polars
+        dtype at runtime: a ``String`` column reads as ``"file_path"``, a
+        ``List``/``Array`` column as ``"list"``/``"array"``, and a ``Binary``
+        column as ``"blob"`` when it carries the VIEW protocol magic and
+        ``"image_bytes"`` otherwise. Pass an explicit format to override the
+        inference (or when the column dtype cannot be routed, such as a plain
+        numeric column).
+
         Image sources (``"image_bytes"`` and ``"file_path"``) auto-detect the
         format and preserve native dtype.  PNG/JPEG decode to u8, 16-bit PNG
         to u16, and TIFF may produce u8, u16, f32, or f64.  All decoded
@@ -651,6 +659,9 @@ class Pipeline:
 
         Args:
             format: How to interpret input data.
+                - "auto" (default): Infer the decode path from the column's
+                  Polars dtype (String → file_path, List/Array → list/array,
+                  Binary → blob if VIEW-tagged else image_bytes)
                 - "image_bytes": Decode PNG/JPEG/TIFF (auto-detect format
                   and dtype; always 3D ``[H, W, C]``)
                 - "blob": VIEW protocol binary (self-describing)
@@ -719,10 +730,14 @@ class Pipeline:
             raise ValueError(msg)
 
         if decode_max_size is not None:
-            if fmt not in (SourceFormat.IMAGE_BYTES, SourceFormat.FILE_PATH):
+            if fmt not in (
+                SourceFormat.AUTO,
+                SourceFormat.IMAGE_BYTES,
+                SourceFormat.FILE_PATH,
+            ):
                 msg = (
-                    "decode_max_size only applies to 'image_bytes'/'file_path' "
-                    f"sources, got '{format}'"
+                    "decode_max_size only applies to 'auto'/'image_bytes'/"
+                    f"'file_path' sources, got '{format}'"
                 )
                 raise ValueError(msg)
             if not isinstance(decode_max_size, int) or decode_max_size <= 0:
@@ -853,6 +868,18 @@ class Pipeline:
             elif fmt == SourceFormat.BLOB:
                 # Blob is self-describing; dtype/ndim unknown until runtime.
                 # User may assert dtype for planning (e.g., list/array sinks).
+                new._expected_ndim = None
+                if dtype_enum is not None:
+                    new._output_dtype = dtype_enum.value
+                else:
+                    new._output_dtype = "auto"
+            elif fmt == SourceFormat.AUTO:
+                # The concrete decode path is chosen from the column dtype at
+                # runtime, so dtype/rank are not knowable here — treat like blob.
+                # For List/Array columns Rust does resolve the leaf dtype at
+                # plan-time-with-input (resolved_output_specs); a Binary/String
+                # column stays "auto" (image dtype isn't known until decode).
+                # An explicit dtype assertion still flows through for planning.
                 new._expected_ndim = None
                 if dtype_enum is not None:
                     new._output_dtype = dtype_enum.value
