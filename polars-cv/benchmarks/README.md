@@ -252,6 +252,7 @@ This provides fair comparison for both real-world (cold) and optimized (warm) sc
 ```python
 from benchmarks.frameworks.base import BaseFrameworkAdapter
 
+
 class MyFrameworkAdapter(BaseFrameworkAdapter):
     name = "my-framework"
     supports_gpu = False
@@ -259,6 +260,7 @@ class MyFrameworkAdapter(BaseFrameworkAdapter):
     def is_available(self) -> bool:
         try:
             import my_framework
+
             return True
         except ImportError:
             return False

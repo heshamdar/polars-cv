@@ -53,12 +53,16 @@ Mann-Whitney is a global rank statistic (`P(positive > negative)`) — no range/
 `MetricResult.bootstrap_ci()` in the base class. Uses `_reconstruct(sampled_ids)` hook per subclass.
 
 ```python
-result.bootstrap_ci(metric="auc")                                          # default
-result.bootstrap_ci(metric="auc", metric_kwargs={"method": "mann_whitney"}) # Mann-Whitney
-result.bootstrap_ci(metric={                                                 # multi-metric
-    "mw": {"metric": "auc", "method": "mann_whitney"},
-    "pauc": {"metric": "auc", "fp_range": (0, 2), "correction": "mcclish"},
-})
+result.bootstrap_ci(metric="auc")  # default
+result.bootstrap_ci(
+    metric="auc", metric_kwargs={"method": "mann_whitney"}
+)  # Mann-Whitney
+result.bootstrap_ci(
+    metric={  # multi-metric
+        "mw": {"metric": "auc", "method": "mann_whitney"},
+        "pauc": {"metric": "auc", "fp_range": (0, 2), "correction": "mcclish"},
+    }
+)
 result.bootstrap_ci(sample_col="case_id")  # entity-level resampling
 ```
 

@@ -106,9 +106,11 @@ Files with `_gaps` in the name (e.g., `test_binary_ops_gaps.py`) are regular tes
 ```python
 from tests.conftest import plugin_required
 
+
 @plugin_required
 class TestMyFeature:
     """Tests that need the compiled Rust plugin."""
+
     ...
 ```
 
@@ -129,6 +131,7 @@ Reference tests have additional fixtures in `reference/conftest.py` (session-sco
 
 ```python
 """Tests for my plugin feature."""
+
 from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
 import polars as pl
@@ -139,6 +142,7 @@ from tests.conftest import plugin_required
 if TYPE_CHECKING:
     from _pytest.fixtures import FixtureRequest
 
+
 @plugin_required
 class TestMyFeature:
     """Tests that execute through the Rust plugin."""
@@ -148,9 +152,7 @@ class TestMyFeature:
         png_bytes = create_test_png(100, 100)
         df = pl.DataFrame({"image": [png_bytes]})
         pipe = Pipeline().source("image_bytes").my_op(param=42)
-        result = df.with_columns(
-            output=pl.col("image").cv.pipe(pipe).sink("numpy")
-        )
+        result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
         assert result["output"].dtype == pl.Struct(...)
 ```
 
