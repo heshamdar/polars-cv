@@ -605,12 +605,17 @@ class SourceSpec:
             result["background"] = self.background
             if self.shape_pipeline is not None:
                 result["shape_pipeline"] = self.shape_pipeline
-        # Include require_contiguous for list/array sources
-        if self.format in (SourceFormat.LIST, SourceFormat.ARRAY):
+        # Include require_contiguous for list/array sources ("auto" may resolve
+        # to a list/array column at runtime).
+        if self.format in (SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO):
             result["require_contiguous"] = self.require_contiguous
         # Cloud credentials must round-trip for file_path sources so graph
-        # execution can authenticate remote reads.
-        if self.format == SourceFormat.FILE_PATH and self.cloud_options is not None:
+        # execution can authenticate remote reads ("auto" may resolve to
+        # file_path from a String column at runtime).
+        if (
+            self.format in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
+            and self.cloud_options is not None
+        ):
             result["cloud_options"] = self.cloud_options.to_dict()
         if self.decode_max_size is not None:
             result["decode_max_size"] = self.decode_max_size
