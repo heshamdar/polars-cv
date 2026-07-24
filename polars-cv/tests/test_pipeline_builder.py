@@ -15,10 +15,10 @@ class TestPipelineSource:
     """Tests for Pipeline source configuration."""
 
     def test_source_default_format(self) -> None:
-        """Default source format is image_bytes."""
+        """Default source format is auto (inferred from the column dtype)."""
         pipe = Pipeline().source()
         assert pipe._source is not None
-        assert pipe._source.format == SourceFormat.IMAGE_BYTES
+        assert pipe._source.format == SourceFormat.AUTO
 
     def test_source_raw_with_dtype(self) -> None:
         """Raw source requires dtype and stores it."""
@@ -90,7 +90,7 @@ class TestPipelineSerialization:
         """Serialized JSON contains source and ops only."""
         pipe = Pipeline().source().resize(height=224, width=224)
         data = json.loads(pipe._to_json())
-        assert data["source"]["format"] == "image_bytes"
+        assert data["source"]["format"] == "auto"
         assert len(data["ops"]) == 1
         assert "sink" not in data
 

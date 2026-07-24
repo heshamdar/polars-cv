@@ -28,6 +28,7 @@ FloatOrExpr: TypeAlias = Union[float, pl.Expr]
 class SourceFormat(str, Enum):
     """Supported input source formats."""
 
+    AUTO = "auto"  # Infer decode path from the column dtype (the default)
     IMAGE_BYTES = "image_bytes"  # Decode PNG/JPEG (auto-detect)
     BLOB = "blob"  # VIEW protocol binary
     RAW = "raw"  # Raw bytes (requires dtype and shape)
