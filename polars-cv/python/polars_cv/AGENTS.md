@@ -43,7 +43,9 @@ pipe = Pipeline().source("image_bytes").channel_select(index=0)
 pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
 pipe = Pipeline().source("image_bytes").sobel(axis="x")
 pipe = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
-pipe = Pipeline().source("image_bytes", on_error="null")  # null this source's decode errors
+pipe = Pipeline().source(
+    "image_bytes", on_error="null"
+)  # null this source's decode errors
 pipe = Pipeline().source("image_bytes").resize(height=224, width=224).on_error("null")
 # ^ graph-level per-row policy: "raise" (default) | "null" | "null_with_message".
 #   "null" nulls all outputs of a failing row (decode, op, or encode errors);
@@ -65,9 +67,11 @@ Key internal state tracked on each Pipeline:
 The **primary API path**: `Pipeline()` -> `.cv.pipe()` -> `LazyPipelineExpr.sink()` -> `PipelineGraph` -> `vb_graph`.
 
 ```python
-img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=224, width=224))
-expr = img.sink("numpy")                                    # single output
-expr = img.alias("resized").sink({"resized": "numpy"})      # multi-output
+img = pl.col("image").cv.pipe(
+    Pipeline().source("image_bytes").resize(height=224, width=224)
+)
+expr = img.sink("numpy")  # single output
+expr = img.alias("resized").sink({"resized": "numpy"})  # multi-output
 ```
 
 `LazyPipelineExpr` enables:
