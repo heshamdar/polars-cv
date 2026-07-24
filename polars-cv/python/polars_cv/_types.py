@@ -389,24 +389,30 @@ class CloudOptions:
     Credentials file); S3 understands ``aws_endpoint``, ``aws_virtual_hosted_style_request``,
     and so on. Keys in ``storage_options`` win over the named fields on collision.
 
-    Federated Google credentials (workforce/workload identity, i.e. ADC of type
-    ``external_account`` or ``external_account_authorized_user``) cannot be
+    Federated Google credentials (workforce/workload identity, i.e. GCS ADC of
+    type ``external_account`` or ``external_account_authorized_user``) cannot be
     parsed by ``object_store``. They are handled without any extra configuration:
     when the ambient ADC is federated, polars-cv delegates to
     ``gcloud auth application-default print-access-token`` (so the ``gcloud`` CLI
     must be on ``PATH``) and uses the resulting access token. Set the environment
     variable ``POLARS_CV_DISABLE_GCS_FEDERATION=1`` to turn that off.
 
-    To obtain the token some other way — a custom broker, a wrapper script, or a
-    different CLI — set ``gcs_token_command`` to any shell command that prints a
-    GCS access token to stdout::
+    To obtain a bearer token some other way — a custom broker, a wrapper script,
+    or a different CLI — set ``token_command`` to any shell command that prints
+    an access token to stdout. This is provider-agnostic and applies to the
+    OAuth-bearer backends, **GCS and Azure**::
 
         opts = CloudOptions(
-            gcs_token_command="gcloud auth application-default print-access-token"
+            token_command="gcloud auth application-default print-access-token"
         )
+        # Azure, equivalently:
+        CloudOptions(token_command="az account get-access-token "
+                     "--resource https://storage.azure.com/ --query accessToken -o tsv")
 
-    Or pass a pre-obtained token directly via ``gcs_bearer_token``. Tokens from
-    any of these routes are cached until shortly before they expire.
+    ``token_command`` does not apply to S3, which authenticates with SigV4 rather
+    than a bearer token; passing it with an ``s3://`` source raises. Or pass a
+    pre-obtained GCS token directly via ``gcs_bearer_token``. Tokens from any of
+    these routes are cached until shortly before they expire.
 
     Attributes:
         aws_region: AWS region (e.g., "us-east-1").
@@ -418,9 +424,10 @@ class CloudOptions:
         azure_storage_access_key: Azure storage access key.
         gcs_bearer_token: Pre-obtained GCS OAuth access token (bearer). Escape
             hatch for credential types object_store cannot load natively.
-        gcs_token_command: Shell command whose stdout is a GCS OAuth access
-            token, run to obtain a bearer credential for federated/brokered
-            setups. Takes precedence over the automatic ``gcloud`` delegation.
+        token_command: Shell command whose stdout is an OAuth access token, run
+            to obtain a bearer credential for federated/brokered setups. Applies
+            to GCS and Azure (not S3); takes precedence over the automatic
+            ``gcloud`` delegation.
         storage_options: Extra options forwarded verbatim to the object_store
             backend, keyed by its native config names. Wins over named fields.
         anonymous: Set to True to opt into unsigned/anonymous access for public
@@ -438,7 +445,7 @@ class CloudOptions:
     # New fields appended after `anonymous` to preserve positional construction.
     gcs_bearer_token: str | None = None
     storage_options: dict[str, str] | None = None
-    gcs_token_command: str | None = None
+    token_command: str | None = None
 
     # Fields that contain sensitive credential data and should be masked
     _SENSITIVE_FIELDS: ClassVar[frozenset[str]] = frozenset(
@@ -463,7 +470,7 @@ class CloudOptions:
             "azure_storage_account",
             "azure_storage_access_key",
             "gcs_bearer_token",
-            "gcs_token_command",
+            "token_command",
         ]:
             value = getattr(self, field_name)
             if value is not None:
@@ -508,8 +515,8 @@ class CloudOptions:
             result["azure_storage_access_key"] = self.azure_storage_access_key
         if self.gcs_bearer_token is not None:
             result["bearer_token"] = self.gcs_bearer_token
-        if self.gcs_token_command is not None:
-            result["token_command"] = self.gcs_token_command
+        if self.token_command is not None:
+            result["token_command"] = self.token_command
         if self.anonymous is not None:
             result["anonymous"] = str(self.anonymous).lower()
         if self.storage_options:

@@ -1,28 +1,28 @@
-//! Federated / brokered GCS credentials, obtained without reimplementing any
-//! provider's token-exchange protocol.
+//! Bearer-token acquisition for federated / brokered cloud credentials,
+//! obtained without reimplementing any provider's token-exchange protocol.
 //!
-//! `object_store`'s GCS credential loader only understands `service_account`
-//! and `authorized_user` Application Default Credentials. Federated setups
-//! (Workload / Workforce Identity Federation — e.g. an external OIDC identity
-//! exchanged into Google) write an `external_account*` ADC its loader rejects.
+//! Some credential types the OAuth-bearer backends accept cannot be loaded by
+//! `object_store` itself — most notably Google Workload / Workforce Identity
+//! Federation (`external_account*` ADC), which its GCS loader rejects. Rather
+//! than own those protocols, polars-cv obtains an access token out of band and
+//! installs it as a static credential. Two general sources exist, both yielding
+//! an OAuth bearer token usable by the bearer backends (GCS and Azure):
 //!
-//! Rather than owning Google's federation protocol, polars-cv gets an access
-//! token from an external command and installs it as a static GCS credential:
+//! - [`token_from_command`] — run a user-configured command (Python:
+//!   `CloudOptions.token_command`) and use its stdout. Provider-agnostic: any
+//!   broker, script, or CLI that prints an access token works.
+//! - [`gcs_federated_token`] — GCS-specific. When the ambient ADC is a
+//!   federated `external_account*` file, delegate to
+//!   `gcloud auth application-default print-access-token`, which understands the
+//!   full federation matrix. Requires the `gcloud` CLI on `PATH`; set
+//!   `POLARS_CV_DISABLE_GCS_FEDERATION=1` to turn it off.
 //!
-//! - If `token_command` is set (Python: `CloudOptions.gcs_token_command`), run
-//!   it and use its stdout as the bearer token. This is provider-agnostic: any
-//!   broker, script, or CLI that prints a GCS access token works.
-//! - Otherwise, if the ambient ADC is a federated `external_account*` file,
-//!   delegate to `gcloud auth application-default print-access-token`, which
-//!   understands the full federation matrix (every `credential_source`,
-//!   service-account impersonation, workload/workforce pools). This requires
-//!   the `gcloud` CLI on `PATH`; set `POLARS_CV_DISABLE_GCS_FEDERATION=1` to
-//!   turn the auto-delegation off.
-//!
-//! Non-federated ambient credentials (`service_account` / `authorized_user`)
-//! are left to `object_store`. Obtained tokens are cached until shortly before
-//! their assumed expiry so a batch of concurrent reads runs the command once,
-//! not once per object.
+//! S3 uses SigV4 (access key / secret / session token), not bearer tokens, so
+//! neither applies there — the S3 path rejects a `token_command` rather than
+//! silently ignore it. Non-federated ambient GCS credentials (`service_account`
+//! / `authorized_user`) are left to `object_store`. Obtained tokens are cached
+//! until shortly before their assumed expiry so a batch of concurrent reads
+//! runs the command once, not once per object.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -32,25 +32,21 @@ use std::time::{Duration, Instant};
 
 use crate::cloud::{CloudError, CloudOptions};
 
-/// The delegation command used for a detected federated ADC.
+/// The delegation command used for a detected federated GCS ADC.
 const GCLOUD_ADC_COMMAND: &str = "gcloud auth application-default print-access-token";
-/// Assumed lifetime of a command-sourced token. GCS access tokens live ~1h; we
-/// cache for a shorter window so a token that is a little shorter-lived than
-/// that is still refreshed before it lapses.
+/// Assumed lifetime of a command-sourced token. GCS/Azure access tokens live
+/// ~1h; we cache for a shorter window so a token that is a little shorter-lived
+/// than that is still refreshed before it lapses.
 const ASSUMED_TOKEN_TTL: Duration = Duration::from_secs(55 * 60);
 
-/// Obtain a GCS access token for a federated/brokered setup, if one applies.
+/// Run the configured `token_command`, if any, and return its output as a
+/// bearer token. Provider-neutral — used by every bearer-token backend.
 ///
-/// Returns `Ok(None)` when there is nothing to do — no `token_command`, an
-/// explicit service account was given, or the ambient ADC is a plain
-/// `service_account` / `authorized_user` file `object_store` handles itself.
-/// Returns `Err` when a token was called for but could not be produced (the
-/// command failed), so the failure is surfaced clearly rather than as a
-/// downstream `object_store` credential error.
-pub(crate) fn maybe_obtain_gcs_token(
+/// Returns `Ok(None)` when no command is configured. Returns `Err` when the
+/// command was configured but failed, so the failure is surfaced clearly.
+pub(crate) fn token_from_command(
     options: Option<&CloudOptions>,
 ) -> Result<Option<String>, CloudError> {
-    // 1. An explicit token command is the most direct intent — always honor it.
     if let Some(opts) = options {
         if let Some(cmd) = opts.token_command.as_deref() {
             if !cmd.trim().is_empty() {
@@ -58,8 +54,19 @@ pub(crate) fn maybe_obtain_gcs_token(
             }
         }
     }
+    Ok(None)
+}
 
-    // 2. Auto-delegation for a detected federated ADC (opt-out via env).
+/// GCS-specific: if the ambient ADC is a federated credential `object_store`
+/// cannot parse, obtain a token for it by delegating to `gcloud`.
+///
+/// Returns `Ok(None)` when there is nothing federated to handle — auto-delegation
+/// disabled, an explicit service account was given, no ADC found, or the ADC is
+/// a plain `service_account` / `authorized_user` file `object_store` handles
+/// itself.
+pub(crate) fn gcs_federated_token(
+    options: Option<&CloudOptions>,
+) -> Result<Option<String>, CloudError> {
     if std::env::var_os("POLARS_CV_DISABLE_GCS_FEDERATION").is_some() {
         return Ok(None);
     }
@@ -233,7 +240,7 @@ mod tests {
     }
 
     fn write_adc(name: &str, body: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("pcv_gauth_{}_{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pcv_cauth_{}_{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("adc.json");
         std::fs::write(&path, body).unwrap();
@@ -255,19 +262,25 @@ mod tests {
     fn test_token_command_is_run_and_used() {
         let opts = opts_with(&[("token_command", "printf 'ya29.from-command'")]);
         assert_eq!(
-            maybe_obtain_gcs_token(Some(&opts)).unwrap(),
+            token_from_command(Some(&opts)).unwrap(),
             Some("ya29.from-command".to_string())
         );
     }
 
     #[test]
+    fn test_no_token_command_returns_none() {
+        let opts = opts_with(&[("aws_region", "eu-west-1")]);
+        assert!(token_from_command(Some(&opts)).unwrap().is_none());
+        assert!(token_from_command(None).unwrap().is_none());
+    }
+
+    #[test]
     fn test_token_command_caches() {
-        // The command appends to a file on each run; a second obtain within the
+        // The command appends to a file on each run; a second call within the
         // TTL must reuse the cache and not run it again.
         let dir = std::env::temp_dir().join(format!("pcv_cmd_cache_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("runs");
-        // Distinct token per key so this test is independent of others.
         let cmd = format!(
             "printf x >> {m}; printf 'tok-cache-{p}'",
             m = marker.display(),
@@ -275,10 +288,10 @@ mod tests {
         );
         let opts = opts_with(&[("token_command", cmd.as_str())]);
 
-        let first = maybe_obtain_gcs_token(Some(&opts)).unwrap().unwrap();
-        let second = maybe_obtain_gcs_token(Some(&opts)).unwrap().unwrap();
+        let first = token_from_command(Some(&opts)).unwrap().unwrap();
+        let second = token_from_command(Some(&opts)).unwrap().unwrap();
         assert_eq!(first, second);
-        // Command ran exactly once despite two obtains.
+        // Command ran exactly once despite two calls.
         assert_eq!(std::fs::read(&marker).unwrap().len(), 1);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -287,7 +300,7 @@ mod tests {
     #[test]
     fn test_failing_token_command_errors() {
         let opts = opts_with(&[("token_command", "exit 3")]);
-        let err = maybe_obtain_gcs_token(Some(&opts)).unwrap_err();
+        let err = token_from_command(Some(&opts)).unwrap_err();
         assert!(err.to_string().contains("exited with"));
     }
 
@@ -297,7 +310,7 @@ mod tests {
         // command is run.
         let (dir, path) = write_adc("sa", r#"{"type": "service_account", "client_email": "x"}"#);
         let opts = opts_with(&[("google_application_credentials", path.to_str().unwrap())]);
-        assert!(maybe_obtain_gcs_token(Some(&opts)).unwrap().is_none());
+        assert!(gcs_federated_token(Some(&opts)).unwrap().is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -310,21 +323,7 @@ mod tests {
             ("google_service_account", "/some/sa.json"),
             ("google_application_credentials", path.to_str().unwrap()),
         ]);
-        assert!(maybe_obtain_gcs_token(Some(&opts)).unwrap().is_none());
+        assert!(gcs_federated_token(Some(&opts)).unwrap().is_none());
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn test_token_command_wins_over_service_account() {
-        // token_command is the most explicit intent; it applies even alongside
-        // other config keys.
-        let opts = opts_with(&[
-            ("google_service_account", "/some/sa.json"),
-            ("token_command", "printf 'ya29.explicit'"),
-        ]);
-        assert_eq!(
-            maybe_obtain_gcs_token(Some(&opts)).unwrap(),
-            Some("ya29.explicit".to_string())
-        );
     }
 }

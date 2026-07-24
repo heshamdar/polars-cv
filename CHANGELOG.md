@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-07-24
+
 ### Added
 
 - **Federated GCS authentication (Workload/Workforce Identity Federation)** —
@@ -19,10 +21,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   which understands the entire federation matrix — and uses the resulting token,
   cached until just before it expires. Requires the `gcloud` CLI on `PATH`; set
   `POLARS_CV_DISABLE_GCS_FEDERATION=1` to disable.
-- **`CloudOptions.gcs_token_command`** — a provider-agnostic hook: any shell
-  command whose stdout is a GCS access token. Use it to source tokens from a
-  custom broker, wrapper script, or CLI; it takes precedence over the automatic
-  `gcloud` delegation and its output is cached like any other token.
+- **`CloudOptions.token_command`** — a provider-agnostic hook: any shell command
+  whose stdout is an OAuth access token. Use it to source tokens from a custom
+  broker, wrapper script, or CLI. It applies to both OAuth-bearer backends —
+  **GCS and Azure** (e.g. `az account get-access-token`) — takes precedence over
+  the automatic `gcloud` delegation, and its output is cached like any other
+  token. It does not apply to S3 (SigV4, not bearer-based); passing it with an
+  `s3://` source raises rather than silently ignoring the credential.
 
 ### Fixed
 
