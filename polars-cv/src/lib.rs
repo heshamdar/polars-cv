@@ -7,6 +7,7 @@ mod cloud;
 mod contour;
 mod engine_warning;
 mod execute;
+mod gcp_auth;
 mod graph;
 mod image_metadata;
 mod output;

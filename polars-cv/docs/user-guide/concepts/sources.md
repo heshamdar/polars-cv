@@ -138,14 +138,22 @@ CloudOptions(storage_options={"google_application_credentials": "/path/adc.json"
 | Service-account JSON file | `gcs_service_account_key="/path/sa.json"` (or `storage_options={"google_service_account": ...}`) |
 | Inline service-account JSON | `storage_options={"google_service_account_key": inline_json}` |
 | Application Default Credentials file | `storage_options={"google_application_credentials": "/path/adc.json"}` |
+| Federated / workload identity | automatic via `gcloud` (see below) |
+| Token from a custom command | `gcs_token_command="my-broker get-gcs-token"` |
 | Pre-obtained OAuth access token | `gcs_bearer_token=token` |
 | Public bucket | `anonymous=True` |
 
-Federated ADC (type `external_account_authorized_user`, e.g. credentials
-brokered through an external identity provider) cannot be parsed by
-`object_store`. Mint an access token out of band — for example with
-`gcloud auth application-default print-access-token` — and pass it via
-`gcs_bearer_token`. Tokens are short-lived (~1 hour), so obtain one per job.
+Federated ADC (type `external_account` or `external_account_authorized_user`,
+e.g. an OIDC identity exchanged through a workload/workforce identity pool)
+cannot be parsed by `object_store`. polars-cv handles it by delegating to
+`gcloud`: when it detects a federated ADC — from `GOOGLE_APPLICATION_CREDENTIALS`,
+an explicit `google_application_credentials` option, or the well-known gcloud
+path — it runs `gcloud auth application-default print-access-token` and uses the
+resulting token, caching it until just before it expires. This needs the
+`gcloud` CLI on `PATH`; set `POLARS_CV_DISABLE_GCS_FEDERATION=1` to disable it.
+To source the token another way, set `gcs_token_command` to any shell command
+that prints a GCS access token (it takes precedence over the automatic `gcloud`
+delegation), or pass `gcs_bearer_token` to supply one yourself.
 
 ## Contour Source and Shape Inference
 

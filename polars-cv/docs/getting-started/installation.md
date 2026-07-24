@@ -83,22 +83,32 @@ cv.CloudOptions(storage_options={"google_application_credentials": "/path/adc.js
 ```
 
 **Federated / brokered Google credentials (workforce & workload identity).**
-Application Default Credentials of type `external_account_authorized_user`
-(e.g. tokens brokered through an external identity provider) cannot be parsed
-by `object_store`. Mint an OAuth access token out of band and pass it as a
-bearer token:
+Application Default Credentials of type `external_account` and
+`external_account_authorized_user` (e.g. an OIDC identity from an external
+provider, exchanged into Google through a workload/workforce identity pool)
+cannot be parsed by `object_store`. polars-cv handles them by delegating to the
+`gcloud` CLI, which understands the full federation matrix. When it detects a
+federated ADC — from `GOOGLE_APPLICATION_CREDENTIALS`, an explicit
+`google_application_credentials` option, or the well-known
+`~/.config/gcloud/application_default_credentials.json` — it runs
+`gcloud auth application-default print-access-token` and uses the resulting
+token (cached until shortly before it expires). This requires the
+[`gcloud` CLI](https://cloud.google.com/sdk/docs/install) on `PATH`; set
+`POLARS_CV_DISABLE_GCS_FEDERATION=1` to disable it.
+
+To obtain the token another way — a custom broker, a wrapper script, or a
+different CLI — point `gcs_token_command` at any shell command that prints a GCS
+access token, or supply a pre-obtained token via `gcs_bearer_token`:
 
 ```python
-import subprocess
 import polars_cv as cv
 
-token = subprocess.check_output(
-    ["gcloud", "auth", "application-default", "print-access-token"]
-).decode().strip()
-opts = cv.CloudOptions(gcs_bearer_token=token)
-```
+# Any command whose stdout is a GCS access token:
+cv.CloudOptions(gcs_token_command="my-broker get-gcs-token --audience ...")
 
-Access tokens are short-lived (~1 hour), so obtain one per job.
+# Or a token you already hold (access tokens are ~1h; supply a fresh one):
+cv.CloudOptions(gcs_bearer_token=token)
+```
 
 ### For Documentation (development only)
 

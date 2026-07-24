@@ -7,6 +7,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **Federated GCS authentication (Workload/Workforce Identity Federation)** —
+  Application Default Credentials of type `external_account` and
+  `external_account_authorized_user` (e.g. an OIDC identity exchanged into Google
+  through an identity pool) now work without minting a bearer token by hand.
+  When polars-cv detects a federated ADC (from `GOOGLE_APPLICATION_CREDENTIALS`,
+  an explicit `google_application_credentials` option, or the well-known gcloud
+  path), it delegates to `gcloud auth application-default print-access-token` —
+  which understands the entire federation matrix — and uses the resulting token,
+  cached until just before it expires. Requires the `gcloud` CLI on `PATH`; set
+  `POLARS_CV_DISABLE_GCS_FEDERATION=1` to disable.
+- **`CloudOptions.gcs_token_command`** — a provider-agnostic hook: any shell
+  command whose stdout is a GCS access token. Use it to source tokens from a
+  custom broker, wrapper script, or CLI; it takes precedence over the automatic
+  `gcloud` delegation and its output is cached like any other token.
+
 ### Fixed
 
 - **GCS `gcs_bearer_token` no longer defeated by unparseable ambient
