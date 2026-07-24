@@ -107,6 +107,14 @@ class TestCloudOptionsRoundTrip:
         spec = json.loads(pipe._to_json())
         assert spec["source"]["cloud_options"] == {"bearer_token": "ya29.token"}
 
+    def test_gcs_token_command_maps_to_reserved_key(self) -> None:
+        opts = CloudOptions(gcs_token_command="my-broker get-gcs-token")
+        pipe = Pipeline().source("file_path", cloud_options=opts).grayscale()
+        spec = json.loads(pipe._to_json())
+        assert spec["source"]["cloud_options"] == {
+            "token_command": "my-broker get-gcs-token"
+        }
+
     def test_storage_options_override_named_fields(self) -> None:
         # storage_options wins over a colliding named field.
         opts = CloudOptions(

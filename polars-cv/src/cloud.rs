@@ -62,8 +62,9 @@ pub enum CloudError {
 /// Cloud storage options for explicit credential configuration.
 ///
 /// `config` holds pass-through options keyed by `object_store`'s native
-/// configuration keys; the reserved `anonymous` and `bearer_token` inputs are
-/// lifted out into their own fields (see the module docs).
+/// configuration keys; the reserved `anonymous`, `bearer_token`, and
+/// `token_command` inputs are lifted out into their own fields (see the module
+/// docs).
 #[derive(Debug, Clone, Default)]
 pub struct CloudOptions {
     /// Options forwarded verbatim to the backend builder via `with_config`,
@@ -71,6 +72,9 @@ pub struct CloudOptions {
     pub config: HashMap<String, String>,
     /// Pre-obtained OAuth bearer token, installed as a static GCS credential.
     pub bearer_token: Option<String>,
+    /// Command whose stdout is a GCS OAuth access token. Run to obtain a bearer
+    /// credential for federated/brokered setups object_store can't load itself.
+    pub token_command: Option<String>,
     /// Skip request signing for public buckets (opt-in; default: signed
     /// requests using the credential chain).
     pub anonymous: Option<bool>,
@@ -80,11 +84,11 @@ impl CloudOptions {
     /// Create options from the wire map (string key/value pairs from Python).
     ///
     /// Most keys pass straight through to `config` using `object_store`'s
-    /// native names. Two keys are reserved (`anonymous`, `bearer_token`), and a
-    /// handful of historical polars-cv field names are translated to their
-    /// canonical `object_store` equivalents for backwards compatibility. When a
-    /// legacy name and its canonical name are both present, the explicit
-    /// canonical value wins.
+    /// native names. Three keys are reserved (`anonymous`, `bearer_token`,
+    /// `token_command`), and a handful of historical polars-cv field names are
+    /// translated to their canonical `object_store` equivalents for backwards
+    /// compatibility. When a legacy name and its canonical name are both
+    /// present, the explicit canonical value wins.
     pub fn from_map(map: &HashMap<String, String>) -> Self {
         let mut config: HashMap<String, String> = HashMap::new();
 
@@ -103,11 +107,13 @@ impl CloudOptions {
         // Pass 2: reserved keys + verbatim pass-through (higher precedence, so
         // an explicit canonical key overrides a legacy alias from pass 1).
         let mut bearer_token = None;
+        let mut token_command = None;
         let mut anonymous = None;
         for (k, v) in map {
             match k.as_str() {
                 "anonymous" => anonymous = Some(v == "true"),
                 "bearer_token" => bearer_token = Some(v.clone()),
+                "token_command" => token_command = Some(v.clone()),
                 "gcs_service_account_key"
                 | "azure_storage_account"
                 | "azure_storage_access_key" => {} // already translated in pass 1
@@ -120,6 +126,7 @@ impl CloudOptions {
         CloudOptions {
             config,
             bearer_token,
+            token_command,
             anonymous,
         }
     }
@@ -180,7 +187,7 @@ pub fn read_local_path(path: &str) -> Result<Vec<u8>, CloudError> {
 ///
 /// Reuses a thread-local runtime to avoid the overhead of creating a new
 /// runtime for every cloud file read.
-fn get_runtime() -> Result<&'static Runtime, CloudError> {
+pub(crate) fn get_runtime() -> Result<&'static Runtime, CloudError> {
     use std::sync::OnceLock;
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     if let Some(rt) = RUNTIME.get() {
@@ -248,6 +255,8 @@ fn build_gcs_store(
     options: Option<&CloudOptions>,
 ) -> Result<object_store::gcp::GoogleCloudStorage, CloudError> {
     let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(bucket);
+    let mut explicit_credential = false;
+    let mut anonymous = false;
 
     if let Some(opts) = options {
         for (k, v) in &opts.config {
@@ -263,9 +272,25 @@ fn build_gcs_store(
                 bearer: token.clone(),
             });
             builder = builder.with_credentials(Arc::new(provider));
+            explicit_credential = true;
         }
         if opts.anonymous == Some(true) {
             builder = builder.with_skip_signature(true);
+            anonymous = true;
+        }
+    }
+
+    // Federated / brokered credentials (Workload Identity Federation, etc.) are
+    // credential types object_store cannot load itself. When the caller hasn't
+    // supplied an explicit credential and isn't going anonymous, obtain an
+    // access token out of band — from a configured `token_command`, or by
+    // delegating a detected federated ADC to `gcloud` — and install it as a
+    // static credential. Non-federated ambient credentials yield None here and
+    // are left to object_store's own credential chain.
+    if !explicit_credential && !anonymous {
+        if let Some(token) = crate::gcp_auth::maybe_obtain_gcs_token(options)? {
+            let provider = StaticCredentialProvider::new(GcpCredential { bearer: token });
+            builder = builder.with_credentials(Arc::new(provider));
         }
     }
 
@@ -652,22 +677,12 @@ mod tests {
 
         // With the bearer token installed, building must succeed despite the
         // unparseable ADC file. Under object_store 0.12 this returned Err.
+        // (An explicit bearer also short-circuits our own federated auto-mint,
+        // so this stays hermetic — no token exchange is attempted.)
         let built = build_gcs_store("bucket", Some(&opts));
         assert!(
             built.is_ok(),
             "bearer_token should bypass unparseable ADC, got {built:?}"
-        );
-
-        // Sanity check the other direction: without the escape hatch, the same
-        // poisoned ADC makes the build fail on the credential decode.
-        let opts_no_token = CloudOptions::from_map(&map(&[(
-            "google_application_credentials",
-            adc.to_str().unwrap(),
-        )]));
-        let built_no_token = build_gcs_store("bucket", Some(&opts_no_token));
-        assert!(
-            built_no_token.is_err(),
-            "poisoned ADC without a bearer token should fail to build"
         );
 
         std::fs::remove_dir_all(&dir).ok();
