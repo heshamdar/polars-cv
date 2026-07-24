@@ -28,7 +28,7 @@
 //!   a token out of band and hand it over directly.
 
 use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
-use object_store::azure::{AzureConfigKey, MicrosoftAzureBuilder};
+use object_store::azure::{AzureConfigKey, AzureCredential, MicrosoftAzureBuilder};
 use object_store::gcp::{GcpCredential, GoogleCloudStorageBuilder, GoogleConfigKey};
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStoreExt, StaticCredentialProvider};
@@ -211,6 +211,19 @@ fn read_s3(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudEr
     let mut builder = AmazonS3Builder::new().with_bucket_name(bucket);
 
     if let Some(opts) = options {
+        // S3 authenticates with SigV4 (access key / secret / session token), not
+        // an OAuth bearer token, so a `token_command` cannot drive it. Reject it
+        // rather than silently ignore a credential the user thinks is in effect;
+        // AWS temporary/federated credentials come in via the standard env vars
+        // or `aws_*` / `storage_options` config keys instead.
+        if opts.token_command.is_some() {
+            return Err(CloudError::StoreError(
+                "token_command produces an OAuth bearer token, which S3 does not \
+                 use; supply AWS credentials via aws_access_key_id / \
+                 aws_secret_access_key / aws_session_token or storage_options"
+                    .to_string(),
+            ));
+        }
         for (k, v) in &opts.config {
             let key = AmazonS3ConfigKey::from_str(k).map_err(|e| {
                 CloudError::StoreError(format!("unknown S3 storage option '{k}': {e}"))
@@ -282,13 +295,17 @@ fn build_gcs_store(
 
     // Federated / brokered credentials (Workload Identity Federation, etc.) are
     // credential types object_store cannot load itself. When the caller hasn't
-    // supplied an explicit credential and isn't going anonymous, obtain an
-    // access token out of band — from a configured `token_command`, or by
-    // delegating a detected federated ADC to `gcloud` — and install it as a
-    // static credential. Non-federated ambient credentials yield None here and
-    // are left to object_store's own credential chain.
+    // supplied an explicit credential and isn't going anonymous, obtain a bearer
+    // token out of band — from a configured `token_command`, or by delegating a
+    // detected federated ADC to `gcloud` — and install it as a static
+    // credential. Non-federated ambient credentials yield None here and are left
+    // to object_store's own credential chain.
     if !explicit_credential && !anonymous {
-        if let Some(token) = crate::gcp_auth::maybe_obtain_gcs_token(options)? {
+        let token = match crate::cloud_auth::token_from_command(options)? {
+            Some(t) => Some(t),
+            None => crate::cloud_auth::gcs_federated_token(options)?,
+        };
+        if let Some(token) = token {
             let provider = StaticCredentialProvider::new(GcpCredential { bearer: token });
             builder = builder.with_credentials(Arc::new(provider));
         }
@@ -336,6 +353,7 @@ fn read_azure(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, Clou
 
     // Build Azure client
     let mut builder = MicrosoftAzureBuilder::new().with_container_name(container);
+    let mut anonymous = false;
 
     if let Some(opts) = options {
         for (k, v) in &opts.config {
@@ -346,6 +364,17 @@ fn read_azure(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, Clou
         }
         if opts.anonymous == Some(true) {
             builder = builder.with_skip_signature(true);
+            anonymous = true;
+        }
+    }
+
+    // Azure Blob accepts an Azure AD OAuth bearer token, so a configured
+    // `token_command` (e.g. a broker or `az account get-access-token`) applies
+    // here just as it does for GCS. Skipped when going anonymous.
+    if !anonymous {
+        if let Some(token) = crate::cloud_auth::token_from_command(options)? {
+            let provider = StaticCredentialProvider::new(AzureCredential::BearerToken(token));
+            builder = builder.with_credentials(Arc::new(provider));
         }
     }
 
@@ -647,6 +676,21 @@ mod tests {
             "expected StoreError, got {err:?}"
         );
         assert!(err.to_string().contains("not_a_real_key"));
+    }
+
+    #[test]
+    fn test_s3_rejects_token_command() {
+        // token_command is an OAuth-bearer concept; S3 uses SigV4. The S3 path
+        // must reject it (before any network I/O) rather than silently ignore a
+        // credential the user believes is in effect.
+        let opts = CloudOptions::from_map(&map(&[("token_command", "printf tok")]));
+        let url = Url::parse("s3://bucket/obj.png").unwrap();
+        let err = read_s3(&url, Some(&opts)).unwrap_err();
+        assert!(
+            matches!(err, CloudError::StoreError(_)),
+            "expected StoreError, got {err:?}"
+        );
+        assert!(err.to_string().contains("S3 does not"));
     }
 
     #[test]

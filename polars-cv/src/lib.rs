@@ -4,10 +4,10 @@
 //! processing pipelines to Polars DataFrame columns, powered by view-buffer.
 
 mod cloud;
+mod cloud_auth;
 mod contour;
 mod engine_warning;
 mod execute;
-mod gcp_auth;
 mod graph;
 mod image_metadata;
 mod output;

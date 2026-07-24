@@ -139,7 +139,7 @@ CloudOptions(storage_options={"google_application_credentials": "/path/adc.json"
 | Inline service-account JSON | `storage_options={"google_service_account_key": inline_json}` |
 | Application Default Credentials file | `storage_options={"google_application_credentials": "/path/adc.json"}` |
 | Federated / workload identity | automatic via `gcloud` (see below) |
-| Token from a custom command | `gcs_token_command="my-broker get-gcs-token"` |
+| Token from a custom command | `token_command="my-broker get-token"` |
 | Pre-obtained OAuth access token | `gcs_bearer_token=token` |
 | Public bucket | `anonymous=True` |
 
@@ -151,9 +151,16 @@ an explicit `google_application_credentials` option, or the well-known gcloud
 path — it runs `gcloud auth application-default print-access-token` and uses the
 resulting token, caching it until just before it expires. This needs the
 `gcloud` CLI on `PATH`; set `POLARS_CV_DISABLE_GCS_FEDERATION=1` to disable it.
-To source the token another way, set `gcs_token_command` to any shell command
-that prints a GCS access token (it takes precedence over the automatic `gcloud`
+To source the token another way, set `token_command` to any shell command that
+prints an access token (it takes precedence over the automatic `gcloud`
 delegation), or pass `gcs_bearer_token` to supply one yourself.
+
+`token_command` is provider-agnostic across the OAuth-bearer backends: the same
+option works for **Azure** Blob Storage (e.g.
+`az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv`).
+It does **not** apply to S3, which authenticates with SigV4 rather than a bearer
+token — supplying it with an `s3://` source raises; use the `aws_*` fields or
+`storage_options` for AWS credentials instead.
 
 ## Contour Source and Shape Inference
 

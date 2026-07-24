@@ -96,17 +96,26 @@ token (cached until shortly before it expires). This requires the
 [`gcloud` CLI](https://cloud.google.com/sdk/docs/install) on `PATH`; set
 `POLARS_CV_DISABLE_GCS_FEDERATION=1` to disable it.
 
-To obtain the token another way — a custom broker, a wrapper script, or a
-different CLI — point `gcs_token_command` at any shell command that prints a GCS
-access token, or supply a pre-obtained token via `gcs_bearer_token`:
+To obtain a bearer token another way — a custom broker, a wrapper script, or a
+different CLI — point `token_command` at any shell command that prints an access
+token. This is provider-agnostic and applies to the OAuth-bearer backends, GCS
+and Azure (it does not apply to S3, which uses SigV4; passing it with an
+`s3://` source raises). You can also supply a pre-obtained GCS token via
+`gcs_bearer_token`:
 
 ```python
 import polars_cv as cv
 
-# Any command whose stdout is a GCS access token:
-cv.CloudOptions(gcs_token_command="my-broker get-gcs-token --audience ...")
+# Any command whose stdout is an access token (GCS or Azure):
+cv.CloudOptions(token_command="my-broker get-token --audience ...")
 
-# Or a token you already hold (access tokens are ~1h; supply a fresh one):
+# Azure via the az CLI:
+cv.CloudOptions(
+    token_command="az account get-access-token "
+    "--resource https://storage.azure.com/ --query accessToken -o tsv"
+)
+
+# Or a GCS token you already hold (access tokens are ~1h; supply a fresh one):
 cv.CloudOptions(gcs_bearer_token=token)
 ```
 
