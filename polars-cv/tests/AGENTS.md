@@ -28,7 +28,7 @@ Two markers are declared in `pyproject.toml` (`[tool.pytest.ini_options]`), and
 | Marker | Meaning | Where it runs |
 |--------|---------|---------------|
 | `network` | Needs network access | Never in CI |
-| `slow` | Long-running | Scheduled lane only, `-m "slow and not network"` (`.github/workflows/ci.yml`) |
+| `slow` | Long-running | `slow-tests` job only — weekly schedule or manual dispatch, `-m "slow and not network"` (`.github/workflows/ci.yml`) |
 
 The per-push lane is `-m "not network and not slow"`. Mark a new test `network`
 if it fetches anything and `slow` if it is not sub-second — an unmarked slow test
