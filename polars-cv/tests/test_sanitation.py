@@ -410,7 +410,7 @@ def test_namespace_plugin_symbols_match_registrations():
     assert called, "no _plugin(...) calls found — scan is broken"
 
     registered: set[str] = set()
-    for rs in ("contour.rs", "point.rs", "image_metadata.rs"):
+    for rs in ("contour.rs", "point.rs", "image_metadata.rs", "read_bytes.rs"):
         text = (src / rs).read_text()
         # `#[polars_expr(...)]` immediately precedes `pub fn <name>` / `fn <name>`.
         registered |= set(

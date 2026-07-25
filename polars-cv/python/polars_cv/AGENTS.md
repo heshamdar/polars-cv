@@ -23,7 +23,7 @@ The **user-facing Python layer**. Responsible for:
 | `__init__.py` | Public API surface, `numpy_from_struct`, `show_images`, mask/hash helpers, tiling config |
 | `pipeline.py` | `Pipeline` builder — source, operations, domain/dtype/shape tracking |
 | `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops |
-| `expressions.py` | `CvNamespace` — `.cv.pipe()`, `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()` |
+| `expressions.py` | `CvNamespace` — `.cv.pipe()`, `.cv.read_bytes()`, `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()` |
 | `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `DType`, `ColorSpace`, `Domain` |
 | `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
 | `_graph_viz.py` | Graph visualization (networkx/graphviz) |

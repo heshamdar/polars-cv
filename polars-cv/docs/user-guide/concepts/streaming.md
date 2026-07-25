@@ -61,6 +61,25 @@ work. Decode a downscaled thumbnail first with
 decode), compute the signal, filter, then full-decode only the survivors in a
 second pass.
 
+When the filter only needs image *dimensions*, you can skip decoding on the
+first pass entirely — and skip the second fetch. Read the bytes once with
+[`read_bytes()`](sources.md#reading-bytes-without-decoding), filter on the
+header-only metadata methods, and decode only what survives:
+
+```python
+lf = (
+    pl.scan_parquet("images.parquet")
+    .with_columns(raw=pl.col("path").cv.read_bytes())
+    .filter(pl.col("raw").cv.width() > 512)
+    .with_columns(thumb=pl.col("raw").cv.pipe(pipe).sink("png"))
+    .drop("raw")
+)
+lf.collect(engine="streaming")
+```
+
+Dropping `raw` before collecting keeps it morsel-bounded; keep it in the
+projection when you want the original bytes as an output.
+
 ## Next Steps
 
 - [Pipelines](pipelines.md)

@@ -106,10 +106,10 @@ struct ExecState<'a> {
     /// type, sorted by alias.
     resolved_outputs: Vec<(String, OutputSpec)>,
     /// Bytes of this batch's remote `file_path` sources, fetched concurrently
-    /// up front (node_id → path → result). Converts per-row network latency
-    /// into per-batch latency; per-path errors surface at their row so the
-    /// usual error policies apply.
-    prefetched: HashMap<String, HashMap<String, Result<Vec<u8>, String>>>,
+    /// up front (node_id → batch). Converts per-row network latency into
+    /// per-batch latency; per-path errors surface at their row so the usual
+    /// error policies apply.
+    prefetched: HashMap<String, crate::fetch::FetchedBatch>,
     /// Concrete decode path for each `"auto"` source node, resolved once per
     /// batch from the input column dtype (node_id → resolved format). The dtype
     /// is constant across rows, so this avoids re-resolving per row; a
@@ -117,9 +117,6 @@ struct ExecState<'a> {
     /// policies apply. Non-auto nodes are absent.
     resolved_auto_formats: HashMap<String, Result<&'static str, String>>,
 }
-
-/// Maximum concurrent remote fetches during source prefetch.
-const PREFETCH_CONCURRENCY: usize = 16;
 
 impl CompiledGraph {
     /// Compile a graph from the plugin kwargs.
@@ -151,17 +148,11 @@ impl CompiledGraph {
         // checks a set membership instead of comparing strings per row).
         let mut source_null_nodes = std::collections::HashSet::new();
         for (node_id, node) in &graph.nodes {
-            match node.source.on_error.as_str() {
-                "raise" => {}
-                "null" => {
-                    source_null_nodes.insert(node_id.clone());
-                }
-                other => {
-                    return Err(polars_err!(ComputeError:
-                        "Unknown source on_error value '{}' for node '{}' (expected 'raise' or 'null')",
-                        other, node_id
-                    ))
-                }
+            if crate::fetch::parse_on_error(
+                node.source.on_error.as_str(),
+                &format!("source node '{node_id}'"),
+            )? {
+                source_null_nodes.insert(node_id.clone());
             }
         }
 
@@ -510,9 +501,9 @@ impl CompiledGraph {
                                 }
                                 _ => Ok(None),
                             }
-                        // TODO: Add path allowlisting/sandboxing for file_path source.
-                        // Currently reads arbitrary local files without sanitization.
-                        // This is safe when data comes from trusted input only.
+                        // `file_path` is fetch + decode: `crate::fetch` reads the
+                        // bytes the path names (see that module for the path
+                        // sandboxing TODO), then they decode as image bytes.
                         } else if source_format == "file_path" {
                             if input_series.dtype() == &DataType::Null {
                                 Ok(None)
@@ -528,56 +519,27 @@ impl CompiledGraph {
                                 };
                                 match input_ca.get(row_idx) {
                                     Some(path) => {
-                                        // Remote sources were fetched concurrently before
-                                        // the row loop; local files are read inline.
-                                        let owned_bytes: Vec<u8>;
-                                        let bytes: &[u8] = if crate::cloud::is_remote_path(path) {
-                                            match state
-                                                .prefetched
-                                                .get(node_id)
-                                                .and_then(|m| m.get(path))
-                                            {
-                                                Some(Ok(b)) => b.as_slice(),
-                                                Some(Err(e)) => {
-                                                    return Err(format!(
-                                                        "Failed to read remote file '{path}': {e}"
-                                                    ));
-                                                }
-                                                // Defensive: every remote path in the batch
-                                                // is prefetched, but fall back to an inline
-                                                // fetch rather than miss.
-                                                None => {
-                                                    owned_bytes = crate::cloud::read_file(
-                                                        path,
-                                                        self.cloud_options.get(node_id),
-                                                    )
-                                                    .map_err(|e| {
-                                                        format!(
-                                                            "Failed to read remote file '{path}': {e}"
-                                                        )
-                                                    })?;
-                                                    owned_bytes.as_slice()
-                                                }
+                                        // Stage 1: bytes. Remote paths were fetched
+                                        // concurrently before the row loop; local
+                                        // files are read inline.
+                                        let empty;
+                                        let batch = match state.prefetched.get(node_id) {
+                                            Some(b) => b,
+                                            None => {
+                                                empty = crate::fetch::FetchedBatch::empty();
+                                                &empty
                                             }
-                                        } else {
-                                            // Already known non-remote: read the
-                                            // literal path, stripping only a
-                                            // file:// prefix. (Routing through
-                                            // the general read_file would
-                                            // re-parse a bare colon-bearing
-                                            // filename as a bogus cloud URL.)
-                                            owned_bytes = crate::cloud::read_local_path(path)
-                                                .map_err(|e| {
-                                                    format!(
-                                                        "Failed to read local file '{path}': {e}"
-                                                    )
-                                                })?;
-                                            owned_bytes.as_slice()
                                         };
-                                        // file_path contents decode like image bytes.
+                                        let bytes = crate::fetch::row_bytes(
+                                            batch,
+                                            path,
+                                            self.cloud_options.get(node_id),
+                                        )?;
+                                        // Stage 2: file_path contents decode like
+                                        // image bytes.
                                         let mut source = node.source.clone();
                                         source.format = "image_bytes".to_string();
-                                        match decode_source(bytes, &source) {
+                                        match decode_source(&bytes, &source) {
                                             Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
                                             Err(e) => {
                                                 Err(format!("Decode error for file '{path}': {e}"))
@@ -998,7 +960,7 @@ impl CompiledGraph {
     fn prefetch_remote_sources(
         &self,
         inputs: &[Series],
-    ) -> HashMap<String, HashMap<String, Result<Vec<u8>, String>>> {
+    ) -> HashMap<String, crate::fetch::FetchedBatch> {
         let mut prefetched = HashMap::new();
         for (node_id, node) in &self.graph.nodes {
             if node.source.format != "file_path" && node.source.format != "auto" {
@@ -1013,21 +975,12 @@ impl CompiledGraph {
             let Ok(ca) = series.str() else {
                 continue;
             };
-            let remote: Vec<String> = ca
-                .iter()
-                .flatten()
-                .filter(|p| crate::cloud::is_remote_path(p))
-                .map(str::to_string)
-                .collect();
-            if remote.is_empty() {
-                continue;
-            }
             prefetched.insert(
                 node_id.clone(),
-                crate::cloud::read_files_concurrent(
-                    &remote,
+                crate::fetch::prefetch(
+                    ca,
                     self.cloud_options.get(node_id),
-                    PREFETCH_CONCURRENCY,
+                    crate::fetch::DEFAULT_CONCURRENCY,
                 ),
             );
         }

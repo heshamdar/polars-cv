@@ -7,6 +7,39 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`.cv.read_bytes()` — read a path column's bytes without decoding.** The
+  `file_path` source has always been two stages (fetch the bytes a path names,
+  then decode them as an image); the fetch stage is now available on its own and
+  returns `Binary`. Bytes come back verbatim, so an encoded file survives the
+  round trip byte-for-byte and can be written back unchanged — the only lossless
+  path through the plugin, since re-encoding a decoded JPEG never reproduces the
+  original and no image sink carries EXIF/ICC metadata. It also lets the
+  header-only metadata methods (`.cv.width()` and friends, which take binary
+  columns) reach local and remote files for the first time:
+
+  ```python
+  df = df.with_columns(raw=pl.col("path").cv.read_bytes(cloud_options=options))
+  df = df.filter(pl.col("raw").cv.width() > 512)   # header-only, no decode
+  df = df.with_columns(thumb=pl.col("raw").cv.pipe(pipe).sink("png"))
+  ```
+
+  Takes the same `cloud_options` as `source("file_path")` and the same
+  `on_error` values (`"raise"` / `"null"`). Fetching is per plugin call — one
+  morsel under the streaming engine — so distinct remote paths are deduped and
+  fetched concurrently exactly as the source already does, and a bytes column
+  stays morsel-bounded under `engine="streaming"`.
+
+### Changed
+
+- **The `file_path` source and `read_bytes` share one fetch implementation**
+  (`src/fetch.rs`). The path-to-bytes stage — remote dedup and concurrent
+  prefetch, the local-read path that avoids misparsing colon-bearing filenames
+  as cloud URLs, and the `on_error` vocabulary — now lives in one module used by
+  both, so their credentials, concurrency, and error messages cannot drift.
+  Behaviour of existing pipelines is unchanged.
+
 ## [0.14.0] — 2026-07-25
 
 ### Added
