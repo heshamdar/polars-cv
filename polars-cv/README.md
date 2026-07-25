@@ -57,6 +57,11 @@ lookup. (The detection-metrics APIs already collect with
 
 ## Source Behavior (Auto DType)
 
+`source()` defaults to `"auto"`, which infers the decode path from the input
+column's dtype: `String` → `file_path`, `List`/`Array` → `list`/`array`, and
+`Binary` → `blob` when it carries the VIEW protocol magic, `image_bytes`
+otherwise. Pass an explicit format to override it.
+
 `image_bytes` and `file_path` sources decode image format and dtype at runtime:
 
 - PNG/JPEG usually decode as `u8`

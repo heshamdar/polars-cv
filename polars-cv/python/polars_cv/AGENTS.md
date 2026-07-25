@@ -112,6 +112,14 @@ These drive schema inference at planning time. **Planning-time schema must match
 execution-time schema.** If an op's dtype cannot be determined at planning time
 (e.g. `auto` from an `image_bytes` source), it stays `auto`.
 
+An `auto` **source** (the `source()` default) is treated like `blob` here: its
+decode path is chosen from the column dtype in Rust at execution time, so
+`_expected_ndim` is `None` and the dtype stays `auto` unless the caller asserts
+one. The `list`/`array` sink guards in `lazy.py` let `auto` through alongside
+`list`/`array` because Rust's `resolved_output_specs` resolves a `List`/`Array`
+column's leaf dtype and rank when the plan sees the input; a Binary/image column
+under `auto` then surfaces the error there instead.
+
 ### Alpha Channel Handling
 
 Alpha channels are **always preserved** during image decoding. Image sources

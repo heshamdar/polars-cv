@@ -42,6 +42,7 @@ result = df.with_columns(
 
 | Format | Input Type | Description |
 |--------|-----------|-------------|
+| `auto` (default) | Varies | Infer the decode path from the column dtype (String → `file_path`, List/Array → `list`/`array`, Binary → `blob` if VIEW-tagged else `image_bytes`) |
 | `image_bytes` | Binary | Decode PNG/JPEG/TIFF bytes (auto format+dtype detect) |
 | `file_path` | String | Local/cloud/HTTP path; decodes like `image_bytes` |
 | `raw` | Binary | Raw bytes (requires `dtype`) |
@@ -70,14 +71,17 @@ If you use `sink("list")` or `sink("array")`, dtype must be known at planning ti
 |--------|------------|-------------|
 | `numpy` | Struct | NumPy-compatible zero-copy struct (`{data, dtype, shape, strides, offset}`); `dtype="f16"` downcasts |
 | `torch` | Struct | PyTorch-compatible zero-copy struct; `dtype="f16"` downcasts |
-| `png` | Binary | PNG bytes |
-| `jpeg` | Binary | JPEG bytes |
-| `webp` | Binary | WebP bytes |
+| `png` | Binary | PNG bytes; preserves bit depth (`u8` → 8-bit, `u16` → 16-bit) |
+| `jpeg` | Binary | JPEG bytes; 8-bit only, requires `u8` |
+| `webp` | Binary | WebP bytes; 8-bit only, requires `u8` |
 | `tiff` | Binary | TIFF bytes with LZW compression (supports floating-point) |
 | `blob` | Binary | Self-describing VIEW binary protocol |
 | `list` | List | Polars nested List |
 | `array` | Array | Polars fixed-size Array |
 | `native` | Varies | Native Python type (for scalars/vectors) |
+
+Float buffers cannot be encoded to PNG/JPEG/WebP — `.cast("u8")`/`.cast("u16")`
+first, or sink to `tiff`, which stores floating point directly.
 
 ## Chaining Operations
 

@@ -108,6 +108,7 @@ match op_spec.op.as_str() {
 
 | Source Format | Decoding |
 |---------------|----------|
+| `auto` (the Python default) | Resolved to a concrete format below by `resolve_auto_format` (`graph/compiled.rs`) from the column dtype: String → `file_path`, List/Array → `list`/`array`, Binary → `blob` if the bytes start with `protocol::MAGIC_BYTES` else `image_bytes`. Resolved once per batch (dtype is row-invariant), not per row; an unroutable dtype errors |
 | `image_bytes` | Decode PNG/JPEG/TIFF via `ImageAdapter` → `ViewBuffer` (alpha channels preserved) |
 | `blob` | VIEW protocol binary (header + data) → `ViewBuffer` |
 | `raw` | Raw bytes with explicit dtype → `ViewBuffer` |
@@ -122,7 +123,7 @@ Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`,
 | Sink Format | Output Type | Encoding |
 |-------------|-------------|----------|
 | `numpy` / `torch` | Struct | Zero-copy struct with `{data, dtype, shape, strides, offset}` |
-| `png` / `jpeg` / `webp` / `tiff` | Binary | Encode `ViewBuffer` to image format bytes |
+| `png` / `jpeg` / `webp` / `tiff` | Binary | Encode `ViewBuffer` to image format bytes. `encode_sink` (`execute.rs`) rejects non-`u8` for JPEG/WebP before encoding; PNG carries bit depth through (`ImageAdapter::to_dynamic_image` builds 8-bit variants for `U8`, 16-bit for `U16`, and rejects anything else); TIFF handles float |
 | `blob` | Binary | VIEW protocol serialization |
 | `list` | List(...) | Typed nested list preserving dtype |
 | `array` | Array(..., shape) | Fixed-size array preserving dtype |
