@@ -26,6 +26,15 @@ result = df.with_columns(
 
 These methods work on binary columns containing encoded images (PNG, JPEG, TIFF, etc.).
 
+To query files named by a **path** column — local or remote — fetch the bytes
+first with [`read_bytes()`](../concepts/sources.md#reading-bytes-without-decoding),
+which does not decode:
+
+```python
+raw = pl.col("path").cv.read_bytes()
+df.with_columns(w=raw.cv.width(), h=raw.cv.height())
+```
+
 ### Use Case: Filtering by Size
 
 ```python

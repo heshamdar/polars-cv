@@ -8,12 +8,14 @@ mod cloud_auth;
 mod contour;
 mod engine_warning;
 mod execute;
+mod fetch;
 mod graph;
 mod image_metadata;
 mod output;
 mod params;
 mod pipeline;
 mod point;
+mod read_bytes;
 
 use polars::prelude::*;
 use pyo3::prelude::*;

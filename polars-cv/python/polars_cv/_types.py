@@ -526,6 +526,53 @@ class CloudOptions:
         return result
 
 
+def normalize_cloud_options(
+    value: "CloudOptions | dict[str, Any] | None",
+) -> "CloudOptions | None":
+    """Coerce a user-supplied ``cloud_options`` argument to ``CloudOptions``.
+
+    Accepts a ``CloudOptions`` unchanged, or a dict whose keys are either named
+    ``CloudOptions`` fields or ``object_store`` config names — the latter are
+    routed into ``storage_options`` as pass-through options.
+
+    Shared by every entry point that takes credentials (``Pipeline.source()``
+    and ``.cv.read_bytes()``) so they accept exactly the same forms.
+
+    Args:
+        value: ``CloudOptions``, a dict of options, or None.
+
+    Returns:
+        A ``CloudOptions`` instance, or None when ``value`` is None.
+
+    Raises:
+        TypeError: If ``value`` is neither ``CloudOptions``, a dict, nor None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, CloudOptions):
+        return value
+    if not isinstance(value, dict):
+        msg = f"cloud_options must be CloudOptions or dict, got {type(value)}"
+        raise TypeError(msg)
+
+    known_fields = set(CloudOptions.__dataclass_fields__)
+    opts_dict: dict[str, Any] = {}
+    passthrough: dict[str, str] = {}
+    for key, item in value.items():
+        if key in known_fields:
+            opts_dict[key] = item
+        else:
+            passthrough[key] = item
+    # Convert "anonymous" from string if present
+    if isinstance(opts_dict.get("anonymous"), str):
+        opts_dict["anonymous"] = opts_dict["anonymous"].lower() == "true"
+    if passthrough:
+        merged = dict(opts_dict.get("storage_options") or {})
+        merged.update(passthrough)
+        opts_dict["storage_options"] = merged
+    return CloudOptions(**opts_dict)
+
+
 @dataclass
 class SourceSpec:
     """Specification for pipeline input source."""

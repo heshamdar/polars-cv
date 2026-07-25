@@ -203,6 +203,67 @@ It does **not** apply to S3, which authenticates with SigV4 rather than a bearer
 token — supplying it with an `s3://` source raises; use the `aws_*` fields or
 `storage_options` for AWS credentials instead.
 
+## Reading Bytes Without Decoding
+
+The `file_path` source is two stages: fetch the bytes a path names, then decode
+them as an image. `.cv.read_bytes()` is the first stage on its own — same fetch
+mechanism, same credentials, same concurrency, no decode.
+
+```python
+import polars as pl
+
+df.with_columns(raw=pl.col("path").cv.read_bytes())  # -> Binary
+```
+
+Bytes come back **verbatim**, so an encoded file survives the round trip
+unchanged:
+
+```python
+assert df.with_columns(raw=pl.col("path").cv.read_bytes())["raw"][0] == Path(p).read_bytes()
+```
+
+That matters because decoding is one-way. Re-encoding a decoded JPEG never
+reproduces the original file, and no image sink carries EXIF or ICC metadata —
+so even a PNG loses information through a decode/encode round trip.
+`read_bytes` is the only lossless path.
+
+It also gives the [header-only metadata methods](../operations/metadata.md)
+a way to reach remote files, since they take binary columns:
+
+```python
+df = df.with_columns(raw=pl.col("path").cv.read_bytes(cloud_options=options))
+df = df.filter(pl.col("raw").cv.width() > 512)                  # header-only, no decode
+df = df.with_columns(thumb=pl.col("raw").cv.pipe(pipe).sink("png"))
+df.select("path", "raw")                                        # originals, untouched
+```
+
+The fetch happens once here and both the predicate and the pipeline read the
+same column — where two separate expressions over a path column would each
+fetch independently.
+
+| Argument | Meaning |
+|----------|---------|
+| `cloud_options` | Credentials/settings for remote reads. Same `CloudOptions` (or dict) the `file_path` source takes. |
+| `on_error` | `"raise"` (default) fails the query on the first unreadable path; `"null"` yields null for that row only. |
+
+### Memory and streaming
+
+Fetching is per plugin call — one morsel under the streaming engine. Within a
+call, distinct remote paths are fetched concurrently up front (exactly as the
+`file_path` source already does) and local files are read per row.
+
+Under `.collect(engine="streaming")` a bytes column is therefore
+morsel-bounded: if you filter on it and drop it, only a morsel's worth is
+resident at a time, and projection pushdown skips it entirely when nothing
+downstream uses it. It only becomes corpus-resident if you select it in the
+final projection — which is the point when you want the originals.
+
+!!! warning "Paths are not sandboxed"
+    `read_bytes` reads whatever the column names, local or remote, with no
+    allowlisting — the same caveat that applies to the `file_path` source, but
+    over any file rather than only decodable images. Use it with trusted path
+    columns.
+
 ## Contour Source and Shape Inference
 
 The `contour` source rasterizes contour structs to binary mask buffers. You can specify dimensions explicitly or infer them from another pipeline expression.
