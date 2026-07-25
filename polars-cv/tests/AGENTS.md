@@ -11,86 +11,61 @@ All Python tests for polars-cv. Tests use **pytest** exclusively. Coverage inclu
 
 ```bash
 cd polars-cv
-uv run pytest tests/                              # all tests (plugin must be built)
-uv run pytest tests/ -k "not plugin_required"      # builder/schema tests only
-uv run pytest tests/reference/ -v                  # reference tests
-python scripts/test_multiple_python.py --all       # multi-Python (3.10-3.13)
+uv run pytest tests/ -m "not network and not slow"  # what CI runs on every push
+uv run pytest tests/                                # everything (plugin must be built)
+uv run pytest tests/ -k "not plugin_required"       # builder/schema tests only
+uv run pytest tests/reference/ -v                   # reference tests
+python scripts/test_multiple_python.py --all        # multi-Python (3.10-3.13)
 ```
 
 The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`. Build with `maturin develop --release`.
 
-## Test Categories
+### Markers and CI lanes
 
-### Unit Tests (no plugin required)
+Two markers are declared in `pyproject.toml` (`[tool.pytest.ini_options]`), and
+**CI never runs the bare `pytest tests/` you probably run locally**:
 
-| File | What it tests |
-|------|--------------|
-| `test_pipeline_builder.py` | Pipeline construction, domain tracking, operation chaining |
-| `test_lazy_schema.py` | LazyPipelineExpr schema inference |
-| `test_dtype_contracts.py` | Plan-time and end-to-end dtype tracking (planner sources dtype from the view-buffer contract) |
-| `test_serialization.py` | Pipeline JSON serialization |
-| `test_geometry_schemas.py` | Geometry schema definitions and validation |
-| `test_affine_builder.py` | Affine pipeline builder (warp_affine, shear, rotate_and_scale), contracts, fusion |
+| Marker | Meaning | Where it runs |
+|--------|---------|---------------|
+| `network` | Needs network access | Never in CI |
+| `slow` | Long-running | Scheduled lane only, `-m "slow and not network"` (`.github/workflows/ci.yml`) |
 
-### Integration Tests (plugin required)
+The per-push lane is `-m "not network and not slow"`. Mark a new test `network`
+if it fetches anything and `slow` if it is not sub-second — an unmarked slow test
+lands in the lane that gates every merge.
 
-| File | What it tests |
-|------|--------------|
-| `test_integration.py` | Basic pipeline execution through Polars |
-| `test_expression_params.py` | Dynamic parameters via `pl.Expr` |
-| `test_zero_copy_sources.py` | List/array source decoding, zero-copy paths |
-| `test_zero_copy_output.py` | Numpy/torch sink output, zero-copy extraction |
-| `test_sink_typing.py` | Sink format dtype inference and validation |
-| `test_multi_output.py` | Multi-output pipelines with aliases |
-| `test_multi_upstream.py` | Multi-source graph execution |
-| `test_source_types.py` | Various source formats (image_bytes, blob, raw, file_path) |
-| `test_contour_plugin.py` | Contour namespace plugin operations |
-| `test_contour_source.py` | Contour-to-mask rasterization |
-| `test_error_handling.py` | Error messages and edge cases |
-| `test_feature_extraction.py` | Extract shape, histogram, perceptual hash |
-| `test_lazy_composition.py` | LazyPipelineExpr composition patterns |
-| `test_schema_inference.py` | Planning-time vs execution-time schema consistency |
-| `test_unified_graph.py` | Graph construction and execution |
-| `test_cse_optimization.py` | Common subexpression elimination |
-| `test_precompile.py` | Pipeline precompilation |
-| `test_mask_metrics.py` | mask_iou, mask_dice |
-| `test_hash_comparison.py` | hamming_distance, hash_similarity |
-| `test_perceptual_hash.py` | Perceptual hashing |
-| `test_http_sources.py` | HTTP/HTTPS file sources |
-| `test_statistical_reductions.py` | reduce_sum, reduce_mean, etc. |
-| `test_typed_nodes.py` | Typed list/array node outputs |
-| `test_numpy_helpers.py` | `numpy_from_struct` utility |
-| `test_detection_table.py` | DetectionTable construction, schema validation, accessors |
-| `test_matchers.py` | PreMatchedAdapter protocol compliance, class/n_gts support |
-| `test_precision_recall.py` | PR curve, AP, mAP, precision/recall/f1 at threshold, confusion |
-| `test_bbox_matching.py` | Rust bbox_pairwise_iou and bbox_match_detections |
-| `test_bootstrap_vectorized.py` | Sequential and vectorized bootstrap, BootstrapResult |
-| `test_image_metadata.py` | Header-only metadata extraction |
-| `test_on_error.py` | `on_error="null"` graceful error handling |
-| `test_display.py` | `show_images()` display utility |
-| `test_tiff_integration.py` | TIFF format integration |
-| `test_alpha_channel.py` | Alpha channel decode/encode (including DROP for threshold/erode/dilate/morph_gradient), planning-time channel inference from view-buffer channel rules, rotate expand shape hints |
+## How the Suite Is Organised
 
-### Reference Tests (`tests/reference/`)
+- `tests/*.py` — unit tests (pure Python: builder, schema inference,
+  serialization) and integration tests (execute a graph through the compiled
+  plugin). The `@plugin_required` decorator, not the filename, is what separates
+  them.
+- `tests/reference/*_ref.py` — output compared against NumPy / OpenCV / PIL /
+  imagehash ground truth. These are the **correctness guarantees**: if a change
+  moves one of these expectations, say why in the commit rather than retuning
+  the tolerance.
+- `_gaps` in a name (e.g. `test_binary_ops_gaps.py`) is historical — they are
+  ordinary tests whose gaps have since been filled.
 
-Compare polars-cv output against NumPy/OpenCV ground truth — these are the **correctness guarantees**.
+There is deliberately no per-file index here: it goes stale the moment a file is
+added. Find the right file by name or content instead:
 
-| File | What it tests |
-|------|--------------|
-| `test_binary_ops_ref.py` | Binary ops vs NumPy |
-| `test_contour_ops_ref.py` | Contour operations vs OpenCV/Shapely |
-| `test_extract_ref.py` | Contour extraction vs OpenCV |
-| `test_histogram_ref.py` | Histogram computation vs NumPy |
-| `test_pairwise_ref.py` | Pairwise contour ops |
-| `test_perceptual_hash_ref.py` | Perceptual hashing vs imagehash |
-| `test_rasterize_ref.py` | Rasterization vs OpenCV/PIL |
-| `test_reductions_ref.py` | Reductions vs NumPy |
-| `test_phase1_ref.py` | Channel, intensity, padding ops vs NumPy/PIL |
-| `test_color_ref.py` | Color space conversions vs OpenCV/NumPy |
-| `test_morphology_ref.py` | Morphological ops (erode, dilate, open, close, gradient) vs OpenCV |
-| `test_affine_ref.py` | Affine transforms (identity, translate, rotate, scale, shear, interpolation, border, multi-channel) vs OpenCV |
+```bash
+ls tests/                                     # names are topic-shaped
+uv run pytest --collect-only -q -k <topic>    # locate existing coverage
+rg "<op_name>" tests/                         # find who already exercises an op
+```
 
-Files with `_gaps` in the name (e.g., `test_binary_ops_gaps.py`) are regular tests despite the name — the gaps they tested have been filled.
+Useful entry points when you need a pattern to copy:
+
+| File | Pattern it demonstrates |
+|------|-------------------------|
+| `test_pipeline_builder.py` | Builder validation and domain tracking, no plugin |
+| `test_lazy_schema.py` | Plan-time schema assertions on `LazyPipelineExpr` |
+| `test_integration.py` | End-to-end execution through Polars |
+| `test_schema_inference.py` | Planning-time vs execution-time schema agreement |
+| `test_source_types.py` | Exercising each source format |
+| `test_sanitation.py` | Meta-tests that police the conventions below |
 
 ## Conventions
 
@@ -114,7 +89,11 @@ class TestMyFeature:
     ...
 ```
 
-Tests that only exercise the Python layer do NOT need `@plugin_required`.
+The rule: anything that **executes** a graph (`.sink(...)` collected through
+Polars, the `.cv`/`.point`/`.contour`/`.bbox` plugin functions, any FFI call into
+`_lib`) needs `@plugin_required`. Tests that only build pipelines or assert on
+plan-time schema must not use it — they are the lane that still runs when the
+plugin is not built (`-k "not plugin_required"`).
 
 ### Shared Fixtures (`conftest.py`)
 

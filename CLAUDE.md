@@ -145,7 +145,7 @@ Every `Pipeline` tracks a **domain** through operations:
 
 | Domain | What it holds | Produced by |
 |--------|---------------|-------------|
-| `buffer` | Multi-dimensional array | `source("image_bytes")` |
+| `buffer` | Multi-dimensional array | `source()` (defaults to `"auto"`; also `"image_bytes"`, `"file_path"`, …) |
 | `contour` | Geometry vectors | `extract_contours()` |
 | `scalar` | Single numeric value | `reduce_sum()` |
 | `vector` | 1-D numeric array (incl. histogram buckets) | `perceptual_hash()`, `histogram()` |

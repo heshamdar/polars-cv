@@ -7,6 +7,43 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-25
+
+### Added
+
+- **`source("auto")` — decode path inferred from the column dtype.** A source no
+  longer has to be told how to read its column when the Polars dtype already
+  says: `String` → `file_path`, `List` → `list`, `Array` → `array`, and `Binary`
+  → `blob` when the bytes carry the VIEW protocol magic, `image_bytes`
+  otherwise. The resolution happens once per batch (the column dtype is constant
+  across rows), so the now-default path costs no per-row work. Everything that
+  applied to the concrete formats still applies: `cloud_options` and concurrent
+  remote prefetch (an auto source over a URL column still prefetches),
+  `decode_max_size`, and `require_contiguous`. A dtype that cannot be routed
+  (e.g. a plain numeric column) raises and names the explicit formats to choose
+  from.
+- **16-bit PNG output.** A `u16` buffer now encodes to a 16-bit PNG
+  (`Luma16`/`LumaA16`/`Rgb16`/`Rgba16`) instead of failing with "Image export
+  requires U8 dtype", so a 16-bit PNG or TIFF read through a pipeline and back
+  out to `sink("png")` keeps its bit depth end to end.
+
+### Changed
+
+- **`Pipeline.source()` defaults to `"auto"`** (was `"image_bytes"`). A `Binary`
+  image column behaves exactly as before; a `String` column, which previously
+  had to be spelled `source("file_path")`, now reads as a path; and a VIEW-tagged
+  `Binary` column resolves to `blob` rather than failing an image decode. Passing
+  an explicit format still overrides the inference in every case.
+
+### Fixed
+
+- **Actionable errors for bit-depth mismatches at the image sinks.** JPEG and
+  WebP are 8-bit formats: sinking a non-`u8` buffer to them now fails before
+  encoding with an error naming the dtype and pointing at `.cast("u8")` or the
+  PNG/TIFF sinks, instead of a generic encode failure. Float buffers into any
+  image sink likewise suggest casting to an integer dtype or sinking to TIFF,
+  which supports floating point.
+
 ## [0.13.0] — 2026-07-24
 
 ### Added

@@ -2,6 +2,37 @@
 
 Sources define how the input column should be interpreted before operations are applied.
 
+## The `auto` Source (default)
+
+`source()` defaults to `"auto"`, which picks the decode path from the input
+column's Polars dtype:
+
+| Column dtype | Resolves to |
+|--------------|-------------|
+| `String` | `file_path` |
+| `List` | `list` |
+| `Array` | `array` |
+| `Binary` carrying the VIEW protocol magic | `blob` |
+| `Binary` otherwise | `image_bytes` |
+
+```python
+from polars_cv import Pipeline
+
+# Reads image bytes from a Binary column, or paths from a String column
+pipe = Pipeline().source().resize(height=224, width=224)
+```
+
+The column dtype is constant across rows, so the resolution happens once per
+batch — the default path adds no per-row cost. Options that apply to the
+resolved format still apply to `auto`: `cloud_options` and concurrent remote
+prefetch (over a `String` URL column), `decode_max_size`, and
+`require_contiguous`.
+
+Pass an explicit format when the dtype cannot be routed — a plain numeric
+column raises and names the alternatives — or when you want to override the
+inference (for example `source("raw", dtype="u8")` over a `Binary` column that
+would otherwise be treated as encoded image bytes).
+
 ## Image Sources: `image_bytes` and `file_path`
 
 Both `image_bytes` and `file_path` decode images with automatic format and dtype detection:
@@ -72,6 +103,7 @@ mirrored on `LazyPipelineExpr`, so you can set it after `.pipe(...)`.
 ## Auto DType Behavior
 
 For `image_bytes` and `file_path`, dtype is runtime-dependent, so the pipeline starts with dtype `auto`.
+An `auto` source starts there too, since its decode path is not chosen until execution.
 
 You can resolve dtype by:
 
@@ -86,6 +118,11 @@ pipe = Pipeline().source("image_bytes", dtype="f32").resize(height=224, width=22
 ## Planning-Time Requirement for `list`/`array` Sinks
 
 `sink("list")` and `sink("array")` require known element dtype at planning time.
+
+`list`/`array` sources — and an `auto` source over a `List`/`Array` column —
+resolve their leaf dtype and rank from the Polars column when the plan sees the
+input, so these sinks type-check without any extra help. An `auto` source over a
+`Binary`/`String` (image) column does not: its dtype is only known after decode.
 
 For image sources, resolve dtype before these sinks:
 
@@ -114,6 +151,10 @@ options = CloudOptions(
 
 pipe = Pipeline().source("file_path", cloud_options=options)
 ```
+
+`cloud_options` also applies to the default `auto` source, since it can resolve
+to `file_path` from a `String` column. It is ignored (with a warning) for
+sources that never read remotely.
 
 Remote requests are **signed by default**. To read from a public bucket without
 credentials, opt into anonymous access explicitly with
@@ -181,6 +222,7 @@ When using `shape=`, the contour mask dimensions automatically match the referen
 
 ## Other Sources
 
+- `auto` (default): infer the decode path from the column dtype (see above)
 - `raw`: raw bytes, requires explicit `dtype`
 - `blob`: self-describing binary VIEW protocol
 - `list`/`array`: infer from Polars column type (or override with `dtype`)

@@ -28,6 +28,11 @@ result = df.with_columns(
 )
 ```
 
+Naming the source format is optional: `source()` defaults to `"auto"`, which
+infers the decode path from the column's dtype (see
+[Sources](../user-guide/concepts/sources.md#the-auto-source-default)). The
+examples below spell it out to show which kind of input they expect.
+
 ## Common Operations
 
 ### Image Processing
