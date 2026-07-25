@@ -29,6 +29,8 @@ maturin develop --release  # Builds cdylib and installs into .venv
 |------|---------------|
 | `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, and the planner-facing FFI (`op_schema`, `op_contract`, `binary_output_dtype`, `enum_variants`, `known_ops`) |
 | `image_metadata.rs` | Header-only metadata plugin functions (`image_width`, `image_height`, `image_channels`, `image_dtype`) |
+| `fetch.rs` | Stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `DEFAULT_CONCURRENCY`, `parse_on_error`). Shared by the `file_path` source and `read_bytes.rs`; owns the path-sandboxing TODO |
+| `read_bytes.rs` | `read_file_bytes` plugin function — `fetch.rs` with the decode omitted, for byte-identical passthrough |
 | `graph/types.rs` | `UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowResult` — graph execution engine, `on_error` handling |
 | `graph/compiled.rs` | `CompiledGraph` — process-wide compiled-graph cache (parsed spec, topo order, slot-bound params) |
 | `graph/decode.rs` | Source decoding, `dtype_for_output` schema inference, reflect/symmetric padding |
@@ -112,7 +114,7 @@ match op_spec.op.as_str() {
 | `image_bytes` | Decode PNG/JPEG/TIFF via `ImageAdapter` → `ViewBuffer` (alpha channels preserved) |
 | `blob` | VIEW protocol binary (header + data) → `ViewBuffer` |
 | `raw` | Raw bytes with explicit dtype → `ViewBuffer` |
-| `file_path` | Read from local/cloud/HTTP, then decode as image (alpha channels preserved) |
+| `file_path` | Two stages: `fetch.rs` reads the bytes from local/cloud/HTTP, then they decode as `image_bytes` (alpha channels preserved). The fetch stage is also exposed on its own as `.cv.read_bytes()` (`read_bytes.rs`) — same code, decode omitted |
 | `contour` | Parse Struct column into `Contour`, optionally rasterize to mask |
 | `list` / `array` | Zero-copy (when contiguous) or copy from Polars nested types |
 
@@ -137,7 +139,9 @@ Runs at Polars planning time (NOT execution time). Parses the graph JSON, resolv
 
 ## Contour/Bbox Plugin Functions
 
-`point.rs` and `contour.rs` expose direct plugin expression functions for `.point` / `.contour` / `.bbox` namespaces. These **bypass `vb_graph`** and operate on Struct/List columns directly.
+`point.rs` and `contour.rs` expose direct plugin expression functions for `.point` / `.contour` / `.bbox` namespaces. These **bypass `vb_graph`** and operate on Struct/List columns directly. `image_metadata.rs` and `read_bytes.rs` bypass it the same way for the `.cv` namespace's non-pipeline methods.
+
+`tests/test_sanitation.py::test_namespace_plugin_symbols_match_registrations` pins both directions of this surface — add any new module carrying a namespace `#[polars_expr]` to the file list it scans, or the symbol silently escapes the check.
 
 Key functions in `contour.rs`:
 - `contour_pairwise_iou`, `contour_match_detections`, `contour_label_reduce`
