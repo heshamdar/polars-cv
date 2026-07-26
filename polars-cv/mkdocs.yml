@@ -94,6 +94,7 @@ nav:
   - API Reference:
     - Pipeline: api/pipeline.md
     - LazyPipelineExpr: api/lazy.md
+    - Expressions (.cv): api/expressions.md
     - Geometry: api/geometry.md
     - Metrics: api/metrics.md
     - Functions: api/functions.md

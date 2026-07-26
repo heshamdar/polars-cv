@@ -99,8 +99,10 @@ class CvNamespace(_PluginNamespace):
         the final projection — which is the point when you want the originals.
 
         Note:
-            Paths are not sandboxed: whatever the column names is read.
-            Use with trusted path columns only.
+            Paths are not sandboxed and file size is not capped: whatever the
+            column names is read in full, including any local file and any
+            ``http://`` address (link-local metadata endpoints among them). Use
+            with trusted path columns only.
 
         Args:
             cloud_options: Credentials/settings for remote reads, as

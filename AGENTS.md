@@ -100,7 +100,7 @@ Image sources have unknown channel count at planning time. Users can assert know
 
 | Namespace | Purpose |
 |-----------|---------|
-| `.cv` | Image/array pipelines via `.pipe()` → `.sink()`, metadata (`.width()`, `.height()`, `.channels()`, `.image_dtype()`) |
+| `.cv` | Image/array pipelines via `.pipe()` → `.sink()`, byte access (`.read_bytes()`), metadata (`.width()`, `.height()`, `.channels()`, `.image_dtype()`) |
 | `.point` | Point geometry ops (normalize, distance, etc.) |
 | `.contour` | Contour geometry ops (area, perimeter, IoU, matching) |
 | `.bbox` | Bounding box ops (pairwise IoU, match detections) |

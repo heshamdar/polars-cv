@@ -133,6 +133,7 @@ result = df.with_columns(
 - **Analysis**: `histogram`, `perceptual_hash`, `extract_shape`, `label_reduce`.
 - **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_argmax`, `reduce_argmin`, `reduce_percentile`, `reduce_popcount`.
 - **Metadata**: `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()`.
+- **Byte access**: `.cv.read_bytes()` — read a path column's bytes (local or cloud) without decoding.
 - **Display**: `show_images()` for Jupyter notebook visualization.
 - **Detection Metrics**: Precision-Recall, AP, mAP, FROC, LROC, F1, confusion matrix, bootstrap confidence intervals.
 
