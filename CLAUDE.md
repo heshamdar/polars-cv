@@ -102,7 +102,7 @@ Rust: view-buffer (the engine)
 |------|------|
 | `pipeline.py` | `Pipeline` builder — all image/array operations as chainable methods |
 | `lazy.py` | `LazyPipelineExpr` — lazy `.pipe()`, `.merge_pipe()`, `.sink()`, binary ops |
-| `expressions.py` | `CvNamespace` — the `.cv` accessor registered on Polars Series/Expr |
+| `expressions.py` | `CvNamespace` — the `.cv` accessor registered on Polars expressions (`.pipe()`, `.read_bytes()`, header-only metadata) |
 | `_types.py` | Core type definitions: `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `Domain`, `DType` |
 | `_graph.py` | `PipelineGraph` / `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
 | `_namespace.py` | Shared base for the `.cv`/`.point`/`.contour`/`.bbox` expression namespaces (plugin-registration boilerplate) |
@@ -119,7 +119,9 @@ Rust: view-buffer (the engine)
 - `graph/` — `UnifiedGraph` execution engine: `types.rs` (`UnifiedGraph`, `GraphNode`, `OutputSpec`, `RowErrorPolicy`), `compiled.rs` (process-wide compiled-graph cache), `step.rs` (`GraphStep` — the plugin-level step vocabulary), source decoding (`decode.rs`), sink encoding (`encode.rs`)
 - `params.rs` — `ParamValue` resolving literals vs per-row Polars column values
 - `pipeline.rs` — serde types for the JSON graph spec crossing the plugin boundary
-- `cloud.rs` — remote/cloud source I/O (`file_path` decode, `cloud_options`, concurrent prefetch)
+- `cloud.rs` — remote/cloud transport (`object_store` backends, `cloud_options`, bounded-concurrency reads)
+- `fetch.rs` — stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `parse_on_error`), shared by the `file_path` source and `read_bytes.rs`; owns the path-sandboxing TODO
+- `read_bytes.rs` — `read_file_bytes` plugin function (`.cv.read_bytes()`) — `fetch.rs` with the decode omitted, for byte-identical passthrough
 - `image_metadata.rs` — header-only metadata plugin functions (`.cv.width()`/`height()`/`channels()`/`image_dtype()`)
 - `output.rs` — zero-copy numpy/torch struct output encoding
 - `engine_warning.rs` — one-time single-threaded-batch warning (points users to `engine="streaming"`)

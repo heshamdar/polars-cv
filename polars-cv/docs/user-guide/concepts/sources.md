@@ -258,11 +258,20 @@ resident at a time, and projection pushdown skips it entirely when nothing
 downstream uses it. It only becomes corpus-resident if you select it in the
 final projection — which is the point when you want the originals.
 
+Under the **default in-memory engine there is no such bound**: `with_columns`
+materializes the whole column, so `read_bytes` over a million-path frame holds
+every file at once. There is also no per-file size cap — whatever the path names
+is read in full. Use `engine="streaming"`, or slice the frame, when the corpus
+does not fit in memory.
+
 !!! warning "Paths are not sandboxed"
     `read_bytes` reads whatever the column names, local or remote, with no
     allowlisting — the same caveat that applies to the `file_path` source, but
-    over any file rather than only decodable images. Use it with trusted path
-    columns.
+    over any file rather than only decodable images. Two edges are sharper here
+    than for the source: any local file is returned verbatim rather than having
+    to survive an image decode, and an `http://` path is fetched as-is, which
+    reaches link-local addresses such as cloud instance-metadata endpoints. Use
+    it with trusted path columns only.
 
 ## Contour Source and Shape Inference
 

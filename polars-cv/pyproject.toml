@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-cv"
-version = "0.14.0"
+version = "0.15.0"
 description = "A Polars plugin for vision/array operations"
 authors = [{ name = "Hesham Dar", email = "heshamdar@gmail.com" }]
 readme = "README.md"

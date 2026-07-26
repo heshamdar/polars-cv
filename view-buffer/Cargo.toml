@@ -1,6 +1,6 @@
 [package]
 name = "view-buffer"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 # Workspace floor (see rust-toolchain.toml): the polars 0.54 stack requires 1.96.
 rust-version = "1.96"

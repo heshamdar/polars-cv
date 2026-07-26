@@ -94,10 +94,19 @@ Create two environments in your repository (Settings → Environments):
 
 ### Release Process
 
-1. Update version in both `Cargo.toml` and `pyproject.toml`
-2. Commit and push to main
-3. Create a GitHub release with a version tag (e.g., `v0.1.0`)
-4. GitHub Actions automatically:
+1. Bump the version in all six places it is recorded — they must agree, and
+   nothing checks them for you:
+   - `polars-cv/Cargo.toml`
+   - `view-buffer/Cargo.toml` (the two crates are versioned together)
+   - `polars-cv/pyproject.toml`
+   - `polars_cv.__version__` in `polars-cv/python/polars_cv/__init__.py`
+   - `Cargo.lock` — refresh with `cargo update -p polars-cv -p view-buffer`
+   - `polars-cv/uv.lock` — refresh with `uv lock` from `polars-cv/`
+2. Roll the `CHANGELOG.md` `[Unreleased]` section into a dated entry for the new
+   version, and leave a fresh empty `[Unreleased]` heading above it
+3. Commit and push to main
+4. Create a GitHub release with a version tag (e.g., `v0.1.0`)
+5. GitHub Actions automatically:
    - Builds wheels for all platforms
    - Publishes to TestPyPI
    - Tests installation from TestPyPI

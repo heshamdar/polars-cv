@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-26
+
 ### Added
 
 - **`.cv.read_bytes()` — read a path column's bytes without decoding.** The
