@@ -191,6 +191,13 @@ def validate_normalize_coords(
     """
     Validate that coordinates are within reference dimensions.
 
+    A standalone helper for callers that want this check eagerly. The
+    ``.contour.normalize`` / ``.point.normalize`` operations deliberately do
+    **not** call it: their reference dimensions may be per-row Polars
+    expressions, so there is no single batch-level value to validate against,
+    and normalizing coordinates that exceed the reference is legitimate — it
+    simply yields values above 1.0.
+
     Args:
         max_x: Maximum X coordinate in the contour.
         max_y: Maximum Y coordinate in the contour.

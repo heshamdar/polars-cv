@@ -176,6 +176,50 @@ class PadMode(str, Enum):
     SYMMETRIC = "symmetric"
 
 
+class ExtractMode(str, Enum):
+    """
+    Contour retrieval mode for ``extract_contours``.
+
+    Mirrors view-buffer's ``ExtractMode`` authority:
+    - EXTERNAL: Outermost contours only (default).
+    - TREE: Full nesting hierarchy.
+    - ALL: Every contour, without hierarchy.
+    """
+
+    EXTERNAL = "external"
+    TREE = "tree"
+    ALL = "all"
+
+
+class ApproxMethod(str, Enum):
+    """
+    Contour point-approximation method for ``extract_contours``.
+
+    Mirrors view-buffer's ``ApproxMethod`` authority:
+    - NONE: Keep every boundary point.
+    - SIMPLE: Drop redundant collinear points (default).
+    - APPROX: Douglas-Peucker style approximation.
+    """
+
+    NONE = "none"
+    SIMPLE = "simple"
+    APPROX = "approx"
+
+
+class InterpolationType(str, Enum):
+    """
+    Interpolation used when sampling an affine warp (``rotate``,
+    ``warp_affine``, ``shear``, ``rotate_and_scale``).
+
+    Mirrors view-buffer's ``InterpolationType`` authority:
+    - NEAREST: Nearest-neighbour sampling (preserves hard edges/pixel art).
+    - BILINEAR: Bilinear sampling (default).
+    """
+
+    NEAREST = "nearest"
+    BILINEAR = "bilinear"
+
+
 class PadPosition(str, Enum):
     """
     Position for pad_to_size.
@@ -582,8 +626,8 @@ class SourceSpec:
     # Contour source parameters
     width: "ParamValue | None" = None
     height: "ParamValue | None" = None
-    fill_value: int = 255
-    background: int = 0
+    fill_value: "ParamValue | None" = None
+    background: "ParamValue | None" = None
     shape_pipeline: dict | None = (
         None  # Serialized LazyPipelineExpr for shape inference
     )
@@ -648,8 +692,10 @@ class SourceSpec:
                 result["width"] = self.width.to_dict()
             if self.height is not None:
                 result["height"] = self.height.to_dict()
-            result["fill_value"] = self.fill_value
-            result["background"] = self.background
+            if self.fill_value is not None:
+                result["fill_value"] = self.fill_value.to_dict()
+            if self.background is not None:
+                result["background"] = self.background.to_dict()
             if self.shape_pipeline is not None:
                 result["shape_pipeline"] = self.shape_pipeline
         # Include require_contiguous for list/array sources ("auto" may resolve

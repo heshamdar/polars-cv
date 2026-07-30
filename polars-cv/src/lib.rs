@@ -9,6 +9,7 @@ mod contour;
 mod engine_warning;
 mod execute;
 mod fetch;
+mod geom_params;
 mod graph;
 mod image_metadata;
 mod output;
@@ -180,7 +181,12 @@ pub(crate) fn resolve_op_from_json_probe(
             }
         }
     }
-    let ctx = ParamCtx::from_inputs(&placeholders);
+    // A *probe* context: placeholders are integers, so a dynamic enum or flag
+    // param cannot be read from one. `ParamCtx::probe` tells the enum/bool
+    // accessors to substitute their default instead. Sound because only params
+    // with no shape/rank/dtype effect are allowed to be dynamic, so the variant
+    // probing picks cannot change the inferred schema.
+    let ctx = ParamCtx::probe(&placeholders);
     crate::execute::resolve_op(&op_spec, 0, &ctx)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
 }

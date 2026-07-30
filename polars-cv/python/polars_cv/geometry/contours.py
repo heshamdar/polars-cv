@@ -10,7 +10,7 @@ from typing import Literal
 
 import polars as pl
 
-from polars_cv._namespace import _PluginNamespace
+from polars_cv._namespace import _ArgBinder, _PluginNamespace
 
 
 @pl.api.register_expr_namespace("contour")
@@ -18,10 +18,16 @@ class ContourNamespace(_PluginNamespace):
     """
     Namespace for geometric operations on contour columns.
 
+    Numeric parameters accept either a literal or a Polars expression; an
+    expression is resolved per row at execution time.
+
     Example:
         >>> df.with_columns(
         ...     area=pl.col("contour").contour.area(),
         ...     bbox=pl.col("contour").contour.bounding_box(),
+        ...     norm=pl.col("contour").contour.normalize(
+        ...         pl.col("img_w"), pl.col("img_h")
+        ...     ),
         ... )
     """
 
@@ -29,62 +35,43 @@ class ContourNamespace(_PluginNamespace):
 
     def normalize(
         self,
-        width: int | pl.Expr,
-        height: int | pl.Expr,
+        width: int | float | pl.Expr,
+        height: int | float | pl.Expr,
     ) -> pl.Expr:
         """
         Convert pixel coordinates to normalized [0,1] range.
 
         Args:
-            width: Reference width for normalization.
-            height: Reference height for normalization.
+            width: Reference width for normalization (literal or expression).
+            height: Reference height for normalization (literal or expression).
 
         Returns:
             Contour with coordinates in [0,1] range.
-
-        Raises:
-            CoordinateRangeError: If any coordinate exceeds ref dimensions.
         """
-        if isinstance(width, pl.Expr) or isinstance(height, pl.Expr):
-            raise TypeError(
-                "contour normalize does not support expression parameters. "
-                "Pass literal int values for width and height."
-            )
-        return self._plugin(
-            "contour_normalize",
-            kwargs={
-                "ref_width": width,
-                "ref_height": height,
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_param("ref_width", width)
+        binder.add_param("ref_height", height)
+        return binder.call(self, "contour_normalize")
 
     def to_absolute(
         self,
-        width: int | pl.Expr,
-        height: int | pl.Expr,
+        width: int | float | pl.Expr,
+        height: int | float | pl.Expr,
     ) -> pl.Expr:
         """
         Convert normalized coordinates to pixel coordinates.
 
         Args:
-            width: Reference width for scaling.
-            height: Reference height for scaling.
+            width: Reference width for scaling (literal or expression).
+            height: Reference height for scaling (literal or expression).
 
         Returns:
             Contour with pixel coordinates.
         """
-        if isinstance(width, pl.Expr) or isinstance(height, pl.Expr):
-            raise TypeError(
-                "contour to_absolute does not support expression parameters. "
-                "Pass literal int values for width and height."
-            )
-        return self._plugin(
-            "contour_to_absolute",
-            kwargs={
-                "ref_width": width,
-                "ref_height": height,
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_param("ref_width", width)
+        binder.add_param("ref_height", height)
+        return binder.call(self, "contour_to_absolute")
 
     # --- Geometric Measures ---
 
@@ -102,7 +89,7 @@ class ContourNamespace(_PluginNamespace):
         """
         return self._plugin("contour_winding")
 
-    def area(self, *, signed: bool = False) -> pl.Expr:
+    def area(self, *, signed: bool | pl.Expr = False) -> pl.Expr:
         """
         Compute contour area using the Shoelace formula.
 
@@ -110,7 +97,8 @@ class ContourNamespace(_PluginNamespace):
 
         Args:
             signed: If True, return signed area (negative for CW winding).
-                   If False, return absolute area.
+                   If False, return absolute area. Accepts a boolean expression
+                   for per-row selection.
 
         Returns:
             Float64 area value.
@@ -118,7 +106,9 @@ class ContourNamespace(_PluginNamespace):
         Raises:
             OpenContourError: If contour is not closed.
         """
-        return self._plugin("contour_area", kwargs={"signed": signed})
+        binder = _ArgBinder()
+        binder.add_param("signed", signed, cast=bool)
+        return binder.call(self, "contour_area")
 
     def perimeter(self) -> pl.Expr:
         """
@@ -199,24 +189,16 @@ class ContourNamespace(_PluginNamespace):
         Translate contour by offset.
 
         Args:
-            dx: X offset.
-            dy: Y offset.
+            dx: X offset (literal or expression).
+            dy: Y offset (literal or expression).
 
         Returns:
             Translated contour.
         """
-        if isinstance(dx, pl.Expr) or isinstance(dy, pl.Expr):
-            raise TypeError(
-                "contour translate does not support expression parameters. "
-                "Pass literal numeric values for dx and dy."
-            )
-        return self._plugin(
-            "contour_translate",
-            kwargs={
-                "dx": dx,
-                "dy": dy,
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_param("dx", dx)
+        binder.add_param("dy", dy)
+        return binder.call(self, "contour_translate")
 
     def scale(
         self,
@@ -229,8 +211,8 @@ class ContourNamespace(_PluginNamespace):
         Scale contour relative to specified origin.
 
         Args:
-            sx: X scale factor.
-            sy: Y scale factor.
+            sx: X scale factor (literal or expression).
+            sy: Y scale factor (literal or expression).
             origin: Point to scale around:
                 - "centroid": Center of mass
                 - "bbox_center": Bounding box center
@@ -239,31 +221,25 @@ class ContourNamespace(_PluginNamespace):
         Returns:
             Scaled contour.
         """
-        if isinstance(sx, pl.Expr) or isinstance(sy, pl.Expr):
-            raise TypeError(
-                "contour scale does not support expression parameters. "
-                "Pass literal numeric values for sx and sy."
-            )
-        return self._plugin(
-            "contour_scale",
-            kwargs={
-                "sx": sx,
-                "sy": sy,
-                "origin": origin,
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_param("sx", sx)
+        binder.add_param("sy", sy)
+        return binder.call(self, "contour_scale", origin=origin)
 
-    def simplify(self, tolerance: float) -> pl.Expr:
+    def simplify(self, tolerance: float | pl.Expr) -> pl.Expr:
         """
         Simplify contour using Douglas-Peucker algorithm.
 
         Args:
             tolerance: Simplification tolerance. Higher = fewer points.
+                Accepts a Polars expression for per-row values.
 
         Returns:
             Simplified contour.
         """
-        return self._plugin("contour_simplify", kwargs={"tolerance": tolerance})
+        binder = _ArgBinder()
+        binder.add_param("tolerance", tolerance)
+        return binder.call(self, "contour_simplify")
 
     # --- Pairwise Operations ---
 
@@ -295,7 +271,7 @@ class ContourNamespace(_PluginNamespace):
         self,
         other: pl.Expr,
         *,
-        threshold: float = 0.5,
+        threshold: float | pl.Expr = 0.5,
         scores: pl.Expr | None = None,
         strategy: Literal["greedy"] = "greedy",
     ) -> pl.Expr:
@@ -304,24 +280,19 @@ class ContourNamespace(_PluginNamespace):
 
         Args:
             other: Ground-truth contour-set expression (`List[Contour]`).
-            threshold: IoU threshold for positive matches.
+            threshold: IoU threshold for positive matches. Accepts a Polars
+                expression for a per-row threshold.
             scores: Optional per-prediction confidence score list used for ordering.
             strategy: Matching strategy. Currently only ``"greedy"`` is supported.
 
         Returns:
             A struct containing per-prediction match indices, IoUs, and TP/FP/FN counts.
         """
-        args = [other]
-        if scores is not None:
-            args.append(scores)
-        return self._plugin(
-            "contour_match_detections",
-            args=args,
-            kwargs={
-                "threshold": threshold,
-                "strategy": strategy,
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_data("other", other)
+        binder.add_data("scores", scores)
+        binder.add_param("threshold", threshold)
+        return binder.call(self, "contour_match_detections", strategy=strategy)
 
     def label_reduce(
         self,

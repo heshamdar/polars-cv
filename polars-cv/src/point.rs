@@ -11,6 +11,8 @@ use serde::Deserialize;
 
 use view_buffer::geometry::contour::Point;
 
+use crate::geom_params::{GeomParams, InputSlots};
+
 // ============================================================================
 // Point Kwargs
 // ============================================================================
@@ -42,6 +44,12 @@ pub struct PointKwargs {
     /// Interpolation parameter (0 to 1).
     #[serde(default)]
     pub t: Option<f64>,
+    /// Maps a named input — data operand or per-row parameter — to its index
+    /// in `inputs`. Names absent from the map are literal (read from the
+    /// scalar fields above) or were not supplied. An empty map reproduces the
+    /// original all-literal behaviour.
+    #[serde(default)]
+    pub input_slots: InputSlots,
 }
 
 // ============================================================================
@@ -136,16 +144,7 @@ fn point_output_type(_input_fields: &[Field]) -> PolarsResult<Field> {
 /// Normalize point coordinates to [0, 1] range.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let ref_width = kwargs
-        .ref_width
-        .ok_or_else(|| polars_err!(ComputeError: "ref_width is required"))?;
-    let ref_height = kwargs
-        .ref_height
-        .ok_or_else(|| polars_err!(ComputeError: "ref_height is required"))?;
-
-    if ref_width == 0.0 || ref_height == 0.0 {
-        return Err(polars_err!(ComputeError: "ref_width and ref_height must be non-zero"));
-    }
+    let params = GeomParams::new(inputs, &kwargs.input_slots);
 
     let series = &inputs[0];
     let len = series.len();
@@ -158,6 +157,15 @@ fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
             x_results.push(None);
             y_results.push(None);
         } else {
+            let ref_width = params.required_f64("ref_width", kwargs.ref_width, i)?;
+            let ref_height = params.required_f64("ref_height", kwargs.ref_height, i)?;
+            // Per-row dimensions cannot be validated once per batch, so the
+            // divide-by-zero guard moves into the loop and names the row.
+            if ref_width == 0.0 || ref_height == 0.0 {
+                polars_bail!(ComputeError:
+                    "ref_width and ref_height must be non-zero (row {})", i
+                );
+            }
             let (x, y) = parse_point(&value)?;
             x_results.push(Some(x / ref_width));
             y_results.push(Some(y / ref_height));
@@ -170,12 +178,7 @@ fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 /// Convert normalized coordinates to absolute pixel coordinates.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let ref_width = kwargs
-        .ref_width
-        .ok_or_else(|| polars_err!(ComputeError: "ref_width is required"))?;
-    let ref_height = kwargs
-        .ref_height
-        .ok_or_else(|| polars_err!(ComputeError: "ref_height is required"))?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots);
 
     let series = &inputs[0];
     let len = series.len();
@@ -188,6 +191,8 @@ fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
             x_results.push(None);
             y_results.push(None);
         } else {
+            let ref_width = params.required_f64("ref_width", kwargs.ref_width, i)?;
+            let ref_height = params.required_f64("ref_height", kwargs.ref_height, i)?;
             let (x, y) = parse_point(&value)?;
             x_results.push(Some(x * ref_width));
             y_results.push(Some(y * ref_height));
@@ -200,8 +205,7 @@ fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
 /// Translate point by offset.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let dx = kwargs.dx.unwrap_or(0.0);
-    let dy = kwargs.dy.unwrap_or(0.0);
+    let params = GeomParams::new(inputs, &kwargs.input_slots);
 
     let series = &inputs[0];
     let len = series.len();
@@ -214,6 +218,8 @@ fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
             x_results.push(None);
             y_results.push(None);
         } else {
+            let dx = params.f64("dx", kwargs.dx, 0.0, i)?;
+            let dy = params.f64("dy", kwargs.dy, 0.0, i)?;
             let (x, y) = parse_point(&value)?;
             x_results.push(Some(x + dx));
             y_results.push(Some(y + dy));
@@ -226,8 +232,7 @@ fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 /// Scale point coordinates.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_scale(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let sx = kwargs.sx.unwrap_or(1.0);
-    let sy = kwargs.sy.unwrap_or(1.0);
+    let params = GeomParams::new(inputs, &kwargs.input_slots);
 
     let series = &inputs[0];
     let len = series.len();
@@ -240,6 +245,8 @@ fn point_scale(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
             x_results.push(None);
             y_results.push(None);
         } else {
+            let sx = params.f64("sx", kwargs.sx, 1.0, i)?;
+            let sy = params.f64("sy", kwargs.sy, 1.0, i)?;
             let (x, y) = parse_point(&value)?;
             x_results.push(Some(x * sx));
             y_results.push(Some(y * sy));
@@ -448,17 +455,16 @@ fn point_angle_to(inputs: &[Series]) -> PolarsResult<Series> {
 /// Rotate point around origin by angle (radians).
 #[polars_expr(output_type_func=point_output_type)]
 fn point_rotate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let angle = kwargs.angle.unwrap_or(0.0);
-    let cos_a = angle.cos();
-    let sin_a = angle.sin();
+    let params = GeomParams::new(inputs, &kwargs.input_slots);
 
     let point_series = &inputs[0];
     let len = point_series.len();
     let mut x_results = Vec::with_capacity(len);
     let mut y_results = Vec::with_capacity(len);
 
-    // Check if an origin point is provided
-    let has_origin = inputs.len() > 1;
+    // Looked up by name: `origin` is optional, so its position is not fixed
+    // once a per-row `angle` can also occupy an input slot.
+    let origin_series = params.slot("origin").map(|idx| &inputs[idx]);
 
     for i in 0..len {
         let point_value = point_series.get(i)?;
@@ -467,18 +473,24 @@ fn point_rotate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> 
             x_results.push(None);
             y_results.push(None);
         } else {
+            // The angle may vary per row, so the trig moves into the loop.
+            let angle = params.f64("angle", kwargs.angle, 0.0, i)?;
+            let cos_a = angle.cos();
+            let sin_a = angle.sin();
+
             let (x, y) = parse_point(&point_value)?;
 
             // Get origin (default to 0,0)
-            let (ox, oy) = if has_origin {
-                let origin_value = inputs[1].get(i)?;
-                if origin_value.is_null() {
-                    (0.0, 0.0)
-                } else {
-                    parse_point(&origin_value)?
+            let (ox, oy) = match origin_series {
+                Some(col) => {
+                    let origin_value = col.get(i)?;
+                    if origin_value.is_null() {
+                        (0.0, 0.0)
+                    } else {
+                        parse_point(&origin_value)?
+                    }
                 }
-            } else {
-                (0.0, 0.0)
+                None => (0.0, 0.0),
             };
 
             // Rotate around origin
@@ -525,7 +537,7 @@ fn point_midpoint(inputs: &[Series]) -> PolarsResult<Series> {
 /// Linear interpolation between two points.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_interpolate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let t = kwargs.t.unwrap_or(0.5);
+    let params = GeomParams::new(inputs, &kwargs.input_slots);
 
     let series_a = &inputs[0];
     let series_b = &inputs[1];
@@ -541,6 +553,7 @@ fn point_interpolate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
             x_results.push(None);
             y_results.push(None);
         } else {
+            let t = params.f64("t", kwargs.t, 0.5, i)?;
             let (x1, y1) = parse_point(&value_a)?;
             let (x2, y2) = parse_point(&value_b)?;
             x_results.push(Some(x1 + t * (x2 - x1)));

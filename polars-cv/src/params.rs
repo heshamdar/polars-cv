@@ -138,15 +138,55 @@ impl ParamValue {
         self.resolve_f64(row_idx, ctx).map(|v| v as f32)
     }
 
-    /// Resolve this parameter to a concrete string value.
+    /// Resolve this parameter to a literal string.
+    ///
+    /// Deliberately literal-only: this is the accessor for **structural**
+    /// string parameters — `cast(dtype)`, `normalize(method/out_dtype)`,
+    /// `histogram(output)` — which feed dtype inference and so must be fixed
+    /// at planning time. Non-structural enums resolve through
+    /// [`resolve_str`](Self::resolve_str) instead.
     pub fn resolve_string(&self) -> PolarsResult<&str> {
         match self {
             ParamValue::Literal { value } => value.as_str().ok_or_else(
                 || polars_err!(ComputeError: "Expected string literal, got {:?}", value),
             ),
             ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => {
-                Err(polars_err!(ComputeError: "String parameters cannot be expressions"))
+                Err(polars_err!(ComputeError:
+                    "This string parameter is structural (it fixes the output \
+                     dtype at planning time) and cannot be an expression"))
             }
+        }
+    }
+
+    /// Resolve this parameter to a string, per row when it is bound to a column.
+    ///
+    /// For enum parameters with no shape or dtype effect, where a per-row value
+    /// is meaningful. Returns `None` under a plan-time probe context, telling
+    /// the caller to use its default (see [`ParamCtx::probe`]).
+    pub fn resolve_str<'a>(
+        &'a self,
+        row_idx: usize,
+        ctx: &ParamCtx<'a>,
+    ) -> PolarsResult<Option<&'a str>> {
+        match self {
+            ParamValue::Literal { value } => value.as_str().map(Some).ok_or_else(
+                || polars_err!(ComputeError: "Expected string literal, got {:?}", value),
+            ),
+            _ if ctx.is_probe() => Ok(None),
+            _ => self.slot_col(ctx)?.get_str(row_idx).map(Some),
+        }
+    }
+
+    /// Resolve this parameter to a boolean, per row when bound to a column.
+    ///
+    /// Returns `None` under a plan-time probe context, as [`resolve_str`] does.
+    pub fn resolve_bool(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<Option<bool>> {
+        match self {
+            ParamValue::Literal { value } => value.as_bool().map(Some).ok_or_else(
+                || polars_err!(ComputeError: "Expected boolean literal, got {:?}", value),
+            ),
+            _ if ctx.is_probe() => Ok(None),
+            _ => self.slot_col(ctx)?.get_bool(row_idx).map(Some),
         }
     }
 
@@ -191,6 +231,49 @@ impl ParamValue {
         }
     }
 
+    /// Borrow the elements of a per-element parameter list.
+    ///
+    /// Handles both forms transparently: the compiled `List` is borrowed with
+    /// no allocation (the per-row hot path), while the un-compiled `Literal`
+    /// JSON-array form used by the introspection path is parsed into
+    /// `owned`, which the caller supplies as scratch storage.
+    pub fn param_elements<'p>(
+        &'p self,
+        owned: &'p mut Option<Vec<ParamValue>>,
+    ) -> PolarsResult<&'p [ParamValue]> {
+        match self.as_param_slice() {
+            Some(slice) => Ok(slice),
+            None => Ok(owned.insert(self.as_param_list()?)),
+        }
+    }
+
+    /// Resolve a per-element parameter list to `f32`s at `row_idx`.
+    ///
+    /// The list *length* stays structural — it fixes a kernel size or channel
+    /// count at planning time — while each element may be a per-row
+    /// expression, the same encoding `reshape` and `warp_affine` use.
+    pub fn resolve_f32_list(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<Vec<f32>> {
+        let mut owned = None;
+        self.param_elements(&mut owned)?
+            .iter()
+            .map(|p| p.resolve_f32(row_idx, ctx))
+            .collect()
+    }
+
+    /// Resolve a per-element parameter list to `usize`s at `row_idx`.
+    ///
+    /// For value-carrying lists such as `channel_swap`'s permutation, where the
+    /// element *count* is structural but the values are not. Axis lists, which
+    /// reorder dimensions and therefore change the output rank, must keep using
+    /// [`as_int_list`](Self::as_int_list).
+    pub fn resolve_usize_list(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<Vec<usize>> {
+        let mut owned = None;
+        self.param_elements(&mut owned)?
+            .iter()
+            .map(|p| p.resolve_usize(row_idx, ctx))
+            .collect()
+    }
+
     /// Get literal value as a list of integers (for transpose, flip axes).
     pub fn as_int_list(&self) -> PolarsResult<Vec<usize>> {
         match self {
@@ -216,19 +299,6 @@ impl ParamValue {
             ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => {
                 Err(polars_err!(ComputeError: "Axes parameters cannot be expressions"))
             }
-        }
-    }
-
-    /// Get literal value as a Vec<f32> (for normalize preset mean/std).
-    pub fn as_f32_vec(&self) -> Option<Vec<f32>> {
-        match self {
-            ParamValue::Literal { value } => {
-                let arr = value.as_array()?;
-                arr.iter()
-                    .map(|v| v.as_f64().map(|f| f as f32))
-                    .collect::<Option<Vec<f32>>>()
-            }
-            ParamValue::Expr { .. } | ParamValue::Slot { .. } | ParamValue::List(_) => None,
         }
     }
 
@@ -264,6 +334,10 @@ enum TypedCol<'a> {
     I64(&'a Int64Chunked),
     F32(&'a Float32Chunked),
     F64(&'a Float64Chunked),
+    /// String columns backing per-row enum parameters (`filter`, `mode`, …).
+    Str(&'a StringChunked),
+    /// Boolean columns backing per-row flag parameters.
+    Bool(&'a BooleanChunked),
     /// Non-primitive columns (structs, lists, …): fall back to `AnyValue`.
     Other(&'a Series),
 }
@@ -291,6 +365,8 @@ impl<'a> ParamCol<'a> {
             DataType::Int64 => TypedCol::I64(series.i64().unwrap()),
             DataType::Float32 => TypedCol::F32(series.f32().unwrap()),
             DataType::Float64 => TypedCol::F64(series.f64().unwrap()),
+            DataType::String => TypedCol::Str(series.str().unwrap()),
+            DataType::Boolean => TypedCol::Bool(series.bool().unwrap()),
             _ => TypedCol::Other(series),
         };
         ParamCol {
@@ -350,6 +426,8 @@ impl<'a> ParamCol<'a> {
                 Some(v) => Some(float_to_i64(v).ok_or_else(|| self.cast_err(row_idx, "i64"))?),
                 None => None,
             },
+            TypedCol::Bool(ca) => ca.get(idx).map(i64::from),
+            TypedCol::Str(_) => return Err(self.cast_err(row_idx, "i64")),
             TypedCol::Other(s) => return s.get(idx)?.try_extract::<i64>(),
         };
         value.ok_or_else(|| self.null_err(row_idx))
@@ -369,9 +447,41 @@ impl<'a> ParamCol<'a> {
             TypedCol::I64(ca) => ca.get(idx).map(|v| v as f64),
             TypedCol::F32(ca) => ca.get(idx).map(f64::from),
             TypedCol::F64(ca) => ca.get(idx),
+            TypedCol::Bool(ca) => ca.get(idx).map(f64::from),
+            TypedCol::Str(_) => return Err(self.cast_err(row_idx, "f64")),
             TypedCol::Other(s) => return s.get(idx)?.try_extract::<f64>(),
         };
         value.ok_or_else(|| self.null_err(row_idx))
+    }
+
+    /// Read the value at `row_idx` as a string, for per-row enum parameters.
+    ///
+    /// Only a genuine string column is accepted: a numeric column here means
+    /// the user routed the wrong expression to an enum parameter, which must
+    /// be an error rather than a silent fallback to the default.
+    pub fn get_str(&self, row_idx: usize) -> PolarsResult<&'a str> {
+        let idx = self.value_index(row_idx);
+        match &self.typed {
+            TypedCol::Str(ca) => ca.get(idx).ok_or_else(|| self.null_err(row_idx)),
+            _ => Err(polars_err!(ComputeError:
+                "Parameter column '{}' must be a String column for an enum \
+                 parameter, got {}",
+                self.series.name(), self.series.dtype()
+            )),
+        }
+    }
+
+    /// Read the value at `row_idx` as a boolean, for per-row flag parameters.
+    pub fn get_bool(&self, row_idx: usize) -> PolarsResult<bool> {
+        let idx = self.value_index(row_idx);
+        match &self.typed {
+            TypedCol::Bool(ca) => ca.get(idx).ok_or_else(|| self.null_err(row_idx)),
+            _ => Err(polars_err!(ComputeError:
+                "Parameter column '{}' must be a Boolean column for a flag \
+                 parameter, got {}",
+                self.series.name(), self.series.dtype()
+            )),
+        }
     }
 
     /// Read the value at `row_idx` as an `AnyValue` (for non-numeric
@@ -397,6 +507,7 @@ fn float_to_i64(v: f64) -> Option<i64> {
 #[derive(Default)]
 pub struct ParamCtx<'a> {
     cols: Vec<ParamCol<'a>>,
+    probe: bool,
 }
 
 impl<'a> ParamCtx<'a> {
@@ -407,7 +518,34 @@ impl<'a> ParamCtx<'a> {
     pub fn from_inputs(inputs: &'a [Series]) -> Self {
         ParamCtx {
             cols: inputs.iter().map(ParamCol::new).collect(),
+            probe: false,
         }
+    }
+
+    /// Build a *plan-time probe* context (see `lib.rs::op_infer_shape`).
+    ///
+    /// Shape probing binds every expression parameter to an integer
+    /// placeholder so it can detect which output dimensions depend on a
+    /// per-row value. A dynamic enum or flag parameter cannot consume an
+    /// integer, so accessors ask [`is_probe`](Self::is_probe) and substitute
+    /// the parameter's documented default instead.
+    ///
+    /// That substitution is sound only because a parameter may become per-row
+    /// exclusively when it has **no effect on output shape, rank, or dtype**
+    /// (see `get::req_enum`), so which variant probing picks cannot change the
+    /// inferred schema. Signalling this explicitly — rather than inferring it
+    /// from the placeholder's dtype — keeps real execution strict: a user who
+    /// routes an integer column into an enum parameter still gets an error.
+    pub fn probe(inputs: &'a [Series]) -> Self {
+        ParamCtx {
+            cols: inputs.iter().map(ParamCol::new).collect(),
+            probe: true,
+        }
+    }
+
+    /// Whether this is a plan-time shape probe rather than real execution.
+    pub fn is_probe(&self) -> bool {
+        self.probe
     }
 
     /// An empty context, for resolving all-literal op specs.
@@ -589,7 +727,67 @@ pub mod get {
     /// Required enum-valued parameter, parsed against a canonical
     /// `NAMED`-style table (plus parser-only aliases). Unknown values error
     /// with the canonical names listed.
+    /// Required enum-valued parameter, resolved per row.
+    ///
+    /// `default` is used when the parameter is bound to a column under a
+    /// plan-time probe context, where no real value exists yet. Only pass a
+    /// parameter through here when its value has **no effect on output shape,
+    /// rank, or dtype** — that invariant is what makes probing with the
+    /// default sound (see [`ParamCtx::probe`]). Structural string parameters
+    /// must keep using [`ParamValue::resolve_string`], which rejects
+    /// expressions outright.
     pub fn req_enum<T: Copy>(
+        params: &Params,
+        name: &str,
+        canonical: &[(&str, T)],
+        aliases: &[(&str, T)],
+        default: T,
+        row_idx: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<T> {
+        let param = params
+            .get(name)
+            .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: {}", name))?;
+        let Some(s) = param
+            .resolve_str(row_idx, ctx)
+            .map_err(|e| named(name, e))?
+        else {
+            return Ok(default);
+        };
+        view_buffer::naming::lookup(canonical, s)
+            .or_else(|| view_buffer::naming::lookup(aliases, s))
+            .ok_or_else(|| {
+                polars_err!(ComputeError:
+                    "parameter '{}': unknown value '{}', expected one of {:?}",
+                    name, s, view_buffer::naming::names(canonical)
+                )
+            })
+    }
+
+    /// Optional enum-valued parameter with a default for absence.
+    pub fn opt_enum<T: Copy>(
+        params: &Params,
+        name: &str,
+        canonical: &[(&str, T)],
+        aliases: &[(&str, T)],
+        default: T,
+        row_idx: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<T> {
+        if params.contains_key(name) {
+            req_enum(params, name, canonical, aliases, default, row_idx, ctx)
+        } else {
+            Ok(default)
+        }
+    }
+
+    /// Required enum-valued parameter that must be a literal.
+    ///
+    /// For enums that *are* structural — they feed dtype inference or fix the
+    /// output length — so a per-row value would desync the lazy schema from
+    /// the produced data. Rejects a bound expression slot as defense in depth,
+    /// mirroring `opt_u32_literal` / `maybe_usize_literal` for numbers.
+    pub fn req_enum_literal<T: Copy>(
         params: &Params,
         name: &str,
         canonical: &[(&str, T)],
@@ -609,8 +807,8 @@ pub mod get {
             })
     }
 
-    /// Optional enum-valued parameter with a default for absence.
-    pub fn opt_enum<T: Copy>(
+    /// Optional literal-only enum parameter with a default for absence.
+    pub fn opt_enum_literal<T: Copy>(
         params: &Params,
         name: &str,
         canonical: &[(&str, T)],
@@ -618,9 +816,31 @@ pub mod get {
         default: T,
     ) -> PolarsResult<T> {
         if params.contains_key(name) {
-            req_enum(params, name, canonical, aliases)
+            req_enum_literal(params, name, canonical, aliases)
         } else {
             Ok(default)
+        }
+    }
+
+    /// Optional boolean parameter, resolved per row.
+    ///
+    /// The per-row counterpart of [`opt_bool`], for flags with no shape or
+    /// dtype effect (`apply_mask(invert)`, `rasterize(anti_alias)`). Flags that
+    /// *do* change the output shape — `rotate(expand)` — must keep using
+    /// [`opt_bool`], which is literal-only.
+    pub fn opt_bool_dyn(
+        params: &Params,
+        name: &str,
+        default: bool,
+        row_idx: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<bool> {
+        match params.get(name) {
+            None => Ok(default),
+            Some(p) => Ok(p
+                .resolve_bool(row_idx, ctx)
+                .map_err(|e| named(name, e))?
+                .unwrap_or(default)),
         }
     }
 }

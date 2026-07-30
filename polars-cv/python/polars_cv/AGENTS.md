@@ -146,9 +146,59 @@ pipe.resize(height=224, width=pl.col("target_w"))
 
 `ParamValue` wraps this distinction. Expression params are tracked in `_expr_columns` and passed to Rust as additional input columns.
 
-**Dynamic parameter coverage:** Most numeric parameters accept `IntOrExpr` / `FloatOrExpr`. This includes: resize dimensions, crop offsets, pad values, rotate angle and `border_value`, warp_affine `border_value`, blur sigma, threshold value, canny thresholds, contrast/gamma/brightness factors, morphology ksize/iterations, channel_select index, convolve2d ksize, warp_affine output_size, rasterize fill_value/background, histogram `range_min`/`range_max`, extract_contours `min_area`, reduce_percentile q, reduce_std ddof. Fill/range params go through `_track_expr` just like their analogues (`pad(value)`, `histogram(bins)`).
+**The rule:** a parameter may be per-row **iff it has no effect on output shape,
+rank, or dtype**. Everything else follows from that one invariant.
 
-**Structural parameters are literal-only and enforced on both sides.** Matrix, kernel, axis lists, enum tags, reduction `axis`, and `perceptual_hash(hash_size)` fix the plan-time schema (rank/length), so they must be literals. A literal `ParamValue` can never hold a `pl.Expr` — `ParamValue.__post_init__` (`_types.py`) rejects it with a clear "structural" error, and the Rust resolvers (`params::get::maybe_usize_literal` / `opt_u32_literal`) reject a bound expression slot as defense-in-depth. Guarded by `TestStructuralParamsRejectExpressions` / `TestFillRangeParamsAcceptExpressions` in `test_param_strictness.py` and `test_structural_literal_resolvers_reject_bound_slots` in `params.rs`.
+**Dynamic parameter coverage.** Three kinds of parameter are expression-capable:
+
+1. *Scalars* (`IntOrExpr` / `FloatOrExpr`), via `_track_expr`: resize dimensions,
+   crop offsets, pad amounts and values, rotate angle and `border_value`,
+   warp_affine `output_size`/`border_value`, blur sigma, threshold value, canny
+   thresholds, contrast/gamma/brightness/sharpen factors, morphology
+   ksize/iterations, channel_select index, convolve2d ksize, rasterize and
+   contour-source `width`/`height`/`fill_value`/`background`, histogram
+   `range_min`/`range_max`, extract_contours `min_area`, reduce_percentile q,
+   reduce_std ddof.
+2. *Per-element lists*, via `_param_list` — the list **length** stays structural
+   while each element may be an expression: warp_affine `matrix`, `reshape`
+   shape, convolve2d `kernel` (which is what makes `sharpen(strength)` dynamic),
+   normalize `mean`/`std`, channel_swap `order`. Rust reads these with
+   `resolve_f32_list` / `resolve_usize_list`.
+3. *Non-structural enums and flags*, via `_enum_param` and `get::opt_bool_dyn`:
+   resize/letterbox `filter`, rotate/warp_affine `interpolation`, `pad(mode)`,
+   `pad_to_size(position)`, `convolve2d(border)`, extract_contours
+   `mode`/`method`, label_reduce `reduction`/`region_mode`,
+   `apply_mask(invert)`, `contour.area(signed)`, `rasterize(anti_alias)`.
+
+**Plan-time probing is why enums need care.** `op_infer_shape` (`lib.rs`) runs
+each op four times with every expression param bound to an *integer* probe. A
+dynamic enum cannot read an integer, so `ParamCtx::probe` marks the context and
+the enum/bool accessors substitute their default. That is sound only because of
+the rule above — the variant probing picks cannot change the inferred schema.
+Signalling it explicitly (rather than sniffing the column's dtype) keeps real
+execution strict: routing an integer column into an enum param still errors.
+
+**Structural parameters are literal-only and enforced on both sides.** Axis
+lists, reduction `axis`, `perceptual_hash(hash_size)`, `reshape` arity,
+`rotate(expand)`, and the dtype-bearing enums `cast(dtype)`,
+`normalize(method`/`out_dtype)`, `histogram(closed`/`output)` fix the plan-time
+schema, so they must be literals. A literal `ParamValue` can never hold a
+`pl.Expr` — `ParamValue.__post_init__` (`_types.py`) rejects it with a clear
+"structural" error, and the Rust resolvers (`params::get::maybe_usize_literal` /
+`opt_u32_literal` / `req_enum_literal`, and `ParamValue::resolve_string`) reject
+a bound expression slot as defense-in-depth. Guarded by
+`TestStructuralParamsRejectExpressions` / `TestFillRangeParamsAcceptExpressions`
+in `test_param_strictness.py` and `test_structural_literal_resolvers_reject_bound_slots`
+in `params.rs`.
+
+**The geometry namespaces use a different mechanism.** `.contour`/`.point`/`.bbox`
+bypass `vb_graph`, so they have no `ParamValue`. Their per-row channel is the
+plugin's *input series*: `_ArgBinder` (`_namespace.py`) appends an
+expression-valued parameter as an extra argument and records it in an
+`input_slots` name→index map, which Rust reads via `GeomParams`
+(`src/geom_params.rs`). Names, not positions, because these functions also take
+*optional* data operands (`scores`, `origin`) whose position would otherwise be
+ambiguous.
 
 ## Adding a New Operation (Python Side)
 

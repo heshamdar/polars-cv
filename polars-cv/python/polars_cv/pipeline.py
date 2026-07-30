@@ -16,15 +16,18 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._types import (
+    ApproxMethod,
     BorderMode,
     CloudOptions,
     ColorSpace,
     DType,
+    ExtractMode,
     FilterType,
     FloatOrExpr,
     HashAlgorithm,
     HistogramClosed,
     HistogramOutput,
+    InterpolationType,
     IntOrExpr,
     LabelReduction,
     LabelRegionMode,
@@ -41,17 +44,27 @@ from polars_cv._types import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from polars_cv._graph import PipelineGraph
     from polars_cv.lazy import LazyPipelineExpr
 
 
 def _rotation_matrix(
-    angle_deg: float, center: tuple[float, float], scale: float
-) -> list[float]:
+    angle_deg: FloatOrExpr,
+    center: tuple[FloatOrExpr, FloatOrExpr],
+    scale: FloatOrExpr,
+) -> list[FloatOrExpr]:
     """Build a 2x3 forward-mapping rotation+scale matrix around *center*.
 
     Matches OpenCV's ``getRotationMatrix2D(center, -angle_deg, scale)``
     convention where positive *angle_deg* = clockwise in image coordinates.
+
+    Any argument may be a Polars expression. Only the trigonometry needs to
+    know the difference — the remaining arithmetic is written with plain
+    operators, which compose identically for floats and for ``pl.Expr``. With
+    all-literal inputs every element comes back a plain float, which is what
+    keeps plan-time affine fusion (``_literal_matrix_values``) working.
 
     Args:
         angle_deg: Rotation angle in degrees (positive = clockwise).
@@ -61,11 +74,14 @@ def _rotation_matrix(
     Returns:
         Six-element list ``[a, b, tx, c, d, ty]`` (forward mapping).
     """
-    import math
-
-    rad = math.radians(angle_deg)
-    cos_a = math.cos(rad) * scale
-    sin_a = math.sin(rad) * scale
+    if isinstance(angle_deg, pl.Expr):
+        rad = angle_deg.radians()
+        cos_a = rad.cos() * scale
+        sin_a = rad.sin() * scale
+    else:
+        rad = math.radians(angle_deg)
+        cos_a = math.cos(rad) * scale
+        sin_a = math.sin(rad) * scale
     cx, cy = center
     tx = (1 - cos_a) * cx + sin_a * cy
     ty = -sin_a * cx + (1 - cos_a) * cy
@@ -82,6 +98,27 @@ def _matrix_param_from_floats(values: "list[float]") -> "ParamValue":
     return ParamValue(
         is_expr=False,
         value=[{"type": "literal", "value": float(v)} for v in values],
+    )
+
+
+def _param_list(
+    values: "Sequence[Any]",
+    track: "Callable[[Any], ParamValue]",
+) -> "ParamValue":
+    """Serialize a fixed-length parameter list element by element.
+
+    Each element becomes its own ``ParamValue`` dict, so any of them may be a
+    per-row expression while the list *length* stays structural — it fixes the
+    kernel size, channel count, or target rank at planning time. This is the
+    encoding ``reshape`` and ``warp_affine`` already use; Rust reads it back
+    with ``resolve_f32_list`` / ``resolve_usize_list``.
+
+    ``track`` is the owning pipeline's ``_track_expr``, so expression elements
+    are registered as plugin inputs.
+    """
+    return ParamValue(
+        is_expr=False,
+        value=[track(v).to_dict() for v in values],
     )
 
 
@@ -103,18 +140,75 @@ def _literal_matrix_values(matrix_param: "ParamValue") -> "list[float] | None":
     return out
 
 
-def _validate_enum(value: str, enum_cls: type, label: str):
-    """Validate a string against a user-facing enum with a uniform error.
+def _reject_expr(value: Any, what: str) -> None:
+    """Reject a Polars expression for a structural parameter.
 
-    The single validation shape for every enum-valued builder parameter:
-    ``Invalid <label> '<value>'. Valid: [...]``.
+    Structural parameters fix the output shape, rank, or dtype at planning
+    time, so an expression there would desync the lazy schema from the produced
+    data. Without this guard the expression fails much later and opaquely —
+    inside ``bool()`` ("the truth value of an Expr is ambiguous") or at JSON
+    serialization — instead of naming the real problem. Mirrors the message
+    ``ParamValue.__post_init__`` raises for scalar structural params.
     """
+    if isinstance(value, pl.Expr):
+        msg = (
+            f"{what} is structural (it fixes the output shape/rank/dtype at "
+            "planning time) and must be a literal, not a Polars expression."
+        )
+        raise TypeError(msg)
+
+
+def _literal_axes(axes: "Sequence[int]", label: str) -> "ParamValue":
+    """Build an axis-list parameter, rejecting expressions element-wise.
+
+    Axis lists reorder or select dimensions, so they fix the output rank at
+    planning time — unlike value-carrying lists (``convolve2d``'s kernel, a
+    ``normalize`` mean/std pair), whose elements may be per-row.
+    """
+    for axis in axes:
+        _reject_expr(axis, f"'{label}'")
+    return ParamValue(is_expr=False, value=list(axes))
+
+
+def _validate_enum(value: str, enum_cls: type, label: str):
+    """Validate a *literal* string against a user-facing enum.
+
+    The single validation shape for every literal enum-valued builder
+    parameter: ``Invalid <label> '<value>'. Valid: [...]``. Enums that may vary
+    per row go through :func:`_enum_param` instead, so reaching here with an
+    expression means the parameter is structural.
+    """
+    _reject_expr(value, f"'{label}'")
     try:
         return enum_cls(value)
     except ValueError as e:
         valid = [v.value for v in enum_cls]
         msg = f"Invalid {label} '{value}'. Valid: {valid}"
         raise ValueError(msg) from e
+
+
+def _enum_param(
+    value: "str | pl.Expr",
+    enum_cls: type,
+    label: str,
+    track: "Callable[[Any], ParamValue]",
+) -> "ParamValue":
+    """Build an enum-valued parameter that may vary per row.
+
+    A literal is validated eagerly against *enum_cls*, exactly as
+    :func:`_validate_enum` does. An expression cannot be checked at build time,
+    so validation moves to execution, where Rust rejects an unknown value with
+    the same "expected one of [...]" error.
+
+    Only use this for enums with **no effect on output shape, rank or dtype** —
+    the invariant that lets plan-time shape probing substitute the default (see
+    ``ParamCtx::probe`` in ``params.rs``). Structural enums (``cast(dtype)``,
+    ``normalize(method)``, ``histogram(output)``) must stay on
+    :func:`_validate_enum` plus a literal ``ParamValue``.
+    """
+    if isinstance(value, pl.Expr):
+        return track(value)
+    return ParamValue(is_expr=False, value=_validate_enum(value, enum_cls, label).value)
 
 
 class Pipeline:
@@ -125,8 +219,17 @@ class Pipeline:
     expression using the `.cv.pipe()` accessor. The pipeline is executed when
     `.sink()` is called on the resulting expression.
 
-    All operations accept either literal values or Polars expressions.
-    Expressions are resolved at execution time per row.
+    Parameters that carry a *value* — sizes, offsets, factors, thresholds, fill
+    values, kernel coefficients, and non-structural enums such as ``filter`` or
+    ``interpolation`` — accept either a literal or a Polars expression, resolved
+    per row at execution time.
+
+    Parameters that fix the output **shape, rank, or dtype** at planning time
+    are literal-only, so the lazy schema cannot desync from the produced data:
+    reduction ``axis``, ``perceptual_hash(hash_size)``, ``reshape``/``transpose``
+    /``flip`` axis lists, ``rotate(expand)``, ``cast(dtype)``,
+    ``normalize(method``/``out_dtype)`` and ``histogram(closed``/``output)``.
+    Passing an expression to one of those raises ``TypeError`` at build time.
 
     Example:
         ```python
@@ -624,8 +727,8 @@ class Pipeline:
         width: IntOrExpr | None = None,
         height: IntOrExpr | None = None,
         shape: "LazyPipelineExpr | None" = None,
-        fill_value: int = 255,
-        background: int = 0,
+        fill_value: IntOrExpr = 255,
+        background: IntOrExpr = 0,
         # Cloud storage options for file_path sources
         cloud_options: "CloudOptions | dict[str, Any] | None" = None,
         # Contiguity option for list/array sources
@@ -680,8 +783,11 @@ class Pipeline:
             width: Output mask width for "contour" format.
             height: Output mask height for "contour" format.
             shape: Infer dimensions from another pipeline for "contour" format.
-            fill_value: Value for pixels inside contour (default 255).
-            background: Value for pixels outside contour (default 0).
+            fill_value: Value for pixels inside contour (default 255). Accepts
+                a Polars expression for per-row dynamic values, matching the
+                identical parameter on :meth:`rasterize`.
+            background: Value for pixels outside contour (default 0). Accepts
+                a Polars expression for per-row dynamic values.
             cloud_options: Credentials for cloud storage (S3, GCS, Azure).
             require_contiguous: For "list"/"array", whether to require rectangular data.
             on_error: Error handling strategy for source decoding.
@@ -802,8 +908,8 @@ class Pipeline:
                 dtype=dtype_enum,
                 width=width_param,
                 height=height_param,
-                fill_value=fill_value,
-                background=background,
+                fill_value=new._track_expr(fill_value),
+                background=new._track_expr(background),
                 shape_pipeline=shape_pipeline_dict,
                 on_error=on_error,
             )
@@ -1013,7 +1119,7 @@ class Pipeline:
         new._ops.append(
             OpSpec(
                 op="transpose",
-                params={"axes": ParamValue(is_expr=False, value=axes)},
+                params={"axes": _literal_axes(axes, "axes")},
             )
         )
         new._update_output_dtype("transpose")
@@ -1061,7 +1167,7 @@ class Pipeline:
         new._ops.append(
             OpSpec(
                 op="flip",
-                params={"axes": ParamValue(is_expr=False, value=axes)},
+                params={"axes": _literal_axes(axes, "axes")},
             )
         )
         new._update_output_dtype("flip")
@@ -1227,8 +1333,8 @@ class Pipeline:
     def normalize(
         self,
         method: str = "minmax",
-        mean: list[float] | None = None,
-        std: list[float] | None = None,
+        mean: list[FloatOrExpr] | None = None,
+        std: list[FloatOrExpr] | None = None,
         out_dtype: str | None = None,
     ) -> "Pipeline":
         """
@@ -1244,10 +1350,14 @@ class Pipeline:
                   using provided ``mean`` and ``std`` values. Each channel is
                   normalized as ``(x - mean[c]) / std[c]``.
             mean: Per-channel mean values. Required when ``method="preset"``.
-                Common preset: ``[0.485, 0.456, 0.406]`` (ImageNet).
+                Common preset: ``[0.485, 0.456, 0.406]`` (ImageNet). **Each
+                element may be a literal float or a Polars expression**, so
+                per-row statistics can be joined in as columns; the list
+                *length* is the channel count and must be literal.
             std: Per-channel standard deviation values. Required when
                 ``method="preset"``. Common preset: ``[0.229, 0.224, 0.225]``
-                (ImageNet).
+                (ImageNet). Each element accepts an expression, as with
+                ``mean``.
             out_dtype: Output dtype (default f32). Normalization always computes
                 in f32; the result is then cast to this dtype at execution, so
                 the produced dtype always matches the planned dtype. Accepts
@@ -1284,8 +1394,8 @@ class Pipeline:
             if len(mean) != len(std):
                 msg = f"mean length ({len(mean)}) must match std length ({len(std)})"
                 raise ValueError(msg)
-            params["mean"] = ParamValue(is_expr=False, value=mean)
-            params["std"] = ParamValue(is_expr=False, value=std)
+            params["mean"] = _param_list(mean, new._track_expr)
+            params["std"] = _param_list(std, new._track_expr)
         elif mean is not None or std is not None:
             msg = "mean/std parameters are only valid for method='preset'"
             raise ValueError(msg)
@@ -1421,7 +1531,7 @@ class Pipeline:
         new._update_output_dtype("channel_select")
         return new
 
-    def channel_swap(self, *, order: list[int]) -> "Pipeline":
+    def channel_swap(self, *, order: list[IntOrExpr]) -> "Pipeline":
         """
         Reorder channels in a multi-channel image.
 
@@ -1429,6 +1539,9 @@ class Pipeline:
 
         Args:
             order: New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR.
+                **Each index may be a literal or a Polars expression**, so the
+                permutation can vary per row. The list *length* is the channel
+                count and must be literal.
 
         Returns:
             Self for chaining.
@@ -1443,7 +1556,7 @@ class Pipeline:
         new._ops.append(
             OpSpec(
                 op="channel_swap",
-                params={"order": ParamValue(is_expr=False, value=order)},
+                params={"order": _param_list(order, new._track_expr)},
             )
         )
         new._update_output_dtype("channel_swap")
@@ -1644,11 +1757,11 @@ class Pipeline:
 
     def convolve2d(
         self,
-        kernel: list[float],
+        kernel: list[FloatOrExpr],
         ksize: IntOrExpr,
         *,
         normalize: bool = False,
-        border: str = "replicate",
+        border: str | pl.Expr = "replicate",
     ) -> "Pipeline":
         """
         Apply generic 2D convolution with an arbitrary kernel.
@@ -1657,6 +1770,10 @@ class Pipeline:
 
         Args:
             kernel: Flattened kernel values (row-major, ``ksize × ksize``).
+                **Each coefficient may be a literal float or a Polars
+                expression**, so a batch can convolve with a different kernel
+                per row. The kernel *length* is structural and must be a
+                literal odd square.
             ksize: Kernel dimension (must be odd; kernel is ``ksize × ksize``).
                 Accepts a Polars expression for per-row dynamic values.
             normalize: If True, divide output by the sum of absolute kernel values.
@@ -1674,7 +1791,19 @@ class Pipeline:
             ```
         """
         self._validate_domain(self.DOMAIN_BUFFER, "convolve2d")
-        if not isinstance(ksize, pl.Expr):
+        if isinstance(ksize, pl.Expr):
+            # `ksize` is only known per row, but the kernel *length* is
+            # structural and still checkable: it must be an odd perfect square.
+            # Previously an expression `ksize` skipped every check, letting a
+            # mismatched kernel reach Rust unvalidated.
+            side = math.isqrt(len(kernel))
+            if side * side != len(kernel) or side % 2 == 0:
+                msg = (
+                    f"convolve2d kernel length {len(kernel)} must be the square "
+                    "of an odd number (9 for 3x3, 25 for 5x5, ...)"
+                )
+                raise ValueError(msg)
+        else:
             if ksize % 2 == 0:
                 msg = f"convolve2d ksize must be odd, got {ksize}"
                 raise ValueError(msg)
@@ -1683,17 +1812,17 @@ class Pipeline:
                     f"kernel length {len(kernel)} doesn't match ksize²={ksize * ksize}"
                 )
                 raise ValueError(msg)
-        border_mode = _validate_enum(border, BorderMode, "border mode")
-
         new = self._clone()
         new._ops.append(
             OpSpec(
                 op="convolve2d",
                 params={
-                    "kernel": ParamValue(is_expr=False, value=kernel),
+                    "kernel": _param_list(kernel, new._track_expr),
                     "ksize": new._track_expr(ksize),
                     "normalize": ParamValue(is_expr=False, value=normalize),
-                    "border": ParamValue(is_expr=False, value=border_mode.value),
+                    "border": _enum_param(
+                        border, BorderMode, "border mode", new._track_expr
+                    ),
                 },
             )
         )
@@ -1757,7 +1886,7 @@ class Pipeline:
         laplacian_3 = [0.0, 1.0, 0.0, 1.0, -4.0, 1.0, 0.0, 1.0, 0.0]
         return self.convolve2d(laplacian_3, ksize, normalize=False)
 
-    def sharpen(self, *, strength: float = 1.0) -> "Pipeline":
+    def sharpen(self, *, strength: FloatOrExpr = 1.0) -> "Pipeline":
         """
         Sharpen using an unsharp-mask-style kernel.
 
@@ -1768,10 +1897,10 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            strength: Sharpening strength (default 1.0). Literal only — the
-                value is baked into the convolution kernel coefficients at
-                build time, so (like ``convolve2d``'s ``kernel``) it cannot be
-                a per-row Polars expression.
+            strength: Sharpening strength (default 1.0). Accepts a Polars
+                expression: the kernel coefficients are built from it
+                element-wise, and ``convolve2d`` resolves each coefficient per
+                row.
 
         Returns:
             Self for chaining.
@@ -1779,10 +1908,18 @@ class Pipeline:
         Example:
             ```python
             >>> sharp = Pipeline().source("image_bytes").sharpen(strength=1.5)
+            >>> # Per-row strength from a column
+            >>> sharp = Pipeline().source("image_bytes").sharpen(
+            ...     strength=pl.col("sharpness")
+            ... )
             ```
         """
         s = strength
-        k = [-s, -s, -s, -s, 1.0 + 8.0 * s, -s, -s, -s, -s]
+        # Expression arithmetic mirrors the float arithmetic, so both paths
+        # produce the same brightness-preserving kernel (sum == 1).
+        center = 1.0 + 8.0 * s
+        neg = -s
+        k = [neg, neg, neg, neg, center, neg, neg, neg, neg]
         return self.convolve2d(k, 3, normalize=False)
 
     # --- Edge Detection ---
@@ -2023,7 +2160,7 @@ class Pipeline:
         *,
         height: IntOrExpr,
         width: IntOrExpr,
-        filter: str = "lanczos3",
+        filter: str | pl.Expr = "lanczos3",
     ) -> "Pipeline":
         """
         Resize image to specified dimensions.
@@ -2038,7 +2175,6 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize")
         new = self._clone()
-        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
@@ -2046,7 +2182,9 @@ class Pipeline:
                 params={
                     "height": new._track_expr(height),
                     "width": new._track_expr(width),
-                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                    "filter": _enum_param(
+                        filter, FilterType, "filter", new._track_expr
+                    ),
                 },
             )
         )
@@ -2060,7 +2198,7 @@ class Pipeline:
         scale: FloatOrExpr | None = None,
         scale_x: FloatOrExpr | None = None,
         scale_y: FloatOrExpr | None = None,
-        filter: str = "lanczos3",
+        filter: str | pl.Expr = "lanczos3",
     ) -> "Pipeline":
         """
         Resize image by scale factor.
@@ -2111,7 +2249,6 @@ class Pipeline:
             raise ValueError(msg)
 
         new = self._clone()
-        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
@@ -2119,7 +2256,9 @@ class Pipeline:
                 params={
                     "scale_x": new._track_expr(actual_scale_x),
                     "scale_y": new._track_expr(actual_scale_y),
-                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                    "filter": _enum_param(
+                        filter, FilterType, "filter", new._track_expr
+                    ),
                 },
             )
         )
@@ -2131,7 +2270,7 @@ class Pipeline:
         self,
         height: IntOrExpr,
         *,
-        filter: str = "lanczos3",
+        filter: str | pl.Expr = "lanczos3",
     ) -> "Pipeline":
         """
         Resize image to target height, preserving aspect ratio.
@@ -2157,14 +2296,15 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize_to_height")
         new = self._clone()
-        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
                 op="resize_to_height",
                 params={
                     "height": new._track_expr(height),
-                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                    "filter": _enum_param(
+                        filter, FilterType, "filter", new._track_expr
+                    ),
                 },
             )
         )
@@ -2176,7 +2316,7 @@ class Pipeline:
         self,
         width: IntOrExpr,
         *,
-        filter: str = "lanczos3",
+        filter: str | pl.Expr = "lanczos3",
     ) -> "Pipeline":
         """
         Resize image to target width, preserving aspect ratio.
@@ -2202,14 +2342,15 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize_to_width")
         new = self._clone()
-        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
                 op="resize_to_width",
                 params={
                     "width": new._track_expr(width),
-                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                    "filter": _enum_param(
+                        filter, FilterType, "filter", new._track_expr
+                    ),
                 },
             )
         )
@@ -2221,7 +2362,7 @@ class Pipeline:
         self,
         max_size: IntOrExpr,
         *,
-        filter: str = "lanczos3",
+        filter: str | pl.Expr = "lanczos3",
     ) -> "Pipeline":
         """
         Resize image so the maximum dimension equals target, preserving aspect ratio.
@@ -2248,14 +2389,15 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize_max")
         new = self._clone()
-        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
                 op="resize_max",
                 params={
                     "max_size": new._track_expr(max_size),
-                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                    "filter": _enum_param(
+                        filter, FilterType, "filter", new._track_expr
+                    ),
                 },
             )
         )
@@ -2267,7 +2409,7 @@ class Pipeline:
         self,
         min_size: IntOrExpr,
         *,
-        filter: str = "lanczos3",
+        filter: str | pl.Expr = "lanczos3",
     ) -> "Pipeline":
         """
         Resize image so the minimum dimension equals target, preserving aspect ratio.
@@ -2294,14 +2436,15 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "resize_min")
         new = self._clone()
-        filter_enum = _validate_enum(filter, FilterType, "filter")
 
         new._ops.append(
             OpSpec(
                 op="resize_min",
                 params={
                     "min_size": new._track_expr(min_size),
-                    "filter": ParamValue(is_expr=False, value=filter_enum.value),
+                    "filter": _enum_param(
+                        filter, FilterType, "filter", new._track_expr
+                    ),
                 },
             )
         )
@@ -2319,7 +2462,7 @@ class Pipeline:
         left: IntOrExpr = 0,
         right: IntOrExpr = 0,
         value: FloatOrExpr = 0.0,
-        mode: str = "constant",
+        mode: str | pl.Expr = "constant",
     ) -> "Pipeline":
         """
         Add padding to the image.
@@ -2349,8 +2492,6 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "pad")
 
-        mode_enum = _validate_enum(mode, PadMode, "pad mode")
-
         new = self._clone()
         new._ops.append(
             OpSpec(
@@ -2361,7 +2502,7 @@ class Pipeline:
                     "left": new._track_expr(left),
                     "right": new._track_expr(right),
                     "value": new._track_expr(value),
-                    "mode": ParamValue(is_expr=False, value=mode_enum.value),
+                    "mode": _enum_param(mode, PadMode, "pad mode", new._track_expr),
                 },
             )
         )
@@ -2374,7 +2515,7 @@ class Pipeline:
         *,
         height: IntOrExpr,
         width: IntOrExpr,
-        position: str = "center",
+        position: str | pl.Expr = "center",
         value: FloatOrExpr = 0.0,
     ) -> "Pipeline":
         """
@@ -2409,8 +2550,6 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "pad_to_size")
 
-        pos_enum = _validate_enum(position, PadPosition, "position")
-
         new = self._clone()
         new._ops.append(
             OpSpec(
@@ -2418,7 +2557,9 @@ class Pipeline:
                 params={
                     "height": new._track_expr(height),
                     "width": new._track_expr(width),
-                    "position": ParamValue(is_expr=False, value=pos_enum.value),
+                    "position": _enum_param(
+                        position, PadPosition, "position", new._track_expr
+                    ),
                     "value": new._track_expr(value),
                 },
             )
@@ -2433,6 +2574,7 @@ class Pipeline:
         height: IntOrExpr,
         width: IntOrExpr,
         value: FloatOrExpr = 0.0,
+        filter: str | pl.Expr = "lanczos3",
     ) -> "Pipeline":
         """
         Resize image maintaining aspect ratio and pad to exact target size.
@@ -2444,10 +2586,12 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            height: Target height.
-            width: Target width.
+            height: Target height (literal or expression).
+            width: Target width (literal or expression).
             value: Fill value for padding (default 0, typically black). Accepts a
                 Polars expression for per-row dynamic values.
+            filter: Resampling filter for the resize step. Defaults to
+                ``"lanczos3"``, which is what letterbox has always used.
 
         Returns:
             Self for chaining.
@@ -2468,6 +2612,9 @@ class Pipeline:
                     "height": new._track_expr(height),
                     "width": new._track_expr(width),
                     "value": new._track_expr(value),
+                    "filter": _enum_param(
+                        filter, FilterType, "filter", new._track_expr
+                    ),
                 },
             )
         )
@@ -2536,7 +2683,7 @@ class Pipeline:
         angle: FloatOrExpr,
         *,
         expand: bool = False,
-        interpolation: str = "bilinear",
+        interpolation: str | pl.Expr = "bilinear",
         border_value: FloatOrExpr = 0.0,
     ) -> "Pipeline":
         """
@@ -2591,7 +2738,9 @@ class Pipeline:
         params: dict[str, ParamValue] = {
             "angle": new._track_expr(angle),
             "expand": ParamValue(is_expr=False, value=expand),
-            "interpolation": ParamValue(is_expr=False, value=interpolation),
+            "interpolation": _enum_param(
+                interpolation, InterpolationType, "interpolation", new._track_expr
+            ),
             "border_value": new._track_expr(border_value),
         }
         new._ops.append(OpSpec(op="rotate", params=params))
@@ -2606,7 +2755,7 @@ class Pipeline:
         matrix: list[FloatOrExpr],
         output_size: tuple[IntOrExpr, IntOrExpr],
         *,
-        interpolation: str = "bilinear",
+        interpolation: str | pl.Expr = "bilinear",
         border_value: FloatOrExpr = 0.0,
     ) -> "Pipeline":
         """
@@ -2676,7 +2825,12 @@ class Pipeline:
                     ),
                     "output_height": new._track_expr(h),
                     "output_width": new._track_expr(w),
-                    "interpolation": ParamValue(is_expr=False, value=interpolation),
+                    "interpolation": _enum_param(
+                        interpolation,
+                        InterpolationType,
+                        "interpolation",
+                        new._track_expr,
+                    ),
                     "border_value": new._track_expr(border_value),
                 },
             )
@@ -2734,10 +2888,10 @@ class Pipeline:
     def rotate_and_scale(
         self,
         *,
-        angle: float,
-        scale: float = 1.0,
-        center: tuple[float, float] | None = None,
-        output_size: tuple[int, int] | None = None,
+        angle: FloatOrExpr,
+        scale: FloatOrExpr = 1.0,
+        center: tuple[FloatOrExpr, FloatOrExpr] | None = None,
+        output_size: tuple[IntOrExpr, IntOrExpr] | None = None,
     ) -> "Pipeline":
         """
         Combined rotation and scaling around a center point.
@@ -2748,12 +2902,15 @@ class Pipeline:
         Domain: buffer → buffer
 
         Args:
-            angle: Rotation angle in degrees (positive = clockwise).
-            scale: Scale factor (default 1.0).
+            angle: Rotation angle in degrees (positive = clockwise). Accepts a
+                Polars expression for a per-row angle.
+            scale: Scale factor (default 1.0). Accepts an expression.
             center: ``(cx, cy)`` center of rotation. Required
-                (auto-compute not yet implemented).
+                (auto-compute not yet implemented). Each element accepts an
+                expression.
             output_size: ``(height, width)`` of the output. Required
-                (auto-sizing not yet implemented).
+                (auto-sizing not yet implemented). Each element accepts an
+                expression.
 
         Returns:
             Self for chaining.
@@ -2761,10 +2918,20 @@ class Pipeline:
         Raises:
             ValueError: If *center* or *output_size* is not provided.
 
+        Note:
+            A matrix built from expressions cannot participate in plan-time
+            affine fusion, which needs concrete numbers to compose matrices;
+            such a call executes as its own warp instead of being folded into
+            a neighbouring one.
+
         Example:
             ```python
             >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
             ...     angle=45.0, scale=1.2, center=(112, 112), output_size=(224, 224)
+            ... )
+            >>> # Per-row angle from a column
+            >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
+            ...     angle=pl.col("theta"), center=(112, 112), output_size=(224, 224)
             ... )
             ```
         """
@@ -2911,8 +3078,8 @@ class Pipeline:
     def extract_contours(
         self,
         *,
-        mode: str = "external",
-        method: str = "simple",
+        mode: str | pl.Expr = "external",
+        method: str | pl.Expr = "simple",
         min_area: FloatOrExpr | None = None,
     ) -> "Pipeline":
         """
@@ -2930,8 +3097,8 @@ class Pipeline:
         new = self._clone()
 
         params: dict[str, ParamValue] = {
-            "mode": ParamValue(is_expr=False, value=mode),
-            "method": ParamValue(is_expr=False, value=method),
+            "mode": _enum_param(mode, ExtractMode, "mode", new._track_expr),
+            "method": _enum_param(method, ApproxMethod, "method", new._track_expr),
         }
 
         if min_area is not None:
@@ -3221,8 +3388,8 @@ class Pipeline:
         self,
         *,
         contours: pl.Expr,
-        reduction: str = "max",
-        region_mode: str = "interior",
+        reduction: str | pl.Expr = "max",
+        region_mode: str | pl.Expr = "interior",
     ) -> "Pipeline":
         """
         Score contour regions against the current buffer values.
@@ -3252,17 +3419,18 @@ class Pipeline:
         if not isinstance(contours, pl.Expr):
             msg = "`contours` must be a Polars expression"
             raise TypeError(msg)
-        reduction_mode = _validate_enum(reduction, LabelReduction, "reduction")
-        region = _validate_enum(region_mode, LabelRegionMode, "region_mode")
-
         new = self._clone()
         new._ops.append(
             OpSpec(
                 op="label_reduce",
                 params={
                     "contours": new._track_expr(contours),
-                    "reduction": ParamValue(is_expr=False, value=reduction_mode.value),
-                    "region_mode": ParamValue(is_expr=False, value=region.value),
+                    "reduction": _enum_param(
+                        reduction, LabelReduction, "reduction", new._track_expr
+                    ),
+                    "region_mode": _enum_param(
+                        region_mode, LabelRegionMode, "region_mode", new._track_expr
+                    ),
                 },
             )
         )

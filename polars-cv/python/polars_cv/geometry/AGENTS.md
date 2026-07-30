@@ -79,11 +79,45 @@ Registered on `pl.Expr` for columns matching `POINT_SCHEMA`. Each method calls `
 
 Point and contour namespace operations go directly through `register_plugin_function` to dedicated Rust functions. They do **not** go through the `vb_graph` pipeline path. This is a design distinction — they operate on Struct columns directly rather than on binary image data.
 
+### Parameter policy: per-row via input slots, not `ParamValue`
+
+Because these bypass `vb_graph`, they have none of `ParamValue`'s literal-vs-
+expression machinery. Their per-row channel is instead the plugin's **input
+series**: `_ArgBinder` (`_namespace.py`) appends an expression-valued parameter
+as an extra plugin argument and records it in an `input_slots` name→index map
+passed as a kwarg. Rust reads it back through `GeomParams`
+(`polars-cv/src/geom_params.rs`), which delegates to `params::ParamCol` — so
+these namespaces inherit the graph engine's dtype coverage, scalar broadcasting
+and null-as-error policy for free.
+
+**Look inputs up by name, never by position.** Several of these functions take
+*optional* data operands (`match_detections`' `scores`, `point.rotate`'s
+`origin`). With per-row parameters also occupying input slots, an appended
+parameter is otherwise indistinguishable from an omitted operand. Register the
+data operands in the map too (`binder.add_data("scores", scores)`) and read them
+via `params.slot("scores")`.
+
+Numeric parameters here are per-row capable; parameters that *select behaviour*
+rather than carry a value stay literal kwargs (`scale`'s `origin`,
+`ensure_winding`'s `direction`, `match_detections`' `strategy`).
+
+Validation that can no longer happen once per batch moves into the row loop and
+names the offending row — see the `threshold` range check in
+`contour_match_detections` and the zero-dimension guard in `point_normalize`.
+
+**Keep signatures honest.** These namespaces have no generated stub and no
+parity test, so a hand-written annotation can drift from behaviour unnoticed —
+which is exactly how four `.contour` methods came to advertise `int | pl.Expr`
+while unconditionally raising `TypeError` on it. `mkdocs.yml` sets
+`show_signature_annotations: true`, so a wrong annotation is published in the
+API reference.
+
 ## Adding a Geometry Operation
 
 1. **Rust:** Add the function in `polars-cv/src/point.rs` or `polars-cv/src/contour.rs` with `#[polars_expr]`
-2. **Python:** Add a method to `PointNamespace` or `ContourNamespace` that calls `register_plugin_function`
-3. **Tests:** Add to `tests/test_contour_plugin.py` or create a reference test
+2. **Python:** Add a method to `PointNamespace` or `ContourNamespace` that builds an `_ArgBinder` and calls `binder.call(self, "<rust_fn_name>")` (or `self._plugin(...)` when it takes no parameters)
+3. **Per-row params:** register each with `binder.add_param(...)`, add the matching field to `ContourKwargs`/`PointKwargs`, and resolve it inside the row loop with `GeomParams`
+4. **Tests:** Add to `tests/test_contour_plugin.py` or create a reference test. For a per-row parameter, assert two rows with *different* values produce *different* outputs (`tests/test_expression_params.py`) — a call that merely succeeds cannot distinguish "resolved per row" from "silently dropped"
 
 ## Schema export policy
 

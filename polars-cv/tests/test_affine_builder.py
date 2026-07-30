@@ -7,7 +7,7 @@ and rotate_and_scale. These tests do NOT require the compiled plugin.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -741,3 +741,61 @@ class TestPerRowAffineExecution:
         arr = numpy_from_struct(out["out"][0])
         assert arr.shape == (2, 3)
         np.testing.assert_array_equal(arr.astype(np.float64).ravel(), flat)
+
+
+@plugin_required
+class TestAffineRankContract:
+    """An affine warp's output rank must match its declared `infer_shape`.
+
+    `ComputeOp::Affine::infer_shape` replaces H and W and leaves the rest of the
+    input shape alone, so a `[H, W, 1]` input must stay 3-D. The kernel used to
+    collapse any single-channel result to `[H, W]`, which the runtime rank guard
+    only caught once plan-time rank folding started reporting a rank at all for
+    list sources.
+    """
+
+    IDENTITY = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+
+    def _warp(self, img: list, schema: Any) -> tuple:
+        import polars as pl
+
+        from polars_cv import numpy_from_struct
+
+        df = pl.DataFrame({"x": [img]}, schema={"x": schema})
+        pipe = (
+            Pipeline()
+            .source("list", dtype="f32")
+            .warp_affine(matrix=self.IDENTITY, output_size=(2, 2))
+        )
+        lf = df.lazy().with_columns(out=pl.col("x").cv.pipe(pipe).sink("numpy"))
+        planned = (
+            df.lazy()
+            .with_columns(out=pl.col("x").cv.pipe(pipe).sink("list"))
+            .collect_schema()["out"]
+        )
+        arr = numpy_from_struct(lf.collect()["out"][0])
+        return arr.shape, planned
+
+    def test_single_channel_keeps_its_channel_axis(self) -> None:
+        import polars as pl
+
+        img = [[[0.0], [1.0]], [[2.0], [3.0]]]  # [2, 2, 1]
+        shape, planned = self._warp(img, pl.List(pl.List(pl.List(pl.Float64))))
+        assert shape == (2, 2, 1)
+        assert planned == pl.List(pl.List(pl.List(pl.Float32)))
+
+    def test_two_dimensional_input_stays_two_dimensional(self) -> None:
+        import polars as pl
+
+        img = [[0.0, 1.0], [2.0, 3.0]]  # [2, 2], no channel axis
+        shape, planned = self._warp(img, pl.List(pl.List(pl.Float64)))
+        assert shape == (2, 2)
+        assert planned == pl.List(pl.List(pl.Float32))
+
+    def test_multi_channel_unchanged(self) -> None:
+        import polars as pl
+
+        img = [[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]]  # [1, 2, 3]
+        shape, planned = self._warp(img, pl.List(pl.List(pl.List(pl.Float64))))
+        assert shape == (2, 2, 3)
+        assert planned == pl.List(pl.List(pl.List(pl.Float32)))

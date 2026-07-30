@@ -732,10 +732,18 @@ class LazyPipelineExpr:
         """
         from polars_cv.pipeline import Pipeline
 
-        # Get contour source parameters (fill_value, background) from original pipeline
+        # Carry the original contour source's fill/background across to the new
+        # shape-referencing source. Both are ``ParamValue | None`` (they accept
+        # per-row expressions), so unwrap back to the value the caller passed —
+        # re-wrapping a ``ParamValue`` would nest it and fail JSON encoding.
         orig_source = contour._pipeline._source
-        fill_value = getattr(orig_source, "fill_value", 255)
-        background = getattr(orig_source, "background", 0)
+
+        def _unwrap(name: str, default: int) -> int | pl.Expr:
+            param = getattr(orig_source, name, None)
+            return default if param is None else param.value
+
+        fill_value = _unwrap("fill_value", 255)
+        background = _unwrap("background", 0)
 
         # Create new contour source with shape= referencing this image for dimensions
         raster_pipeline = Pipeline().source(

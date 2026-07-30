@@ -448,7 +448,9 @@ Pipeline().source("image_bytes").resize_max(max_size=256)
 Pipeline().source("image_bytes").resize_min(min_size=128)
 ```
 
-All resize variants accept Polars expressions for per-row dynamic sizes.
+Every resize variant accepts Polars expressions for per-row dynamic sizes, and
+for the `filter` choice. (`thumbnail`, below, is a decode-time assertion rather
+than a resize — its `max_size` is literal-only.)
 
 ## Thumbnail
 
@@ -506,28 +508,52 @@ pipe = Pipeline().source("image_bytes").crop(
 
 | Category | Parameters |
 |----------|-----------|
-| Resize | `height`, `width`, `scale`, `scale_x`, `scale_y`, `max_size`, `min_size` |
+| Resize | `height`, `width`, `scale`, `scale_x`, `scale_y`, `max_size`, `min_size`, `filter` |
 | Crop | `top`, `left`, `height`, `width` |
-| Pad | `top`, `bottom`, `left`, `right`, `value` |
-| Pad to size / Letterbox | `height`, `width`, `value` |
-| Rotate | `angle` |
-| Warp affine | `matrix` (each of the 6 elements, per-row), `output_size` (height and width), `border_value` |
+| Pad | `top`, `bottom`, `left`, `right`, `value`, `mode` |
+| Pad to size | `height`, `width`, `value`, `position` |
+| Letterbox | `height`, `width`, `value`, `filter` |
+| Rotate | `angle`, `border_value`, `interpolation` |
+| Warp affine | `matrix` (each of the 6 elements, per-row), `output_size` (height and width), `border_value`, `interpolation` |
 | Shear | `sx`, `sy` |
+| Rotate and scale | `angle`, `scale`, `center`, `output_size` |
 | Scale / Clamp | `factor`, `min_val`, `max_val` |
+| Normalize | `mean`, `std` (each element, per-row) |
 | Threshold | `value` |
 | Blur | `sigma` |
 | Canny | `low_threshold`, `high_threshold` |
 | Contrast / Gamma / Brightness | `factor`, `gamma` |
+| Sharpen | `strength` |
 | Morphology | `ksize`, `iterations` |
-| Channel select | `index` |
-| Convolution | `ksize` |
+| Channel select / swap | `index`, `order` (each element, per-row) |
+| Convolution | `kernel` (each coefficient, per-row), `ksize`, `border` |
+| Colour / masks | `apply_mask(invert)`, `contour.area(signed)` |
 | Reductions | `q` (percentile), `ddof` (std) |
-| Histogram | `bins` (integer form) |
-| Rasterize | `fill_value`, `background` |
+| Histogram | `bins` (integer form), `range` |
+| Extract contours | `min_area`, `mode`, `method` |
+| Label reduce | `reduction`, `region_mode` |
+| Rasterize | `width`, `height`, `fill_value`, `background`, `anti_alias` |
+| Contour source | `width`, `height`, `fill_value`, `background` |
 
 **Planning-time implications:** When a shape-affecting parameter is an expression (e.g., `resize(height=pl.col("h"))`), the pipeline planner cannot determine the output dimensions at planning time. Shape hints will be `None` for those dimensions.
 
-**Structural parameters** like `kernel` (convolution), `axes` (transpose/flip), and enum values like `interpolation`, `mode`, `border` remain static only. (The affine `matrix` is an exception: although structural in shape, each of its six elements may be a per-row expression, so a batch can apply a different affine per row.)
+`histogram(bins=...)` is a special case: it is accepted as an expression, but it
+fixes the output vector length. Pairing a per-row `bins` with an `array` sink
+therefore fails at planning time, since that sink needs a known shape — use the
+`list` sink, or pass a literal `bins`.
+
+**Structural parameters remain literal-only**, because they fix the output
+shape, rank or dtype at planning time and the lazy schema must match what
+executes: reduction `axis`, `perceptual_hash(hash_size)`, the `axes` lists of
+`transpose`/`flip`, `reshape`'s element count, `rotate(expand)` (it changes the
+output dimensions), `cast(dtype)`, `normalize(method`/`out_dtype)` and
+`histogram(closed`/`output)`. Passing an expression to one of these raises
+`TypeError` at build time.
+
+Note the distinction for list-valued parameters: the *length* is structural
+while the *values* are not. A convolution `kernel`, a `normalize` mean/std pair,
+a `channel_swap` order and the affine `matrix` all keep a literal element count
+but accept a per-row expression for any individual element.
 
 ## Next Steps
 
