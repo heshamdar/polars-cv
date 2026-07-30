@@ -60,18 +60,23 @@ fn resolve_interpolation(
 ///
 /// Resolved per row — a resampling filter changes pixel values, never the
 /// output geometry, which the resize dimensions alone determine.
+///
+/// Required, not defaulted: every builder path emits `filter`, so an absent one
+/// means the spec was built wrong and must error rather than silently resample
+/// with some other filter. The `Lanczos3` argument is only consumed under a
+/// plan-time probe context, where no concrete value exists yet and the choice
+/// cannot affect the inferred schema.
 fn resolve_filter(
     params: &HashMap<String, ParamValue>,
     row_idx: usize,
     ctx: &ParamCtx,
-    default: FilterType,
 ) -> PolarsResult<FilterType> {
-    get::opt_enum(
+    get::req_enum(
         params,
         "filter",
         FilterType::NAMED,
         FilterType::ALIASES,
-        default,
+        FilterType::Lanczos3,
         row_idx,
         ctx,
     )
@@ -499,7 +504,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "resize" => {
             let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
             let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Resize {
@@ -512,7 +517,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "resize_scale" => {
             let scale_x = get_param(&op_spec.params, "scale_x")?.resolve_f32(row_idx, ctx)?;
             let scale_y = get_param(&op_spec.params, "scale_y")?.resolve_f32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeScale {
@@ -524,7 +529,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "resize_to_height" => {
             let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeToHeight { height, filter },
@@ -532,7 +537,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "resize_to_width" => {
             let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeToWidth { width, filter },
@@ -540,7 +545,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "resize_max" => {
             let max_size = get_param(&op_spec.params, "max_size")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeMax { max_size, filter },
@@ -548,7 +553,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "resize_min" => {
             let min_size = get_param(&op_spec.params, "min_size")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeMin { min_size, filter },
@@ -618,7 +623,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             // Letterbox has always resized with lanczos3, so that stays the
             // default; the builder now exposes it, per row like every other
             // resize variant's filter.
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Lanczos3)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Letterbox {
                     height,
@@ -1062,7 +1067,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             // resolves per row. The kernel *length* stays structural.
             let kernel = get_param(&op_spec.params, "kernel")?.resolve_f32_list(row_idx, ctx)?;
             let ksize = get_param(&op_spec.params, "ksize")?.resolve_usize(row_idx, ctx)?;
-            let normalize = get::opt_bool(&op_spec.params, "normalize", false)?;
+            let normalize = get::opt_bool_dyn(&op_spec.params, "normalize", false, row_idx, ctx)?;
             let border = get::opt_enum(
                 &op_spec.params,
                 "border",

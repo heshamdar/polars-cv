@@ -38,10 +38,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **Per-row non-structural enums and flags.** `filter` (every resize variant and
   `letterbox`), `interpolation` (`rotate`, `warp_affine`), `pad(mode=)`,
   `pad_to_size(position=)`, `convolve2d(border=)`, `extract_contours(mode=,
-  method=)`, `label_reduce(reduction=, region_mode=)`, `apply_mask(invert=)` and
-  `rasterize(anti_alias=)`. A parameter is eligible only when it has no effect
-  on output shape, rank or dtype; that invariant is what lets plan-time shape
-  probing substitute the default.
+  method=)`, `label_reduce(reduction=, region_mode=)` — on both `Pipeline` and
+  the `.contour` namespace — plus the flags `apply_mask(invert=)`,
+  `convolve2d(normalize=)` and `area(signed=)`. A parameter is eligible only
+  when it has no effect on output shape, rank or dtype; that invariant is what
+  lets plan-time shape probing substitute the default.
+  (`rasterize(anti_alias=)` is plumbed identically, but view-buffer's
+  rasterizer still ignores the flag, so it has no observable effect yet.)
 
 - **`rotate_and_scale(angle=, scale=, center=, output_size=)`** accept
   expressions, building the affine matrix from expression arithmetic.
@@ -49,6 +52,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `lanczos3` default is unchanged.
 - **Contour-source `fill_value` / `background`** accept expressions, matching the
   identical parameters on the `rasterize` op.
+- **`FilterType` exposes all five view-buffer filters.** `catmullrom` and
+  `gaussian` were deliberately withheld from Python while Rust accepted them.
+  Making `filter` per-row broke that restriction asymmetrically — a literal was
+  checked against the smaller Python enum, a column value went straight to
+  Rust's larger table — so rather than validate the same subset twice, the
+  subset was dropped and `FilterType` is now full parity.
 
 ### Fixed
 

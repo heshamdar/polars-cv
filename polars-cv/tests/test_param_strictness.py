@@ -59,6 +59,38 @@ def _patterned_png(width: int = 16, height: int = 12) -> bytes:
     return buf.getvalue()
 
 
+def _assert_matches_per_row_literals(
+    image_bytes: bytes,
+    build: "Callable[[object], Pipeline]",
+    values: list,
+    column: str = "p",
+) -> None:
+    """Assert a per-row parameter equals the literal pipeline *for each row*.
+
+    Asserting only that two rows differ proves the parameter was not silently
+    dropped, but an off-by-one in `row_idx` would produce differing rows too.
+    Comparing each row against the pipeline built with that row's literal value
+    pins the parameter to the correct row.
+    """
+    df = pl.DataFrame({"image": [image_bytes] * len(values), column: values})
+    dynamic = df.with_columns(
+        r=pl.col("image").cv.pipe(build(pl.col(column))).sink("numpy")
+    )["r"].to_list()
+
+    for i, value in enumerate(values):
+        one = pl.DataFrame({"image": [image_bytes]})
+        expected = one.with_columns(
+            r=pl.col("image").cv.pipe(build(value)).sink("numpy")
+        )["r"].to_list()[0]
+        assert dynamic[i] == expected, (
+            f"row {i} with {column}={value!r} does not match the literal pipeline"
+        )
+
+    assert len({str(v) for v in dynamic}) > 1, (
+        "every row produced the same output; the parameter cannot have varied"
+    )
+
+
 def _run(pipe: Pipeline, sink: str, image_bytes: bytes) -> pl.Series:
     """Execute a one-row pipeline and return the output column."""
     df = pl.DataFrame({"image": [image_bytes]})
@@ -341,49 +373,46 @@ class TestListParamElementsAcceptExpressions:
         return _patterned_png()
 
     def test_convolve2d_kernel_elements_accept_expr(self, image_bytes: bytes) -> None:
-        df = pl.DataFrame({"image": [image_bytes, image_bytes], "k": [0.0, 1.0]})
-        # Identity kernel in row 0 (centre 1, rest 0); row 1 adds neighbours.
-        kernel = [pl.col("k")] * 4 + [1.0] + [pl.col("k")] * 4
-        pipe = Pipeline().source("image_bytes").convolve2d(kernel, 3)
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
-        values = out["r"].to_list()
-        assert values[0] != values[1]
+        # Identity kernel where k == 0 (centre 1, rest 0); k != 0 adds neighbours.
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda k: (
+                Pipeline()
+                .source("image_bytes")
+                .convolve2d([k] * 4 + [1.0] + [k] * 4, 3)
+            ),
+            [0.0, 1.0, 0.5],
+            column="k",
+        )
 
     def test_sharpen_strength_accepts_expr(self, image_bytes: bytes) -> None:
         """``sharpen`` builds its kernel from ``strength`` element-wise."""
-        df = pl.DataFrame({"image": [image_bytes, image_bytes], "s": [0.0, 2.0]})
-        pipe = Pipeline().source("image_bytes").sharpen(strength=pl.col("s"))
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
-        values = out["r"].to_list()
-        # strength=0 is the identity kernel, so row 0 differs from row 1.
-        assert values[0] != values[1]
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda s: Pipeline().source("image_bytes").sharpen(strength=s),
+            [0.0, 2.0, 1.5],
+            column="s",
+        )
 
     def test_normalize_mean_std_elements_accept_expr(self, image_bytes: bytes) -> None:
-        df = pl.DataFrame({"image": [image_bytes, image_bytes], "m": [0.0, 0.5]})
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .normalize(
-                method="preset",
-                mean=[pl.col("m"), pl.col("m"), pl.col("m")],
-                std=[1.0, 1.0, 1.0],
-            )
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda m: (
+                Pipeline()
+                .source("image_bytes")
+                .normalize(method="preset", mean=[m] * 3, std=[1.0, 1.0, 1.0])
+            ),
+            [0.0, 0.5, 0.25],
+            column="m",
         )
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
-        values = out["r"].to_list()
-        assert values[0] != values[1]
 
     def test_channel_swap_order_elements_accept_expr(self, image_bytes: bytes) -> None:
-        df = pl.DataFrame(
-            {
-                "image": [image_bytes, image_bytes],
-                "i": pl.Series("i", [0, 2], dtype=pl.Int64),
-            }
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda i: Pipeline().source("image_bytes").channel_swap(order=[i, 1, 0]),
+            [0, 2, 1],
+            column="i",
         )
-        pipe = Pipeline().source("image_bytes").channel_swap(order=[pl.col("i"), 1, 0])
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
-        values = out["r"].to_list()
-        assert values[0] != values[1]
 
     def test_convolve2d_rejects_a_non_square_kernel(self) -> None:
         """The kernel *length* is checkable even when ``ksize`` is dynamic."""
@@ -405,17 +434,36 @@ class TestEnumParamsAcceptExpressions:
         return _patterned_png()
 
     def test_resize_filter_accepts_expr(self, image_bytes: bytes) -> None:
-        df = pl.DataFrame(
-            {"image": [image_bytes, image_bytes], "f": ["nearest", "lanczos3"]}
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda f: (
+                Pipeline().source("image_bytes").resize(height=7, width=5, filter=f)
+            ),
+            [f.value for f in FilterType],
+            column="f",
         )
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .resize(height=7, width=5, filter=pl.col("f"))
+
+    def test_letterbox_filter_accepts_expr(self, image_bytes: bytes) -> None:
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda f: (
+                Pipeline()
+                .source("image_bytes")
+                .letterbox(height=24, width=24, filter=f)
+            ),
+            ["nearest", "lanczos3"],
+            column="f",
         )
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
-        values = out["r"].to_list()
-        assert values[0] != values[1]
+
+    def test_convolve2d_border_accepts_expr(self, image_bytes: bytes) -> None:
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda b: (
+                Pipeline().source("image_bytes").convolve2d([1.0] * 9, 3, border=b)
+            ),
+            ["replicate", "zero", "reflect"],
+            column="b",
+        )
 
     def test_dynamic_filter_keeps_shape_known_at_plan_time(self) -> None:
         """A dynamic filter must not erase the plan-time shape.
@@ -432,39 +480,52 @@ class TestEnumParamsAcceptExpressions:
         assert pipe._shape_hints.width == ParamValue(is_expr=False, value=5)
 
     def test_rotate_interpolation_accepts_expr(self, image_bytes: bytes) -> None:
-        df = pl.DataFrame(
-            {"image": [image_bytes, image_bytes], "i": ["nearest", "bilinear"]}
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda i: Pipeline().source("image_bytes").rotate(33, interpolation=i),
+            ["nearest", "bilinear"],
+            column="i",
         )
-        pipe = Pipeline().source("image_bytes").rotate(33, interpolation=pl.col("i"))
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
-        values = out["r"].to_list()
-        assert values[0] != values[1]
+
+    def test_warp_affine_interpolation_accepts_expr(self, image_bytes: bytes) -> None:
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda i: (
+                Pipeline()
+                .source("image_bytes")
+                .warp_affine(
+                    matrix=[1.0, 0.3, 2.0, 0.2, 1.0, 1.0],
+                    output_size=(12, 16),
+                    interpolation=i,
+                )
+            ),
+            ["nearest", "bilinear"],
+            column="i",
+        )
 
     def test_pad_mode_accepts_expr(self, image_bytes: bytes) -> None:
-        df = pl.DataFrame(
-            {"image": [image_bytes, image_bytes], "m": ["constant", "edge"]}
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda m: (
+                Pipeline()
+                .source("image_bytes")
+                .pad(top=2, bottom=2, left=2, right=2, mode=m)
+            ),
+            [m.value for m in PadMode],
+            column="m",
         )
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .pad(top=2, bottom=2, left=2, right=2, mode=pl.col("m"))
-        )
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
-        values = out["r"].to_list()
-        assert values[0] != values[1]
 
     def test_pad_to_size_position_accepts_expr(self, image_bytes: bytes) -> None:
-        df = pl.DataFrame(
-            {"image": [image_bytes, image_bytes], "p": ["center", "top-left"]}
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda p: (
+                Pipeline()
+                .source("image_bytes")
+                .pad_to_size(height=20, width=20, position=p)
+            ),
+            [p.value for p in PadPosition],
+            column="p",
         )
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .pad_to_size(height=20, width=20, position=pl.col("p"))
-        )
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
-        values = out["r"].to_list()
-        assert values[0] != values[1]
 
     def test_unknown_enum_value_errors_at_execution(self, image_bytes: bytes) -> None:
         """A per-row enum cannot be validated at build time, so Rust does it."""
@@ -615,3 +676,245 @@ class TestContourSourceFillAcceptsExpressions:
         out = df.with_columns(r=pl.col("c").cv.pipe(pipe).sink("numpy"))
         values = out["r"].to_list()
         assert values[0] != values[1]
+
+
+@plugin_required
+class TestFlagParamsAcceptExpressions:
+    """Non-structural boolean flags resolve per row.
+
+    These were declared per-row in Rust before the Python builders emitted
+    anything but a literal, leaving `get::opt_bool_dyn` unreachable and the
+    docs claiming a capability that did not exist.
+    """
+
+    @pytest.fixture()
+    def image_bytes(self) -> bytes:
+        return _patterned_png()
+
+    def test_convolve2d_normalize_accepts_expr(self, image_bytes: bytes) -> None:
+        _assert_matches_per_row_literals(
+            image_bytes,
+            lambda n: (
+                Pipeline().source("image_bytes").convolve2d([1.0] * 9, 3, normalize=n)
+            ),
+            [True, False],
+            column="n",
+        )
+
+    def test_rasterize_anti_alias_accepts_expr(self, image_bytes: bytes) -> None:
+        """`anti_alias` is plumbed per-row even though the kernel ignores it.
+
+        view-buffer's rasterizer takes `_anti_alias` and does nothing with it
+        (documented "not yet implemented"), so there is no output difference to
+        assert — only that the builder emits an expression and execution
+        resolves it. Once the kernel honours the flag this should become a
+        value-level comparison.
+        """
+        df = pl.DataFrame({"image": [image_bytes, image_bytes], "aa": [True, False]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .extract_contours()
+            .rasterize(width=24, height=24, anti_alias=pl.col("aa"))
+        )
+        assert pipe._ops[-1].params["anti_alias"].is_expr
+        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
+        assert out["r"].null_count() == 0
+
+    def test_pipeline_area_signed_accepts_expr(self, image_bytes: bytes) -> None:
+        """`Pipeline.area` accepts the flag its namespace twin accepts.
+
+        Extracted contours all share a winding, so signed and absolute area
+        agree here; the value-level per-row proof is
+        `test_area_signed_flag_is_per_row` in `test_expression_params.py`,
+        which builds a clockwise square by hand. What this pins is that the
+        builder emits an expression and execution resolves it without error —
+        the combination that used to raise `TypeError` at build time.
+        """
+        df = pl.DataFrame({"image": [image_bytes, image_bytes], "s": [True, False]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .extract_contours()
+            .area(signed=pl.col("s"))
+        )
+        assert pipe._ops[-1].params["signed"].is_expr
+        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("native"))
+        assert out.height == 2
+
+    def test_apply_mask_invert_accepts_expr(self, image_bytes: bytes) -> None:
+        df = pl.DataFrame({"image": [image_bytes, image_bytes], "inv": [True, False]})
+        img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").grayscale())
+        mask = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").grayscale().threshold(128)
+        )
+        out = df.with_columns(
+            r=img.apply_mask(mask, invert=pl.col("inv")).sink("numpy")
+        )["r"].to_list()
+        assert out[0] != out[1], "invert did not vary per row"
+
+
+@plugin_required
+class TestExtractContoursAndLabelReduceEnums:
+    """The contour-domain enums the CHANGELOG claims, actually exercised."""
+
+    @pytest.fixture()
+    def image_bytes(self) -> bytes:
+        return _patterned_png(24, 24)
+
+    def _contours(self, mode: object, method: object) -> Pipeline:
+        return (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .extract_contours(mode=mode, method=method)
+        )
+
+    def test_extract_contours_mode_accepts_expr(self, image_bytes: bytes) -> None:
+        df = pl.DataFrame(
+            {"image": [image_bytes, image_bytes], "m": ["external", "all"]}
+        )
+        dynamic = df.with_columns(
+            r=pl.col("image")
+            .cv.pipe(self._contours(pl.col("m"), "simple"))
+            .sink("native")
+        )["r"].to_list()
+        for i, mode in enumerate(["external", "all"]):
+            one = pl.DataFrame({"image": [image_bytes]})
+            expected = one.with_columns(
+                r=pl.col("image").cv.pipe(self._contours(mode, "simple")).sink("native")
+            )["r"].to_list()[0]
+            assert dynamic[i] == expected, f"row {i} (mode={mode}) mismatched"
+
+    def test_extract_contours_method_accepts_expr(self, image_bytes: bytes) -> None:
+        df = pl.DataFrame(
+            {"image": [image_bytes, image_bytes], "m": ["none", "simple"]}
+        )
+        dynamic = df.with_columns(
+            r=pl.col("image")
+            .cv.pipe(self._contours("external", pl.col("m")))
+            .sink("native")
+        )["r"].to_list()
+        for i, method in enumerate(["none", "simple"]):
+            one = pl.DataFrame({"image": [image_bytes]})
+            expected = one.with_columns(
+                r=pl.col("image")
+                .cv.pipe(self._contours("external", method))
+                .sink("native")
+            )["r"].to_list()[0]
+            assert dynamic[i] == expected, f"row {i} (method={method}) mismatched"
+
+    def test_pipeline_label_reduce_enums_accept_expr(self, image_bytes: bytes) -> None:
+        contours = pl.col("image").cv.pipe(
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .extract_contours()
+        )
+        df = pl.DataFrame({"image": [image_bytes, image_bytes], "r": ["max", "mean"]})
+
+        def build(reduction: object) -> pl.Expr:
+            pipe = (
+                Pipeline()
+                .source("image_bytes")
+                .grayscale()
+                .label_reduce(
+                    contours=contours.sink("native", return_expr=True),
+                    reduction=reduction,
+                )
+            )
+            return pl.col("image").cv.pipe(pipe).sink("list")
+
+        dynamic = df.with_columns(out=build(pl.col("r")))["out"].to_list()
+        for i, reduction in enumerate(["max", "mean"]):
+            one = pl.DataFrame({"image": [image_bytes]})
+            expected = one.with_columns(out=build(reduction))["out"].to_list()[0]
+            assert dynamic[i] == expected, f"row {i} (reduction={reduction}) mismatched"
+
+    def test_contour_namespace_label_reduce_enums_accept_expr(
+        self, image_bytes: bytes
+    ) -> None:
+        """`.contour.label_reduce` matches `Pipeline.label_reduce`'s capability."""
+        cset = (
+            pl.col("image")
+            .cv.pipe(
+                Pipeline()
+                .source("image_bytes")
+                .grayscale()
+                .threshold(128)
+                .extract_contours()
+            )
+            .sink("native")
+        )
+        img = (
+            pl.col("image")
+            .cv.pipe(Pipeline().source("image_bytes", dtype="u8").grayscale())
+            .sink("list")
+        )
+        df = pl.DataFrame({"image": [image_bytes, image_bytes], "r": ["max", "mean"]})
+        base = df.with_columns(c=cset, i=img)
+
+        dynamic = base.with_columns(
+            s=pl.col("c").contour.label_reduce(pl.col("i"), reduction=pl.col("r"))
+        )["s"].to_list()
+        for i, reduction in enumerate(["max", "mean"]):
+            expected = (
+                base[i]
+                .with_columns(
+                    s=pl.col("c").contour.label_reduce(pl.col("i"), reduction=reduction)
+                )["s"]
+                .to_list()[0]
+            )
+            assert dynamic[i] == expected, f"row {i} (reduction={reduction}) mismatched"
+
+
+@plugin_required
+class TestInputSlotsAreValidated:
+    """A geometry call's `input_slots` map must account for every input.
+
+    Both failure modes were silent or violent before: an index past the end
+    panicked on a raw `inputs[idx]`, and a map missing an entry dropped that
+    operand and computed a quietly wrong result.
+    """
+
+    SQUARE = {
+        "exterior": [
+            {"x": 0.0, "y": 0.0},
+            {"x": 10.0, "y": 0.0},
+            {"x": 10.0, "y": 10.0},
+            {"x": 0.0, "y": 10.0},
+        ],
+        "holes": [],
+        "is_closed": True,
+    }
+
+    def _call(self, slots: dict, args: list) -> pl.Expr:
+        from pathlib import Path as _Path
+
+        from polars.plugins import register_plugin_function
+
+        import polars_cv
+
+        return register_plugin_function(
+            plugin_path=_Path(polars_cv.__file__).parent,
+            function_name="contour_normalize",
+            args=[pl.col("c"), *args],
+            kwargs={"ref_width": 10.0, "ref_height": 10.0, "input_slots": slots},
+            is_elementwise=True,
+        )
+
+    def test_unregistered_extra_input_is_rejected(self) -> None:
+        df = pl.DataFrame({"c": [self.SQUARE], "w": [10.0]})
+        with pytest.raises(Exception, match="input_slots"):
+            df.with_columns(n=self._call({}, [pl.col("w")]))
+
+    def test_out_of_range_slot_is_rejected(self) -> None:
+        df = pl.DataFrame({"c": [self.SQUARE], "w": [10.0]})
+        with pytest.raises(Exception, match="input slot"):
+            df.with_columns(n=self._call({"ref_width": 7}, [pl.col("w")]))

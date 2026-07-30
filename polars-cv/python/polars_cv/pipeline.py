@@ -17,6 +17,7 @@ import polars as pl
 
 from polars_cv._types import (
     ApproxMethod,
+    BoolOrExpr,
     BorderMode,
     CloudOptions,
     ColorSpace,
@@ -40,6 +41,7 @@ from polars_cv._types import (
     ShapeHints,
     SourceFormat,
     SourceSpec,
+    StrOrExpr,
     normalize_cloud_options,
 )
 
@@ -1760,8 +1762,8 @@ class Pipeline:
         kernel: list[FloatOrExpr],
         ksize: IntOrExpr,
         *,
-        normalize: bool = False,
-        border: str | pl.Expr = "replicate",
+        normalize: BoolOrExpr = False,
+        border: StrOrExpr = "replicate",
     ) -> "Pipeline":
         """
         Apply generic 2D convolution with an arbitrary kernel.
@@ -1819,7 +1821,7 @@ class Pipeline:
                 params={
                     "kernel": _param_list(kernel, new._track_expr),
                     "ksize": new._track_expr(ksize),
-                    "normalize": ParamValue(is_expr=False, value=normalize),
+                    "normalize": new._track_expr(normalize),
                     "border": _enum_param(
                         border, BorderMode, "border mode", new._track_expr
                     ),
@@ -2962,7 +2964,10 @@ class Pipeline:
         """
         self._validate_domain(self.DOMAIN_BUFFER, "perceptual_hash")
 
-        # Convert string to enum if needed
+        # `algorithm` is paired with the structural `hash_size` and stays
+        # literal; reject an expression here rather than letting it fall past
+        # the isinstance check and explode on `.value`.
+        _reject_expr(algorithm, "perceptual_hash 'algorithm'")
         if isinstance(algorithm, str):
             algorithm = _validate_enum(algorithm, HashAlgorithm, "algorithm")
 
@@ -3002,7 +3007,7 @@ class Pipeline:
         shape: "LazyPipelineExpr | None" = None,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
-        anti_alias: bool = False,
+        anti_alias: BoolOrExpr = False,
     ) -> "Pipeline":
         """
         Rasterize contour to a binary mask.
@@ -3015,6 +3020,10 @@ class Pipeline:
                 for per-row dynamic values.
             background: Outside value (default 0). Accepts a Polars expression
                 for per-row dynamic values.
+            anti_alias: **Accepted but not yet implemented** — view-buffer's
+                rasterizer ignores it, so the mask is hard-edged either way.
+                The value is plumbed through (and may be a per-row expression)
+                so it takes effect as soon as the kernel supports it.
 
         Domain transition: contour → buffer
         """
@@ -3034,7 +3043,7 @@ class Pipeline:
         params: dict[str, ParamValue] = {
             "fill_value": new._track_expr(fill_value),
             "background": new._track_expr(background),
-            "anti_alias": ParamValue(is_expr=False, value=anti_alias),
+            "anti_alias": new._track_expr(anti_alias),
         }
 
         if has_explicit:
@@ -3489,7 +3498,7 @@ class Pipeline:
 
     # --- Contour Measure Operations (contour → scalar/vector) ---
 
-    def area(self, *, signed: bool = False) -> "Pipeline":
+    def area(self, *, signed: BoolOrExpr = False) -> "Pipeline":
         """
         Compute the area of the contour using the Shoelace formula.
 
@@ -3509,7 +3518,7 @@ class Pipeline:
         new._ops.append(
             OpSpec(
                 op="contour_area",
-                params={"signed": ParamValue(is_expr=False, value=signed)},
+                params={"signed": new._track_expr(signed)},
             )
         )
         new._update_output_dtype("contour_area")
@@ -3823,8 +3832,11 @@ class Pipeline:
         params: dict[str, ParamValue] = {
             "other_node": ParamValue(is_expr=False, value=other_node_id),
         }
+        # `other_node` above is graph topology and stays literal; the
+        # remaining kwargs are ordinary op params (e.g. `apply_mask(invert)`),
+        # so an expression among them resolves per row like anywhere else.
         for key, value in kwargs.items():
-            params[key] = ParamValue(is_expr=False, value=value)
+            params[key] = self._track_expr(value)
 
         self._ops.append(OpSpec(op=op, params=params))
         # Binary ops are elementwise: H/W hints pass through unchanged, but

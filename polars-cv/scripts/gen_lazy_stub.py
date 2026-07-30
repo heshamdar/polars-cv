@@ -42,7 +42,13 @@ from typing import Any
 import polars as pl
 
 from polars_cv._graph import PipelineGraph
-from polars_cv._types import FloatOrExpr, HashAlgorithm, IntOrExpr
+from polars_cv._types import (
+    BoolOrExpr,
+    FloatOrExpr,
+    HashAlgorithm,
+    IntOrExpr,
+    StrOrExpr,
+)
 from polars_cv.pipeline import Pipeline
 
 PIPELINE_ONLY_METHODS: frozenset[str]

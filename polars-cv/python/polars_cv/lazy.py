@@ -387,7 +387,7 @@ class LazyPipelineExpr:
         self,
         mask: "LazyPipelineExpr",
         *,
-        invert: bool = False,
+        invert: bool | pl.Expr = False,
     ) -> "LazyPipelineExpr":
         """
         Apply a binary mask to this image.
@@ -711,7 +711,7 @@ class LazyPipelineExpr:
         self,
         contour: "LazyPipelineExpr",
         *,
-        invert: bool = False,
+        invert: bool | pl.Expr = False,
     ) -> "LazyPipelineExpr":
         """
         Apply a contour as a mask to this image.

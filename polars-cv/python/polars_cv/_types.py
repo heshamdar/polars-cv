@@ -23,6 +23,10 @@ import polars as pl
 LiteralOrExpr: TypeAlias = Union[int, float, str, pl.Expr]
 IntOrExpr: TypeAlias = Union[int, pl.Expr]
 FloatOrExpr: TypeAlias = Union[float, pl.Expr]
+# For non-structural flags only. A flag that changes the output shape — such as
+# ``rotate(expand)`` — stays a plain ``bool``.
+BoolOrExpr: TypeAlias = Union[bool, pl.Expr]
+StrOrExpr: TypeAlias = Union[str, pl.Expr]
 
 
 class SourceFormat(str, Enum):
@@ -116,10 +120,17 @@ class OutputDType(str, Enum):
 
 
 class FilterType(str, Enum):
-    """Image resize filter types."""
+    """Image resize filter types.
+
+    Full parity with view-buffer's ``FilterType`` authority. ``BILINEAR`` is the
+    API name for view-buffer's ``Triangle`` variant; the parser also accepts
+    ``"triangle"`` as a backwards-compatible alias.
+    """
 
     NEAREST = "nearest"
     BILINEAR = "bilinear"
+    CATMULLROM = "catmullrom"
+    GAUSSIAN = "gaussian"
     LANCZOS3 = "lanczos3"
 
 

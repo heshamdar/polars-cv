@@ -775,6 +775,10 @@ def test_enum_parity_domain():
         "HistogramClosed",
         "LabelReduction",
         "LabelRegionMode",
+        "FilterType",
+        "ExtractMode",
+        "ApproxMethod",
+        "InterpolationType",
     ],
 )
 def test_enum_parity_api_enums(enum_name):
@@ -789,12 +793,16 @@ def test_enum_parity_api_enums(enum_name):
 
 
 @plugin_required
-def test_enum_parity_filter_type_is_subset():
-    """Python FilterType is a documented subset of view-buffer's FilterType.
+def test_filter_type_exposes_every_rust_variant():
+    """`FilterType` is full parity, not a subset.
 
-    Rust also offers catmullrom/gaussian (and surfaces `Triangle` as "bilinear");
-    polars-cv intentionally exposes only nearest/bilinear/lanczos3. Guard the
-    subset so a new Python value can't escape the Rust authority.
+    It was previously a deliberate subset (nearest/bilinear/lanczos3). Making
+    `filter` a per-row parameter broke that: the literal path validated against
+    the Python enum while a column value went straight to Rust's larger table,
+    so an expression could reach a filter a literal could not. Rather than
+    validate the same restriction twice, the subset was dropped — checked here
+    alongside the other API enums via `test_enum_parity_api_enums`, with this
+    test pinning the specific variants that used to be Rust-only.
     """
     rust = _rust_enum_variants("FilterType")
     if rust is None:
@@ -802,8 +810,11 @@ def test_enum_parity_filter_type_is_subset():
     import polars_cv._types as t
 
     py = {m.value for m in t.FilterType}
-    assert py <= rust, f"FilterType: python {py} is not a subset of rust {rust}"
-    assert {"catmullrom", "gaussian"} <= rust, "expected Rust-only filter variants"
+    assert {"catmullrom", "gaussian"} <= py, (
+        "catmullrom/gaussian must stay reachable from Python; a subset here "
+        "would be bypassable through a per-row `filter` expression"
+    )
+    assert py == rust, f"FilterType: python {py} != rust {rust}"
 
 
 # SourceFormat/SinkFormat are intentionally NOT enum-parity-checked: view-buffer
