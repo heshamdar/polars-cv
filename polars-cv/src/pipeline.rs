@@ -6,6 +6,7 @@
 //! operation with its parameters). They are consumed by `graph::types`
 //! (`GraphNode`/`OutputSpec`) and the executor.
 
+use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -25,12 +26,14 @@ pub struct SourceSpec {
     /// Height for contour rasterization.
     #[serde(default)]
     pub height: Option<crate::params::ParamValue>,
-    /// Fill value for contour interior (default 255).
-    #[serde(default = "default_fill_value")]
-    pub fill_value: u8,
-    /// Background value for contour exterior (default 0).
+    /// Fill value for contour interior (default 255). Per-row capable, matching
+    /// the identical parameter on the `rasterize` op.
     #[serde(default)]
-    pub background: u8,
+    pub fill_value: Option<crate::params::ParamValue>,
+    /// Background value for contour exterior (default 0). Per-row capable,
+    /// matching the identical parameter on the `rasterize` op.
+    #[serde(default)]
+    pub background: Option<crate::params::ParamValue>,
     /// Serialized shape pipeline for dimension inference.
     #[serde(default)]
     pub shape_pipeline: Option<serde_json::Value>,
@@ -57,8 +60,41 @@ fn default_on_error() -> String {
     "raise".to_string()
 }
 
-fn default_fill_value() -> u8 {
-    255
+impl SourceSpec {
+    /// Resolve a contour source's `(fill_value, background)` at `row_idx`.
+    ///
+    /// Both default when absent (255 / 0) and both may be per-row expressions,
+    /// mirroring `resolve_rasterize_style` for the `rasterize` op so the two
+    /// spellings of the same operation cannot diverge.
+    pub fn resolve_fill(
+        &self,
+        row_idx: usize,
+        ctx: &crate::params::ParamCtx,
+    ) -> PolarsResult<(u8, u8)> {
+        Ok((
+            resolve_u8(self.fill_value.as_ref(), "fill_value", 255, row_idx, ctx)?,
+            resolve_u8(self.background.as_ref(), "background", 0, row_idx, ctx)?,
+        ))
+    }
+}
+
+fn resolve_u8(
+    param: Option<&crate::params::ParamValue>,
+    name: &str,
+    default: u8,
+    row_idx: usize,
+    ctx: &crate::params::ParamCtx,
+) -> PolarsResult<u8> {
+    match param {
+        None => Ok(default),
+        Some(p) => {
+            let v = p.resolve_i64(row_idx, ctx)?;
+            u8::try_from(v).map_err(|_| {
+                polars_err!(ComputeError:
+                    "source parameter '{}' must be in 0..=255, got {}", name, v)
+            })
+        }
+    }
 }
 
 /// Sink format specification.
@@ -127,8 +163,12 @@ mod tests {
     fn test_source_spec_defaults() {
         let source: SourceSpec = serde_json::from_str(r#"{"format": "image_bytes"}"#).unwrap();
         assert_eq!(source.format, "image_bytes");
-        assert_eq!(source.fill_value, 255);
-        assert_eq!(source.background, 0);
+        // Absent fill/background resolve to their documented defaults.
+        let (fill, background) = source
+            .resolve_fill(0, &crate::params::ParamCtx::empty())
+            .unwrap();
+        assert_eq!(fill, 255);
+        assert_eq!(background, 0);
         assert_eq!(source.on_error, "raise");
         assert!(source.decode_max_size.is_none());
         assert!(source.cloud_options.is_none());

@@ -404,10 +404,19 @@ def test_namespace_plugin_symbols_match_registrations():
 
     pkg = Path(polars_cv.__file__).parent
     called: set[str] = set()
+    # Two spellings reach the same plugin: the direct `self._plugin("name", ...)`
+    # and `_ArgBinder.call(self, "name", ...)`, which routes through `_plugin`
+    # after partitioning literal kwargs from per-row expression inputs.
+    # `\s*` spans the newline for multi-line calls.
+    patterns = (
+        r'_plugin\(\s*"([a-z_0-9]+)"',
+        r'\.call\(\s*self,\s*"([a-z_0-9]+)"',
+    )
     for py in pkg.rglob("*.py"):
-        # `\s*` spans the newline for multi-line `_plugin(\n  "name", ...)` calls.
-        called |= set(re.findall(r'_plugin\(\s*"([a-z_0-9]+)"', py.read_text()))
-    assert called, "no _plugin(...) calls found — scan is broken"
+        text = py.read_text()
+        for pattern in patterns:
+            called |= set(re.findall(pattern, text))
+    assert called, "no plugin calls found — scan is broken"
 
     registered: set[str] = set()
     for rs in ("contour.rs", "point.rs", "image_metadata.rs", "read_bytes.rs"):

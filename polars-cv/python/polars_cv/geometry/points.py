@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from polars_cv._namespace import _PluginNamespace
+from polars_cv._namespace import _ArgBinder, _PluginNamespace
 
 
 @pl.api.register_expr_namespace("point")
@@ -22,10 +22,16 @@ class PointNamespace(_PluginNamespace):
     The point column must match POINT_SCHEMA or POINT_SET_SCHEMA.
     Operations automatically handle both single points and sets of points.
 
+    Numeric parameters accept either a literal or a Polars expression; an
+    expression is resolved per row at execution time.
+
     Example:
         >>> df.with_columns(
         ...     normalized=pl.col("keypoint").point.normalize(width=100, height=100),
         ...     shifted=pl.col("keypoint").point.translate(dx=10, dy=20),
+        ...     per_row=pl.col("keypoint").point.normalize(
+        ...         width=pl.col("img_w"), height=pl.col("img_h")
+        ...     ),
         ... )
     """
 
@@ -33,111 +39,83 @@ class PointNamespace(_PluginNamespace):
 
     def normalize(
         self,
-        width: int | float,
-        height: int | float,
+        width: int | float | pl.Expr,
+        height: int | float | pl.Expr,
     ) -> pl.Expr:
         """
         Convert pixel coordinates to normalized [0,1] range.
 
         Args:
-            width: Reference width for normalization.
-            height: Reference height for normalization.
+            width: Reference width for normalization (literal or expression).
+            height: Reference height for normalization (literal or expression).
 
         Returns:
             Point with coordinates in [0,1] range.
         """
-        if isinstance(width, pl.Expr) or isinstance(height, pl.Expr):
-            raise TypeError(
-                "point.normalize() does not support pl.Expr arguments; pass literal int values"
-            )
-        return self._plugin(
-            "point_normalize",
-            kwargs={
-                "ref_width": float(width),
-                "ref_height": float(height),
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_param("ref_width", width)
+        binder.add_param("ref_height", height)
+        return binder.call(self, "point_normalize")
 
     def to_absolute(
         self,
-        width: int | float,
-        height: int | float,
+        width: int | float | pl.Expr,
+        height: int | float | pl.Expr,
     ) -> pl.Expr:
         """
         Convert normalized coordinates to pixel coordinates.
 
         Args:
-            width: Reference width for scaling.
-            height: Reference height for scaling.
+            width: Reference width for scaling (literal or expression).
+            height: Reference height for scaling (literal or expression).
 
         Returns:
             Point with pixel coordinates.
         """
-        if isinstance(width, pl.Expr) or isinstance(height, pl.Expr):
-            raise TypeError(
-                "point.to_absolute() does not support pl.Expr arguments; pass literal int values"
-            )
-        return self._plugin(
-            "point_to_absolute",
-            kwargs={
-                "ref_width": float(width),
-                "ref_height": float(height),
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_param("ref_width", width)
+        binder.add_param("ref_height", height)
+        return binder.call(self, "point_to_absolute")
 
     def translate(
         self,
-        dx: float,
-        dy: float,
+        dx: float | pl.Expr,
+        dy: float | pl.Expr,
     ) -> pl.Expr:
         """
         Translate point by offset.
 
         Args:
-            dx: X offset.
-            dy: Y offset.
+            dx: X offset (literal or expression).
+            dy: Y offset (literal or expression).
 
         Returns:
             Translated point.
         """
-        if isinstance(dx, pl.Expr) or isinstance(dy, pl.Expr):
-            raise TypeError(
-                "point.translate() does not support pl.Expr arguments; pass literal numeric values"
-            )
-        return self._plugin(
-            "point_translate",
-            kwargs={
-                "dx": float(dx),
-                "dy": float(dy),
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_param("dx", dx)
+        binder.add_param("dy", dy)
+        return binder.call(self, "point_translate")
 
     def scale(
         self,
-        sx: float,
-        sy: float,
+        sx: float | pl.Expr,
+        sy: float | pl.Expr,
     ) -> pl.Expr:
         """
         Scale point coordinates.
 
         Args:
-            sx: X scale factor.
-            sy: Y scale factor.
+            sx: X scale factor (literal or expression).
+            sy: Y scale factor (literal or expression).
 
         Returns:
             Scaled point.
         """
-        if isinstance(sx, pl.Expr) or isinstance(sy, pl.Expr):
-            raise TypeError(
-                "point.scale() does not support pl.Expr arguments; pass literal numeric values"
-            )
-        return self._plugin(
-            "point_scale",
-            kwargs={
-                "sx": float(sx),
-                "sy": float(sy),
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_param("sx", sx)
+        binder.add_param("sy", sy)
+        return binder.call(self, "point_scale")
 
     # --- Distance Operations ---
 
@@ -249,12 +227,15 @@ class PointNamespace(_PluginNamespace):
         """
         return self._plugin("point_angle_to", args=[other])
 
-    def rotate(self, angle: float, *, origin: pl.Expr | None = None) -> pl.Expr:
+    def rotate(
+        self, angle: float | pl.Expr, *, origin: pl.Expr | None = None
+    ) -> pl.Expr:
         """
         Rotate point around an origin by angle (in radians).
 
         Args:
             angle: Rotation angle in radians (counter-clockwise positive).
+                Accepts a Polars expression for a per-row angle.
             origin: Center of rotation. If None, rotates around (0, 0).
 
         Returns:
@@ -266,12 +247,10 @@ class PointNamespace(_PluginNamespace):
             ...     rotated=pl.col("point").point.rotate(math.pi / 2)  # 90 degrees
             ... )
         """
-        args = [origin] if origin is not None else None
-        return self._plugin(
-            "point_rotate",
-            args=args,
-            kwargs={"angle": float(angle)},
-        )
+        binder = _ArgBinder()
+        binder.add_data("origin", origin)
+        binder.add_param("angle", angle)
+        return binder.call(self, "point_rotate")
 
     def midpoint(self, other: pl.Expr) -> pl.Expr:
         """
@@ -290,7 +269,7 @@ class PointNamespace(_PluginNamespace):
         """
         return self._plugin("point_midpoint", args=[other])
 
-    def interpolate(self, other: pl.Expr, t: float = 0.5) -> pl.Expr:
+    def interpolate(self, other: pl.Expr, t: float | pl.Expr = 0.5) -> pl.Expr:
         """
         Linear interpolation between two points.
 
@@ -298,6 +277,7 @@ class PointNamespace(_PluginNamespace):
             other: Target point column.
             t: Interpolation parameter (0 = self, 1 = other).
                 Values outside [0, 1] extrapolate beyond the endpoints.
+                Accepts a Polars expression for a per-row parameter.
 
         Returns:
             Interpolated point.
@@ -307,7 +287,10 @@ class PointNamespace(_PluginNamespace):
             ...     quarter=pl.col("p1").point.interpolate(pl.col("p2"), t=0.25)
             ... )
         """
-        return self._plugin("point_interpolate", args=[other], kwargs={"t": float(t)})
+        binder = _ArgBinder()
+        binder.add_data("other", other)
+        binder.add_param("t", t)
+        return binder.call(self, "point_interpolate")
 
     def within_bbox(self, bbox: pl.Expr) -> pl.Expr:
         """

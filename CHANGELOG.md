@@ -7,6 +7,78 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **Per-row expression parameters in the geometry namespaces.** `.contour`,
+  `.point` and `.bbox` previously accepted only literals — and four `.contour`
+  methods annotated `int | pl.Expr` while unconditionally raising `TypeError` on
+  exactly that type, an impossible signature that the API reference published.
+  Their numeric parameters now resolve per row:
+
+  ```python
+  # Normalize each contour against its own image's dimensions
+  df.with_columns(
+      norm=pl.col("contour").contour.normalize(pl.col("img_w"), pl.col("img_h"))
+  )
+  ```
+
+  Covers `normalize`, `to_absolute`, `translate`, `scale`, `simplify`,
+  `area(signed=)` and `match_detections(threshold=)` on `.contour`; `normalize`,
+  `to_absolute`, `translate`, `scale`, `rotate(angle=)` and `interpolate(t=)` on
+  `.point`; and `match_detections(threshold=)` on `.bbox`. Aggregations
+  broadcast and null parameters are errors, matching the image operations.
+
+- **Per-row elements in list-valued parameters.** The list *length* stays
+  structural — it fixes a kernel size or channel count at planning time — while
+  each element may now be an expression, the encoding `warp_affine`'s matrix
+  already used. This covers `convolve2d(kernel=)`, `normalize(mean=, std=)` and
+  `channel_swap(order=)`, and in turn makes `sharpen(strength=)` per-row, whose
+  docstring previously described the limitation as permanent.
+
+- **Per-row non-structural enums and flags.** `filter` (every resize variant and
+  `letterbox`), `interpolation` (`rotate`, `warp_affine`), `pad(mode=)`,
+  `pad_to_size(position=)`, `convolve2d(border=)`, `extract_contours(mode=,
+  method=)`, `label_reduce(reduction=, region_mode=)`, `apply_mask(invert=)` and
+  `rasterize(anti_alias=)`. A parameter is eligible only when it has no effect
+  on output shape, rank or dtype; that invariant is what lets plan-time shape
+  probing substitute the default.
+
+- **`rotate_and_scale(angle=, scale=, center=, output_size=)`** accept
+  expressions, building the affine matrix from expression arithmetic.
+- **`letterbox(filter=)`** is now exposed; Rust already read it. The historical
+  `lanczos3` default is unchanged.
+- **Contour-source `fill_value` / `background`** accept expressions, matching the
+  identical parameters on the `rasterize` op.
+
+### Fixed
+
+- **Plan/execution rank desync for ops with list-valued parameters on `list` and
+  `array` sources.** `fold_output_rank` re-serialized ops that graph compilation
+  had already bound, and the compiled-only `Slot`/`List` forms are
+  `#[serde(skip)]` — so the op silently failed to resolve, the output rank was
+  recorded as unknown, and a planned `List(List(List(f32)))` collapsed to
+  `List(f32)`. Affected `warp_affine` on list/array sources.
+- **Single-channel affine warps dropped the channel axis.** `warp_affine` (and
+  the arbitrary-angle `rotate`/`shear`/`rotate_and_scale` paths that share its
+  kernel) collapsed a `[H, W, 1]` input to `[H, W]`, contradicting the op's own
+  `infer_shape`, which preserves the input rank. A `[H, W]` input still produces
+  `[H, W]`; only the explicit single-channel axis is now retained. This was
+  masked by the rank-folding bug above.
+- **`convolve2d` skipped kernel/`ksize` validation entirely when `ksize` was an
+  expression**, letting a mismatched kernel reach Rust unchecked. The kernel
+  length is structural, so it is now always validated as an odd perfect square.
+- **Structural parameters given an expression now report why.** `cast(dtype=)`,
+  `normalize(method=)`, `histogram(closed=, output=)` and the `transpose`/`flip`
+  axis lists failed opaquely inside `bool()` ("the truth value of an Expr is
+  ambiguous") or at JSON encoding; they now raise the same clear "is structural"
+  `TypeError` as the other literal-only parameters.
+- **`docs/user-guide/operations/geometry.md`** documented `point.normalize` and
+  `point.to_absolute` with `ref_width=` / `ref_height=` — the Rust kwarg names.
+  Both examples raised `TypeError`; the Python parameters are `width` / `height`.
+- The `Pipeline` docstring claimed *all* operations accept expressions, and the
+  image-ops guide's "all resize variants" claim sat directly above `thumbnail`,
+  whose `max_size` is literal-only. Both now state the actual rule.
+
 ## [0.15.0] — 2026-07-26
 
 ### Added

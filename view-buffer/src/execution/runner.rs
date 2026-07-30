@@ -1364,6 +1364,10 @@ where
     let in_h = shape[0];
     let in_w = shape[1];
     let channels = shape.get(2).copied().unwrap_or(1);
+    // Whether the input carried an explicit channel axis, as distinct from a
+    // channel *count* of 1: `[H, W]` and `[H, W, 1]` have the same count but
+    // different ranks, and the output must keep whichever the input had.
+    let has_channel_axis = shape.len() >= 3;
 
     let out_h = params.output_height as usize;
     let out_w = params.output_width as usize;
@@ -1467,10 +1471,14 @@ where
         }
     }
 
-    let output_shape = if channels == 1 {
-        vec![out_h, out_w]
-    } else {
+    // Mirror `ComputeOp::Affine::infer_shape`, which replaces H and W and
+    // leaves the rest of the input shape alone. Collapsing a `[H, W, 1]` input
+    // to `[H, W]` here contradicted that contract, so a single-channel affine
+    // planned rank 3 and produced rank 2.
+    let output_shape = if has_channel_axis {
         vec![out_h, out_w, channels]
+    } else {
+        vec![out_h, out_w]
     };
 
     ViewBuffer::from_vec(dst_data).reshape(output_shape)

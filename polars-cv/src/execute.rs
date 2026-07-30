@@ -38,14 +38,42 @@ pub(crate) const BINARY_OPS: &[(&str, BinaryOp)] = &[
 ];
 
 /// Parse the optional `interpolation` parameter (shared by `rotate` and
-/// `warp_affine`; defaults to bilinear).
-fn resolve_interpolation(params: &HashMap<String, ParamValue>) -> PolarsResult<InterpolationType> {
+/// `warp_affine`; defaults to bilinear). Resolved per row: the choice of
+/// interpolation affects pixel values, never output shape or dtype.
+fn resolve_interpolation(
+    params: &HashMap<String, ParamValue>,
+    row_idx: usize,
+    ctx: &ParamCtx,
+) -> PolarsResult<InterpolationType> {
     get::opt_enum(
         params,
         "interpolation",
         InterpolationType::NAMED,
         &[],
         InterpolationType::Bilinear,
+        row_idx,
+        ctx,
+    )
+}
+
+/// Parse the `filter` parameter shared by every resize variant.
+///
+/// Resolved per row — a resampling filter changes pixel values, never the
+/// output geometry, which the resize dimensions alone determine.
+fn resolve_filter(
+    params: &HashMap<String, ParamValue>,
+    row_idx: usize,
+    ctx: &ParamCtx,
+    default: FilterType,
+) -> PolarsResult<FilterType> {
+    get::opt_enum(
+        params,
+        "filter",
+        FilterType::NAMED,
+        FilterType::ALIASES,
+        default,
+        row_idx,
+        ctx,
     )
 }
 
@@ -70,7 +98,7 @@ pub(crate) fn resolve_rasterize_style(
     Ok((
         get::opt_u8(params, "fill_value", 255, row_idx, ctx)?,
         get::opt_u8(params, "background", 0, row_idx, ctx)?,
-        get::opt_bool(params, "anti_alias", false)?,
+        get::opt_bool_dyn(params, "anti_alias", false, row_idx, ctx)?,
     ))
 }
 
@@ -87,9 +115,8 @@ pub fn decode_contour_source(
     // Resolve dimensions
     let (width, height) = resolve_contour_dimensions(row_idx, source, ctx)?;
 
-    // Get fill and background values
-    let fill_value = source.fill_value;
-    let background = source.background;
+    // Get fill and background values (both per-row capable)
+    let (fill_value, background) = source.resolve_fill(row_idx, ctx)?;
 
     // Rasterize the contour to a ViewBuffer
     Ok(rasterize(
@@ -436,19 +463,12 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 "minmax" => NormalizeMethod::MinMax,
                 "zscore" => NormalizeMethod::ZScore,
                 "preset" => {
-                    // Extract mean and std arrays from parameters
-                    let mean_param = get_param(&op_spec.params, "mean")?;
-                    let std_param = get_param(&op_spec.params, "std")?;
-
-                    // Parse mean array from ParamValue
-                    let mean = mean_param.as_f32_vec().ok_or_else(|| {
-                        polars_err!(ComputeError: "normalize preset requires 'mean' as array of floats")
-                    })?;
-
-                    // Parse std array from ParamValue
-                    let std = std_param.as_f32_vec().ok_or_else(|| {
-                        polars_err!(ComputeError: "normalize preset requires 'std' as array of floats")
-                    })?;
+                    // Per-element ParamValues, so a per-row mean/std (dataset
+                    // statistics joined in as columns) resolves per row. The
+                    // element count is the channel count and stays structural.
+                    let mean =
+                        get_param(&op_spec.params, "mean")?.resolve_f32_list(row_idx, ctx)?;
+                    let std = get_param(&op_spec.params, "std")?.resolve_f32_list(row_idx, ctx)?;
 
                     NormalizeMethod::Preset { mean, std }
                 }
@@ -479,8 +499,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "resize" => {
             let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
             let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
-            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(filter_str)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Resize {
@@ -493,8 +512,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "resize_scale" => {
             let scale_x = get_param(&op_spec.params, "scale_x")?.resolve_f32(row_idx, ctx)?;
             let scale_y = get_param(&op_spec.params, "scale_y")?.resolve_f32(row_idx, ctx)?;
-            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(filter_str)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeScale {
@@ -506,8 +524,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "resize_to_height" => {
             let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
-            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(filter_str)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeToHeight { height, filter },
@@ -515,8 +532,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "resize_to_width" => {
             let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
-            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(filter_str)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeToWidth { width, filter },
@@ -524,8 +540,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "resize_max" => {
             let max_size = get_param(&op_spec.params, "max_size")?.resolve_u32(row_idx, ctx)?;
-            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(filter_str)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeMax { max_size, filter },
@@ -533,8 +548,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         }
         "resize_min" => {
             let min_size = get_param(&op_spec.params, "min_size")?.resolve_u32(row_idx, ctx)?;
-            let filter_str = get_param(&op_spec.params, "filter")?.resolve_string()?;
-            let filter = parse_filter(filter_str)?;
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Triangle)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeMin { min_size, filter },
@@ -550,7 +564,15 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let left = get_param(&op_spec.params, "left")?.resolve_u32(row_idx, ctx)?;
             let right = get_param(&op_spec.params, "right")?.resolve_u32(row_idx, ctx)?;
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
-            let mode = get::req_enum(&op_spec.params, "mode", PadMode::NAMED, &[])?;
+            let mode = get::req_enum(
+                &op_spec.params,
+                "mode",
+                PadMode::NAMED,
+                &[],
+                PadMode::Constant,
+                row_idx,
+                ctx,
+            )?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Pad {
@@ -569,7 +591,15 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
             let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
-            let position = get::req_enum(&op_spec.params, "position", PadPosition::NAMED, &[])?;
+            let position = get::req_enum(
+                &op_spec.params,
+                "position",
+                PadPosition::NAMED,
+                &[],
+                PadPosition::Center,
+                row_idx,
+                ctx,
+            )?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::PadToSize {
@@ -585,15 +615,10 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
             let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
 
-            // Letterbox has always resized with lanczos3; kept as the default
-            // (now overridable per-op if the builder ever exposes it).
-            let filter = get::opt_enum(
-                &op_spec.params,
-                "filter",
-                FilterType::NAMED,
-                FilterType::ALIASES,
-                FilterType::Lanczos3,
-            )?;
+            // Letterbox has always resized with lanczos3, so that stays the
+            // default; the builder now exposes it, per row like every other
+            // resize variant's filter.
+            let filter = resolve_filter(&op_spec.params, row_idx, ctx, FilterType::Lanczos3)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Letterbox {
                     height,
@@ -648,7 +673,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 // Route arbitrary angles through AffineParams for unified code path.
                 // The affine matrix is built at execution time from the current
                 // buffer dimensions (handled by RotateToAffine).
-                let interpolation = resolve_interpolation(&op_spec.params)?;
+                let interpolation = resolve_interpolation(&op_spec.params, row_idx, ctx)?;
                 let border_value = resolve_border_value(&op_spec.params, row_idx, ctx)?;
 
                 buffer_step(ViewDto::Compute(ComputeOp::RotateAffine {
@@ -694,7 +719,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let output_width =
                 get_param(&op_spec.params, "output_width")?.resolve_u32(row_idx, ctx)?;
 
-            let interpolation = resolve_interpolation(&op_spec.params)?;
+            let interpolation = resolve_interpolation(&op_spec.params, row_idx, ctx)?;
             let border_value = resolve_border_value(&op_spec.params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Compute(ComputeOp::Affine(AffineParams {
@@ -711,7 +736,9 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "perceptual_hash" => {
             use view_buffer::ops::phash::{HashAlgorithm, PerceptualHashOp};
 
-            let algorithm = get::opt_enum(
+            // Paired with the structural `hash_size` below; kept literal so
+            // the fingerprint's identity is fixed at planning time.
+            let algorithm = get::opt_enum_literal(
                 &op_spec.params,
                 "algorithm",
                 HashAlgorithm::NAMED,
@@ -750,6 +777,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 ExtractMode::NAMED,
                 &[],
                 ExtractMode::External,
+                row_idx,
+                ctx,
             )?;
             let method = get::opt_enum(
                 &op_spec.params,
@@ -757,6 +786,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 ApproxMethod::NAMED,
                 &[],
                 ApproxMethod::Simple,
+                row_idx,
+                ctx,
             )?;
             let min_area = get::maybe_f64(&op_spec.params, "min_area", row_idx, ctx)?;
 
@@ -769,7 +800,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Geometry measure operations
         "contour_area" => {
-            let signed = get::opt_bool(&op_spec.params, "signed", false)?;
+            let signed = get::opt_bool_dyn(&op_spec.params, "signed", false, row_idx, ctx)?;
             Ok(GraphStep::Geometry(GeometryOp::Area { signed }))
         }
         "contour_perimeter" => Ok(GraphStep::Geometry(GeometryOp::Perimeter)),
@@ -890,6 +921,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 LabelReduction::NAMED,
                 &[],
                 LabelReduction::Max,
+                row_idx,
+                ctx,
             )?;
             let region_mode = get::opt_enum(
                 &op_spec.params,
@@ -897,6 +930,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 LabelRegionMode::NAMED,
                 &[],
                 LabelRegionMode::Interior,
+                row_idx,
+                ctx,
             )?;
             Ok(GraphStep::LabelReduce {
                 contours_col,
@@ -917,8 +952,12 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 (bins_param.resolve_usize(row_idx, ctx)?, None)
             };
 
-            let closed = get::req_enum(&op_spec.params, "closed", HistogramClosed::NAMED, &[])?;
-            let output = get::req_enum(&op_spec.params, "output", HistogramOutput::NAMED, &[])?;
+            // `closed` and `output` shape the histogram's dtype/semantics at plan
+            // time, so both stay literal-only.
+            let closed =
+                get::req_enum_literal(&op_spec.params, "closed", HistogramClosed::NAMED, &[])?;
+            let output =
+                get::req_enum_literal(&op_spec.params, "output", HistogramOutput::NAMED, &[])?;
 
             // Parse optional range
             let range = if op_spec.params.contains_key("range_min")
@@ -952,7 +991,9 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             buffer_step(ViewDto::View(ViewOp::ChannelSelect { index }))
         }
         "channel_swap" => {
-            let order = get_param(&op_spec.params, "order")?.as_int_list()?;
+            // A permutation: the element count is structural (channel count is
+            // preserved) but the indices themselves may be per-row.
+            let order = get_param(&op_spec.params, "order")?.resolve_usize_list(row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ChannelSwap { order },
             }))
@@ -1016,11 +1057,10 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "convolve2d" => {
             use view_buffer::ops::filter::{BorderMode, ConvolveOp};
 
-            let kernel = get_param(&op_spec.params, "kernel")?
-                .as_f32_vec()
-                .ok_or_else(
-                    || polars_err!(ComputeError: "convolve2d requires 'kernel' as array of floats"),
-                )?;
+            // Each coefficient is its own ParamValue, so a kernel whose values
+            // derive from a column (an unsharp mask with a per-row strength)
+            // resolves per row. The kernel *length* stays structural.
+            let kernel = get_param(&op_spec.params, "kernel")?.resolve_f32_list(row_idx, ctx)?;
             let ksize = get_param(&op_spec.params, "ksize")?.resolve_usize(row_idx, ctx)?;
             let normalize = get::opt_bool(&op_spec.params, "normalize", false)?;
             let border = get::opt_enum(
@@ -1029,6 +1069,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 BorderMode::NAMED,
                 &[],
                 BorderMode::Replicate,
+                row_idx,
+                ctx,
             )?;
 
             buffer_step(ViewDto::Filter(ConvolveOp {
@@ -1080,7 +1122,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             let mask_node_id = get_param(&op_spec.params, "other_node")?
                 .resolve_string()?
                 .to_string();
-            let invert = get::opt_bool(&op_spec.params, "invert", false)?;
+            let invert = get::opt_bool_dyn(&op_spec.params, "invert", false, row_idx, ctx)?;
             Ok(GraphStep::ApplyMask {
                 mask: mask_node_id,
                 invert,
@@ -1109,18 +1151,6 @@ fn parse_dtype(s: &str) -> PolarsResult<DType> {
     })
 }
 
-/// Parse a filter type string (canonical names from `FilterType::NAMED`,
-/// plus parser-only aliases).
-fn parse_filter(s: &str) -> PolarsResult<FilterType> {
-    naming::lookup(FilterType::NAMED, s)
-        .or_else(|| naming::lookup(FilterType::ALIASES, s))
-        .ok_or_else(|| {
-            polars_err!(ComputeError:
-                "Unknown filter type: {}, expected one of {:?}",
-                s, naming::names(FilterType::NAMED))
-        })
-}
-
 #[cfg(test)]
 mod strict_param_tests {
     //! One failure policy for operation parameters: an *absent* optional
@@ -1143,6 +1173,16 @@ mod strict_param_tests {
                 .map(|(k, v)| (k.to_string(), ParamValue::Literal { value: v.clone() }))
                 .collect::<HashMap<_, _>>(),
         }
+    }
+
+    /// Build the per-element encoding a list-valued param now uses: an array of
+    /// serialized `ParamValue`s rather than raw numbers, so any element can be a
+    /// per-row expression (see `ParamValue::resolve_f32_list`).
+    fn param_list(values: &[f64]) -> serde_json::Value {
+        json!(values
+            .iter()
+            .map(|v| json!({"type": "literal", "value": v}))
+            .collect::<Vec<_>>())
     }
 
     fn resolve_err(spec: &OpSpec) -> String {
@@ -1248,7 +1288,7 @@ mod strict_param_tests {
             (
                 "convolve2d",
                 "normalize",
-                &[("kernel", json!(vec![0.0; 9])), ("ksize", json!(3))],
+                &[("kernel", param_list(&[0.0; 9])), ("ksize", json!(3))],
             ),
             ("apply_mask", "invert", &[("other_node", json!("m"))]),
         ];

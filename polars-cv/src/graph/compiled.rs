@@ -479,8 +479,15 @@ impl CompiledGraph {
                                         }
                                         let height = shape[0] as u32;
                                         let width = shape[1] as u32;
-                                        let fill_value = node.source.fill_value;
-                                        let background = node.source.background;
+                                        let (fill_value, background) = match node
+                                            .source
+                                            .resolve_fill(row_idx, ctx)
+                                        {
+                                            Ok(v) => v,
+                                            Err(e) => {
+                                                return Err(format!("Contour decode error: {e}"))
+                                            }
+                                        };
                                         match decode_contour_source_with_dims(
                                             &value, width, height, fill_value, background,
                                         ) {
@@ -1099,6 +1106,12 @@ fn bind_graph_params(
         if let Some(h) = node.source.height.as_mut() {
             bind_param(h, name_to_slot)?;
         }
+        if let Some(f) = node.source.fill_value.as_mut() {
+            bind_param(f, name_to_slot)?;
+        }
+        if let Some(b) = node.source.background.as_mut() {
+            bind_param(b, name_to_slot)?;
+        }
         for op in node.ops.iter_mut() {
             let keep_named = op.op == "label_reduce";
             for (pname, p) in op.params.iter_mut() {
@@ -1117,10 +1130,12 @@ fn bind_graph_params(
 /// plain scalar arrays are left untouched.
 ///
 /// A `Literal` whose JSON value is an array of serialized `ParamValue`s (a
-/// `warp_affine` matrix, a `reshape` shape) is parsed once here into a
+/// `warp_affine` matrix, a `reshape` shape, a `convolve2d` kernel, `normalize`
+/// mean/std, a `channel_swap` order) is parsed once here into a
 /// [`ParamValue::List`] with each element bound — so per-row resolution reads the
 /// already-bound elements directly instead of re-deserializing the JSON every
-/// row. Plain literal arrays (mean/std floats, flip axes) are left as-is.
+/// row. Plain literal arrays (flip/transpose axes, histogram bin edges) are
+/// left as-is.
 fn bind_param(p: &mut ParamValue, name_to_slot: &HashMap<String, usize>) -> PolarsResult<()> {
     match p {
         ParamValue::Expr { col, .. } => {
@@ -1216,6 +1231,42 @@ pub(crate) fn resolved_output_specs(
     specs
 }
 
+/// Re-serialize one compiled param into a form `resolve_op_from_json` accepts.
+///
+/// The ops walked by [`fold_output_rank`] have already been through
+/// [`bind_graph_params`], so their expression params are `Slot`s and their
+/// nested lists are `List`s — both `#[serde(skip)]`, and therefore *dropped* by
+/// a plain `serde_json::to_string`. The op would then fail to resolve for a
+/// missing parameter, which the caller's `.ok()?` silently turns into "rank
+/// unknown" — collapsing a planned `List(List(List(f32)))` to `List(f32)` and
+/// desyncing the lazy schema from the produced data.
+///
+/// A `Slot` goes back to the wire `Expr` form rather than to a literal, so the
+/// probe context binds it and substitutes defaults for dynamic enums; a literal
+/// integer would fail an enum lookup. None of these values can affect the
+/// result: a rank rule is structural and never reads a parameter's value.
+fn param_probe_json(param: &ParamValue) -> serde_json::Value {
+    match param {
+        ParamValue::Literal { value } => serde_json::json!({"type": "literal", "value": value}),
+        ParamValue::Expr { col } => serde_json::json!({"type": "expr", "col": col}),
+        ParamValue::Slot { .. } => serde_json::json!({"type": "expr", "col": "__probe__"}),
+        ParamValue::List(items) => serde_json::json!({
+            "type": "literal",
+            "value": items.iter().map(param_probe_json).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+/// Render a compiled [`OpSpec`] as introspectable JSON. See [`param_probe_json`].
+fn op_probe_json(op: &OpSpec) -> String {
+    let mut map = serde_json::Map::new();
+    map.insert("op".into(), serde_json::Value::String(op.op.clone()));
+    for (name, param) in &op.params {
+        map.insert(name.clone(), param_probe_json(param));
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
 /// Derive a node's output rank by folding each op's `OutputRankRule` from a
 /// concrete source rank. Walks the primary upstream lineage to the root source
 /// node (whose input rank is the given `source_rank`). Returns `None` if any op
@@ -1233,8 +1284,7 @@ fn fold_output_rank(graph: &UnifiedGraph, node_id: &str, source_rank: usize) -> 
         None => source_rank,
     };
     for op in &node.ops {
-        let op_json = serde_json::to_string(op).ok()?;
-        let step = crate::resolve_op_from_json(&op_json).ok()?;
+        let step = crate::resolve_op_from_json(&op_probe_json(op)).ok()?;
         rank = match step.output_rank_rule() {
             OutputRankRule::PreserveRank => rank,
             OutputRankRule::ReduceByOne => rank.saturating_sub(1).max(1),

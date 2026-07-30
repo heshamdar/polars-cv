@@ -9,7 +9,7 @@ from typing import Literal
 
 import polars as pl
 
-from polars_cv._namespace import _PluginNamespace
+from polars_cv._namespace import _ArgBinder, _PluginNamespace
 
 
 @pl.api.register_expr_namespace("bbox")
@@ -43,7 +43,7 @@ class BBoxNamespace(_PluginNamespace):
         self,
         other: pl.Expr,
         *,
-        threshold: float = 0.5,
+        threshold: float | pl.Expr = 0.5,
         scores: pl.Expr | None = None,
         strategy: Literal["greedy"] = "greedy",
     ) -> pl.Expr:
@@ -55,6 +55,7 @@ class BBoxNamespace(_PluginNamespace):
         Args:
             other: Ground-truth bboxes (``List[BBOX_SCHEMA]``).
             threshold: IoU threshold for a match to be considered a TP.
+                Accepts a Polars expression for a per-row threshold.
             scores: Optional per-prediction confidence scores
                 (``List[Float64]``). When provided, predictions are processed
                 in descending score order.
@@ -63,11 +64,8 @@ class BBoxNamespace(_PluginNamespace):
         Returns:
             Struct expression matching ``MATCH_RESULT_SCHEMA``.
         """
-        args = [other]
-        if scores is not None:
-            args.append(scores)
-        return self._plugin(
-            "bbox_match_detections",
-            args=args,
-            kwargs={"threshold": threshold, "strategy": strategy},
-        )
+        binder = _ArgBinder()
+        binder.add_data("other", other)
+        binder.add_data("scores", scores)
+        binder.add_param("threshold", threshold)
+        return binder.call(self, "bbox_match_detections", strategy=strategy)

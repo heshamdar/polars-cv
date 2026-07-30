@@ -2,6 +2,32 @@
 
 polars-cv provides two expression namespaces for geometry: `.contour` for polygon operations and `.point` for point operations.
 
+## Expression parameters
+
+Numeric parameters in these namespaces accept either a literal or a **Polars
+expression**, resolved per row at execution time — the same rule as the image
+operations:
+
+```python
+# Normalize each contour against its own image's dimensions
+df.with_columns(
+    norm=pl.col("contour").contour.normalize(pl.col("img_w"), pl.col("img_h"))
+)
+```
+
+This covers `normalize`, `to_absolute`, `translate`, `scale`, `simplify`,
+`area(signed=)` and `match_detections(threshold=)` on `.contour`; `normalize`,
+`to_absolute`, `translate`, `scale`, `rotate(angle=)` and `interpolate(t=)` on
+`.point`; and `match_detections(threshold=)` on `.bbox`.
+
+Structural parameters stay literal-only, as they do elsewhere: `scale`'s
+`origin`, `ensure_winding`'s `direction` and `match_detections`' `strategy`
+select behaviour rather than carrying a value.
+
+An aggregation broadcasts, matching Polars' own semantics — `pl.col("w").max()`
+produces one value applied to every row. A null parameter is an error, not a
+null result.
+
 ## Schemas
 
 Geometry data uses Polars Struct columns:
@@ -86,8 +112,8 @@ The `.point` namespace operates on point columns.
 
 ```python
 df.with_columns(
-    normalized=pl.col("point").point.normalize(ref_width=100, ref_height=100),
-    absolute=pl.col("point").point.to_absolute(ref_width=100, ref_height=100),
+    normalized=pl.col("point").point.normalize(width=100, height=100),
+    absolute=pl.col("point").point.to_absolute(width=100, height=100),
     moved=pl.col("point").point.translate(dx=10, dy=20),
     scaled=pl.col("point").point.scale(sx=2.0, sy=2.0),
     rotated=pl.col("point").point.rotate(math.pi / 2),
