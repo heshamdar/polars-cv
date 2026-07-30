@@ -1,6 +1,6 @@
 # Geometry Operations
 
-polars-cv provides two expression namespaces for geometry: `.contour` for polygon operations and `.point` for point operations.
+polars-cv provides three expression namespaces for geometry: `.contour` for polygon operations, `.point` for point operations, and `.bbox` for bounding-box operations.
 
 ## Expression parameters
 

@@ -85,7 +85,8 @@ first, or sink to `tiff`, which stores floating point directly.
 
 ## Chaining Operations
 
-Operations are chained fluently. Most image operations accept both literal values and Polars expressions.
+Operations are chained fluently. Most operation parameters accept both literal
+values and Polars expressions.
 
 ```python
 pipe = (
@@ -96,6 +97,13 @@ pipe = (
     .normalize(method="minmax")
 )
 ```
+
+A parameter may be an expression whenever its value does not fix the output
+shape, rank or dtype at planning time — the lazy schema has to match what
+executes. The same rule governs the geometry namespaces
+([`.contour` / `.point` / `.bbox`](../operations/geometry.md#expression-parameters)),
+and [Dynamic Parameters](../operations/image-ops.md#dynamic-parameters) lists
+every parameter on both sides of the line.
 
 ## Best Practices
 

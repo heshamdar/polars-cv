@@ -7,7 +7,7 @@ A Polars plugin for high-performance vision and array operations.
 ## Features
 
 - **Modular Pipelines**: Define image processing pipelines and apply them to DataFrame columns.
-- **Expression Arguments**: Use Polars expressions for dynamic, per-row parameters.
+- **Expression Arguments**: Any parameter that doesn't fix the output shape takes a Polars expression — numeric values, individual list elements, and non-structural enums/flags — on both the pipeline and the geometry namespaces.
 - **Zero-Copy Performance**: Efficient memory management with stride-aware operations.
 - **Multi-Domain**: Seamlessly move between images, geometry (contours), and numeric results.
 
