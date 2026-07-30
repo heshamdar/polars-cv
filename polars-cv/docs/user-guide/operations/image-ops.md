@@ -11,7 +11,7 @@ Pipeline().source("image_bytes").resize(height=224, width=224)
 Pipeline().source("image_bytes").resize(height=224, width=224, filter="bilinear")
 ```
 
-**Filters:** `"nearest"`, `"bilinear"`, `"lanczos3"` (default).
+**Filters:** `"nearest"`, `"bilinear"`, `"catmullrom"`, `"gaussian"`, `"lanczos3"` (default).
 
 ## Grayscale
 
@@ -527,12 +527,12 @@ pipe = Pipeline().source("image_bytes").crop(
 | Morphology | `ksize`, `iterations` |
 | Channel select / swap | `index`, `order` (each element, per-row) |
 | Convolution | `kernel` (each coefficient, per-row), `ksize`, `border` |
-| Colour / masks | `apply_mask(invert)`, `contour.area(signed)` |
+| Flags | `apply_mask(invert)`, `convolve2d(normalize)`, `area(signed)` |
 | Reductions | `q` (percentile), `ddof` (std) |
 | Histogram | `bins` (integer form), `range` |
 | Extract contours | `min_area`, `mode`, `method` |
 | Label reduce | `reduction`, `region_mode` |
-| Rasterize | `width`, `height`, `fill_value`, `background`, `anti_alias` |
+| Rasterize | `width`, `height`, `fill_value`, `background` |
 | Contour source | `width`, `height`, `fill_value`, `background` |
 
 **Planning-time implications:** When a shape-affecting parameter is an expression (e.g., `resize(height=pl.col("h"))`), the pipeline planner cannot determine the output dimensions at planning time. Shape hints will be `None` for those dimensions.

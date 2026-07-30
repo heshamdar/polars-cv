@@ -32,8 +32,10 @@ pub type InputSlots = HashMap<String, usize>;
 
 /// Per-row resolver over one plugin call's inputs.
 ///
-/// Built once before the row loop; every lookup inside the loop is an indexed
-/// read.
+/// Built once before the row loop. A lookup inside the loop is a small
+/// string-keyed map probe followed by an indexed column read — these functions
+/// are dominated by contour parsing, so resolving by name rather than hoisting
+/// literals out of the loop is not a measurable cost.
 pub struct GeomParams<'a> {
     ctx: ParamCtx<'a>,
     slots: &'a InputSlots,
@@ -41,11 +43,36 @@ pub struct GeomParams<'a> {
 
 impl<'a> GeomParams<'a> {
     /// Wrap a call's inputs and its `input_slots` map.
-    pub fn new(inputs: &'a [Series], slots: &'a InputSlots) -> Self {
-        GeomParams {
+    ///
+    /// Validates the map against the inputs up front, because both ways it can
+    /// be wrong fail silently or violently otherwise: an index past the end
+    /// would panic on a raw `inputs[idx]`, and a map that does not account for
+    /// every extra input means an operand or parameter was dropped somewhere
+    /// between the builder and here — which would compute a quietly wrong
+    /// result rather than fail.
+    pub fn new(inputs: &'a [Series], slots: &'a InputSlots) -> PolarsResult<Self> {
+        for (name, &idx) in slots {
+            if idx == 0 || idx >= inputs.len() {
+                polars_bail!(ComputeError:
+                    "input slot '{}' points at index {} but the call has {} inputs; \
+                     the expression was built by an incompatible version",
+                    name, idx, inputs.len()
+                );
+            }
+        }
+        // Index 0 is the namespace's own column; every other input must be
+        // claimed by exactly one name.
+        if slots.len() + 1 != inputs.len() {
+            polars_bail!(ComputeError:
+                "call has {} inputs but 'input_slots' names {}; every operand and \
+                 per-row parameter must be registered (see `_ArgBinder`)",
+                inputs.len(), slots.len()
+            );
+        }
+        Ok(GeomParams {
             ctx: ParamCtx::from_inputs(inputs),
             slots,
-        }
+        })
     }
 
     /// The input series index bound to `name`, if any.
@@ -74,6 +101,24 @@ impl<'a> GeomParams<'a> {
         match self.slot(name) {
             Some(idx) => self.ctx.col(idx)?.get_f64(row),
             None => literal.ok_or_else(|| polars_err!(ComputeError: "{} is required", name)),
+        }
+    }
+
+    /// Resolve a string parameter from a bound input, else the literal kwarg.
+    ///
+    /// For enum-valued parameters with no shape or dtype effect. A bound input
+    /// must be a genuine String column; the callers pass the result to the
+    /// same `parse` used for the literal form, so an unknown value produces
+    /// the same error either way.
+    pub fn str_opt(
+        &self,
+        name: &str,
+        literal: Option<&'a str>,
+        row: usize,
+    ) -> PolarsResult<Option<&'a str>> {
+        match self.slot(name) {
+            Some(idx) => self.ctx.col(idx)?.get_str(row).map(Some),
+            None => Ok(literal),
         }
     }
 

@@ -45,9 +45,11 @@ pub struct PointKwargs {
     #[serde(default)]
     pub t: Option<f64>,
     /// Maps a named input — data operand or per-row parameter — to its index
-    /// in `inputs`. Names absent from the map are literal (read from the
-    /// scalar fields above) or were not supplied. An empty map reproduces the
-    /// original all-literal behaviour.
+    /// in `inputs`. A parameter absent from the map is literal, read from the
+    /// scalar fields above. Every input beyond the namespace's own column at
+    /// index 0 must appear here; `GeomParams::new` rejects a map that does not
+    /// account for all of them, so a stale caller fails loudly instead of
+    /// silently dropping an operand.
     #[serde(default)]
     pub input_slots: InputSlots,
 }
@@ -144,7 +146,7 @@ fn point_output_type(_input_fields: &[Field]) -> PolarsResult<Field> {
 /// Normalize point coordinates to [0, 1] range.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -178,7 +180,7 @@ fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 /// Convert normalized coordinates to absolute pixel coordinates.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -205,7 +207,7 @@ fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
 /// Translate point by offset.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -232,7 +234,7 @@ fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 /// Scale point coordinates.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_scale(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -455,7 +457,7 @@ fn point_angle_to(inputs: &[Series]) -> PolarsResult<Series> {
 /// Rotate point around origin by angle (radians).
 #[polars_expr(output_type_func=point_output_type)]
 fn point_rotate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let point_series = &inputs[0];
     let len = point_series.len();
@@ -537,10 +539,13 @@ fn point_midpoint(inputs: &[Series]) -> PolarsResult<Series> {
 /// Linear interpolation between two points.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_interpolate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series_a = &inputs[0];
-    let series_b = &inputs[1];
+    let series_b = params
+        .slot("other")
+        .map(|idx| &inputs[idx])
+        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'other'"))?;
     let len = series_a.len();
     let mut x_results = Vec::with_capacity(len);
     let mut y_results = Vec::with_capacity(len);

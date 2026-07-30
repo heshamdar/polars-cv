@@ -168,7 +168,9 @@ rank, or dtype**. Everything else follows from that one invariant.
    resize/letterbox `filter`, rotate/warp_affine `interpolation`, `pad(mode)`,
    `pad_to_size(position)`, `convolve2d(border)`, extract_contours
    `mode`/`method`, label_reduce `reduction`/`region_mode`,
-   `apply_mask(invert)`, `contour.area(signed)`, `rasterize(anti_alias)`.
+   `apply_mask(invert)`, `area(signed)`, `convolve2d(normalize)`.
+   (`rasterize(anti_alias)` is plumbed the same way but view-buffer's
+   rasterizer ignores the flag, so it has no observable effect yet.)
 
 **Plan-time probing is why enums need care.** `op_infer_shape` (`lib.rs`) runs
 each op four times with every expression param bound to an *integer* probe. A

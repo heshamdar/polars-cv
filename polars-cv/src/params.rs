@@ -426,8 +426,9 @@ impl<'a> ParamCol<'a> {
                 Some(v) => Some(float_to_i64(v).ok_or_else(|| self.cast_err(row_idx, "i64"))?),
                 None => None,
             },
-            TypedCol::Bool(ca) => ca.get(idx).map(i64::from),
-            TypedCol::Str(_) => return Err(self.cast_err(row_idx, "i64")),
+            // A Boolean column for a numeric parameter is a mis-routed
+            // expression, not a 0/1 value the user asked for.
+            TypedCol::Bool(_) | TypedCol::Str(_) => return Err(self.cast_err(row_idx, "i64")),
             TypedCol::Other(s) => return s.get(idx)?.try_extract::<i64>(),
         };
         value.ok_or_else(|| self.null_err(row_idx))
@@ -447,8 +448,7 @@ impl<'a> ParamCol<'a> {
             TypedCol::I64(ca) => ca.get(idx).map(|v| v as f64),
             TypedCol::F32(ca) => ca.get(idx).map(f64::from),
             TypedCol::F64(ca) => ca.get(idx),
-            TypedCol::Bool(ca) => ca.get(idx).map(f64::from),
-            TypedCol::Str(_) => return Err(self.cast_err(row_idx, "f64")),
+            TypedCol::Bool(_) | TypedCol::Str(_) => return Err(self.cast_err(row_idx, "f64")),
             TypedCol::Other(s) => return s.get(idx)?.try_extract::<f64>(),
         };
         value.ok_or_else(|| self.null_err(row_idx))
@@ -724,10 +724,9 @@ pub mod get {
         }
     }
 
-    /// Required enum-valued parameter, parsed against a canonical
+    /// Required enum-valued parameter, resolved per row against a canonical
     /// `NAMED`-style table (plus parser-only aliases). Unknown values error
     /// with the canonical names listed.
-    /// Required enum-valued parameter, resolved per row.
     ///
     /// `default` is used when the parameter is bound to a column under a
     /// plan-time probe context, where no real value exists yet. Only pass a
@@ -796,15 +795,19 @@ pub mod get {
         let param = params
             .get(name)
             .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: {}", name))?;
-        let s = param.resolve_string().map_err(|e| named(name, e))?;
-        view_buffer::naming::lookup(canonical, s)
-            .or_else(|| view_buffer::naming::lookup(aliases, s))
-            .ok_or_else(|| {
-                polars_err!(ComputeError:
-                    "parameter '{}': unknown value '{}', expected one of {:?}",
-                    name, s, view_buffer::naming::names(canonical)
-                )
-            })
+        // Reject an expression here, then reuse the shared lookup. An empty
+        // probe context is safe precisely because the literal-only check above
+        // means no slot can be read.
+        param.resolve_string().map_err(|e| named(name, e))?;
+        req_enum(
+            params,
+            name,
+            canonical,
+            aliases,
+            canonical[0].1,
+            0,
+            &ParamCtx::empty(),
+        )
     }
 
     /// Optional literal-only enum parameter with a default for absence.

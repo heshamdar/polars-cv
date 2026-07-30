@@ -191,9 +191,11 @@ pub struct ContourKwargs {
     #[serde(default)]
     pub region_mode: Option<String>,
     /// Maps a named input — data operand or per-row parameter — to its index
-    /// in `inputs`. Names absent from the map are literal (read from the
-    /// scalar fields above) or were not supplied. An empty map reproduces the
-    /// original all-literal behaviour.
+    /// in `inputs`. A parameter absent from the map is literal, read from the
+    /// scalar fields above. Every input beyond the namespace's own column at
+    /// index 0 must appear here; `GeomParams::new` rejects a map that does not
+    /// account for all of them, so a stale caller fails loudly instead of
+    /// silently dropping an operand.
     #[serde(default)]
     pub input_slots: InputSlots,
 }
@@ -807,7 +809,7 @@ fn score_order(scores: &[f64]) -> Vec<usize> {
 /// Compute contour area.
 #[polars_expr(output_type=Float64)]
 fn contour_area(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1107,11 +1109,15 @@ fn contour_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
 /// Match detection contour sets with greedy one-to-one IoU assignment.
 #[polars_expr(output_type_func=match_detections_output_type)]
 fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
     let pred_series = &inputs[0];
-    let gt_series = &inputs[1];
-    // Looked up by name: `scores` is optional, so its position is not fixed
-    // once per-row parameters can also occupy input slots.
+    // Both operands are looked up by name. `scores` is optional, so its
+    // position is not fixed once per-row parameters can occupy input slots
+    // either; `other` follows the same rule so no read here is positional.
+    let gt_series = params
+        .slot("other")
+        .map(|idx| &inputs[idx])
+        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'other'"))?;
     let score_series = params.slot("scores").map(|idx| &inputs[idx]);
     let len = pred_series.len();
 
@@ -1227,11 +1233,13 @@ fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsR
 /// Score each contour against a heatmap using a configurable reduction.
 #[polars_expr(output_type_func=label_reduce_output_type)]
 fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
     let contour_series = &inputs[0];
-    let heatmap_series = &inputs[1];
+    let heatmap_series = params
+        .slot("image")
+        .map(|idx| &inputs[idx])
+        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'image'"))?;
     let len = contour_series.len();
-    let reduction = ScoreReduction::parse(kwargs.reduction.as_deref())?;
-    let region_mode = RegionMode::parse(kwargs.region_mode.as_deref())?;
     let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
 
     for i in 0..len {
@@ -1241,6 +1249,13 @@ fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResul
             rows.push(AnyValue::Null);
             continue;
         }
+
+        // Per-row capable, matching `Pipeline.label_reduce`: neither choice
+        // affects the output's shape or dtype.
+        let reduction =
+            ScoreReduction::parse(params.str_opt("reduction", kwargs.reduction.as_deref(), i)?)?;
+        let region_mode =
+            RegionMode::parse(params.str_opt("region_mode", kwargs.region_mode.as_deref(), i)?)?;
 
         let contours = parse_contour_list(&contours_value)?;
         let heatmap = parse_heatmap(&heatmap_value)?;
@@ -1361,7 +1376,7 @@ fn contour_transform_output_type(input_fields: &[Field]) -> PolarsResult<Field> 
 /// Translate contour by offset.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1386,7 +1401,7 @@ fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 /// Scale contour.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     // Parse origin parameter
     let scale_origin = match kwargs.origin.as_deref() {
@@ -1419,7 +1434,7 @@ fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Serie
 /// Simplify contour.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_simplify(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1485,7 +1500,7 @@ fn contour_convex_hull(inputs: &[Series]) -> PolarsResult<Series> {
 /// Normalize contour coordinates to [0, 1] range.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_normalize(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1510,7 +1525,7 @@ fn contour_normalize(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 /// Convert normalized coordinates to absolute pixel coordinates.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_to_absolute(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1673,11 +1688,15 @@ fn bbox_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
 /// Match detection bbox sets with greedy one-to-one IoU assignment.
 #[polars_expr(output_type_func=match_detections_output_type)]
 fn bbox_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots);
+    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
     let pred_series = &inputs[0];
-    let gt_series = &inputs[1];
-    // Looked up by name: `scores` is optional, so its position is not fixed
-    // once per-row parameters can also occupy input slots.
+    // Both operands are looked up by name. `scores` is optional, so its
+    // position is not fixed once per-row parameters can occupy input slots
+    // either; `other` follows the same rule so no read here is positional.
+    let gt_series = params
+        .slot("other")
+        .map(|idx| &inputs[idx])
+        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'other'"))?;
     let score_series = params.slot("scores").map(|idx| &inputs[idx]);
     let len = pred_series.len();
 

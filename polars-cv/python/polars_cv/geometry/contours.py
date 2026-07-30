@@ -299,8 +299,8 @@ class ContourNamespace(_PluginNamespace):
         image: pl.Expr | None = None,
         *,
         heatmap: pl.Expr | None = None,
-        reduction: Literal["max", "mean", "sum"] = "max",
-        region_mode: Literal["interior", "bbox"] = "interior",
+        reduction: Literal["max", "mean", "sum"] | pl.Expr = "max",
+        region_mode: Literal["interior", "bbox"] | pl.Expr = "interior",
     ) -> pl.Expr:
         """
         Score each contour from an image/array expression with configurable reduction.
@@ -309,7 +309,10 @@ class ContourNamespace(_PluginNamespace):
             image: Image/array expression aligned by row with contour sets.
             heatmap: Backward-compatible alias for ``image``.
             reduction: Aggregation method over pixels in each contour region.
+                Accepts a Polars expression for a per-row choice, matching
+                :meth:`polars_cv.Pipeline.label_reduce`.
             region_mode: Region selector - ``"interior"`` or ``"bbox"``.
+                Accepts a Polars expression.
 
         Returns:
             A list of float scores, aligned to the input contour order.
@@ -322,14 +325,11 @@ class ContourNamespace(_PluginNamespace):
             raise ValueError(msg)
         image_expr = image if image is not None else heatmap
         assert image_expr is not None
-        return self._plugin(
-            "contour_label_reduce",
-            args=[image_expr],
-            kwargs={
-                "reduction": reduction,
-                "region_mode": region_mode,
-            },
-        )
+        binder = _ArgBinder()
+        binder.add_data("image", image_expr)
+        binder.add_param("reduction", reduction, cast=str)
+        binder.add_param("region_mode", region_mode, cast=str)
+        return binder.call(self, "contour_label_reduce")
 
     def dice(self, other: pl.Expr) -> pl.Expr:
         """

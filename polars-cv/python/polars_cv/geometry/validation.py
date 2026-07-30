@@ -180,34 +180,3 @@ def validate_point_count(n_points: int, min_required: int = 3) -> None:
     """
     if n_points < min_required:
         raise InsufficientPointsError(n_points, min_required)
-
-
-def validate_normalize_coords(
-    max_x: float,
-    max_y: float,
-    ref_width: float,
-    ref_height: float,
-) -> None:
-    """
-    Validate that coordinates are within reference dimensions.
-
-    A standalone helper for callers that want this check eagerly. The
-    ``.contour.normalize`` / ``.point.normalize`` operations deliberately do
-    **not** call it: their reference dimensions may be per-row Polars
-    expressions, so there is no single batch-level value to validate against,
-    and normalizing coordinates that exceed the reference is legitimate — it
-    simply yields values above 1.0.
-
-    Args:
-        max_x: Maximum X coordinate in the contour.
-        max_y: Maximum Y coordinate in the contour.
-        ref_width: Reference width for normalization.
-        ref_height: Reference height for normalization.
-
-    Raises:
-        CoordinateRangeError: If any coordinate exceeds reference dimensions.
-    """
-    if max_x > ref_width:
-        raise CoordinateRangeError("x", max_x, ref_width)
-    if max_y > ref_height:
-        raise CoordinateRangeError("y", max_y, ref_height)
