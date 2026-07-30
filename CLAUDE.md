@@ -126,6 +126,7 @@ Rust: view-buffer (the engine)
 - `output.rs` — zero-copy numpy/torch struct output encoding
 - `engine_warning.rs` — one-time single-threaded-batch warning (points users to `engine="streaming"`)
 - `contour.rs`, `point.rs` — standalone plugin functions for geometry namespaces
+- `geom_params.rs` — `GeomParams`: per-row parameter resolution for those standalone functions, reading expression params off the extra inputs the Python `_ArgBinder` appends and names in `input_slots`
 
 **view-buffer/src/** (see `view-buffer/AGENTS.md` for the full module tree)
 - `core/` — `ViewBuffer` (strided N-D array), `DType`, `Layout`
@@ -156,7 +157,9 @@ Domain constraints are enforced at pipeline-build time. Operations that don't ma
 
 ### Parameter Values
 
-Most numeric operation parameters accept either a literal (`224`) or a Polars expression (`pl.col("target_height")`). This is typed as `ParamValue` in `_types.py`. Per-row expression params are resolved in Rust via `params.rs`. Structural parameters (enum tags, kernel shapes, axis lists) are literals only.
+Most operation parameters accept either a literal (`224`) or a Polars expression (`pl.col("target_height")`). This is typed as `ParamValue` in `_types.py`. Per-row expression params are resolved in Rust via `params.rs` (`resolve_*` for numbers, `resolve_str`/`resolve_bool` for enums and flags), and by `geom_params.rs` for the `.contour`/`.point`/`.bbox` namespaces, which bypass `vb_graph` and carry their expression params as extra plugin inputs recorded in an `input_slots` name→index map.
+
+The rule for whether a parameter may be per-row is *not* its type: **a parameter is eligible iff its value has no effect on the output shape, rank or dtype**, because the lazy schema is computed at plan time and must match what executes. So non-structural enums and flags (`filter`, `interpolation`, `pad(mode=)`, `convolve2d(border=, normalize=)`, …) are per-row, while structural parameters are literal-only: `cast(dtype=)`, `normalize(method=, out_dtype=)`, reduction `axis`, `perceptual_hash(hash_size=, algorithm=)`, `rotate(expand=)`, `histogram(closed=, output=)`, the `transpose`/`flip` axis lists and `reshape`'s element count. For a list-valued parameter the *length* is structural while the elements are not — a `convolve2d` kernel keeps a literal element count but each coefficient may be an expression. Plan-time shape probing binds every expression param to an integer placeholder, so the enum/flag accessors substitute their default under `ParamCtx::probe`; that substitution is sound only because of the eligibility rule.
 
 ### `Pipeline` Is Immutable
 

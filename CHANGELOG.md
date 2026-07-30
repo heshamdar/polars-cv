@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-07-30
+
 ### Added
 
 - **Per-row expression parameters in the geometry namespaces.** `.contour`,
@@ -59,6 +61,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   Rust's larger table — so rather than validate the same subset twice, the
   subset was dropped and `FilterType` is now full parity.
 
+### Changed
+
+- **A Boolean column no longer satisfies a numeric per-row parameter.** It used
+  to coerce to `0`/`1`, which reads as a mis-routed expression far more often
+  than as a value someone chose; passing one now raises the same cast error a
+  `String` column does.
+
 ### Fixed
 
 - **Plan/execution rank desync for ops with list-valued parameters on `list` and
@@ -77,9 +86,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   expression**, letting a mismatched kernel reach Rust unchecked. The kernel
   length is structural, so it is now always validated as an odd perfect square.
 - **Structural parameters given an expression now report why.** `cast(dtype=)`,
-  `normalize(method=)`, `histogram(closed=, output=)` and the `transpose`/`flip`
-  axis lists failed opaquely inside `bool()` ("the truth value of an Expr is
-  ambiguous") or at JSON encoding; they now raise the same clear "is structural"
+  `normalize(method=)`, `histogram(closed=, output=)`,
+  `perceptual_hash(algorithm=)` and the `transpose`/`flip` axis lists failed
+  opaquely inside `bool()` ("the truth value of an Expr is ambiguous"), on
+  `.value`, or at JSON encoding; they now raise the same clear "is structural"
   `TypeError` as the other literal-only parameters.
 - **`docs/user-guide/operations/geometry.md`** documented `point.normalize` and
   `point.to_absolute` with `ref_width=` / `ref_height=` — the Rust kwarg names.
@@ -87,6 +97,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - The `Pipeline` docstring claimed *all* operations accept expressions, and the
   image-ops guide's "all resize variants" claim sat directly above `thumbnail`,
   whose `max_size` is literal-only. Both now state the actual rule.
+- The quickstart repeated the same "any parameter" claim; it now states the
+  eligibility rule and links the full table. The pipelines concept page states
+  the rule once where chaining is introduced, and points at the geometry
+  namespaces, which now follow it too. The geometry guide called `.contour` and
+  `.point` the geometry namespaces while documenting `.bbox` alongside them.
 
 ## [0.15.0] — 2026-07-26
 
@@ -352,6 +367,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.16.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.16.0
+[0.15.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.15.0
+[0.14.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.14.0
+[0.13.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.13.0
 [0.12.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.12.0
 [0.11.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.11.0
 [0.10.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.10.0

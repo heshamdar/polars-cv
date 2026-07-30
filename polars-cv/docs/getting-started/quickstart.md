@@ -66,7 +66,10 @@ Pipeline().source("image_bytes").normalize(method="zscore")
 
 ## Dynamic Parameters
 
-Any parameter can be a Polars expression for per-row customization:
+A parameter can be a Polars expression, resolved per row at execution time,
+whenever it does not change the output shape, rank or dtype at planning time —
+which covers the numeric parameters, the individual elements of list-valued ones,
+and the non-structural enums and flags:
 
 ```python
 # Resize each image to different dimensions
@@ -86,6 +89,12 @@ result = df.with_columns(
     resized=pl.col("image").cv.pipe(pipe).sink("numpy")
 )
 ```
+
+Structural parameters — the ones that fix the output shape, rank or dtype, such
+as `cast(dtype=)` or a reduction `axis` — stay literal-only and raise
+`TypeError` at build time if given an expression. See
+[Dynamic Parameters](../user-guide/operations/image-ops.md#dynamic-parameters)
+for the full table of which parameters accept expressions.
 
 ## Output Formats (Sinks)
 

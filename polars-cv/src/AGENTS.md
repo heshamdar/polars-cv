@@ -39,11 +39,13 @@ maturin develop --release  # Builds cdylib and installs into .venv
 | `execute.rs` | `resolve_op()` (op-spec to `GraphStep`), decode/encode helpers shared by graph execution |
 | `graph/step.rs` | `GraphStep` — the plugin-level step vocabulary: `Buffer(ViewDto)` plus graph-only steps (binary, mask, merge, geometry, reduction, histogram, perceptual_hash, extract_shape, label_reduce); contract methods read by the FFI |
 | `pipeline.rs` | `SourceSpec`, `SinkSpec`, `OpSpec` serde types for JSON deserialization |
-| `params.rs` | `ParamValue` — literal vs expression parameter resolution |
+| `params.rs` | `ParamValue` — literal vs expression parameter resolution (`resolve_*` numerics, `resolve_str`/`resolve_bool` for non-structural enums and flags, `req_*_literal` for structural ones). `ParamCtx::probe` marks the plan-time shape probe, where every expression param is bound to an integer placeholder and the enum/flag accessors fall back to their default; real execution stays strict |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `cloud.rs` | Cloud storage and HTTP file reads via `object_store` + `reqwest` |
+| `cloud_auth.rs` | Bearer-token sourcing for the OAuth backends (GCS/Azure): federated ADC delegation to `gcloud`, `token_command`, expiry-aware caching |
 | `contour.rs` | Contour namespace plugin functions (IoU, matching, label_reduce, bbox variants) |
 | `point.rs` | Point geometry plugin functions |
+| `geom_params.rs` | `GeomParams` — per-row parameter resolution for those namespace functions, reading expression params off the extra inputs named in the graph-free `input_slots` map |
 
 ## Core Architecture
 
@@ -142,6 +144,8 @@ Runs at Polars planning time (NOT execution time). Parses the graph JSON, resolv
 `point.rs` and `contour.rs` expose direct plugin expression functions for `.point` / `.contour` / `.bbox` namespaces. These **bypass `vb_graph`** and operate on Struct/List columns directly. `image_metadata.rs` and `read_bytes.rs` bypass it the same way for the `.cv` namespace's non-pipeline methods.
 
 `tests/test_sanitation.py::test_namespace_plugin_symbols_match_registrations` pins both directions of this surface — add any new module carrying a namespace `#[polars_expr]` to the file list it scans, or the symbol silently escapes the check.
+
+Because they bypass `vb_graph`, these functions get no `ParamCtx`. Their per-row parameters ride in as **extra input series**: Python's `_ArgBinder` appends each expression-valued parameter to the inputs and records its name in an `input_slots` name→index map inside the kwargs, which `geom_params.rs` reads back through the same `ParamCol` accessors `params.rs` uses. Names, not positions — several of these functions already take optional data operands (`scores`, `origin`) positionally, where an appended parameter would be indistinguishable from an omitted operand. `GeomParams` rejects an out-of-range index and a map that does not account for every input, so a binder/reader drift fails loudly instead of silently dropping an operand.
 
 Key functions in `contour.rs`:
 - `contour_pairwise_iou`, `contour_match_detections`, `contour_label_reduce`
