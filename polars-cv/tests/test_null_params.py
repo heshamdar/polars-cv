@@ -290,6 +290,36 @@ class TestIndependentOfOnError:
         assert out["out"].struct.field("_error")[1] is None
         assert out["out"].struct.field("_output")[1]["data"] is None
 
+    def test_does_not_swallow_an_invalid_non_null_param(self) -> None:
+        # The discriminator for over-swallowing: a *present but invalid* value
+        # in the same parameter column must still raise under "null". Only a
+        # genuine null may null the row.
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=pl.col("h"), width=pl.col("h"))
+            .on_null_param("null")
+        )
+        df = pl.DataFrame({"img": [_png(), _png()], "h": [4, -1]})
+        with pytest.raises(pl.exceptions.ComputeError):
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+
+    def test_does_not_swallow_a_wrong_dtype_param(self) -> None:
+        # A String column routed into a numeric parameter is a user error, not
+        # a null, and must survive the policy.
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=pl.col("h"), width=pl.col("h"))
+            .on_null_param("null")
+        )
+        df = pl.DataFrame(
+            {"img": [_png(), _png()], "h": ["4", None]},
+            schema={"img": pl.Binary, "h": pl.String},
+        )
+        with pytest.raises(pl.exceptions.ComputeError):
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+
     def test_on_error_null_still_covers_null_params(self) -> None:
         # Pre-existing behaviour: `on_error("null")` catches the null-parameter
         # error too, just less precisely (it nulls the whole row).
@@ -307,17 +337,32 @@ class TestIndependentOfOnError:
 
 @plugin_required
 class TestComposition:
-    def test_conflicting_policies_rejected(self) -> None:
+    def test_one_pipeline_setting_the_policy_applies_to_the_graph(self) -> None:
+        # The hoist collects only *non-default* policies, so an explicit
+        # "raise" alongside a "null" is not a conflict — "null" wins for the
+        # graph. With only two values there is no way to make the conflict
+        # branch fire for this policy (unlike on_error, whose rejection is
+        # covered by test_row_error_policy.py); asserting that honestly is
+        # more useful than a test named for a case that cannot happen.
         a = pl.col("img").cv.pipe(
             Pipeline().source("image_bytes").on_null_param("null")
         )
         b = pl.col("img").cv.pipe(
             Pipeline().source("image_bytes").grayscale().on_null_param("raise")
         )
-        # Only distinct *non-default* policies conflict; "raise" is the default
-        # and so never participates.
-        merged = a.add(b)
-        merged.sink("numpy")
+        graph = a.add(b).sink("numpy", return_expr=False)
+        assert graph._to_dict()["on_null_param"] == "null"
+
+    def test_generalized_hoist_still_rejects_on_error_conflicts(self) -> None:
+        # The two policies share one hoist loop in `PipelineGraph._to_dict`.
+        # on_error is the instantiation whose conflict branch can fire, so it
+        # guards the refactor that generalized the loop.
+        a = pl.col("img").cv.pipe(Pipeline().source("image_bytes").on_error("null"))
+        b = pl.col("img").cv.pipe(
+            Pipeline().source("image_bytes").grayscale().on_error("null_with_message")
+        )
+        with pytest.raises(ValueError, match="Conflicting on_error"):
+            a.add(b).sink("numpy")
 
     def test_policy_set_on_lazy_expr(self) -> None:
         expr = (
