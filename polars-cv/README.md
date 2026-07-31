@@ -7,7 +7,7 @@ A Polars plugin for high-performance vision and array operations.
 ## Features
 
 - **Modular Pipelines**: Define image processing pipelines and apply them to DataFrame columns.
-- **Expression Arguments**: Any parameter that doesn't fix the output shape takes a Polars expression — numeric values, individual list elements, and non-structural enums/flags — on both the pipeline and the geometry namespaces.
+- **Expression Arguments**: Any parameter that doesn't fix the output shape takes a Polars expression — numeric values, individual list elements, and non-structural enums/flags — on both the pipeline and the geometry namespaces. A null in one of those columns raises by default, or nulls only the rows that depend on it with `.on_null_param("null")`.
 - **Zero-Copy Performance**: Efficient memory management with stride-aware operations.
 - **Multi-Domain**: Seamlessly move between images, geometry (contours), and numeric results.
 
@@ -114,6 +114,12 @@ result = df.with_columns(
     processed=pl.col("image").cv.pipe(pipe).sink("numpy")
 )
 ```
+
+A parameter column may contain nulls. By default that fails the query, naming
+the column and row; `.on_null_param("null")` yields null for the affected rows
+instead — only the outputs that actually depend on the parameter, leaving
+genuine decode and execution errors raising as before. For a fallback value,
+fill it in the expression: `pl.col("target_h").fill_null(224)`.
 
 ## Operations
 

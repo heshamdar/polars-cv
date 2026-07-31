@@ -42,6 +42,26 @@ contour = contour_from_points([
 ])
 ```
 
+## Per-Row Parameters and Nulls
+
+Numeric parameters on all three namespaces accept a `pl.Expr` as well as a
+literal, resolved per row. A null in such a column raises by default;
+`on_null("null")` — shared by `.contour`, `.point` and `.bbox` — yields null for
+the affected rows instead:
+
+```python
+df.with_columns(
+    norm=pl.col("contour").contour.on_null("null").normalize(pl.col("w"), 100)
+)
+```
+
+`on_null()` returns a copy of the accessor with the policy applied and chains
+ahead of the call, so it never appears in a method signature. The `.cv`
+namespace has no equivalent: its parameters belong to a `Pipeline`, so the
+control there is [`Pipeline.on_null_param()`](pipeline.md). See
+[Geometry Operations](../user-guide/operations/geometry.md#expression-parameters)
+for which parameters are per-row.
+
 ## ContourNamespace
 
 ::: polars_cv.geometry.contours.ContourNamespace
@@ -53,6 +73,14 @@ contour = contour_from_points([
 ## PointNamespace
 
 ::: polars_cv.geometry.points.PointNamespace
+    options:
+      show_root_heading: false
+      show_source: false
+      heading_level: 3
+
+## BBoxNamespace
+
+::: polars_cv.geometry.bbox.BBoxNamespace
     options:
       show_root_heading: false
       show_source: false

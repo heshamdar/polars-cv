@@ -105,6 +105,11 @@ Image sources have unknown channel count at planning time. Users can assert know
 | `.contour` | Contour geometry ops (area, perimeter, IoU, matching) |
 | `.bbox` | Bounding box ops (pairwise IoU, match detections) |
 
+The three geometry namespaces also carry `on_null("raise"|"null")`, which says
+what a null in a per-row expression parameter means. `.cv` deliberately has no
+`on_null` — its parameters belong to a `Pipeline`, so the control there is
+`Pipeline.on_null_param()`.
+
 ## Directory Structure
 
 ```
