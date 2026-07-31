@@ -106,7 +106,9 @@ Create two environments in your repository (Settings → Environments):
 
    The compiled extension's `polars_cv._lib.__version__` needs no action: it is
    baked in from `polars-cv/Cargo.toml` at build time. That is what makes a stale
-   build detectable — see `polars_cv.build_info()`.
+   `.so` detectable — the install is editable, so Python edits are live but the
+   extension is not rebuilt until you run `maturin develop`. See
+   `polars_cv.build_info()`.
 2. Roll the `CHANGELOG.md` `[Unreleased]` section into a dated entry for the new
    version, and leave a fresh empty `[Unreleased]` heading above it
 3. Commit and push to main

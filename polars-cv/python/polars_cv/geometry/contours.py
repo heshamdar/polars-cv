@@ -94,9 +94,11 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
 
     def area(self, *, signed: bool | pl.Expr = False) -> pl.Expr:
         """
-        Compute contour area using the Shoelace formula.
+        Compute contour area.
 
-        For contours with holes, the hole areas are subtracted.
+        The area of the region the contour describes: the exterior minus the union
+        of its hole rings, in either winding direction. Overlapping or nested hole
+        rings are not double-subtracted.
 
         Args:
             signed: If True, return signed area (negative for CW winding).
@@ -256,6 +258,11 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         Compute Intersection over Union with another contour.
 
+        Overlap is exact for arbitrary simple polygons — concave shapes and holes
+        included, in either winding direction. Each contour is measured as its
+        exterior minus the union of its hole rings, the same region `area()`,
+        `contains_point()` and rasterization use.
+
         Args:
             other: Another contour column to compare with.
 
@@ -358,8 +365,11 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         Compute Hausdorff distance to another contour.
 
-        The Hausdorff distance is the maximum distance from any point
-        on one contour to the nearest point on the other.
+        The maximum, over every *vertex* of either contour, of the distance to the
+        nearest vertex of the other. This is a vertex-to-vertex measure, not
+        point-to-edge: two contours tracing the same outline with different vertex
+        spacing have a non-zero distance. Hole vertices are included. An empty
+        contour gives `inf`.
 
         Args:
             other: Another contour column to compare with.

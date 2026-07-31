@@ -21,18 +21,45 @@ fn ring_line_string(points: &[Point]) -> LineString<f64> {
 /// Positive area indicates counter-clockwise winding (in standard math coords).
 /// Negative area indicates clockwise winding.
 ///
+/// Computed in place rather than through [`Contour::to_geo`]: this is called per
+/// ring by `winding` and `ensure_winding`, and the round-trip would cost two
+/// allocations for a single accumulator. The first-vertex shift is `geo`'s
+/// (`Area for LineString`) and keeps precision on coordinates far from the origin.
+///
 /// # Arguments
 /// * `points` - Slice of points forming a closed polygon
 ///
 /// # Returns
 /// Signed area value
 pub fn signed_area(points: &[Point]) -> f64 {
-    ring_polygon(points).signed_area()
+    let [origin, rest @ ..] = points else {
+        return 0.0;
+    };
+
+    if rest.len() < 2 {
+        return 0.0;
+    }
+
+    // Sum over the closed ring; the final edge wraps back to `origin`, whose own
+    // terms vanish once shifted, so it contributes nothing and is skipped.
+    let twice_area: f64 = rest
+        .windows(2)
+        .map(|edge| {
+            let (p, q) = (edge[0], edge[1]);
+            (p.x - origin.x) * (q.y - origin.y) - (q.x - origin.x) * (p.y - origin.y)
+        })
+        .sum();
+
+    twice_area / 2.0
 }
 
 /// Computes the area of a contour.
 ///
-/// Hole areas are subtracted, whichever way each hole ring is wound.
+/// This is the area of the region the contour describes — the exterior minus the
+/// union of every hole ring, whichever way each ring is wound. Subtracting each
+/// hole's area in turn would double-count wherever two holes overlap, and would
+/// disagree with `contains_point`, `rasterize` and [`super::pairwise::iou`]; see
+/// [`Contour::to_geo_region`].
 ///
 /// # Arguments
 /// * `contour` - The contour to measure
@@ -41,12 +68,12 @@ pub fn signed_area(points: &[Point]) -> f64 {
 /// # Returns
 /// Area value (absolute if `signed` is false)
 pub fn area(contour: &Contour, signed: bool) -> f64 {
-    let polygon = contour.to_geo();
+    let magnitude = contour.to_geo_region().unsigned_area();
 
-    if signed {
-        polygon.signed_area()
+    if signed && signed_area(&contour.exterior) < 0.0 {
+        -magnitude
     } else {
-        polygon.unsigned_area()
+        magnitude
     }
 }
 

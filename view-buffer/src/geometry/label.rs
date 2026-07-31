@@ -124,19 +124,21 @@ fn score_one(
     let mut acc = 0.0;
     let mut max_val = f64::NEG_INFINITY;
     let mut count = 0usize;
+    // Converted once for the whole scan: `to_geo` allocates, and the two
+    // point-in-contour modes below test every pixel in the bounding box.
+    let polygon = (region_mode != LabelRegionMode::Bbox).then(|| contour.to_geo());
     for y in y0..y1 {
         for x in x0..x1 {
-            let include = match region_mode {
-                LabelRegionMode::Bbox => true,
-                LabelRegionMode::Interior => {
-                    predicates::contains_point(contour, x as f64 + 0.5, y as f64 + 0.5)
+            let point = Point::new(x as f64 + 0.5, y as f64 + 0.5);
+            let include = match (region_mode, &polygon) {
+                (LabelRegionMode::Bbox, _) => true,
+                (LabelRegionMode::Interior, Some(polygon)) => {
+                    predicates::position_in_polygon(polygon, &point) > 0
                 }
-                LabelRegionMode::Boundary => {
-                    predicates::point_in_contour(
-                        &Point::new(x as f64 + 0.5, y as f64 + 0.5),
-                        contour,
-                    ) >= 0
+                (LabelRegionMode::Boundary, Some(polygon)) => {
+                    predicates::position_in_polygon(polygon, &point) >= 0
                 }
+                _ => unreachable!("polygon is built for every non-Bbox mode"),
             };
             if include {
                 let val = at(y, x);

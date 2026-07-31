@@ -5,7 +5,7 @@
 use crate::core::buffer::ViewBuffer;
 
 use super::contour::{Contour, Point};
-use super::predicates::point_in_polygon;
+use super::predicates::position_in_polygon;
 
 /// Rasterizes a contour to a binary mask.
 ///
@@ -125,24 +125,17 @@ pub fn rasterize_simple(
     let h = height as usize;
     let mut data = vec![background; w * h];
 
+    // Converted once: `to_geo` allocates, and this loop runs per pixel. The
+    // polygon carries its holes, so one position test replaces the old
+    // exterior-then-holes walk (a point on a hole boundary still paints, as
+    // before, because that reads as `0` rather than `-1`).
+    let polygon = contour.to_geo();
+
     for y in 0..h {
         for x in 0..w {
             let point = Point::new(x as f64 + 0.5, y as f64 + 0.5);
-            let result = point_in_polygon(&point, &contour.exterior);
 
-            let mut inside = result > 0;
-
-            // Check holes
-            if inside {
-                for hole in &contour.holes {
-                    if point_in_polygon(&point, hole) > 0 {
-                        inside = false;
-                        break;
-                    }
-                }
-            }
-
-            if inside || result == 0 {
+            if position_in_polygon(&polygon, &point) >= 0 {
                 data[y * w + x] = fill_value;
             }
         }

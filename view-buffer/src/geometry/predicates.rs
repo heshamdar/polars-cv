@@ -75,10 +75,20 @@ pub fn point_in_contour(point: &Point, contour: &Contour) -> i32 {
         return -1;
     }
 
-    match contour
-        .to_geo()
-        .coordinate_position(&coord! { x: point.x, y: point.y })
-    {
+    position_in_polygon(&contour.to_geo(), point)
+}
+
+/// Tests a point against an already-converted [`geo::Polygon`].
+///
+/// [`Contour::to_geo`] allocates, so testing many points against one contour must
+/// convert once and call this — a pixel loop that converts per point spends most
+/// of its time in the allocator. Callers with a single point should use
+/// [`point_in_contour`].
+///
+/// # Returns
+/// `1` inside, `0` on the boundary of the exterior or of a hole, `-1` outside.
+pub fn position_in_polygon(polygon: &geo::Polygon<f64>, point: &Point) -> i32 {
+    match polygon.coordinate_position(&coord! { x: point.x, y: point.y }) {
         CoordPos::Inside => 1,
         CoordPos::OnBoundary => 0,
         CoordPos::Outside => -1,

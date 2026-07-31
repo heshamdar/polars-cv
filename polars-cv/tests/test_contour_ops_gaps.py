@@ -98,6 +98,34 @@ def holed_square_ccw_hole(holed_square: dict) -> dict:
 
 
 @pytest.fixture
+def nested_holes() -> dict:
+    """100×100 square whose hole contains a second ring. Region = 10000 - 6400."""
+    return {
+        "exterior": [
+            {"x": 0.0, "y": 0.0},
+            {"x": 100.0, "y": 0.0},
+            {"x": 100.0, "y": 100.0},
+            {"x": 0.0, "y": 100.0},
+        ],
+        "holes": [
+            [
+                {"x": 10.0, "y": 10.0},
+                {"x": 10.0, "y": 90.0},
+                {"x": 90.0, "y": 90.0},
+                {"x": 90.0, "y": 10.0},
+            ],
+            [
+                {"x": 40.0, "y": 40.0},
+                {"x": 40.0, "y": 60.0},
+                {"x": 60.0, "y": 60.0},
+                {"x": 60.0, "y": 40.0},
+            ],
+        ],
+        "is_closed": True,
+    }
+
+
+@pytest.fixture
 def overlapping_squares() -> tuple[dict, dict]:
     """Two overlapping squares: (0,0)→(60,60) and (40,40)→(100,100).
 
@@ -574,12 +602,63 @@ class TestHolesAreStructuralNotDirectional:
         """Intersection is the holed shape (7500); union is the solid one (10000)."""
         assert _iou(holed_square, ccw_square) == pytest.approx(0.75, abs=1e-9)
 
+    def test_iou_ccw_holed_vs_solid_accounts_for_the_hole(
+        self, holed_square_ccw_hole: dict, ccw_square: dict
+    ) -> None:
+        """
+        The load-bearing assertion for hole handling.
+
+        A holed contour matched against *itself* saturates at 1.0 under the final
+        clamp no matter what the intersection does, so identity tests cannot detect
+        a hole being ignored or double-counted. Only an asymmetric comparison can,
+        and it has to run against the CCW-wound hole — the CW one behaves the same
+        under fill rules that get this wrong.
+        """
+        assert _iou(holed_square_ccw_hole, ccw_square) == pytest.approx(0.75, abs=1e-9)
+
     def test_dice_holed_vs_solid_accounts_for_the_hole(
         self, holed_square: dict, ccw_square: dict
     ) -> None:
         assert _dice(holed_square, ccw_square) == pytest.approx(
             15000.0 / 17500.0, abs=1e-9
         )
+
+    def test_dice_ccw_holed_vs_solid_accounts_for_the_hole(
+        self, holed_square_ccw_hole: dict, ccw_square: dict
+    ) -> None:
+        assert _dice(holed_square_ccw_hole, ccw_square) == pytest.approx(
+            15000.0 / 17500.0, abs=1e-9
+        )
+
+    def test_nested_holes_are_all_holes(
+        self, nested_holes: dict, ccw_square: dict
+    ) -> None:
+        """
+        Every ring in `holes` is a hole, however the rings nest.
+
+        The region is the exterior minus the *union* of the hole rings — the inner
+        ring lies in a part already removed, so it changes nothing. 10000 - 6400.
+        """
+        df = pl.DataFrame(
+            {"c": [nested_holes]}, schema={"c": CONTOUR_SCHEMA}
+        ).with_columns(area=pl.col("c").contour.area())
+        assert df["area"][0] == pytest.approx(3600.0, abs=1e-9)
+
+        assert _iou(nested_holes, nested_holes) == pytest.approx(1.0, abs=1e-9)
+        assert _iou(nested_holes, ccw_square) == pytest.approx(0.36, abs=1e-9)
+        assert _dice(nested_holes, ccw_square) == pytest.approx(
+            7200.0 / 13600.0, abs=1e-9
+        )
+
+    def test_nested_hole_interior_is_outside_the_contour(
+        self, nested_holes: dict
+    ) -> None:
+        """A point in the inner ring sits inside a removed region, so it is out."""
+        df = pl.DataFrame(
+            {"c": [nested_holes], "p": [{"x": 50.0, "y": 50.0}]},
+            schema={"c": CONTOUR_SCHEMA, "p": POINT_SCHEMA},
+        ).with_columns(inside=pl.col("c").contour.contains_point(pl.col("p")))
+        assert not df["inside"][0]
 
     def test_area_ignores_hole_winding(
         self, holed_square: dict, holed_square_ccw_hole: dict

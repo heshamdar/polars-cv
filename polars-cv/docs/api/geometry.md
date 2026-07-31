@@ -35,7 +35,11 @@ from polars_cv import CONTOUR_SCHEMA
 The `holes` field is the only thing that makes a ring a hole. Point order is never
 read as a hole signal, and no operation requires a particular winding — `area`,
 `centroid`, `contains_point`, `iou`, `dice` and rasterization all give the same
-answer whichever way each ring is wound. Winding is reported by
+answer whichever way each ring is wound.
+
+The region a contour describes is its exterior minus the **union** of its hole
+rings. Overlapping rings are not subtracted twice, and a ring nested inside
+another hole remains a hole. Winding is reported by
 [`.contour.winding()`](#winding) and set by [`.contour.ensure_winding()`](#transforms),
 and is consulted nowhere else.
 
