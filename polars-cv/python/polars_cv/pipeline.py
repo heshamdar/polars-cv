@@ -374,6 +374,9 @@ class Pipeline:
         ] = {}
         # Per-row error policy for the executed graph ("raise" by default).
         self._on_error: str = "raise"
+        # What a null in a per-row expression parameter means ("raise" by
+        # default). Independent of _on_error — see on_null_param().
+        self._on_null_param: str = "raise"
         # LazyPipelineExpr nodes referenced by ops (e.g. rasterize(shape=...));
         # consumers wiring this pipeline into a graph add them as upstream
         # dependencies so the referenced node executes first.
@@ -440,6 +443,7 @@ class Pipeline:
         new._hint_snapshots = dict(self._hint_snapshots)
         new._expected_ndim = self._expected_ndim
         new._on_error = self._on_error
+        new._on_null_param = self._on_null_param
         new._shape_refs = self._shape_refs.copy()
         return new
 
@@ -482,6 +486,53 @@ class Pipeline:
             raise ValueError(msg)
         new = self._clone()
         new._on_error = policy
+        return new
+
+    def on_null_param(self, policy: str) -> "Pipeline":
+        """
+        Set what a null in a per-row expression parameter means.
+
+        Parameters that take a Polars expression are read from ordinary
+        columns, which may contain nulls:
+
+        - ``"raise"`` (default): a null parameter fails the whole expression.
+        - ``"null"``: rows whose parameter is null yield null, exactly as a
+          null *input image* already does. Other rows are unaffected.
+
+        Under ``"null"`` only the outputs that actually depend on the affected
+        operation go null — unlike ``on_error("null")``, which nulls every
+        output of a failing row. The two settings are independent: this one
+        does not weaken error reporting for decode, encode or genuine
+        operation failures.
+
+        To substitute a **fallback value** instead of nulling, fill the null in
+        the expression itself — ``pl.col("scale").fill_null(1.0)`` — which is
+        the idiomatic Polars way and needs nothing from this API.
+
+        This is a graph-level setting: when pipelines are composed
+        (``merge_pipe``, binary ops), all composed pipelines must agree on the
+        policy.
+
+        Args:
+            policy: One of ``"raise"``, ``"null"``.
+
+        Returns:
+            New Pipeline with the null-parameter policy set.
+
+        Example:
+            >>> pipe = (
+            ...     Pipeline()
+            ...     .source("image_bytes")
+            ...     .resize(height=pl.col("h"), width=pl.col("w"))
+            ...     .on_null_param("null")
+            ... )
+        """
+        valid = ("raise", "null")
+        if policy not in valid:
+            msg = f"on_null_param must be one of {valid}, got '{policy}'"
+            raise ValueError(msg)
+        new = self._clone()
+        new._on_null_param = policy
         return new
 
     def _validate_domain(self, expected: str, op_name: str) -> None:

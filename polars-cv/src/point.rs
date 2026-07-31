@@ -12,6 +12,7 @@ use serde::Deserialize;
 use view_buffer::geometry::contour::Point;
 
 use crate::geom_params::{GeomParams, InputSlots};
+use crate::params::NullParamPolicy;
 
 // ============================================================================
 // Point Kwargs
@@ -52,6 +53,12 @@ pub struct PointKwargs {
     /// silently dropping an operand.
     #[serde(default)]
     pub input_slots: InputSlots,
+    /// What a null in a per-row parameter column means for that row: `raise`
+    /// (default) fails the expression, `null` yields a null result for the
+    /// affected rows. Set from Python by `_PluginNamespace.on_null` and applied
+    /// by `GeomParams::row`.
+    #[serde(default)]
+    pub on_null: NullParamPolicy,
 }
 
 // ============================================================================
@@ -123,6 +130,38 @@ fn build_point_series(
     StructChunked::from_series(name, len, [x_col, y_col].iter()).map(|ca| ca.into_series())
 }
 
+/// Run one row of a point transform and record its result.
+///
+/// Every transform in this module has the same row shape, and two different
+/// things make a row null: a null input point (`input_is_null`), and — under
+/// `on_null="null"` — a null per-row parameter. Routing both through one
+/// helper keeps the second from being re-implemented in each transform, and
+/// keeps them producing identical output.
+fn point_row(
+    params: &GeomParams,
+    input_is_null: bool,
+    x_results: &mut Vec<Option<f64>>,
+    y_results: &mut Vec<Option<f64>>,
+    transform: impl FnOnce() -> PolarsResult<(f64, f64)>,
+) -> PolarsResult<()> {
+    let result = if input_is_null {
+        None
+    } else {
+        params.row(transform)?
+    };
+    match result {
+        Some((x, y)) => {
+            x_results.push(Some(x));
+            y_results.push(Some(y));
+        }
+        None => {
+            x_results.push(None);
+            y_results.push(None);
+        }
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Output Type Functions
 // ============================================================================
@@ -146,7 +185,7 @@ fn point_output_type(_input_fields: &[Field]) -> PolarsResult<Field> {
 /// Normalize point coordinates to [0, 1] range.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -155,23 +194,25 @@ fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            x_results.push(None);
-            y_results.push(None);
-        } else {
-            let ref_width = params.required_f64("ref_width", kwargs.ref_width, i)?;
-            let ref_height = params.required_f64("ref_height", kwargs.ref_height, i)?;
-            // Per-row dimensions cannot be validated once per batch, so the
-            // divide-by-zero guard moves into the loop and names the row.
-            if ref_width == 0.0 || ref_height == 0.0 {
-                polars_bail!(ComputeError:
-                    "ref_width and ref_height must be non-zero (row {})", i
-                );
-            }
-            let (x, y) = parse_point(&value)?;
-            x_results.push(Some(x / ref_width));
-            y_results.push(Some(y / ref_height));
-        }
+        point_row(
+            &params,
+            value.is_null(),
+            &mut x_results,
+            &mut y_results,
+            || {
+                let ref_width = params.required_f64("ref_width", kwargs.ref_width, i)?;
+                let ref_height = params.required_f64("ref_height", kwargs.ref_height, i)?;
+                // Per-row dimensions cannot be validated once per batch, so the
+                // divide-by-zero guard moves into the loop and names the row.
+                if ref_width == 0.0 || ref_height == 0.0 {
+                    polars_bail!(ComputeError:
+                        "ref_width and ref_height must be non-zero (row {})", i
+                    );
+                }
+                let (x, y) = parse_point(&value)?;
+                Ok((x / ref_width, y / ref_height))
+            },
+        )?;
     }
 
     build_point_series(series.name().clone(), x_results, y_results)
@@ -180,7 +221,7 @@ fn point_normalize(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 /// Convert normalized coordinates to absolute pixel coordinates.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -189,16 +230,18 @@ fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            x_results.push(None);
-            y_results.push(None);
-        } else {
-            let ref_width = params.required_f64("ref_width", kwargs.ref_width, i)?;
-            let ref_height = params.required_f64("ref_height", kwargs.ref_height, i)?;
-            let (x, y) = parse_point(&value)?;
-            x_results.push(Some(x * ref_width));
-            y_results.push(Some(y * ref_height));
-        }
+        point_row(
+            &params,
+            value.is_null(),
+            &mut x_results,
+            &mut y_results,
+            || {
+                let ref_width = params.required_f64("ref_width", kwargs.ref_width, i)?;
+                let ref_height = params.required_f64("ref_height", kwargs.ref_height, i)?;
+                let (x, y) = parse_point(&value)?;
+                Ok((x * ref_width, y * ref_height))
+            },
+        )?;
     }
 
     build_point_series(series.name().clone(), x_results, y_results)
@@ -207,7 +250,7 @@ fn point_to_absolute(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
 /// Translate point by offset.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -216,16 +259,18 @@ fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            x_results.push(None);
-            y_results.push(None);
-        } else {
-            let dx = params.f64("dx", kwargs.dx, 0.0, i)?;
-            let dy = params.f64("dy", kwargs.dy, 0.0, i)?;
-            let (x, y) = parse_point(&value)?;
-            x_results.push(Some(x + dx));
-            y_results.push(Some(y + dy));
-        }
+        point_row(
+            &params,
+            value.is_null(),
+            &mut x_results,
+            &mut y_results,
+            || {
+                let dx = params.f64("dx", kwargs.dx, 0.0, i)?;
+                let dy = params.f64("dy", kwargs.dy, 0.0, i)?;
+                let (x, y) = parse_point(&value)?;
+                Ok((x + dx, y + dy))
+            },
+        )?;
     }
 
     build_point_series(series.name().clone(), x_results, y_results)
@@ -234,7 +279,7 @@ fn point_translate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Serie
 /// Scale point coordinates.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_scale(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -243,16 +288,18 @@ fn point_scale(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            x_results.push(None);
-            y_results.push(None);
-        } else {
-            let sx = params.f64("sx", kwargs.sx, 1.0, i)?;
-            let sy = params.f64("sy", kwargs.sy, 1.0, i)?;
-            let (x, y) = parse_point(&value)?;
-            x_results.push(Some(x * sx));
-            y_results.push(Some(y * sy));
-        }
+        point_row(
+            &params,
+            value.is_null(),
+            &mut x_results,
+            &mut y_results,
+            || {
+                let sx = params.f64("sx", kwargs.sx, 1.0, i)?;
+                let sy = params.f64("sy", kwargs.sy, 1.0, i)?;
+                let (x, y) = parse_point(&value)?;
+                Ok((x * sx, y * sy))
+            },
+        )?;
     }
 
     build_point_series(series.name().clone(), x_results, y_results)
@@ -457,7 +504,7 @@ fn point_angle_to(inputs: &[Series]) -> PolarsResult<Series> {
 /// Rotate point around origin by angle (radians).
 #[polars_expr(output_type_func=point_output_type)]
 fn point_rotate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let point_series = &inputs[0];
     let len = point_series.len();
@@ -471,39 +518,38 @@ fn point_rotate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> 
     for i in 0..len {
         let point_value = point_series.get(i)?;
 
-        if point_value.is_null() {
-            x_results.push(None);
-            y_results.push(None);
-        } else {
-            // The angle may vary per row, so the trig moves into the loop.
-            let angle = params.f64("angle", kwargs.angle, 0.0, i)?;
-            let cos_a = angle.cos();
-            let sin_a = angle.sin();
+        point_row(
+            &params,
+            point_value.is_null(),
+            &mut x_results,
+            &mut y_results,
+            || {
+                // The angle may vary per row, so the trig moves into the loop.
+                let angle = params.f64("angle", kwargs.angle, 0.0, i)?;
+                let cos_a = angle.cos();
+                let sin_a = angle.sin();
 
-            let (x, y) = parse_point(&point_value)?;
+                let (x, y) = parse_point(&point_value)?;
 
-            // Get origin (default to 0,0)
-            let (ox, oy) = match origin_series {
-                Some(col) => {
-                    let origin_value = col.get(i)?;
-                    if origin_value.is_null() {
-                        (0.0, 0.0)
-                    } else {
-                        parse_point(&origin_value)?
+                // Get origin (default to 0,0)
+                let (ox, oy) = match origin_series {
+                    Some(col) => {
+                        let origin_value = col.get(i)?;
+                        if origin_value.is_null() {
+                            (0.0, 0.0)
+                        } else {
+                            parse_point(&origin_value)?
+                        }
                     }
-                }
-                None => (0.0, 0.0),
-            };
+                    None => (0.0, 0.0),
+                };
 
-            // Rotate around origin
-            let dx = x - ox;
-            let dy = y - oy;
-            let new_x = dx * cos_a - dy * sin_a + ox;
-            let new_y = dx * sin_a + dy * cos_a + oy;
-
-            x_results.push(Some(new_x));
-            y_results.push(Some(new_y));
-        }
+                // Rotate around origin
+                let dx = x - ox;
+                let dy = y - oy;
+                Ok((dx * cos_a - dy * sin_a + ox, dx * sin_a + dy * cos_a + oy))
+            },
+        )?;
     }
 
     build_point_series(point_series.name().clone(), x_results, y_results)
@@ -539,7 +585,7 @@ fn point_midpoint(inputs: &[Series]) -> PolarsResult<Series> {
 /// Linear interpolation between two points.
 #[polars_expr(output_type_func=point_output_type)]
 fn point_interpolate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series_a = &inputs[0];
     let series_b = params
@@ -554,16 +600,19 @@ fn point_interpolate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
         let value_a = series_a.get(i)?;
         let value_b = series_b.get(i)?;
 
-        if value_a.is_null() || value_b.is_null() {
-            x_results.push(None);
-            y_results.push(None);
-        } else {
-            let t = params.f64("t", kwargs.t, 0.5, i)?;
-            let (x1, y1) = parse_point(&value_a)?;
-            let (x2, y2) = parse_point(&value_b)?;
-            x_results.push(Some(x1 + t * (x2 - x1)));
-            y_results.push(Some(y1 + t * (y2 - y1)));
-        }
+        let input_is_null = value_a.is_null() || value_b.is_null();
+        point_row(
+            &params,
+            input_is_null,
+            &mut x_results,
+            &mut y_results,
+            || {
+                let t = params.f64("t", kwargs.t, 0.5, i)?;
+                let (x1, y1) = parse_point(&value_a)?;
+                let (x2, y2) = parse_point(&value_b)?;
+                Ok((x1 + t * (x2 - x1), y1 + t * (y2 - y1)))
+            },
+        )?;
     }
 
     build_point_series(series_a.name().clone(), x_results, y_results)

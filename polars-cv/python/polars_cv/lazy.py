@@ -199,8 +199,9 @@ class LazyPipelineExpr:
             # Only the NEW operations (not self's ops)
             new_pipeline._ops = pipeline._ops.copy()
             new_pipeline._expr_refs = pipeline._expr_refs.copy()
-            # Carry the graph-level error policy through continuations.
+            # Carry the graph-level policies through continuations.
             new_pipeline._on_error = pipeline._on_error
+            new_pipeline._on_null_param = pipeline._on_null_param
             # Shape knowledge must survive continuations: replay each new op's
             # plan-time shape effect over the UPSTREAM hints (the standalone
             # pipeline computed its hints from an empty start, which loses

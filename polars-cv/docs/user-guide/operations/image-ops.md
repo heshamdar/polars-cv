@@ -555,6 +555,40 @@ while the *values* are not. A convolution `kernel`, a `normalize` mean/std pair,
 a `channel_swap` order and the affine `matrix` all keep a literal element count
 but accept a per-row expression for any individual element.
 
+### Null parameter values
+
+A parameter column can contain nulls. By default a null parameter fails the
+whole expression, naming the column and the row:
+
+```
+Parameter column 'target_h' has a null value at row 7
+```
+
+`.on_null_param("null")` opts into null-in/null-out instead — the rows whose
+parameter is null yield null, exactly as a null *input image* already does, and
+every other row proceeds:
+
+```python
+pipe = (
+    Pipeline()
+    .source("image_bytes")
+    .resize(height=pl.col("h"), width=pl.col("w"))
+    .on_null_param("null")
+)
+```
+
+Only the outputs that depend on the affected operation go null, and unrelated
+failures still raise — see
+[Error Handling](../concepts/sources.md#error-handling) for how this differs
+from `.on_error("null")`.
+
+For a **fallback value** instead of a null, fill it in the expression:
+`pl.col("h").fill_null(224)`. There is no policy for this because Polars
+already expresses it.
+
+An aggregation broadcasts, so a null in a length-1 parameter column (e.g.
+`pl.col("h").max()` over an all-null column) applies to — and nulls — every row.
+
 ## Next Steps
 
 - [Geometry Operations](geometry.md)

@@ -12,6 +12,31 @@
 
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
+
+/// What a **null** in a per-row expression parameter column means.
+///
+/// Per-row parameters are read from ordinary Polars columns, which may contain
+/// nulls. This says whether a missing parameter aborts the query or simply
+/// yields a missing result for the rows it affects.
+///
+/// Deliberately separate from [`RowErrorPolicy`](crate::graph::RowErrorPolicy):
+/// under [`Null`](Self::Null) a null parameter is *not* an error, so it records
+/// no `_error` message under `null_with_message`, and opting into it does not
+/// weaken reporting for decode, encode or genuine operation failures.
+///
+/// There is deliberately no "fallback default" variant: `pl.col("w").fill_null(1.0)`
+/// already expresses that in Polars itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NullParamPolicy {
+    /// A null parameter fails the expression (the default).
+    #[default]
+    Raise,
+    /// A null parameter makes the node produce no output for that row, which
+    /// propagates as a null exactly like a null *input* already does.
+    Null,
+}
 
 /// A parameter value that can be either a literal or an expression reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,7 +126,7 @@ impl ParamValue {
             ParamValue::Literal { value } => value.as_i64().ok_or_else(
                 || polars_err!(ComputeError: "Expected integer literal, got {:?}", value),
             ),
-            _ => self.slot_col(ctx)?.get_i64(row_idx),
+            _ => self.slot_col(ctx)?.get_i64(row_idx, ctx),
         }
     }
 
@@ -129,7 +154,7 @@ impl ParamValue {
             ParamValue::Literal { value } => value.as_f64().ok_or_else(
                 || polars_err!(ComputeError: "Expected float literal, got {:?}", value),
             ),
-            _ => self.slot_col(ctx)?.get_f64(row_idx),
+            _ => self.slot_col(ctx)?.get_f64(row_idx, ctx),
         }
     }
 
@@ -173,7 +198,7 @@ impl ParamValue {
                 || polars_err!(ComputeError: "Expected string literal, got {:?}", value),
             ),
             _ if ctx.is_probe() => Ok(None),
-            _ => self.slot_col(ctx)?.get_str(row_idx).map(Some),
+            _ => self.slot_col(ctx)?.get_str(row_idx, ctx).map(Some),
         }
     }
 
@@ -186,7 +211,7 @@ impl ParamValue {
                 || polars_err!(ComputeError: "Expected boolean literal, got {:?}", value),
             ),
             _ if ctx.is_probe() => Ok(None),
-            _ => self.slot_col(ctx)?.get_bool(row_idx).map(Some),
+            _ => self.slot_col(ctx)?.get_bool(row_idx, ctx).map(Some),
         }
     }
 
@@ -386,7 +411,21 @@ impl<'a> ParamCol<'a> {
         }
     }
 
-    fn null_err(&self, row_idx: usize) -> PolarsError {
+    /// The single point where a null per-row parameter is handled.
+    ///
+    /// Every null in an expression parameter — numeric, enum, flag, or list
+    /// element, for any of the ~70 operations — reaches this function, so the
+    /// policy is a shared mechanism rather than something each op re-declares.
+    ///
+    /// Both policies return `Err`, which is what makes this safe: resolution
+    /// short-circuits, so no placeholder value can reach an operation. Under
+    /// [`NullParamPolicy::Null`] the context is additionally flagged, and the
+    /// caller that owns the row (`graph::compiled`, or `GeomParams::row`) turns
+    /// that flag into a null result instead of propagating the error.
+    fn on_null(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsError {
+        if ctx.null_policy() == NullParamPolicy::Null {
+            ctx.flag_null();
+        }
         polars_err!(ComputeError:
             "Parameter column '{}' has a null value at row {}",
             self.series.name(), row_idx
@@ -402,7 +441,7 @@ impl<'a> ParamCol<'a> {
 
     /// Read the value at `row_idx` as i64 (truncating floats, like
     /// `AnyValue::try_extract`).
-    pub fn get_i64(&self, row_idx: usize) -> PolarsResult<i64> {
+    pub fn get_i64(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<i64> {
         let idx = self.value_index(row_idx);
         let value: Option<i64> = match &self.typed {
             TypedCol::U8(ca) => ca.get(idx).map(i64::from),
@@ -429,13 +468,18 @@ impl<'a> ParamCol<'a> {
             // A Boolean column for a numeric parameter is a mis-routed
             // expression, not a 0/1 value the user asked for.
             TypedCol::Bool(_) | TypedCol::Str(_) => return Err(self.cast_err(row_idx, "i64")),
-            TypedCol::Other(s) => return s.get(idx)?.try_extract::<i64>(),
+            // Route the fallback path's null through `on_null` too, rather than
+            // letting `try_extract` report it as a cast failure.
+            TypedCol::Other(s) => match s.get(idx)? {
+                AnyValue::Null => None,
+                v => return v.try_extract::<i64>(),
+            },
         };
-        value.ok_or_else(|| self.null_err(row_idx))
+        value.ok_or_else(|| self.on_null(row_idx, ctx))
     }
 
     /// Read the value at `row_idx` as f64.
-    pub fn get_f64(&self, row_idx: usize) -> PolarsResult<f64> {
+    pub fn get_f64(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<f64> {
         let idx = self.value_index(row_idx);
         let value: Option<f64> = match &self.typed {
             TypedCol::U8(ca) => ca.get(idx).map(f64::from),
@@ -449,9 +493,12 @@ impl<'a> ParamCol<'a> {
             TypedCol::F32(ca) => ca.get(idx).map(f64::from),
             TypedCol::F64(ca) => ca.get(idx),
             TypedCol::Bool(_) | TypedCol::Str(_) => return Err(self.cast_err(row_idx, "f64")),
-            TypedCol::Other(s) => return s.get(idx)?.try_extract::<f64>(),
+            TypedCol::Other(s) => match s.get(idx)? {
+                AnyValue::Null => None,
+                v => return v.try_extract::<f64>(),
+            },
         };
-        value.ok_or_else(|| self.null_err(row_idx))
+        value.ok_or_else(|| self.on_null(row_idx, ctx))
     }
 
     /// Read the value at `row_idx` as a string, for per-row enum parameters.
@@ -459,10 +506,10 @@ impl<'a> ParamCol<'a> {
     /// Only a genuine string column is accepted: a numeric column here means
     /// the user routed the wrong expression to an enum parameter, which must
     /// be an error rather than a silent fallback to the default.
-    pub fn get_str(&self, row_idx: usize) -> PolarsResult<&'a str> {
+    pub fn get_str(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<&'a str> {
         let idx = self.value_index(row_idx);
         match &self.typed {
-            TypedCol::Str(ca) => ca.get(idx).ok_or_else(|| self.null_err(row_idx)),
+            TypedCol::Str(ca) => ca.get(idx).ok_or_else(|| self.on_null(row_idx, ctx)),
             _ => Err(polars_err!(ComputeError:
                 "Parameter column '{}' must be a String column for an enum \
                  parameter, got {}",
@@ -472,10 +519,10 @@ impl<'a> ParamCol<'a> {
     }
 
     /// Read the value at `row_idx` as a boolean, for per-row flag parameters.
-    pub fn get_bool(&self, row_idx: usize) -> PolarsResult<bool> {
+    pub fn get_bool(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<bool> {
         let idx = self.value_index(row_idx);
         match &self.typed {
-            TypedCol::Bool(ca) => ca.get(idx).ok_or_else(|| self.null_err(row_idx)),
+            TypedCol::Bool(ca) => ca.get(idx).ok_or_else(|| self.on_null(row_idx, ctx)),
             _ => Err(polars_err!(ComputeError:
                 "Parameter column '{}' must be a Boolean column for a flag \
                  parameter, got {}",
@@ -508,17 +555,26 @@ fn float_to_i64(v: f64) -> Option<i64> {
 pub struct ParamCtx<'a> {
     cols: Vec<ParamCol<'a>>,
     probe: bool,
+    null_policy: NullParamPolicy,
+    /// Set by [`ParamCol::on_null`] when a null was read under
+    /// [`NullParamPolicy::Null`]. `Cell` because resolvers take `&ParamCtx`;
+    /// the context is per-call and the row loop that reads the flag is
+    /// single-threaded, so no `Sync` bound is introduced.
+    null_hit: Cell<bool>,
 }
 
 impl<'a> ParamCtx<'a> {
-    /// Build a context over every plugin input series.
+    /// Build a context over every plugin input series, applying `policy` to
+    /// null parameter values.
     ///
     /// Source columns are included (slots never point at them, but absolute
     /// indexing keeps the binding trivial and collision-free).
-    pub fn from_inputs(inputs: &'a [Series]) -> Self {
+    pub fn with_null_policy(inputs: &'a [Series], policy: NullParamPolicy) -> Self {
         ParamCtx {
             cols: inputs.iter().map(ParamCol::new).collect(),
             probe: false,
+            null_policy: policy,
+            null_hit: Cell::new(false),
         }
     }
 
@@ -540,12 +596,42 @@ impl<'a> ParamCtx<'a> {
         ParamCtx {
             cols: inputs.iter().map(ParamCol::new).collect(),
             probe: true,
+            // Probe placeholders are synthesised non-null integers, so the
+            // policy is unreachable here; `Raise` keeps probing strict.
+            null_policy: NullParamPolicy::Raise,
+            null_hit: Cell::new(false),
         }
     }
 
     /// Whether this is a plan-time shape probe rather than real execution.
     pub fn is_probe(&self) -> bool {
         self.probe
+    }
+
+    /// The policy this context applies to null parameter values.
+    pub fn null_policy(&self) -> NullParamPolicy {
+        self.null_policy
+    }
+
+    /// Record that a null parameter was read under [`NullParamPolicy::Null`].
+    pub(crate) fn flag_null(&self) {
+        self.null_hit.set(true);
+    }
+
+    /// Clear the null flag before a unit of work whose outcome will be tested
+    /// with [`took_null`](Self::took_null).
+    pub fn clear_null(&self) {
+        self.null_hit.set(false);
+    }
+
+    /// Whether the work since the last [`clear_null`](Self::clear_null) read a
+    /// null parameter that the policy says should yield a null result.
+    ///
+    /// Only meaningful alongside an `Err`: `on_null` always returns an error so
+    /// resolution short-circuits, and this distinguishes "null parameter, null
+    /// result wanted" from a genuine failure.
+    pub fn took_null(&self) -> bool {
+        self.null_hit.get()
     }
 
     /// An empty context, for resolving all-literal op specs.
@@ -573,6 +659,15 @@ impl<'a> ParamCtx<'a> {
 /// out-of-range value, or a per-row expression that fails to resolve — is
 /// always an error. Helpers never swallow a resolution error into a default
 /// (guarded by `execute::strict_param_tests`).
+///
+/// A **null** per-row value is the one thing that is not covered here, because
+/// it is not a matter of validity: it is governed by [`NullParamPolicy`] at
+/// [`ParamCol::on_null`], the layer below. Under `Raise` it reaches these
+/// helpers as an ordinary error and the policy above applies unchanged; under
+/// `Null` the error still propagates out of `resolve_op`, but the caller that
+/// owns the row recognises it and nulls the row instead. Either way, no helper
+/// here may turn a null into its default — that would silently compute a wrong
+/// result for a missing input.
 pub mod get {
     use super::{ParamCtx, ParamValue};
     use polars::prelude::*;
@@ -898,7 +993,7 @@ mod tests {
     fn test_slot_typed_read() {
         let s = Series::new("h".into(), &[10i64, 20, 30]);
         let inputs = vec![s];
-        let ctx = ParamCtx::from_inputs(&inputs);
+        let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Raise);
         let param = ParamValue::Slot { idx: 0 };
         assert_eq!(param.resolve_i64(2, &ctx).unwrap(), 30);
         assert_eq!(param.resolve_u32(1, &ctx).unwrap(), 20);
@@ -909,7 +1004,7 @@ mod tests {
         // A one-element series (aggregation result) broadcasts to all rows.
         let s = Series::new("h".into(), &[7i32]);
         let inputs = vec![s];
-        let ctx = ParamCtx::from_inputs(&inputs);
+        let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Raise);
         let param = ParamValue::Slot { idx: 0 };
         assert_eq!(param.resolve_i64(0, &ctx).unwrap(), 7);
         assert_eq!(param.resolve_i64(99, &ctx).unwrap(), 7);
@@ -919,17 +1014,93 @@ mod tests {
     fn test_slot_null_value_errors() {
         let s = Series::new("h".into(), &[Some(1i64), None]);
         let inputs = vec![s];
-        let ctx = ParamCtx::from_inputs(&inputs);
+        let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Raise);
         let param = ParamValue::Slot { idx: 0 };
         assert_eq!(param.resolve_i64(0, &ctx).unwrap(), 1);
         assert!(param.resolve_i64(1, &ctx).is_err());
+        // Under `Raise` the context is never flagged, so callers cannot
+        // mistake a genuine failure for a null-parameter row.
+        assert!(!ctx.took_null());
+    }
+
+    #[test]
+    fn test_null_policy_flags_the_context() {
+        // Under `Null` the read still errors — so resolution short-circuits
+        // and no placeholder value reaches an op — but the context is flagged
+        // so the row's owner can null it instead of propagating.
+        let s = Series::new("h".into(), &[Some(1i64), None]);
+        let inputs = vec![s];
+        let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Null);
+        let param = ParamValue::Slot { idx: 0 };
+
+        ctx.clear_null();
+        assert_eq!(param.resolve_i64(0, &ctx).unwrap(), 1);
+        assert!(!ctx.took_null());
+
+        ctx.clear_null();
+        assert!(param.resolve_i64(1, &ctx).is_err());
+        assert!(ctx.took_null());
+    }
+
+    #[test]
+    fn test_null_policy_does_not_flag_other_failures() {
+        // A wrong-dtype column is a user error, not a null: it must stay an
+        // error under `Null` rather than silently nulling the row.
+        let s = Series::new("h".into(), &["not-a-number"]);
+        let inputs = vec![s];
+        let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Null);
+        let param = ParamValue::Slot { idx: 0 };
+
+        ctx.clear_null();
+        assert!(param.resolve_i64(0, &ctx).is_err());
+        assert!(!ctx.took_null());
+    }
+
+    #[test]
+    fn test_null_policy_covers_every_accessor() {
+        // Numeric, enum and flag parameters all route through `on_null`.
+        let ints = Series::new("i".into(), &[None::<i64>]);
+        let floats = Series::new("f".into(), &[None::<f64>]);
+        let strings = Series::new("s".into(), &[None::<&str>]);
+        let bools = Series::new("b".into(), &[None::<bool>]);
+        let inputs = vec![ints, floats, strings, bools];
+        let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Null);
+
+        for idx in 0..4 {
+            let param = ParamValue::Slot { idx };
+            ctx.clear_null();
+            let result: PolarsResult<()> = match idx {
+                0 => param.resolve_i64(0, &ctx).map(|_| ()),
+                1 => param.resolve_f64(0, &ctx).map(|_| ()),
+                2 => param.resolve_str(0, &ctx).map(|_| ()),
+                _ => param.resolve_bool(0, &ctx).map(|_| ()),
+            };
+            assert!(result.is_err(), "slot {idx} should error");
+            assert!(ctx.took_null(), "slot {idx} should flag the null");
+        }
+    }
+
+    #[test]
+    fn test_null_policy_covers_non_primitive_columns() {
+        // The `TypedCol::Other` fallback used to report `try_extract`'s cast
+        // error for a null, bypassing the null path entirely.
+        let s = Series::new("d".into(), &[None::<i64>])
+            .cast(&DataType::Duration(TimeUnit::Milliseconds))
+            .unwrap();
+        let inputs = vec![s];
+        let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Null);
+        let param = ParamValue::Slot { idx: 0 };
+
+        ctx.clear_null();
+        assert!(param.resolve_i64(0, &ctx).is_err());
+        assert!(ctx.took_null());
     }
 
     #[test]
     fn test_slot_float_truncates_like_try_extract() {
         let s = Series::new("h".into(), &[3.9f64, -2.7]);
         let inputs = vec![s];
-        let ctx = ParamCtx::from_inputs(&inputs);
+        let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Raise);
         let param = ParamValue::Slot { idx: 0 };
         assert_eq!(param.resolve_i64(0, &ctx).unwrap(), 3);
         assert_eq!(param.resolve_i64(1, &ctx).unwrap(), -2);

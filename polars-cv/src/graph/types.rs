@@ -11,6 +11,7 @@ use std::sync::Arc;
 use view_buffer::geometry::Contour;
 use view_buffer::ViewBuffer;
 
+use crate::params::NullParamPolicy;
 use crate::pipeline::{SinkSpec, SourceSpec};
 
 use super::encode::{default_domain, default_dtype};
@@ -101,6 +102,12 @@ pub struct UnifiedGraph {
     /// Per-row error policy for the whole graph.
     #[serde(default)]
     pub on_error: RowErrorPolicy,
+    /// What a null in a per-row expression parameter means for the affected
+    /// rows. Independent of [`on_error`](Self::on_error): under
+    /// [`NullParamPolicy::Null`] a null parameter is not an error at all, so it
+    /// yields a null result without weakening error reporting for anything else.
+    #[serde(default)]
+    pub on_null_param: NullParamPolicy,
     /// Named nodes in the graph.
     pub nodes: HashMap<String, GraphNode>,
     /// Output specifications (alias -> spec).

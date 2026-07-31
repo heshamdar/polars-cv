@@ -7,6 +7,48 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **Null handling for per-row expression parameters.** A parameter given as a
+  `pl.Expr` is read from an ordinary column, which may contain nulls; until now
+  that was unconditionally fatal. `Pipeline.on_null_param("raise" | "null")`
+  chooses between failing the query (the default, unchanged) and yielding null
+  for the affected rows — the same null-in/null-out behaviour a null *input
+  image* has always had. The `.contour` / `.point` / `.bbox` namespaces bypass
+  the graph engine, so they carry the policy on the accessor instead:
+  `pl.col("c").contour.on_null("null").normalize(pl.col("w"), 100)`.
+
+  This is one shared mechanism rather than per-operation handling: the policy
+  rides on `ParamCtx`, and every null — numeric, enum, flag or list element, for
+  any of the ~70 operations — passes through `ParamCol::on_null`. No `resolve_op`
+  arm changed.
+
+  Two properties distinguish it from the existing `on_error("null")`:
+
+  - **Node-scoped.** A null parameter leaves that node without an output for the
+    row, which propagates through the path a null input already takes, so only
+    the outputs that actually depend on it go null — not every output of the row.
+  - **Independent of error reporting.** A null parameter is not treated as an
+    error, so it records no `_error` message under `null_with_message`, and
+    decode, encode and genuine operation failures still raise.
+
+  There is deliberately no "fallback default" mode: `pl.col("h").fill_null(224)`
+  already expresses it in Polars, and adding a per-parameter policy would have
+  had to enter the `ParamValue` wire format and its equality/hash (which CSE
+  depends on).
+
+### Fixed
+
+- A null operand no longer raises "references unknown node". A node that
+  produced nothing for a row — null input bytes, `source(on_error="null")`, or
+  now a null parameter — was indistinguishable from a node missing from the
+  graph, so a null image in a `merge_pipe` / `apply_mask` / `channel_merge`
+  operand column failed the query instead of nulling that row. Cross-node
+  operand reads now go through `CompiledGraph::operand`, which separates the two
+  cases.
+- A null in a non-primitive parameter column reported a cast failure from
+  `try_extract` rather than the null-value error, bypassing the null path.
+
 ## [0.16.0] — 2026-07-30
 
 ### Added
