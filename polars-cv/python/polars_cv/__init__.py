@@ -65,17 +65,18 @@ from .metrics import (
 )
 from .pipeline import Pipeline
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
 
 def build_info() -> dict[str, str | None]:
     """
     Report the versions of the three things that can disagree.
 
-    ``maturin develop`` installs a *copy* of the Python sources alongside the
-    compiled extension, so after a ``git pull`` both stay frozen at their build-time
-    version until the project is rebuilt. When these three values disagree, the
-    installed package is stale and needs ``maturin develop --release`` re-run.
+    The install is editable, so edits to the Python sources are live — but the
+    compiled extension is not. After a ``git pull`` that touches Rust,
+    ``_lib.abi3.so`` keeps its build-time version until ``maturin develop`` is
+    re-run, and new Python then runs against old Rust. When these three values
+    disagree, re-run ``maturin develop --release``.
 
     Returns:
         Dict with:

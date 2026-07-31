@@ -304,6 +304,22 @@ impl Contour {
             })
     }
 
+    /// Every ring of this contour — exterior and holes alike — as open line strings.
+    ///
+    /// This is the contour's *boundary*, which is what the vertex-set measures
+    /// operate on: a hole edge bounds the region just as the exterior does, so
+    /// [`super::pairwise::hausdorff_distance`] must see it. Unlike [`Self::to_geo`]
+    /// the rings are not closed, because a repeated first vertex changes no
+    /// max-of-min distance and only makes the O(n*m) scan walk it twice.
+    pub fn to_geo_rings(&self) -> geo::MultiLineString<f64> {
+        geo::MultiLineString::new(
+            std::iter::once(&self.exterior)
+                .chain(&self.holes)
+                .map(|ring| ring_to_geo(ring))
+                .collect(),
+        )
+    }
+
     /// Converts back from a [`geo::Polygon`], dropping the repeated closing point so
     /// the result follows this crate's implicitly-closed ring convention.
     pub fn from_geo(polygon: &geo::Polygon<f64>) -> Self {

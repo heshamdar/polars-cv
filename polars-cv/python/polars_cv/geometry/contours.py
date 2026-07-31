@@ -128,6 +128,9 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         Compute contour centroid (center of mass).
 
+        Measured on the same region as `area()` — the exterior minus the union of
+        the hole rings — so overlapping or nested holes are not subtracted twice.
+
         Returns:
             Point struct with x, y coordinates.
         """

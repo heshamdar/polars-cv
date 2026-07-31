@@ -126,6 +126,42 @@ def nested_holes() -> dict:
 
 
 @pytest.fixture
+def overlapping_holes() -> dict:
+    """
+    100×100 square with two *overlapping* hole rings.
+
+    Hole A is [10,50]² (area 1600, centroid 30,30), hole B is [30,70]² (area 1600,
+    centroid 50,50); they share [30,50]² (area 400, centroid 40,40). The union is
+    area 2800 about (40,40), leaving a region of area 7200. The arrangement is
+    asymmetric on purpose — a symmetric one lands on the right centroid even when
+    the holes are subtracted one at a time.
+    """
+    return {
+        "exterior": [
+            {"x": 0.0, "y": 0.0},
+            {"x": 100.0, "y": 0.0},
+            {"x": 100.0, "y": 100.0},
+            {"x": 0.0, "y": 100.0},
+        ],
+        "holes": [
+            [
+                {"x": 10.0, "y": 10.0},
+                {"x": 50.0, "y": 10.0},
+                {"x": 50.0, "y": 50.0},
+                {"x": 10.0, "y": 50.0},
+            ],
+            [
+                {"x": 30.0, "y": 30.0},
+                {"x": 70.0, "y": 30.0},
+                {"x": 70.0, "y": 70.0},
+                {"x": 30.0, "y": 70.0},
+            ],
+        ],
+        "is_closed": True,
+    }
+
+
+@pytest.fixture
 def overlapping_squares() -> tuple[dict, dict]:
     """Two overlapping squares: (0,0)→(60,60) and (40,40)→(100,100).
 
@@ -672,6 +708,48 @@ class TestHolesAreStructuralNotDirectional:
         )
         assert df["area_a"][0] == pytest.approx(7500.0)
         assert df["area_b"][0] == pytest.approx(7500.0)
+
+    def test_centroid_measures_the_same_region_as_area(
+        self, overlapping_holes: dict
+    ) -> None:
+        """
+        The centroid belongs to the region `area` reports, not to a different shape.
+
+        Region moment 10000*50 - 2800*40 = 388000 over an area of 7200. Subtracting
+        each hole's moment in turn instead gives 372000/6800 = 54.7059..., the
+        centroid of a shape where the shared part was removed twice.
+        """
+        df = pl.DataFrame(
+            {"c": [overlapping_holes]}, schema={"c": CONTOUR_SCHEMA}
+        ).with_columns(
+            area=pl.col("c").contour.area(),
+            centroid=pl.col("c").contour.centroid(),
+        )
+        assert df["area"][0] == pytest.approx(7200.0, abs=1e-9)
+        expected = 388000.0 / 7200.0
+        assert df["centroid"][0]["x"] == pytest.approx(expected, abs=1e-6)
+        assert df["centroid"][0]["y"] == pytest.approx(expected, abs=1e-6)
+
+    def test_hausdorff_walks_hole_vertices(
+        self, holed_square: dict, ccw_square: dict
+    ) -> None:
+        """
+        A hole edge bounds the region, so it counts toward the boundary distance.
+
+        These two share an exterior, so an exterior-only measure would call them
+        identical. Each hole corner is 25*sqrt(2) from the nearest corner of the
+        solid square.
+        """
+        df = pl.DataFrame(
+            {"a": [holed_square], "b": [ccw_square]},
+            schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
+        ).with_columns(
+            d_ab=pl.col("a").contour.hausdorff_distance(pl.col("b")),
+            d_ba=pl.col("b").contour.hausdorff_distance(pl.col("a")),
+        )
+        expected = 25.0 * 2.0**0.5
+        assert df["d_ab"][0] == pytest.approx(expected, abs=1e-9)
+        assert df["d_ba"][0] == pytest.approx(expected, abs=1e-9)
 
     def test_contains_point_ignores_hole_winding(
         self, holed_square: dict, holed_square_ccw_hole: dict
