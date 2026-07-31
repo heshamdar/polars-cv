@@ -34,15 +34,42 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **Bounding-box IoU** no longer round-trips through polygon clipping; it is
   computed analytically from the rectangle overlap.
 
+- **Overlapping and nested hole rings.** `Contour::area` subtracted each hole's
+  area in turn, double-counting wherever two hole rings overlapped, and reporting
+  a different region than `contains_point` and `rasterize` (which have always
+  treated the region as the exterior minus the *union* of the hole rings). Area
+  now uses that same region. A square with a hole containing a further ring reports
+  3600 rather than 3200, and `iou` against the solid square reports 0.36 rather
+  than 0.4348.
+
+- **`hausdorff_distance` on an empty contour** returned `-1.797e308` — a negative
+  distance — because `geo` folds with `Bounded::min_value()` where the previous
+  implementation used `f64::INFINITY`. It returns `INFINITY` again.
+
 ### Changed
 
 - **`view-buffer` now depends on [`geo`](https://crates.io/crates/geo)** (0.33,
   `default-features = false`) for its polygon maths. Alongside the clipper, the
   hand-rolled Douglas–Peucker simplification, Graham-scan convex hull, ray-casting
   point-in-polygon, convexity test, shoelace centroid and point-to-segment
-  projection were deleted in favour of `geo`'s implementations, which use exact
-  orientation predicates rather than epsilon comparisons. Public signatures in
-  `view-buffer::geometry` are unchanged.
+  projection were deleted in favour of `geo`'s implementations. Public signatures
+  in `view-buffer::geometry` are unchanged, but several **semantics** are not:
+
+  - The boolean ops, convexity test and point-in-polygon now use exact orientation
+    predicates instead of epsilon comparisons. A point within `1e-10` of an edge
+    previously read as *on the boundary* and now reads as inside or outside.
+    (Area, centroid, simplification and distance remain ordinary floating point.)
+  - `hausdorff_distance` walks hole vertices as well as the exterior. A holed
+    contour against the same solid shape used to report 0.0 and now reports a
+    positive distance.
+  - `centroid` of a **zero-area** ring returns `geo`'s length-weighted centroid
+    rather than the mean of the vertices. Non-degenerate contours are unaffected.
+  - `simplify(tolerance=0.0)` is now a no-op rather than dropping collinear
+    points, and simplification runs on the closed ring, so a ring is never
+    collapsed below 4 points — `simplify` with a huge tolerance returns the shape
+    instead of a degenerate 2-point line.
+  - `nearest_point_on_contour` returns null for a ring whose points are all
+    identical, where it used to return that point.
 
 - **Hole-ness is documented as structural, and only structural.** The `holes`
   field of `CONTOUR_SCHEMA` is the sole carrier; ring winding is never interpreted

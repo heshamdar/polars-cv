@@ -1,5 +1,6 @@
 //! Core contour types and basic operations.
 
+use geo::BooleanOps;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -274,6 +275,33 @@ impl Contour {
             ring_to_geo(&self.exterior),
             self.holes.iter().map(|h| ring_to_geo(h)).collect(),
         )
+    }
+
+    /// The filled region this contour describes: the exterior minus the **union**
+    /// of every hole ring.
+    ///
+    /// This is the representation area and overlap must use, and it is not the same
+    /// as [`Self::to_geo`]. A `geo::Polygon` carries its holes as interior rings,
+    /// where two independent rules disagree once rings overlap or nest:
+    /// `geo::Area` subtracts each interior ring's absolute area (double-counting
+    /// the shared part), while `BooleanOps` applies the even-odd rule (filling a
+    /// ring nested inside another). Differencing the hole union out once leaves a
+    /// region on which every operation agrees, and matches what `contains_point`
+    /// and `rasterize` have always reported.
+    ///
+    /// Hole-free contours — the overwhelming majority — skip the boolean op.
+    pub fn to_geo_region(&self) -> geo::MultiPolygon<f64> {
+        let exterior = geo::Polygon::new(ring_to_geo(&self.exterior), Vec::new());
+
+        if self.holes.is_empty() {
+            return geo::MultiPolygon::new(vec![exterior]);
+        }
+
+        self.holes
+            .iter()
+            .fold(geo::MultiPolygon::new(vec![exterior]), |region, hole| {
+                region.difference(&geo::Polygon::new(ring_to_geo(hole), Vec::new()))
+            })
     }
 
     /// Converts back from a [`geo::Polygon`], dropping the repeated closing point so

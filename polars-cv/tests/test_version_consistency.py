@@ -4,11 +4,12 @@ Guards against the two ways a reported version can be wrong.
 1. **Drift.** The version is recorded in four hand-edited places that must agree.
    `CONTRIBUTING.md` lists them and notes that nothing checks them; these tests are
    that check.
-2. **Staleness.** `maturin develop` installs a *copy* of the Python sources next to
-   the compiled extension, so after a `git pull` an unrebuilt environment keeps
-   reporting the old version — and, more importantly, keeps running the old code.
-   Comparing `__version__` against the extension and the installed distribution
-   turns that into a test failure instead of a silent wrong answer.
+2. **Staleness.** The install is editable, so the Python sources under test are
+   always the working tree's — but the compiled extension is not. After a `git
+   pull` that touches Rust, `_lib.abi3.so` keeps its build-time version until
+   `maturin develop` is re-run, and the suite silently exercises old Rust against
+   new Python. Comparing `__version__` against the extension and the installed
+   distribution turns that into a test failure instead of a wrong answer.
 """
 
 import sys
@@ -71,10 +72,16 @@ def test_crates_are_versioned_together() -> None:
     assert plugin == engine
 
 
-def test_build_info_reports_the_python_version() -> None:
+def test_build_info_reports_every_channel() -> None:
+    """`build_info()` surfaces all three versions, not just the one it can't get wrong."""
     info = polars_cv.build_info()
-    assert info["version"] == polars_cv.__version__
     assert set(info) == {"version", "plugin_version", "dist_version"}
+    # `version` is read straight off the module, so asserting it matches
+    # `__version__` proves nothing. The other two are what can disagree.
+    assert info["plugin_version"] is not None or info["dist_version"] is not None, (
+        "build_info() found neither a compiled plugin nor installed distribution "
+        "metadata — it cannot detect staleness in this environment"
+    )
 
 
 @plugin_required
@@ -108,27 +115,22 @@ def test_installed_distribution_is_not_stale() -> None:
     )
 
 
-def test_imported_package_is_the_one_under_test() -> None:
+@requires_checkout
+def test_imported_package_is_the_source_tree() -> None:
     """
-    `polars_cv` resolves to this checkout, or to an install built from it.
+    `polars_cv` resolves to this checkout's source, not to a copy of it.
 
-    Catches the case where a site-packages copy shadows the source tree entirely.
+    This project installs editable — `.venv` carries a `.pth` pointing at
+    `polars-cv/python`, and `maturin develop` drops `_lib.abi3.so` into that same
+    directory — so the `.py` files under test are always the ones in the working
+    tree. If that ever stops holding, edits to the Python source silently stop
+    affecting test runs, and the failure looks like a mysteriously unfixable bug.
     """
-    if not _running_from_checkout():
-        pytest.skip("not running from a source checkout")
-
     imported = Path(polars_cv.__file__).resolve().parent
-    source = REPO_ROOT / "polars-cv" / "python" / "polars_cv"
+    source = (REPO_ROOT / "polars-cv" / "python" / "polars_cv").resolve()
 
-    if imported == source:
-        return
-
-    # Installed elsewhere (a copy): the version check above is what guards it, but
-    # make the situation visible when it fails.
-    assert polars_cv.__version__ == _declared_version(
-        "polars-cv/pyproject.toml", ("project", "version")
-    ), (
-        f"polars_cv is imported from {imported} (not {source}) and its version "
-        f"does not match this checkout — the install is stale. "
+    assert imported == source, (
+        f"polars_cv is imported from {imported}, not the source tree at {source}. "
+        f"Editing the Python sources will not affect this run. "
         f"sys.path[0] is {sys.path[0]!r}"
     )

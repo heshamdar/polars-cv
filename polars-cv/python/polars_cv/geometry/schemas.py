@@ -110,6 +110,10 @@ Hole-ness is structural, not directional. A ring is a hole because it appears in
 with `.contour.flip()` or `.contour.ensure_winding()` therefore never changes what
 region the contour describes; it only changes what `.contour.winding()` reports.
 
+The region is the exterior minus the **union** of the hole rings. Rings that
+overlap are not subtracted twice, and a ring nested inside another hole is still a
+hole — it simply lies in a part that has already been removed.
+
 Example:
     ```python
     >>> contour = {

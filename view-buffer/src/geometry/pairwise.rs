@@ -2,12 +2,15 @@
 //!
 //! Implements IoU, Dice coefficient, and Hausdorff distance.
 //!
-//! Overlap is computed exactly, by handing both polygons to `geo`'s boolean
-//! operations. Those are winding-independent and hole-aware, so a contour always
-//! scores 1.0 against itself regardless of point order, concavity, or holes.
+//! Overlap is computed exactly, by handing both regions to `geo`'s boolean
+//! operations. Each contour is first reduced to its filled region — exterior minus
+//! the union of its hole rings, see [`Contour::to_geo_region`] — so area and
+//! intersection are measured on the same thing. Results are winding-independent
+//! and hole-aware, and a contour always scores 1.0 against itself regardless of
+//! point order, concavity, or holes.
 
 use super::contour::{BoundingBox, Contour};
-use geo::{Area, BooleanOps, BoundingRect, HausdorffDistance, Intersects, Polygon};
+use geo::{Area, BooleanOps, BoundingRect, HausdorffDistance, Intersects, MultiPolygon};
 
 /// Areas below this are treated as degenerate.
 const EPSILON: f64 = 1e-10;
@@ -33,13 +36,18 @@ pub struct DetectionMatchResult {
     pub n_fn: usize,
 }
 
-/// Areas of both polygons and of their exact intersection.
+/// Areas of both regions and of their exact intersection.
 ///
-/// Returns `None` when either polygon is degenerate or the two cannot possibly
+/// Returns `None` when either region is degenerate or the two cannot possibly
 /// overlap, letting the callers short-circuit to zero. The bounding-box test is
 /// what keeps `match_detections` cheap: most pairs are disjoint and never reach
 /// the boolean op.
-fn intersection_areas(a: &Polygon<f64>, b: &Polygon<f64>) -> Option<(f64, f64, f64)> {
+///
+/// Both inputs must come from [`Contour::to_geo_region`], whose output is already
+/// a canonically-oriented region. That makes the result independent of the fill
+/// rule — the choice that silently decided how nested rings were treated when the
+/// holes were still carried as interior rings.
+fn intersection_areas(a: &MultiPolygon<f64>, b: &MultiPolygon<f64>) -> Option<(f64, f64, f64)> {
     let (area_a, area_b) = (a.unsigned_area(), b.unsigned_area());
 
     if area_a < EPSILON || area_b < EPSILON {
@@ -65,16 +73,17 @@ fn intersection_areas(a: &Polygon<f64>, b: &Polygon<f64>) -> Option<(f64, f64, f
 /// # Returns
 /// IoU value in [0, 1]
 pub fn iou(a: &Contour, b: &Contour) -> f64 {
-    iou_polygons(&a.to_geo(), &b.to_geo())
+    iou_regions(&a.to_geo_region(), &b.to_geo_region())
 }
 
-fn iou_polygons(a: &Polygon<f64>, b: &Polygon<f64>) -> f64 {
+fn iou_regions(a: &MultiPolygon<f64>, b: &MultiPolygon<f64>) -> f64 {
     let Some((area_a, area_b, intersection_area)) = intersection_areas(a, b) else {
         return 0.0;
     };
 
-    // Inclusion-exclusion is exact here: `unsigned_area` and the boolean op agree
-    // on hole semantics, so the union needs no second boolean op.
+    // Inclusion-exclusion is exact only because both sides are measured on the
+    // same region: `to_geo_region` has already differenced the holes out, so
+    // `unsigned_area` and the boolean op cannot disagree about what is filled.
     let union_area = area_a + area_b - intersection_area;
 
     if union_area < EPSILON {
@@ -98,12 +107,12 @@ pub fn iou_matrix(a: &[Contour], b: &[Contour]) -> Vec<Vec<f64>> {
     }
 
     // Convert once per contour rather than once per pair.
-    let a_polys: Vec<Polygon<f64>> = a.iter().map(Contour::to_geo).collect();
-    let b_polys: Vec<Polygon<f64>> = b.iter().map(Contour::to_geo).collect();
+    let a_regions: Vec<MultiPolygon<f64>> = a.iter().map(Contour::to_geo_region).collect();
+    let b_regions: Vec<MultiPolygon<f64>> = b.iter().map(Contour::to_geo_region).collect();
 
-    a_polys
+    a_regions
         .iter()
-        .map(|pa| b_polys.iter().map(|pb| iou_polygons(pa, pb)).collect())
+        .map(|ra| b_regions.iter().map(|rb| iou_regions(ra, rb)).collect())
         .collect()
 }
 
@@ -262,7 +271,8 @@ pub fn bbox_match_detections(
 /// # Returns
 /// Dice coefficient in [0, 1]
 pub fn dice(a: &Contour, b: &Contour) -> f64 {
-    let Some((area_a, area_b, intersection_area)) = intersection_areas(&a.to_geo(), &b.to_geo())
+    let Some((area_a, area_b, intersection_area)) =
+        intersection_areas(&a.to_geo_region(), &b.to_geo_region())
     else {
         return 0.0;
     };
@@ -290,7 +300,17 @@ pub fn dice(a: &Contour, b: &Contour) -> f64 {
 /// # Returns
 /// Hausdorff distance
 pub fn hausdorff_distance(a: &Contour, b: &Contour) -> f64 {
-    a.to_geo().hausdorff_distance(&b.to_geo())
+    // `geo` folds with `Bounded::min_value()`, so an empty coordinate set yields
+    // -f64::MAX rather than propagating emptiness. A distance is never negative.
+    if a.exterior.is_empty() || b.exterior.is_empty() {
+        return f64::INFINITY;
+    }
+
+    // Only the coordinates are read, so pass the rings rather than building
+    // polygons whose closing points would be walked twice by the O(n*m) loop.
+    a.to_geo()
+        .exterior()
+        .hausdorff_distance(b.to_geo().exterior())
 }
 
 #[cfg(test)]
@@ -476,10 +496,84 @@ mod tests {
 
     #[test]
     fn test_iou_holed_vs_solid() {
-        let holed = holed_square(Winding::Clockwise);
+        // Asserted for BOTH hole windings on purpose. Only the asymmetric
+        // holed-vs-solid comparison can detect a hole being silently ignored — a
+        // holed contour against *itself* saturates at 1.0 under the final clamp
+        // whatever the intersection does, so identity tests cannot catch it.
+        for winding in [Winding::Clockwise, Winding::CounterClockwise] {
+            let holed = holed_square(winding);
+            let solid = square_contour(0.0, 0.0, 100.0);
+            // intersection = the holed shape (7500); union = the solid square (10000).
+            assert!(
+                (iou(&holed, &solid) - 0.75).abs() < 1e-9,
+                "winding {winding:?} gave {}",
+                iou(&holed, &solid)
+            );
+        }
+    }
+
+    /// A 100x100 square whose hole contains a further ring.
+    ///
+    /// Every ring in `holes` is a hole, so the region is the exterior minus the
+    /// union of the hole rings: 10000 - 6400 = 3600. The inner ring changes
+    /// nothing — it lies inside a part that has already been removed.
+    fn nested_holes() -> Contour {
+        let ring = |pts: &[(f64, f64)]| pts.iter().map(|&(x, y)| Point::new(x, y)).collect();
+        Contour::with_holes(
+            ring(&[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]),
+            vec![
+                ring(&[(10.0, 10.0), (10.0, 90.0), (90.0, 90.0), (90.0, 10.0)]),
+                ring(&[(40.0, 40.0), (40.0, 60.0), (60.0, 60.0), (60.0, 40.0)]),
+            ],
+        )
+    }
+
+    #[test]
+    fn test_nested_hole_area_is_the_removed_union() {
+        // Not 10000 - 6400 - 400: the rings overlap, so subtracting each in turn
+        // double-counts. `contains_point` and `rasterize` have always agreed on
+        // 3600; this is the value `area` must report too.
+        assert!((super::super::measures::area(&nested_holes(), false) - 3600.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_iou_nested_holes_identical() {
+        let a = nested_holes();
+        assert!((iou(&a, &a) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_iou_nested_holes_vs_solid() {
+        // The case the clamp hides: if the boolean op fills the inner ring while
+        // `area` subtracts it, the intersection exceeds the smaller area and this
+        // ratio comes out too high.
+        let nested = nested_holes();
         let solid = square_contour(0.0, 0.0, 100.0);
-        // intersection = the holed shape (7500); union = the solid square (10000).
-        assert!((iou(&holed, &solid) - 0.75).abs() < 1e-9);
+        assert!(
+            (iou(&nested, &solid) - 0.36).abs() < 1e-9,
+            "got {}",
+            iou(&nested, &solid)
+        );
+    }
+
+    #[test]
+    fn test_dice_nested_holes_vs_solid() {
+        let nested = nested_holes();
+        let solid = square_contour(0.0, 0.0, 100.0);
+        // 2 * 3600 / (3600 + 10000)
+        assert!((dice(&nested, &solid) - (7200.0 / 13600.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_hausdorff_empty_contour_is_infinite() {
+        // Never a finite value, and never negative: `geo` folds with
+        // `Bounded::min_value()`, which yields -f64::MAX for an empty coord set.
+        let empty = Contour::new(Vec::new());
+        let square = square_contour(0.0, 0.0, 10.0);
+
+        assert_eq!(hausdorff_distance(&empty, &square), f64::INFINITY);
+        assert_eq!(hausdorff_distance(&square, &empty), f64::INFINITY);
+        assert_eq!(hausdorff_distance(&empty, &empty), f64::INFINITY);
     }
 
     #[test]

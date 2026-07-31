@@ -212,16 +212,19 @@ fn filter_external_contours(contours: Vec<Contour>) -> Vec<Contour> {
 
     let mut external = Vec::new();
 
+    // Converted once per contour rather than once per (i, j) pair: this scan is
+    // quadratic, and `to_geo` allocates.
+    let polygons: Vec<geo::Polygon<f64>> = contours.iter().map(Contour::to_geo).collect();
+
     for (i, contour) in contours.iter().enumerate() {
-        let is_contained = contours.iter().enumerate().any(|(j, other)| {
+        let is_contained = polygons.iter().enumerate().any(|(j, other)| {
             if i == j {
                 return false;
             }
             // Check if contour's first point is inside other
-            if let Some(p) = contour.exterior.first() {
-                super::predicates::point_in_polygon(p, &other.exterior) > 0
-            } else {
-                false
+            match contour.exterior.first() {
+                Some(p) => super::predicates::position_in_polygon(other, p) > 0,
+                None => false,
             }
         });
 
