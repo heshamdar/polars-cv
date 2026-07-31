@@ -568,11 +568,41 @@ class TestContourSourceShapeReference:
     produced nothing for a row must null this row — not raise. Regression for
     the fifth such read being missed when the other four were converted.
 
-    All of these consume the shape node as an operand too (via ``apply_mask``).
-    A shape node referenced *only* by ``shape=`` is never collected into the
-    dependency graph at all — a separate, pre-existing bug unrelated to nulls,
-    which fails identically with no null anywhere in the frame.
+    Covered both ways: with the shape node also consumed as an operand (via
+    ``apply_mask``), and with it referenced *only* by ``shape=`` — the latter
+    reaches the same read through a node that has no other reason to be in the
+    graph.
     """
+
+    def test_shape_ref_only_null_bytes(self) -> None:
+        img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+        mask = pl.col("cnt").cv.pipe(Pipeline().source("contour", shape=img))
+
+        df = pl.DataFrame(
+            {"img": [_png(), None], "cnt": [SQUARE, SQUARE]},
+            schema={"img": pl.Binary, "cnt": None},
+        )
+        out = df.with_columns(out=mask.sink("numpy"))
+        assert out["out"][0]["data"] is not None
+        assert out["out"][1]["data"] is None
+
+    def test_shape_ref_only_null_param(self) -> None:
+        img = pl.col("img").cv.pipe(
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=pl.col("h"), width=pl.col("h"))
+            .on_null_param("null")
+        )
+        mask = pl.col("cnt").cv.pipe(
+            Pipeline().source("contour", shape=img).on_null_param("null")
+        )
+
+        df = pl.DataFrame(
+            {"img": [_png(), _png()], "cnt": [SQUARE, SQUARE], "h": [8, None]}
+        )
+        out = df.with_columns(out=mask.sink("numpy"))
+        assert out["out"][0]["data"] is not None
+        assert out["out"][1]["data"] is None
 
     def test_null_bytes_in_the_shape_branch(self) -> None:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
@@ -628,6 +658,23 @@ class TestSourceAndSinkParamSites:
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
         assert out["out"][1]["data"] is None
+
+    def test_out_of_range_contour_source_fill_value(self) -> None:
+        # Range validation for a source parameter shares the op parameters'
+        # accessor, so it reports with the same "parameter '<name>'" prefix.
+        img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+        mask = pl.col("cnt").cv.pipe(
+            Pipeline().source("contour", shape=img, fill_value=pl.col("fill"))
+        )
+
+        df = pl.DataFrame(
+            {"img": [_png()], "cnt": [SQUARE], "fill": [300]},
+            schema={"img": pl.Binary, "cnt": None, "fill": pl.Int64},
+        )
+        with pytest.raises(
+            pl.exceptions.ComputeError, match=r"parameter 'fill_value' must be in 0"
+        ):
+            df.with_columns(out=mask.sink("numpy"))
 
     def test_null_rasterize_style_on_a_shape_reference(self) -> None:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))

@@ -815,7 +815,23 @@ pub mod get {
         row_idx: usize,
         ctx: &ParamCtx,
     ) -> PolarsResult<u8> {
-        match params.get(name) {
+        opt_u8_value(params.get(name), name, default, row_idx, ctx)
+    }
+
+    /// [`opt_u8`] for a parameter the caller already holds.
+    ///
+    /// `SourceSpec` keeps its per-row parameters in named fields rather than a
+    /// map, so it cannot look one up by name — but it must not grow a second
+    /// copy of this logic, or a future change to null handling or range
+    /// checking would have to land in two places.
+    pub fn opt_u8_value(
+        param: Option<&ParamValue>,
+        name: &str,
+        default: u8,
+        row_idx: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<u8> {
+        match param {
             None => Ok(default),
             Some(p) => {
                 let v = p.resolve_i64(row_idx, ctx).map_err(|e| named(name, e))?;
