@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-07-31
+
 ### Added
 
 - **Null handling for per-row expression parameters.** A parameter given as a
@@ -58,6 +60,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   it, which is what every example does — which is why it went unnoticed.
 - A null in a non-primitive parameter column reported a cast failure from
   `try_extract` rather than the null-value error, bypassing the null path.
+
+### Documentation
+
+- The API reference gained a `BBoxNamespace` section — `.bbox` was the one
+  namespace with no reference page — plus the `on_null` policy the three
+  geometry accessors share, which is inherited from a mixin and so was not
+  rendered from any of their own class bodies.
+- `LazyPipelineExpr`'s reference page now says that the `Pipeline` methods
+  mirrored onto it are generated at import time, which is why they are absent
+  from the members list below it.
+- The composition rule for `on_null_param` is stated correctly: unlike
+  `on_error`, an explicit `"raise"` composed with a `"null"` gives the graph
+  `"null"` rather than being rejected as a conflict, because only non-default
+  policies are collected and there are only two values.
+- `shape=` on the contour source is documented as registering an upstream
+  dependency, so referencing a pipeline only as a shape is a supported shape of
+  graph, and a null in that branch nulls the mask.
 
 ## [0.16.0] — 2026-07-30
 
@@ -419,6 +438,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.17.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.17.0
 [0.16.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.16.0
 [0.15.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.15.0
 [0.14.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.14.0

@@ -8,7 +8,7 @@ polars-cv is a Polars plugin that enables lazy, modular image processing on Data
 
 - **🚀 Performance**: Rust-powered operations with automatic kernel fusion.
 - **🔗 Composable**: Modular pipelines that can be branched and merged.
-- **🎚️ Per-Row Parameters**: Any parameter that doesn't fix the output shape takes a Polars expression, resolved per row.
+- **🎚️ Per-Row Parameters**: Any parameter that doesn't fix the output shape takes a Polars expression, resolved per row — with a policy for null parameter values.
 - **🎯 Multi-Domain**: Seamlessly move between images, geometry (contours), and numeric results.
 - **📊 Multi-Output**: Extract multiple results from a single execution pass.
 - **🔌 Integration**: Direct output to NumPy and other formats.

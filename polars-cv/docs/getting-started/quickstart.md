@@ -96,6 +96,10 @@ as `cast(dtype=)` or a reduction `axis` — stay literal-only and raise
 [Dynamic Parameters](../user-guide/operations/image-ops.md#dynamic-parameters)
 for the full table of which parameters accept expressions.
 
+A null in a parameter column fails the query by default;
+`.on_null_param("null")` nulls just the rows that depend on it instead — see
+[Null parameter values](../user-guide/operations/image-ops.md#null-parameter-values).
+
 ## Output Formats (Sinks)
 
 | Format | Description | Use Case |

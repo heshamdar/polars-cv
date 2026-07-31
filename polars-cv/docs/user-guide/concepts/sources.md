@@ -136,10 +136,18 @@ pipe = Pipeline().source("image_bytes").resize(
 )
 ```
 
-Like `.on_error()`, this is graph-level, composed pipelines must agree, and it
-is mirrored on `LazyPipelineExpr`. The `.contour` / `.point` / `.bbox`
-namespaces bypass the graph engine, so they carry the same policy on the
-accessor instead: `pl.col("c").contour.on_null("null").normalize(pl.col("w"), 100)`.
+Like `.on_error()`, this is a graph-level setting, and it is mirrored on
+`LazyPipelineExpr` so you can set it after `.pipe(...)`. Composition is more
+forgiving than `.on_error()`, though: only a non-default policy is collected
+from the composed pipelines, so composing a `"null"` pipeline with a `"raise"`
+one gives the whole graph `"null"` rather than being rejected — with two values
+and one of them the default, no combination can conflict.
+
+The `.contour` / `.point` / `.bbox` namespaces bypass the graph engine, so they
+carry the same policy on the accessor instead:
+`pl.col("c").contour.on_null("null").normalize(pl.col("w"), 100)`. There is no
+`.cv.on_null()` — a `.cv` pipeline's parameters belong to its `Pipeline`, so
+`Pipeline.on_null_param()` is the control there.
 
 ## Auto DType Behavior
 
@@ -329,7 +337,12 @@ img = pl.col("image").cv.pipe(Pipeline().source("image_bytes").resize(height=200
 mask_pipe = Pipeline().source("contour", shape=img)
 ```
 
-When using `shape=`, the contour mask dimensions automatically match the referenced pipeline's output size.
+When using `shape=`, the contour mask dimensions automatically match the
+referenced pipeline's output size. The referenced expression becomes an upstream
+dependency of the mask, so it executes first whether or not the graph consumes
+it anywhere else — referencing it *only* as `shape=` is fine. If its row is null
+(null bytes, `on_error="null"`, or a null parameter under `on_null_param("null")`),
+the mask for that row is null too.
 
 ## Other Sources
 

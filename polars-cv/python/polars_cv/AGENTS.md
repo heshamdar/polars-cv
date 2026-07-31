@@ -92,6 +92,19 @@ When `.sink()` is called, a `PipelineGraph` is built:
 5. The graph is serialized to JSON
 6. `register_plugin_function(function_name="vb_graph", ...)` is called
 
+**A node reference is not a dependency until it is an upstream edge.** An op or
+source that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)`,
+`source("contour", shape=)` — must *also* append it to `Pipeline._shape_refs`,
+because `_shape_refs` is what `cv.pipe` / `LazyPipelineExpr.pipe` turn into the
+`upstream` list, and only an upstream edge puts the referenced node into the
+graph at all. Record the id without the edge and the reference dangles at
+execution — invisibly, for as long as some other consumer happens to pull the
+same node in (masking with the same image, which every example does). The
+appended edge does not disturb the referenced node's own input:
+`_build_column_bindings` keys on the node having a column, and the executor
+picks the decode path from `has_column_binding`, using upstream only for
+ordering.
+
 ### Operation Contracts (view-buffer is the authority)
 
 Every operation's schema effect — output domain, dtype, rank (ndim) and channel
@@ -205,11 +218,19 @@ ambiguous.
 **Null parameter values are a shared policy, not per-op handling.** A parameter
 column may contain nulls; `Pipeline.on_null_param("raise"|"null")` says whether
 that fails the query or nulls the affected rows. It is stored as
-`Pipeline._on_null_param`, hoisted (with the same conflict check as `_on_error`)
-in `PipelineGraph._to_dict()`, and emitted as a top-level `"on_null_param"` key
+`Pipeline._on_null_param`, hoisted by the same loop as `_on_error` in
+`PipelineGraph._to_dict()`, and emitted as a top-level `"on_null_param"` key
 **only when non-default**, so unaffected graphs serialize byte-identically and
 keep their compiled-graph cache entry. Rust applies it at one place —
 `ParamCol::on_null` — so no operation declares anything.
+
+That shared loop also carries a conflict check, but it can only ever fire for
+`_on_error`: the hoist collects non-default values, and with `"raise"` and
+`"null"` as the only null-param policies the collected set can never hold two.
+So an explicit `.on_null_param("raise")` composed with a `"null"` pipeline gives
+the graph `"null"` rather than an error — that is intended, not an oversight
+(`TestComposition::test_one_pipeline_setting_the_policy_applies_to_the_graph`).
+Adding a third policy would make the branch reachable and change that.
 
 Do **not** add a per-op or per-parameter null keyword. Deliberately absent, for
 two reasons: a fallback value is already expressible as
@@ -218,9 +239,18 @@ two reasons: a fallback value is already expressible as
 or CSE will merge ops that differ only in policy.
 
 The geometry namespaces have no `Pipeline` to hang a graph-level setting on, so
-the policy lives on the accessor: `_PluginNamespace.on_null(policy)` returns a
-copy with `_on_null` set, and `_ArgBinder.call` injects it into kwargs beside
+the policy lives on the accessor: `on_null(policy)` returns a copy with
+`_on_null` set, and `_ArgBinder.call` injects it into kwargs beside
 `input_slots`. That keeps it out of all 15 geometry method signatures.
+
+It lives on `_GeomNullPolicy`, a mixin the three geometry namespaces add
+alongside `_PluginNamespace` — **not** on `_PluginNamespace` itself, which `.cv`
+also inherits. `.cv` routes its per-row parameters through `vb_graph`, where
+only `Pipeline.on_null_param` is read, so inheriting `on_null` there would let
+`pl.col("x").cv.on_null("null")` chain and read as effective while doing
+nothing. On the mixin, that call is an `AttributeError`
+(`test_cv_does_not_expose_on_null`). Keep any future accessor-level policy on
+the same mixin unless `.cv` genuinely honours it.
 
 ## Adding a New Operation (Python Side)
 

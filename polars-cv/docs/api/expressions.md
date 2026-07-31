@@ -35,6 +35,11 @@ df.with_columns(out=pl.col("image").cv.pipe(pipe).sink("numpy"))
 See [Pipeline](pipeline.md) for the operations and
 [LazyPipelineExpr](lazy.md) for composition and sinks.
 
+Everything that configures a pipeline lives on the `Pipeline` (or on the
+`LazyPipelineExpr` it produces), not on the accessor — including the per-row
+error and null-parameter policies, `.on_error()` and `.on_null_param()`. Unlike
+the geometry namespaces, `.cv` has no `on_null()`.
+
 ## Byte access
 
 `read_bytes()` is the fetch half of the `"file_path"` source — that source
