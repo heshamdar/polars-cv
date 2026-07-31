@@ -9,11 +9,11 @@ from typing import Literal
 
 import polars as pl
 
-from polars_cv._namespace import _ArgBinder, _PluginNamespace
+from polars_cv._namespace import _ArgBinder, _GeomNullPolicy, _PluginNamespace
 
 
 @pl.api.register_expr_namespace("bbox")
-class BBoxNamespace(_PluginNamespace):
+class BBoxNamespace(_GeomNullPolicy, _PluginNamespace):
     """Namespace for bounding-box operations on ``List[BBOX_SCHEMA]`` columns.
 
     Example::

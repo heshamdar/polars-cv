@@ -485,13 +485,19 @@ impl CompiledGraph {
                                             .ok_or_else(|| {
                                                 "shape_pipeline missing 'node_id'".to_string()
                                             })?;
-                                        let shape_output = node_outputs
-                                            .get(shape_node_id)
-                                            .ok_or_else(|| {
-                                                format!(
-                                                    "Shape reference '{shape_node_id}' not found. Ensure the shape source is defined before this contour pipeline."
-                                                )
-                                            })?;
+                                        // The fifth cross-node operand read.
+                                        // `Ok(None)` (rather than `continue
+                                        // 'nodes`) because this sits inside the
+                                        // decode closure, whose `None` already
+                                        // means "no output for this row".
+                                        let Some(shape_output) = self.operand(
+                                            node_outputs,
+                                            shape_node_id,
+                                            "Contour source shape",
+                                        )?
+                                        else {
+                                            return Ok(None);
+                                        };
                                         let shape_buffer = shape_output
                                             .as_buffer()
                                             .ok_or_else(|| {

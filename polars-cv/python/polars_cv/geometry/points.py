@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import polars as pl
 
-from polars_cv._namespace import _ArgBinder, _PluginNamespace
+from polars_cv._namespace import _ArgBinder, _GeomNullPolicy, _PluginNamespace
 
 
 @pl.api.register_expr_namespace("point")
-class PointNamespace(_PluginNamespace):
+class PointNamespace(_GeomNullPolicy, _PluginNamespace):
     """
     Operations on point columns.
 
