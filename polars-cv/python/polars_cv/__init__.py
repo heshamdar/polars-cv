@@ -65,6 +65,56 @@ from .metrics import (
 )
 from .pipeline import Pipeline
 
+__version__ = "0.17.0"
+
+
+def build_info() -> dict[str, str | None]:
+    """
+    Report the versions of the three things that can disagree.
+
+    ``maturin develop`` installs a *copy* of the Python sources alongside the
+    compiled extension, so after a ``git pull`` both stay frozen at their build-time
+    version until the project is rebuilt. When these three values disagree, the
+    installed package is stale and needs ``maturin develop --release`` re-run.
+
+    Returns:
+        Dict with:
+            - ``version``: ``polars_cv.__version__``, from the imported Python source.
+            - ``plugin_version``: the compiled Rust extension's version, baked in
+              from ``Cargo.toml`` at build time. ``None`` if the plugin is not built.
+            - ``dist_version``: the installed distribution metadata version.
+              ``None`` if the package is not installed (e.g. run from a checkout).
+
+    Example:
+        ```python
+        >>> import polars_cv
+        >>> info = polars_cv.build_info()
+        >>> len(set(v for v in info.values() if v is not None)) == 1  # all agree
+        True
+        ```
+    """
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _dist_version
+
+    try:
+        from . import _lib
+
+        plugin_version = getattr(_lib, "__version__", None)
+    except ImportError:
+        plugin_version = None
+
+    try:
+        dist_version = _dist_version("polars-cv")
+    except PackageNotFoundError:
+        dist_version = None
+
+    return {
+        "version": __version__,
+        "plugin_version": plugin_version,
+        "dist_version": dist_version,
+    }
+
+
 # Schema for numpy/torch sink output struct
 # Matches the Rust output module schema
 NUMPY_OUTPUT_SCHEMA = pl.Struct(
@@ -427,5 +477,7 @@ __all__ = [
     "CONTOUR_SCHEMA",
     "CONTOUR_SET_SCHEMA",
     "BBOX_SCHEMA",
+    # Build/version introspection
+    "__version__",
+    "build_info",
 ]
-__version__ = "0.17.0"

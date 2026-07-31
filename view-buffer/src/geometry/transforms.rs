@@ -5,6 +5,7 @@
 use super::contour::{Contour, Point, Winding};
 use super::measures::{centroid, signed_area};
 use super::ops::ScaleOrigin;
+use geo::{ConvexHull, Simplify};
 
 /// Translates a contour by the given offset.
 ///
@@ -167,6 +168,8 @@ pub fn to_absolute(contour: &Contour, ref_width: f64, ref_height: f64) -> Contou
 
 /// Simplifies a contour using the Douglas-Peucker algorithm.
 ///
+/// Each ring is simplified independently; holes are preserved.
+///
 /// # Arguments
 /// * `contour` - The contour to simplify
 /// * `tolerance` - Maximum perpendicular distance for point removal
@@ -174,72 +177,10 @@ pub fn to_absolute(contour: &Contour, ref_width: f64, ref_height: f64) -> Contou
 /// # Returns
 /// Simplified contour with fewer points
 pub fn simplify(contour: &Contour, tolerance: f64) -> Contour {
-    let exterior = douglas_peucker(&contour.exterior, tolerance);
-
-    let holes = contour
-        .holes
-        .iter()
-        .map(|hole| douglas_peucker(hole, tolerance))
-        .collect();
-
-    Contour::with_holes(exterior, holes)
+    Contour::from_geo(&contour.to_geo().simplify(tolerance))
 }
 
-/// Douglas-Peucker simplification algorithm.
-fn douglas_peucker(points: &[Point], tolerance: f64) -> Vec<Point> {
-    if points.len() < 3 {
-        return points.to_vec();
-    }
-
-    // Find the point with maximum distance from the line between first and last
-    let first = &points[0];
-    let last = &points[points.len() - 1];
-
-    let mut max_dist = 0.0;
-    let mut max_idx = 0;
-
-    for (i, point) in points.iter().enumerate().skip(1).take(points.len() - 2) {
-        let dist = perpendicular_distance(point, first, last);
-        if dist > max_dist {
-            max_dist = dist;
-            max_idx = i;
-        }
-    }
-
-    if max_dist > tolerance {
-        // Recursively simplify both segments
-        let mut left = douglas_peucker(&points[..=max_idx], tolerance);
-        let right = douglas_peucker(&points[max_idx..], tolerance);
-
-        // Remove duplicate point at junction
-        left.pop();
-        left.extend(right);
-        left
-    } else {
-        // All points are within tolerance, keep only endpoints
-        vec![*first, *last]
-    }
-}
-
-/// Computes perpendicular distance from a point to a line.
-fn perpendicular_distance(point: &Point, line_start: &Point, line_end: &Point) -> f64 {
-    let dx = line_end.x - line_start.x;
-    let dy = line_end.y - line_start.y;
-    let length_sq = dx * dx + dy * dy;
-
-    if length_sq < 1e-10 {
-        return point.distance_to(line_start);
-    }
-
-    // Area of triangle * 2 / base = height
-    let area = ((line_end.x - line_start.x) * (line_start.y - point.y)
-        - (line_start.x - point.x) * (line_end.y - line_start.y))
-        .abs();
-
-    area / length_sq.sqrt()
-}
-
-/// Computes the convex hull of a contour using Graham scan.
+/// Computes the convex hull of a contour's exterior ring.
 ///
 /// # Arguments
 /// * `contour` - The contour to compute hull for
@@ -247,55 +188,7 @@ fn perpendicular_distance(point: &Point, line_start: &Point, line_end: &Point) -
 /// # Returns
 /// New contour representing the convex hull
 pub fn convex_hull(contour: &Contour) -> Contour {
-    let hull_points = graham_scan(&contour.exterior);
-    Contour::new(hull_points)
-}
-
-/// Graham scan algorithm for convex hull.
-fn graham_scan(points: &[Point]) -> Vec<Point> {
-    if points.len() < 3 {
-        return points.to_vec();
-    }
-
-    // Find the bottom-most point (or left-most in case of tie)
-    let mut start_idx = 0;
-    for (i, p) in points.iter().enumerate().skip(1) {
-        if p.y < points[start_idx].y || (p.y == points[start_idx].y && p.x < points[start_idx].x) {
-            start_idx = i;
-        }
-    }
-
-    let start = points[start_idx];
-
-    // Sort points by polar angle with respect to start
-    let mut sorted: Vec<Point> = points.iter().copied().filter(|p| *p != start).collect();
-
-    sorted.sort_by(|a, b| {
-        let angle_a = (a.y - start.y).atan2(a.x - start.x);
-        let angle_b = (b.y - start.y).atan2(b.x - start.x);
-        angle_a
-            .partial_cmp(&angle_b)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Build hull
-    let mut hull = vec![start];
-
-    for point in sorted {
-        while hull.len() > 1
-            && cross_product(&hull[hull.len() - 2], &hull[hull.len() - 1], &point) <= 0.0
-        {
-            hull.pop();
-        }
-        hull.push(point);
-    }
-
-    hull
-}
-
-/// Cross product of vectors OA and OB.
-fn cross_product(o: &Point, a: &Point, b: &Point) -> f64 {
-    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    Contour::from_geo(&contour.to_geo().convex_hull())
 }
 
 #[cfg(test)]

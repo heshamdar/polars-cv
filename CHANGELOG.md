@@ -7,6 +7,65 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **Contour IoU and Dice were wrong for most real contours.** Overlap went through
+  a hand-rolled Sutherland–Hodgman clipper, which is only correct when the *clip*
+  polygon is convex, and whose half-plane test hard-coded a counter-clockwise
+  winding. Neither condition is required by `CONTOUR_SCHEMA`, and neither was
+  enforced. Concretely, against an identical copy of itself: a clockwise-wound
+  square scored **0.0**, an L-shape **0.2**, a U-shape **0.0**. `iou(a, b)` was not
+  even symmetric — it returned 1.0 or 0.0 for the same pair depending on argument
+  order. Holes compounded it: they were subtracted from each contour's area but
+  ignored when intersecting, so a holed contour against itself produced an
+  intersection larger than its union, saved only by a final clamp; with a large
+  enough hole the union went negative and the result collapsed to 0.0.
+
+  Segmentation contours are essentially never convex, so this affected
+  `.contour.iou()`, `.contour.dice()`, `.contour.pairwise_iou()`,
+  `.contour.match_detections()`, and everything built on them —
+  `ContourMatcher`, `DetectionTable`, and the FROC/LROC/precision-recall curves.
+
+  Overlap is now computed exactly, by `geo`'s boolean operations. Results are
+  winding-independent, hole-aware and symmetric. **This changes reported numbers**:
+  IoU and Dice will generally go up, so thresholds calibrated against the old
+  behaviour should be re-checked.
+
+- **Bounding-box IoU** no longer round-trips through polygon clipping; it is
+  computed analytically from the rectangle overlap.
+
+### Changed
+
+- **`view-buffer` now depends on [`geo`](https://crates.io/crates/geo)** (0.33,
+  `default-features = false`) for its polygon maths. Alongside the clipper, the
+  hand-rolled Douglas–Peucker simplification, Graham-scan convex hull, ray-casting
+  point-in-polygon, convexity test, shoelace centroid and point-to-segment
+  projection were deleted in favour of `geo`'s implementations, which use exact
+  orientation predicates rather than epsilon comparisons. Public signatures in
+  `view-buffer::geometry` are unchanged.
+
+- **Hole-ness is documented as structural, and only structural.** The `holes`
+  field of `CONTOUR_SCHEMA` is the sole carrier; ring winding is never interpreted
+  as a hole signal. The schema docstrings previously also stated a "CCW = exterior,
+  CW = hole" convention that no code read or enforced — following it (via
+  `.contour.ensure_winding("cw")`) is precisely what produced an IoU of 0.
+  `.contour.winding()` reports point order and `.contour.ensure_winding()` sets it;
+  nothing else consults it. `is_closed` is documented as reserved: it is written
+  unconditionally as `true` and never read back.
+
+### Added
+
+- **`polars_cv.build_info()`** reports the three versions that must agree:
+  `__version__` (the imported Python source), the compiled extension's version
+  (now exposed as `polars_cv._lib.__version__`, baked in from `Cargo.toml`), and
+  the installed distribution's. `maturin develop` installs a *copy* of the Python
+  sources, so after a `git pull` an unrebuilt environment silently keeps running
+  the old code — this makes that visible.
+
+- **`tests/test_version_consistency.py`** fails when the version manifests drift
+  apart or when the installed package is stale. The release checklist in
+  `CONTRIBUTING.md` previously noted that nothing checked them.
+
 ## [0.17.0] — 2026-07-31
 
 ### Added

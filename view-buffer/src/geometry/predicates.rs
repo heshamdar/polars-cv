@@ -1,49 +1,30 @@
 //! Geometric predicates for contours.
 //!
 //! Implements convexity check and point-in-polygon tests.
+//!
+//! Both delegate to `geo`, whose implementations use exact (robust) orientation
+//! predicates rather than epsilon comparisons.
 
 use super::contour::{Contour, Point};
+use geo::coordinate_position::{CoordPos, CoordinatePosition};
+use geo::{coord, IsConvex};
 
 /// Checks if a polygon is convex.
-///
-/// A polygon is convex if all cross products of consecutive edge pairs
-/// have the same sign.
 ///
 /// # Arguments
 /// * `points` - Slice of points forming a closed polygon
 ///
 /// # Returns
-/// true if the polygon is convex
+/// true if the polygon is convex. Degenerate rings (fewer than 3 points) are
+/// considered convex.
 pub fn is_convex(points: &[Point]) -> bool {
     if points.len() < 3 {
-        return true; // Degenerate cases are considered convex
+        return true;
     }
-
-    let n = points.len();
-    let mut sign: Option<bool> = None;
-
-    for i in 0..n {
-        let p0 = &points[i];
-        let p1 = &points[(i + 1) % n];
-        let p2 = &points[(i + 2) % n];
-
-        let cross = (p1.x - p0.x) * (p2.y - p1.y) - (p1.y - p0.y) * (p2.x - p1.x);
-
-        // Skip collinear points (cross ≈ 0)
-        if cross.abs() < 1e-10 {
-            continue;
-        }
-
-        let current_sign = cross > 0.0;
-
-        match sign {
-            None => sign = Some(current_sign),
-            Some(s) if s != current_sign => return false,
-            _ => {}
-        }
-    }
-
-    true
+    Contour::new(points.to_vec())
+        .to_geo()
+        .exterior()
+        .is_convex()
 }
 
 /// Checks if a contour is convex.
@@ -62,11 +43,11 @@ pub fn contour_is_convex(contour: &Contour) -> bool {
     is_convex(&contour.exterior)
 }
 
-/// Tests if a point is inside a polygon using the ray casting algorithm.
+/// Tests if a point is inside a polygon.
 ///
 /// # Arguments
 /// * `point` - The point to test
-/// * `points` - Slice of points forming a closed polygon
+/// * `polygon` - Slice of points forming a closed polygon
 ///
 /// # Returns
 /// * `1` if point is inside
@@ -76,60 +57,10 @@ pub fn point_in_polygon(point: &Point, polygon: &[Point]) -> i32 {
     if polygon.len() < 3 {
         return -1;
     }
-
-    let n = polygon.len();
-    let mut inside = false;
-
-    let mut j = n - 1;
-    for i in 0..n {
-        let pi = &polygon[i];
-        let pj = &polygon[j];
-
-        // Check if point is on the edge
-        if is_point_on_segment(point, pi, pj) {
-            return 0;
-        }
-
-        // Ray casting
-        if ((pi.y > point.y) != (pj.y > point.y))
-            && (point.x < (pj.x - pi.x) * (point.y - pi.y) / (pj.y - pi.y) + pi.x)
-        {
-            inside = !inside;
-        }
-
-        j = i;
-    }
-
-    if inside {
-        1
-    } else {
-        -1
-    }
+    point_in_contour(point, &Contour::new(polygon.to_vec()))
 }
 
-/// Checks if a point lies on a line segment.
-fn is_point_on_segment(point: &Point, seg_start: &Point, seg_end: &Point) -> bool {
-    // Check collinearity using cross product
-    let cross = (point.y - seg_start.y) * (seg_end.x - seg_start.x)
-        - (point.x - seg_start.x) * (seg_end.y - seg_start.y);
-
-    if cross.abs() > 1e-10 {
-        return false;
-    }
-
-    // Check if point is within bounding box of segment
-    let min_x = seg_start.x.min(seg_end.x);
-    let max_x = seg_start.x.max(seg_end.x);
-    let min_y = seg_start.y.min(seg_end.y);
-    let max_y = seg_start.y.max(seg_end.y);
-
-    point.x >= min_x - 1e-10
-        && point.x <= max_x + 1e-10
-        && point.y >= min_y - 1e-10
-        && point.y <= max_y + 1e-10
-}
-
-/// Tests if a point is inside a contour (including holes).
+/// Tests if a point is inside a contour, treating holes as outside.
 ///
 /// # Arguments
 /// * `point` - The point to test
@@ -137,31 +68,21 @@ fn is_point_on_segment(point: &Point, seg_start: &Point, seg_end: &Point) -> boo
 ///
 /// # Returns
 /// * `1` if point is inside (not in a hole)
-/// * `0` if point is on the boundary
+/// * `0` if point is on the boundary of the exterior or of a hole
 /// * `-1` if point is outside or inside a hole
 pub fn point_in_contour(point: &Point, contour: &Contour) -> i32 {
-    let exterior_result = point_in_polygon(point, &contour.exterior);
-
-    if exterior_result == 0 {
-        return 0; // On exterior boundary
+    if contour.exterior.len() < 3 {
+        return -1;
     }
 
-    if exterior_result < 0 {
-        return -1; // Outside exterior
+    match contour
+        .to_geo()
+        .coordinate_position(&coord! { x: point.x, y: point.y })
+    {
+        CoordPos::Inside => 1,
+        CoordPos::OnBoundary => 0,
+        CoordPos::Outside => -1,
     }
-
-    // Check if point is inside any hole
-    for hole in &contour.holes {
-        let hole_result = point_in_polygon(point, hole);
-        if hole_result == 0 {
-            return 0; // On hole boundary
-        }
-        if hole_result > 0 {
-            return -1; // Inside hole = outside contour
-        }
-    }
-
-    1 // Inside exterior and not in any hole
 }
 
 /// Checks if a contour contains a specific point.

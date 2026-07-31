@@ -19,6 +19,11 @@ crate-type = ["rlib"]
 [dependencies]
 thiserror = "1.0"
 num-traits = "0.2"
+# Exact polygon geometry: boolean ops (via i_overlay), area, centroid, distance,
+# simplification, convex hull, winding. `default-features = false` drops the
+# earcut/spade triangulators and `multithreading` — the latter matters because this
+# crate runs inside an already-parallel Polars plugin.
+geo = { version = "0.33", default-features = false }
 
 # Optional dependencies
 ndarray = { version = "0.17", optional = true }

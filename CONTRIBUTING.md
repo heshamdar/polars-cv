@@ -94,14 +94,19 @@ Create two environments in your repository (Settings → Environments):
 
 ### Release Process
 
-1. Bump the version in all six places it is recorded — they must agree, and
-   nothing checks them for you:
+1. Bump the version in all six places it is recorded — they must agree.
+   `polars-cv/tests/test_version_consistency.py` checks the first four for you;
+   run it after bumping:
    - `polars-cv/Cargo.toml`
    - `view-buffer/Cargo.toml` (the two crates are versioned together)
    - `polars-cv/pyproject.toml`
    - `polars_cv.__version__` in `polars-cv/python/polars_cv/__init__.py`
    - `Cargo.lock` — refresh with `cargo update -p polars-cv -p view-buffer`
    - `polars-cv/uv.lock` — refresh with `uv lock` from `polars-cv/`
+
+   The compiled extension's `polars_cv._lib.__version__` needs no action: it is
+   baked in from `polars-cv/Cargo.toml` at build time. That is what makes a stale
+   build detectable — see `polars_cv.build_info()`.
 2. Roll the `CHANGELOG.md` `[Unreleased]` section into a dated entry for the new
    version, and leave a fresh empty `[Unreleased]` heading above it
 3. Commit and push to main

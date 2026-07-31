@@ -43,12 +43,23 @@ All geometry data uses Float64 coordinates. This is deliberate — it avoids pre
 | `CONTOUR_SET_SCHEMA` | `List(CONTOUR_SCHEMA)` | Multiple contours |
 | `BBOX_SCHEMA` | `Struct({x, y, width, height: Float64})` | Axis-aligned bounding box |
 
-### Winding Direction Convention
+### Holes and Winding
 
-Winding is **computed from point order**, not stored:
-- Counter-clockwise (CCW) = positive signed area = exterior boundary
-- Clockwise (CW) = negative signed area = hole
-- Uses the Shoelace formula
+Hole-ness is **structural**: a ring is a hole because it sits in `CONTOUR_SCHEMA`'s
+`holes` field, never because of how it is wound. Every operation — area, centroid,
+`contains_point`, IoU, Dice, rasterization — is winding-independent, so `flip()` and
+`ensure_winding()` change what `winding()` reports without changing the region the
+contour describes. Do not reintroduce a "CW means hole" rule: an earlier version of
+this doc stated one, no code ever honoured it, and the one place that accidentally
+depended on winding (the old Sutherland-Hodgman IoU clipper) returned 0.0 for a
+CW contour matched against itself.
+
+Winding is **computed from point order** (Shoelace), not stored:
+- Counter-clockwise (CCW) = positive signed area
+- Clockwise (CW) = negative signed area
+
+`is_closed` is reserved — written unconditionally as `true`, never read back. Rings
+are implicitly closed; the first point is not repeated.
 
 ## Expression Namespaces
 

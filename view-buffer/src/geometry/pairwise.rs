@@ -1,9 +1,16 @@
 //! Pairwise geometric operations between contours.
 //!
 //! Implements IoU, Dice coefficient, and Hausdorff distance.
+//!
+//! Overlap is computed exactly, by handing both polygons to `geo`'s boolean
+//! operations. Those are winding-independent and hole-aware, so a contour always
+//! scores 1.0 against itself regardless of point order, concavity, or holes.
 
-use super::contour::{BoundingBox, Contour, Point};
-use super::measures::area;
+use super::contour::{BoundingBox, Contour};
+use geo::{Area, BooleanOps, BoundingRect, HausdorffDistance, Intersects, Polygon};
+
+/// Areas below this are treated as degenerate.
+const EPSILON: f64 = 1e-10;
 
 /// Pairwise matching result for a set of predictions and ground truths.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,36 +33,30 @@ pub struct DetectionMatchResult {
     pub n_fn: usize,
 }
 
-/// Computes the areas and intersection area of two contours.
-/// Returns `None` if either contour has near-zero area or their bounding boxes don't intersect.
-fn contour_intersection_areas(a: &Contour, b: &Contour) -> Option<(f64, f64, f64)> {
-    let area_a = area(a, false);
-    let area_b = area(b, false);
+/// Areas of both polygons and of their exact intersection.
+///
+/// Returns `None` when either polygon is degenerate or the two cannot possibly
+/// overlap, letting the callers short-circuit to zero. The bounding-box test is
+/// what keeps `match_detections` cheap: most pairs are disjoint and never reach
+/// the boolean op.
+fn intersection_areas(a: &Polygon<f64>, b: &Polygon<f64>) -> Option<(f64, f64, f64)> {
+    let (area_a, area_b) = (a.unsigned_area(), b.unsigned_area());
 
-    if area_a < 1e-10 || area_b < 1e-10 {
+    if area_a < EPSILON || area_b < EPSILON {
         return None;
     }
 
-    let bbox_a = a.bounding_box()?;
-    let bbox_b = b.bounding_box()?;
-
-    if !bbox_a.intersects(&bbox_b) {
+    if !a.bounding_rect()?.intersects(&b.bounding_rect()?) {
         return None;
     }
 
-    let intersection = polygon_intersection(&a.exterior, &b.exterior);
-    let intersection_area = polygon_area(&intersection);
-
-    Some((area_a, area_b, intersection_area))
+    Some((area_a, area_b, a.intersection(b).unsigned_area()))
 }
 
 /// Computes Intersection over Union (IoU) between two contours.
 ///
-/// IoU = intersection_area / union_area
-///
-/// This implementation uses a polygon clipping approach for exact computation
-/// when contours are simple polygons. For complex cases, it falls back to
-/// rasterization-based approximation.
+/// IoU = intersection_area / union_area, computed exactly for arbitrary simple
+/// polygons — concave shapes and holes included, in either winding direction.
 ///
 /// # Arguments
 /// * `a` - First contour
@@ -64,14 +65,19 @@ fn contour_intersection_areas(a: &Contour, b: &Contour) -> Option<(f64, f64, f64
 /// # Returns
 /// IoU value in [0, 1]
 pub fn iou(a: &Contour, b: &Contour) -> f64 {
-    let (area_a, area_b, intersection_area) = match contour_intersection_areas(a, b) {
-        Some(v) => v,
-        None => return 0.0,
+    iou_polygons(&a.to_geo(), &b.to_geo())
+}
+
+fn iou_polygons(a: &Polygon<f64>, b: &Polygon<f64>) -> f64 {
+    let Some((area_a, area_b, intersection_area)) = intersection_areas(a, b) else {
+        return 0.0;
     };
 
+    // Inclusion-exclusion is exact here: `unsigned_area` and the boolean op agree
+    // on hole semantics, so the union needs no second boolean op.
     let union_area = area_a + area_b - intersection_area;
 
-    if union_area < 1e-10 {
+    if union_area < EPSILON {
         return 0.0;
     }
 
@@ -91,15 +97,14 @@ pub fn iou_matrix(a: &[Contour], b: &[Contour]) -> Vec<Vec<f64>> {
         return vec![Vec::new(); a.len()];
     }
 
-    let mut matrix = Vec::with_capacity(a.len());
-    for contour_a in a {
-        let mut row = Vec::with_capacity(b.len());
-        for contour_b in b {
-            row.push(iou(contour_a, contour_b));
-        }
-        matrix.push(row);
-    }
-    matrix
+    // Convert once per contour rather than once per pair.
+    let a_polys: Vec<Polygon<f64>> = a.iter().map(Contour::to_geo).collect();
+    let b_polys: Vec<Polygon<f64>> = b.iter().map(Contour::to_geo).collect();
+
+    a_polys
+        .iter()
+        .map(|pa| b_polys.iter().map(|pb| iou_polygons(pa, pb)).collect())
+        .collect()
 }
 
 /// Greedy one-to-one detection matching using IoU thresholding.
@@ -113,10 +118,26 @@ pub fn match_detections(
     threshold: f64,
     pred_order: Option<&[usize]>,
 ) -> DetectionMatchResult {
-    let n_preds = preds.len();
-    let n_gts = gts.len();
-    let matrix = iou_matrix(preds, gts);
+    match_from_matrix(
+        iou_matrix(preds, gts),
+        preds.len(),
+        gts.len(),
+        threshold,
+        pred_order,
+    )
+}
 
+/// The greedy matcher itself, over a precomputed IoU matrix.
+///
+/// Shared by the contour and bounding-box entry points so the matching policy
+/// lives in exactly one place.
+fn match_from_matrix(
+    matrix: Vec<Vec<f64>>,
+    n_preds: usize,
+    n_gts: usize,
+    threshold: f64,
+    pred_order: Option<&[usize]>,
+) -> DetectionMatchResult {
     let order: Vec<usize> = match pred_order {
         Some(indices) => indices.to_vec(),
         None => (0..n_preds).collect(),
@@ -178,14 +199,6 @@ pub fn match_detections(
 }
 
 /// Convert an axis-aligned bounding box to a 4-point rectangular contour.
-///
-/// This enables reuse of the contour-based IoU and matching infrastructure for
-/// bounding-box inputs.
-///
-/// # TODO
-/// A dedicated axis-aligned bbox IoU path using `BoundingBox::intersection().area()`
-/// would avoid the polygon clipping overhead and should be implemented when
-/// bbox-heavy workloads are profiled.
 pub fn bbox_to_contour(bbox: &BoundingBox) -> Contour {
     Contour::from_tuples(&[
         (bbox.x, bbox.y),
@@ -195,16 +208,31 @@ pub fn bbox_to_contour(bbox: &BoundingBox) -> Contour {
     ])
 }
 
-/// IoU between two axis-aligned bounding boxes (via contour conversion).
+/// IoU between two axis-aligned bounding boxes.
+///
+/// Rectangle overlap is a two-interval intersection, so this stays analytic rather
+/// than going through general polygon boolean ops.
 pub fn bbox_iou(a: &BoundingBox, b: &BoundingBox) -> f64 {
-    iou(&bbox_to_contour(a), &bbox_to_contour(b))
+    let intersection = a.intersection(b).map_or(0.0, |r| r.area());
+
+    if intersection < EPSILON {
+        return 0.0;
+    }
+
+    let union = a.area() + b.area() - intersection;
+
+    if union < EPSILON {
+        return 0.0;
+    }
+
+    (intersection / union).clamp(0.0, 1.0)
 }
 
 /// Pairwise IoU matrix between two sets of bounding boxes.
 pub fn bbox_iou_matrix(a: &[BoundingBox], b: &[BoundingBox]) -> Vec<Vec<f64>> {
-    let a_contours: Vec<Contour> = a.iter().map(bbox_to_contour).collect();
-    let b_contours: Vec<Contour> = b.iter().map(bbox_to_contour).collect();
-    iou_matrix(&a_contours, &b_contours)
+    a.iter()
+        .map(|ba| b.iter().map(|bb| bbox_iou(ba, bb)).collect())
+        .collect()
 }
 
 /// Greedy one-to-one detection matching on bounding boxes.
@@ -214,9 +242,13 @@ pub fn bbox_match_detections(
     threshold: f64,
     pred_order: Option<&[usize]>,
 ) -> DetectionMatchResult {
-    let pred_contours: Vec<Contour> = preds.iter().map(bbox_to_contour).collect();
-    let gt_contours: Vec<Contour> = gts.iter().map(bbox_to_contour).collect();
-    match_detections(&pred_contours, &gt_contours, threshold, pred_order)
+    match_from_matrix(
+        bbox_iou_matrix(preds, gts),
+        preds.len(),
+        gts.len(),
+        threshold,
+        pred_order,
+    )
 }
 
 /// Computes the Dice coefficient between two contours.
@@ -230,14 +262,14 @@ pub fn bbox_match_detections(
 /// # Returns
 /// Dice coefficient in [0, 1]
 pub fn dice(a: &Contour, b: &Contour) -> f64 {
-    let (area_a, area_b, intersection_area) = match contour_intersection_areas(a, b) {
-        Some(v) => v,
-        None => return 0.0,
+    let Some((area_a, area_b, intersection_area)) = intersection_areas(&a.to_geo(), &b.to_geo())
+    else {
+        return 0.0;
     };
 
     let denominator = area_a + area_b;
 
-    if denominator < 1e-10 {
+    if denominator < EPSILON {
         return 0.0;
     }
 
@@ -258,131 +290,67 @@ pub fn dice(a: &Contour, b: &Contour) -> f64 {
 /// # Returns
 /// Hausdorff distance
 pub fn hausdorff_distance(a: &Contour, b: &Contour) -> f64 {
-    let h_ab = directed_hausdorff(&a.exterior, &b.exterior);
-    let h_ba = directed_hausdorff(&b.exterior, &a.exterior);
-    h_ab.max(h_ba)
-}
-
-/// Directed Hausdorff distance from A to B.
-fn directed_hausdorff(a: &[Point], b: &[Point]) -> f64 {
-    if a.is_empty() || b.is_empty() {
-        return f64::INFINITY;
-    }
-
-    let mut max_dist = 0.0;
-
-    for pa in a {
-        let mut min_dist = f64::INFINITY;
-        for pb in b {
-            let dist = pa.distance_to(pb);
-            if dist < min_dist {
-                min_dist = dist;
-            }
-        }
-        if min_dist > max_dist {
-            max_dist = min_dist;
-        }
-    }
-
-    max_dist
-}
-
-/// Sutherland-Hodgman polygon clipping algorithm.
-///
-/// Clips `subject` polygon against `clip` polygon.
-fn polygon_intersection(subject: &[Point], clip: &[Point]) -> Vec<Point> {
-    if subject.len() < 3 || clip.len() < 3 {
-        return Vec::new();
-    }
-
-    let mut output = subject.to_vec();
-
-    let n = clip.len();
-    for i in 0..n {
-        if output.is_empty() {
-            break;
-        }
-
-        let edge_start = &clip[i];
-        let edge_end = &clip[(i + 1) % n];
-
-        output = clip_polygon_by_edge(&output, edge_start, edge_end);
-    }
-
-    output
-}
-
-/// Clips a polygon by a single edge using Sutherland-Hodgman.
-fn clip_polygon_by_edge(polygon: &[Point], edge_start: &Point, edge_end: &Point) -> Vec<Point> {
-    if polygon.is_empty() {
-        return Vec::new();
-    }
-
-    let mut result = Vec::new();
-    let n = polygon.len();
-
-    for i in 0..n {
-        let current = &polygon[i];
-        let next = &polygon[(i + 1) % n];
-
-        let current_inside = is_inside_edge(current, edge_start, edge_end);
-        let next_inside = is_inside_edge(next, edge_start, edge_end);
-
-        if current_inside {
-            result.push(*current);
-            if !next_inside {
-                if let Some(inter) = line_intersection(current, next, edge_start, edge_end) {
-                    result.push(inter);
-                }
-            }
-        } else if next_inside {
-            if let Some(inter) = line_intersection(current, next, edge_start, edge_end) {
-                result.push(inter);
-            }
-        }
-    }
-
-    result
-}
-
-/// Checks if a point is on the "inside" of an edge (left side for CCW polygon).
-fn is_inside_edge(point: &Point, edge_start: &Point, edge_end: &Point) -> bool {
-    // Cross product determines which side of the edge the point is on
-    let cross = (edge_end.x - edge_start.x) * (point.y - edge_start.y)
-        - (edge_end.y - edge_start.y) * (point.x - edge_start.x);
-    cross >= 0.0
-}
-
-/// Computes the intersection of two line segments.
-fn line_intersection(p1: &Point, p2: &Point, p3: &Point, p4: &Point) -> Option<Point> {
-    let d1x = p2.x - p1.x;
-    let d1y = p2.y - p1.y;
-    let d2x = p4.x - p3.x;
-    let d2y = p4.y - p3.y;
-
-    let denom = d1x * d2y - d1y * d2x;
-
-    if denom.abs() < 1e-10 {
-        return None; // Parallel lines
-    }
-
-    let t = ((p3.x - p1.x) * d2y - (p3.y - p1.y) * d2x) / denom;
-
-    Some(Point::new(p1.x + t * d1x, p1.y + t * d1y))
-}
-
-/// Computes the area of a polygon using the Shoelace formula.
-/// Delegates to `measures::signed_area` to avoid duplication.
-fn polygon_area(points: &[Point]) -> f64 {
-    super::measures::signed_area(points).abs()
+    a.to_geo().hausdorff_distance(&b.to_geo())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::contour::{Point, Winding};
+    use crate::geometry::transforms;
 
     fn square_contour(x: f64, y: f64, size: f64) -> Contour {
         Contour::from_tuples(&[(x, y), (x + size, y), (x + size, y + size), (x, y + size)])
+    }
+
+    /// The same square as [`square_contour`], wound the other way.
+    fn cw_square_contour(x: f64, y: f64, size: f64) -> Contour {
+        Contour::from_tuples(&[(x, y), (x, y + size), (x + size, y + size), (x + size, y)])
+    }
+
+    /// Concave: a 100x100 square with the top-right quadrant removed. Area 7500.
+    fn l_shape(dx: f64, dy: f64) -> Contour {
+        Contour::from_tuples(&[
+            (dx, dy),
+            (dx + 100.0, dy),
+            (dx + 100.0, dy + 50.0),
+            (dx + 50.0, dy + 50.0),
+            (dx + 50.0, dy + 100.0),
+            (dx, dy + 100.0),
+        ])
+    }
+
+    /// Concave with a reflex notch cut into one side. Area 100x100 - 40x60 = 7600.
+    fn u_shape() -> Contour {
+        Contour::from_tuples(&[
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (70.0, 100.0),
+            (70.0, 40.0),
+            (30.0, 40.0),
+            (30.0, 100.0),
+            (0.0, 100.0),
+        ])
+    }
+
+    /// A 100x100 square with a 50x50 hole. Net area 10000 - 2500 = 7500.
+    fn holed_square(hole_winding: Winding) -> Contour {
+        let hole = match hole_winding {
+            Winding::Clockwise => vec![(25.0, 25.0), (25.0, 75.0), (75.0, 75.0), (75.0, 25.0)],
+            Winding::CounterClockwise => {
+                vec![(25.0, 25.0), (75.0, 25.0), (75.0, 75.0), (25.0, 75.0)]
+            }
+        };
+        Contour::with_holes(
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(100.0, 0.0),
+                Point::new(100.0, 100.0),
+                Point::new(0.0, 100.0),
+            ],
+            vec![hole.into_iter().map(|(x, y)| Point::new(x, y)).collect()],
+        )
     }
 
     #[test]
@@ -424,6 +392,177 @@ mod tests {
         let b = square_contour(20.0, 20.0, 10.0);
         let dice_val = dice(&a, &b);
         assert!(dice_val < 0.01);
+    }
+
+    // --- Winding independence ---
+    //
+    // `holes` is the only carrier of hole-ness in the contour spec; point order is
+    // never interpreted as a hole signal. These pin that as behaviour.
+
+    #[test]
+    fn test_iou_cw_identical() {
+        let a = cw_square_contour(0.0, 0.0, 10.0);
+        assert!((iou(&a, &a) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_iou_mixed_winding_identical() {
+        let ccw = square_contour(0.0, 0.0, 10.0);
+        let cw = cw_square_contour(0.0, 0.0, 10.0);
+        assert!((iou(&ccw, &cw) - 1.0).abs() < 1e-9);
+        assert!((iou(&cw, &ccw) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_iou_is_symmetric() {
+        let a = l_shape(0.0, 0.0);
+        let b = l_shape(25.0, 25.0);
+        assert!((iou(&a, &b) - iou(&b, &a)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_iou_winding_does_not_change_result() {
+        let a = l_shape(0.0, 0.0);
+        let b = l_shape(25.0, 25.0);
+        let flipped_b = transforms::flip(&b);
+        assert!((iou(&a, &b) - iou(&a, &flipped_b)).abs() < 1e-9);
+    }
+
+    // --- Concave polygons ---
+    //
+    // Sutherland-Hodgman clipping is only valid for a convex clip polygon, so these
+    // are the cases that silently under-reported. Real segmentation contours are
+    // essentially never convex.
+
+    #[test]
+    fn test_iou_l_shape_identical() {
+        let a = l_shape(0.0, 0.0);
+        assert!((iou(&a, &a) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_iou_u_shape_identical() {
+        let a = u_shape();
+        assert!((iou(&a, &a) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_iou_concave_partial_overlap() {
+        // `a` covers x:[0,100] y:[0,50] plus x:[0,50] y:[50,100].
+        // `b` is the same shape offset by (25,25): x:[25,125] y:[25,75] plus
+        // x:[25,75] y:[75,125]. Overlapping rectangles:
+        //   x:[25,100] y:[25,50] = 1875
+        //   x:[25,50]  y:[50,75] =  625
+        //   x:[25,50]  y:[75,100] = 625
+        // giving 3125 of intersection against a union of 7500 + 7500 - 3125.
+        let a = l_shape(0.0, 0.0);
+        let b = l_shape(25.0, 25.0);
+        let expected = 3125.0 / 11875.0;
+        assert!((iou(&a, &b) - expected).abs() < 1e-9, "got {}", iou(&a, &b));
+    }
+
+    // --- Holes ---
+    //
+    // `area()` subtracts holes, so the intersection must account for them too or the
+    // ratio exceeds 1 (or the union goes negative and the result collapses to 0).
+
+    #[test]
+    fn test_iou_holed_identical() {
+        for winding in [Winding::Clockwise, Winding::CounterClockwise] {
+            let a = holed_square(winding);
+            assert!((iou(&a, &a) - 1.0).abs() < 1e-9, "winding {winding:?}");
+        }
+    }
+
+    #[test]
+    fn test_iou_holed_vs_solid() {
+        let holed = holed_square(Winding::Clockwise);
+        let solid = square_contour(0.0, 0.0, 100.0);
+        // intersection = the holed shape (7500); union = the solid square (10000).
+        assert!((iou(&holed, &solid) - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_iou_hole_winding_is_not_a_signal() {
+        let cw_hole = holed_square(Winding::Clockwise);
+        let ccw_hole = holed_square(Winding::CounterClockwise);
+        assert!((iou(&cw_hole, &ccw_hole) - 1.0).abs() < 1e-9);
+    }
+
+    // --- Aggregates built on `iou` ---
+
+    #[test]
+    fn test_iou_matrix_matches_pairwise() {
+        let a = vec![l_shape(0.0, 0.0), u_shape()];
+        let b = vec![u_shape(), l_shape(50.0, 50.0)];
+        let matrix = iou_matrix(&a, &b);
+        for (i, ca) in a.iter().enumerate() {
+            for (j, cb) in b.iter().enumerate() {
+                assert!((matrix[i][j] - iou(ca, cb)).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn test_match_detections_matches_concave_shapes_to_themselves() {
+        let shapes = vec![l_shape(0.0, 0.0), u_shape(), l_shape(500.0, 500.0)];
+        let result = match_detections(&shapes, &shapes, 0.5, None);
+        assert_eq!(result.n_tp, 3);
+        assert_eq!(result.n_fp, 0);
+        assert_eq!(result.n_fn, 0);
+        for (i, gt) in result.gt_idx.iter().enumerate() {
+            assert_eq!(*gt, Some(i));
+        }
+    }
+
+    // --- Dice shares the same intersection path ---
+
+    #[test]
+    fn test_dice_cw_identical() {
+        let a = cw_square_contour(0.0, 0.0, 10.0);
+        assert!((dice(&a, &a) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_dice_l_shape_identical() {
+        let a = l_shape(0.0, 0.0);
+        assert!((dice(&a, &a) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_dice_holed_identical() {
+        let a = holed_square(Winding::Clockwise);
+        assert!((dice(&a, &a) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_dice_holed_vs_solid() {
+        let holed = holed_square(Winding::Clockwise);
+        let solid = square_contour(0.0, 0.0, 100.0);
+        // 2 * 7500 / (7500 + 10000)
+        assert!((dice(&holed, &solid) - (15000.0 / 17500.0)).abs() < 1e-9);
+    }
+
+    // --- Bounding boxes ---
+
+    #[test]
+    fn test_bbox_iou_identical() {
+        let b = BoundingBox::new(10.0, 20.0, 30.0, 40.0);
+        assert!((bbox_iou(&b, &b) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_bbox_iou_partial() {
+        let a = BoundingBox::new(0.0, 0.0, 10.0, 10.0);
+        let b = BoundingBox::new(5.0, 5.0, 10.0, 10.0);
+        assert!((bbox_iou(&a, &b) - 25.0 / 175.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_bbox_iou_disjoint() {
+        let a = BoundingBox::new(0.0, 0.0, 10.0, 10.0);
+        let b = BoundingBox::new(20.0, 20.0, 10.0, 10.0);
+        assert_eq!(bbox_iou(&a, &b), 0.0);
     }
 
     #[test]
