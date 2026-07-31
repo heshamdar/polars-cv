@@ -293,12 +293,20 @@ pub fn dice(a: &Contour, b: &Contour) -> f64 {
 ///
 /// where h(A, B) = max_{a in A} min_{b in B} d(a, b)
 ///
+/// This is `geo`'s *discrete* Hausdorff distance: the sets are the two contours'
+/// **vertices**, not their edges, so two contours tracing the same outline with
+/// different vertex spacing are a positive distance apart.
+///
+/// Every ring is measured, holes included — a hole edge bounds the region exactly
+/// as the exterior does. Two shapes with the same outline but different holes are
+/// therefore not at distance zero.
+///
 /// # Arguments
 /// * `a` - First contour
 /// * `b` - Second contour
 ///
 /// # Returns
-/// Hausdorff distance
+/// Hausdorff distance, or `INFINITY` if either contour is empty
 pub fn hausdorff_distance(a: &Contour, b: &Contour) -> f64 {
     // `geo` folds with `Bounded::min_value()`, so an empty coordinate set yields
     // -f64::MAX rather than propagating emptiness. A distance is never negative.
@@ -306,11 +314,10 @@ pub fn hausdorff_distance(a: &Contour, b: &Contour) -> f64 {
         return f64::INFINITY;
     }
 
-    // Only the coordinates are read, so pass the rings rather than building
-    // polygons whose closing points would be walked twice by the O(n*m) loop.
-    a.to_geo()
-        .exterior()
-        .hausdorff_distance(b.to_geo().exterior())
+    // `to_geo_rings` carries the holes and leaves the rings open; going through
+    // `to_geo` would instead drop the holes on `.exterior()` and close the ring,
+    // making the O(n*m) scan walk the first vertex twice.
+    a.to_geo_rings().hausdorff_distance(&b.to_geo_rings())
 }
 
 #[cfg(test)]
@@ -657,6 +664,33 @@ mod tests {
         let a = BoundingBox::new(0.0, 0.0, 10.0, 10.0);
         let b = BoundingBox::new(20.0, 20.0, 10.0, 10.0);
         assert_eq!(bbox_iou(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn test_hausdorff_walks_hole_vertices() {
+        // Same exterior, so an exterior-only measure calls these identical. The
+        // hole is what distinguishes them: each of its corners is 25*sqrt(2) from
+        // the nearest corner of the solid square, and every solid corner has an
+        // exact match in the holed contour's exterior.
+        for winding in [Winding::Clockwise, Winding::CounterClockwise] {
+            let holed = holed_square(winding);
+            let solid = square_contour(0.0, 0.0, 100.0);
+            let expected = 25.0 * 2.0_f64.sqrt();
+
+            assert!(
+                (hausdorff_distance(&holed, &solid) - expected).abs() < 1e-9,
+                "winding {winding:?} gave {}",
+                hausdorff_distance(&holed, &solid)
+            );
+            // Symmetric: the max is taken over both directions.
+            assert!((hausdorff_distance(&solid, &holed) - expected).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_hausdorff_identical_holed_contour_is_zero() {
+        let a = holed_square(Winding::Clockwise);
+        assert!(hausdorff_distance(&a, &a) < 1e-12);
     }
 
     #[test]

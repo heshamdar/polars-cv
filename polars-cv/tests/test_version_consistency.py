@@ -89,10 +89,10 @@ def test_compiled_plugin_is_not_stale() -> None:
     """
     The compiled extension was built from this Python source.
 
-    A mismatch means the installed package predates the checkout: `maturin develop`
-    copies the Python sources in, so the `.py` files being imported are also stale
-    and no amount of editing the source will affect what runs. Rebuild with
-    `maturin develop --release`.
+    A mismatch means `_lib.abi3.so` predates the checkout. The Python sources being
+    imported are the working tree's either way (the install is editable), so the
+    suite would go on exercising old Rust against new Python and the failures would
+    point anywhere but here. Rebuild with `maturin develop --release`.
     """
     info = polars_cv.build_info()
     assert info["plugin_version"] == info["version"], (

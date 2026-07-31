@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-31
+
 ### Fixed
 
 - **Contour IoU and Dice were wrong for most real contours.** Overlap went through
@@ -45,6 +47,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **`hausdorff_distance` on an empty contour** returned `-1.797e308` — a negative
   distance — because `geo` folds with `Bounded::min_value()` where the previous
   implementation used `f64::INFINITY`. It returns `INFINITY` again.
+
+- **`centroid` measured a different region than `area`.** It was the one measure
+  left on the holes-as-interior-rings representation, so it subtracted each hole's
+  moment in turn — double-counting wherever two hole rings overlap, and subtracting
+  a nested ring that lies in an already-removed part. It now measures the same
+  region as `area`, `contains_point`, `iou` and rasterization. For a 100×100 square
+  with holes `[10,50]²` and `[30,70]²`, the centroid moves from `(54.71, 54.71)` —
+  a shape that does not exist — to `(53.89, 53.89)`. Contours with no holes, and
+  contours whose holes are disjoint, are unaffected.
 
 ### Changed
 
@@ -85,9 +96,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **`polars_cv.build_info()`** reports the three versions that must agree:
   `__version__` (the imported Python source), the compiled extension's version
   (now exposed as `polars_cv._lib.__version__`, baked in from `Cargo.toml`), and
-  the installed distribution's. `maturin develop` installs a *copy* of the Python
-  sources, so after a `git pull` an unrebuilt environment silently keeps running
-  the old code — this makes that visible.
+  the installed distribution's. The install is editable, so Python edits are live
+  while the compiled extension stays at its last `maturin develop` — after a `git
+  pull` that touches Rust, an unrebuilt environment silently runs new Python
+  against old Rust. This makes that visible.
 
 - **`tests/test_version_consistency.py`** fails when the version manifests drift
   apart or when the installed package is stale. The release checklist in
@@ -524,6 +536,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.18.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.18.0
 [0.17.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.17.0
 [0.16.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.16.0
 [0.15.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.15.0
