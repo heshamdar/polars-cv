@@ -27,6 +27,13 @@ maturin develop --release        # Compile Rust plugin and install into .venv
 maturin build --release          # Build distributable wheels
 ```
 
+`maturin develop` installs a **copy** of the Python sources next to the compiled
+extension, so after pulling new commits both the `.py` files and the `.so` stay at
+their build-time version until you re-run it. Editing Python alone is not enough.
+`polars_cv.build_info()` reports the three versions that must agree
+(`__version__`, the compiled plugin, the installed distribution), and
+`tests/test_version_consistency.py` fails when they do not.
+
 ### Test
 
 ```bash

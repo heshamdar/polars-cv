@@ -53,6 +53,12 @@ from polars_cv import CONTOUR_SCHEMA, POINT_SCHEMA, BBOX_SCHEMA
 # CONTOUR_SCHEMA: Struct({exterior: List(POINT), holes: List(List(POINT)), is_closed: bool})
 ```
 
+Rings are implicitly closed — do not repeat the first point. A ring is a hole
+because it sits in `holes`, not because of how it is wound: every operation is
+winding-independent, so `flip()` and `ensure_winding()` change what
+`winding()` reports without changing the region the contour describes.
+`is_closed` is reserved and never read.
+
 ---
 
 ## Contours

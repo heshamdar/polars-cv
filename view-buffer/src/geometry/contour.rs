@@ -181,12 +181,16 @@ impl BoundingBox {
 
 /// A polygon contour with an exterior ring and optional interior holes.
 ///
-/// Contours use a right-hand rule convention:
-/// - Exterior ring is counter-clockwise (CCW) for positive area
-/// - Interior holes are clockwise (CW)
+/// The `holes` field is the **sole** carrier of hole-ness. Point order is never
+/// interpreted as a hole signal: a ring listed in `holes` is a hole whichever way it
+/// is wound, and every operation here is winding-independent. Winding is only
+/// *reported* (by [`measures::contour_winding`]) and *set* (by
+/// [`transforms::ensure_winding`]) on request.
 ///
-/// In image coordinates (y-axis pointing down), visual CW appears as
-/// mathematical CCW due to the flipped y-axis.
+/// Rings are implicitly closed — the first point is not repeated at the end.
+///
+/// [`measures::contour_winding`]: super::measures::contour_winding
+/// [`transforms::ensure_winding`]: super::transforms::ensure_winding
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Contour {
@@ -259,6 +263,46 @@ impl Contour {
     pub fn bounding_box(&self) -> Option<BoundingBox> {
         BoundingBox::from_points(&self.exterior)
     }
+
+    /// Converts to a [`geo::Polygon`], the representation the exact geometry
+    /// algorithms operate on.
+    ///
+    /// `geo::Polygon::new` closes each ring for us. Because every consumer treats
+    /// hole-ness structurally, the rings are handed over with their point order intact.
+    pub fn to_geo(&self) -> geo::Polygon<f64> {
+        geo::Polygon::new(
+            ring_to_geo(&self.exterior),
+            self.holes.iter().map(|h| ring_to_geo(h)).collect(),
+        )
+    }
+
+    /// Converts back from a [`geo::Polygon`], dropping the repeated closing point so
+    /// the result follows this crate's implicitly-closed ring convention.
+    pub fn from_geo(polygon: &geo::Polygon<f64>) -> Self {
+        Self::with_holes(
+            ring_from_geo(polygon.exterior()),
+            polygon.interiors().iter().map(ring_from_geo).collect(),
+        )
+    }
+}
+
+fn ring_to_geo(points: &[Point]) -> geo::LineString<f64> {
+    geo::LineString::from(
+        points
+            .iter()
+            .map(|p| geo::coord! { x: p.x, y: p.y })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn ring_from_geo(ring: &geo::LineString<f64>) -> Vec<Point> {
+    let coords = ring.0.as_slice();
+    // A closed `LineString` repeats its first coordinate; our rings do not.
+    let coords = match coords {
+        [first, .., last] if first == last => &coords[..coords.len() - 1],
+        _ => coords,
+    };
+    coords.iter().map(|c| Point::new(c.x, c.y)).collect()
 }
 
 impl From<Vec<Point>> for Contour {

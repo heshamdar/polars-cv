@@ -9,11 +9,17 @@ Coordinate System:
 - X increases to the right, Y increases downward.
 - For normalized coordinates, values are in [0, 1] range.
 
+Holes:
+- The `holes` field of `CONTOUR_SCHEMA` is the ONLY thing that makes a ring a hole.
+- Point order is never interpreted as a hole signal, and no operation requires a
+  particular winding: a ring listed in `holes` is a hole whichever way it is wound.
+
 Winding Direction:
 - Winding is COMPUTED from point order, not stored explicitly.
-- Counter-clockwise (CCW) = positive area = exterior boundary
-- Clockwise (CW) = negative area = hole
+- Counter-clockwise (CCW) = positive signed area; clockwise (CW) = negative.
 - In image coordinates (Y-down), CCW appears as CW visually.
+- It is reported by `.contour.winding()` and set by `.contour.ensure_winding()`.
+  Nothing else consults it.
 """
 
 from __future__ import annotations
@@ -74,9 +80,11 @@ RING_SCHEMA = pl.List(POINT_SCHEMA)
 """
 Base ring schema - ordered list of points forming a closed ring.
 
-The winding direction is determined by the point order:
-- CCW (positive signed area) = exterior
-- CW (negative signed area) = hole
+The ring is implicitly closed; do not repeat the first point at the end.
+
+A ring carries no indication of whether it is an exterior or a hole — that is
+decided by which field of `CONTOUR_SCHEMA` it appears in. Point order only
+determines the ring's winding, which `.contour.winding()` reports.
 """
 
 CONTOUR_SCHEMA = pl.Struct(
@@ -90,14 +98,17 @@ CONTOUR_SCHEMA = pl.Struct(
 Contour with exterior boundary and optional holes.
 
 Fields:
-    exterior: Outer boundary as a ring of points (CCW winding).
-    holes: List of interior holes (each with CW winding).
-    is_closed: Whether the contour forms a closed polygon.
-               Must be True for area/fill operations.
+    exterior: Outer boundary as a ring of points, in either winding direction.
+    holes: List of interior holes, each in either winding direction. This field
+           is the sole carrier of hole-ness — see below.
+    is_closed: Reserved. Always written as True and never read back; rings are
+               implicitly closed. Kept for wire compatibility.
 
-Winding direction is computed from point order using the Shoelace formula:
-- Positive signed area = CCW = exterior
-- Negative signed area = CW = hole
+Hole-ness is structural, not directional. A ring is a hole because it appears in
+`holes`, not because of how it is wound, and every operation (area, centroid,
+`contains_point`, IoU, Dice, rasterization) treats it that way. Flipping a ring
+with `.contour.flip()` or `.contour.ensure_winding()` therefore never changes what
+region the contour describes; it only changes what `.contour.winding()` reports.
 
 Example:
     ```python

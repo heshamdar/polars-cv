@@ -27,8 +27,10 @@ use crate::params::NullParamPolicy;
 ///
 /// The schema is:
 /// - exterior: List[{x: Float64, y: Float64}]
-/// - holes: List[List[{x: Float64, y: Float64}]]
-/// - is_closed: Boolean
+/// - holes: List[List[{x: Float64, y: Float64}]] — the sole carrier of hole-ness;
+///   ring winding is never interpreted as a hole signal
+/// - is_closed: Boolean — reserved. Always written `true` here and ignored by
+///   `parse_contour`; rings are implicitly closed.
 pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
     // Build exterior points as list of structs
     let exterior_points: Vec<AnyValue> = contour
@@ -106,7 +108,7 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
         vec![
             AnyValue::List(exterior_series),
             AnyValue::List(holes_series),
-            AnyValue::Boolean(true), // is_closed
+            AnyValue::Boolean(true), // is_closed: reserved, never read back
         ],
         vec![
             Field::new(

@@ -28,6 +28,10 @@ use serde::Deserialize;
 #[pymodule]
 #[pyo3(name = "_lib")]
 fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Baked in at compile time so a stale extension is detectable: `maturin develop`
+    // installs a *copy*, so both this and the Python sources freeze until rebuilt.
+    // `polars_cv.build_info()` compares the two.
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(op_schema, m)?)?;

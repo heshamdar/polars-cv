@@ -1,8 +1,20 @@
 //! Geometric measures for contours.
 //!
-//! Implements area, perimeter, centroid, bounding box, and winding direction.
+//! Implements area, perimeter, centroid, bounding box, winding direction, and
+//! point-to-contour distance. The maths is `geo`'s; this module only maps between
+//! [`Contour`] and [`geo::Polygon`] and keeps the crate's degenerate-input
+//! conventions.
 
 use super::contour::{BoundingBox, Contour, Point, Winding};
+use geo::{Area, Centroid, Closest, ClosestPoint, Distance, Euclidean, Length, LineString};
+
+fn ring_polygon(points: &[Point]) -> geo::Polygon<f64> {
+    Contour::new(points.to_vec()).to_geo()
+}
+
+fn ring_line_string(points: &[Point]) -> LineString<f64> {
+    ring_polygon(points).into_inner().0
+}
 
 /// Computes the signed area of a polygon using the Shoelace formula.
 ///
@@ -15,55 +27,30 @@ use super::contour::{BoundingBox, Contour, Point, Winding};
 /// # Returns
 /// Signed area value
 pub fn signed_area(points: &[Point]) -> f64 {
-    if points.len() < 3 {
-        return 0.0;
-    }
-
-    let n = points.len();
-    let mut area = 0.0;
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        area += points[i].x * points[j].y;
-        area -= points[j].x * points[i].y;
-    }
-
-    area / 2.0
+    ring_polygon(points).signed_area()
 }
 
 /// Computes the area of a contour.
 ///
-/// For contours with holes, the hole areas are subtracted.
+/// Hole areas are subtracted, whichever way each hole ring is wound.
 ///
 /// # Arguments
 /// * `contour` - The contour to measure
-/// * `signed` - If true, returns signed area (negative for CW winding)
+/// * `signed` - If true, returns signed area (negative for CW exterior winding)
 ///
 /// # Returns
 /// Area value (absolute if `signed` is false)
 pub fn area(contour: &Contour, signed: bool) -> f64 {
-    let exterior_area = signed_area(&contour.exterior);
-
-    let holes_area: f64 = contour
-        .holes
-        .iter()
-        .map(|hole| signed_area(hole).abs())
-        .sum();
-
-    let net_area = exterior_area.abs() - holes_area;
+    let polygon = contour.to_geo();
 
     if signed {
-        if exterior_area >= 0.0 {
-            net_area
-        } else {
-            -net_area
-        }
+        polygon.signed_area()
     } else {
-        net_area.abs()
+        polygon.unsigned_area()
     }
 }
 
-/// Computes the perimeter (arc length) of a polygon.
+/// Computes the perimeter (arc length) of a closed ring.
 ///
 /// # Arguments
 /// * `points` - Slice of points forming a closed polygon
@@ -75,15 +62,7 @@ pub fn perimeter_of_ring(points: &[Point]) -> f64 {
         return 0.0;
     }
 
-    let n = points.len();
-    let mut perimeter = 0.0;
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        perimeter += points[i].distance_to(&points[j]);
-    }
-
-    perimeter
+    Euclidean.length(&ring_line_string(points))
 }
 
 /// Computes the perimeter of a contour including holes.
@@ -94,68 +73,47 @@ pub fn perimeter_of_ring(points: &[Point]) -> f64 {
 /// # Returns
 /// Total perimeter length
 pub fn perimeter(contour: &Contour) -> f64 {
-    let exterior_perimeter = perimeter_of_ring(&contour.exterior);
+    perimeter_of_ring(&contour.exterior)
+        + contour
+            .holes
+            .iter()
+            .map(|hole| perimeter_of_ring(hole))
+            .sum::<f64>()
+}
 
-    let holes_perimeter: f64 = contour
-        .holes
-        .iter()
-        .map(|hole| perimeter_of_ring(hole))
-        .sum();
+/// Mean of a set of points, used where a centroid is undefined.
+fn vertex_mean(points: &[Point]) -> Point {
+    if points.is_empty() {
+        return Point::new(0.0, 0.0);
+    }
 
-    exterior_perimeter + holes_perimeter
+    let n = points.len() as f64;
+    Point::new(
+        points.iter().map(|p| p.x).sum::<f64>() / n,
+        points.iter().map(|p| p.y).sum::<f64>() / n,
+    )
 }
 
 /// Computes the centroid (center of mass) of a polygon.
-///
-/// Uses the formula for centroid of a simple polygon.
 ///
 /// # Arguments
 /// * `points` - Slice of points forming a closed polygon
 ///
 /// # Returns
-/// Centroid point, or (0, 0) if polygon has less than 3 points
+/// Centroid point, or the mean of the points when fewer than 3 are given
 pub fn centroid_of_ring(points: &[Point]) -> Point {
     if points.len() < 3 {
-        if points.is_empty() {
-            return Point::new(0.0, 0.0);
-        }
-        // For degenerate cases, return mean of points
-        let sum_x: f64 = points.iter().map(|p| p.x).sum();
-        let sum_y: f64 = points.iter().map(|p| p.y).sum();
-        return Point::new(sum_x / points.len() as f64, sum_y / points.len() as f64);
+        return vertex_mean(points);
     }
 
-    let n = points.len();
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    let mut signed_area = 0.0;
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let cross = points[i].x * points[j].y - points[j].x * points[i].y;
-        signed_area += cross;
-        cx += (points[i].x + points[j].x) * cross;
-        cy += (points[i].y + points[j].y) * cross;
-    }
-
-    signed_area /= 2.0;
-
-    if signed_area.abs() < 1e-10 {
-        // Degenerate polygon, return mean of points
-        let sum_x: f64 = points.iter().map(|p| p.x).sum();
-        let sum_y: f64 = points.iter().map(|p| p.y).sum();
-        return Point::new(sum_x / points.len() as f64, sum_y / points.len() as f64);
-    }
-
-    cx /= 6.0 * signed_area;
-    cy /= 6.0 * signed_area;
-
-    Point::new(cx, cy)
+    ring_polygon(points)
+        .centroid()
+        .map_or_else(|| vertex_mean(points), |c| Point::new(c.x(), c.y()))
 }
 
 /// Computes the centroid of a contour.
 ///
-/// For contours with holes, uses weighted average based on area.
+/// For contours with holes, the hole areas are subtracted from the moment.
 ///
 /// # Arguments
 /// * `contour` - The contour to measure
@@ -163,32 +121,10 @@ pub fn centroid_of_ring(points: &[Point]) -> Point {
 /// # Returns
 /// Centroid point
 pub fn centroid(contour: &Contour) -> Point {
-    if contour.holes.is_empty() {
-        return centroid_of_ring(&contour.exterior);
-    }
-
-    // For contours with holes, use weighted centroid
-    let ext_area = signed_area(&contour.exterior).abs();
-    let ext_centroid = centroid_of_ring(&contour.exterior);
-
-    let mut total_area = ext_area;
-    let mut weighted_x = ext_centroid.x * ext_area;
-    let mut weighted_y = ext_centroid.y * ext_area;
-
-    for hole in &contour.holes {
-        let hole_area = signed_area(hole).abs();
-        let hole_centroid = centroid_of_ring(hole);
-        // Subtract hole contribution
-        total_area -= hole_area;
-        weighted_x -= hole_centroid.x * hole_area;
-        weighted_y -= hole_centroid.y * hole_area;
-    }
-
-    if total_area.abs() < 1e-10 {
-        return ext_centroid;
-    }
-
-    Point::new(weighted_x / total_area, weighted_y / total_area)
+    contour.to_geo().centroid().map_or_else(
+        || centroid_of_ring(&contour.exterior),
+        |c| Point::new(c.x(), c.y()),
+    )
 }
 
 /// Computes the bounding box of a contour.
@@ -204,14 +140,16 @@ pub fn bounding_box(contour: &Contour) -> Option<BoundingBox> {
 
 /// Determines the winding direction of a polygon.
 ///
+/// This *reports* point order; it is never used to decide whether a ring is a
+/// hole. See [`Contour`] for the hole convention.
+///
 /// # Arguments
 /// * `points` - Slice of points forming a closed polygon
 ///
 /// # Returns
 /// Winding direction
 pub fn winding(points: &[Point]) -> Winding {
-    let area = signed_area(points);
-    if area >= 0.0 {
+    if signed_area(points) >= 0.0 {
         Winding::CounterClockwise
     } else {
         Winding::Clockwise
@@ -233,6 +171,10 @@ pub fn contour_winding(contour: &Contour) -> Winding {
 // Point Distance Operations
 // ============================================================================
 
+fn geo_point(point: &Point) -> geo::Point<f64> {
+    geo::Point::new(point.x, point.y)
+}
+
 /// Computes the minimum distance from a point to a line segment.
 ///
 /// This is the distance to the closest point on the segment, not the infinite line.
@@ -245,26 +187,8 @@ pub fn contour_winding(contour: &Contour) -> Winding {
 /// # Returns
 /// Minimum distance to the segment
 pub fn distance_to_segment(point: &Point, seg_start: &Point, seg_end: &Point) -> f64 {
-    let dx = seg_end.x - seg_start.x;
-    let dy = seg_end.y - seg_start.y;
-    let length_sq = dx * dx + dy * dy;
-
-    if length_sq < 1e-10 {
-        // Degenerate segment (start == end)
-        return point.distance_to(seg_start);
-    }
-
-    // Project point onto the line, clamped to [0, 1] for segment bounds
-    let t = ((point.x - seg_start.x) * dx + (point.y - seg_start.y) * dy) / length_sq;
-    let t_clamped = t.clamp(0.0, 1.0);
-
-    // Closest point on segment
-    let closest_x = seg_start.x + t_clamped * dx;
-    let closest_y = seg_start.y + t_clamped * dy;
-
-    let px = point.x - closest_x;
-    let py = point.y - closest_y;
-    (px * px + py * py).sqrt()
+    let segment = geo::Line::new(geo_point(seg_start), geo_point(seg_end));
+    Euclidean.distance(&geo_point(point), &segment)
 }
 
 /// Computes the minimum distance from a point to a polygon boundary.
@@ -276,25 +200,11 @@ pub fn distance_to_segment(point: &Point, seg_start: &Point, seg_end: &Point) ->
 /// # Returns
 /// Minimum distance to any edge of the polygon
 pub fn distance_to_polygon(point: &Point, polygon: &[Point]) -> f64 {
-    if polygon.is_empty() {
-        return f64::INFINITY;
+    match polygon {
+        [] => f64::INFINITY,
+        [only] => point.distance_to(only),
+        _ => Euclidean.distance(&geo_point(point), &ring_line_string(polygon)),
     }
-    if polygon.len() == 1 {
-        return point.distance_to(&polygon[0]);
-    }
-
-    let n = polygon.len();
-    let mut min_dist = f64::INFINITY;
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let dist = distance_to_segment(point, &polygon[i], &polygon[j]);
-        if dist < min_dist {
-            min_dist = dist;
-        }
-    }
-
-    min_dist
 }
 
 /// Computes the minimum distance from a point to a contour boundary.
@@ -308,16 +218,10 @@ pub fn distance_to_polygon(point: &Point, polygon: &[Point]) -> f64 {
 /// # Returns
 /// Minimum distance to the contour boundary
 pub fn distance_to_contour(point: &Point, contour: &Contour) -> f64 {
-    let mut min_dist = distance_to_polygon(point, &contour.exterior);
-
-    for hole in &contour.holes {
-        let hole_dist = distance_to_polygon(point, hole);
-        if hole_dist < min_dist {
-            min_dist = hole_dist;
-        }
-    }
-
-    min_dist
+    std::iter::once(&contour.exterior)
+        .chain(&contour.holes)
+        .map(|ring| distance_to_polygon(point, ring))
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Finds the nearest point on a polygon boundary.
@@ -329,42 +233,14 @@ pub fn distance_to_contour(point: &Point, contour: &Contour) -> f64 {
 /// # Returns
 /// The nearest point on the polygon boundary, or None if polygon is empty
 pub fn nearest_point_on_polygon(point: &Point, polygon: &[Point]) -> Option<Point> {
-    if polygon.is_empty() {
-        return None;
+    match polygon {
+        [] => None,
+        [only] => Some(*only),
+        _ => match ring_line_string(polygon).closest_point(&geo_point(point)) {
+            Closest::Intersection(p) | Closest::SinglePoint(p) => Some(Point::new(p.x(), p.y())),
+            Closest::Indeterminate => None,
+        },
     }
-    if polygon.len() == 1 {
-        return Some(polygon[0]);
-    }
-
-    let n = polygon.len();
-    let mut min_dist = f64::INFINITY;
-    let mut nearest = polygon[0];
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let seg_start = &polygon[i];
-        let seg_end = &polygon[j];
-
-        let dx = seg_end.x - seg_start.x;
-        let dy = seg_end.y - seg_start.y;
-        let length_sq = dx * dx + dy * dy;
-
-        let closest = if length_sq < 1e-10 {
-            *seg_start
-        } else {
-            let t = ((point.x - seg_start.x) * dx + (point.y - seg_start.y) * dy) / length_sq;
-            let t_clamped = t.clamp(0.0, 1.0);
-            Point::new(seg_start.x + t_clamped * dx, seg_start.y + t_clamped * dy)
-        };
-
-        let dist = point.distance_to(&closest);
-        if dist < min_dist {
-            min_dist = dist;
-            nearest = closest;
-        }
-    }
-
-    Some(nearest)
 }
 
 /// Finds the nearest point on a contour boundary.
@@ -378,20 +254,10 @@ pub fn nearest_point_on_polygon(point: &Point, polygon: &[Point]) -> Option<Poin
 /// # Returns
 /// The nearest point on the contour boundary
 pub fn nearest_point_on_contour(point: &Point, contour: &Contour) -> Option<Point> {
-    let mut nearest = nearest_point_on_polygon(point, &contour.exterior)?;
-    let mut min_dist = point.distance_to(&nearest);
-
-    for hole in &contour.holes {
-        if let Some(hole_nearest) = nearest_point_on_polygon(point, hole) {
-            let hole_dist = point.distance_to(&hole_nearest);
-            if hole_dist < min_dist {
-                min_dist = hole_dist;
-                nearest = hole_nearest;
-            }
-        }
-    }
-
-    Some(nearest)
+    std::iter::once(&contour.exterior)
+        .chain(&contour.holes)
+        .filter_map(|ring| nearest_point_on_polygon(point, ring))
+        .min_by(|a, b| point.distance_to(a).total_cmp(&point.distance_to(b)))
 }
 
 #[cfg(test)]

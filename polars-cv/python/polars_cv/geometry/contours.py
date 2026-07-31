@@ -77,7 +77,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
 
     def winding(self) -> pl.Expr:
         """
-        Compute winding direction from point order.
+        Compute the exterior ring's winding direction from point order.
 
         Returns:
             String 'ccw' for counter-clockwise, 'cw' for clockwise.
@@ -86,6 +86,9 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             Winding is computed using the Shoelace formula:
             - Positive signed area = CCW
             - Negative signed area = CW
+
+            This is purely a report on point order. Winding does not mark a ring as
+            a hole — the `holes` field does — and no other operation consults it.
         """
         return self._plugin("contour_winding")
 
@@ -161,6 +164,10 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         Reverse point order (flips winding direction).
 
+        Exterior and holes are reversed together. This changes only what
+        `winding()` reports — the region the contour describes is unaffected,
+        because no operation reads winding.
+
         Returns:
             Contour with reversed point order.
         """
@@ -170,7 +177,9 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         Ensure contour has specified winding direction.
 
-        Flips the contour if needed to match target winding.
+        Flips the contour if needed to match target winding. Use this when handing
+        contours to an external consumer that expects a convention; polars-cv's own
+        operations never require one.
 
         Args:
             direction: Target winding direction.

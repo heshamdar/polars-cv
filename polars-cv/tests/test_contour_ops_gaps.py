@@ -67,6 +67,37 @@ def l_shape() -> dict:
 
 
 @pytest.fixture
+def holed_square() -> dict:
+    """100×100 square with a 50×50 hole. Net area 10000 - 2500 = 7500."""
+    return {
+        "exterior": [
+            {"x": 0.0, "y": 0.0},
+            {"x": 100.0, "y": 0.0},
+            {"x": 100.0, "y": 100.0},
+            {"x": 0.0, "y": 100.0},
+        ],
+        "holes": [
+            [
+                {"x": 25.0, "y": 25.0},
+                {"x": 25.0, "y": 75.0},
+                {"x": 75.0, "y": 75.0},
+                {"x": 75.0, "y": 25.0},
+            ]
+        ],
+        "is_closed": True,
+    }
+
+
+@pytest.fixture
+def holed_square_ccw_hole(holed_square: dict) -> dict:
+    """The same shape with its hole ring wound the other way."""
+    return {
+        **holed_square,
+        "holes": [list(reversed(holed_square["holes"][0]))],
+    }
+
+
+@pytest.fixture
 def overlapping_squares() -> tuple[dict, dict]:
     """Two overlapping squares: (0,0)→(60,60) and (40,40)→(100,100).
 
@@ -451,6 +482,145 @@ class TestPairwiseOverlapScenarios:
             d_ba=pl.col("b").contour.hausdorff_distance(pl.col("a")),
         )
         assert result["d_ab"][0] == pytest.approx(result["d_ba"][0], rel=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Pairwise: winding, concavity and holes must not affect overlap
+# ---------------------------------------------------------------------------
+
+
+def _pair(a: dict, b: dict) -> pl.DataFrame:
+    return pl.DataFrame(
+        {"a": [a], "b": [b]},
+        schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
+    )
+
+
+def _iou(a: dict, b: dict) -> float:
+    return _pair(a, b).select(pl.col("a").contour.iou(pl.col("b"))).item()
+
+
+def _dice(a: dict, b: dict) -> float:
+    return _pair(a, b).select(pl.col("a").contour.dice(pl.col("b"))).item()
+
+
+@plugin_required
+class TestOverlapIgnoresWindingAndConcavity:
+    """
+    A contour scores 1.0 against itself whatever its point order or shape.
+
+    Overlap used to go through a Sutherland-Hodgman clipper, which is only valid
+    for a convex, CCW-wound clip polygon — neither of which the schema requires.
+    """
+
+    def test_iou_cw_identical_is_one(self, cw_square: dict) -> None:
+        assert _iou(cw_square, cw_square) == pytest.approx(1.0, abs=1e-9)
+
+    def test_iou_mixed_winding_identical_is_one(
+        self, ccw_square: dict, cw_square: dict
+    ) -> None:
+        """The same square wound both ways is still the same square."""
+        assert _iou(ccw_square, cw_square) == pytest.approx(1.0, abs=1e-9)
+        assert _iou(cw_square, ccw_square) == pytest.approx(1.0, abs=1e-9)
+
+    def test_iou_concave_identical_is_one(self, l_shape: dict) -> None:
+        assert _iou(l_shape, l_shape) == pytest.approx(1.0, abs=1e-9)
+
+    def test_iou_concave_partial_overlap_is_exact(self, l_shape: dict) -> None:
+        """
+        `l_shape` offset by (25, 25) overlaps it in three rectangles:
+        75×25 + 25×25 + 25×25 = 3125, against a union of 7500 + 7500 - 3125.
+        """
+        shifted = {
+            **l_shape,
+            "exterior": [
+                {"x": p["x"] + 25.0, "y": p["y"] + 25.0} for p in l_shape["exterior"]
+            ],
+        }
+        assert _iou(l_shape, shifted) == pytest.approx(3125.0 / 11875.0, abs=1e-9)
+
+    def test_iou_is_symmetric(self, ccw_square: dict, l_shape: dict) -> None:
+        assert _iou(ccw_square, l_shape) == pytest.approx(
+            _iou(l_shape, ccw_square), abs=1e-12
+        )
+
+    def test_dice_cw_identical_is_one(self, cw_square: dict) -> None:
+        assert _dice(cw_square, cw_square) == pytest.approx(1.0, abs=1e-9)
+
+    def test_dice_concave_identical_is_one(self, l_shape: dict) -> None:
+        assert _dice(l_shape, l_shape) == pytest.approx(1.0, abs=1e-9)
+
+
+@plugin_required
+class TestHolesAreStructuralNotDirectional:
+    """
+    The `holes` field decides hole-ness; ring winding never does.
+
+    These pin the spec as behaviour rather than prose: the same shape described
+    with a CW hole and with a CCW hole must be indistinguishable.
+    """
+
+    def test_iou_holed_identical_is_one(self, holed_square: dict) -> None:
+        assert _iou(holed_square, holed_square) == pytest.approx(1.0, abs=1e-9)
+
+    def test_iou_hole_winding_does_not_matter(
+        self, holed_square: dict, holed_square_ccw_hole: dict
+    ) -> None:
+        assert _iou(holed_square, holed_square_ccw_hole) == pytest.approx(1.0, abs=1e-9)
+
+    def test_iou_holed_vs_solid_accounts_for_the_hole(
+        self, holed_square: dict, ccw_square: dict
+    ) -> None:
+        """Intersection is the holed shape (7500); union is the solid one (10000)."""
+        assert _iou(holed_square, ccw_square) == pytest.approx(0.75, abs=1e-9)
+
+    def test_dice_holed_vs_solid_accounts_for_the_hole(
+        self, holed_square: dict, ccw_square: dict
+    ) -> None:
+        assert _dice(holed_square, ccw_square) == pytest.approx(
+            15000.0 / 17500.0, abs=1e-9
+        )
+
+    def test_area_ignores_hole_winding(
+        self, holed_square: dict, holed_square_ccw_hole: dict
+    ) -> None:
+        df = pl.DataFrame(
+            {"a": [holed_square], "b": [holed_square_ccw_hole]},
+            schema={"a": CONTOUR_SCHEMA, "b": CONTOUR_SCHEMA},
+        ).with_columns(
+            area_a=pl.col("a").contour.area(),
+            area_b=pl.col("b").contour.area(),
+        )
+        assert df["area_a"][0] == pytest.approx(7500.0)
+        assert df["area_b"][0] == pytest.approx(7500.0)
+
+    def test_contains_point_ignores_hole_winding(
+        self, holed_square: dict, holed_square_ccw_hole: dict
+    ) -> None:
+        """A point in the hole is outside the contour, however the hole is wound."""
+        df = pl.DataFrame(
+            {
+                "a": [holed_square],
+                "b": [holed_square_ccw_hole],
+                "in_hole": [{"x": 50.0, "y": 50.0}],
+                "in_ring": [{"x": 10.0, "y": 10.0}],
+            },
+            schema={
+                "a": CONTOUR_SCHEMA,
+                "b": CONTOUR_SCHEMA,
+                "in_hole": POINT_SCHEMA,
+                "in_ring": POINT_SCHEMA,
+            },
+        ).with_columns(
+            in_hole_a=pl.col("a").contour.contains_point(pl.col("in_hole")),
+            in_hole_b=pl.col("b").contour.contains_point(pl.col("in_hole")),
+            in_ring_a=pl.col("a").contour.contains_point(pl.col("in_ring")),
+            in_ring_b=pl.col("b").contour.contains_point(pl.col("in_ring")),
+        )
+        assert not df["in_hole_a"][0]
+        assert not df["in_hole_b"][0]
+        assert df["in_ring_a"][0]
+        assert df["in_ring_b"][0]
 
 
 # ---------------------------------------------------------------------------

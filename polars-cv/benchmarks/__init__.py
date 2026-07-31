@@ -7,4 +7,5 @@ against other vision processing frameworks like OpenCV, PIL, and torchvision.
 
 from __future__ import annotations
 
-__version__ = "0.11.0"
+# No `__version__` here: the benchmark suite is not released separately, and a
+# second version literal only drifts. Use `polars_cv.__version__`.
