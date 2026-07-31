@@ -43,9 +43,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   produced nothing for a row — null input bytes, `source(on_error="null")`, or
   now a null parameter — was indistinguishable from a node missing from the
   graph, so a null image in a `merge_pipe` / `apply_mask` / `channel_merge`
-  operand column failed the query instead of nulling that row. Cross-node
-  operand reads now go through `CompiledGraph::operand`, which separates the two
-  cases.
+  operand column failed the query instead of nulling that row. All five
+  cross-node operand reads now go through `CompiledGraph::operand`, which
+  separates the two cases.
+- `source("contour", shape=...)` no longer fails a row whose shape reference is
+  null. A null image in the shape branch raised `Shape reference '<id>' not
+  found. Ensure the shape source is defined before this contour pipeline.` —
+  a message pointing at a graph-wiring problem that did not exist.
 - A null in a non-primitive parameter column reported a cast failure from
   `try_extract` rather than the null-value error, bypassing the null path.
 

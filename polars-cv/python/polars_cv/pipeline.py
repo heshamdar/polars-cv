@@ -509,9 +509,13 @@ class Pipeline:
         the expression itself — ``pl.col("scale").fill_null(1.0)`` — which is
         the idiomatic Polars way and needs nothing from this API.
 
-        This is a graph-level setting: when pipelines are composed
-        (``merge_pipe``, binary ops), all composed pipelines must agree on the
-        policy.
+        This is a graph-level setting. Only a non-default policy is collected
+        from the composed pipelines, so an explicit ``"raise"`` is
+        indistinguishable from leaving it unset: composing a ``"null"``
+        pipeline with a ``"raise"`` one gives the whole graph ``"null"``,
+        rather than being rejected as a conflict. (With only two values there
+        is no combination that can conflict; ``on_error``, which has two
+        non-default values, does reject genuine disagreement.)
 
         Args:
             policy: One of ``"raise"``, ``"null"``.

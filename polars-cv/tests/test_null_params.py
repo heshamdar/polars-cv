@@ -227,16 +227,19 @@ class TestOnNullParamNull:
 
     def test_plan_schema_matches_execution(self) -> None:
         # Per-row parameters cannot affect shape, rank or dtype, so nulling a
-        # row must not change the column's schema.
+        # row must not change the column's schema. The fixture must actually
+        # contain a nulled row, or this passes with the feature removed.
         pipe = (
             Pipeline()
             .source("image_bytes")
             .resize(height=pl.col("h"), width=pl.col("h"))
             .on_null_param("null")
         )
-        lf = pl.DataFrame({"img": [_png()], "h": [4]}).lazy()
+        lf = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]}).lazy()
         lf = lf.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
-        assert lf.collect_schema()["out"] == lf.collect()["out"].dtype
+        collected = lf.collect()
+        assert lf.collect_schema()["out"] == collected["out"].dtype
+        assert collected["out"][1]["data"] is None
 
 
 @plugin_required
@@ -306,7 +309,10 @@ class TestIndependentOfOnError:
 
     def test_does_not_swallow_a_wrong_dtype_param(self) -> None:
         # A String column routed into a numeric parameter is a user error, not
-        # a null, and must survive the policy.
+        # a null, and must survive the policy. The null comes FIRST so the
+        # policy gets its chance to (wrongly) swallow the row before the
+        # wrong-dtype value is reached — ordering the other way would hit the
+        # cast error on row 0 and never exercise the interaction.
         pipe = (
             Pipeline()
             .source("image_bytes")
@@ -314,7 +320,7 @@ class TestIndependentOfOnError:
             .on_null_param("null")
         )
         df = pl.DataFrame(
-            {"img": [_png(), _png()], "h": ["4", None]},
+            {"img": [_png(), _png()], "h": [None, "4"]},
             schema={"img": pl.Binary, "h": pl.String},
         )
         with pytest.raises(pl.exceptions.ComputeError):
@@ -491,3 +497,172 @@ class TestNullOperandPropagation:
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
         assert out["out"][1]["data"] is None
+
+    def test_null_bytes_in_an_apply_mask_operand(self) -> None:
+        img = pl.col("a").cv.pipe(Pipeline().source("image_bytes"))
+        mask = pl.col("b").cv.pipe(Pipeline().source("image_bytes").grayscale())
+        expr = img.apply_mask(mask).sink("numpy")
+
+        df = pl.DataFrame(
+            {"a": [_png(), _png()], "b": [_png(), None]},
+            schema={"a": pl.Binary, "b": pl.Binary},
+        )
+        out = df.with_columns(out=expr)
+        assert out["out"][0]["data"] is not None
+        assert out["out"][1]["data"] is None
+
+    def test_null_bytes_in_a_channel_merge_operand(self) -> None:
+        # channel_select yields [H, W]; grayscale would yield [H, W, 1], which
+        # ChannelMerge rejects.
+        base = Pipeline().source("image_bytes")
+        a = pl.col("a").cv.pipe(base.channel_select(index=0))
+        b = pl.col("b").cv.pipe(base.channel_select(index=1))
+        c = pl.col("c").cv.pipe(base.channel_select(index=2))
+        expr = a.channel_merge(b, c).sink("numpy")
+
+        df = pl.DataFrame(
+            {"a": [_png()] * 2, "b": [_png(), None], "c": [_png()] * 2},
+            schema={"a": pl.Binary, "b": pl.Binary, "c": pl.Binary},
+        )
+        out = df.with_columns(out=expr)
+        assert out["out"][0]["data"] is not None
+        assert out["out"][1]["data"] is None
+
+    def test_one_nulled_node_feeding_two_consumers(self) -> None:
+        # Both consumers must go null, and an independent branch must not.
+        base = pl.col("a").cv.pipe(
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=pl.col("h"), width=pl.col("h"))
+            .on_null_param("null")
+        )
+        left = base.pipe(Pipeline().grayscale()).alias("left")
+        right = base.pipe(Pipeline().invert()).alias("right")
+        other = (
+            pl.col("b")
+            .cv.pipe(Pipeline().source("image_bytes").on_null_param("null"))
+            .alias("other")
+        )
+        expr = (
+            left.merge_pipe(right)
+            .merge_pipe(other)
+            .sink({"left": "numpy", "right": "numpy", "other": "numpy"})
+        )
+
+        df = pl.DataFrame({"a": [_png()] * 2, "b": [_png()] * 2, "h": [8, None]})
+        out = df.with_columns(outs=expr)
+        for alias in ("left", "right"):
+            field = out["outs"].struct.field(alias)
+            assert field[0]["data"] is not None
+            assert field[1]["data"] is None
+        independent = out["outs"].struct.field("other")
+        assert independent[0]["data"] is not None
+        assert independent[1]["data"] is not None
+
+
+@plugin_required
+class TestContourSourceShapeReference:
+    """`source("contour", shape=...)` reads another node for its dimensions.
+
+    That read is a cross-node operand like any other, so a shape node which
+    produced nothing for a row must null this row — not raise. Regression for
+    the fifth such read being missed when the other four were converted.
+
+    All of these consume the shape node as an operand too (via ``apply_mask``).
+    A shape node referenced *only* by ``shape=`` is never collected into the
+    dependency graph at all — a separate, pre-existing bug unrelated to nulls,
+    which fails identically with no null anywhere in the frame.
+    """
+
+    def test_null_bytes_in_the_shape_branch(self) -> None:
+        img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+        mask = pl.col("cnt").cv.pipe(Pipeline().source("contour", shape=img))
+        expr = img.apply_mask(mask).sink("numpy")
+
+        df = pl.DataFrame(
+            {"img": [_png(), None], "cnt": [SQUARE, SQUARE]},
+            schema={"img": pl.Binary, "cnt": None},
+        )
+        out = df.with_columns(out=expr)
+        assert out["out"][0]["data"] is not None
+        assert out["out"][1]["data"] is None
+
+    def test_null_param_in_the_shape_branch(self) -> None:
+        img = pl.col("img").cv.pipe(
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=pl.col("h"), width=pl.col("h"))
+            .on_null_param("null")
+        )
+        mask = pl.col("cnt").cv.pipe(
+            Pipeline().source("contour", shape=img).on_null_param("null")
+        )
+        expr = img.apply_mask(mask).sink("numpy")
+
+        df = pl.DataFrame(
+            {"img": [_png(), _png()], "cnt": [SQUARE, SQUARE], "h": [8, None]}
+        )
+        out = df.with_columns(out=expr)
+        assert out["out"][0]["data"] is not None
+        assert out["out"][1]["data"] is None
+
+
+@plugin_required
+class TestSourceAndSinkParamSites:
+    """Per-row parameter sites outside `resolve_op`, which have their own
+    interception points in `graph/compiled.rs`."""
+
+    def test_null_contour_source_fill_value(self) -> None:
+        img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+        mask = pl.col("cnt").cv.pipe(
+            Pipeline()
+            .source("contour", shape=img, fill_value=pl.col("fill"))
+            .on_null_param("null")
+        )
+        expr = img.apply_mask(mask).sink("numpy")
+
+        df = pl.DataFrame(
+            {"img": [_png()] * 2, "cnt": [SQUARE, SQUARE], "fill": [255, None]},
+            schema={"img": pl.Binary, "cnt": None, "fill": pl.Int64},
+        )
+        out = df.with_columns(out=expr)
+        assert out["out"][0]["data"] is not None
+        assert out["out"][1]["data"] is None
+
+    def test_null_rasterize_style_on_a_shape_reference(self) -> None:
+        img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
+        expr = (
+            pl.col("cnt")
+            .cv.pipe(
+                Pipeline()
+                .source("contour", shape=img)
+                .extract_contours()
+                .rasterize(shape=img, fill_value=pl.col("fill"))
+                .on_null_param("null")
+            )
+            .sink("numpy")
+        )
+
+        df = pl.DataFrame(
+            {"img": [_png()] * 2, "cnt": [SQUARE, SQUARE], "fill": [255, None]},
+            schema={"img": pl.Binary, "cnt": None, "fill": pl.Int64},
+        )
+        out = df.with_columns(out=expr)
+        assert out["out"][0]["data"] is not None
+        assert out["out"][1]["data"] is None
+
+
+class TestCvNamespaceHasNoOnNull:
+    """`.cv` must not advertise a policy it cannot apply.
+
+    `Pipeline.on_null_param` is the `.cv` path's control. `on_null` belongs to
+    the geometry accessors, which have no Pipeline to carry it; inheriting it
+    onto `.cv` would let a chained call look effective while doing nothing.
+    """
+
+    def test_cv_does_not_expose_on_null(self) -> None:
+        assert not hasattr(pl.col("img").cv, "on_null")
+
+    def test_geometry_accessors_still_expose_it(self) -> None:
+        for accessor in ("contour", "point", "bbox"):
+            assert hasattr(getattr(pl.col("x"), accessor), "on_null")

@@ -531,8 +531,16 @@ impl<'a> ParamCol<'a> {
         }
     }
 
-    /// Read the value at `row_idx` as an `AnyValue` (for non-numeric
-    /// parameter columns such as contour structs).
+    /// Read the value at `row_idx` as an `AnyValue`, for columns carrying
+    /// *data* rather than a parameter value — currently only `label_reduce`'s
+    /// contour operand, which travels by column name instead of as a
+    /// `ParamValue`.
+    ///
+    /// Deliberately outside [`NullParamPolicy`]: it returns `AnyValue::Null`
+    /// rather than routing through [`on_null`](Self::on_null), and its caller
+    /// gives that its own meaning (an empty score vector). Do not reach for
+    /// this accessor for an actual parameter — the typed accessors are what
+    /// make the null policy uniform.
     pub fn get_any(&self, row_idx: usize) -> PolarsResult<AnyValue<'a>> {
         self.series.get(self.value_index(row_idx))
     }

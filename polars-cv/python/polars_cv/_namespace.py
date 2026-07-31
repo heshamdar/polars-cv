@@ -33,37 +33,6 @@ class _PluginNamespace:
 
     def __init__(self, expr: pl.Expr) -> None:
         self._expr = expr
-        self._on_null = "raise"
-
-    def on_null(self, policy: str):
-        """Set what a null in a per-row expression parameter means.
-
-        These namespaces have no ``Pipeline`` object to hang a graph-level
-        setting on, so the policy lives on the accessor itself and chains
-        ahead of the call::
-
-            pl.col("c").contour.on_null("null").normalize(pl.col("w"), 100)
-
-        - ``"raise"`` (default): a null parameter fails the expression.
-        - ``"null"``: rows whose parameter is null yield null, matching how a
-          null input geometry is already handled.
-
-        For a **fallback value** instead, fill the null in the expression
-        itself — ``pl.col("w").fill_null(1.0)``.
-
-        Args:
-            policy: One of ``"raise"``, ``"null"``.
-
-        Returns:
-            A copy of this namespace with the policy applied. The original is
-            unchanged, matching ``Pipeline``'s immutable-builder convention.
-        """
-        if policy not in _NULL_PARAM_POLICIES:
-            msg = f"on_null must be one of {_NULL_PARAM_POLICIES}, got '{policy}'"
-            raise ValueError(msg)
-        new = copy.copy(self)
-        new._on_null = policy
-        return new
 
     def _plugin(
         self,
@@ -88,6 +57,54 @@ class _PluginNamespace:
             kwargs=kwargs,
             is_elementwise=is_elementwise,
         )
+
+
+class _GeomNullPolicy:
+    """Adds ``on_null`` to the geometry accessors — and only to those.
+
+    Deliberately **not** on :class:`_PluginNamespace`. ``.cv`` shares that base
+    but routes per-row parameters through the ``vb_graph`` graph engine, where
+    the policy belongs to the pipeline (``Pipeline.on_null_param``). Inheriting
+    ``on_null`` onto ``.cv`` would let ``pl.col("x").cv.on_null("null")`` chain
+    and read as effective while silently doing nothing, because only
+    :meth:`_ArgBinder.call` reads ``_on_null``. Keeping it on a geometry-only
+    mixin makes that call an ``AttributeError`` instead of a quiet no-op.
+    """
+
+    _on_null: str = "raise"
+
+    def on_null(self, policy: str):
+        """Set what a null in a per-row expression parameter means.
+
+        These namespaces have no ``Pipeline`` object to hang a graph-level
+        setting on, so the policy lives on the accessor itself and chains
+        ahead of the call::
+
+            pl.col("c").contour.on_null("null").normalize(pl.col("w"), 100)
+
+        - ``"raise"`` (default): a null parameter fails the expression.
+        - ``"null"``: rows whose parameter is null yield null, matching how a
+          null input geometry is already handled.
+
+        For a **fallback value** instead, fill the null in the expression
+        itself — ``pl.col("w").fill_null(1.0)``.
+
+        The ``.cv`` namespace deliberately has no ``on_null``; its equivalent
+        is ``Pipeline.on_null_param``.
+
+        Args:
+            policy: One of ``"raise"``, ``"null"``.
+
+        Returns:
+            A copy of this namespace with the policy applied. The original is
+            unchanged, matching ``Pipeline``'s immutable-builder convention.
+        """
+        if policy not in _NULL_PARAM_POLICIES:
+            msg = f"on_null must be one of {_NULL_PARAM_POLICIES}, got '{policy}'"
+            raise ValueError(msg)
+        new = copy.copy(self)
+        new._on_null = policy
+        return new
 
 
 class _ArgBinder:

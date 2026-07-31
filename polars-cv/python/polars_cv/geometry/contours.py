@@ -10,11 +10,11 @@ from typing import Literal
 
 import polars as pl
 
-from polars_cv._namespace import _ArgBinder, _PluginNamespace
+from polars_cv._namespace import _ArgBinder, _GeomNullPolicy, _PluginNamespace
 
 
 @pl.api.register_expr_namespace("contour")
-class ContourNamespace(_PluginNamespace):
+class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
     """
     Namespace for geometric operations on contour columns.
 
