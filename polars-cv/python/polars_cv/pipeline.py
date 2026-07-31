@@ -959,6 +959,14 @@ class Pipeline:
                     "pipeline": shape._pipeline._to_spec_dict(),
                     "upstream": [u._node_id for u in shape._upstream],
                 }
+                # Referencing a node by id is not enough to get it executed:
+                # `_shape_refs` is what `cv.pipe` / `LazyPipelineExpr.pipe`
+                # turn into upstream edges, and only an upstream edge puts a
+                # node into the dependency graph. Without this the reference
+                # dangles unless the node happens to be reachable some other
+                # way (e.g. it is also the image being masked). Mirrors
+                # `rasterize(shape=...)` below.
+                new._shape_refs.append(shape)
 
             new._source = SourceSpec(
                 format=fmt,

@@ -71,29 +71,11 @@ impl SourceSpec {
         row_idx: usize,
         ctx: &crate::params::ParamCtx,
     ) -> PolarsResult<(u8, u8)> {
+        use crate::params::get::opt_u8_value;
         Ok((
-            resolve_u8(self.fill_value.as_ref(), "fill_value", 255, row_idx, ctx)?,
-            resolve_u8(self.background.as_ref(), "background", 0, row_idx, ctx)?,
+            opt_u8_value(self.fill_value.as_ref(), "fill_value", 255, row_idx, ctx)?,
+            opt_u8_value(self.background.as_ref(), "background", 0, row_idx, ctx)?,
         ))
-    }
-}
-
-fn resolve_u8(
-    param: Option<&crate::params::ParamValue>,
-    name: &str,
-    default: u8,
-    row_idx: usize,
-    ctx: &crate::params::ParamCtx,
-) -> PolarsResult<u8> {
-    match param {
-        None => Ok(default),
-        Some(p) => {
-            let v = p.resolve_i64(row_idx, ctx)?;
-            u8::try_from(v).map_err(|_| {
-                polars_err!(ComputeError:
-                    "source parameter '{}' must be in 0..=255, got {}", name, v)
-            })
-        }
     }
 }
 

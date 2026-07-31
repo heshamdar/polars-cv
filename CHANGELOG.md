@@ -50,6 +50,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   null. A null image in the shape branch raised `Shape reference '<id>' not
   found. Ensure the shape source is defined before this contour pipeline.` —
   a message pointing at a graph-wiring problem that did not exist.
+- `source("contour", shape=expr)` now works when `expr` is referenced *only* as
+  the shape, with no nulls involved. The source recorded the reference by node
+  id but never registered it as a dependency, so the node was left out of the
+  graph entirely and execution failed on a dangling reference. It happened to
+  work whenever the shape node was also consumed some other way — masking with
+  it, which is what every example does — which is why it went unnoticed.
 - A null in a non-primitive parameter column reported a cast failure from
   `try_extract` rather than the null-value error, bypassing the null path.
 
