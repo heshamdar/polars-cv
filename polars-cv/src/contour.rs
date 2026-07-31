@@ -17,6 +17,7 @@ use view_buffer::geometry::{
 };
 
 use crate::geom_params::{check_range, GeomParams, InputSlots};
+use crate::params::NullParamPolicy;
 
 // ============================================================================
 // Contour Serialization Helpers
@@ -121,6 +122,27 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
     )))
 }
 
+/// Run one row of a contour operation and record its result.
+///
+/// Two different things make a row null: a null input contour
+/// (`input_is_null`), and — under `on_null="null"` — a null per-row parameter.
+/// Routing both through [`GeomParams::row`] here keeps the second from being
+/// re-implemented in every operation below.
+fn contour_row<T>(
+    params: &GeomParams,
+    input_is_null: bool,
+    results: &mut Vec<Option<T>>,
+    compute: impl FnOnce() -> PolarsResult<T>,
+) -> PolarsResult<()> {
+    let value = if input_is_null {
+        None
+    } else {
+        params.row(compute)?
+    };
+    results.push(value);
+    Ok(())
+}
+
 /// Build a contour Series from a vector of Contours.
 ///
 /// This is used by contour transform operations that need to return
@@ -198,6 +220,12 @@ pub struct ContourKwargs {
     /// silently dropping an operand.
     #[serde(default)]
     pub input_slots: InputSlots,
+    /// What a null in a per-row parameter column means for that row: `raise`
+    /// (default) fails the expression, `null` yields a null result for the
+    /// affected rows. Set from Python by `_PluginNamespace.on_null` and applied
+    /// by `GeomParams::row`.
+    #[serde(default)]
+    pub on_null: NullParamPolicy,
 }
 
 /// Parse a contour from a Polars value.
@@ -809,7 +837,7 @@ fn score_order(scores: &[f64]) -> Vec<usize> {
 /// Compute contour area.
 #[polars_expr(output_type=Float64)]
 fn contour_area(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -817,14 +845,11 @@ fn contour_area(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
+        contour_row(&params, value.is_null(), &mut results, || {
             let signed = params.bool("signed", kwargs.signed, i)?;
             let contour = parse_contour(&value)?;
-            let area_val = measures::area(&contour, signed);
-            results.push(Some(area_val));
-        }
+            Ok(measures::area(&contour, signed))
+        })?;
     }
 
     Ok(Float64Chunked::from_iter_options(series.name().clone(), results.into_iter()).into_series())
@@ -1109,7 +1134,7 @@ fn contour_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
 /// Match detection contour sets with greedy one-to-one IoU assignment.
 #[polars_expr(output_type_func=match_detections_output_type)]
 fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
     let pred_series = &inputs[0];
     // Both operands are looked up by name. `scores` is optional, so its
     // position is not fixed once per-row parameters can occupy input slots
@@ -1160,9 +1185,17 @@ fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsR
         }
 
         // Per-row parameters cannot be range-checked once per batch, so the
-        // check moves into the loop and names the offending row.
-        let threshold = params.f64("threshold", kwargs.threshold, 0.5, i)?;
-        check_range("threshold", threshold, 0.0, 1.0, i)?;
+        // check moves into the loop and names the offending row. A null
+        // `threshold` under `on_null="null"` nulls this row instead.
+        let Some(threshold) = params.row(|| {
+            let threshold = params.f64("threshold", kwargs.threshold, 0.5, i)?;
+            check_range("threshold", threshold, 0.0, 1.0, i)?;
+            Ok(threshold)
+        })?
+        else {
+            rows.push(AnyValue::Null);
+            continue;
+        };
 
         let preds = parse_contour_list(&preds_value)?;
         let gts = parse_contour_list(&gts_value)?;
@@ -1233,7 +1266,7 @@ fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsR
 /// Score each contour against a heatmap using a configurable reduction.
 #[polars_expr(output_type_func=label_reduce_output_type)]
 fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
     let contour_series = &inputs[0];
     let heatmap_series = params
         .slot("image")
@@ -1252,10 +1285,23 @@ fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResul
 
         // Per-row capable, matching `Pipeline.label_reduce`: neither choice
         // affects the output's shape or dtype.
-        let reduction =
-            ScoreReduction::parse(params.str_opt("reduction", kwargs.reduction.as_deref(), i)?)?;
-        let region_mode =
-            RegionMode::parse(params.str_opt("region_mode", kwargs.region_mode.as_deref(), i)?)?;
+        let Some((reduction, region_mode)) = params.row(|| {
+            let reduction = ScoreReduction::parse(params.str_opt(
+                "reduction",
+                kwargs.reduction.as_deref(),
+                i,
+            )?)?;
+            let region_mode = RegionMode::parse(params.str_opt(
+                "region_mode",
+                kwargs.region_mode.as_deref(),
+                i,
+            )?)?;
+            Ok((reduction, region_mode))
+        })?
+        else {
+            rows.push(AnyValue::Null);
+            continue;
+        };
 
         let contours = parse_contour_list(&contours_value)?;
         let heatmap = parse_heatmap(&heatmap_value)?;
@@ -1376,7 +1422,7 @@ fn contour_transform_output_type(input_fields: &[Field]) -> PolarsResult<Field> 
 /// Translate contour by offset.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1384,15 +1430,12 @@ fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
+        contour_row(&params, value.is_null(), &mut results, || {
             let dx = params.f64("dx", kwargs.dx, 0.0, i)?;
             let dy = params.f64("dy", kwargs.dy, 0.0, i)?;
             let contour = parse_contour(&value)?;
-            let translated = transforms::translate(&contour, dx, dy);
-            results.push(Some(translated));
-        }
+            Ok(transforms::translate(&contour, dx, dy))
+        })?;
     }
 
     build_contour_series(series.name().clone(), results, series.dtype())
@@ -1401,7 +1444,7 @@ fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 /// Scale contour.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     // Parse origin parameter
     let scale_origin = match kwargs.origin.as_deref() {
@@ -1417,15 +1460,12 @@ fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Serie
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
+        contour_row(&params, value.is_null(), &mut results, || {
             let sx = params.f64("sx", kwargs.sx, 1.0, i)?;
             let sy = params.f64("sy", kwargs.sy, 1.0, i)?;
             let contour = parse_contour(&value)?;
-            let scaled = transforms::scale(&contour, sx, sy, scale_origin);
-            results.push(Some(scaled));
-        }
+            Ok(transforms::scale(&contour, sx, sy, scale_origin))
+        })?;
     }
 
     build_contour_series(series.name().clone(), results, series.dtype())
@@ -1434,7 +1474,7 @@ fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Serie
 /// Simplify contour.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_simplify(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1442,14 +1482,11 @@ fn contour_simplify(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Se
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
+        contour_row(&params, value.is_null(), &mut results, || {
             let tolerance = params.f64("tolerance", kwargs.tolerance, 1.0, i)?;
             let contour = parse_contour(&value)?;
-            let simplified = transforms::simplify(&contour, tolerance);
-            results.push(Some(simplified));
-        }
+            Ok(transforms::simplify(&contour, tolerance))
+        })?;
     }
 
     build_contour_series(series.name().clone(), results, series.dtype())
@@ -1500,7 +1537,7 @@ fn contour_convex_hull(inputs: &[Series]) -> PolarsResult<Series> {
 /// Normalize contour coordinates to [0, 1] range.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_normalize(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1508,15 +1545,12 @@ fn contour_normalize(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
+        contour_row(&params, value.is_null(), &mut results, || {
             let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, i)?;
             let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, i)?;
             let contour = parse_contour(&value)?;
-            let normalized = transforms::normalize(&contour, ref_width, ref_height);
-            results.push(Some(normalized));
-        }
+            Ok(transforms::normalize(&contour, ref_width, ref_height))
+        })?;
     }
 
     build_contour_series(series.name().clone(), results, series.dtype())
@@ -1525,7 +1559,7 @@ fn contour_normalize(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 /// Convert normalized coordinates to absolute pixel coordinates.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_to_absolute(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1533,15 +1567,12 @@ fn contour_to_absolute(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
+        contour_row(&params, value.is_null(), &mut results, || {
             let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, i)?;
             let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, i)?;
             let contour = parse_contour(&value)?;
-            let absolute = transforms::to_absolute(&contour, ref_width, ref_height);
-            results.push(Some(absolute));
-        }
+            Ok(transforms::to_absolute(&contour, ref_width, ref_height))
+        })?;
     }
 
     build_contour_series(series.name().clone(), results, series.dtype())
@@ -1688,7 +1719,7 @@ fn bbox_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
 /// Match detection bbox sets with greedy one-to-one IoU assignment.
 #[polars_expr(output_type_func=match_detections_output_type)]
 fn bbox_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots)?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
     let pred_series = &inputs[0];
     // Both operands are looked up by name. `scores` is optional, so its
     // position is not fixed once per-row parameters can occupy input slots
@@ -1730,9 +1761,17 @@ fn bbox_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResu
         }
 
         // Per-row parameters cannot be range-checked once per batch, so the
-        // check moves into the loop and names the offending row.
-        let threshold = params.f64("threshold", kwargs.threshold, 0.5, i)?;
-        check_range("threshold", threshold, 0.0, 1.0, i)?;
+        // check moves into the loop and names the offending row. A null
+        // `threshold` under `on_null="null"` nulls this row instead.
+        let Some(threshold) = params.row(|| {
+            let threshold = params.f64("threshold", kwargs.threshold, 0.5, i)?;
+            check_range("threshold", threshold, 0.0, 1.0, i)?;
+            Ok(threshold)
+        })?
+        else {
+            rows.push(AnyValue::Null);
+            continue;
+        };
 
         let preds = parse_bbox_list(&preds_value)?;
         let gts = parse_bbox_list(&gts_value)?;

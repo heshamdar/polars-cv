@@ -641,21 +641,27 @@ class PipelineGraph:
             "column_bindings": self._column_bindings,
         }
 
-        # The per-row error policy is a graph-level setting collected from the
+        # Both per-row policies are graph-level settings collected from the
         # composed pipelines; distinct non-default policies are ambiguous.
-        policies = {
-            node.pipeline._on_error
-            for node in self._nodes.values()
-            if node.pipeline._on_error != "raise"
-        }
-        if len(policies) > 1:
-            msg = (
-                "Conflicting on_error policies in composed pipelines: "
-                f"{sorted(policies)}. All pipelines in a graph must agree."
-            )
-            raise ValueError(msg)
-        if policies:
-            graph_spec["on_error"] = policies.pop()
+        # Emitted only when non-default, so unaffected graphs serialize
+        # byte-identically to before.
+        for attr, key in (
+            ("_on_error", "on_error"),
+            ("_on_null_param", "on_null_param"),
+        ):
+            policies = {
+                getattr(node.pipeline, attr)
+                for node in self._nodes.values()
+                if getattr(node.pipeline, attr) != "raise"
+            }
+            if len(policies) > 1:
+                msg = (
+                    f"Conflicting {key} policies in composed pipelines: "
+                    f"{sorted(policies)}. All pipelines in a graph must agree."
+                )
+                raise ValueError(msg)
+            if policies:
+                graph_spec[key] = policies.pop()
 
         return graph_spec
 

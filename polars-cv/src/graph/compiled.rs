@@ -249,7 +249,7 @@ impl CompiledGraph {
         }
         let state = ExecState {
             inputs,
-            ctx: ParamCtx::from_inputs(inputs),
+            ctx: ParamCtx::with_null_policy(inputs, self.graph.on_null_param),
             resolved_outputs: resolved_output_specs(&self.graph, inputs.first().map(|s| s.dtype())),
             prefetched: self.prefetch_remote_sources(inputs),
             resolved_auto_formats: self.resolve_auto_source_formats(inputs),
@@ -403,6 +403,28 @@ impl CompiledGraph {
         Ok(())
     }
 
+    /// Look up another node's output for the current row.
+    ///
+    /// An absent entry means one of two different things, and conflating them
+    /// turns a legitimate null into a hard error. `Ok(None)` is the benign
+    /// case: the node belongs to the graph but produced nothing for this row,
+    /// because its input was null, its source failed under
+    /// `source(on_error="null")`, or a per-row parameter was null under
+    /// `on_null_param="null"`. The node reading it must then go null too.
+    /// A name that is not in the graph at all stays an error.
+    fn operand<'o>(
+        &self,
+        node_outputs: &'o HashMap<String, NodeOutput>,
+        id: &str,
+        what: &str,
+    ) -> Result<Option<&'o NodeOutput>, String> {
+        match node_outputs.get(id) {
+            Some(output) => Ok(Some(output)),
+            None if self.graph.nodes.contains_key(id) => Ok(None),
+            None => Err(format!("{what} references unknown node '{id}'")),
+        }
+    }
+
     /// Run every node of the graph for one row, leaving each node's output in
     /// `node_outputs` (no output encoding).
     fn run_row_nodes<'g>(
@@ -416,7 +438,11 @@ impl CompiledGraph {
         let inputs = state.inputs;
         let ctx = &state.ctx;
         {
-            for node_id in order {
+            // Labelled so a null per-row parameter can skip straight to the
+            // next node: leaving this node out of `node_outputs` is exactly
+            // how a null *input* already propagates (see the `else` branch of
+            // `if let Some(input)` below, and `execute_one_row`).
+            'nodes: for node_id in order {
                 let node = match self.graph.nodes.get(node_id) {
                     Some(n) => n,
                     None => continue,
@@ -424,6 +450,10 @@ impl CompiledGraph {
                 let has_column_binding = self.graph.column_bindings.contains_key(node_id);
                 let node_input: Option<NodeOutput> = if has_column_binding {
                     let on_error_null = self.source_null_nodes.contains(node_id);
+                    // Cleared here so `took_null` below refers only to this
+                    // node's own source-parameter resolution (a contour
+                    // source's `fill_value` / `background`).
+                    ctx.clear_null();
                     let decode_result: Result<Option<NodeOutput>, String> = (|| {
                         // Bounds are validated once per call in `execute()`.
                         let col_idx = self
@@ -628,6 +658,10 @@ impl CompiledGraph {
                     );
                     match decode_result {
                         Ok(output) => output,
+                        // A null per-row *parameter* is not a decode failure:
+                        // under `on_null_param="null"` it nulls this node for
+                        // this row regardless of the source's own `on_error`.
+                        Err(_) if ctx.took_null() => None,
                         Err(_e) if on_error_null => None,
                         Err(e) => return Err(e),
                     }
@@ -647,12 +681,19 @@ impl CompiledGraph {
                                 OpResolver::Static(step) => {
                                     dto_scratch.push(ResolvedStep::Step(Cow::Borrowed(step)))
                                 }
-                                OpResolver::Dynamic(spec) => match resolve_op(spec, row_idx, ctx) {
-                                    Ok(step) => {
-                                        dto_scratch.push(ResolvedStep::Step(Cow::Owned(step)))
+                                OpResolver::Dynamic(spec) => {
+                                    ctx.clear_null();
+                                    match resolve_op(spec, row_idx, ctx) {
+                                        Ok(step) => {
+                                            dto_scratch.push(ResolvedStep::Step(Cow::Owned(step)))
+                                        }
+                                        // Under `on_null_param="null"` a null
+                                        // parameter is not a failure — this
+                                        // node just has no output for this row.
+                                        Err(_) if ctx.took_null() => continue 'nodes,
+                                        Err(e) => return Err(format!("Op resolution error: {e}")),
                                     }
-                                    Err(e) => return Err(format!("Op resolution error: {e}")),
-                                },
+                                }
                                 OpResolver::RasterizeShapeRef { spec, shape_node } => dto_scratch
                                     .push(ResolvedStep::RasterizeShapeRef { spec, shape_node }),
                             }
@@ -684,12 +725,14 @@ impl CompiledGraph {
                                 // buffer (already executed: it is upstream).
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let shape_output =
-                                    node_outputs.get(*shape_node).ok_or_else(|| {
-                                        format!(
-                                            "Rasterize shape reference '{shape_node}' produced no output"
-                                        )
-                                    })?;
+                                let Some(shape_output) = self.operand(
+                                    node_outputs,
+                                    shape_node,
+                                    "Rasterize shape reference",
+                                )?
+                                else {
+                                    continue 'nodes;
+                                };
                                 let shape_buf = shape_output.as_buffer().ok_or_else(|| {
                                     format!(
                                         "Rasterize shape reference '{shape_node}' must be a Buffer, got {:?}",
@@ -705,13 +748,17 @@ impl CompiledGraph {
                                 }
                                 let height = dims[0] as u32;
                                 let width = dims[1] as u32;
+                                ctx.clear_null();
                                 let (fill_value, background, anti_alias) =
-                                    crate::execute::resolve_rasterize_style(
+                                    match crate::execute::resolve_rasterize_style(
                                         &spec.params,
                                         row_idx,
                                         ctx,
-                                    )
-                                    .map_err(|e| e.to_string())?;
+                                    ) {
+                                        Ok(style) => style,
+                                        Err(_) if ctx.took_null() => continue 'nodes,
+                                        Err(e) => return Err(e.to_string()),
+                                    };
                                 let geo_op = view_buffer::GeometryOp::Rasterize {
                                     width,
                                     height,
@@ -739,9 +786,11 @@ impl CompiledGraph {
                                         current_output.domain()
                                     )
                                 })?;
-                                let other_output = node_outputs.get(other).ok_or_else(|| {
-                                    format!("Binary op references unknown node '{other}'")
-                                })?;
+                                let Some(other_output) =
+                                    self.operand(node_outputs, other, "Binary op")?
+                                else {
+                                    continue 'nodes;
+                                };
                                 let other_buf = other_output.as_buffer().ok_or_else(|| {
                                     format!(
                                         "Binary op other operand must be Buffer, got {:?}",
@@ -760,9 +809,11 @@ impl CompiledGraph {
                                         current_output.domain()
                                     )
                                 })?;
-                                let mask_output = node_outputs.get(mask).ok_or_else(|| {
-                                    format!("ApplyMask references unknown node '{mask}'")
-                                })?;
+                                let Some(mask_output) =
+                                    self.operand(node_outputs, mask, "ApplyMask")?
+                                else {
+                                    continue 'nodes;
+                                };
                                 let mask_buf = mask_output.as_buffer().ok_or_else(|| {
                                     format!(
                                         "ApplyMask mask must be Buffer, got {:?}",
@@ -901,10 +952,11 @@ impl CompiledGraph {
                                 })?;
                                 let mut all_bufs: Vec<&ViewBuffer> = vec![current_buf];
                                 for other_id in others {
-                                    let other_output =
-                                        node_outputs.get(other_id).ok_or_else(|| {
-                                            format!("ChannelMerge: node '{other_id}' not found")
-                                        })?;
+                                    let Some(other_output) =
+                                        self.operand(node_outputs, other_id, "ChannelMerge")?
+                                    else {
+                                        continue 'nodes;
+                                    };
                                     let other_buf = other_output.as_buffer().ok_or_else(|| {
                                         format!("ChannelMerge: node '{other_id}' is not a Buffer")
                                     })?;

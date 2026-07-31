@@ -25,8 +25,21 @@ Structural parameters stay literal-only, as they do elsewhere: `scale`'s
 select behaviour rather than carrying a value.
 
 An aggregation broadcasts, matching Polars' own semantics — `pl.col("w").max()`
-produces one value applied to every row. A null parameter is an error, not a
-null result.
+produces one value applied to every row.
+
+A null parameter raises by default. `on_null(...)` on the accessor opts into a
+null result for the affected rows instead, mirroring `Pipeline.on_null_param`
+(these namespaces have no `Pipeline` object, so the policy chains ahead of the
+call):
+
+```python
+df.with_columns(
+    norm=pl.col("contour").contour.on_null("null").normalize(pl.col("w"), 100)
+)
+```
+
+For a fallback value instead, fill the null in the expression:
+`pl.col("w").fill_null(1.0)`.
 
 ## Schemas
 

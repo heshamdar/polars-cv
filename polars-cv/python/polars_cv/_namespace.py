@@ -9,6 +9,7 @@ collapses to a single ``self._plugin(...)`` call.
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,6 +19,8 @@ from polars.plugins import register_plugin_function
 # The compiled extension lives alongside this module in the ``polars_cv``
 # package directory. Every namespace resolves to this same path.
 _LIB_PATH = Path(__file__).parent
+
+_NULL_PARAM_POLICIES = ("raise", "null")
 
 
 class _PluginNamespace:
@@ -30,6 +33,37 @@ class _PluginNamespace:
 
     def __init__(self, expr: pl.Expr) -> None:
         self._expr = expr
+        self._on_null = "raise"
+
+    def on_null(self, policy: str):
+        """Set what a null in a per-row expression parameter means.
+
+        These namespaces have no ``Pipeline`` object to hang a graph-level
+        setting on, so the policy lives on the accessor itself and chains
+        ahead of the call::
+
+            pl.col("c").contour.on_null("null").normalize(pl.col("w"), 100)
+
+        - ``"raise"`` (default): a null parameter fails the expression.
+        - ``"null"``: rows whose parameter is null yield null, matching how a
+          null input geometry is already handled.
+
+        For a **fallback value** instead, fill the null in the expression
+        itself — ``pl.col("w").fill_null(1.0)``.
+
+        Args:
+            policy: One of ``"raise"``, ``"null"``.
+
+        Returns:
+            A copy of this namespace with the policy applied. The original is
+            unchanged, matching ``Pipeline``'s immutable-builder convention.
+        """
+        if policy not in _NULL_PARAM_POLICIES:
+            msg = f"on_null must be one of {_NULL_PARAM_POLICIES}, got '{policy}'"
+            raise ValueError(msg)
+        new = copy.copy(self)
+        new._on_null = policy
+        return new
 
     def _plugin(
         self,
@@ -116,5 +150,12 @@ class _ArgBinder:
         return namespace._plugin(
             function_name,
             args=self._args,
-            kwargs={**self._kwargs, **kwargs, "input_slots": self._slots},
+            kwargs={
+                **self._kwargs,
+                **kwargs,
+                "input_slots": self._slots,
+                # Injected centrally so no geometry method has to declare it;
+                # Rust reads it in `GeomParams::new`.
+                "on_null": namespace._on_null,
+            },
         )

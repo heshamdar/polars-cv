@@ -15,14 +15,16 @@
 //!
 //! Reading is delegated to [`crate::params::ParamCol`], so these namespaces
 //! inherit the same dtype coverage, scalar broadcasting (a length-1 series from
-//! an aggregation applies to every row) and null-as-error policy the graph
-//! engine already uses.
+//! an aggregation applies to every row) and [`NullParamPolicy`] the graph
+//! engine already uses. The policy arrives as an `on_null` kwarg (set from
+//! Python by `_PluginNamespace.on_null`) and is applied by [`GeomParams::row`],
+//! which each row loop wraps its parameter resolution in.
 
 use std::collections::HashMap;
 
 use polars::prelude::*;
 
-use crate::params::ParamCtx;
+use crate::params::{NullParamPolicy, ParamCtx};
 
 /// Named indices into a plugin's `inputs` slice.
 ///
@@ -50,7 +52,11 @@ impl<'a> GeomParams<'a> {
     /// every extra input means an operand or parameter was dropped somewhere
     /// between the builder and here — which would compute a quietly wrong
     /// result rather than fail.
-    pub fn new(inputs: &'a [Series], slots: &'a InputSlots) -> PolarsResult<Self> {
+    pub fn new(
+        inputs: &'a [Series],
+        slots: &'a InputSlots,
+        on_null: NullParamPolicy,
+    ) -> PolarsResult<Self> {
         for (name, &idx) in slots {
             if idx == 0 || idx >= inputs.len() {
                 polars_bail!(ComputeError:
@@ -70,7 +76,7 @@ impl<'a> GeomParams<'a> {
             );
         }
         Ok(GeomParams {
-            ctx: ParamCtx::from_inputs(inputs),
+            ctx: ParamCtx::with_null_policy(inputs, on_null),
             slots,
         })
     }
@@ -78,6 +84,24 @@ impl<'a> GeomParams<'a> {
     /// The input series index bound to `name`, if any.
     pub fn slot(&self, name: &str) -> Option<usize> {
         self.slots.get(name).copied()
+    }
+
+    /// Resolve one row's parameters, applying the call's [`NullParamPolicy`].
+    ///
+    /// Returns `Ok(None)` when `f` failed *because* a per-row parameter was null
+    /// and the policy asks for a null result — the caller pushes its null for
+    /// that row, exactly as it already does for null input data. Every other
+    /// error propagates unchanged.
+    ///
+    /// Wrapping resolution in this one helper is what keeps the policy a shared
+    /// mechanism: no geometry function re-implements null handling.
+    pub fn row<T>(&self, f: impl FnOnce() -> PolarsResult<T>) -> PolarsResult<Option<T>> {
+        self.ctx.clear_null();
+        match f() {
+            Ok(value) => Ok(Some(value)),
+            Err(_) if self.ctx.took_null() => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// Resolve a float parameter: the bound input at `row`, else the literal
@@ -90,7 +114,7 @@ impl<'a> GeomParams<'a> {
         row: usize,
     ) -> PolarsResult<f64> {
         match self.slot(name) {
-            Some(idx) => self.ctx.col(idx)?.get_f64(row),
+            Some(idx) => self.ctx.col(idx)?.get_f64(row, &self.ctx),
             None => Ok(literal.unwrap_or(default)),
         }
     }
@@ -99,7 +123,7 @@ impl<'a> GeomParams<'a> {
     /// literal kwarg, erroring when the caller supplied neither.
     pub fn required_f64(&self, name: &str, literal: Option<f64>, row: usize) -> PolarsResult<f64> {
         match self.slot(name) {
-            Some(idx) => self.ctx.col(idx)?.get_f64(row),
+            Some(idx) => self.ctx.col(idx)?.get_f64(row, &self.ctx),
             None => literal.ok_or_else(|| polars_err!(ComputeError: "{} is required", name)),
         }
     }
@@ -117,7 +141,7 @@ impl<'a> GeomParams<'a> {
         row: usize,
     ) -> PolarsResult<Option<&'a str>> {
         match self.slot(name) {
-            Some(idx) => self.ctx.col(idx)?.get_str(row).map(Some),
+            Some(idx) => self.ctx.col(idx)?.get_str(row, &self.ctx).map(Some),
             None => Ok(literal),
         }
     }
@@ -130,7 +154,7 @@ impl<'a> GeomParams<'a> {
     /// than an error.
     pub fn bool(&self, name: &str, literal: bool, row: usize) -> PolarsResult<bool> {
         match self.slot(name) {
-            Some(idx) => self.ctx.col(idx)?.get_bool(row),
+            Some(idx) => self.ctx.col(idx)?.get_bool(row, &self.ctx),
             None => Ok(literal),
         }
     }

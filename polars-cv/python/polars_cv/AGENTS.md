@@ -202,6 +202,26 @@ expression-valued parameter as an extra argument and records it in an
 *optional* data operands (`scores`, `origin`) whose position would otherwise be
 ambiguous.
 
+**Null parameter values are a shared policy, not per-op handling.** A parameter
+column may contain nulls; `Pipeline.on_null_param("raise"|"null")` says whether
+that fails the query or nulls the affected rows. It is stored as
+`Pipeline._on_null_param`, hoisted (with the same conflict check as `_on_error`)
+in `PipelineGraph._to_dict()`, and emitted as a top-level `"on_null_param"` key
+**only when non-default**, so unaffected graphs serialize byte-identically and
+keep their compiled-graph cache entry. Rust applies it at one place —
+`ParamCol::on_null` — so no operation declares anything.
+
+Do **not** add a per-op or per-parameter null keyword. Deliberately absent, for
+two reasons: a fallback value is already expressible as
+`pl.col("h").fill_null(224)`, and a per-parameter policy would have to enter the
+`ParamValue` wire format, which would mean `__eq__`/`__hash__` must include it
+or CSE will merge ops that differ only in policy.
+
+The geometry namespaces have no `Pipeline` to hang a graph-level setting on, so
+the policy lives on the accessor: `_PluginNamespace.on_null(policy)` returns a
+copy with `_on_null` set, and `_ArgBinder.call` injects it into kwargs beside
+`input_slots`. That keeps it out of all 15 geometry method signatures.
+
 ## Adding a New Operation (Python Side)
 
 1. **`pipeline.py`**: Add a method to `Pipeline` class:

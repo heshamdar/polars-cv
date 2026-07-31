@@ -1164,6 +1164,12 @@ mod strict_param_tests {
     //! must be an error — never silently coerced to a default. These tests
     //! pin that policy for every parameter that historically swallowed
     //! errors.
+    //!
+    //! A **null** per-row value is a separate axis and is deliberately not
+    //! covered here: it is neither absent nor invalid, and what it means is
+    //! chosen by `NullParamPolicy` (`params.rs`) — raise, or null the affected
+    //! rows. It is never coerced to a default under either policy, so the rule
+    //! above still holds; see `params::tests::test_null_policy_*`.
 
     use super::*;
     use crate::params::ParamValue;
