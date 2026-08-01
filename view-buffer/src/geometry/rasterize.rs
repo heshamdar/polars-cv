@@ -45,8 +45,13 @@ pub fn rasterize(
 /// Scanline polygon fill algorithm.
 ///
 /// More efficient than point-in-polygon testing for each pixel.
+///
+/// A pixel belongs to the polygon when its **centre** — `(x + 0.5, y + 0.5)` —
+/// lies inside it, boundary included. That is the rule [`rasterize_simple`],
+/// `contains_point` and the area measures all follow, so a mask's pixel count
+/// tracks the contour's area rather than exceeding it by a border.
 fn scanline_fill(polygon: &[Point], width: usize, height: usize, data: &mut [u8], value: u8) {
-    if polygon.len() < 3 {
+    if polygon.len() < 3 || width == 0 || height == 0 {
         return;
     }
 
@@ -92,18 +97,24 @@ fn scanline_fill(polygon: &[Point], width: usize, height: usize, data: &mut [u8]
                 break;
             }
 
-            // Clamp x coordinates to valid range [0, width)
-            let x_start = (intersections[i].ceil() as i32)
-                .max(0)
-                .min((width - 1) as i32) as usize;
-            let x_end = ((intersections[i + 1].floor() as i32) + 1).min(width as i32) as usize;
+            // Centres inside the span, i.e. `x + 0.5` in [left, right]. Rounding
+            // the span itself outward instead — ceil(left), floor(right) — took in
+            // a surplus column at every right edge, so a 100-wide box rasterized
+            // 101 columns while the y loop, driven by `scan_y`, got it right.
+            let first = (intersections[i] - 0.5).ceil();
+            let last = (intersections[i + 1] - 0.5).floor();
 
-            // Ensure we don't exceed bounds
-            for x in x_start..x_end.min(width) {
-                let idx = y * width + x;
-                if idx < data.len() {
-                    data[idx] = value;
-                }
+            if last < 0.0 || first >= width as f64 {
+                continue;
+            }
+
+            // Both ends are in range now, so the casts cannot saturate
+            // surprisingly: `last` is non-negative and `first` is below `width`.
+            let x_start = first.max(0.0) as usize;
+            let x_end = (last as usize + 1).min(width);
+
+            for x in x_start..x_end {
+                data[y * width + x] = value;
             }
         }
     }
@@ -207,27 +218,50 @@ mod tests {
         assert_eq!(slice[10 * 100 + 10], 255);
     }
 
+    fn mask_pixels(mask: &ViewBuffer, len: usize) -> Vec<u8> {
+        let data = mask.to_contiguous();
+        let ptr = unsafe { data.as_ptr::<u8>() };
+        unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
+    }
+
     #[test]
     fn test_rasterize_simple_matches() {
-        let contour = square_contour();
+        // On a canvas that holds the whole contour, and asserted pixel-for-pixel.
+        // The previous version of this test used a 50x50 canvas for a contour
+        // spanning [10, 90], so every column the two fillers disagreed about was
+        // off-canvas, and it tolerated 50 differing pixels besides — which is why
+        // the scanline filler's surplus right-hand column went unnoticed.
+        for contour in [
+            square_contour(),
+            Contour::from_tuples(&[(10.0, 10.0), (90.0, 30.0), (60.0, 90.0)]),
+        ] {
+            let scanline = rasterize(&contour, 100, 100, 255, 0, false);
+            let per_pixel = rasterize_simple(&contour, 100, 100, 255, 0);
 
-        let mask1 = rasterize(&contour, 50, 50, 255, 0, false);
-        let mask2 = rasterize_simple(&contour, 50, 50, 255, 0);
-
-        let data1 = mask1.to_contiguous();
-        let data2 = mask2.to_contiguous();
-
-        let slice1 = unsafe { std::slice::from_raw_parts(data1.as_ptr::<u8>(), 50 * 50) };
-        let slice2 = unsafe { std::slice::from_raw_parts(data2.as_ptr::<u8>(), 50 * 50) };
-
-        // Should produce identical results (or very close due to edge handling)
-        let mut diff_count = 0;
-        for i in 0..(50 * 50) {
-            if slice1[i] != slice2[i] {
-                diff_count += 1;
-            }
+            assert_eq!(
+                mask_pixels(&scanline, 100 * 100),
+                mask_pixels(&per_pixel, 100 * 100)
+            );
         }
-        // Allow small differences at boundaries
-        assert!(diff_count < 50); // Less than 2% difference
+    }
+
+    #[test]
+    fn test_rasterized_pixel_count_is_the_area() {
+        // An axis-aligned box on integer coordinates puts no pixel centre on an
+        // edge, so the count is the area exactly. Filling [10, 90] rasterized 81
+        // columns before the span rounding was fixed.
+        let mask = rasterize(&square_contour(), 100, 100, 1, 0, false);
+        let painted: u32 = mask_pixels(&mask, 100 * 100)
+            .iter()
+            .map(|&v| v as u32)
+            .sum();
+
+        assert_eq!(painted, 80 * 80);
+    }
+
+    #[test]
+    fn test_rasterize_zero_sized_canvas_is_empty() {
+        let mask = rasterize(&square_contour(), 0, 0, 255, 0, false);
+        assert_eq!(mask.shape(), &[0, 0, 1]);
     }
 }

@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-31
+
 ### Fixed
 
 - **Contour IoU and Dice were wrong for most real contours.** Overlap went through
@@ -45,6 +47,53 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **`hausdorff_distance` on an empty contour** returned `-1.797e308` — a negative
   distance — because `geo` folds with `Bounded::min_value()` where the previous
   implementation used `f64::INFINITY`. It returns `INFINITY` again.
+
+- **`extract_contours` did not trace boundaries at all.** The Moore-neighbour
+  walk resumed its neighbourhood sweep five positions past the direction it had
+  just moved, rather than at the background cell it had arrived from. From the
+  top-left of a filled square its first step went *inward* along the diagonal; it
+  then bounced between four cells and returned to the start. A filled 400×400
+  region came back as **399 degenerate 2×2 contours, one per row** — never its
+  outline. Everything downstream inherited it: `.extract_contours()`, contour
+  metrics, and `ContourMatcher`, where `metrics` carried a filter for detections
+  whose "rasterized interior is empty and are provably artifacts of the boundary
+  tracer". A region now traces to exactly one border, following its rim.
+
+  Two related faults went with it. The sweep's starting side is now chosen the
+  way Suzuki–Abe does — west where a foreground run begins, east where one ends —
+  so a **hole's rim traces correctly** instead of wandering the interior until a
+  length guard stopped it; `mode="all"` reports the exterior plus one border per
+  enclosed background region. And a trace no longer *starts* at a cell touching
+  background only diagonally (the inside of a reflex corner, or a cell
+  catty-corner to a hole), which was producing spurious extra contours on L, U
+  and plus shapes.
+
+  The traced outline runs through the **centres** of the boundary pixels, so it
+  is inset by half a pixel: a region filling `w × h` pixels returns bounding
+  `(w-1) × (h-1)`. That is inherent to describing a pixel set by a polygon, and
+  is now documented and asserted rather than incidental.
+
+- **Rasterized masks were one pixel too wide at every right-hand edge.** The
+  scanline filler behind `source("contour", ...)` and `Pipeline.rasterize()`
+  rounded each span outward — `ceil(left)` to `floor(right)` — instead of asking
+  which pixel *centres* fall inside it. Since the scanline itself samples at
+  `y + 0.5`, the vertical extent was already right, so masks came out asymmetric:
+  a 400×400 box rasterized 401×400 pixels, and every interior hole was likewise
+  a column too wide. A mask's pixel count therefore did not agree with the
+  contour's `area()`, and `apply_mask` with a contour mask included a column of
+  pixels outside the contour. Masks are now exactly the set of pixels whose
+  centre lies in the shape — the rule `contains_point` and the area measures
+  already followed — so an axis-aligned box on integer coordinates rasterizes to
+  precisely its area. Zero-width or zero-height output no longer panics.
+
+- **`centroid` measured a different region than `area`.** It was the one measure
+  left on the holes-as-interior-rings representation, so it subtracted each hole's
+  moment in turn — double-counting wherever two hole rings overlap, and subtracting
+  a nested ring that lies in an already-removed part. It now measures the same
+  region as `area`, `contains_point`, `iou` and rasterization. For a 100×100 square
+  with holes `[10,50]²` and `[30,70]²`, the centroid moves from `(54.71, 54.71)` —
+  a shape that does not exist — to `(53.89, 53.89)`. Contours with no holes, and
+  contours whose holes are disjoint, are unaffected.
 
 ### Changed
 
@@ -85,9 +134,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **`polars_cv.build_info()`** reports the three versions that must agree:
   `__version__` (the imported Python source), the compiled extension's version
   (now exposed as `polars_cv._lib.__version__`, baked in from `Cargo.toml`), and
-  the installed distribution's. `maturin develop` installs a *copy* of the Python
-  sources, so after a `git pull` an unrebuilt environment silently keeps running
-  the old code — this makes that visible.
+  the installed distribution's. The install is editable, so Python edits are live
+  while the compiled extension stays at its last `maturin develop` — after a `git
+  pull` that touches Rust, an unrebuilt environment silently runs new Python
+  against old Rust. This makes that visible.
 
 - **`tests/test_version_consistency.py`** fails when the version manifests drift
   apart or when the installed package is stale. The release checklist in
@@ -524,6 +574,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.18.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.18.0
 [0.17.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.17.0
 [0.16.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.16.0
 [0.15.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.15.0

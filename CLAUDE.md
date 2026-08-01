@@ -196,6 +196,16 @@ reads via `channel_rule`:
 - Unit tests for pure Python (schema inference, builder validation) live in files like `test_pipeline_builder.py` and `test_lazy_schema.py` and require no compiled plugin.
 - Integration tests and reference tests (comparing output against NumPy/OpenCV ground truth) are in separate files under `tests/reference/`.
 - Reuse `conftest.py` fixtures (`create_test_png`, `sample_image_bytes`, etc.) rather than redefining helpers per file.
+- `test_contour_raster_crosscheck.py` checks the analytic contour measures
+  (`area`, `centroid`, `iou`, `dice`, `contains_point`) against pixel counts on a
+  rasterized mask — two independent implementations of the same quantity, so a
+  fault in either shows up as a mismatch. Contours whose vertices are all
+  integers on axis-aligned edges put no pixel centre on an edge, so those cases
+  assert *exact* equality; diagonal and curved shapes assert a tolerance scaled
+  by perimeter, since discretization error tracks boundary length, not area.
+  Extend the `RECTILINEAR` / `CURVED` shape tables rather than adding one-off
+  tests, and keep new rectilinear shapes on integer coordinates so they stay
+  exact.
 
 ### Adding a New Operation
 

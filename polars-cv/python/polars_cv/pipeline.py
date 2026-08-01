@@ -3075,6 +3075,12 @@ class Pipeline:
         """
         Rasterize contour to a binary mask.
 
+        A pixel is filled when its centre — ``(x + 0.5, y + 0.5)`` — lies inside
+        the contour, boundary included; holes are cut out by the same rule. This
+        is the convention ``contains_point`` and the area measures follow, so for
+        a shape whose vertices are integers on axis-aligned edges the mask holds
+        exactly ``area()`` pixels.
+
         Args:
             width: Mask width.
             height: Mask height.
@@ -3162,6 +3168,17 @@ class Pipeline:
             method: "simple" (remove redundant), "none" (all points), "approx".
             min_area: Filter small contours. Accepts a Polars expression for
                 per-row dynamic thresholds.
+
+        The traced outline passes through the **centres** of the boundary pixels,
+        so it sits half a pixel inside the region it describes: a blob filling
+        ``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the
+        result therefore erodes it by a pixel per round trip.
+
+        Borders come back as a flat list with no hierarchy. ``mode="all"`` yields
+        the exterior plus one border for each enclosed background region — holes
+        that touch or nest enclose one region between them — and reassembling a
+        holed contour from those is the caller's job. ``mode="external"`` keeps
+        only the outermost, discarding hole borders.
 
         Domain transition: buffer → contour
         """

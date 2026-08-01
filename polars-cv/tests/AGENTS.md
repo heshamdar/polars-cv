@@ -66,6 +66,34 @@ Useful entry points when you need a pattern to copy:
 | `test_schema_inference.py` | Planning-time vs execution-time schema agreement |
 | `test_source_types.py` | Exercising each source format |
 | `test_sanitation.py` | Meta-tests that police the conventions below |
+| `test_contour_raster_crosscheck.py` | Differential testing: one quantity, two implementations |
+
+### Differential tests against the rasterizer
+
+`test_contour_raster_crosscheck.py` measures the same quantities two ways —
+`area`, `centroid`, `iou`, `dice` and `contains_point` from polygon geometry,
+versus pixel counts on a mask produced by the scanline filler. The two share no
+code, so a fault in either surfaces as a disagreement even when each is
+internally consistent. This is what caught the scanline filler painting a
+surplus column at every right-hand edge, which every existing rasterize test had
+missed.
+
+The file also closes the loop the other way — contour → mask → contour through
+`extract_contours`. That leg is lossy in one *predictable* way: the tracer
+reports the centres of the boundary pixels, so what comes back is inset half a
+pixel and a `w x h` region returns as `(w-1) x (h-1)`. The tests assert that
+inset exactly rather than tolerating it; a tolerance wide enough to absorb it
+would also absorb a tracer that collapsed, which is exactly the bug these tests
+were written to catch.
+
+The shapes live in two tables. `RECTILINEAR` shapes have integer vertices on
+axis-aligned edges, so no pixel centre ever lands on an edge and the mask count
+equals the area **exactly** — those cases assert equality, and are where the
+suite gets its power. `CURVED` shapes have diagonal or curved edges that cut
+through pixels, so they assert a tolerance scaled by perimeter (discretization
+error tracks boundary length, not area). Add cases to the tables rather than
+writing one-off tests, and keep rectilinear additions on integer coordinates so
+they stay exact.
 
 ## Conventions
 

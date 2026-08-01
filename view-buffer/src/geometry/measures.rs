@@ -140,7 +140,12 @@ pub fn centroid_of_ring(points: &[Point]) -> Point {
 
 /// Computes the centroid of a contour.
 ///
-/// For contours with holes, the hole areas are subtracted from the moment.
+/// Measured on the same region as [`area`] — the exterior minus the union of the
+/// hole rings. Handing `geo` a polygon whose holes are interior rings would instead
+/// subtract each hole's moment in turn, double-counting wherever two hole rings
+/// overlap and subtracting a nested ring that lies in an already-removed part; the
+/// centroid would then belong to a different shape than the one `area`,
+/// `contains_point` and [`super::pairwise::iou`] report on.
 ///
 /// # Arguments
 /// * `contour` - The contour to measure
@@ -148,7 +153,7 @@ pub fn centroid_of_ring(points: &[Point]) -> Point {
 /// # Returns
 /// Centroid point
 pub fn centroid(contour: &Contour) -> Point {
-    contour.to_geo().centroid().map_or_else(
+    contour.to_geo_region().centroid().map_or_else(
         || centroid_of_ring(&contour.exterior),
         |c| Point::new(c.x(), c.y()),
     )
@@ -343,6 +348,51 @@ mod tests {
         let a = area(&contour, false);
         // 100 - 36 = 64
         assert!((a - 64.0).abs() < 0.01);
+    }
+
+    /// A 100x100 square with two *overlapping* hole rings.
+    ///
+    /// Hole A is [10,50]^2 (area 1600, centroid 30,30), hole B is [30,70]^2 (area
+    /// 1600, centroid 50,50); they share [30,50]^2 (area 400, centroid 40,40). The
+    /// union is therefore area 2800 about (40,40), leaving a region of area 7200.
+    ///
+    /// Asymmetry is the point: with a symmetric arrangement, subtracting the holes
+    /// one at a time lands on the right centroid by accident.
+    fn overlapping_holes() -> Contour {
+        let ring = |pts: &[(f64, f64)]| -> Vec<Point> {
+            pts.iter().map(|&(x, y)| Point::new(x, y)).collect()
+        };
+        Contour::with_holes(
+            ring(&[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]),
+            vec![
+                ring(&[(10.0, 10.0), (50.0, 10.0), (50.0, 50.0), (10.0, 50.0)]),
+                ring(&[(30.0, 30.0), (70.0, 30.0), (70.0, 70.0), (30.0, 70.0)]),
+            ],
+        )
+    }
+
+    #[test]
+    fn test_area_of_overlapping_holes_removes_the_union_once() {
+        // Not 10000 - 1600 - 1600: the shared [30,50]^2 belongs to both rings and
+        // is only removed once.
+        assert!((area(&overlapping_holes(), false) - 7200.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_centroid_measures_the_same_region_as_area() {
+        // Region moment: 10000*50 - 2800*40 = 388000, over an area of 7200.
+        // Subtracting each hole's moment in turn instead gives 372000/6800 =
+        // 54.7059..., the centroid of a shape that does not exist.
+        let c = centroid(&overlapping_holes());
+        let expected = 388000.0 / 7200.0;
+        assert!((c.x - expected).abs() < 1e-6, "x was {}", c.x);
+        assert!((c.y - expected).abs() < 1e-6, "y was {}", c.y);
+    }
+
+    #[test]
+    fn test_centroid_of_hole_free_contour_is_unchanged() {
+        let c = centroid(&square_contour());
+        assert!((c.x - 5.0).abs() < 1e-9 && (c.y - 5.0).abs() < 1e-9);
     }
 
     #[test]
