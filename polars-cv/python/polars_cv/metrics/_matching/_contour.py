@@ -315,9 +315,15 @@ def _score_contours_from_heatmap(
 def _filter_zero_score_detections(lf: pl.LazyFrame) -> pl.LazyFrame:
     """Remove zero-score contours *before* matching.
 
-    Contours that score 0.0 against the heatmap have no meaningful interior
-    pixels (sub-pixel boundary artifacts).  Filtering them before matching
-    prevents them from claiming GT objects during greedy IoU assignment.
+    A detection that scores 0.0 against the heatmap carries no evidence, so
+    letting it into greedy IoU assignment would allow it to claim a GT object
+    ahead of a detection that does.
+
+    This filter was introduced when such contours were mostly artifacts: the
+    boundary tracer collapsed every region into degenerate 2x2 walks with no
+    interior to score. That defect is fixed, so what reaches here now is genuinely
+    unevidenced rather than malformed — the filter is kept for the matching reason
+    above, not the tracing one.
 
     Computes the indices of positive scores, then gathers from both the
     score and contour lists to keep them aligned.
@@ -589,9 +595,8 @@ class ContourMatcher:
             source_info=aligned_source,
         )
 
-        # Filter out spurious zero-score detections: contours extracted from
-        # a region above extraction_threshold that score 0.0 have an empty
-        # rasterized interior and are provably artifacts of the boundary tracer.
+        # Drop detections that score 0.0 against the heatmap, so an unevidenced
+        # contour cannot claim a GT object during greedy assignment.
         prepared = _filter_zero_score_detections(prepared)
 
         # Run matching

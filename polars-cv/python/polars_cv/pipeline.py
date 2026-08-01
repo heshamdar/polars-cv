@@ -3169,6 +3169,17 @@ class Pipeline:
             min_area: Filter small contours. Accepts a Polars expression for
                 per-row dynamic thresholds.
 
+        The traced outline passes through the **centres** of the boundary pixels,
+        so it sits half a pixel inside the region it describes: a blob filling
+        ``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the
+        result therefore erodes it by a pixel per round trip.
+
+        Borders come back as a flat list with no hierarchy. ``mode="all"`` yields
+        the exterior plus one border for each enclosed background region — holes
+        that touch or nest enclose one region between them — and reassembling a
+        holed contour from those is the caller's job. ``mode="external"`` keeps
+        only the outermost, discarding hole borders.
+
         Domain transition: buffer → contour
         """
         self._validate_domain(self.DOMAIN_BUFFER, "extract_contours")
