@@ -55,6 +55,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `#[serde(flatten)]`, which serde documents as incompatible with
   `deny_unknown_fields`.
 
+  **This is a behaviour change under version skew.** A newer Python emitting a
+  node field an older compiled `.so` does not declare now fails the query
+  rather than dropping the field silently. The install is editable, so a stale
+  extension is the normal state after pulling Rust changes — re-run
+  `maturin develop`, or check `polars_cv.build_info()`, which reports the three
+  versions that must agree.
+
 - **Two `unreachable!()` panics removed from `build_plan`.** They were reachable
   by an op author declaring `MemoryEffect::View` on a compute or image op — a
   runtime abort for a contract mistake. The materialisation decision is now a

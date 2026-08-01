@@ -4059,10 +4059,6 @@ class Pipeline:
             "source": self._source.to_dict() if self._source else None,
             "ops": [op.to_dict() for op in self._ops],
         }
-
-        if self._shape_hints.has_any():
-            spec["shape_hints"] = self._shape_hints.to_dict()
-
         return json.dumps(spec)
 
     def _get_expr_columns(self) -> list[pl.Expr]:

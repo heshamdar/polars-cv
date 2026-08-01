@@ -435,10 +435,13 @@ fn out_dtype_override(op_json: &str) -> PyResult<Option<view_buffer::DType>> {
 /// Every enum's names come from its canonical `NAMED` table in view-buffer
 /// (see `view_buffer::naming`) — the same table the executor's parameter
 /// parser consumes — so the names surfaced to Python and the names the
-/// executor accepts cannot drift. Format enums are intentionally not exposed
-/// here: view-buffer's `SourceFormat`/`SinkFormat` use a different vocabulary
-/// than the graph's string formats, a divergence slated for consolidation
-/// rather than enforcement.
+/// executor accepts cannot drift.
+///
+/// The graph's source/sink formats are not here because they have no Rust
+/// enum: the boundary carries them as plain strings and Python's
+/// `SourceFormat`/`SinkFormat` are their single definition. view-buffer's
+/// shadowing copies were deleted with its unreachable composition layer, so
+/// there is no longer a format vocabulary to reconcile.
 #[pyfunction]
 fn enum_variants(name: &str) -> PyResult<Vec<String>> {
     use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};

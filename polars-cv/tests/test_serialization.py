@@ -42,13 +42,15 @@ class TestPipelineJsonFormat:
         assert data["source"]["format"] == "raw"
         assert data["source"]["dtype"] == "f32"
 
-    def test_shape_hints_format(self) -> None:
+    def test_shape_hints_are_not_serialized(self) -> None:
         """Shape hints are preserved in serialization."""
         pipe = Pipeline().source().assert_shape(height=100, width=200)
         data = json.loads(pipe._to_json())
-        assert "shape_hints" in data
-        assert data["shape_hints"]["height"]["value"] == 100
-        assert data["shape_hints"]["width"]["value"] == 200
+        # Shape hints are plan-time state, not wire format: no Rust code ever
+        # read the key. Plan-time shape reaches Rust as `expected_shape` on the
+        # output spec instead.
+        assert "shape_hints" not in data
+        assert data["ops"] == []
 
 
 class TestExpressionReferencesJson:
