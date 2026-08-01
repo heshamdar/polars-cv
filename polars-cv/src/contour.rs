@@ -13,8 +13,10 @@ use std::cmp::Ordering;
 // Import geometry operations from view-buffer
 use view_buffer::geometry::{
     contour::{BoundingBox, Contour, Point, Winding},
+    label::{score_contours_on_buffer, LabelReduction, LabelRegionMode},
     measures, pairwise, predicates, transforms,
 };
+use view_buffer::{naming, ViewBuffer};
 
 use crate::geom_params::{check_range, GeomParams, InputSlots};
 use crate::params::NullParamPolicy;
@@ -514,44 +516,25 @@ fn extract_points_from_series(series: &Series) -> PolarsResult<Vec<Point>> {
     Ok(points)
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ScoreReduction {
-    Max,
-    Mean,
-    Sum,
-}
-
-impl ScoreReduction {
-    fn parse(value: Option<&str>) -> PolarsResult<Self> {
-        match value.unwrap_or("max") {
-            "max" => Ok(Self::Max),
-            "mean" => Ok(Self::Mean),
-            "sum" => Ok(Self::Sum),
-            other => Err(polars_err!(
-                ComputeError: "Unsupported reduction '{}'. Expected one of: max, mean, sum",
-                other
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum RegionMode {
-    Interior,
-    BBox,
-}
-
-impl RegionMode {
-    fn parse(value: Option<&str>) -> PolarsResult<Self> {
-        match value.unwrap_or("interior") {
-            "interior" => Ok(Self::Interior),
-            "bbox" => Ok(Self::BBox),
-            other => Err(polars_err!(
-                ComputeError: "Unsupported region_mode '{}'. Expected one of: interior, bbox",
-                other
-            )),
-        }
-    }
+/// Resolve a string parameter against an enum's canonical `NAMED` table.
+///
+/// The same table the graph path and the `enum_variants` FFI read, so the two
+/// `label_reduce` entry points cannot drift apart on accepted names.
+fn parse_named<T: Copy>(
+    table: &[(&str, T)],
+    param: &str,
+    value: Option<&str>,
+    default: T,
+) -> PolarsResult<T> {
+    let Some(name) = value else {
+        return Ok(default);
+    };
+    naming::lookup(table, name).ok_or_else(|| {
+        polars_err!(
+            ComputeError: "Unsupported {} '{}'. Expected one of: {}",
+            param, name, naming::names(table).join(", ")
+        )
+    })
 }
 
 fn parse_numeric_series(series: &Series) -> PolarsResult<Vec<f64>> {
@@ -641,13 +624,15 @@ fn parse_grid_rows(series: &Series) -> PolarsResult<Vec<Vec<f64>>> {
     Ok(rows)
 }
 
-fn parse_heatmap(value: &AnyValue) -> PolarsResult<Vec<Vec<f64>>> {
-    match value {
+/// Parse a nested list/array image column value into a `[H, W, 1]` `ViewBuffer`.
+///
+/// A buffer, rather than a row-of-rows grid, because that is what
+/// [`score_contours_on_buffer`] consumes — the same engine entry point
+/// `Pipeline.label_reduce` reaches through the graph. An empty or null value
+/// yields a `[0, 0, 1]` buffer, which scores every contour 0.0.
+fn parse_heatmap(value: &AnyValue) -> PolarsResult<ViewBuffer> {
+    let rows: Vec<Vec<f64>> = match value {
         AnyValue::List(series) | AnyValue::Array(series, _) => {
-            if series.is_empty() {
-                return Ok(Vec::new());
-            }
-
             let mut first_non_null: Option<AnyValue> = None;
             for i in 0..series.len() {
                 let item = series.get(i)?;
@@ -657,22 +642,31 @@ fn parse_heatmap(value: &AnyValue) -> PolarsResult<Vec<Vec<f64>>> {
                 }
             }
 
-            let Some(sample) = first_non_null else {
-                return Ok(Vec::new());
-            };
-
-            if matches!(sample, AnyValue::List(_) | AnyValue::Array(_, _)) {
-                parse_grid_rows(series)
-            } else {
-                Ok(vec![parse_numeric_series(series)?])
+            match first_non_null {
+                // Rows of pixels: a full [H, W] grid. A flat list of scalars is a
+                // single row, and an empty/all-null column has no rows at all.
+                Some(AnyValue::List(_) | AnyValue::Array(_, _)) => parse_grid_rows(series)?,
+                Some(_) => vec![parse_numeric_series(series)?],
+                None => Vec::new(),
             }
         }
-        AnyValue::Null => Ok(Vec::new()),
-        _ => Err(polars_err!(
-            ComputeError: "Expected image/array values as list/array, got {:?}",
-            value
-        )),
-    }
+        AnyValue::Null => Vec::new(),
+        _ => {
+            return Err(polars_err!(
+                ComputeError: "Expected image/array values as list/array, got {:?}",
+                value
+            ))
+        }
+    };
+
+    let height = rows.len();
+    let width = rows.first().map_or(0, Vec::len);
+    let data: Vec<f64> = rows.into_iter().flatten().collect();
+
+    Ok(ViewBuffer::from_vec_with_shape(
+        data,
+        vec![height, width, 1],
+    ))
 }
 
 fn float_list_anyvalue(values: &[f64], name: PlSmallStr) -> AnyValue<'static> {
@@ -758,67 +752,6 @@ fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
         name,
         DataType::List(Box::new(DataType::Float64)),
     ))
-}
-
-fn contour_score(
-    contour: &Contour,
-    heatmap: &[Vec<f64>],
-    reduction: ScoreReduction,
-    region_mode: RegionMode,
-) -> f64 {
-    let height = heatmap.len();
-    if height == 0 {
-        return 0.0;
-    }
-    let width = heatmap[0].len();
-    if width == 0 {
-        return 0.0;
-    }
-
-    let Some(bbox) = contour.bounding_box() else {
-        return 0.0;
-    };
-
-    let x0 = bbox.x.floor().max(0.0) as usize;
-    let y0 = bbox.y.floor().max(0.0) as usize;
-    let x1 = (bbox.x + bbox.width).ceil().min(width as f64).max(0.0) as usize;
-    let y1 = (bbox.y + bbox.height).ceil().min(height as f64).max(0.0) as usize;
-
-    if x0 >= x1 || y0 >= y1 {
-        return 0.0;
-    }
-
-    let mut acc = 0.0;
-    let mut max_val = f64::NEG_INFINITY;
-    let mut count = 0usize;
-
-    for (y, row) in heatmap.iter().enumerate().skip(y0).take(y1 - y0) {
-        for (x, value) in row.iter().enumerate().skip(x0).take(x1 - x0) {
-            let include = match region_mode {
-                RegionMode::BBox => true,
-                RegionMode::Interior => {
-                    // TODO: Add exact rasterization-based contour fill mode for sub-pixel accurate scoring.
-                    predicates::contains_point(contour, x as f64 + 0.5, y as f64 + 0.5)
-                }
-            };
-            if include {
-                let val = *value;
-                acc += val;
-                max_val = max_val.max(val);
-                count += 1;
-            }
-        }
-    }
-
-    if count == 0 {
-        return 0.0;
-    }
-
-    match reduction {
-        ScoreReduction::Max => max_val,
-        ScoreReduction::Mean => acc / count as f64,
-        ScoreReduction::Sum => acc,
-    }
 }
 
 fn score_order(scores: &[f64]) -> Vec<usize> {
@@ -1266,6 +1199,10 @@ fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsR
 }
 
 /// Score each contour against a heatmap using a configurable reduction.
+///
+/// Delegates to the engine's [`score_contours_on_buffer`] — the same function
+/// `Pipeline.label_reduce` reaches through the graph — so the two entry points
+/// share their region modes, their reductions and their empty-region fallback.
 #[polars_expr(output_type_func=label_reduce_output_type)]
 fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
     let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
@@ -1288,16 +1225,18 @@ fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResul
         // Per-row capable, matching `Pipeline.label_reduce`: neither choice
         // affects the output's shape or dtype.
         let Some((reduction, region_mode)) = params.row(|| {
-            let reduction = ScoreReduction::parse(params.str_opt(
+            let reduction = parse_named(
+                LabelReduction::NAMED,
                 "reduction",
-                kwargs.reduction.as_deref(),
-                i,
-            )?)?;
-            let region_mode = RegionMode::parse(params.str_opt(
+                params.str_opt("reduction", kwargs.reduction.as_deref(), i)?,
+                LabelReduction::Max,
+            )?;
+            let region_mode = parse_named(
+                LabelRegionMode::NAMED,
                 "region_mode",
-                kwargs.region_mode.as_deref(),
-                i,
-            )?)?;
+                params.str_opt("region_mode", kwargs.region_mode.as_deref(), i)?,
+                LabelRegionMode::Interior,
+            )?;
             Ok((reduction, region_mode))
         })?
         else {
@@ -1307,10 +1246,8 @@ fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResul
 
         let contours = parse_contour_list(&contours_value)?;
         let heatmap = parse_heatmap(&heatmap_value)?;
-        let scores: Vec<f64> = contours
-            .iter()
-            .map(|contour| contour_score(contour, &heatmap, reduction, region_mode))
-            .collect();
+        let scores = score_contours_on_buffer(&heatmap, &contours, reduction, region_mode)
+            .map_err(|err| polars_err!(ComputeError: "{}", err))?;
         rows.push(float_list_anyvalue(
             &scores,
             PlSmallStr::from_static("scores"),

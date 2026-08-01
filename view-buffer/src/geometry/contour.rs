@@ -1,6 +1,6 @@
 //! Core contour types and basic operations.
 
-use geo::BooleanOps;
+use geo::{BooleanOps, Distance, Euclidean};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -24,17 +24,10 @@ impl Point {
     /// Returns the Euclidean distance to another point.
     #[inline]
     pub fn distance_to(&self, other: &Point) -> f64 {
-        let dx = self.x - other.x;
-        let dy = self.y - other.y;
-        (dx * dx + dy * dy).sqrt()
-    }
-
-    /// Returns the squared distance to another point (avoids sqrt).
-    #[inline]
-    pub fn distance_squared_to(&self, other: &Point) -> f64 {
-        let dx = self.x - other.x;
-        let dy = self.y - other.y;
-        dx * dx + dy * dy
+        Euclidean.distance(
+            &geo::Point::new(self.x, self.y),
+            &geo::Point::new(other.x, other.y),
+        )
     }
 }
 
@@ -163,21 +156,6 @@ impl BoundingBox {
             height: bottom - y,
         })
     }
-
-    /// Computes the union (bounding box that contains both).
-    pub fn union(&self, other: &BoundingBox) -> BoundingBox {
-        let x = self.x.min(other.x);
-        let y = self.y.min(other.y);
-        let right = (self.x + self.width).max(other.x + other.width);
-        let bottom = (self.y + self.height).max(other.y + other.height);
-
-        BoundingBox {
-            x,
-            y,
-            width: right - x,
-            height: bottom - y,
-        }
-    }
 }
 
 /// A polygon contour with an exterior ring and optional interior holes.
@@ -221,15 +199,6 @@ impl Contour {
         Self::new(exterior)
     }
 
-    /// Creates a contour from integer coordinates.
-    pub fn from_int_tuples(points: &[(i32, i32)]) -> Self {
-        let exterior = points
-            .iter()
-            .map(|&(x, y)| Point::new(x as f64, y as f64))
-            .collect();
-        Self::new(exterior)
-    }
-
     /// Returns the number of points in the exterior ring.
     pub fn len(&self) -> usize {
         self.exterior.len()
@@ -245,22 +214,7 @@ impl Contour {
         !self.holes.is_empty()
     }
 
-    /// Adds a hole to the contour.
-    pub fn add_hole(&mut self, hole: Vec<Point>) {
-        self.holes.push(hole);
-    }
-
-    /// Returns an iterator over the exterior points.
-    pub fn iter(&self) -> impl Iterator<Item = &Point> {
-        self.exterior.iter()
-    }
-
-    /// Returns the exterior points as a slice.
-    pub fn points(&self) -> &[Point] {
-        &self.exterior
-    }
-
-    /// Returns the cached or computed bounding box.
+    /// Returns the axis-aligned bounding box of the exterior ring.
     pub fn bounding_box(&self) -> Option<BoundingBox> {
         BoundingBox::from_points(&self.exterior)
     }

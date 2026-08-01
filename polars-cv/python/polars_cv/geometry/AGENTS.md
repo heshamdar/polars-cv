@@ -13,12 +13,11 @@ Geometry data is represented as Polars Struct columns with well-defined schemas.
 
 | File | Responsibility |
 |------|---------------|
-| `__init__.py` | Re-exports schemas, validation errors, and `BBoxNamespace` |
+| `__init__.py` | Re-exports schemas and `BBoxNamespace` |
 | `bbox.py` | `BBoxNamespace` (`.bbox`) — pairwise IoU, match detections for bounding boxes |
 | `schemas.py` | Schema constants (`POINT_SCHEMA`, `CONTOUR_SCHEMA`, `CONTOUR_SET_SCHEMA`, `MATCH_RESULT_SCHEMA`, `BBOX_SCHEMA`, etc.), validation helpers, factory functions |
 | `contours.py` | `ContourNamespace` (`.contour`) — area, perimeter, centroid, bounding_box, IoU/Dice/Hausdorff, set-level matching (`pairwise_iou`, `match_detections`), and heatmap scoring (`label_reduce`) |
 | `points.py` | `PointNamespace` (`.point`) — normalize, to_absolute, translate, scale, rotate, distance, angle_to, etc. |
-| `validation.py` | Error classes: `GeometryValidationError`, `OpenContourError`, `CoordinateRangeError`, `InvalidContourError` |
 
 ## Schemas
 
@@ -54,7 +53,7 @@ this doc stated one, no code ever honoured it, and the one place that accidental
 depended on winding (the old Sutherland-Hodgman IoU clipper) returned 0.0 for a
 CW contour matched against itself.
 
-Winding is **computed from point order** (Shoelace), not stored:
+Winding is **computed from point order** (the sign of `geo`'s signed area), not stored:
 - Counter-clockwise (CCW) = positive signed area
 - Clockwise (CW) = negative signed area
 

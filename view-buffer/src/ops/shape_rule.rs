@@ -104,7 +104,7 @@ mod parity_tests {
     //! produces. This is the drift guard that makes the rules a faithful, single
     //! authority for plan-time structural inference rather than a parallel copy.
 
-    use crate::geometry::ops::{ApproxMethod, ExtractMode, GeometryOp};
+    use crate::geometry::ops::{ApproxMethod, ExtractMode, GeometryOp, ScaleOrigin};
     use crate::ops::binary::BinaryOp;
     use crate::ops::color::{ColorConvertOp, ColorSpace};
     use crate::ops::compute::ComputeOp;
@@ -358,7 +358,16 @@ mod parity_tests {
         check(&GeometryOp::Centroid, &contour);
         check(&GeometryOp::BoundingBox, &contour);
         check(&GeometryOp::Translate { dx: 1.0, dy: 2.0 }, &contour);
-        check(&GeometryOp::IoU, &contour);
+        check(
+            &GeometryOp::Scale {
+                sx: 2.0,
+                sy: 2.0,
+                origin: ScaleOrigin::Centroid,
+            },
+            &contour,
+        );
+        check(&GeometryOp::Simplify { tolerance: 0.5 }, &contour);
+        check(&GeometryOp::ConvexHull, &contour);
         check(
             &GeometryOp::ExtractContours {
                 mode: ExtractMode::External,

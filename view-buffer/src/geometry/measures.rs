@@ -16,15 +16,19 @@ fn ring_line_string(points: &[Point]) -> LineString<f64> {
     ring_polygon(points).into_inner().0
 }
 
-/// Computes the signed area of a polygon using the Shoelace formula.
+/// Computes the signed area of a single closed ring.
 ///
 /// Positive area indicates counter-clockwise winding (in standard math coords).
 /// Negative area indicates clockwise winding.
 ///
-/// Computed in place rather than through [`Contour::to_geo`]: this is called per
-/// ring by `winding` and `ensure_winding`, and the round-trip would cost two
-/// allocations for a single accumulator. The first-vertex shift is `geo`'s
-/// (`Area for LineString`) and keeps precision on coordinates far from the origin.
+/// This measures the ring alone, which is why it takes a `&[Point]` rather than a
+/// [`Contour`]: its callers ([`winding`] and [`super::transforms::ensure_winding`])
+/// ask about point order, and [`area`] uses only its *sign*. For the area of the
+/// region a contour describes — holes removed — use [`area`].
+///
+/// Measured on a hole-free `geo::Polygon` rather than the ring's `LineString`: to
+/// `geo` a line string is one-dimensional and its `signed_area` is zero, so the
+/// ring has to be handed over as the polygon it bounds.
 ///
 /// # Arguments
 /// * `points` - Slice of points forming a closed polygon
@@ -32,25 +36,11 @@ fn ring_line_string(points: &[Point]) -> LineString<f64> {
 /// # Returns
 /// Signed area value
 pub fn signed_area(points: &[Point]) -> f64 {
-    let [origin, rest @ ..] = points else {
-        return 0.0;
-    };
-
-    if rest.len() < 2 {
+    if points.len() < 3 {
         return 0.0;
     }
 
-    // Sum over the closed ring; the final edge wraps back to `origin`, whose own
-    // terms vanish once shifted, so it contributes nothing and is skipped.
-    let twice_area: f64 = rest
-        .windows(2)
-        .map(|edge| {
-            let (p, q) = (edge[0], edge[1]);
-            (p.x - origin.x) * (q.y - origin.y) - (q.x - origin.x) * (p.y - origin.y)
-        })
-        .sum();
-
-    twice_area / 2.0
+    ring_polygon(points).signed_area()
 }
 
 /// Computes the area of a contour.
@@ -205,22 +195,6 @@ pub fn contour_winding(contour: &Contour) -> Winding {
 
 fn geo_point(point: &Point) -> geo::Point<f64> {
     geo::Point::new(point.x, point.y)
-}
-
-/// Computes the minimum distance from a point to a line segment.
-///
-/// This is the distance to the closest point on the segment, not the infinite line.
-///
-/// # Arguments
-/// * `point` - The query point
-/// * `seg_start` - Start of the line segment
-/// * `seg_end` - End of the line segment
-///
-/// # Returns
-/// Minimum distance to the segment
-pub fn distance_to_segment(point: &Point, seg_start: &Point, seg_end: &Point) -> f64 {
-    let segment = geo::Line::new(geo_point(seg_start), geo_point(seg_end));
-    Euclidean.distance(&geo_point(point), &segment)
 }
 
 /// Computes the minimum distance from a point to a polygon boundary.
@@ -420,24 +394,6 @@ mod tests {
     fn test_winding_cw() {
         let contour = Contour::from_tuples(&[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)]);
         assert_eq!(contour_winding(&contour), Winding::Clockwise);
-    }
-
-    #[test]
-    fn test_distance_to_segment() {
-        let seg_start = Point::new(0.0, 0.0);
-        let seg_end = Point::new(10.0, 0.0);
-
-        // Point perpendicular to middle of segment
-        let point = Point::new(5.0, 5.0);
-        assert!((distance_to_segment(&point, &seg_start, &seg_end) - 5.0).abs() < 1e-10);
-
-        // Point beyond end of segment
-        let point = Point::new(15.0, 0.0);
-        assert!((distance_to_segment(&point, &seg_start, &seg_end) - 5.0).abs() < 1e-10);
-
-        // Point on segment
-        let point = Point::new(5.0, 0.0);
-        assert!(distance_to_segment(&point, &seg_start, &seg_end) < 1e-10);
     }
 
     #[test]

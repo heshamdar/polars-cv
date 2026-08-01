@@ -184,13 +184,39 @@ class TestLabelReducePrimitive:
         assert out["s_mean"][0][0] == pytest.approx(2.5)
         assert out["s_sum"][0][0] == pytest.approx(10.0)
 
-    def test_buffer_space_label_reduce_matches_contour_namespace(self) -> None:
-        """Buffer-space and contour-space label reduction produce identical scores."""
-        contour = _square(0.0, 0.0, 2.0)
+    @pytest.mark.parametrize("region_mode", ["interior", "boundary", "bbox"])
+    @pytest.mark.parametrize("reduction", ["max", "mean", "sum"])
+    def test_buffer_space_label_reduce_matches_contour_namespace(
+        self, reduction: str, region_mode: str
+    ) -> None:
+        """Both label_reduce entry points run the same engine routine.
+
+        Asserted across every reduction and region mode, not just ``bbox``.
+        The two used to be separate implementations, and ``bbox`` was the one
+        mode they agreed on: the plugin-side copy had no ``boundary`` mode at
+        all and returned 0.0 where the engine falls back to the centroid, so a
+        bbox-only parity check could not see the difference.
+        """
+        contours = [
+            _square(0.0, 0.0, 2.0),
+            # Concave, and offset so the interior and bbox regions differ.
+            {
+                "exterior": [
+                    {"x": 0.0, "y": 0.0},
+                    {"x": 3.0, "y": 0.0},
+                    {"x": 3.0, "y": 1.0},
+                    {"x": 1.0, "y": 1.0},
+                    {"x": 1.0, "y": 3.0},
+                    {"x": 0.0, "y": 3.0},
+                ],
+                "holes": [],
+                "is_closed": True,
+            },
+        ]
         df = pl.DataFrame(
             {
-                "preds": [[contour]],
-                "image": [[[1.0, 2.0], [3.0, 4.0]]],
+                "preds": [contours],
+                "image": [[[1.0, 2.0, 3.0, 4.0]] * 4],
             },
             schema={
                 "preds": CONTOUR_SET_SCHEMA,
@@ -199,16 +225,69 @@ class TestLabelReducePrimitive:
         )
         score_pipe = (
             Pipeline()
-            .source("list", dtype="f32")
-            .label_reduce(contours=pl.col("preds"), reduction="max", region_mode="bbox")
+            .source("list", dtype="f64")
+            .label_reduce(
+                contours=pl.col("preds"), reduction=reduction, region_mode=region_mode
+            )
         )
         out = df.with_columns(
             contour_scores=pl.col("preds").contour.label_reduce(
-                image=pl.col("image"), reduction="max", region_mode="bbox"
+                image=pl.col("image"), reduction=reduction, region_mode=region_mode
             ),
             buffer_scores=pl.col("image").cv.pipe(score_pipe).sink("native"),
         )
-        assert out["contour_scores"][0].to_list() == out["buffer_scores"][0].to_list()
+        assert out["contour_scores"][0].to_list() == pytest.approx(
+            out["buffer_scores"][0].to_list()
+        )
+
+    def test_subpixel_contour_falls_back_to_its_centroid(self) -> None:
+        """A contour catching no pixel centre scores at its centroid, not 0.0.
+
+        The engine has always done this; the plugin-side copy the `.contour`
+        accessor used returned 0.0, which reached `metrics` as a detection that
+        looked unevidenced.
+        """
+        tiny = {
+            "exterior": [
+                {"x": 2.3, "y": 2.3},
+                {"x": 2.5, "y": 2.3},
+                {"x": 2.5, "y": 2.5},
+                {"x": 2.3, "y": 2.5},
+            ],
+            "holes": [],
+            "is_closed": True,
+        }
+        image = [[0.0] * 4 for _ in range(4)]
+        image[2][2] = 9.0
+        df = pl.DataFrame(
+            {"preds": [[tiny]], "image": [image]},
+            schema={
+                "preds": CONTOUR_SET_SCHEMA,
+                "image": pl.List(pl.List(pl.Float64)),
+            },
+        )
+        out = df.with_columns(
+            score=pl.col("preds").contour.label_reduce(
+                image=pl.col("image"), reduction="max", region_mode="interior"
+            )
+        )
+        assert out["score"][0][0] == pytest.approx(9.0)
+
+    def test_label_reduce_rejects_an_unknown_region_mode(self) -> None:
+        """Enum names come from the engine's NAMED table, shared with the graph path."""
+        df = pl.DataFrame(
+            {"preds": [[_square(0.0, 0.0, 2.0)]], "image": [[[1.0, 2.0], [3.0, 4.0]]]},
+            schema={
+                "preds": CONTOUR_SET_SCHEMA,
+                "image": pl.List(pl.List(pl.Float64)),
+            },
+        )
+        with pytest.raises(Exception, match="interior"):
+            df.with_columns(
+                score=pl.col("preds").contour.label_reduce(
+                    image=pl.col("image"), region_mode="nonsense"
+                )
+            )
 
     def test_label_reduce_accepts_array_input(self) -> None:
         """Contour label_reduce accepts fixed-size array image input."""

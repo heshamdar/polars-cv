@@ -44,12 +44,6 @@ from .schemas import (
     POINT_SET_SCHEMA,
     RING_SCHEMA,
 )
-from .validation import (
-    CoordinateRangeError,
-    GeometryValidationError,
-    InvalidContourError,
-    OpenContourError,
-)
 
 __all__ = [
     # Schemas
@@ -61,9 +55,4 @@ __all__ = [
     "CONTOUR_SET_SCHEMA",
     "MATCH_RESULT_SCHEMA",
     "BBOX_SCHEMA",
-    # Validation errors
-    "GeometryValidationError",
-    "OpenContourError",
-    "CoordinateRangeError",
-    "InvalidContourError",
 ]

@@ -57,6 +57,11 @@ src/
 ├── expr.rs             # ViewExpr — lazy expression graph builder
 ├── execution/          # ExecutionPlan, runner, tiling (no-op)
 ├── geometry/           # Contour, Point, BoundingBox, extraction, rasterization, measures, pairwise
+│                       # Polygon maths is `geo`'s throughout — this layer maps
+│                       # Contour <-> geo types and owns degenerate-input conventions.
+│                       # `GeometryOp` lists only ops the Pipeline *graph* routes;
+│                       # contour-column ops live in the plugin's `.contour` namespace
+│                       # and call measures/predicates/pairwise/transforms directly.
 ├── protocol.rs         # VIEW binary protocol (header + data serialization)
 └── interop/            # Arrow, ndarray, image crate, Polars-arrow integration
 ```
@@ -167,7 +172,7 @@ Key implementation points:
 - **Affine** (`execution/runner.rs`): Forward-mapping 2×3 matrix with internal inversion for inverse-mapping interpolation. Supports Nearest and Bilinear interpolation with configurable `border_value`. Parameters in `ops/affine.rs` (`AffineParams`, `InterpolationType`). Two variants: `ComputeOp::Affine` (raw matrix) and `ComputeOp::RotateAffine` (deferred rotation, constructs `AffineParams` via `AffineParams::from_rotation()` at execution time). Both use `apply_affine_warp()`. `MemoryEffect::RequiresContiguous`.
 - **Erode/Dilate** (`execution/runner.rs`): Separable row+column min/max filter. Single-channel only. Supports multiple iterations. `TilePolicy::LocalNeighborhood`.
 - **MorphGradient** (`execution/runner.rs`): Dilate − Erode (saturating subtract). Single-channel only. `TilePolicy::LocalNeighborhood`.
-- **label_reduce centroid fallback**: When `region_mode="interior"` finds no interior pixels for a contour, falls back to sampling at centroid. Prevents sub-pixel contours from scoring 0.
+- **label_reduce centroid fallback** (`geometry/label.rs`): When the chosen region catches no pixel centre for a contour, falls back to sampling at the centroid. Prevents sub-pixel contours from scoring 0. `score_contours_on_buffer` is the single implementation behind both `Pipeline.label_reduce` and the `.contour.label_reduce()` accessor — the plugin must not carry its own scorer.
 
 ## Adding a New Operation
 

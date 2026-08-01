@@ -3,7 +3,7 @@
 //! Implements translate, scale, flip, simplify, and convex hull.
 
 use super::contour::{Contour, Point, Winding};
-use super::measures::{centroid, signed_area};
+use super::measures::{centroid, contour_winding};
 use super::ops::ScaleOrigin;
 use geo::{ConvexHull, Simplify};
 
@@ -107,13 +107,7 @@ pub fn flip(contour: &Contour) -> Contour {
 /// # Returns
 /// Contour with the correct winding direction
 pub fn ensure_winding(contour: &Contour, direction: Winding) -> Contour {
-    let current = if signed_area(&contour.exterior) >= 0.0 {
-        Winding::CounterClockwise
-    } else {
-        Winding::Clockwise
-    };
-
-    if current == direction {
+    if contour_winding(contour) == direction {
         contour.clone()
     } else {
         flip(contour)
@@ -231,12 +225,9 @@ mod tests {
     #[test]
     fn test_flip() {
         let contour = square_contour();
-        let original_winding = signed_area(&contour.exterior) >= 0.0;
-
         let flipped = flip(&contour);
-        let flipped_winding = signed_area(&flipped.exterior) >= 0.0;
 
-        assert_ne!(original_winding, flipped_winding);
+        assert_ne!(contour_winding(&contour), contour_winding(&flipped));
     }
 
     #[test]

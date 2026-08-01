@@ -168,27 +168,6 @@ pub(crate) fn execute_geometry_op(
                 .collect();
             Ok(NodeOutput::from_contours(hulls))
         }
-        // Contour transforms/measures/predicates that the graph path does not
-        // execute. Their user-facing behaviour is served by the dedicated
-        // `.contour` namespace (`src/contour.rs`), which calls the view-buffer
-        // geometry helpers directly rather than through `GeometryOp`. This arm is
-        // written out explicitly (rather than a catch-all `_`) so the match stays
-        // exhaustive: adding a new `GeometryOp` variant is a compile error here
-        // until it is either implemented above or classified as unsupported.
-        GeometryOp::Winding
-        | GeometryOp::IsConvex
-        | GeometryOp::Flip
-        | GeometryOp::Normalize { .. }
-        | GeometryOp::ToAbsolute { .. }
-        | GeometryOp::EnsureWinding { .. }
-        | GeometryOp::ContainsPoint { .. }
-        | GeometryOp::IoU
-        | GeometryOp::Dice
-        | GeometryOp::HausdorffDistance => Err(format!(
-            "Geometry operation {} is not supported in the pipeline graph; \
-             use the .contour namespace accessor instead",
-            op.name()
-        )),
     }
 }
 /// Helper type for list row data: (TypedBufferData, shape)
@@ -745,16 +724,16 @@ mod tests {
     use super::execute_geometry_op;
 
     /// Structural coverage: every geometry op the graph builder can construct
-    /// via `resolve_op` must be executable by `execute_geometry_op` — none may
-    /// fall through to the "not supported in the pipeline graph" arm. This is
-    /// the geometry analog of view-buffer's `apply_op_coverage` probe: it pins
-    /// the class of bug where a `resolve_op` arm builds a `GeometryOp` variant
-    /// that `execute_geometry_op` never handles (e.g. the former
-    /// `Winding`/`IsConvex` gap that resolved but errored at runtime).
+    /// via `resolve_op` must actually execute. This is the geometry analog of
+    /// view-buffer's `apply_op_coverage` probe.
     ///
-    /// The `probe_params` table is asserted to list *exactly* the geometry ops
-    /// `resolve_op` produces, so registering a new graph geometry op without a
-    /// probe here fails the test rather than silently escaping coverage.
+    /// `GeometryOp` now carries only variants the graph routes, so a variant
+    /// `execute_geometry_op` cannot handle is a non-exhaustive-match compile
+    /// error rather than a runtime string. What remains for this test is the
+    /// other direction: that resolving and running each op *works*, and that the
+    /// `probe_params` table lists exactly the geometry ops `resolve_op` produces,
+    /// so registering a new one without a probe fails here rather than silently
+    /// escaping coverage.
     #[test]
     fn every_graph_geometry_op_executes() {
         use crate::execute::{resolve_op, KNOWN_OPS};
@@ -826,10 +805,9 @@ mod tests {
                 sample_contours()
             };
             if let Err(err) = execute_geometry_op(input, &geo) {
-                assert!(
-                    !err.contains("not supported in the pipeline graph"),
-                    "graph op '{op_name}' resolves to GeometryOp::{geo:?} but \
-                     execute_geometry_op has no arm for it: {err}"
+                panic!(
+                    "graph op '{op_name}' resolves to GeometryOp::{geo:?} but does \
+                     not execute: {err}"
                 );
             }
         }
