@@ -382,8 +382,10 @@ class TestReductionDomainTransitions:
         result = df.select(pl.col("image").cv.pipe(pipe_valid).sink("native"))
         assert result is not None
 
-        # Now test that reduction fails after domain change to contour
-        with pytest.raises(ValueError, match="expects buffer input"):
+        # Now test that reduction fails after domain change to contour.
+        # The accepted set is "buffer or vector" — a reduction consumes any
+        # numeric container (a perceptual hash is a vector), but not geometry.
+        with pytest.raises(ValueError, match="expects buffer or vector input"):
             Pipeline().source("image_bytes").grayscale().threshold(
                 128
             ).extract_contours().reduce_mean()

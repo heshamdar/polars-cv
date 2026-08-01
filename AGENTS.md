@@ -212,7 +212,9 @@ changes; they explain *why* the code is shaped the way it is.
   `test_lazy_pipeline_method_parity`); the type stub is regenerated via
   `scripts/gen_lazy_stub.py` and guarded by `test_lazy_stub_is_current`.
 - **One mandatory append path.** `Pipeline._push_op()` is the only code allowed
-  to mutate `_ops`, and it applies an operation's *entire* plan-time effect:
+  to *append* to `_ops` (`_set_ops_slice` replaces the list wholesale for CSE
+  and re-keys the position-keyed side tables; `_clone` copies everything), and
+  it applies an operation's *entire* plan-time effect:
   the input-domain check, the `op_schema` fold (domain/dtype/ndim) and the
   shape hints. Builders call it through `_append_op`; the lazy continuation
   replays through it too, which is what makes `.pipe(p.op())` and

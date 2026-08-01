@@ -257,7 +257,22 @@ fn infer_shape_probe(op_json: &str, input_dims: &[Option<i64>], probe: i64) -> P
         .iter()
         .map(|d| d.unwrap_or(probe).max(1) as usize)
         .collect();
-    let out = op.infer_shape(&[input_shape.as_slice()]);
+    // `infer_shape` implementations index their input shape directly, so an
+    // op whose parameters disagree with the input rank (a transpose carrying
+    // three axes over rank-2 data) panics rather than returning an error.
+    // This is a *planning* call reached from an ordinary Python builder, so a
+    // panic here would escape as a `PanicException` with a Rust backtrace
+    // instead of the ValueError the builder contract promises. Catch it and
+    // report "not inferable"; the builder validates the parameters itself and
+    // raises the actionable message.
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        op.infer_shape(&[input_shape.as_slice()])
+    }))
+    .map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(
+            "op_infer_shape: operation parameters are inconsistent with the input rank",
+        )
+    })?;
     // A step whose output shape is data-dependent (extract_contours) returns
     // an empty shape; report it as "not inferable" rather than as rank 0.
     if out.is_empty() {
@@ -493,6 +508,13 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
     dict.set_item("rank_rule", rank_rule_name(dto.output_rank_rule()))?;
     dict.set_item("channel_rule", channel_rule_name(dto.output_channel_rule()))?;
     dict.set_item("input_domain", dto.input_domain().name())?;
+    dict.set_item(
+        "input_domains",
+        dto.input_domains()
+            .iter()
+            .map(|d| d.name())
+            .collect::<Vec<_>>(),
+    )?;
     dict.set_item("output_domain", dto.output_domain().name())?;
     Ok(dict.into())
 }
