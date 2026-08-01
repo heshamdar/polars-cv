@@ -211,3 +211,18 @@ changes; they explain *why* the code is shaped the way it is.
   `Pipeline` method at import time (drift-guarded by
   `test_lazy_pipeline_method_parity`); the type stub is regenerated via
   `scripts/gen_lazy_stub.py` and guarded by `test_lazy_stub_is_current`.
+- **One mandatory append path.** `Pipeline._push_op()` is the only code allowed
+  to mutate `_ops`, and it applies an operation's *entire* plan-time effect:
+  the input-domain check, the `op_schema` fold (domain/dtype/ndim) and the
+  shape hints. Builders call it through `_append_op`; the lazy continuation
+  replays through it too, which is what makes `.pipe(p.op())` and
+  `.pipe(p).op()` agree by construction. Guarded structurally by
+  `tests/test_append_contract.py` — an AST check that nothing else touches
+  `_ops`, plus an eager/lazy parity sweep whose op table is
+  completeness-asserted against the real chainable-op list.
+
+  This replaced a convention where each builder made the update calls by hand.
+  It failed the way hand-maintained sequences do: every builder ran the schema
+  fold, only 19 of 60 also updated the shape hints, and the ratchet guarding it
+  enumerated one of the two calls. Prefer a mechanism callers cannot step
+  around over a test that lists what they must remember.

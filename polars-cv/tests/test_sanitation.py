@@ -478,6 +478,7 @@ def _emitted_op_names_from_source():
     names: set[str] = set()
     text = (pkg / "pipeline.py").read_text()
     names |= set(re.findall(r'op="([a-z_0-9]+)"', text))
+    names |= set(re.findall(r'_append_op\(\s*"([a-z_0-9]+)"', text))
     lazy = (pkg / "lazy.py").read_text()
     names |= set(re.findall(r'_(?:add_)?binary_op\("([a-z_]+)"', lazy))
     return names
@@ -1180,53 +1181,24 @@ def test_reshape_rank_tracked_eagerly() -> None:
     assert dyn._expected_ndim == 2
 
 
-def test_every_op_append_updates_tracked_state() -> None:
-    """Ratchet: every Pipeline builder method that appends an OpSpec must run
-    the appended op through the op_schema authority (_update_output_dtype).
-    A method that skips the call leaves the eager tracked state stale while
-    the lazy fold sees the op — the eager/lazy drift class of bug.
+def test_op_append_ratchet_moved_to_the_append_contract_suite() -> None:
+    """The per-call ratchet has been replaced by a structural guard.
 
-    Exception: _add_binary_op is an internal hook whose schema effect is
-    resolved by LazyPipelineExpr via binary_output_dtype (a two-input rule
-    op_schema cannot express).
+    This test used to assert that every builder appending an OpSpec also
+    called ``_update_output_dtype`` — one of the *two* updates an append
+    requires. Its own docstring named the failure mode it was meant to stop
+    ("the eager/lazy drift class of bug"), and the ops that skipped the other
+    update (``_update_shape_hints``) shipped a plan/exec divergence underneath
+    it: enumerating required calls only guards the calls you enumerated.
+
+    ``tests/test_append_contract.py`` now forbids anything but
+    ``Pipeline._push_op`` from mutating ``_ops`` at all, which makes the whole
+    sequence unskippable rather than checked. Kept as a pointer so the weaker
+    form is not reintroduced.
     """
-    import ast
-    from pathlib import Path
+    from tests import test_append_contract
 
-    import polars_cv.pipeline as pipeline_mod
-
-    source = Path(pipeline_mod.__file__).read_text()
-    tree = ast.parse(source)
-    pipeline_cls = next(
-        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Pipeline"
-    )
-
-    def calls_in(node: ast.AST, attr: str) -> bool:
-        return any(
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr == attr
-            for sub in ast.walk(node)
-        )
-
-    offenders = [
-        method.name
-        for method in pipeline_cls.body
-        if isinstance(method, ast.FunctionDef)
-        and method.name != "_add_binary_op"
-        and any(
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr == "append"
-            and isinstance(sub.func.value, ast.Attribute)
-            and sub.func.value.attr == "_ops"
-            for sub in ast.walk(method)
-        )
-        and not calls_in(method, "_update_output_dtype")
-    ]
-    assert not offenders, (
-        f"builder methods append an OpSpec without _update_output_dtype: {offenders}"
-    )
+    assert hasattr(test_append_contract, "test_op_append_is_structurally_exclusive")
 
 
 def test_histogram_schema_declared_once() -> None:

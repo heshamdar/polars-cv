@@ -190,55 +190,51 @@ class LazyPipelineExpr:
         """
         if pipeline._source is None:
             # Continuation: new node receives input from self, only has NEW ops
+            import copy as _copy
+
             from polars_cv._types import SourceFormat, SourceSpec
             from polars_cv.pipeline import Pipeline as PipelineClass
 
             new_pipeline = PipelineClass()
             # BLOB source means "receive from upstream node"
             new_pipeline._source = SourceSpec(format=SourceFormat.BLOB)
-            # Only the NEW operations (not self's ops)
-            new_pipeline._ops = pipeline._ops.copy()
             new_pipeline._expr_refs = pipeline._expr_refs.copy()
             # Carry the graph-level policies through continuations.
             new_pipeline._on_error = pipeline._on_error
             new_pipeline._on_null_param = pipeline._on_null_param
-            # Shape knowledge must survive continuations: replay each new op's
-            # plan-time shape effect over the UPSTREAM hints (the standalone
-            # pipeline computed its hints from an empty start, which loses
-            # e.g. pad's additive updates), then overlay any dimension the
-            # standalone pipeline knows outright (a resize target,
-            # an assert_shape) — that knowledge is upstream-independent.
-            import copy as _copy
 
-            new_pipeline._shape_hints = _copy.deepcopy(self._pipeline._shape_hints)
-            for op_idx, op_spec in enumerate(new_pipeline._ops):
-                new_pipeline._update_shape_hints(
-                    op_spec.op, op_spec.params, op_spec, op_index=op_idx
-                )
-            for dim in ("height", "width", "channels", "batch"):
-                inner_value = getattr(pipeline._shape_hints, dim)
-                if inner_value is not None:
-                    setattr(new_pipeline._shape_hints, dim, _copy.deepcopy(inner_value))
-            # Compute continuation node type state from upstream state + new ops.
-            # Using the op-only pipeline state here is incorrect because it loses
-            # the upstream dtype/domain context and can cause contract drift.
-            upstream_domain = self._pipeline._current_domain
+            # A continuation's pre-op state IS the upstream node's output
+            # state, hints included. Seed from it, then re-apply each new op
+            # through the same mandatory append path the eager builders use,
+            # so domain/dtype/ndim and the shape hints advance together, one
+            # op at a time.
+            #
+            # Folding per-op is the point: the previous code replayed only the
+            # hints and assigned `_expected_ndim` afterwards, so every replayed
+            # op saw `ndim = None` and `_update_hw_from_infer_shape` returned
+            # at its opening guard — the H/W half of the replay never ran. It
+            # cannot be fixed by hoisting that assignment, either: a
+            # rank-changing op must infer against its own input rank, not the
+            # chain's final one. Batch re-folds (CSE prefixes) seed from the
+            # same pre-op state.
             upstream_dtype = self._pipeline._output_dtype
             upstream_ndim = self._pipeline._expected_ndim
-            (
-                new_pipeline._current_domain,
-                new_pipeline._output_dtype,
-                new_pipeline._expected_ndim,
-            ) = PipelineClass._compute_output_domain_dtype_ndim(
-                new_pipeline._ops,
-                initial_domain=upstream_domain,
-                initial_dtype=upstream_dtype,
-                initial_ndim=upstream_ndim,
-            )
-            # A continuation's pre-op state IS the upstream node's output
-            # state — batch re-folds (CSE prefixes) must seed from it.
+            new_pipeline._shape_hints = _copy.deepcopy(self._pipeline._shape_hints)
+            new_pipeline._current_domain = self._pipeline._current_domain
+            new_pipeline._output_dtype = upstream_dtype
+            new_pipeline._expected_ndim = upstream_ndim
             new_pipeline._initial_output_dtype = upstream_dtype
             new_pipeline._initial_expected_ndim = upstream_ndim
+            new_pipeline._assertions = {
+                i: dict(a) for i, a in pipeline._assertions.items()
+            }
+            for op_idx, op_spec in enumerate(pipeline._ops):
+                # An assert_shape() written before this op outranks whatever
+                # the preceding ops inferred, so it is replayed at its own
+                # position rather than overlaid at the end.
+                new_pipeline._apply_assertions_at(op_idx)
+                new_pipeline._push_op(op_spec)
+            new_pipeline._apply_assertions_at(len(pipeline._ops))
 
             # Ops referencing other nodes (rasterize(shape=...)) make those
             # nodes upstream dependencies so they execute first.
