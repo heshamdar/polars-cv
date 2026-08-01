@@ -1,28 +1,28 @@
 //! Core operation traits and types.
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::cost::OpCost;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::validation::ValidationError;
 use crate::ops::{Domain, NodeOutput};
 
-/// Legacy memory effect enum - kept for backwards compatibility.
-/// Prefer using `Op::intrinsic_cost()` which returns `OpCost`.
+/// What an operation needs from its input's memory layout.
+///
+/// **This is the materialisation authority**, not a legacy label: `build_plan`
+/// matches on it to decide whether to insert a `MaterializeContiguous` step
+/// before an op, and `calc_strides` reads it to decide whether an output can
+/// keep its input's strides. It was previously documented as legacy in favour
+/// of an `OpCost` that could not replace it — the `MemoryEffect -> OpCost`
+/// conversion collapsed `StridePreserving` and `RequiresContiguous` into a
+/// single `Allocating`, losing exactly the distinction the planner needs. That
+/// cost-reporting surface had no consumer and has been removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryEffect {
+    /// Metadata-only: the output is a view over the input's buffer.
     View,
+    /// Allocates, but can read a strided input directly.
     StridePreserving,
+    /// Allocates, and needs its input contiguous first.
     RequiresContiguous,
-}
-
-impl From<MemoryEffect> for OpCost {
-    fn from(effect: MemoryEffect) -> Self {
-        match effect {
-            MemoryEffect::View => OpCost::ZeroCopy,
-            MemoryEffect::StridePreserving => OpCost::Allocating,
-            MemoryEffect::RequiresContiguous => OpCost::Allocating,
-        }
-    }
 }
 
 /// Trait for all operations in the pipeline.
@@ -69,13 +69,11 @@ pub trait Op {
     /// Required (no default): every op must state its channel transform.
     fn output_channel_rule(&self) -> OutputChannelRule;
 
-    /// Returns the legacy memory effect. Prefer `intrinsic_cost()`.
+    /// Declares what this operation needs from its input's memory layout.
+    ///
+    /// Required (no default): an op that allocates but claims `View` would be
+    /// planned as zero-copy.
     fn memory_effect(&self) -> MemoryEffect;
-
-    /// Returns the intrinsic cost of this operation.
-    fn intrinsic_cost(&self) -> OpCost {
-        self.memory_effect().into()
-    }
 
     /// Infers output strides given input shape and strides.
     ///

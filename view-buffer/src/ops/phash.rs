@@ -11,7 +11,6 @@
 
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::cost::OpCost;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -204,11 +203,6 @@ impl Op for PerceptualHashOp {
     fn memory_effect(&self) -> MemoryEffect {
         // Hashing requires the full image to be loaded
         MemoryEffect::RequiresContiguous
-    }
-
-    fn intrinsic_cost(&self) -> OpCost {
-        // Hash computation allocates a new buffer for the result
-        OpCost::Allocating
     }
 
     fn infer_strides(

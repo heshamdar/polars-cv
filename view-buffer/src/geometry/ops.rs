@@ -4,7 +4,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::cost::OpCost;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
@@ -74,7 +73,6 @@ pub enum GeometryOp {
         height: u32,
         fill_value: u8,
         background: u8,
-        anti_alias: bool,
     },
 
     // --- Extraction (image -> contour) ---
@@ -209,12 +207,6 @@ impl Op for GeometryOp {
         MemoryEffect::RequiresContiguous
     }
 
-    fn intrinsic_cost(&self) -> OpCost {
-        // Measures, transforms, rasterization and extraction alike build a new
-        // allocation rather than a view; none of them fuse.
-        OpCost::Allocating
-    }
-
     fn infer_strides(
         &self,
         _input_shape: &[usize],
@@ -334,7 +326,6 @@ mod tests {
                 height: 100,
                 fill_value: 255,
                 background: 0,
-                anti_alias: false
             }
             .name(),
             "Rasterize"
@@ -348,7 +339,6 @@ mod tests {
             height: 100,
             fill_value: 255,
             background: 0,
-            anti_alias: false,
         };
         let shape = op.infer_shape(&[]);
         assert_eq!(shape, vec![100, 200, 1]);
@@ -361,7 +351,6 @@ mod tests {
             height: 100,
             fill_value: 255,
             background: 0,
-            anti_alias: false,
         };
         assert!(op.validate(&[], &[]).is_err());
     }
@@ -383,7 +372,6 @@ mod tests {
             height: 100,
             fill_value: 255,
             background: 0,
-            anti_alias: false,
         };
         assert_eq!(rasterize.input_domain(), Domain::Contour);
         assert_eq!(rasterize.output_domain(), Domain::Buffer);

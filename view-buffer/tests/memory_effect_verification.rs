@@ -1,11 +1,14 @@
-//! Cost verification tests.
+//! Memory-effect verification tests.
 //!
-//! These tests verify that the declared OpCost matches the actual runtime behavior:
-//! - ZeroCopy operations should preserve storage_id
-//! - Allocating operations should create new storage
-//! - DType should be preserved unless explicitly changed
+//! Each op declares a `MemoryEffect`, and the planner trusts it: `build_plan`
+//! inserts a `MaterializeContiguous` from it, and `calc_strides` decides from
+//! it whether an output can keep its input's strides. These tests bind the
+//! declaration to what actually happens at runtime:
+//! - `View` ops must preserve storage_id (no allocation)
+//! - allocating ops must create new storage
+//! - dtype must be preserved unless explicitly changed
 
-use view_buffer::ops::{ComputeOp, NormalizeMethod, Op, OpCost, ViewOp};
+use view_buffer::ops::{ComputeOp, MemoryEffect, NormalizeMethod, Op, ViewOp};
 use view_buffer::{DType, ViewBuffer, ViewExpr};
 
 // --- Helper Functions ---
@@ -47,7 +50,7 @@ fn make_3d_buffer() -> ViewBuffer {
         .execute()
 }
 
-// --- OpCost Declaration Tests ---
+// --- MemoryEffect Declaration Tests ---
 
 #[test]
 fn test_view_ops_declare_zero_copy() {
@@ -63,8 +66,8 @@ fn test_view_ops_declare_zero_copy() {
 
     for op in &ops {
         assert_eq!(
-            op.intrinsic_cost(),
-            OpCost::ZeroCopy,
+            op.memory_effect(),
+            MemoryEffect::View,
             "ViewOp {op:?} should declare ZeroCopy cost"
         );
     }
@@ -82,8 +85,8 @@ fn test_compute_ops_declare_allocating() {
 
     for op in &ops {
         assert_eq!(
-            op.intrinsic_cost(),
-            OpCost::Allocating,
+            op.memory_effect(),
+            MemoryEffect::RequiresContiguous,
             "ComputeOp {op:?} should declare Allocating cost"
         );
     }
@@ -286,60 +289,4 @@ fn test_normalize_validation_accepts_all_numeric_types() {
             "Normalize should accept {dtype:?} dtype with dtype promotion"
         );
     }
-}
-
-// --- Cost Report Tests ---
-
-#[test]
-fn test_cost_report_counts_allocations() {
-    let buf = make_2d_buffer();
-    let expr = ViewExpr::new_source(buf);
-
-    // Pipeline with 2 allocating ops and 1 zero-copy op
-    let pipeline = expr
-        .flip(vec![0]) // ZeroCopy
-        .scale(2.0) // Allocating
-        .relu(); // Allocating
-
-    let report = pipeline.cost_report();
-
-    assert_eq!(report.total_allocations, 2, "Should have 2 allocating ops");
-    assert_eq!(report.operations.len(), 3, "Should have 3 operations total");
-}
-
-#[test]
-fn test_cost_report_tracks_dtype_changes() {
-    let buf = make_2d_buffer();
-    let expr = ViewExpr::new_source(buf);
-
-    let pipeline = expr.cast(DType::U8);
-
-    let report = pipeline.cost_report();
-
-    assert_eq!(report.dtype_changes.len(), 1, "Should have 1 dtype change");
-    let (op_name, from, to) = &report.dtype_changes[0];
-    assert_eq!(op_name, "Cast");
-    assert_eq!(*from, DType::F32);
-    assert_eq!(*to, DType::U8);
-}
-
-/// Tests that the explain_costs output contains expected information.
-#[test]
-fn test_explain_costs_output() {
-    let buf = make_2d_buffer();
-    let expr = ViewExpr::new_source(buf);
-
-    let pipeline = expr.flip(vec![0]).scale(2.0);
-
-    let explanation = pipeline.explain_costs();
-
-    // Check the summary header
-    assert!(explanation.contains("Pipeline Cost Summary"));
-    // The new format shows "Operations: X (Y zero-copy, Z allocating)"
-    assert!(explanation.contains("1 zero-copy, 1 allocating"));
-    // Check individual ops are listed with their cost symbols and dtype info
-    assert!(explanation.contains("Flip [0]")); // ZeroCopy symbol
-    assert!(explanation.contains("Scale [A]")); // Allocating symbol
-                                                // Check dtype flow is shown
-    assert!(explanation.contains("F32"));
 }

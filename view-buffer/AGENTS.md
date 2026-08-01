@@ -37,7 +37,7 @@ src/
 ├── ops/                # Operations
 │   ├── mod.rs          # Module aggregator / re-exports for all op types
 │   ├── dto.rs          # ViewDto — serializable operation enum
-│   ├── traits.rs       # Op trait and core op types (MemoryEffect, OpCost wiring)
+│   ├── traits.rs       # Op trait and core op types (MemoryEffect — the materialisation authority)
 │   ├── image.rs        # ImageOp, ImageOpKind (resize, blur, canny, erode, dilate, morph_gradient, etc.)
 │   ├── color.rs        # ColorConvertOp, ColorSpace
 │   ├── filter.rs       # ConvolveOp, BorderMode — 2D convolution
@@ -51,8 +51,6 @@ src/
 │   ├── view.rs         # ViewOp enum — zero-copy layout ops (transpose, reshape, flip, crop, channel_select)
 │   ├── shape_rule.rs   # OutputRankRule / OutputChannelRule — plan-time structure rules (the authority)
 │   ├── validation.rs   # Plan-time shape/dtype constraint checks
-│   ├── cost.rs         # OpCost — memory/perf cost categorization for zero-copy analysis
-│   ├── io.rs           # Source/sink format definitions for pipeline composition
 │   └── util.rs         # Shared index/coordinate helpers
 ├── expr.rs             # ViewExpr — lazy expression graph builder
 ├── execution/          # ExecutionPlan, runner, tiling (no-op)
@@ -193,6 +191,32 @@ Key implementation points:
 | `polars_interop` | polars-arrow | Polars-specific Arrow interop |
 | `perceptual_hash` | image_hasher + image_interop | Perceptual hashing |
 | `serde` | serde, serde_json, bytemuck | Serialization support |
+
+## Removed Subsystems
+
+Two layers from view-buffer's original life as a standalone crate were deleted
+once nothing reached them. Both are listed here so the next author does not
+reinvent them without a consumer:
+
+- **Pipeline composition (`ops/io.rs`).** `SourceFormat`, `SinkFormat` and
+  `PlaceholderMeta`, plus `ExprNode::LazySource` / `::Placeholder` / `::Sink`
+  and their constructors. Nothing in the workspace ever called them — the
+  plugin builds its own source/sink vocabulary in `polars-cv/src/pipeline.rs`.
+  Their only cost was not code size: every `match` over `ExprNode` carried arms
+  for them, two of which were `panic!("must be resolved before building plan")`.
+  Deleting them also retired the "three-way format representation split" that
+  two comments described as a known divergence to live with.
+- **Cost reporting (`ops/cost.rs`).** `OpCost`, `OpCostReport`,
+  `PipelineCostReport`, `ViewExpr::cost_report()`, `explain_costs()` and
+  `Op::intrinsic_cost()`. Exercised only by view-buffer's own tests; no Python
+  surface reached it, so every op author maintained a declaration for nobody.
+  **`MemoryEffect` stayed** — it is what `build_plan` matches on to insert a
+  `MaterializeContiguous`, and cost could never have replaced it because the
+  `MemoryEffect -> OpCost` conversion collapsed `StridePreserving` and
+  `RequiresContiguous` into one value. Its doc comment claimed the reverse.
+
+  If a cost/allocation explain surface is wanted later, build it against
+  `MemoryEffect` and wire it to a user-facing API in the same change.
 
 ## Tiling (Removed)
 

@@ -947,7 +947,7 @@ pub mod get {
     /// Optional boolean parameter, resolved per row.
     ///
     /// The per-row counterpart of [`opt_bool`], for flags with no shape or
-    /// dtype effect (`apply_mask(invert)`, `rasterize(anti_alias)`). Flags that
+    /// dtype effect (e.g. `apply_mask(invert)`). Flags that
     /// *do* change the output shape — `rotate(expand)` — must keep using
     /// [`opt_bool`], which is literal-only.
     pub fn opt_bool_dyn(

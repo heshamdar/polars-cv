@@ -3046,7 +3046,6 @@ class Pipeline:
         shape: "LazyPipelineExpr | None" = None,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
-        anti_alias: BoolOrExpr = False,
     ) -> "Pipeline":
         """
         Rasterize contour to a binary mask.
@@ -3065,10 +3064,6 @@ class Pipeline:
                 for per-row dynamic values.
             background: Outside value (default 0). Accepts a Polars expression
                 for per-row dynamic values.
-            anti_alias: **Accepted but not yet implemented** — view-buffer's
-                rasterizer ignores it, so the mask is hard-edged either way.
-                The value is plumbed through (and may be a per-row expression)
-                so it takes effect as soon as the kernel supports it.
 
         Domain transition: contour → buffer
         """
@@ -3086,7 +3081,6 @@ class Pipeline:
             params: dict[str, ParamValue] = {
                 "fill_value": p._track_expr(fill_value),
                 "background": p._track_expr(background),
-                "anti_alias": p._track_expr(anti_alias),
             }
 
             if has_explicit:
@@ -4024,12 +4018,18 @@ class Pipeline:
         The node-level ``domain``/``output_dtype`` are Python-side
         visualization metadata (consumed by ``_graph_viz.parse_logical_graph``
         for intermediate nodes, which the terminal-only ``OutputSpec`` cannot
-        supply). Rust's ``GraphNode`` deliberately ignores them and computes
-        its own schema from the ops; both are derived from the same
-        ``op_schema`` authority, so they cannot drift.
+        supply). Rust's ``GraphNode`` declares but ignores them, computing its
+        own schema from the ops; both are derived from the same ``op_schema``
+        authority, so they cannot drift.
+
+        Shape hints are deliberately *not* emitted: no Rust code ever read the
+        key, and because ``graph_json`` is the compiled-graph cache key, two
+        pipelines that execute identically but carry different hints occupied
+        separate cache entries. Plan-time shape still crosses the boundary as
+        ``expected_shape`` on the output spec, which Rust does read.
 
         Returns:
-            Dictionary with source, shape_hints, ops, domain, and output_dtype.
+            Dictionary with source, ops, domain, and output_dtype.
         """
         optimized_ops = self._fuse_affine_ops(self._ops)
         spec: dict = {
@@ -4038,9 +4038,6 @@ class Pipeline:
             "domain": self._current_domain,
             "output_dtype": self._output_dtype,
         }
-
-        if self._shape_hints.has_any():
-            spec["shape_hints"] = self._shape_hints.to_dict()
 
         return spec
 

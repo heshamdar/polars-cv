@@ -92,18 +92,17 @@ fn resolve_border_value(
     get::opt_f64(params, "border_value", 0.0, row_idx, ctx)
 }
 
-/// Parse rasterize's optional style parameters `(fill_value, background,
-/// anti_alias)` — shared with the graph executor's rasterize-by-shape-ref
-/// path so the two sites cannot diverge.
+/// Parse rasterize's optional style parameters `(fill_value, background)` —
+/// shared with the graph executor's rasterize-by-shape-ref path so the two
+/// sites cannot diverge.
 pub(crate) fn resolve_rasterize_style(
     params: &HashMap<String, ParamValue>,
     row_idx: usize,
     ctx: &ParamCtx,
-) -> PolarsResult<(u8, u8, bool)> {
+) -> PolarsResult<(u8, u8)> {
     Ok((
         get::opt_u8(params, "fill_value", 255, row_idx, ctx)?,
         get::opt_u8(params, "background", 0, row_idx, ctx)?,
-        get::opt_bool_dyn(params, "anti_alias", false, row_idx, ctx)?,
     ))
 }
 
@@ -124,9 +123,7 @@ pub fn decode_contour_source(
     let (fill_value, background) = source.resolve_fill(row_idx, ctx)?;
 
     // Rasterize the contour to a ViewBuffer
-    Ok(rasterize(
-        &contour, width, height, fill_value, background, false, // anti_alias not yet supported
-    ))
+    Ok(rasterize(&contour, width, height, fill_value, background))
 }
 
 /// Decode a contour source with explicit dimensions (for graph execution with shape inference).
@@ -144,9 +141,7 @@ pub fn decode_contour_source_with_dims(
     let contour = crate::contour::parse_contour(value)?;
 
     // Rasterize the contour to a ViewBuffer
-    Ok(rasterize(
-        &contour, width, height, fill_value, background, false, // anti_alias not yet supported
-    ))
+    Ok(rasterize(&contour, width, height, fill_value, background))
 }
 
 /// Resolve contour dimensions from pipeline source spec.
@@ -763,14 +758,12 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "rasterize" => {
             let width = get_param(&op_spec.params, "width")?.resolve_usize(row_idx, ctx)? as u32;
             let height = get_param(&op_spec.params, "height")?.resolve_usize(row_idx, ctx)? as u32;
-            let (fill_value, background, anti_alias) =
-                resolve_rasterize_style(&op_spec.params, row_idx, ctx)?;
+            let (fill_value, background) = resolve_rasterize_style(&op_spec.params, row_idx, ctx)?;
             Ok(GraphStep::Geometry(GeometryOp::Rasterize {
                 width,
                 height,
                 fill_value,
                 background,
-                anti_alias,
             }))
         }
         "extract_contours" => {
@@ -1290,11 +1283,6 @@ mod strict_param_tests {
         #[allow(clippy::type_complexity)]
         let cases: &[(&str, &str, &[(&str, serde_json::Value)])] = &[
             ("rotate", "expand", &[("angle", json!(45.0))]),
-            (
-                "rasterize",
-                "anti_alias",
-                &[("width", json!(8)), ("height", json!(8))],
-            ),
             ("contour_area", "signed", &[]),
             (
                 "convolve2d",

@@ -7,6 +7,60 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Removed
+
+- **`rasterize(anti_alias=)`.** It was threaded from the builder through the op
+  spec, the JSON graph, `resolve_rasterize_style` and `GeometryOp::Rasterize`
+  into `geometry::rasterize`, whose signature named it `_anti_alias` and ignored
+  it. Documented as "not yet implemented", but not free: it entered the op's
+  identity, so two pipelines that behave identically hashed differently for CSE
+  and compiled to separate graph-cache entries. Passing it now raises
+  `TypeError` instead of being silently discarded.
+
+- **view-buffer's unreachable pipeline-composition layer.** `ops/io.rs`
+  (`SourceFormat`, `SinkFormat`, `PlaceholderMeta`) and the `ExprNode`
+  variants only it fed — `LazySource`, `Placeholder`, `Sink` — plus their
+  constructors. Nothing in the workspace called them; the plugin builds its own
+  source/sink vocabulary. Every `match` over `ExprNode` carried arms for them,
+  two of which were `panic!("must be resolved before building plan")`. Also
+  removes the never-enabled `numpy_interop` / `torch_interop` features, and
+  retires the "three-way format representation split" that two comments
+  described as a divergence to live with.
+
+- **The cost-reporting subsystem.** `ops/cost.rs`, `OpCost`, `OpCostReport`,
+  `PipelineCostReport`, `ViewExpr::cost_report()`, `explain_costs()` and
+  `Op::intrinsic_cost()`. Exercised only by view-buffer's own tests — no Python
+  surface reached it, so every op author maintained a declaration for nobody.
+  `MemoryEffect` is retained and its documentation corrected: it called itself
+  legacy and pointed at `intrinsic_cost()`, when it is in fact the
+  materialisation authority (`build_plan` inserts `MaterializeContiguous` from
+  it) and cost could never have replaced it, because the `MemoryEffect ->
+  OpCost` conversion collapsed `StridePreserving` and `RequiresContiguous` into
+  a single value.
+
+- **Node-level `shape_hints` from the graph JSON.** No Rust code ever read the
+  key. Because `graph_json` is the compiled-graph cache key, two pipelines that
+  execute identically but carry different hints occupied separate cache
+  entries. Plan-time shape still crosses the boundary as `expected_shape` on
+  the output spec, which Rust does read.
+
+### Changed
+
+- **The graph wire format is closed at the node.** `GraphNode` now carries
+  `#[serde(deny_unknown_fields)]`, so a stale or misspelled key fails loudly
+  instead of being silently dropped — which is how `shape_hints` went on being
+  emitted long after its last reader. Fields only Python consumes
+  (`domain`, `output_dtype`) are declared on the Rust struct to keep it closed.
+  `OpSpec` is deliberately *not* closed: its parameters ride on
+  `#[serde(flatten)]`, which serde documents as incompatible with
+  `deny_unknown_fields`.
+
+- **Two `unreachable!()` panics removed from `build_plan`.** They were reachable
+  by an op author declaring `MemoryEffect::View` on a compute or image op — a
+  runtime abort for a contract mistake. The materialisation decision is now a
+  direct comparison that treats a `View` declaration as "no materialisation
+  needed", which is what it means.
+
 ### Fixed
 
 - **Plan-time shape tracking was opt-in, and most builders opted out.** Appending

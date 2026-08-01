@@ -1,5 +1,4 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
-use crate::ops::cost::OpCost;
 use crate::ops::pad::{PadMode, PadPosition};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
@@ -334,11 +333,6 @@ impl Op for ImageOp {
             | ImageOpKind::Letterbox { .. }
             | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresContiguous,
         }
-    }
-
-    fn intrinsic_cost(&self) -> OpCost {
-        // All image ops allocate new buffers
-        OpCost::Allocating
     }
 
     fn infer_strides(

@@ -34,13 +34,12 @@ pub use execution::{
 };
 
 // Re-exports - Expression
-pub use expr::{PipelineCostReport, ViewExpr};
+pub use expr::ViewExpr;
 
 // Re-exports - Ops
 pub use ops::{
     apply_mask, BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType, ImageOp, ImageOpKind,
-    NormalizeMethod, Op, OpCost, OpCostReport, OutputChannelRule, OutputRankRule, PlaceholderMeta,
-    SinkFormat, SourceFormat, ValidationError, ViewDto, ViewOp,
+    NormalizeMethod, Op, OutputChannelRule, OutputRankRule, ValidationError, ViewDto, ViewOp,
 };
 
 // Re-exports - Protocol
