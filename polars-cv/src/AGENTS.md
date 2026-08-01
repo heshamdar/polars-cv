@@ -149,8 +149,18 @@ Because they bypass `vb_graph`, these functions get no `ParamCtx`. Their per-row
 
 Key functions in `contour.rs`:
 - `contour_pairwise_iou`, `contour_match_detections`, `contour_label_reduce`
-- `bbox_pairwise_iou`, `bbox_match_detections` (convert bboxes to rectangular contours internally)
+- `bbox_pairwise_iou`, `bbox_match_detections` — rectangle overlap is a two-interval
+  intersection, so these stay analytic (`pairwise::bbox_iou`) rather than going
+  through general polygon boolean ops. Both share `match_from_matrix` with the
+  contour matcher, so the greedy matching policy lives in one place.
 - Graph-side `label_reduce` in `resolve_op` (buffer + contour expression parameter → vector)
+
+`contour_label_reduce` and the graph-side `label_reduce` are two entry points onto
+**one** implementation: both call `view_buffer::geometry::label::score_contours_on_buffer`
+and parse their `reduction`/`region_mode` against that module's `NAMED` tables. Do not
+reintroduce a plugin-local scorer — the previous one drifted into a second dialect with
+no `boundary` mode and no centroid fallback, and the only parity test covered `bbox`,
+the one mode where the two happened to agree.
 
 ## Module Notes
 

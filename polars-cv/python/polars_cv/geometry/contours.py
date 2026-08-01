@@ -107,9 +107,6 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
 
         Returns:
             Float64 area value.
-
-        Raises:
-            OpenContourError: If contour is not closed.
         """
         binder = _ArgBinder()
         binder.add_param("signed", signed, cast=bool)
@@ -319,19 +316,28 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         *,
         heatmap: pl.Expr | None = None,
         reduction: Literal["max", "mean", "sum"] | pl.Expr = "max",
-        region_mode: Literal["interior", "bbox"] | pl.Expr = "interior",
+        region_mode: Literal["interior", "boundary", "bbox"] | pl.Expr = "interior",
     ) -> pl.Expr:
         """
         Score each contour from an image/array expression with configurable reduction.
+
+        Runs the same engine routine as :meth:`polars_cv.Pipeline.label_reduce`,
+        so the two agree on every reduction, region mode and edge case; this
+        accessor differs only in taking an already-materialized contour column
+        rather than extracting one inside a pipeline.
+
+        Pixels are sampled at their centres. A contour whose region catches no
+        pixel centre — a sub-pixel detection — is scored at its centroid rather
+        than as 0.0.
 
         Args:
             image: Image/array expression aligned by row with contour sets.
             heatmap: Backward-compatible alias for ``image``.
             reduction: Aggregation method over pixels in each contour region.
-                Accepts a Polars expression for a per-row choice, matching
-                :meth:`polars_cv.Pipeline.label_reduce`.
-            region_mode: Region selector - ``"interior"`` or ``"bbox"``.
-                Accepts a Polars expression.
+                Accepts a Polars expression for a per-row choice.
+            region_mode: Region selector - ``"interior"`` (pixels strictly inside),
+                ``"boundary"`` (interior plus the contour boundary) or ``"bbox"``
+                (everything in the bounding box). Accepts a Polars expression.
 
         Returns:
             A list of float scores, aligned to the input contour order.

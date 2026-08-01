@@ -5,7 +5,6 @@
 use crate::core::buffer::ViewBuffer;
 
 use super::contour::{Contour, Point};
-use super::predicates::position_in_polygon;
 
 /// Rasterizes a contour to a binary mask.
 ///
@@ -47,9 +46,10 @@ pub fn rasterize(
 /// More efficient than point-in-polygon testing for each pixel.
 ///
 /// A pixel belongs to the polygon when its **centre** — `(x + 0.5, y + 0.5)` —
-/// lies inside it, boundary included. That is the rule [`rasterize_simple`],
-/// `contains_point` and the area measures all follow, so a mask's pixel count
-/// tracks the contour's area rather than exceeding it by a border.
+/// lies inside it, boundary included. That is the rule `contains_point` and the
+/// area measures follow, so a mask's pixel count tracks the contour's area rather
+/// than exceeding it by a border. The test-only `rasterize_simple` asserts the
+/// two agree pixel for pixel.
 fn scanline_fill(polygon: &[Point], width: usize, height: usize, data: &mut [u8], value: u8) {
     if polygon.len() < 3 || width == 0 || height == 0 {
         return;
@@ -120,12 +120,16 @@ fn scanline_fill(polygon: &[Point], width: usize, height: usize, data: &mut [u8]
     }
 }
 
-/// Rasterizes a contour with simple point-in-polygon testing.
+/// Rasterizes a contour by testing every pixel centre against the polygon.
 ///
-/// Less efficient but more straightforward implementation.
-/// Useful for validation and small contours.
-#[allow(dead_code)]
-pub fn rasterize_simple(
+/// The independent oracle [`rasterize`]'s scanline filler is checked against:
+/// it asks `geo` the same question [`super::predicates::contains_point`] and the
+/// area measures answer, one pixel at a time, sharing no code with the span
+/// arithmetic. Too slow for production — O(w * h * n) against the scanline
+/// filler's O(h * n) — so it stays test-only rather than becoming a second
+/// rasterization path callers could pick.
+#[cfg(test)]
+fn rasterize_simple(
     contour: &Contour,
     width: u32,
     height: u32,
@@ -146,7 +150,7 @@ pub fn rasterize_simple(
         for x in 0..w {
             let point = Point::new(x as f64 + 0.5, y as f64 + 0.5);
 
-            if position_in_polygon(&polygon, &point) >= 0 {
+            if super::predicates::position_in_polygon(&polygon, &point) >= 0 {
                 data[y * w + x] = fill_value;
             }
         }

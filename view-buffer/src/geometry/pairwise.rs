@@ -207,16 +207,6 @@ fn match_from_matrix(
     }
 }
 
-/// Convert an axis-aligned bounding box to a 4-point rectangular contour.
-pub fn bbox_to_contour(bbox: &BoundingBox) -> Contour {
-    Contour::from_tuples(&[
-        (bbox.x, bbox.y),
-        (bbox.x + bbox.width, bbox.y),
-        (bbox.x + bbox.width, bbox.y + bbox.height),
-        (bbox.x, bbox.y + bbox.height),
-    ])
-}
-
 /// IoU between two axis-aligned bounding boxes.
 ///
 /// Rectangle overlap is a two-interval intersection, so this stays analytic rather

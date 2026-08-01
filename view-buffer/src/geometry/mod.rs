@@ -14,8 +14,13 @@
 //!
 //! # Operations
 //!
+//! The polygon maths is [`geo`]'s throughout — area, centroid, distance, boolean
+//! ops, simplification, convex hull and the orientation predicates. This module
+//! maps between [`Contour`] and `geo`'s types and owns the crate's conventions for
+//! degenerate input; it does not reimplement geometry.
+//!
 //! ## Measures
-//! - Area (signed and unsigned, using Shoelace formula)
+//! - Area (signed and unsigned)
 //! - Perimeter (arc length)
 //! - Centroid (center of mass)
 //! - Bounding box

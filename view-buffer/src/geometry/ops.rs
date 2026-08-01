@@ -10,8 +10,6 @@ use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
 
-use super::contour::Winding;
-
 /// Origin point for scale operations.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -24,14 +22,22 @@ pub enum ScaleOrigin {
     Origin,
 }
 
-/// Geometry operations for the pipeline system.
+/// Geometry operations reachable from a `Pipeline` graph.
 ///
-/// These operations work on contour data or produce contours/masks.
+/// This enum is the *graph* vocabulary, not a catalogue of the geometry the crate
+/// can do. Every variant here has a `resolve_op` arm in the polars-cv plugin and a
+/// `GraphStep::Geometry` encoding; contour operations that only make sense on an
+/// already-materialized contour column — winding, flip, normalize, contains_point,
+/// IoU, Dice, Hausdorff and friends — are standalone `.contour` namespace plugin
+/// functions that call [`super::measures`], [`super::predicates`],
+/// [`super::pairwise`] and [`super::transforms`] directly. Adding a variant here
+/// without a `resolve_op` arm makes it unconstructible; adding one without an
+/// encoding is a compile error at the plugin's exhaustive match.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum GeometryOp {
     // --- Measures (contour -> scalar) ---
-    /// Compute area using the Shoelace formula.
+    /// Compute the area of the region the contour describes.
     /// If `signed` is true, returns signed area (negative for CW).
     Area { signed: bool },
 
@@ -44,9 +50,6 @@ pub enum GeometryOp {
     /// Compute axis-aligned bounding box.
     BoundingBox,
 
-    /// Determine winding direction.
-    Winding,
-
     // --- Transforms (contour -> contour) ---
     /// Translate by offset.
     Translate { dx: f64, dy: f64 },
@@ -58,40 +61,11 @@ pub enum GeometryOp {
         origin: ScaleOrigin,
     },
 
-    /// Flip (reverse) point order, changing winding direction.
-    Flip,
-
-    /// Ensure a specific winding direction.
-    EnsureWinding { direction: Winding },
-
     /// Simplify using Douglas-Peucker algorithm.
     Simplify { tolerance: f64 },
 
     /// Compute convex hull.
     ConvexHull,
-
-    /// Normalize coordinates to [0, 1] range.
-    Normalize { ref_width: f64, ref_height: f64 },
-
-    /// Convert normalized coords to absolute pixel coords.
-    ToAbsolute { ref_width: f64, ref_height: f64 },
-
-    // --- Predicates (contour -> bool or scalar) ---
-    /// Check if contour is convex.
-    IsConvex,
-
-    /// Check if a point is inside the contour.
-    ContainsPoint { x: f64, y: f64 },
-
-    // --- Pairwise (contour, contour -> scalar) ---
-    /// Compute Intersection over Union with another contour.
-    IoU,
-
-    /// Compute Dice coefficient with another contour.
-    Dice,
-
-    /// Compute Hausdorff distance to another contour.
-    HausdorffDistance,
 
     // --- Rasterization (contour -> image) ---
     /// Rasterize contour to binary mask.
@@ -155,20 +129,10 @@ impl Op for GeometryOp {
             GeometryOp::Perimeter => "Perimeter",
             GeometryOp::Centroid => "Centroid",
             GeometryOp::BoundingBox => "BoundingBox",
-            GeometryOp::Winding => "Winding",
             GeometryOp::Translate { .. } => "Translate",
             GeometryOp::Scale { .. } => "Scale",
-            GeometryOp::Flip => "Flip",
-            GeometryOp::EnsureWinding { .. } => "EnsureWinding",
             GeometryOp::Simplify { .. } => "Simplify",
             GeometryOp::ConvexHull => "ConvexHull",
-            GeometryOp::Normalize { .. } => "Normalize",
-            GeometryOp::ToAbsolute { .. } => "ToAbsolute",
-            GeometryOp::IsConvex => "IsConvex",
-            GeometryOp::ContainsPoint { .. } => "ContainsPoint",
-            GeometryOp::IoU => "IoU",
-            GeometryOp::Dice => "Dice",
-            GeometryOp::HausdorffDistance => "HausdorffDistance",
             GeometryOp::Rasterize { .. } => "Rasterize",
             GeometryOp::ExtractContours { .. } => "ExtractContours",
         }
@@ -177,18 +141,7 @@ impl Op for GeometryOp {
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize> {
         match self {
             // Scalar outputs
-            GeometryOp::Area { .. }
-            | GeometryOp::Perimeter
-            | GeometryOp::IsConvex
-            | GeometryOp::ContainsPoint { .. }
-            | GeometryOp::IoU
-            | GeometryOp::Dice
-            | GeometryOp::HausdorffDistance => {
-                vec![1]
-            }
-
-            // Winding returns a single value (encoded as int)
-            GeometryOp::Winding => vec![1],
+            GeometryOp::Area { .. } | GeometryOp::Perimeter => vec![1],
 
             // Centroid returns (x, y)
             GeometryOp::Centroid => vec![2],
@@ -196,23 +149,13 @@ impl Op for GeometryOp {
             // BoundingBox returns (x, y, width, height)
             GeometryOp::BoundingBox => vec![4],
 
-            // Contour transforms preserve the number of points (mostly)
+            // Contour transforms preserve the point list; `Simplify` and
+            // `ConvexHull` may shorten it, which is not knowable statically, so
+            // the input shape stands in for both.
             GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
-            | GeometryOp::Flip
-            | GeometryOp::EnsureWinding { .. }
-            | GeometryOp::Normalize { .. }
-            | GeometryOp::ToAbsolute { .. } => {
-                if !inputs.is_empty() {
-                    inputs[0].to_vec()
-                } else {
-                    vec![]
-                }
-            }
-
-            // These may reduce points
-            GeometryOp::Simplify { .. } | GeometryOp::ConvexHull => {
-                // Can't know output size statically, return placeholder
+            | GeometryOp::Simplify { .. }
+            | GeometryOp::ConvexHull => {
                 if !inputs.is_empty() {
                     inputs[0].to_vec()
                 } else {
@@ -238,21 +181,11 @@ impl Op for GeometryOp {
             // Scalar/vector measures emit a fixed-length 1-D result.
             GeometryOp::Area { .. }
             | GeometryOp::Perimeter
-            | GeometryOp::IsConvex
-            | GeometryOp::ContainsPoint { .. }
-            | GeometryOp::IoU
-            | GeometryOp::Dice
-            | GeometryOp::HausdorffDistance
-            | GeometryOp::Winding
             | GeometryOp::Centroid
             | GeometryOp::BoundingBox => OutputRankRule::Fixed(1),
             // Contour→contour transforms preserve the point-list rank.
             GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
-            | GeometryOp::Flip
-            | GeometryOp::EnsureWinding { .. }
-            | GeometryOp::Normalize { .. }
-            | GeometryOp::ToAbsolute { .. }
             | GeometryOp::Simplify { .. }
             | GeometryOp::ConvexHull => OutputRankRule::PreserveRank,
             // Rasterize emits an [H, W, 1] image.
@@ -272,48 +205,14 @@ impl Op for GeometryOp {
     }
 
     fn memory_effect(&self) -> MemoryEffect {
-        match self {
-            // In-place transformations could be view-like but we allocate for safety
-            GeometryOp::Flip | GeometryOp::EnsureWinding { .. } => MemoryEffect::StridePreserving,
-
-            // Everything else allocates
-            _ => MemoryEffect::RequiresContiguous,
-        }
+        // Every geometry op materializes a fresh contour, measure or mask.
+        MemoryEffect::RequiresContiguous
     }
 
     fn intrinsic_cost(&self) -> OpCost {
-        match self {
-            // Simple scalar measures are cheap
-            GeometryOp::Area { .. }
-            | GeometryOp::Perimeter
-            | GeometryOp::Centroid
-            | GeometryOp::BoundingBox
-            | GeometryOp::Winding
-            | GeometryOp::IsConvex
-            | GeometryOp::ContainsPoint { .. } => OpCost::Allocating,
-
-            // Transforms allocate new contour
-            GeometryOp::Translate { .. }
-            | GeometryOp::Scale { .. }
-            | GeometryOp::Flip
-            | GeometryOp::EnsureWinding { .. }
-            | GeometryOp::Normalize { .. }
-            | GeometryOp::ToAbsolute { .. } => OpCost::Allocating,
-
-            // These are O(n log n) or more
-            GeometryOp::Simplify { .. } | GeometryOp::ConvexHull => OpCost::Allocating,
-
-            // Pairwise ops require rasterization or polygon clipping
-            GeometryOp::IoU | GeometryOp::Dice | GeometryOp::HausdorffDistance => {
-                OpCost::Allocating
-            }
-
-            // Rasterization is expensive
-            GeometryOp::Rasterize { .. } => OpCost::Allocating,
-
-            // Contour extraction is expensive
-            GeometryOp::ExtractContours { .. } => OpCost::Allocating,
-        }
+        // Measures, transforms, rasterization and extraction alike build a new
+        // allocation rather than a view; none of them fuse.
+        OpCost::Allocating
     }
 
     fn infer_strides(
@@ -327,7 +226,7 @@ impl Op for GeometryOp {
 
     fn validate(
         &self,
-        input_shapes: &[&[usize]],
+        _input_shapes: &[&[usize]],
         _input_dtypes: &[DType],
     ) -> Result<(), ValidationError> {
         match self {
@@ -351,34 +250,6 @@ impl Op for GeometryOp {
                 Ok(())
             }
 
-            GeometryOp::Normalize {
-                ref_width,
-                ref_height,
-            }
-            | GeometryOp::ToAbsolute {
-                ref_width,
-                ref_height,
-            } => {
-                if *ref_width <= 0.0 || *ref_height <= 0.0 {
-                    return Err(ValidationError::InvalidParameter {
-                        param: "ref_width/ref_height".to_string(),
-                        reason: "Reference dimensions must be > 0".to_string(),
-                    });
-                }
-                Ok(())
-            }
-
-            // Pairwise ops need two inputs
-            GeometryOp::IoU | GeometryOp::Dice | GeometryOp::HausdorffDistance => {
-                if input_shapes.len() < 2 {
-                    return Err(ValidationError::InsufficientInputs {
-                        expected: 2,
-                        got: input_shapes.len(),
-                    });
-                }
-                Ok(())
-            }
-
             _ => Ok(()),
         }
     }
@@ -394,9 +265,6 @@ impl Op for GeometryOp {
     fn output_dtype_rule(&self) -> OutputDTypeRule {
         match self {
             GeometryOp::Rasterize { .. } => OutputDTypeRule::Fixed(DType::U8),
-            GeometryOp::IsConvex | GeometryOp::ContainsPoint { .. } | GeometryOp::Winding => {
-                OutputDTypeRule::Fixed(DType::U8)
-            }
             _ => OutputDTypeRule::Fixed(DType::F64),
         }
     }
@@ -412,27 +280,15 @@ impl GeometryOp {
             // Rasterization: Contour → Buffer
             GeometryOp::Rasterize { .. } => Domain::Contour,
 
-            // Measures: Contour → Scalar/Vector
+            // Measures and contour→contour transforms alike read a contour.
             GeometryOp::Area { .. }
             | GeometryOp::Perimeter
             | GeometryOp::Centroid
             | GeometryOp::BoundingBox
-            | GeometryOp::Winding
-            | GeometryOp::IsConvex
-            | GeometryOp::ContainsPoint { .. } => Domain::Contour,
-
-            // Contour transforms: Contour → Contour
-            GeometryOp::Translate { .. }
+            | GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
-            | GeometryOp::Flip
-            | GeometryOp::EnsureWinding { .. }
             | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull
-            | GeometryOp::Normalize { .. }
-            | GeometryOp::ToAbsolute { .. } => Domain::Contour,
-
-            // Pairwise operations: Contour (+ Contour) → Scalar
-            GeometryOp::IoU | GeometryOp::Dice | GeometryOp::HausdorffDistance => Domain::Contour,
+            | GeometryOp::ConvexHull => Domain::Contour,
         }
     }
 
@@ -444,14 +300,6 @@ impl GeometryOp {
 
             // Rasterization: Contour → Buffer
             GeometryOp::Rasterize { .. } => Domain::Buffer,
-
-            // Scalar measures
-            GeometryOp::IsConvex
-            | GeometryOp::ContainsPoint { .. }
-            | GeometryOp::Winding
-            | GeometryOp::IoU
-            | GeometryOp::Dice
-            | GeometryOp::HausdorffDistance => Domain::Scalar,
 
             // Per-contour measures: one value (or coordinate group) per
             // extracted contour. Execution iterates every contour, so these
@@ -466,12 +314,8 @@ impl GeometryOp {
             // Contour transforms preserve contour domain
             GeometryOp::Translate { .. }
             | GeometryOp::Scale { .. }
-            | GeometryOp::Flip
-            | GeometryOp::EnsureWinding { .. }
             | GeometryOp::Simplify { .. }
-            | GeometryOp::ConvexHull
-            | GeometryOp::Normalize { .. }
-            | GeometryOp::ToAbsolute { .. } => Domain::Contour,
+            | GeometryOp::ConvexHull => Domain::Contour,
         }
     }
 }

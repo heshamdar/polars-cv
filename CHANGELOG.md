@@ -7,6 +7,64 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **`.contour.label_reduce()` was a second, divergent implementation.** The
+  accessor scored contours with a plugin-local routine while
+  `Pipeline.label_reduce()` used the engine's `score_contours_on_buffer` — the
+  same math, moved into `view-buffer` earlier, whose plugin-side copy was never
+  deleted. The two had drifted:
+
+  - `region_mode="boundary"` was rejected by the accessor and accepted by the
+    pipeline.
+  - A contour catching no pixel centre (a sub-pixel detection) scored **0.0**
+    through the accessor and its **centroid value** through the pipeline. The
+    accessor's zero then read downstream as a detection with no evidence.
+  - The accessor copied the whole image into a `Vec<Vec<f64>>` before scoring.
+
+  Both entry points now call `score_contours_on_buffer` and parse `reduction` /
+  `region_mode` against the engine's `NAMED` tables, so accepted names cannot
+  drift either. **This changes reported numbers** for `.contour.label_reduce()`
+  on sub-pixel contours, which now score at their centroid instead of 0.0.
+  `Pipeline.label_reduce()` and `ContourMatcher` are unaffected — they were
+  already on the engine path.
+
+  The existing parity test covered only `region_mode="bbox"`, the one mode the
+  two agreed on; it now runs across every reduction and region mode.
+
+### Removed
+
+- **Unreachable geometry vocabulary.** `GeometryOp` carried ten variants
+  (`Winding`, `Flip`, `EnsureWinding`, `Normalize`, `ToAbsolute`, `IsConvex`,
+  `ContainsPoint`, `IoU`, `Dice`, `HausdorffDistance`) that no `resolve_op` arm
+  could construct, together with an arm in the plugin's graph executor whose only
+  job was to reject them. Those operations are served by the `.contour` namespace,
+  which calls the `view-buffer` geometry functions directly. `GeometryOp` now
+  lists only what the pipeline graph routes, and the executor's match is
+  exhaustive by construction rather than by a runtime error string.
+
+- **Dead `view-buffer::geometry` API**: `pairwise::bbox_to_contour`,
+  `predicates::point_in_polygon`, `measures::distance_to_segment`,
+  `Point::distance_squared_to`, `Contour::{from_int_tuples, add_hole, iter,
+  points}` and `BoundingBox::union` had no callers. `rasterize_simple` is now
+  `#[cfg(test)]`: it is the per-pixel oracle the scanline filler is checked
+  against, not a second rasterization path.
+
+- **`polars_cv.geometry.validation`**, along with the re-exported
+  `GeometryValidationError`, `OpenContourError`, `CoordinateRangeError` and
+  `InvalidContourError`. The three validator functions were never called and the
+  exception classes were never raised, so nothing could catch them. The
+  `Raises: OpenContourError` line on `.contour.area()` documented an error that
+  could not occur.
+
+### Changed
+
+- `measures::signed_area` is now `geo`'s signed area rather than a hand-written
+  shoelace loop, and `transforms::ensure_winding` reads `measures::winding`
+  instead of re-deriving it — leaving `geo` the single authority for polygon
+  area. (`geo` treats a `LineString` as one-dimensional with zero area, so the
+  ring is measured as the hole-free polygon it bounds.)
+
 ## [0.18.0] — 2026-07-31
 
 ### Fixed

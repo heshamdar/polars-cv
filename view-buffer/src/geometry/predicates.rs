@@ -43,23 +43,6 @@ pub fn contour_is_convex(contour: &Contour) -> bool {
     is_convex(&contour.exterior)
 }
 
-/// Tests if a point is inside a polygon.
-///
-/// # Arguments
-/// * `point` - The point to test
-/// * `polygon` - Slice of points forming a closed polygon
-///
-/// # Returns
-/// * `1` if point is inside
-/// * `0` if point is on the boundary
-/// * `-1` if point is outside
-pub fn point_in_polygon(point: &Point, polygon: &[Point]) -> i32 {
-    if polygon.len() < 3 {
-        return -1;
-    }
-    point_in_contour(point, &Contour::new(polygon.to_vec()))
-}
-
 /// Tests if a point is inside a contour, treating holes as outside.
 ///
 /// # Arguments
