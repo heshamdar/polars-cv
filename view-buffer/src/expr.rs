@@ -799,6 +799,19 @@ fn plan_ends_in_view(plan: &ExecutionPlan) -> bool {
     matches!(plan.steps.last(), Some(PlanStep::View(_)))
 }
 
+// --- Helper for Fusion ---
+
+/// Lowers one `ComputeOp` into the scalar ops a `FusedKernel` runs.
+///
+/// `input_dtype` is needed because some lowerings are dtype-dependent:
+/// `Invert` and the gamma family use the dtype's value range, so the same op
+/// becomes different scalar work for `u8` than for `f32`.
+///
+/// `is_outer` marks the op at the end of the chain. An outer `Cast` lowers to
+/// *no* scalar ops at all: the kernel already converts its `f32` result to
+/// `FusedKernel::out_dtype` on write, and `try_fuse` pins that dtype to what
+/// the unfused chain would have produced — so emitting a cast here would apply
+/// the conversion twice.
 fn extract_ops(
     op: &ComputeOp,
     input_dtype: DType,

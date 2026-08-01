@@ -39,17 +39,6 @@ maturin develop --release  # Builds cdylib and installs into .venv
 | `execute.rs` | `resolve_op()` (op-spec to `GraphStep`), decode/encode helpers shared by graph execution |
 | `graph/step.rs` | `GraphStep` — the plugin-level step vocabulary: `Buffer(ViewDto)` plus graph-only steps (binary, mask, merge, geometry, reduction, histogram, perceptual_hash, extract_shape, label_reduce); contract methods read by the FFI |
 | `pipeline.rs` | `SourceSpec`, `SinkSpec`, `OpSpec` serde types for JSON deserialization |
-
-**The graph wire format is closed at the node.** `GraphNode` carries
-`#[serde(deny_unknown_fields)]`, so anything Python sends must be declared on
-the Rust struct — including `domain`/`output_dtype`, which only the Python
-visualizer consumes. It was permissive before, which is how node-level
-`shape_hints` went on being serialized long after the last reader was removed
-(and, because `graph_json` is the compiled-graph cache key, cost cache entries
-for pipelines that execute identically). `OpSpec` cannot be closed the same way:
-its parameters ride on `#[serde(flatten)]`, which serde documents as
-incompatible with `deny_unknown_fields`. Op names are guarded by the
-registry-parity tests and `resolve_op`'s catch-all instead.
 | `params.rs` | `ParamValue` — literal vs expression parameter resolution (`resolve_*` numerics, `resolve_str`/`resolve_bool` for non-structural enums and flags, `req_*_literal` for structural ones). `ParamCtx::probe` marks the plan-time shape probe, where every expression param is bound to an integer placeholder and the enum/flag accessors fall back to their default; real execution stays strict |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
 | `cloud.rs` | Cloud storage and HTTP file reads via `object_store` + `reqwest` |
@@ -57,6 +46,18 @@ registry-parity tests and `resolve_op`'s catch-all instead.
 | `contour.rs` | Contour namespace plugin functions (IoU, matching, label_reduce, bbox variants) |
 | `point.rs` | Point geometry plugin functions |
 | `geom_params.rs` | `GeomParams` — per-row parameter resolution for those namespace functions, reading expression params off the extra inputs named in the graph-free `input_slots` map |
+
+**The graph wire format is closed at the node.** `GraphNode` carries
+`#[serde(deny_unknown_fields)]`, so anything Python sends must be declared on
+the Rust struct — including `domain`/`output_dtype`, which only the Python
+visualizer consumes. It was permissive before, which is how node-level
+`shape_hints` went on being serialized long after the last reader was removed,
+costing a distinct compiled-graph cache entry for pipelines that execute
+identically (`graph_json` is the cache key). `OpSpec` cannot be closed the same
+way: its parameters ride on `#[serde(flatten)]`, which serde documents as
+incompatible with `deny_unknown_fields`. Op names are guarded by the
+registry-parity tests and `resolve_op`'s catch-all instead.
+
 
 ## Core Architecture
 

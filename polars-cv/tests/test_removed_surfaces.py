@@ -62,7 +62,6 @@ def test_anti_alias_is_gone_from_the_type_stub() -> None:
 # ---------------------------------------------------------------------------
 
 
-@plugin_required
 def test_graph_json_carries_no_shape_hints() -> None:
     """Node-level ``shape_hints`` must not be serialized.
 
@@ -109,8 +108,6 @@ def test_graph_node_rejects_unknown_fields() -> None:
     op parameter by construction. Op names and their parameters are guarded
     instead by the registry-parity tests and ``resolve_op``'s catch-all.
     """
-    import polars as pl
-
     df = pl.DataFrame({"img": [b""]})
     graph = (
         pl.col("img")

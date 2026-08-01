@@ -14,7 +14,6 @@ A zero-copy, stride-aware tensor orchestration framework for Rust.
 - **Lazy expression graphs**: Build computation pipelines that are optimized before execution
 - **Automatic kernel fusion**: Consecutive scalar operations are fused into single passes
 - **Multiple backend interop**: Seamless integration with ndarray, Arrow, and image crates
-- **Cost tracking**: Introspection tools to understand allocation patterns in your pipelines
 
 ## Features
 
@@ -23,8 +22,6 @@ A zero-copy, stride-aware tensor orchestration framework for Rust.
 | `ndarray_interop` | Zero-copy views to/from `ndarray::ArrayViewD` |
 | `image_interop` | Integration with the `image` crate for image processing |
 | `arrow_interop` | Zero-copy interop with Apache Arrow buffers |
-| `numpy_interop` | Export format compatible with NumPy |
-| `torch_interop` | Export format compatible with PyTorch |
 | `serde` | Serialization support for operations and plans |
 | `python` | Python bindings via PyO3 |
 
@@ -101,34 +98,13 @@ let view = buffer.as_array_view::<f32>()?;
 println!("Sum: {}", view.sum());
 ```
 
-### Cost Analysis
-
-```rust
-use view_buffer::{ViewBuffer, ViewExpr, DType};
-
-let buffer = ViewBuffer::from_vec(vec![1.0f32; 1000]);
-let expr = ViewExpr::new_source(buffer)
-    .reshape(vec![10, 100])
-    .flip(vec![0])          // Zero-copy
-    .scale(2.0)             // Allocating
-    .cast(DType::U8);       // Allocating
-
-// Analyze the pipeline
-let report = expr.cost_report();
-println!("Total allocations: {}", report.total_allocations);
-println!("DType changes: {:?}", report.dtype_changes);
-
-// Human-readable explanation
-println!("{}", expr.explain_costs());
-```
-
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      ViewExpr (Lazy Graph)                  │
 │  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐     │
-│  │ Source  │ → │  View   │ → │ Compute │ → │  Sink   │     │
+│  │ Source  │ → │  View   │ → │ Compute │ → │  Image  │     │
 │  └─────────┘   └─────────┘   └─────────┘   └─────────┘     │
 └─────────────────────────────────────────────────────────────┘
                             │

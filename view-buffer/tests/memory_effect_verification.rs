@@ -68,7 +68,7 @@ fn test_view_ops_declare_zero_copy() {
         assert_eq!(
             op.memory_effect(),
             MemoryEffect::View,
-            "ViewOp {op:?} should declare ZeroCopy cost"
+            "ViewOp {op:?} must declare View (metadata-only)"
         );
     }
 }
@@ -84,10 +84,14 @@ fn test_compute_ops_declare_allocating() {
     ];
 
     for op in &ops {
-        assert_eq!(
+        // "Allocating" is *both* StridePreserving and RequiresContiguous —
+        // the distinction the planner needs and the old OpCost collapsed.
+        // Asserting RequiresContiguous alone would fail for Cast/Scale/Relu/
+        // Clamp, which read strided input directly.
+        assert_ne!(
             op.memory_effect(),
-            MemoryEffect::RequiresContiguous,
-            "ComputeOp {op:?} should declare Allocating cost"
+            MemoryEffect::View,
+            "ComputeOp {op:?} allocates, so it must not declare View"
         );
     }
 }
