@@ -305,7 +305,14 @@ pub(crate) enum OutputValue {
     HistogramBuckets(Vec<f64>),
 }
 /// A node in the pipeline graph.
+///
+/// `deny_unknown_fields` closes this end of the wire format. It was permissive,
+/// so a stale or misspelled key was silently dropped — which is how node-level
+/// `shape_hints` went on being serialized long after the last reader was
+/// removed. Anything Python sends must be declared here, including the fields
+/// only Python consumes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GraphNode {
     /// Source specification for this node's input.
     pub source: SourceSpec,
@@ -320,4 +327,13 @@ pub struct GraphNode {
     #[serde(default)]
     #[allow(dead_code)]
     pub alias: Option<String>,
+    /// Planner metadata for graph visualization only; the executor computes
+    /// its own schema from `ops`. Declared so the node stays closed.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub domain: Option<String>,
+    /// See [`GraphNode::domain`].
+    #[serde(default, rename = "output_dtype")]
+    #[allow(dead_code)]
+    pub output_dtype: Option<String>,
 }

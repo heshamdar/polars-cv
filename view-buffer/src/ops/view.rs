@@ -1,7 +1,6 @@
 //! View operations that perform zero-copy transformations.
 
 use crate::core::dtype::OutputDTypeRule;
-use crate::ops::cost::OpCost;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 
@@ -118,10 +117,6 @@ impl Op for ViewOp {
 
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::View
-    }
-
-    fn intrinsic_cost(&self) -> OpCost {
-        OpCost::ZeroCopy
     }
 
     fn infer_strides(&self, _input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>> {

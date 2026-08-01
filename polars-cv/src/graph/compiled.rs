@@ -755,7 +755,7 @@ impl CompiledGraph {
                                 let height = dims[0] as u32;
                                 let width = dims[1] as u32;
                                 ctx.clear_null();
-                                let (fill_value, background, anti_alias) =
+                                let (fill_value, background) =
                                     match crate::execute::resolve_rasterize_style(
                                         &spec.params,
                                         row_idx,
@@ -770,7 +770,6 @@ impl CompiledGraph {
                                     height,
                                     fill_value,
                                     background,
-                                    anti_alias,
                                 };
                                 current_output = execute_geometry_op(current_output, &geo_op)?;
                                 continue;

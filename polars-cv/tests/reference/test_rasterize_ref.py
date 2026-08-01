@@ -115,29 +115,6 @@ class TestRasterizeReference:
         assert mask[10, 10] == 255  # On edge
         assert mask[50, 50] == 0  # Interior empty
 
-    def test_rasterize_anti_alias_reference(
-        self, standard_contours: dict[str, np.ndarray]
-    ) -> None:
-        """
-        Rasterize with anti-aliasing (smooth edges).
-
-        Note: OpenCV drawContours with lineType=cv2.LINE_AA for anti-aliasing.
-        """
-        circle = standard_contours["circle"]
-        contour_cv = circle.reshape(-1, 1, 2).astype(np.int32)
-
-        # Without anti-aliasing
-        mask_no_aa = np.zeros((100, 100), dtype=np.uint8)
-        cv2.drawContours(mask_no_aa, [contour_cv], 0, 255, -1, lineType=cv2.LINE_8)
-
-        # With anti-aliasing (for outline)
-        mask_aa = np.zeros((100, 100), dtype=np.uint8)
-        cv2.drawContours(mask_aa, [contour_cv], 0, 255, 1, lineType=cv2.LINE_AA)
-
-        # Both should have content
-        assert mask_no_aa.max() == 255
-        assert mask_aa.max() == 255
-
     def test_rasterize_multiple_contours_reference(self) -> None:
         """
         Rasterize multiple contours to single mask.

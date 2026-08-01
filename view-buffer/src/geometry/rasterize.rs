@@ -14,7 +14,6 @@ use super::contour::{Contour, Point};
 /// * `height` - Output mask height in pixels
 /// * `fill_value` - Value for pixels inside the contour
 /// * `background` - Value for pixels outside the contour
-/// * `anti_alias` - Whether to apply anti-aliasing (not yet implemented)
 ///
 /// # Returns
 /// A ViewBuffer with shape [height, width, 1] and dtype U8
@@ -24,7 +23,6 @@ pub fn rasterize(
     height: u32,
     fill_value: u8,
     background: u8,
-    _anti_alias: bool,
 ) -> ViewBuffer {
     let w = width as usize;
     let h = height as usize;
@@ -171,7 +169,7 @@ mod tests {
     #[test]
     fn test_rasterize_shape() {
         let contour = square_contour();
-        let mask = rasterize(&contour, 100, 100, 255, 0, false);
+        let mask = rasterize(&contour, 100, 100, 255, 0);
 
         assert_eq!(mask.shape(), &[100, 100, 1]);
         assert_eq!(mask.dtype(), DType::U8);
@@ -180,7 +178,7 @@ mod tests {
     #[test]
     fn test_rasterize_content() {
         let contour = square_contour();
-        let mask = rasterize(&contour, 100, 100, 255, 0, false);
+        let mask = rasterize(&contour, 100, 100, 255, 0);
 
         // Access the data
         let data = mask.to_contiguous();
@@ -210,7 +208,7 @@ mod tests {
         ];
         let contour = Contour::with_holes(exterior, vec![hole]);
 
-        let mask = rasterize(&contour, 100, 100, 255, 0, false);
+        let mask = rasterize(&contour, 100, 100, 255, 0);
         let data = mask.to_contiguous();
         let ptr = unsafe { data.as_ptr::<u8>() };
         let slice = unsafe { std::slice::from_raw_parts(ptr, 100 * 100) };
@@ -239,7 +237,7 @@ mod tests {
             square_contour(),
             Contour::from_tuples(&[(10.0, 10.0), (90.0, 30.0), (60.0, 90.0)]),
         ] {
-            let scanline = rasterize(&contour, 100, 100, 255, 0, false);
+            let scanline = rasterize(&contour, 100, 100, 255, 0);
             let per_pixel = rasterize_simple(&contour, 100, 100, 255, 0);
 
             assert_eq!(
@@ -254,7 +252,7 @@ mod tests {
         // An axis-aligned box on integer coordinates puts no pixel centre on an
         // edge, so the count is the area exactly. Filling [10, 90] rasterized 81
         // columns before the span rounding was fixed.
-        let mask = rasterize(&square_contour(), 100, 100, 1, 0, false);
+        let mask = rasterize(&square_contour(), 100, 100, 1, 0);
         let painted: u32 = mask_pixels(&mask, 100 * 100)
             .iter()
             .map(|&v| v as u32)
@@ -265,7 +263,7 @@ mod tests {
 
     #[test]
     fn test_rasterize_zero_sized_canvas_is_empty() {
-        let mask = rasterize(&square_contour(), 0, 0, 255, 0, false);
+        let mask = rasterize(&square_contour(), 0, 0, 255, 0);
         assert_eq!(mask.shape(), &[0, 0, 1]);
     }
 }

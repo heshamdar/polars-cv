@@ -2,7 +2,6 @@
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::affine::{AffineParams, InterpolationType};
-use crate::ops::cost::OpCost;
 use crate::ops::scalar::FusedKernel;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
@@ -158,10 +157,6 @@ impl Op for ComputeOp {
             ComputeOp::Normalize(..) => MemoryEffect::RequiresContiguous,
             ComputeOp::AdjustContrast(_) => MemoryEffect::RequiresContiguous,
         }
-    }
-
-    fn intrinsic_cost(&self) -> OpCost {
-        OpCost::Allocating
     }
 
     fn infer_strides(

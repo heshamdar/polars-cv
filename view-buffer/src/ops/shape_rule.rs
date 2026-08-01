@@ -383,7 +383,6 @@ mod parity_tests {
                 height: 8,
                 fill_value: 255,
                 background: 0,
-                anti_alias: false,
             },
             &[4usize, 4, 3],
         );

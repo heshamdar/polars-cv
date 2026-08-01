@@ -52,7 +52,6 @@ pub(crate) fn execute_geometry_op(
             height,
             fill_value,
             background,
-            anti_alias,
         } => {
             let contours = input
                 .as_contours()
@@ -65,17 +64,9 @@ pub(crate) fn execute_geometry_op(
                 Ok(NodeOutput::from_buffer(mask))
             } else {
                 // Render all contours onto the same canvas by folding with max.
-                let mut canvas = rasterize(
-                    &contours[0],
-                    *width,
-                    *height,
-                    *fill_value,
-                    *background,
-                    *anti_alias,
-                );
+                let mut canvas = rasterize(&contours[0], *width, *height, *fill_value, *background);
                 for c in &contours[1..] {
-                    let overlay =
-                        rasterize(c, *width, *height, *fill_value, *background, *anti_alias);
+                    let overlay = rasterize(c, *width, *height, *fill_value, *background);
                     canvas = BinaryOp::Maximum.execute(&canvas, &overlay);
                 }
                 Ok(NodeOutput::from_buffer(canvas))
