@@ -3075,6 +3075,12 @@ class Pipeline:
         """
         Rasterize contour to a binary mask.
 
+        A pixel is filled when its centre — ``(x + 0.5, y + 0.5)`` — lies inside
+        the contour, boundary included; holes are cut out by the same rule. This
+        is the convention ``contains_point`` and the area measures follow, so for
+        a shape whose vertices are integers on axis-aligned edges the mask holds
+        exactly ``area()`` pixels.
+
         Args:
             width: Mask width.
             height: Mask height.

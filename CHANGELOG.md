@@ -48,6 +48,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   distance — because `geo` folds with `Bounded::min_value()` where the previous
   implementation used `f64::INFINITY`. It returns `INFINITY` again.
 
+- **Rasterized masks were one pixel too wide at every right-hand edge.** The
+  scanline filler behind `source("contour", ...)` and `Pipeline.rasterize()`
+  rounded each span outward — `ceil(left)` to `floor(right)` — instead of asking
+  which pixel *centres* fall inside it. Since the scanline itself samples at
+  `y + 0.5`, the vertical extent was already right, so masks came out asymmetric:
+  a 400×400 box rasterized 401×400 pixels, and every interior hole was likewise
+  a column too wide. A mask's pixel count therefore did not agree with the
+  contour's `area()`, and `apply_mask` with a contour mask included a column of
+  pixels outside the contour. Masks are now exactly the set of pixels whose
+  centre lies in the shape — the rule `contains_point` and the area measures
+  already followed — so an axis-aligned box on integer coordinates rasterizes to
+  precisely its area. Zero-width or zero-height output no longer panics.
+
 - **`centroid` measured a different region than `area`.** It was the one measure
   left on the holes-as-interior-rings representation, so it subtracted each hole's
   moment in turn — double-counting wherever two hole rings overlap, and subtracting
