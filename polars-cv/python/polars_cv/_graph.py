@@ -68,7 +68,15 @@ class GraphNode:
 
     @property
     def expected_shape(self) -> list[int] | None:
-        """Get the expected output shape of this node's pipeline if deterministic."""
+        """Get the expected output shape of this node's pipeline if deterministic.
+
+        Only reported for a rank-3 ``[H, W, C]`` output. The hints track H/W/C
+        specifically, so at any other rank they cannot describe the shape —
+        publishing ``[H, W, C]`` for a rank-2 output is exactly how
+        ``channel_select`` used to declare a schema execution could not produce.
+        """
+        if self.pipeline._expected_ndim != 3:
+            return None
         hints = self.pipeline._shape_hints
         if (
             hints.height

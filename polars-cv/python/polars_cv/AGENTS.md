@@ -254,14 +254,41 @@ the same mixin unless `.cv` genuinely honours it.
 
 ## Adding a New Operation (Python Side)
 
-1. **`pipeline.py`**: Add a method to `Pipeline` class:
-   - Validate domain with `_validate_domain()`
-   - Clone with `_clone()`
-   - Append `OpSpec` with params wrapped in `ParamValue`
-   - Call `_update_output_dtype()` — one incremental `op_schema` FFI call
-     that updates the tracked domain, dtype, and ndim from the op's own Rust
-     contract. Never assign `_current_domain`/`_output_dtype` by hand.
-   - Return new Pipeline
+1. **`pipeline.py`**: Add a method to `Pipeline` that returns
+   `self._append_op("<op_name>", lambda p: {...params...})`. That is the whole
+   builder — there is no sequence to get right:
+
+   ```python
+   def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> "Pipeline":
+       """..."""
+       return self._append_op(
+           "erode",
+           lambda p: {
+               "ksize": p._track_expr(ksize),
+               "iterations": p._track_expr(iterations),
+           },
+       )
+   ```
+
+   The callback receives the *cloned* pipeline, so `p._track_expr` registers
+   per-row expressions on the clone rather than the receiver. `_append_op`
+   then validates the input domain against `op_contract(...)["input_domain"]`
+   and hands off to `_push_op`, which appends and applies **both** halves of
+   the plan-time effect: the `op_schema` fold (domain/dtype/ndim) and the
+   shape hints (`op_infer_shape` for H/W, the channel rule for C).
+
+   **Do not touch `_ops` directly.** `_push_op` is the only function permitted
+   to mutate it, enforced by `test_op_append_is_structurally_exclusive` in
+   `tests/test_append_contract.py`. That guard exists because the previous
+   convention — each builder calling the update methods by hand — let 41 of 60
+   builders skip the shape-hint half and publish a planned schema execution
+   could not produce. Never assign `_current_domain` / `_output_dtype` /
+   `_shape_hints` by hand either; they follow from the op's Rust contract.
+
+   Validation that must happen before the op is built (a kernel-size check, an
+   enum parse) goes in the method body before the `return`; work that must
+   happen *after* the append (e.g. `scale`'s `preserve_dtype` cast-back) reads
+   the returned pipeline. Both compose without bypassing the append path.
 
 2. **`lazy.py`**: Nothing to add for an ordinary op. `LazyPipelineExpr` generates a
    forwarder for every chainable `Pipeline` method at import time

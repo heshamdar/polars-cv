@@ -239,16 +239,32 @@ fn infer_shape_probe(op_json: &str, input_dims: &[Option<i64>], probe: i64) -> P
     use crate::graph::step::GraphStep;
 
     let step = resolve_op_from_json_probe(op_json, probe)?;
-    let GraphStep::Buffer(dto) = step else {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "op_infer_shape: only single-buffer ops have an inferable shape",
-        ));
+    // Buffer ops and geometry steps both carry an `Op` with a real
+    // `infer_shape`. Geometry has to be included or the planner has no shape
+    // authority for `rasterize`, whose output canvas is fixed by its own
+    // width/height params — the Python side then had to assign those hints
+    // itself, a side effect the lazy continuation replay silently skipped.
+    let op: &dyn view_buffer::Op = match &step {
+        GraphStep::Buffer(dto) => dto.as_op(),
+        GraphStep::Geometry(geo) => geo,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "op_infer_shape: only buffer and geometry ops have an inferable shape",
+            ))
+        }
     };
     let input_shape: Vec<usize> = input_dims
         .iter()
         .map(|d| d.unwrap_or(probe).max(1) as usize)
         .collect();
-    let out = dto.as_op().infer_shape(&[input_shape.as_slice()]);
+    let out = op.infer_shape(&[input_shape.as_slice()]);
+    // A step whose output shape is data-dependent (extract_contours) returns
+    // an empty shape; report it as "not inferable" rather than as rank 0.
+    if out.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "op_infer_shape: output shape is not knowable at plan time",
+        ));
+    }
     Ok(out.iter().map(|&x| x as i64).collect())
 }
 

@@ -9,6 +9,65 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Plan-time shape tracking was opt-in, and most builders opted out.** Appending
+  an operation required a sequence of calls each builder made by hand. All 60
+  ran the schema fold (`_update_output_dtype`); only 19 also updated the shape
+  hints. Ops that change shape but skipped it published a planned schema
+  execution could not produce, which surfaced at `collect()` as
+  *"planned shape [...] but execution produced [...]. The planner's shape
+  contract disagrees with the Rust implementation."*
+
+  - `transpose(axes)` kept the pre-transpose H/W (a 100×200 image still reported
+    100×200 after `[1,0,2]`) and kept a channel count its `unknown` channel rule
+    says is not knowable.
+  - `channel_select(index)` dropped rank 3 → 2 while `expected_shape` kept
+    publishing a three-dimensional shape.
+  - `channel_merge` kept the first operand's channel count.
+
+  `Pipeline._push_op()` is now the only code that may mutate `_ops`, and it
+  applies the domain check, the schema fold and the hint update together.
+  Guarded structurally by `test_op_append_is_structurally_exclusive`, which
+  fails if anything else touches `_ops` — replacing a ratchet that enumerated
+  one of the two required calls.
+
+- **The lazy continuation's shape replay never ran.** `LazyPipelineExpr.pipe()`
+  re-applied each op's shape effect over the upstream hints, but assigned
+  `_expected_ndim` *after* that loop, so every replayed op saw `ndim = None` and
+  the H/W half of the replay returned at its opening guard. A post-loop overlay
+  masked it for absolute targets like `resize(h, w)` while producing wrong
+  values elsewhere — `.pipe(p).resize_to_height(50)` reported a width of 50,
+  `resize_max(120)` reported a square, and `pad`/`pad_to_size`/`rotate` silently
+  kept the upstream shape.
+
+  The continuation now folds state and hints together one op at a time through
+  the same append path the eager builders use, so the two spellings of an
+  operation — `.pipe(p.op())` and `.pipe(p).op()` — agree by construction.
+  Pinned by `test_eager_and_lazy_agree_on_shape_state` across every chainable
+  op, with the op table completeness-asserted so a new operation cannot join
+  without a case.
+
+### Changed
+
+- **Each operation's input domain now comes from its Rust contract.** Builders
+  passed their own expected domain to `_validate_domain(self.DOMAIN_BUFFER, ...)`
+  at 53 call sites, restating a fact `op_contract(...)["input_domain"]` already
+  published and nothing read. The check moved into the append path, and
+  `Pipeline`'s `DOMAIN_*` string constants — a third copy of the domain
+  vocabulary behind Rust's `Domain::NAMED` and the Python `Domain` enum — are
+  gone.
+
+- **`op_infer_shape` now covers geometry steps.** `rasterize`'s output canvas is
+  fixed by its own width/height, but the FFI accepted only buffer ops, so the
+  Python builder assigned those hints itself as a side effect of building the
+  op's parameters — which the continuation replay skipped. `GeometryOp`'s
+  `infer_shape` is now read like any other, and a step whose shape is genuinely
+  data-dependent (`extract_contours`) reports "not knowable" rather than rank 0.
+
+- **`assert_shape()` records the position it was written at.** A user assertion
+  outranks inference, but only from that point on, so it can survive a
+  continuation replay without overriding later ops that legitimately change the
+  shape (`assert_shape(channels=3).grayscale()` still reports 1 channel).
+
 - **`.contour.label_reduce()` was a second, divergent implementation.** The
   accessor scored contours with a plugin-local routine while
   `Pipeline.label_reduce()` used the engine's `score_contours_on_buffer` — the
