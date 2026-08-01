@@ -18,11 +18,18 @@ relative tolerance derived from the perimeter rather than an exact count.
 
 Rasterization is at 512x512 with shapes ~400px across, keeping the boundary a
 small fraction of the interior.
+
+The last section closes the loop the other way: contour -> mask -> contour,
+through `extract_contours`. That leg has a systematic bias rather than a random
+one — see `TestRoundTripThroughExtraction` — and its assertions are written
+around the exact size of that bias, not around a tolerance wide enough to hide
+it.
 """
 
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -30,6 +37,9 @@ import pytest
 
 from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_struct
 from tests.conftest import plugin_required
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 CANVAS = 512
 """Mask edge length. Large enough that boundary pixels stay a small fraction."""
@@ -451,3 +461,232 @@ class TestContainsPointMatchesTheMask:
             assert bool(mask[int(py), int(px)]) == bool(inside), (
                 f"{name}: disagreement at ({px}, {py})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Round trip: contour -> mask -> contour
+# ---------------------------------------------------------------------------
+
+
+def _extract(
+    contour: dict, *, mode: str = "external", method: str = "simple"
+) -> list[dict]:
+    """Rasterize, then trace the mask back into contours."""
+    frame = pl.DataFrame({"c": [contour]}, schema={"c": CONTOUR_SCHEMA})
+    pipe = (
+        Pipeline()
+        .source("contour", width=CANVAS, height=CANVAS, fill_value=255, background=0)
+        .extract_contours(mode=mode, method=method)
+    )
+    traced = frame.with_columns(r=pl.col("c").cv.pipe(pipe).sink("native"))["r"][0]
+    return list(traced)
+
+
+def _as_contour(border: dict) -> dict:
+    """A traced border on its own, with no holes."""
+    return {"exterior": border["exterior"], "holes": [], "is_closed": True}
+
+
+def _reassemble(borders: list[dict]) -> dict:
+    """
+    Rebuild one contour from the borders of a region: biggest is the exterior.
+
+    `extract_contours` returns borders as a flat list without hierarchy, so
+    putting a holed shape back together is the caller's job. Ranking by area is
+    enough for the shapes here, where every hole sits inside a single exterior.
+    """
+    ranked = sorted(
+        borders,
+        key=lambda b: _analytic_area(_as_contour(b)),
+        reverse=True,
+    )
+    return {
+        "exterior": ranked[0]["exterior"],
+        "holes": [b["exterior"] for b in ranked[1:]],
+        "is_closed": True,
+    }
+
+
+HOLE_FREE = {name: shape for name, shape in ALL_SHAPES.items() if not shape["holes"]}
+
+# Holes that touch or nest merge into one background region, so the mask has
+# fewer holes than the contour was given rings. That is the same union-of-rings
+# semantics `area` reports, arrived at through pixels instead of polygon
+# arithmetic: `overlapping_holes` and `nested_holes` were each built from two
+# rings and enclose one region.
+CONNECTED_HOLE_COUNT = {
+    "holed_square": 1,
+    "holed_square_cw_hole": 1,
+    "two_disjoint_holes": 2,
+    "overlapping_holes": 1,
+    "nested_holes": 1,
+    "concave_with_hole": 1,
+    "circle_with_circular_hole": 1,
+}
+
+
+@plugin_required
+class TestRoundTripThroughExtraction:
+    """
+    A contour survives being rasterized and traced back.
+
+    The trip is lossy in one specific, predictable way: the tracer reports the
+    **centres of the boundary pixels**, so the polygon that comes back is inset
+    by half a pixel all round. A `w x h` box returns as `(w-1) x (h-1)`. The
+    tests below assert that inset rather than tolerate it — a bug that shifted
+    the outline the other way, or collapsed it, would have to survive an exact
+    equality to go unnoticed.
+    """
+
+    @pytest.mark.parametrize("name", sorted(ALL_SHAPES))
+    def test_one_region_yields_one_external_contour(self, name: str) -> None:
+        """
+        Every shape here is a single connected region, so it traces to one
+        border. Before the tracer's sweep was fixed, a filled square came back as
+        one degenerate 2x2 contour per row — 399 of them at this canvas size.
+        """
+        assert len(_extract(ALL_SHAPES[name])) == 1
+
+    def test_disjoint_regions_yield_one_contour_each(
+        self, encode_png: "Callable"
+    ) -> None:
+        """
+        Separate regions stay separate. A mask is the only way to state this — a
+        contour has one exterior — so this one enters through an image.
+        """
+        image = np.zeros((CANVAS, CANVAS, 3), dtype=np.uint8)
+        image[40:160, 40:160] = 255
+        image[300:450, 300:450] = 255
+
+        frame = pl.DataFrame({"img": [encode_png(image)]})
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .threshold(128)
+            .extract_contours(mode="external", method="simple")
+        )
+        traced = frame.select(out=pl.col("img").cv.pipe(pipe).sink("native"))["out"][0]
+
+        assert len(traced) == 2
+        # Each is its own square, not one contour spanning both.
+        for border in traced:
+            xs = [p["x"] for p in border["exterior"]]
+            assert max(xs) - min(xs) < 200
+
+    @pytest.mark.parametrize(
+        ("name", "width", "height"),
+        [("square", 400, 400), ("wide_rect", 470, 120)],
+    )
+    def test_box_round_trips_to_an_exact_one_pixel_inset(
+        self, name: str, width: int, height: int
+    ) -> None:
+        """
+        The traced outline runs through the centres of the rim pixels, so a box
+        filling `w x h` pixels returns bounding `(w-1) x (h-1)`. Exact, not
+        approximate — this is the assertion that pins the tracer's convention.
+        """
+        traced = _as_contour(_extract(RECTILINEAR[name])[0])
+        assert _analytic_area(traced) == pytest.approx(
+            (width - 1) * (height - 1), abs=1e-9
+        )
+
+    def test_box_round_trips_to_four_corners(self) -> None:
+        """`method="simple"` drops the collinear rim points, leaving the corners."""
+        traced = _extract(RECTILINEAR["square"])[0]
+        assert len(traced["exterior"]) == 4
+
+    @pytest.mark.parametrize(
+        ("name", "slack"),
+        # Half a pixel along each unit of boundary. On an axis-aligned edge that
+        # bound is tight. A sloped edge rasterizes to a staircase whose length runs
+        # up to sqrt(2) times the edge it approximates, and the inset follows the
+        # staircase, so the sloped shapes get that factor and nothing more.
+        [(name, 1.0) for name in sorted(RECTILINEAR) if not RECTILINEAR[name]["holes"]]
+        + [
+            (name, math.sqrt(2.0))
+            for name in sorted(CURVED)
+            if not CURVED[name]["holes"]
+        ],
+    )
+    def test_round_trip_loses_area_but_never_gains_it(
+        self, name: str, slack: float
+    ) -> None:
+        """
+        The inset can only shrink the shape, and only by so much. A trace that
+        wandered into the interior, or one that overshot the rim, breaks these
+        bounds from one side or the other.
+        """
+        contour = ALL_SHAPES[name]
+        original = _analytic_area(contour)
+        traced = _analytic_area(_as_contour(_extract(contour)[0]))
+        deficit = original - traced
+
+        assert deficit >= -1.0, f"{name}: round trip gained {-deficit} of area"
+        assert deficit <= _perimeter(contour) / 2 * slack + 1.0, (
+            f"{name}: lost {deficit}, more than the inset can account for"
+        )
+
+    @pytest.mark.parametrize("name", sorted(HOLE_FREE))
+    def test_round_trip_iou_is_high(self, name: str) -> None:
+        contour = HOLE_FREE[name]
+        traced = _as_contour(_extract(contour)[0])
+        assert _pair_measure(contour, traced, lambda a, b: a.contour.iou(b)) > 0.98
+
+    @pytest.mark.parametrize("name", sorted(RECTILINEAR))
+    def test_traced_outline_lies_inside_the_original(self, name: str) -> None:
+        """
+        Inset, never outset. Where the trace lies wholly inside the original, the
+        intersection *is* the traced area and IoU collapses to the ratio of the two
+        areas — so asserting that identity checks containment and pins the size at
+        once. An outset or wandering trace drives IoU well below the ratio.
+
+        The tolerance is for reflex corners, where the 8-connected walk cuts the
+        inner angle and pokes a pixel or two outside; `plus_shape`, with four of
+        them, is the case that needs it.
+        """
+        contour = RECTILINEAR[name]
+        traced = _as_contour(_extract(contour)[0])
+        # Compare against the solid outline: `external` mode drops hole borders.
+        solid = {"exterior": contour["exterior"], "holes": [], "is_closed": True}
+
+        ratio = _analytic_area(traced) / _analytic_area(solid)
+        assert _pair_measure(solid, traced, lambda a, b: a.contour.iou(b)) == (
+            pytest.approx(ratio, abs=1e-4)
+        )
+
+    @pytest.mark.parametrize("name", sorted(CONNECTED_HOLE_COUNT))
+    def test_hole_borders_come_back_as_separate_borders(self, name: str) -> None:
+        """
+        `mode="all"` reports the exterior plus one border per enclosed background
+        region — and rings that overlap or nest enclose *one* region between them,
+        which is the union-of-rings semantics `area` uses, reached through pixels.
+        """
+        borders = _extract(ALL_SHAPES[name], mode="all")
+        assert len(borders) == 1 + CONNECTED_HOLE_COUNT[name]
+
+    @pytest.mark.parametrize("name", sorted(CONNECTED_HOLE_COUNT))
+    def test_holed_shape_reassembles_to_the_original(self, name: str) -> None:
+        """The full trip for a holed shape: rings out, region back."""
+        contour = ALL_SHAPES[name]
+        rebuilt = _reassemble(_extract(contour, mode="all"))
+
+        assert _pair_measure(contour, rebuilt, lambda a, b: a.contour.iou(b)) > 0.98
+        # The inset applies to the exterior and to each hole rim, and they pull in
+        # opposite directions, so the net area stays within a perimeter's worth.
+        assert _analytic_area(rebuilt) == pytest.approx(
+            _analytic_area(contour), abs=_perimeter(contour)
+        )
+
+    def test_each_pass_erodes_by_exactly_one_pixel(self) -> None:
+        """
+        The trip is not idempotent, and shouldn't be claimed to be: every pass
+        insets by half a pixel on each side. Pinning the erosion exactly is what
+        keeps that a known property rather than a drifting one.
+        """
+        contour = RECTILINEAR["square"]  # fills 400 x 400 pixels
+        for expected_side in (399, 398, 397):
+            contour = _as_contour(_extract(contour)[0])
+            assert _analytic_area(contour) == pytest.approx(
+                expected_side**2, abs=1e-9
+            ), f"expected a {expected_side}px square"

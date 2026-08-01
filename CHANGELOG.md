@@ -48,6 +48,31 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   distance — because `geo` folds with `Bounded::min_value()` where the previous
   implementation used `f64::INFINITY`. It returns `INFINITY` again.
 
+- **`extract_contours` did not trace boundaries at all.** The Moore-neighbour
+  walk resumed its neighbourhood sweep five positions past the direction it had
+  just moved, rather than at the background cell it had arrived from. From the
+  top-left of a filled square its first step went *inward* along the diagonal; it
+  then bounced between four cells and returned to the start. A filled 400×400
+  region came back as **399 degenerate 2×2 contours, one per row** — never its
+  outline. Everything downstream inherited it: `.extract_contours()`, contour
+  metrics, and `ContourMatcher`, where `metrics` carried a filter for detections
+  whose "rasterized interior is empty and are provably artifacts of the boundary
+  tracer". A region now traces to exactly one border, following its rim.
+
+  Two related faults went with it. The sweep's starting side is now chosen the
+  way Suzuki–Abe does — west where a foreground run begins, east where one ends —
+  so a **hole's rim traces correctly** instead of wandering the interior until a
+  length guard stopped it; `mode="all"` reports the exterior plus one border per
+  enclosed background region. And a trace no longer *starts* at a cell touching
+  background only diagonally (the inside of a reflex corner, or a cell
+  catty-corner to a hole), which was producing spurious extra contours on L, U
+  and plus shapes.
+
+  The traced outline runs through the **centres** of the boundary pixels, so it
+  is inset by half a pixel: a region filling `w × h` pixels returns bounding
+  `(w-1) × (h-1)`. That is inherent to describing a pixel set by a polygon, and
+  is now documented and asserted rather than incidental.
+
 - **Rasterized masks were one pixel too wide at every right-hand edge.** The
   scanline filler behind `source("contour", ...)` and `Pipeline.rasterize()`
   rounded each span outward — `ceil(left)` to `floor(right)` — instead of asking

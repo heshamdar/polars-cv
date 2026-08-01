@@ -78,6 +78,14 @@ internally consistent. This is what caught the scanline filler painting a
 surplus column at every right-hand edge, which every existing rasterize test had
 missed.
 
+The file also closes the loop the other way — contour → mask → contour through
+`extract_contours`. That leg is lossy in one *predictable* way: the tracer
+reports the centres of the boundary pixels, so what comes back is inset half a
+pixel and a `w x h` region returns as `(w-1) x (h-1)`. The tests assert that
+inset exactly rather than tolerating it; a tolerance wide enough to absorb it
+would also absorb a tracer that collapsed, which is exactly the bug these tests
+were written to catch.
+
 The shapes live in two tables. `RECTILINEAR` shapes have integer vertices on
 axis-aligned edges, so no pixel centre ever lands on an edge and the mask count
 equals the area **exactly** — those cases assert equality, and are where the
