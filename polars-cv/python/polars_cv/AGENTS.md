@@ -326,7 +326,14 @@ Fusible operations:
 `_update_shape_hints()` no longer re-derives any per-dimension geometry in
 Python. It reads the op's view-buffer `infer_shape` through the `op_infer_shape`
 FFI (`_update_hw_from_infer_shape`), the same authority execution uses, so the
-tracked H/W can never drift from what the op actually produces. Unknowns
+tracked H/W cannot disagree with what the op produces.
+
+Not every step *has* an inferable shape: axis reductions, histograms, channel
+merge and the binary ops are graph-level steps `op_infer_shape` rejects. For
+those the H/W hints are **invalidated**, not carried forward — several of them
+do change H/W, and keeping the pre-op values is how a pipeline came to publish
+`[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown is always safe:
+`expected_shape` reports `None` and a typed sink asks for an explicit shape. Unknowns
 propagate automatically: an unknown input dim or a per-row expression param
 yields a `None` output dim. This covers every op uniformly — including rotation
 (static 90/270 swap, static-angle expand bounding box, and expression-angle

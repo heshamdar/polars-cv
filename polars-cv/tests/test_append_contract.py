@@ -39,8 +39,25 @@ from .conftest import plugin_required
 # 1. Only _push_op may mutate _ops
 # ---------------------------------------------------------------------------
 
-#: The one function permitted to mutate ``Pipeline._ops``.
-_SOLE_MUTATOR = "_push_op"
+#: The only functions permitted to touch ``Pipeline._ops``.
+#:
+#: ``_push_op`` appends one op and advances the tracked state; ``_set_ops_slice``
+#: replaces the list wholesale for CSE and re-keys everything keyed by op index.
+#: Both live in ``pipeline.py`` next to the state they maintain. Anything else
+#: assigning ``_ops`` has to remember which side tables are position-keyed —
+#: which is how the CSE path came to re-key ``_hint_snapshots`` but not
+#: ``_assertions``.
+#:
+#: ``_clone`` is listed because it is the copy constructor: it duplicates every
+#: field including all the side tables, so there is no position bookkeeping for
+#: it to get wrong. It is the one place where assigning ``_ops`` carries no
+#: obligation.
+_OPS_MUTATORS = frozenset({"_push_op", "_set_ops_slice", "_clone"})
+
+#: Every module in the package. The guard scans all of them: the first version
+#: read only ``pipeline.py``, and both real ``_ops`` mutations outside it (in
+#: ``_graph.py``'s CSE) sailed straight through.
+_PACKAGE_MODULES = sorted(Path(polars_cv.__file__).parent.rglob("*.py"))
 
 
 def _pipeline_ast() -> ast.ClassDef:
@@ -52,8 +69,16 @@ def _pipeline_ast() -> ast.ClassDef:
 
 
 def _mutates_ops(node: ast.AST) -> bool:
-    """True if *node* appends to, assigns into, or extends ``*._ops``."""
+    """True if *node* appends to, assigns into, replaces or aliases ``*._ops``.
+
+    Aliasing counts (``ops = self._ops`` then ``ops.append(...)``) because it
+    is the obvious way around a guard that only looks for ``._ops.append``.
+    """
     for sub in ast.walk(node):
+        # ops = x._ops  — an alias the mutation can then happen through
+        if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Attribute):
+            if sub.value.attr == "_ops":
+                return True
         # x._ops.append(...) / .extend(...) / .insert(...) / .clear(...)
         if (
             isinstance(sub, ast.Call)
@@ -74,10 +99,7 @@ def _mutates_ops(node: ast.AST) -> bool:
                 if t.value.attr == "_ops":
                     return True
             if isinstance(t, ast.Attribute) and t.attr == "_ops":
-                # Whole-list rebinding is how a Pipeline is *constructed*
-                # (_clone, _create_sub_pipeline), not how an op is appended.
-                if isinstance(sub, ast.AugAssign):
-                    return True
+                return True
     return False
 
 
@@ -88,17 +110,23 @@ def test_op_append_is_structurally_exclusive() -> None:
     cannot add an operation without also running the domain check, the schema
     fold and the shape-hint update, because it never touches ``_ops`` at all.
     """
-    offenders = [
-        method.name
-        for method in _pipeline_ast().body
-        if isinstance(method, ast.FunctionDef)
-        and method.name != _SOLE_MUTATOR
-        and _mutates_ops(method)
-    ]
+    offenders: list[str] = []
+    for module in _PACKAGE_MODULES:
+        tree = ast.parse(module.read_text())
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if fn.name in _OPS_MUTATORS:
+                continue
+            # Only the function's own statements, not those of nested defs
+            # (which are reported under their own name).
+            if _mutates_ops(fn):
+                offenders.append(f"{module.name}:{fn.name}")
     assert not offenders, (
-        f"only Pipeline.{_SOLE_MUTATOR}() may mutate _ops, but these also do: "
-        f"{offenders}. Route them through _append_op()/_push_op() so the "
-        f"plan-time state cannot be updated by halves."
+        f"only {sorted(_OPS_MUTATORS)} may touch Pipeline._ops, but these also "
+        f"do: {sorted(set(offenders))}. Route them through _append_op() / "
+        f"_push_op() / _set_ops_slice() so the plan-time state and the "
+        f"position-keyed side tables cannot be updated by halves."
     )
 
 
@@ -114,7 +142,7 @@ def test_push_op_updates_dtype_and_hints_unconditionally() -> None:
     fn = next(
         m
         for m in _pipeline_ast().body
-        if isinstance(m, ast.FunctionDef) and m.name == _SOLE_MUTATOR
+        if isinstance(m, ast.FunctionDef) and m.name == "_push_op"
     )
     called = {
         sub.func.attr
@@ -123,12 +151,27 @@ def test_push_op_updates_dtype_and_hints_unconditionally() -> None:
     }
     assert "_update_output_dtype" in called
     assert "_update_shape_hints" in called
+    assert "_require_input_domain" in called, (
+        "_push_op must validate the input domain, so every append path gets "
+        "the check — not just the builder path through _append_op"
+    )
 
-    # The hint update must not sit inside an `if`: it applies to every op.
+    # `update_dtype` is the only opt-out, and it opts out of exactly one thing.
+    args = [a.arg for a in fn.args.kwonlyargs] + [a.arg for a in fn.args.args]
+    flags = [a for a in args if a not in {"self", "spec", "contract"}]
+    assert flags == ["update_dtype"], (
+        f"_push_op grew a new opt-out: {flags}. Every additional flag is a way "
+        f"to append an op while skipping part of its plan-time effect."
+    )
+
+    # The hint update must not sit inside *any* compound statement: it applies
+    # to every op unconditionally. Checking only `ast.If` left try/for/while/with
+    # as ways to make it conditional while still passing.
+    compound = (ast.If, ast.Try, ast.For, ast.While, ast.With)
     guarded = {
         sub.func.attr
         for branch in ast.walk(fn)
-        if isinstance(branch, ast.If)
+        if isinstance(branch, compound)
         for sub in ast.walk(branch)
         if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
     }
@@ -196,8 +239,8 @@ def test_input_domain_matches_the_rust_contract() -> None:
     with pytest.raises(ValueError) as excinfo:
         contour_pipe.resize(height=8, width=8)
     resize_spec = Pipeline().source("image_bytes").resize(height=8, width=8)._ops[-1]
-    expected = op_contract(json.dumps(resize_spec.to_dict()))["input_domain"]
-    assert f"expects {expected} input" in str(excinfo.value)
+    accepted = op_contract(json.dumps(resize_spec.to_dict()))["input_domains"]
+    assert f"expects {' or '.join(accepted)} input" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +378,44 @@ def test_op_case_table_is_complete() -> None:
     assert not stale, f"parity cases for ops that no longer exist: {sorted(stale)}"
 
 
+#: Extra parameterisations for ops whose interesting behaviour is in a branch
+#: the single case in ``_OP_CASES`` does not reach. Kept separate so the
+#: completeness assertion above stays a strict one-case-per-op check.
+_EXTRA_CASES: list[tuple[str, str, dict]] = [
+    # rotate's zero-copy 90/180/270 fast path vs the affine path vs expand.
+    ("rotate", _BUFFER, {"angle": 45.0}),
+    ("rotate", _BUFFER, {"angle": 45.0, "expand": True}),
+    ("rotate", _BUFFER, {"angle": 180}),
+    # Axis reductions drop a dimension; the no-axis form does not.
+    ("reduce_max", _BUFFER, {"axis": 0}),
+    ("reduce_min", _BUFFER, {"axis": 1}),
+    ("reduce_mean", _BUFFER, {"axis": 2}),
+    ("reduce_std", _BUFFER, {"axis": 0}),
+    # Non-square and rank-changing reshapes.
+    ("reshape", _BUFFER, {"shape": [200, 100, 3]}),
+    ("reshape", _BUFFER, {"shape": [60000]}),
+    # crop with only an offset, and histogram's struct-encoded output.
+    ("crop", _BUFFER, {"top": 10, "left": 20}),
+    ("histogram", _BUFFER, {"bins": 8, "output": "buckets"}),
+]
+
+
+@plugin_required
+@pytest.mark.parametrize(
+    ("op", "domain", "kwargs"),
+    [(o, d, k) for o, d, k in _EXTRA_CASES],
+    ids=[f"{o}-{sorted(k)}" for o, _, k in _EXTRA_CASES],
+)
+def test_eager_and_lazy_agree_on_extra_branches(op, domain, kwargs) -> None:
+    """Branch coverage for ops whose single parity case misses the interesting path."""
+    base = _base(domain)
+    eager = getattr(base, op)(**kwargs)
+    lazy = getattr(pl.col("img").cv.pipe(base), op)(**kwargs)._pipeline
+    assert _state(eager) == _state(lazy), (
+        f"{op}({kwargs}): eager {_state(eager)} != lazy {_state(lazy)}"
+    )
+
+
 @plugin_required
 @pytest.mark.parametrize(
     "op", sorted(name for name, case in _OP_CASES.items() if case is not None)
@@ -376,13 +457,20 @@ def test_assert_shape_survives_a_continuation() -> None:
     assert (hints.height.value, hints.width.value, hints.channels.value) == (6, 5, 3)
 
     # Asserted before an op that changes the same dimension: the op wins.
-    asserted_then_gray = (
-        Pipeline()
-        .source("image_bytes", dtype="u8")
-        .assert_shape(channels=3)
-        .grayscale()
+    # Checked on both spellings — the positional replay is what makes the lazy
+    # side work, and an end-of-chain overlay would pass the eager case alone.
+    base_u8 = Pipeline().source("image_bytes", dtype="u8")
+    eager = base_u8.assert_shape(channels=3).grayscale()
+    assert eager._shape_hints.channels.value == 1
+
+    lazy = pl.col("img").cv.pipe(base_u8).assert_shape(channels=3).grayscale()._pipeline
+    assert lazy._shape_hints.channels.value == 1
+
+    # And an assertion mid-chain in a single continuation pipeline.
+    mid = (
+        pl.col("img").cv.pipe(Pipeline().assert_shape(channels=3).grayscale())._pipeline
     )
-    assert asserted_then_gray._shape_hints.channels.value == 1
+    assert mid._shape_hints.channels.value == 1
 
 
 # ---------------------------------------------------------------------------

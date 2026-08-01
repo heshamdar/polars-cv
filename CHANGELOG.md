@@ -48,6 +48,31 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Binary ops and reductions declare that they accept a vector.** Their
+  `GraphStep` contract said `buffer`, which read as "images only" and was
+  wrong: a perceptual hash is a 1-D `u8` buffer encoded as a `vector`, and the
+  library's own `hamming_distance` is `hash_a ^ hash_b → reduce_popcount` with
+  both operands in `vector`. Nothing enforced input domains from that contract
+  until the planner started to, so the mistake was invisible. `input_domains()`
+  is now a set (`["buffer", "vector"]` for those two), which keeps
+  `extract_contours().reduce_sum()` rejected at build time — widening them to
+  `Domain::Any` would not have. The rejection message names the accepted set,
+  so it now reads "expects buffer or vector input".
+
+- **Shape hints are invalidated, not carried forward, when a step has no
+  inferable shape.** Axis reductions, histograms, channel merge and the binary
+  ops are graph-level steps `op_infer_shape` rejects; keeping the pre-op H/W
+  across them let a pipeline publish `[100, 200, 2]` for data that executes as
+  `[200, 3, 2]`. Unknown is always safe — a typed sink asks for an explicit
+  shape instead of planning a wrong one.
+
+- **`transpose` and `flip` validate their axes against the tracked rank.**
+  `transpose([1,0,2])` after a `channel_select` (rank 2) reached view-buffer's
+  `infer_shape`, which indexes the input shape unchecked, and surfaced as a
+  `PanicException` with a Rust backtrace from an ordinary builder call. The
+  builders now raise `ValueError`, and `op_infer_shape` catches unwinds so no
+  future op can leak a panic into the planner.
+
 - **Each operation's input domain now comes from its Rust contract.** Builders
   passed their own expected domain to `_validate_domain(self.DOMAIN_BUFFER, ...)`
   at 53 call sites, restating a fact `op_contract(...)["input_domain"]` already

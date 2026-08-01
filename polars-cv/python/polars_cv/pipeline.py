@@ -143,6 +143,16 @@ def _literal_matrix_values(matrix_param: "ParamValue") -> "list[float] | None":
     return out
 
 
+#: view-buffer's identity domain (`Domain::Any`): a step declaring it accepts
+#: whatever it is handed, mirroring `Domain::accepts` on the Rust side. It is
+#: deliberately *not* a member of the user-facing `Domain` enum — no pipeline is
+#: ever *in* this domain, so `test_enum_parity_domain` excludes it from the
+#: surfaced variant set. No step currently declares it — binary ops and
+#: reductions list `["buffer", "vector"]` explicitly rather than opting out of
+#: the check entirely — but the contract may return it, so the reader honours it.
+_DOMAIN_ANY = "any"
+
+
 def _op_contract_for(spec: "OpSpec") -> dict:
     """Read one operation's Rust contract (domains + rank/channel rules).
 
@@ -622,9 +632,7 @@ class Pipeline:
         spec = OpSpec(op=op_name, params=build_params(new))
         # One contract read serves both the input-domain check and the channel
         # rule, so an append still costs a constant number of FFI calls.
-        contract = _op_contract_for(spec)
-        new._require_input_domain(spec, contract)
-        new._push_op(spec, contract)
+        new._push_op(spec)
         return new
 
     def _push_op(
@@ -656,6 +664,7 @@ class Pipeline:
         """
         if contract is None:
             contract = _op_contract_for(spec)
+        self._require_input_domain(spec, contract)
         # The rank the op *consumes*, captured before the schema fold below
         # advances it — `op_infer_shape` describes a transform of the input.
         input_ndim = self._expected_ndim
@@ -679,23 +688,86 @@ class Pipeline:
         for dim, param in self._assertions.get(position, {}).items():
             setattr(self._shape_hints, dim, param)
 
+    def _set_ops_slice(self, ops: "list[OpSpec]", *, shift: int) -> None:
+        """Replace the whole op list, re-keying everything keyed by op index.
+
+        The sanctioned wholesale replacement, for CSE (``_graph.py``), which
+        splits one pipeline's ops across a shared prefix node and a suffix
+        node. Distinct from :meth:`_push_op`, which appends a single op and
+        advances the tracked state; here the state is supplied by the caller
+        and only the index-keyed side tables move.
+
+        It exists so no code outside this module has to assign ``_ops``
+        directly — every such assignment has to remember which side tables are
+        keyed by op position, and the CSE path had already forgotten
+        ``_assertions``.
+
+        Args:
+            ops: The new op list.
+            shift: How far each surviving op moved left (``prefix_len`` for a
+                suffix node, ``0`` when keeping a prefix).
+        """
+        self._ops = list(ops)
+        self._hint_snapshots = {
+            i - shift: v
+            for i, v in self._hint_snapshots.items()
+            if shift <= i < shift + len(ops)
+        }
+        self._assertions = {
+            i - shift: dict(a)
+            for i, a in self._assertions.items()
+            if shift <= i <= shift + len(ops)
+        }
+
+    def _require_axes_within_rank(self, axes: "Sequence[int]", label: str) -> None:
+        """Reject an axis list that does not address the tracked rank.
+
+        The rank is only known some of the time (an ``auto`` source leaves it
+        ``None``), so this is a check that fires when it can rather than a
+        guarantee. It has to exist because ``infer_shape`` indexes the input
+        shape directly: a ``transpose`` carrying three axes over rank-2 data
+        would otherwise reach the engine and abort, and the planner calls
+        ``infer_shape`` from an ordinary builder where a clean ValueError is
+        the contract.
+        """
+        ndim = self._expected_ndim
+        if ndim is None:
+            return
+        # Only range-check plain integers. A Polars expression here is a
+        # *structural* violation with its own error, raised by `_literal_axes`
+        # further down; pre-empting it with a range message would bury the
+        # real problem.
+        bad = [a for a in axes if isinstance(a, int) and not -ndim <= a < ndim]
+        if bad:
+            msg = (
+                f"{label} {list(axes)} is out of range for a {ndim}-dimensional "
+                f"input (valid axes: 0..{ndim - 1})."
+            )
+            raise ValueError(msg)
+
     def _require_input_domain(self, spec: "OpSpec", contract: dict) -> None:
         """Reject an operation whose input domain is not the current domain.
 
-        The expected domain is read from the op's Rust contract
-        (``op_contract(...)["input_domain"]``) rather than restated in Python.
+        The accepted domains are read from the op's Rust contract
+        (``op_contract(...)["input_domains"]``) rather than restated in Python.
         It is the same authority the executor dispatches on, so the builder
         cannot disagree with what will actually run — the input-domain mirror
         of ``op_schema`` supplying the output domain.
+
+        It is a *set*: binary ops and reductions accept a buffer or a vector,
+        because a perceptual hash is a 1-D buffer encoded as a vector.
+        ``Domain::Any`` means the step accepts whatever it is handed.
         """
-        expected = contract["input_domain"]
-        if expected != self._current_domain:
-            raise ValueError(
-                f"{spec.op}() expects {expected} input but pipeline is currently "
-                f"in {self._current_domain} domain. Add a domain-converting "
-                f"operation (e.g., rasterize() for contour→buffer, "
-                f"extract_contours() for buffer→contour)."
-            )
+        accepted = contract["input_domains"]
+        if _DOMAIN_ANY in accepted or self._current_domain in accepted:
+            return
+        expected = " or ".join(accepted)
+        raise ValueError(
+            f"{spec.op}() expects {expected} input but pipeline is currently "
+            f"in {self._current_domain} domain. Add a domain-converting "
+            f"operation (e.g., rasterize() for contour→buffer, "
+            f"extract_contours() for buffer→contour)."
+        )
 
     def _update_output_dtype(self) -> None:
         """
@@ -722,13 +794,7 @@ class Pipeline:
         self._output_dtype = dtype
         self._expected_ndim = ndim
 
-    def _update_shape_hints(
-        self,
-        op_spec: "OpSpec | None" = None,
-        op_index: int | None = None,
-        contract: dict | None = None,
-        input_ndim: "int | None" = None,
-    ) -> None:
+    def _update_shape_hints(self, contract: dict, input_ndim: "int | None") -> None:
         """
         Update shape hints based on the operation being added.
 
@@ -737,24 +803,24 @@ class Pipeline:
         its channel rule via :meth:`_update_channels_from_rule`. No shape math
         is re-implemented in Python.
 
+        Always describes the op just appended (``_ops[-1]``); there is one
+        caller, :meth:`_push_op`, and both arguments are required so the
+        method cannot be invoked with a silently wrong default.
+
         Args:
-            op_spec: The op spec the rules should be resolved for. Defaults to
-                the most recently appended op.
-            op_index: Index of the op these hints are updated for. Defaults
-                to the most recently appended op.
-            contract: A pre-read op contract, so :meth:`_push_op` does not pay
-                a second FFI call. Read on demand when omitted.
-            input_ndim: The rank the op consumes. :meth:`_push_op` captures
-                this before the schema fold advances ``_expected_ndim``,
-                because ``infer_shape`` describes a transform *of the input* —
-                passing the post-op rank misdescribes every rank-changing op.
-                Defaults to the current ``_expected_ndim``.
+            contract: The op contract :meth:`_push_op` already read, so an
+                append still costs a constant number of FFI calls.
+            input_ndim: The rank the op consumes, captured before the schema
+                fold advances ``_expected_ndim`` — ``infer_shape`` describes a
+                transform *of the input*, so the post-op rank would misstate
+                every rank-changing op. ``None`` means the rank is genuinely
+                unknown, not "look it up".
         """
         # Record the hints ENTERING this op (before the update below) so
         # affine fusion can convert a rotate with the shape at its own
         # position. Any assert_shape() between ops is naturally captured:
         # it mutated _shape_hints before this append.
-        idx = op_index if op_index is not None else len(self._ops) - 1
+        idx = len(self._ops) - 1
         if idx >= 0:
             self._hint_snapshots[idx] = (
                 copy.deepcopy(self._shape_hints.height),
@@ -766,16 +832,12 @@ class Pipeline:
         # and per-row expression params propagate to unknown (None) output
         # dims; the previous hand-written per-op geometry (and the rotate
         # bounding-box math) is gone. ---
-        spec = (
-            op_spec
-            if op_spec is not None
-            else (self._ops[idx] if 0 <= idx < len(self._ops) else None)
-        )
+        spec = self._ops[idx] if idx >= 0 else None
         if spec is not None:
             self._update_hw_from_infer_shape(spec, input_ndim)
 
         # --- Channel updates driven by the Rust channel rule ---
-        self._update_channels_from_rule(op_spec, contract=contract)
+        self._update_channels_from_rule(contract)
         self._drop_hints_below_rank()
 
     def _drop_hints_below_rank(self) -> None:
@@ -798,11 +860,7 @@ class Pipeline:
         if ndim < 1:
             self._shape_hints.height = None
 
-    def _update_channels_from_rule(
-        self,
-        op_spec: "OpSpec | None" = None,
-        contract: dict | None = None,
-    ) -> None:
+    def _update_channels_from_rule(self, contract: dict) -> None:
         """Update channel hints from the operation's view-buffer channel rule.
 
         Reads ``output_channel_rule`` from the op contract (the single
@@ -816,9 +874,6 @@ class Pipeline:
         - ``strip_restore:<c>``: ``c`` color channels plus a preserved input
           alpha channel (an input channel count of 2 or 4).
         """
-        spec = op_spec if op_spec is not None else self._ops[-1]
-        if contract is None:
-            contract = _op_contract_for(spec)
         rule = contract["channel_rule"]
 
         if rule in ("preserve", "n/a"):
@@ -864,7 +919,7 @@ class Pipeline:
         return dims
 
     def _update_hw_from_infer_shape(
-        self, spec: "OpSpec", input_ndim: "int | None" = None
+        self, spec: "OpSpec", input_ndim: "int | None"
     ) -> None:
         """Set H/W hints from the op's view-buffer ``infer_shape`` (single
         authority), replacing the old per-op geometry.
@@ -874,11 +929,12 @@ class Pipeline:
         maps the leading two output dims onto the H/W hints. Channels stay with
         :meth:`_update_channels_from_rule`; rank stays with ``op_schema``.
 
-        ``input_ndim`` is the rank the op *consumes*. It must be the pre-op
-        rank: ``infer_shape`` transforms an input shape, so describing the
-        input at the post-op rank would misstate every rank-changing op.
+        ``input_ndim`` is the rank the op *consumes*, and is required rather
+        than defaulted: falling back to ``self._expected_ndim`` here would read
+        the *post*-op rank the schema fold just wrote, which is exactly the
+        misstatement this argument exists to prevent.
         """
-        ndim = input_ndim if input_ndim is not None else self._expected_ndim
+        ndim = input_ndim
         if ndim is None or ndim < 1:
             # Rank unknown → per-dim H/W not tracked here.
             return
@@ -888,8 +944,18 @@ class Pipeline:
         try:
             out = op_infer_shape(json.dumps(spec.to_dict()), dims)
         except ValueError:
-            # Not a single-buffer op (e.g. a domain-changing step) — it has no
-            # inferable H/W here; leave the hints for the domain logic.
+            # No inferable shape for this step — an axis reduction, a
+            # histogram, a channel merge, a binary op, or an op whose params
+            # disagree with the input rank.
+            #
+            # Invalidate rather than keep the pre-op values. Several of these
+            # steps *do* change H/W (an axis reduction drops a dimension), so
+            # leaving the old hints in place is how a pipeline came to publish
+            # `[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown
+            # is always safe: `expected_shape` reports None and the sink asks
+            # for an explicit shape.
+            self._shape_hints.height = None
+            self._shape_hints.width = None
             return
 
         def _dim(i: int) -> "ParamValue | None":
@@ -1315,6 +1381,17 @@ class Pipeline:
             Self for chaining.
         """
         # Axes are always literals (list of ints)
+        self._require_axes_within_rank(axes, "transpose axes")
+        if (
+            self._expected_ndim is not None
+            and all(isinstance(a, int) for a in axes)
+            and len(axes) != self._expected_ndim
+        ):
+            msg = (
+                f"transpose axes {list(axes)} must name every one of the "
+                f"{self._expected_ndim} input dimensions exactly once."
+            )
+            raise ValueError(msg)
         return self._append_op(
             "transpose", lambda p: {"axes": _literal_axes(axes, "axes")}
         )
@@ -1346,6 +1423,7 @@ class Pipeline:
         Returns:
             Self for chaining.
         """
+        self._require_axes_within_rank(axes, "flip axes")
         return self._append_op("flip", lambda p: {"axes": _literal_axes(axes, "axes")})
 
     def flip_h(self) -> "Pipeline":
@@ -3682,22 +3760,14 @@ class Pipeline:
             sub._source = self._source
 
         sub._shape_hints = copy.deepcopy(self._shape_hints)
-        sub._ops = self._ops[start_op:end_op]
         sub._expr_refs = self._expr_refs.copy()
         sub._initial_output_dtype = self._initial_output_dtype
         sub._initial_expected_ndim = self._initial_expected_ndim
-        # Re-key the entering-hints snapshots to the sliced op indices so
+        # The op slice carries its position-keyed side tables with it, so
         # affine fusion in the sub-pipeline still sees per-position shapes.
-        sub._hint_snapshots = {
-            i - start_op: v
-            for i, v in self._hint_snapshots.items()
-            if start_op <= i < end_op
-        }
-        sub._assertions = {
-            i - start_op: dict(a)
-            for i, a in self._assertions.items()
-            if start_op <= i <= end_op
-        }
+        sub._hint_snapshots = dict(self._hint_snapshots)
+        sub._assertions = {i: dict(a) for i, a in self._assertions.items()}
+        sub._set_ops_slice(self._ops[start_op:end_op], shift=start_op)
 
         # Compute the correct domain and dtype for this subset of operations.
         # The fold covers ops[0:end_op], so it must be seeded with the
