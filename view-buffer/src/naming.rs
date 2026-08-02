@@ -59,11 +59,14 @@ pub trait NamedEnum {
 
 /// Register every enum whose names cross the FFI.
 ///
-/// One line per enum. The entries are read by `enum_variants`/`enum_names` in
-/// the plugin *and* by this module's uniqueness test, so a registered enum is
-/// surfaced to Python and checked for duplicate names by the same act. The
-/// test previously kept its own hand-written list, which had already drifted:
+/// One line per enum. The entries are read by this module's uniqueness test,
+/// which previously kept its own hand-written list and had already drifted:
 /// it omitted `LabelReduction` and `LabelRegionMode`.
+///
+/// The plugin's `enum_variants` FFI does **not** read this yet — it still
+/// matches on each enum's `NAMED` table by hand, so registering an enum here
+/// does not by itself make Python able to query it. Wiring that up is a
+/// separate change; until it lands, the two lists must both be updated.
 macro_rules! registry {
     ($($ty:path),+ $(,)?) => {
         /// Every enum surfaced across the FFI: `(name, variant names)`.
