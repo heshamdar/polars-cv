@@ -501,6 +501,39 @@ def test_op_names_covers_all_emitted_ops():
     )
 
 
+def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
+    """``Pipeline.OP_NAMES`` must equal Rust's ``KNOWN_OPS``, checked from source.
+
+    The two ``test_registry_parity_*`` tests already pin this equality in both
+    directions, but both are ``@plugin_required`` and skip when the extension
+    is not built. That is not a hypothetical lane: the editable install leaves
+    the compiled ``.so`` at its last ``maturin develop`` while Python sources
+    track the working tree, so a contributor adding a builder op and running
+    the suite before rebuilding gets two skips where they expect two failures.
+
+    Reading ``KNOWN_OPS`` out of the Rust source needs no plugin, so the drift
+    is caught in that window too. Source-scanning is the weaker technique and
+    is used here only because the stronger one is unavailable by construction;
+    it asserts it parsed a plausible registry rather than matching nothing.
+    """
+    src = _rust_src_dir()
+    if src is None:
+        pytest.skip("Rust sources not available (installed wheel)")
+
+    text = (src / "execute.rs").read_text()
+    m = re.search(r"pub const KNOWN_OPS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
+    assert m, "could not find KNOWN_OPS in execute.rs — scan is out of date"
+    rust_ops = set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+    assert len(rust_ops) > 50, f"KNOWN_OPS scan found only {len(rust_ops)} ops"
+
+    declared = set(Pipeline.OP_NAMES)
+    assert declared == rust_ops, (
+        "Pipeline.OP_NAMES has drifted from Rust KNOWN_OPS: "
+        f"python-only={sorted(declared - rust_ops)}, "
+        f"rust-only={sorted(rust_ops - declared)}"
+    )
+
+
 @plugin_required
 def test_registry_parity_no_dead_contracts():
     """Ops the Pipeline never emits are not executable (B2: sobel/laplacian/sharpen)."""
