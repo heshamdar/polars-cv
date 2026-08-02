@@ -523,7 +523,10 @@ def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
     text = (src / "execute.rs").read_text()
     m = re.search(r"pub const KNOWN_OPS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
     assert m, "could not find KNOWN_OPS in execute.rs — scan is out of date"
-    rust_ops = set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+    # Strip comments first: this codebase explains absences inline (`// "sobel"
+    # is deliberately absent`), and a quoted name in one would read as an op.
+    body = re.sub(r"(?m)//.*$", "", m.group(1))
+    rust_ops = set(re.findall(r'"([a-z0-9_]+)"', body))
     assert len(rust_ops) > 50, f"KNOWN_OPS scan found only {len(rust_ops)} ops"
 
     declared = set(Pipeline.OP_NAMES)
@@ -1421,9 +1424,14 @@ def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
     rows = re.findall(
         r'\(\s*(\w+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*\)', body
     )
-    # Exact, not a lower bound: a loose bound lets a mis-parse that swallows the
-    # rest of the file still satisfy the check.
-    assert len(rows) == 10, f"dtype_table! parse found {len(rows)} rows, expected 10"
+    # Cross-checked against an independent count of the invocation's rows, so a
+    # mis-parse that swallows the rest of the file fails, while legitimately
+    # adding an 11th dtype does not read as a parse bug.
+    row_lines = [ln for ln in body.splitlines() if ln.strip().startswith("(")]
+    assert len(rows) == len(row_lines), (
+        f"dtype_table! parse found {len(rows)} rows but the invocation has "
+        f"{len(row_lines)} lines starting a row — the scan is out of date"
+    )
     return [(v, s, int(c), n) for v, s, c, n in rows]
 
 
@@ -1510,10 +1518,17 @@ def test_no_second_dtype_spelling_table() -> None:
     dispatches names every dtype twice, so dropping one arm makes the counts
     uneven even though the *set* is still complete.
 
-    Known blind spot: it only sees ``match`` arm keys. A dtype table written as
-    an if/else chain or a ``HashMap`` literal is invisible to it. That is a
-    deliberate limit — arm keys can be found without parsing Rust, and the
-    parsing attempts above are what produced two unsound versions.
+    Two limits, stated because a guard that overstates its reach is how this
+    test went wrong twice already:
+
+    - It checks that the arm *keys* are all present, never that a key maps to
+      the right thing. ``"u32" | "u64" => build_typed_list_u32(..)`` folds two
+      dtypes onto one builder and passes: the set is complete. Only a test that
+      executes the dispatch can catch that.
+    - It reads ``match`` arms. A dtype table written as an if/else chain or a
+      ``HashMap`` literal is invisible. Arm keys and ``DType::`` variant keys
+      can be found without parsing Rust, and the two parsing attempts above are
+      what produced two unsound versions.
     """
     root = Path(__file__).resolve().parents[2]
     allowed = {
@@ -1523,62 +1538,116 @@ def test_no_second_dtype_spelling_table() -> None:
         root / "view-buffer" / "tests" / "dtype_single_authority.rs",
     }
     expected = {short for _variant, short, _code, _numpy in _dtype_table_rows()}
+    variants = {v for v, _short, _code, _numpy in _dtype_table_rows()}
     dtype_lit = re.compile(r'"([ui](?:8|16|32|64)|f(?:8|16|32|64))"')
-    fn_start = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)")
+    dtype_variant = re.compile(r"\bDType::(\w+)\b")
+    fn_start = re.compile(
+        r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+)?(?:const\s+)?"
+        r"(?:async\s+)?(?:unsafe\s+)?(?:extern\s+\"[^\"]*\"\s+)?fn\s+(\w+)"
+    )
+
+    def strip_line_comment(line: str) -> str:
+        """Drop a trailing ``//`` comment, ignoring ``//`` inside a string."""
+        idx = line.find("//")
+        while idx != -1:
+            if line[:idx].count('"') % 2 == 0:
+                return line[:idx]
+            idx = line.find("//", idx + 2)
+        return line
+
+    def logical_lines(text: str):
+        """Yield arms as single lines, rejoining rustfmt's wrapped alternation.
+
+        ``rustfmt`` splits a long ``"u8" | "i8" | ... | "f64" => ...`` across
+        lines, stranding the earlier names on a line with no ``=>``. Joining
+        continuations keeps a correctly-formatted dispatch from reading as an
+        incomplete one.
+        """
+        buf = ""
+        for raw in text.splitlines():
+            line = strip_line_comment(raw)
+            stripped = line.strip()
+            if buf and (stripped.startswith("|") or buf.rstrip().endswith("|")):
+                buf += " " + stripped
+            else:
+                if buf:
+                    yield buf
+                buf = line
+        if buf:
+            yield buf
 
     offenders = []
     for path in sorted(root.glob("**/*.rs")):
         if path in allowed or "/target/" in str(path):
             continue
-        source = path.read_text()
-        # Comments legitimately spell dtypes out — a doc example is not a
-        # dispatch. Both line and block comments are stripped.
-        source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
-        source = re.sub(r"(?m)^\s*//.*$", "", source)
-        production, sep, after_tests = source.partition("#[cfg(test)]")
-        # Assertions in test modules name dtypes freely, so they are excluded.
-        # A production fn placed *after* a test module would go unscanned, so
-        # that is checked rather than assumed.
-        if sep and any(
-            dtype_lit.search(line.split("=>", 1)[0])
-            for line in after_tests.splitlines()
-            if "=>" in line
-        ):
-            offenders.append(
-                f"{path.relative_to(root)}: a dtype dispatch appears after "
-                f"#[cfg(test)], where this ratchet does not scan. Move it above "
-                f"the test module so it is checked."
-            )
+        source = re.sub(r"/\*.*?\*/", "", path.read_text(), flags=re.S)
 
-        # Group arms by enclosing function. Only literals on a line containing
-        # `=>` count, so error-message strings that merely mention dtypes are
-        # not mistaken for a dispatch.
+        # Test modules name dtypes freely in assertions, so they are excluded.
+        # Everything at indent 0 after the test module is production code and
+        # is scanned: the earlier version reported it as an unscannable region,
+        # which was a false positive on any `#[cfg(test)]` helper that happened
+        # to hold a complete dispatch.
+        production, sep, after_tests = source.partition("#[cfg(test)]")
+        if sep:
+            keep, in_top_fn = [], False
+            for line in after_tests.splitlines():
+                if fn_start.match(line) and not line.startswith((" ", "\t")):
+                    in_top_fn = True
+                if in_top_fn:
+                    keep.append(line)
+                    if line.startswith("}"):
+                        in_top_fn = False
+            production += "\n" + "\n".join(keep)
+
         current = "<file scope>"
-        per_fn: dict[str, list[str]] = {}
-        for line in production.splitlines():
+        keyed: dict[str, list[str]] = {}
+        named: dict[str, list[tuple[str, str]]] = {}
+        for line in logical_lines(production):
             m = fn_start.match(line)
             if m:
                 current = m.group(1)
             if "=>" in line:
-                # Only the arm *key* counts. `cast_err(row_idx, "i64")` in an
-                # arm body names a dtype without dispatching on it.
-                for lit in dtype_lit.findall(line.split("=>", 1)[0]):
-                    per_fn.setdefault(current, []).append(lit)
+                key, _, value = line.partition("=>")
+                # An arm *key* that is a dtype name: a `match` on a dtype
+                # string. `cast_err(row_idx, "i64")` in an arm body is not one.
+                for lit in dtype_lit.findall(key):
+                    keyed.setdefault(current, []).append(lit)
+                # An arm keyed by a `DType` variant that *yields* a dtype name:
+                # a variant-to-name table, the other half of the same defect.
+                # Keyed on `DType::` so a stray literal in an arm body is not
+                # mistaken for one.
+                variant_keys = [v for v in dtype_variant.findall(key) if v in variants]
+                value_names = dtype_lit.findall(value)
+                if len(variant_keys) == 1 and len(value_names) == 1:
+                    named.setdefault(current, []).append(
+                        (variant_keys[0], value_names[0])
+                    )
 
-        for fn_name, names in per_fn.items():
+        for fn_name, names in keyed.items():
             counts = Counter(names)
             if set(counts) != expected:
-                missing = sorted(expected - set(counts))
-                unknown = sorted(set(counts) - expected)
                 offenders.append(
-                    f"{path.relative_to(root)}::{fn_name} "
-                    f"(missing={missing}, unknown={unknown})"
+                    f"{path.relative_to(root)}::{fn_name} dispatches on dtype "
+                    f"names (missing={sorted(expected - set(counts))}, "
+                    f"unknown={sorted(set(counts) - expected)})"
                 )
             elif len(set(counts.values())) != 1:
-                uneven = {n: c for n, c in sorted(counts.items())}
                 offenders.append(
                     f"{path.relative_to(root)}::{fn_name} holds more than one "
-                    f"dtype dispatch and they disagree: {uneven}"
+                    f"dtype dispatch and they disagree: "
+                    f"{ {n: c for n, c in sorted(counts.items())} }"
+                )
+
+        for fn_name, pairs in named.items():
+            got_variants = {v for v, _ in pairs}
+            got_names = {n for _, n in pairs}
+            if got_variants != variants or got_names != expected:
+                offenders.append(
+                    f"{path.relative_to(root)}::{fn_name} maps DType variants "
+                    f"to names but does not agree with dtype_table! "
+                    f"(missing variants={sorted(variants - got_variants)}, "
+                    f"missing names={sorted(expected - got_names)}, "
+                    f"unknown names={sorted(got_names - expected)})"
                 )
 
     assert not offenders, (
@@ -1601,10 +1670,26 @@ def test_contour_dtype_map_matches_rust() -> None:
     )
 
 
-def test_contour_source_rejects_non_buffer_element_types() -> None:
-    """A List(Boolean) mask must be refused, not silently called f32."""
+def test_contour_source_accepts_boolean_masks() -> None:
+    """A ``List(Boolean)`` mask is the documented shape for ``gt_col``.
+
+    Regression guard. It briefly raised, on the theory that Boolean is not a
+    buffer element type and declaring one was a silent lie. The source decoder
+    *casts* rather than reinterprets (``series_to_bytes`` in graph/decode.rs),
+    so the declared dtype was always honest and boolean masks worked; the
+    rejection broke them.
+    """
     from polars_cv.metrics._matching._contour import _detect_source_info
 
-    schema = {"mask": pl.List(pl.List(pl.Boolean))}
-    with pytest.raises(ValueError, match="not a buffer element type"):
-        _detect_source_info(schema, "mask")
+    info = _detect_source_info({"mask": pl.List(pl.List(pl.Boolean))}, "mask")
+    assert info.kwargs["dtype"] == "u8"
+
+
+def test_contour_source_rejects_types_with_no_buffer_meaning() -> None:
+    """Types whose cast would fail or lose meaning must still be refused up
+    front, rather than becoming an f32 source that fails later and deeper."""
+    from polars_cv.metrics._matching._contour import _detect_source_info
+
+    for leaf in (pl.String, pl.Duration):
+        with pytest.raises(ValueError, match="no meaningful buffer"):
+            _detect_source_info({"mask": pl.List(pl.List(leaf))}, "mask")

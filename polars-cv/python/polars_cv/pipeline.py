@@ -285,7 +285,8 @@ class Pipeline:
 
     # Registry of every operation name a pipeline can emit (via builder methods
     # here and the binary-op helpers in lazy.py). It must be a subset of the
-    # Rust executor's registry (``_lib.known_ops()``) so every emitted op is
+    # Rust executor's registry (``_lib.known_ops()``) — equal to it, not merely
+    # a subset — so every emitted op is
     # executable — enforced by ``test_registry_parity_*`` and kept honest by a
     # source-scan drift test in test_sanitation.py.
     OP_NAMES: frozenset[str] = frozenset(

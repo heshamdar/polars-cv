@@ -53,6 +53,13 @@ _EXTRACTED_CONTOUR_SET_SCHEMA = pl.List(_EXTRACTED_CONTOUR_SCHEMA)
 # ``test_contour_dtype_map_matches_rust`` pins this against them, since this
 # module builds pipeline sources without going through the plugin.
 _POLARS_TO_CV_DTYPE: dict[pl.DataType, str] = {
+    # A boolean mask is the documented shape for ``gt_col`` and the natural
+    # output of ``np_mask.astype(bool).tolist()``. It is not a buffer element
+    # type, but the source decoder *casts* rather than reinterprets
+    # (``series_to_bytes`` in graph/decode.rs), so u8 gives the 0/1 a mask
+    # means. Rejecting it broke working code; only types whose cast would fail
+    # or lose meaning (String, Decimal, Duration) belong outside this map.
+    pl.Boolean: "u8",
     pl.Float32: "f32",
     pl.Float64: "f64",
     pl.UInt8: "u8",
@@ -92,19 +99,19 @@ def _polars_dtype_to_cv(dtype: pl.DataType, col: str) -> str:
     metaclass singletons.
 
     Raises:
-        ValueError: If the leaf type is not a buffer element type. This used to
-            fall back to ``"f32"``, which meant a ``List(Boolean)`` mask built a
-            source declaring float elements it does not have — the surrounding
-            function already refuses column types it does not support, so a
-            leaf type it does not support belongs in the same error, not in a
-            guess.
+        ValueError: If the leaf type has no meaningful buffer representation.
+            This used to fall back to ``"f32"`` for *anything* unmapped, so a
+            ``String`` or ``Decimal`` column silently became a float source and
+            failed later, deeper, with a cast error. Types that do convert
+            sensibly are in the map, including ``Boolean``; the fallback only
+            ever helped the types that cannot.
     """
     try:
         return _POLARS_TO_CV_DTYPE[dtype]
     except KeyError:
         raise ValueError(
-            f"Column {col!r} has element type {dtype}, which is not a buffer "
-            f"element type. Expected one of: "
+            f"Column {col!r} has element type {dtype}, which has no meaningful "
+            f"buffer representation. Expected one of: "
             f"{', '.join(sorted(_POLARS_TO_CV_DTYPE.values()))}."
         ) from None
 
