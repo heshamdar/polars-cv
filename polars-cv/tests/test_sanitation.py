@@ -818,10 +818,10 @@ def test_filter_type_exposes_every_rust_variant():
     assert py == rust, f"FilterType: python {py} != rust {rust}"
 
 
-# SourceFormat/SinkFormat are intentionally NOT enum-parity-checked: view-buffer
-# defines its own (CamelCase) format enums while the graph boundary uses plain
-# strings and Python defines a third set — a three-way representation split to
-# consolidate in Phase 2, not a simple drift to assert away here.
+# SourceFormat/SinkFormat have no Rust enum to be checked against: the graph
+# boundary carries them as plain strings, and view-buffer's shadowing copies
+# were deleted along with its unreachable pipeline-composition layer. Python's
+# enums are now the single definition, so there is nothing to pin them to.
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,6 @@
 //! - Reduction operations (statistical aggregations)
 //! - Histogram operations (binning and quantization)
 //! - Perceptual hash operations (image fingerprinting)
-//! - I/O operations (sources and sinks)
 //!
 //! # Typed Pipeline Nodes
 //!
