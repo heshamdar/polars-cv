@@ -139,7 +139,7 @@ Rust: view-buffer (the engine)
 
 **view-buffer/src/** (see `view-buffer/AGENTS.md` for the full module tree)
 - `core/` — `ViewBuffer` (strided N-D array), `DType`, `Layout`
-- `ops/` — operation definitions by category (`image.rs`, `color.rs`, `compute.rs`, `scalar.rs`, `filter.rs`, `affine.rs`, `view.rs`, `binary.rs`, `reduction.rs`, `histogram.rs`, `phash.rs`, `pad.rs`, `mask.rs`), plus `shape_rule.rs` (the plan-time rank/channel authority), `validation.rs`, `traits.rs`
+- `ops/` — operation definitions by category (`image.rs`, `color.rs`, `compute.rs`, `scalar.rs`, `filter.rs`, `affine.rs`, `view.rs`, `binary.rs`, `reduction.rs`, `histogram.rs`, `phash.rs`, `pad.rs`, `mask.rs`), plus `shape_rule.rs` (the plan-time rank/channel authority), `validation.rs`, `traits.rs`, `util.rs`
 - `ops/dto.rs` — `ViewDto` enum: the serializable bridge between JSON and Rust op code
 - `expr.rs` — `ViewExpr` lazy builder with `.plan()` / `.execute()`
 - `execution/` — `ExecutionPlan`, runner, kernel fusion

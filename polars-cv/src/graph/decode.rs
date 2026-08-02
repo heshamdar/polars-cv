@@ -619,10 +619,15 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
 /// materialize a `u8` column that may disagree with execution.
 fn list_array_inner_dtype(dtype: &str, sink: &str) -> PolarsResult<DataType> {
     if dtype == "auto" {
+        // Not labelled an internal error: the common way to get here is a
+        // source column whose element type the planner cannot map to a buffer
+        // dtype (a boolean or decimal list), which is the user's input, not a
+        // bug. The fix is the same either way — say what it is.
         polars_bail!(ComputeError:
-            "internal error: '{sink}' sink reached schema resolution with an \
-             unresolved 'auto' element dtype. Supply an explicit dtype \
-             (e.g. source(..., dtype=\"u16\") or .cast(...)) before the sink."
+            "the '{sink}' sink needs to know the element dtype at planning \
+             time, and it could not be inferred from the input column. \
+             Supply it explicitly, e.g. source(..., dtype=\"u16\") or \
+             .cast(...) before the sink."
         );
     }
     Ok(dtype_str_to_polars(dtype))
