@@ -39,34 +39,13 @@ impl Default for ViewHeader {
     }
 }
 
-// Stable mapping for DType <-> u8 to ensure binary compatibility
+// Stable mapping for DType <-> u8 to ensure binary compatibility.
+// The codes themselves live in `dtype_table!` (core/dtype.rs) alongside each
+// dtype's other names; these remain as the protocol-facing spelling.
 pub fn dtype_to_u8(dt: DType) -> u8 {
-    match dt {
-        DType::U8 => 1,
-        DType::I8 => 2,
-        DType::U16 => 3,
-        DType::I16 => 4,
-        DType::U32 => 5,
-        DType::I32 => 6,
-        DType::F32 => 7,
-        DType::F64 => 8,
-        DType::U64 => 9,
-        DType::I64 => 10,
-    }
+    dt.wire_code()
 }
 
 pub fn u8_to_dtype(code: u8) -> Option<DType> {
-    match code {
-        1 => Some(DType::U8),
-        2 => Some(DType::I8),
-        3 => Some(DType::U16),
-        4 => Some(DType::I16),
-        5 => Some(DType::U32),
-        6 => Some(DType::I32),
-        7 => Some(DType::F32),
-        8 => Some(DType::F64),
-        9 => Some(DType::U64),
-        10 => Some(DType::I64),
-        _ => None,
-    }
+    DType::from_wire_code(code)
 }
