@@ -523,6 +523,7 @@ _REQUIRED_LIB_HOOKS = (
     "binary_output_dtype",
     "known_ops",
     "enum_variants",
+    "enum_names",
 )
 
 
@@ -764,26 +765,42 @@ def test_enum_parity_domain():
     assert py == surfaced, f"Domain: python {py} != surfaced rust {surfaced}"
 
 
+# Enums whose Python mirror is a plain `_types` enum of the same name, checked
+# uniformly below. `test_every_rust_enum_is_parity_checked` asserts this list
+# plus the bespoke cases account for every enum Rust surfaces, so adding one in
+# Rust fails here until it is either mirrored or explicitly excused.
+_UNIFORM_PARITY_ENUMS = [
+    "NormalizeMethod",
+    "ColorSpace",
+    "HashAlgorithm",
+    "HistogramOutput",
+    "PadMode",
+    "PadPosition",
+    "BorderMode",
+    "HistogramClosed",
+    "LabelReduction",
+    "LabelRegionMode",
+    "FilterType",
+    "ExtractMode",
+    "ApproxMethod",
+    "InterpolationType",
+]
+
+# Checked, but not by the uniform test: their Python side needs special
+# handling (a subtracted internal variant, an extra sub-assertion).
+_BESPOKE_PARITY_ENUMS = {"DType", "Domain"}
+
+# Surfaced by `enum_variants` with no Python enum to compare against.
+_NO_PYTHON_MIRROR = {
+    # Binary ops are Python *methods* (`.add()`, `.blend()`), not an enum, so
+    # there is no member set to diff. `test_binary_ops_match_rust` pins the
+    # names against the Rust table instead.
+    "BinaryOp",
+}
+
+
 @plugin_required
-@pytest.mark.parametrize(
-    "enum_name",
-    [
-        "NormalizeMethod",
-        "ColorSpace",
-        "HashAlgorithm",
-        "HistogramOutput",
-        "PadMode",
-        "PadPosition",
-        "BorderMode",
-        "HistogramClosed",
-        "LabelReduction",
-        "LabelRegionMode",
-        "FilterType",
-        "ExtractMode",
-        "ApproxMethod",
-        "InterpolationType",
-    ],
-)
+@pytest.mark.parametrize("enum_name", _UNIFORM_PARITY_ENUMS)
 def test_enum_parity_api_enums(enum_name):
     """Each user-facing API enum must equal its view-buffer authority set (A4)."""
     rust = _rust_enum_variants(enum_name)
@@ -818,6 +835,54 @@ def test_filter_type_exposes_every_rust_variant():
         "would be bypassable through a per-row `filter` expression"
     )
     assert py == rust, f"FilterType: python {py} != rust {rust}"
+
+
+@plugin_required
+def test_every_rust_enum_is_parity_checked():
+    """Every enum ``enum_variants`` answers for must be checked by some test.
+
+    The list of enums to check used to be hand-written, and had drifted:
+    ``LabelReduction`` and ``LabelRegionMode`` both had authoritative Rust
+    tables and neither appeared in any parity test, so a Python/Rust
+    divergence in either would have shipped. Reading the enum names from Rust
+    closes that: a newly registered enum lands in ``enum_names()`` and fails
+    here until it is mirrored in ``_types`` or explicitly excused above.
+    """
+    fn = getattr(_lib(), "enum_names", None)
+    if not callable(fn):
+        pytest.skip("_lib.enum_names() not built")
+
+    surfaced = set(fn())
+    accounted = set(_UNIFORM_PARITY_ENUMS) | _BESPOKE_PARITY_ENUMS | _NO_PYTHON_MIRROR
+    unchecked = surfaced - accounted
+    assert not unchecked, (
+        f"these Rust enums are surfaced to Python but no parity test covers "
+        f"them: {sorted(unchecked)}. Add each to _UNIFORM_PARITY_ENUMS (with a "
+        f"matching polars_cv._types enum), or to _NO_PYTHON_MIRROR with a "
+        f"reason."
+    )
+
+    # The reverse direction: an excused or bespoke name that Rust no longer
+    # surfaces is a stale entry that would quietly stop checking anything.
+    stale = accounted - surfaced
+    assert not stale, (
+        f"these names are listed as parity-checked but Rust does not surface "
+        f"them: {sorted(stale)}"
+    )
+
+
+@plugin_required
+def test_binary_ops_match_rust():
+    """``BinaryOp`` has no Python enum, so pin the method names instead."""
+    rust = _rust_enum_variants("BinaryOp")
+    if rust is None:
+        pytest.skip("_lib.enum_variants() not built")
+    from polars_cv.lazy import LazyPipelineExpr
+
+    missing = {name for name in rust if not hasattr(LazyPipelineExpr, name)}
+    assert not missing, (
+        f"Rust exposes binary ops with no LazyPipelineExpr method: {sorted(missing)}"
+    )
 
 
 # SourceFormat/SinkFormat have no Rust enum to be checked against: the graph

@@ -594,10 +594,18 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
         "i64" => DataType::Int64,
         "f32" => DataType::Float32,
         "f64" => DataType::Float64,
-        // "auto" (or any unknown string) means the dtype was not resolved at
-        // planning time. Typed list/array sinks reject this up front (see
-        // `list_array_inner_dtype`); the remaining callers (binary/struct sinks)
-        // do not depend on this value, so a UInt8 fallback is harmless.
+        // Reachable only for "auto", and only where the value is unused.
+        // "auto" means the dtype was not resolved at planning time;
+        // `list_array_inner_dtype` bails on it during schema resolution, which
+        // Polars runs before execution, so the typed list/array builders in
+        // `encode.rs` — the callers that *would* be misled, since they use this
+        // to type the output Series — never see it. The remaining callers
+        // (binary/struct sinks) ignore the value.
+        //
+        // Any *other* unmatched string would be silently typed UInt8 here,
+        // which is why `test_no_second_dtype_spelling_table` requires every
+        // dtype dispatch to name exactly the ten `dtype_table!` declares: the
+        // only way to reach this arm with a real dtype is for a table to drift.
         _ => DataType::UInt8,
     }
 }

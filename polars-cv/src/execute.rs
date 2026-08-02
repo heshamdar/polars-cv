@@ -18,6 +18,13 @@ use crate::pipeline::{OpSpec, SinkSpec, SourceSpec};
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::naming;
 
+/// The name Python queries [`BINARY_OPS`] under via `enum_variants`.
+///
+/// This family is the one enum-shaped vocabulary view-buffer's registry cannot
+/// hold, because the table below lives in this crate. Naming it here keeps the
+/// string next to what it names rather than loose in the FFI.
+pub(crate) const BINARY_OP_ENUM: &str = "BinaryOp";
+
 /// The Python-facing name of every two-buffer binary operation.
 ///
 /// Single authority consumed by `resolve_op` (one match arm for the whole
