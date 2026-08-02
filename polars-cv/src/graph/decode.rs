@@ -233,20 +233,12 @@ fn dtype_from_polars_datatype(dt: &DataType) -> Option<view_buffer::DType> {
     }
 }
 /// Parse dtype string to view-buffer DType.
+///
+/// The names come from `dtype_table!` via `from_short_name`; this wrapper adds
+/// the graph layer's error string.
 pub(super) fn parse_dtype_str(dtype_str: &str) -> Result<view_buffer::DType, String> {
-    match dtype_str {
-        "u8" => Ok(view_buffer::DType::U8),
-        "i8" => Ok(view_buffer::DType::I8),
-        "u16" => Ok(view_buffer::DType::U16),
-        "i16" => Ok(view_buffer::DType::I16),
-        "u32" => Ok(view_buffer::DType::U32),
-        "i32" => Ok(view_buffer::DType::I32),
-        "u64" => Ok(view_buffer::DType::U64),
-        "i64" => Ok(view_buffer::DType::I64),
-        "f32" => Ok(view_buffer::DType::F32),
-        "f64" => Ok(view_buffer::DType::F64),
-        other => Err(format!("Unknown dtype: {other}")),
-    }
+    view_buffer::DType::from_short_name(dtype_str)
+        .ok_or_else(|| format!("Unknown dtype: {dtype_str}"))
 }
 /// Decode a Polars List or Array value at a specific row into a ViewBuffer.
 ///

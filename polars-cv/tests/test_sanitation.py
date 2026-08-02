@@ -29,6 +29,8 @@ deleted and re-added later.
 from __future__ import annotations
 
 import io
+import re
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -1285,3 +1287,150 @@ def test_no_local_png_factories() -> None:
         str(p.name) for p in _test_files() if "def create_test_png" in p.read_text()
     ]
     assert not offenders, f"local create_test_png definitions in: {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# dtype spellings: one authority (dtype_table! in view-buffer/src/core/dtype.rs)
+# ---------------------------------------------------------------------------
+
+
+def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
+    """Parse ``dtype_table!``'s rows out of the Rust source.
+
+    Read from source rather than the FFI because the wire codes are not
+    surfaced across it — ``enum_variants`` carries names only. Source-scanning
+    is the weaker technique, so it is used for exactly the part the FFI cannot
+    answer, and the parse asserts it found a plausible table rather than
+    silently matching nothing.
+    """
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "view-buffer"
+        / "src"
+        / "core"
+        / "dtype.rs"
+    ).read_text()
+    body = src.split("dtype_table!(", 1)[1].split("\n);", 1)[0]
+    rows = re.findall(
+        r'\(\s*(\w+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*\)', body
+    )
+    assert len(rows) >= 10, f"dtype_table! parse found only {len(rows)} rows"
+    return [(v, s, int(c), n) for v, s, c, n in rows]
+
+
+def test_display_wire_codes_match_the_rust_dtype_table() -> None:
+    """``display.py`` renders VIEW blobs without going through the plugin, so
+    it keeps its own wire-code map. Pin it to the Rust table it copies."""
+    import numpy as np
+
+    import polars_cv.display as display_mod
+
+    numpy_by_name = {
+        "uint8": np.uint8,
+        "int8": np.int8,
+        "uint16": np.uint16,
+        "int16": np.int16,
+        "uint32": np.uint32,
+        "int32": np.int32,
+        "uint64": np.uint64,
+        "int64": np.int64,
+        "float32": np.float32,
+        "float64": np.float64,
+    }
+    expected = {
+        code: numpy_by_name[numpy_name]
+        for _variant, _short, code, numpy_name in _dtype_table_rows()
+    }
+
+    source = Path(display_mod.__file__).read_text()
+    body = source.split("dtype_map = {", 1)[1].split("}", 1)[0]
+    actual = {
+        int(code): getattr(np, name)
+        for code, name in re.findall(r"(\d+):\s*np\.(\w+)", body)
+    }
+
+    assert actual == expected, (
+        "display.py's VIEW wire-code map has drifted from dtype_table! in "
+        f"view-buffer/src/core/dtype.rs: {actual} != {expected}"
+    )
+
+
+def test_display_rejects_unknown_wire_codes() -> None:
+    """An unrecognised dtype code must raise, not render as uint8. Guessing
+    reinterprets the payload and produces a plausible but meaningless image."""
+    import polars_cv.display as display_mod
+
+    blob = bytearray(b"VIEW" + bytes(60))
+    blob[6] = 200  # not a dtype code
+    blob[7] = 2
+    with pytest.raises(ValueError, match="unknown VIEW dtype code"):
+        display_mod._view_to_png(bytes(blob))
+
+
+def test_no_second_dtype_spelling_table() -> None:
+    """Ratchet: dtype names are declared in ``dtype_table!`` only.
+
+    Some dispatch genuinely has to name every dtype: matching a string to a
+    Polars ``DataType``, or to a macro arm that needs the variant as a literal
+    token. Those are correspondences, not naming decisions, and cannot be
+    derived away. What must not happen is one of them disagreeing with the
+    authority — a missing arm or a stray ``"f16"`` is how a dtype ends up
+    handled in nine places and forgotten in the tenth.
+
+    So this does not forbid the tables; it requires any file that names six or
+    more dtypes to name *exactly* the ten that ``dtype_table!`` declares. New
+    code that only needs the name should still use ``DType::short_name`` /
+    ``numpy_name`` / ``wire_code`` rather than adding an eleventh site.
+    """
+    root = Path(__file__).resolve().parents[2]
+    allowed = {
+        # The authority itself.
+        root / "view-buffer" / "src" / "core" / "dtype.rs",
+        # Pins the frozen VIEW codes literally, on purpose.
+        root / "view-buffer" / "tests" / "dtype_single_authority.rs",
+    }
+    expected = {short for _variant, short, _code, _numpy in _dtype_table_rows()}
+    pattern = re.compile(r'"(?:[ui](?:8|16|32|64)|f(?:8|16|32|64))"')
+
+    def match_blocks(source: str):
+        """Yield the body of each ``match`` expression, innermost span only.
+
+        Checked per block rather than per file on purpose: ``encode.rs`` holds
+        two dtype dispatches, and a file-level check lets one supply a name the
+        other is missing, so a dropped arm passes. That is a guard that cannot
+        fail for the reason it claims, which is worse than no guard.
+        """
+        for m in re.finditer(r"\bmatch\b[^{]*\{", source):
+            depth, i = 0, m.end() - 1
+            while i < len(source):
+                if source[i] == "{":
+                    depth += 1
+                elif source[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        yield source[m.end() : i]
+                        break
+                i += 1
+
+    offenders = []
+    for path in root.glob("**/*.rs"):
+        if path in allowed or "/target/" in str(path):
+            continue
+        source = path.read_text()
+        # Comments and test modules legitimately spell dtypes out — a doc
+        # example or an assertion is not a dispatch table.
+        source = re.sub(r"(?m)^\s*//.*$", "", source)
+        source = source.split("#[cfg(test)]")[0]
+        for block in match_blocks(source):
+            hits = {m.group(0).strip('"') for m in pattern.finditer(block)}
+            if len(hits) >= 6 and hits != expected:
+                missing = sorted(expected - hits)
+                extra = sorted(hits - expected)
+                offenders.append(
+                    f"{path.relative_to(root)} (missing={missing}, unknown={extra})"
+                )
+
+    assert not offenders, (
+        "these files dispatch on dtype names but do not agree with "
+        f"dtype_table! in view-buffer/src/core/dtype.rs: {offenders}"
+    )

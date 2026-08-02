@@ -71,6 +71,10 @@ def _view_to_png(data: bytes) -> bytes:
 
     dtype_code = data[6]
     rank = data[7]
+    # A Python-side copy of the VIEW wire codes, which Rust declares once in
+    # `dtype_table!` (view-buffer/src/core/dtype.rs). It is a copy because this
+    # renders blobs without going through the plugin; `test_sanitation.py`
+    # pins it against the Rust table so the two cannot drift.
     dtype_map = {
         1: np.uint8,
         2: np.int8,
@@ -83,7 +87,15 @@ def _view_to_png(data: bytes) -> bytes:
         9: np.uint64,
         10: np.int64,
     }
-    np_dtype = dtype_map.get(dtype_code, np.uint8)
+    if dtype_code not in dtype_map:
+        # Guessing uint8 here would reinterpret the payload and render a
+        # plausible-looking but meaningless thumbnail. An unknown code means a
+        # corrupt header or a blob from a newer writer; say so.
+        raise ValueError(
+            f"unknown VIEW dtype code {dtype_code!r}: the blob is corrupt, or "
+            "was written by a newer polars-cv than the one rendering it"
+        )
+    np_dtype = dtype_map[dtype_code]
 
     shape_start = _VIEW_HEADER_SIZE
     shape = []

@@ -16,18 +16,6 @@ use view_buffer::protocol::{dtype_to_u8, u8_to_dtype};
 use view_buffer::DType;
 
 #[test]
-fn all_lists_every_variant() {
-    // `ALL` is generated from the same rows as the accessors, so this pins the
-    // count against a hand-edit that drops a row from one and not the other.
-    assert_eq!(
-        DType::ALL.len(),
-        10,
-        "DType::ALL should list all 10 dtypes; update this count deliberately \
-         when adding a dtype, having added it to dtype_table!"
-    );
-}
-
-#[test]
 fn wire_codes_are_unique() {
     let codes: HashSet<u8> = DType::ALL.iter().map(|d| d.wire_code()).collect();
     assert_eq!(

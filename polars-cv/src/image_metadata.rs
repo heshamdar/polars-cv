@@ -17,8 +17,11 @@ use view_buffer::DType as VbDType;
 struct ImageMeta {
     width: u32,
     height: u32,
-    channels: u32,
-    dtype: &'static str,
+    /// `None` when the colour type was not recognised. Dimensions are read
+    /// from the header before the colour type is consulted and stay valid,
+    /// so an unknown colour type nulls these two fields only.
+    channels: Option<u32>,
+    dtype: Option<&'static str>,
 }
 
 /// Try to extract metadata from VIEW protocol header (first 64 bytes).
@@ -55,8 +58,8 @@ fn try_view_header(bytes: &[u8]) -> Option<ImageMeta> {
     Some(ImageMeta {
         width,
         height,
-        channels,
-        dtype: dtype_str,
+        channels: Some(channels),
+        dtype: Some(dtype_str),
     })
 }
 
@@ -77,28 +80,34 @@ fn try_image_header(bytes: &[u8]) -> Option<ImageMeta> {
     // variants they covered, and each carried its own `_` guess (1 channel,
     // "uint8") for the ones it did not. `image::ColorType` is `#[non_exhaustive]`,
     // so a catch-all is mandatory — but an unrecognised colour type means we do
-    // not know the metadata, and `None` says that. Reporting a confident
+    // not know these two facts, and `None` says that. Reporting a confident
     // "uint8"/1-channel answer for a format we failed to recognise is worse
     // than a null: it is indistinguishable from a real greyscale image.
-    let (channels, dtype) = match color {
-        image::ColorType::L8 => (1, VbDType::U8),
-        image::ColorType::L16 => (1, VbDType::U16),
-        image::ColorType::La8 => (2, VbDType::U8),
-        image::ColorType::La16 => (2, VbDType::U16),
-        image::ColorType::Rgb8 => (3, VbDType::U8),
-        image::ColorType::Rgb16 => (3, VbDType::U16),
-        image::ColorType::Rgb32F => (3, VbDType::F32),
-        image::ColorType::Rgba8 => (4, VbDType::U8),
-        image::ColorType::Rgba16 => (4, VbDType::U16),
-        image::ColorType::Rgba32F => (4, VbDType::F32),
-        _ => return None,
+    //
+    // Only these two are nulled. `width`/`height` come off the header above,
+    // before the colour type is consulted, and are equally valid whether or
+    // not we recognise it — failing them too would make a future `image`
+    // release that adds a variant silently regress `.cv.width()`/`.cv.height()`
+    // on files whose dimensions we read perfectly well.
+    let channels_and_dtype = match color {
+        image::ColorType::L8 => Some((1, VbDType::U8)),
+        image::ColorType::L16 => Some((1, VbDType::U16)),
+        image::ColorType::La8 => Some((2, VbDType::U8)),
+        image::ColorType::La16 => Some((2, VbDType::U16)),
+        image::ColorType::Rgb8 => Some((3, VbDType::U8)),
+        image::ColorType::Rgb16 => Some((3, VbDType::U16)),
+        image::ColorType::Rgb32F => Some((3, VbDType::F32)),
+        image::ColorType::Rgba8 => Some((4, VbDType::U8)),
+        image::ColorType::Rgba16 => Some((4, VbDType::U16)),
+        image::ColorType::Rgba32F => Some((4, VbDType::F32)),
+        _ => None,
     };
 
     Some(ImageMeta {
         width,
         height,
-        channels,
-        dtype: dtype.numpy_name(),
+        channels: channels_and_dtype.map(|(c, _)| c),
+        dtype: channels_and_dtype.map(|(_, d)| d.numpy_name()),
     })
 }
 
@@ -135,7 +144,7 @@ fn image_channels(inputs: &[Series]) -> PolarsResult<Series> {
     let ca = inputs[0].binary()?;
     let out: UInt32Chunked = ca
         .iter()
-        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.channels)))
+        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).and_then(|m| m.channels)))
         .collect();
     Ok(out.with_name(ca.name().clone()).into_series())
 }
@@ -146,7 +155,7 @@ fn image_dtype(inputs: &[Series]) -> PolarsResult<Series> {
     let ca = inputs[0].binary()?;
     let out: StringChunked = ca
         .iter()
-        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.dtype)))
+        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).and_then(|m| m.dtype)))
         .collect();
     Ok(out.with_name(ca.name().clone()).into_series())
 }

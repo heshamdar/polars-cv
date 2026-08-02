@@ -24,19 +24,28 @@ pub enum DType {
 /// A dtype is named three times across this workspace's boundaries: a short
 /// name (`"u8"`) in the graph JSON, a VIEW protocol wire code (`1`) in the
 /// binary header, and a numpy name (`"uint8"`) in the numpy/torch sink and
-/// the header-only metadata accessors. Each used to be its own `match`, so a
-/// new dtype had to be added to five tables in four files and nothing failed
-/// if it was not.
+/// the header-only metadata accessors. Each used to be its own `match` — five
+/// tables in four files — so adding a dtype meant finding all five.
+///
+/// Most of those were already exhaustive matches over `DType` and so were
+/// compiler-enforced: forgetting one was a build error, not a silent gap. The
+/// exception was the reverse map `u8_to_dtype`, whose `_ => None` arm meant a
+/// new dtype would simply fail to decode from a VIEW header. So the win here
+/// is locality — one row per dtype, all three spellings visible together —
+/// plus closing that one silent case, not a wholesale gain in safety.
 ///
 /// The generated accessors below all `match` on the listed variants, so the
-/// compiler rejects a `DType` variant that this table omits — the same
+/// compiler still rejects a `DType` variant that this table omits — the same
 /// exhaustiveness guard `named_variants!` uses, extended to carry the wire
 /// code and numpy name alongside the short name.
 ///
 /// Wire codes are **not** the declaration order: they are fixed by the VIEW
-/// binary format and must never be renumbered. They are listed per row for
-/// that reason. Declaration order here sets `NAMED`'s order, which Python's
-/// enum-parity test compares against, so rows stay in their original order.
+/// binary format and must never be renumbered (`F32`/`F64` are 7/8, ahead of
+/// `U64`/`I64` at 9/10). They are listed per row for that reason. Row order
+/// itself sets `NAMED`'s order; no test depends on it — the Python parity
+/// tests compare sets — but it is the order users see in `expected one of
+/// {...}` errors, so rows keep their original order rather than being
+/// reshuffled into wire-code order for cosmetics.
 macro_rules! dtype_table {
     ($(($variant:ident, $short:literal, $code:literal, $numpy:literal)),+ $(,)?) => {
         crate::naming::named_variants!(DType { $($short => $variant),+ });
