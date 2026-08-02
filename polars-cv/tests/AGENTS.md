@@ -12,8 +12,7 @@ All Python tests for polars-cv. Tests use **pytest** exclusively. Coverage inclu
 ```bash
 cd polars-cv
 uv run pytest tests/ -m "not network and not slow"  # what CI runs on every push
-uv run pytest tests/                                # everything (plugin must be built)
-uv run pytest tests/                                # plugin tests self-skip if unbuilt
+uv run pytest tests/                                # everything; plugin tests self-skip if unbuilt
 uv run pytest tests/reference/ -v                   # reference tests
 python scripts/test_multiple_python.py --all        # multi-Python (3.10-3.13)
 ```

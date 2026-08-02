@@ -1405,10 +1405,32 @@ mod known_ops_tests {
                 .find("Unknown operation")
                 .expect("resolve_op catch-all not found");
         let mut arm_names: Vec<&str> = Vec::new();
+        let mut guard_arms: Vec<&str> = Vec::new();
         for line in src[start..end].lines() {
             let trimmed = line.trim_start();
             let indent = line.len() - trimmed.len();
-            if indent != 8 || !trimmed.starts_with('"') {
+            if indent != 8 {
+                continue;
+            }
+            // A guard arm (`name if TABLE.contains(&name) => ...`) registers
+            // whatever its table holds, and names nothing this scan can read.
+            // Collect them so an unrecognised one fails below rather than
+            // slipping through as "not a string arm": that is how an op could
+            // become executable with no KNOWN_OPS entry.
+            if !trimmed.starts_with('"') && trimmed.contains(" if ") && trimmed.contains("=>") {
+                // Key on the guard *condition*, not the binding name: every
+                // guard arm here binds `name`, so allow-listing the binder
+                // would wave through any future arm that reused it.
+                let cond = trimmed
+                    .split(" if ")
+                    .nth(1)
+                    .and_then(|rest| rest.split("=>").next())
+                    .unwrap_or(trimmed)
+                    .trim();
+                guard_arms.push(cond);
+                continue;
+            }
+            if !trimmed.starts_with('"') {
                 continue;
             }
             // Arm patterns look like `"name" => {` or `"a" | "b" => ...`;
@@ -1420,14 +1442,36 @@ mod known_ops_tests {
                 }
             }
         }
-        // Sanity floor so the scan can't silently rot to zero. The binary-op
-        // family dispatches through one BINARY_OPS-guarded arm (not string
-        // patterns), so the floor is below KNOWN_OPS.len().
+        // Every op in KNOWN_OPS is either a string arm found above or covered
+        // by one of the known guard arms below, so the scan cannot rot to a
+        // subset without this failing. A count floor was used here before; it
+        // was both too weak (10 arms could drop out of indent 8 unnoticed) and
+        // too brittle (deprecating an op tripped it), so the relationship is
+        // pinned instead of a magic number.
+        let guarded: Vec<&str> = BINARY_OPS.iter().map(|(n, _)| *n).collect();
+        let unaccounted: Vec<&&str> = KNOWN_OPS
+            .iter()
+            .filter(|n| !arm_names.contains(n) && !guarded.contains(n))
+            .collect();
         assert!(
-            arm_names.len() >= 60,
-            "arm scan found only {} arms — the source scan has rotted, fix the test",
-            arm_names.len()
+            unaccounted.is_empty(),
+            "these KNOWN_OPS have no string arm and are not in a known guarded \
+             family: {unaccounted:?} — either resolve_op changed shape or the \
+             source scan has rotted"
         );
+        // Guard arms register a whole family at once. Each one needs a rule
+        // above tying its table to KNOWN_OPS; a new one has none, so fail
+        // until it is given one rather than let it register ops invisibly.
+        const KNOWN_GUARD_ARMS: &[&str] = &["naming::lookup(BINARY_OPS, name).is_some()"];
+        for arm in &guard_arms {
+            assert!(
+                KNOWN_GUARD_ARMS.contains(arm),
+                "resolve_op has an unrecognised guard arm '{arm}'. Guard arms \
+                 register ops without naming them, so add it to \
+                 KNOWN_GUARD_ARMS here along with a check that its table is \
+                 fully listed in KNOWN_OPS (see BINARY_OPS below)."
+            );
+        }
         // The guarded binary-op family must still be fully registered.
         for (name, _) in BINARY_OPS {
             assert!(
