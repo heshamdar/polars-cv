@@ -9,6 +9,24 @@ All Python tests for polars-cv. Tests use **pytest** exclusively. Coverage inclu
 
 ## Running Tests
 
+To verify a change, run **`scripts/verify.sh`** from the repo root. It runs
+every check CI runs, prints each one's exit code, and ends in a single
+`PASS`/`FAIL` line computed from those codes.
+
+Use it in preference to running the checks by hand and reading the output.
+Reading a *filtered view* of a check has produced false "all green" reports
+here more than once: a `grep | head` that cut the failing suite off below the
+fold, and a `maturin … | tail` whose reported exit code belonged to `tail`
+rather than to `maturin`. Both looked exactly like success. If you do run a
+check by hand, take its exit code directly — `cmd | tail` returns `tail`'s
+status, so use `${PIPESTATUS[0]}` or `set -o pipefail`.
+
+`test_verify_script_covers_every_ci_check` pins the script to CI, so a check
+added to one and not the other fails rather than leaving a local `PASS` that
+does not mean CI passes.
+
+The individual lanes:
+
 ```bash
 cd polars-cv
 uv run pytest tests/ -m "not network and not slow"  # what CI runs on every push
@@ -180,3 +198,55 @@ class TestMyFeature:
 `test_sanitation.py` (`test_no_local_plugin_available_definitions`,
 `test_no_local_png_factories`) fail the suite if a test file redefines
 either.
+
+## Writing a Sanitation Guard
+
+The guards in `test_sanitation.py` are the enforcement mechanism for the
+single-authority invariants, so a guard that cannot fail is worse than no
+guard: it reads as coverage. The dtype-dispatch ratchet was wrong **seven**
+times before it settled, and every time it kept passing while covering less
+than the version it replaced. Twice the regression was introduced while fixing
+the previous one.
+
+Two rules follow from that.
+
+**A new guard is not done until you have watched it fail.** Break the thing it
+claims to catch, confirm it reports that specific thing, revert. If you cannot
+construct a failure, the guard is decorative. Check the *reason* too — three of
+those seven failed for a different reason than they claimed, which is how the
+next rewrite lost coverage without anyone noticing.
+
+**A guard with non-trivial logic gets committed fixtures.** Put the logic in a
+helper the guard imports (`tests/_dtype_ratchet.py` is the worked example),
+then add known-bad inputs it must flag and known-good inputs it must not, as in
+`test_dtype_ratchet_fixtures.py`. The fixtures must call the same helper the
+real guard calls — a fixture exercising a copy proves nothing about the guard.
+
+Every past blind spot becomes a fixture, so re-introducing one fails the suite.
+Keep the good fixtures too: three of the seven rewrites false-positived on
+correct, `rustfmt`-clean code, and a guard that fires on valid code gets
+weakened or deleted by whoever hits it next.
+
+Beware thresholds. A "six or more names must be all ten" rule made damage
+self-concealing — dropping four arms failed and dropping five passed. Prefer a
+rule whose sensitivity does not fall off as the defect grows, and test the
+whole range rather than one example.
+
+## Changing Behaviour
+
+If a change alters what a caller sees — a signature, whether something raises,
+a dtype — exercise the **user-facing entry point**, not just the helper you
+edited. A change that made `_polars_dtype_to_cv` raise for boolean masks was
+verified at the planner and shipped as a bug fix; it had in fact broken the
+documented input shape for `ContourMatcher`, which one call through the public
+API would have shown.
+
+## Multi-Fix Commits
+
+When a commit applies a list of fixes (a review's findings, say), write a
+throwaway script with **one check per item** and run it to produce a
+fixed/still-broken table, rather than asserting from memory. Doing this found
+three claimed fixes that a batch script had silently skipped when it aborted
+partway — and two bugs in the checking script itself, including a check that
+could not run at all and so printed a failure it never tested. A batch edit
+should collect and report its misses, never `exit` on the first one.

@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import io
 import re
-from collections import Counter
 from pathlib import Path
 
 import polars as pl
@@ -38,6 +37,7 @@ import pytest
 
 import polars_cv
 from polars_cv import Pipeline
+from tests._dtype_ratchet import dispatch_offenders
 from tests.conftest import plugin_required
 
 # ---------------------------------------------------------------------------
@@ -1539,116 +1539,14 @@ def test_no_second_dtype_spelling_table() -> None:
     }
     expected = {short for _variant, short, _code, _numpy in _dtype_table_rows()}
     variants = {v for v, _short, _code, _numpy in _dtype_table_rows()}
-    dtype_lit = re.compile(r'"([ui](?:8|16|32|64)|f(?:8|16|32|64))"')
-    dtype_variant = re.compile(r"\bDType::(\w+)\b")
-    fn_start = re.compile(
-        r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+)?(?:const\s+)?"
-        r"(?:async\s+)?(?:unsafe\s+)?(?:extern\s+\"[^\"]*\"\s+)?fn\s+(\w+)"
-    )
-
-    def strip_line_comment(line: str) -> str:
-        """Drop a trailing ``//`` comment, ignoring ``//`` inside a string."""
-        idx = line.find("//")
-        while idx != -1:
-            if line[:idx].count('"') % 2 == 0:
-                return line[:idx]
-            idx = line.find("//", idx + 2)
-        return line
-
-    def logical_lines(text: str):
-        """Yield arms as single lines, rejoining rustfmt's wrapped alternation.
-
-        ``rustfmt`` splits a long ``"u8" | "i8" | ... | "f64" => ...`` across
-        lines, stranding the earlier names on a line with no ``=>``. Joining
-        continuations keeps a correctly-formatted dispatch from reading as an
-        incomplete one.
-        """
-        buf = ""
-        for raw in text.splitlines():
-            line = strip_line_comment(raw)
-            stripped = line.strip()
-            if buf and (stripped.startswith("|") or buf.rstrip().endswith("|")):
-                buf += " " + stripped
-            else:
-                if buf:
-                    yield buf
-                buf = line
-        if buf:
-            yield buf
 
     offenders = []
     for path in sorted(root.glob("**/*.rs")):
         if path in allowed or "/target/" in str(path):
             continue
-        source = re.sub(r"/\*.*?\*/", "", path.read_text(), flags=re.S)
-
-        # Test modules name dtypes freely in assertions, so they are excluded.
-        # Everything at indent 0 after the test module is production code and
-        # is scanned: the earlier version reported it as an unscannable region,
-        # which was a false positive on any `#[cfg(test)]` helper that happened
-        # to hold a complete dispatch.
-        production, sep, after_tests = source.partition("#[cfg(test)]")
-        if sep:
-            keep, in_top_fn = [], False
-            for line in after_tests.splitlines():
-                if fn_start.match(line) and not line.startswith((" ", "\t")):
-                    in_top_fn = True
-                if in_top_fn:
-                    keep.append(line)
-                    if line.startswith("}"):
-                        in_top_fn = False
-            production += "\n" + "\n".join(keep)
-
-        current = "<file scope>"
-        keyed: dict[str, list[str]] = {}
-        named: dict[str, list[tuple[str, str]]] = {}
-        for line in logical_lines(production):
-            m = fn_start.match(line)
-            if m:
-                current = m.group(1)
-            if "=>" in line:
-                key, _, value = line.partition("=>")
-                # An arm *key* that is a dtype name: a `match` on a dtype
-                # string. `cast_err(row_idx, "i64")` in an arm body is not one.
-                for lit in dtype_lit.findall(key):
-                    keyed.setdefault(current, []).append(lit)
-                # An arm keyed by a `DType` variant that *yields* a dtype name:
-                # a variant-to-name table, the other half of the same defect.
-                # Keyed on `DType::` so a stray literal in an arm body is not
-                # mistaken for one.
-                variant_keys = [v for v in dtype_variant.findall(key) if v in variants]
-                value_names = dtype_lit.findall(value)
-                if len(variant_keys) == 1 and len(value_names) == 1:
-                    named.setdefault(current, []).append(
-                        (variant_keys[0], value_names[0])
-                    )
-
-        for fn_name, names in keyed.items():
-            counts = Counter(names)
-            if set(counts) != expected:
-                offenders.append(
-                    f"{path.relative_to(root)}::{fn_name} dispatches on dtype "
-                    f"names (missing={sorted(expected - set(counts))}, "
-                    f"unknown={sorted(set(counts) - expected)})"
-                )
-            elif len(set(counts.values())) != 1:
-                offenders.append(
-                    f"{path.relative_to(root)}::{fn_name} holds more than one "
-                    f"dtype dispatch and they disagree: "
-                    f"{ {n: c for n, c in sorted(counts.items())} }"
-                )
-
-        for fn_name, pairs in named.items():
-            got_variants = {v for v, _ in pairs}
-            got_names = {n for _, n in pairs}
-            if got_variants != variants or got_names != expected:
-                offenders.append(
-                    f"{path.relative_to(root)}::{fn_name} maps DType variants "
-                    f"to names but does not agree with dtype_table! "
-                    f"(missing variants={sorted(variants - got_variants)}, "
-                    f"missing names={sorted(expected - got_names)}, "
-                    f"unknown names={sorted(got_names - expected)})"
-                )
+        offenders += dispatch_offenders(
+            path.read_text(), str(path.relative_to(root)), expected, variants
+        )
 
     assert not offenders, (
         "these dtype dispatches do not agree with dtype_table! in "
@@ -1693,3 +1591,53 @@ def test_contour_source_rejects_types_with_no_buffer_meaning() -> None:
     for leaf in (pl.String, pl.Duration):
         with pytest.raises(ValueError, match="no meaningful buffer"):
             _detect_source_info({"mask": pl.List(pl.List(leaf))}, "mask")
+
+
+# ---------------------------------------------------------------------------
+# The verification entry point must not drift from CI
+# ---------------------------------------------------------------------------
+
+
+def test_verify_script_covers_every_ci_check() -> None:
+    """``scripts/verify.sh`` must run every check CI runs.
+
+    The script exists so a full verification is one command with per-check exit
+    codes, rather than a set of commands whose output someone reads and
+    summarises — reading a filtered view is what produced false "all green"
+    reports here more than once. That only holds if the script stays complete,
+    so the two are pinned together: a check added to CI and not to the script
+    would leave the local run passing while CI fails.
+    """
+    root = Path(__file__).resolve().parents[2]
+    ci = (root / ".github" / "workflows" / "ci.yml").read_text()
+    script = (root / "scripts" / "verify.sh").read_text()
+
+    # (substring identifying the check in CI, substring identifying it in the
+    # script). Matched loosely on purpose: flags legitimately differ (CI adds
+    # -x/-v, the script adds -q), and pinning exact command lines would make
+    # this fail on formatting rather than on a missing check.
+    required = [
+        ("cargo fmt --all -- --check", "cargo fmt --all -- --check"),
+        ("cargo clippy", "cargo clippy"),
+        ("cargo test -p view-buffer", "cargo test -p view-buffer"),
+        ("maturin develop", "maturin develop"),
+        ('-m "not network and not slow"', '-m "not network and not slow"'),
+        ('-m "slow and not network"', '-m "slow and not network"'),
+        ("ruff check", "ruff check"),
+        ("ruff format --check", "ruff format --check"),
+    ]
+    missing = [
+        ci_frag
+        for ci_frag, script_frag in required
+        if ci_frag in ci and script_frag not in script
+    ]
+    assert not missing, (
+        f"scripts/verify.sh is missing checks that CI runs: {missing}. "
+        f"A local 'PASS' would not mean CI passes."
+    )
+
+    stale = [ci_frag for ci_frag, _ in required if ci_frag not in ci]
+    assert not stale, (
+        f"this test expects CI to run checks it no longer does: {stale}. "
+        f"Update the list rather than leaving it asserting nothing."
+    )
