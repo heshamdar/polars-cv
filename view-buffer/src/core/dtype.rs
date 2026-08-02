@@ -19,33 +19,79 @@ pub enum DType {
     I64,
 }
 
-crate::naming::named_variants!(DType {
-    "u8" => U8,
-    "i8" => I8,
-    "u16" => U16,
-    "i16" => I16,
-    "u32" => U32,
-    "i32" => I32,
-    "u64" => U64,
-    "i64" => I64,
-    "f32" => F32,
-    "f64" => F64,
-});
+/// Declare every representation of every dtype in one place.
+///
+/// A dtype is named three times across this workspace's boundaries: a short
+/// name (`"u8"`) in the graph JSON, a VIEW protocol wire code (`1`) in the
+/// binary header, and a numpy name (`"uint8"`) in the numpy/torch sink and
+/// the header-only metadata accessors. Each used to be its own `match`, so a
+/// new dtype had to be added to five tables in four files and nothing failed
+/// if it was not.
+///
+/// The generated accessors below all `match` on the listed variants, so the
+/// compiler rejects a `DType` variant that this table omits — the same
+/// exhaustiveness guard `named_variants!` uses, extended to carry the wire
+/// code and numpy name alongside the short name.
+///
+/// Wire codes are **not** the declaration order: they are fixed by the VIEW
+/// binary format and must never be renumbered. They are listed per row for
+/// that reason. Declaration order here sets `NAMED`'s order, which Python's
+/// enum-parity test compares against, so rows stay in their original order.
+macro_rules! dtype_table {
+    ($(($variant:ident, $short:literal, $code:literal, $numpy:literal)),+ $(,)?) => {
+        crate::naming::named_variants!(DType { $($short => $variant),+ });
 
-impl DType {
-    /// The canonical short name ("u8", "f32", …) of this dtype.
-    pub fn short_name(&self) -> &'static str {
-        Self::NAMED
-            .iter()
-            .find_map(|(n, d)| (d == self).then_some(*n))
-            .expect("NAMED covers every DType variant")
-    }
+        impl DType {
+            /// Every dtype, in `NAMED` declaration order.
+            pub const ALL: &'static [DType] = &[$(DType::$variant),+];
 
-    /// Parse a canonical short name back into a dtype.
-    pub fn from_short_name(s: &str) -> Option<Self> {
-        crate::naming::lookup(Self::NAMED, s)
-    }
+            /// The canonical short name ("u8", "f32", …) of this dtype.
+            pub const fn short_name(&self) -> &'static str {
+                match self { $(DType::$variant => $short),+ }
+            }
+
+            /// This dtype's VIEW protocol wire code.
+            ///
+            /// Stable across releases — the binary format depends on it.
+            pub const fn wire_code(&self) -> u8 {
+                match self { $(DType::$variant => $code),+ }
+            }
+
+            /// This dtype's numpy name ("uint8", "float32", …).
+            pub const fn numpy_name(&self) -> &'static str {
+                match self { $(DType::$variant => $numpy),+ }
+            }
+
+            /// Parse a canonical short name back into a dtype.
+            pub fn from_short_name(s: &str) -> Option<Self> {
+                crate::naming::lookup(Self::NAMED, s)
+            }
+
+            /// Parse a VIEW protocol wire code back into a dtype.
+            pub fn from_wire_code(code: u8) -> Option<Self> {
+                match code { $($code => Some(DType::$variant),)+ _ => None }
+            }
+
+            /// Parse a numpy name back into a dtype.
+            pub fn from_numpy_name(s: &str) -> Option<Self> {
+                match s { $($numpy => Some(DType::$variant),)+ _ => None }
+            }
+        }
+    };
 }
+
+dtype_table!(
+    (U8, "u8", 1, "uint8"),
+    (I8, "i8", 2, "int8"),
+    (U16, "u16", 3, "uint16"),
+    (I16, "i16", 4, "int16"),
+    (U32, "u32", 5, "uint32"),
+    (I32, "i32", 6, "int32"),
+    (U64, "u64", 9, "uint64"),
+    (I64, "i64", 10, "int64"),
+    (F32, "f32", 7, "float32"),
+    (F64, "f64", 8, "float64"),
+);
 
 /// Categories of data types that operations can accept as input.
 ///
