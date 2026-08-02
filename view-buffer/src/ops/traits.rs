@@ -27,7 +27,7 @@ pub enum MemoryEffect {
 
 /// Trait for all operations in the pipeline.
 ///
-/// Operations must provide shape/dtype inference, cost information,
+/// Operations must provide shape/dtype inference, their memory effect,
 /// and optional validation for plan-time error checking.
 ///
 /// ## Dtype Contract
