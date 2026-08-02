@@ -40,7 +40,7 @@ Python. `polars_cv.build_info()` reports the three versions that must agree
 
 ```bash
 uv run pytest tests/                            # Full test suite (requires plugin built first)
-uv run pytest tests/ -k "not plugin_required"  # Schema/builder tests only (no Rust needed)
+uv run pytest tests/                            # Plugin tests self-skip if not built
 uv run pytest tests/test_pipeline_builder.py   # Single test file
 uv run pytest tests/ -k "test_resize"          # Single test by name
 python scripts/test_multiple_python.py --all   # Test across Python 3.10–3.13

@@ -13,7 +13,7 @@ All Python tests for polars-cv. Tests use **pytest** exclusively. Coverage inclu
 cd polars-cv
 uv run pytest tests/ -m "not network and not slow"  # what CI runs on every push
 uv run pytest tests/                                # everything (plugin must be built)
-uv run pytest tests/ -k "not plugin_required"       # builder/schema tests only
+uv run pytest tests/                                # plugin tests self-skip if unbuilt
 uv run pytest tests/reference/ -v                   # reference tests
 python scripts/test_multiple_python.py --all        # multi-Python (3.10-3.13)
 ```
@@ -121,7 +121,16 @@ The rule: anything that **executes** a graph (`.sink(...)` collected through
 Polars, the `.cv`/`.point`/`.contour`/`.bbox` plugin functions, any FFI call into
 `_lib`) needs `@plugin_required`. Tests that only build pipelines or assert on
 plan-time schema must not use it — they are the lane that still runs when the
-plugin is not built (`-k "not plugin_required"`).
+plugin is not built.
+
+`plugin_required` is a `pytest.mark.skipif`, not a named marker, so it cannot
+be selected on: `-k "not plugin_required"` matches test *names* and deselects
+nothing, and `-m` sees no such marker. None is needed — the tests skip
+themselves when the extension is absent. Because skips are quiet, a builder
+change that should have failed a parity test can look clean against an unbuilt
+or stale plugin; the parity guards that can run without one
+(`test_op_names_matches_rust_known_ops_without_the_plugin`,
+`test_op_names_covers_all_emitted_ops`) exist to cover that window.
 
 ### Shared Fixtures (`conftest.py`)
 
