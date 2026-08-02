@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import io
 import re
+from collections import Counter
 from pathlib import Path
 
 import polars as pl
@@ -877,11 +878,15 @@ def test_binary_ops_match_rust():
     rust = _rust_enum_variants("BinaryOp")
     if rust is None:
         pytest.skip("_lib.enum_variants() not built")
-    from polars_cv.lazy import LazyPipelineExpr
-
-    missing = {name for name in rust if not hasattr(LazyPipelineExpr, name)}
-    assert not missing, (
-        f"Rust exposes binary ops with no LazyPipelineExpr method: {sorted(missing)}"
+    # `hasattr(LazyPipelineExpr, name)` would be a weak proxy: the class
+    # generates methods from Pipeline, so a Rust op whose name collided with an
+    # unrelated generated method would pass. Compare against the names the lazy
+    # API actually emits as binary ops.
+    emitted = _binary_op_names_from_source()
+    assert emitted, "no binary ops scanned from lazy.py — scan regex out of date?"
+    assert emitted == rust, (
+        f"BinaryOp drift between Rust and lazy.py: "
+        f"rust-only={sorted(rust - emitted)}, python-only={sorted(emitted - rust)}"
     )
 
 
@@ -1375,11 +1380,17 @@ def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
         / "core"
         / "dtype.rs"
     ).read_text()
-    body = src.split("dtype_table!(", 1)[1].split("\n);", 1)[0]
+    assert "dtype_table!(" in src, "dtype_table! invocation not found — parse is broken"
+    body = src.split("dtype_table!(", 1)[1]
+    end = re.search(r"^\s*\);", body, re.M)
+    assert end, "could not find the end of the dtype_table! invocation"
+    body = body[: end.start()]
     rows = re.findall(
         r'\(\s*(\w+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*\)', body
     )
-    assert len(rows) >= 10, f"dtype_table! parse found only {len(rows)} rows"
+    # Exact, not a lower bound: a loose bound lets a mis-parse that swallows the
+    # rest of the file still satisfy the check.
+    assert len(rows) == 10, f"dtype_table! parse found {len(rows)} rows, expected 10"
     return [(v, s, int(c), n) for v, s, c, n in rows]
 
 
@@ -1442,10 +1453,34 @@ def test_no_second_dtype_spelling_table() -> None:
     authority — a missing arm or a stray ``"f16"`` is how a dtype ends up
     handled in nine places and forgotten in the tenth.
 
-    So this does not forbid the tables; it requires any file that names six or
-    more dtypes to name *exactly* the ten that ``dtype_table!`` declares. New
-    code that only needs the name should still use ``DType::short_name`` /
-    ``numpy_name`` / ``wire_code`` rather than adding an eleventh site.
+    So this does not forbid the tables; it requires any dtype dispatch to name
+    *exactly* the ten that ``dtype_table!`` declares. New code that only needs
+    the name should still use ``DType::short_name`` / ``numpy_name`` /
+    ``wire_code`` rather than adding an eleventh site.
+
+    Two earlier versions of this test were unsound, so the technique matters:
+
+    - Checking per *file* let ``encode.rs``'s two dispatches cover for each
+      other, so deleting an arm from one passed.
+    - Checking per brace-matched ``match`` block fixed that but was
+      non-monotonic: with a "six or more names must be all ten" threshold,
+      dropping four arms failed while dropping five *passed*, because the
+      block fell under the threshold. Damage concealed itself by growing. The
+      brace matcher was also defeatable by an unbalanced ``{`` inside a string
+      literal (``polars_bail!("expected one of {")``) and by a brace in the
+      scrutinee (``match Key { id: 1 } {``), either of which merged sibling
+      blocks and restored the per-file hole.
+
+    This version does no brace matching and has no threshold. It groups arms
+    by enclosing function and requires each function's dtype-arm set to be
+    exactly the ten. Multiplicity is checked too: a function holding two
+    dispatches names every dtype twice, so dropping one arm makes the counts
+    uneven even though the *set* is still complete.
+
+    Known blind spot: it only sees ``match`` arm keys. A dtype table written as
+    an if/else chain or a ``HashMap`` literal is invisible to it. That is a
+    deliberate limit — arm keys can be found without parsing Rust, and the
+    parsing attempts above are what produced two unsound versions.
     """
     root = Path(__file__).resolve().parents[2]
     allowed = {
@@ -1455,47 +1490,88 @@ def test_no_second_dtype_spelling_table() -> None:
         root / "view-buffer" / "tests" / "dtype_single_authority.rs",
     }
     expected = {short for _variant, short, _code, _numpy in _dtype_table_rows()}
-    pattern = re.compile(r'"(?:[ui](?:8|16|32|64)|f(?:8|16|32|64))"')
-
-    def match_blocks(source: str):
-        """Yield the body of each ``match`` expression, innermost span only.
-
-        Checked per block rather than per file on purpose: ``encode.rs`` holds
-        two dtype dispatches, and a file-level check lets one supply a name the
-        other is missing, so a dropped arm passes. That is a guard that cannot
-        fail for the reason it claims, which is worse than no guard.
-        """
-        for m in re.finditer(r"\bmatch\b[^{]*\{", source):
-            depth, i = 0, m.end() - 1
-            while i < len(source):
-                if source[i] == "{":
-                    depth += 1
-                elif source[i] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        yield source[m.end() : i]
-                        break
-                i += 1
+    dtype_lit = re.compile(r'"([ui](?:8|16|32|64)|f(?:8|16|32|64))"')
+    fn_start = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)")
 
     offenders = []
-    for path in root.glob("**/*.rs"):
+    for path in sorted(root.glob("**/*.rs")):
         if path in allowed or "/target/" in str(path):
             continue
         source = path.read_text()
-        # Comments and test modules legitimately spell dtypes out — a doc
-        # example or an assertion is not a dispatch table.
+        # Comments legitimately spell dtypes out — a doc example is not a
+        # dispatch. Both line and block comments are stripped.
+        source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
         source = re.sub(r"(?m)^\s*//.*$", "", source)
-        source = source.split("#[cfg(test)]")[0]
-        for block in match_blocks(source):
-            hits = {m.group(0).strip('"') for m in pattern.finditer(block)}
-            if len(hits) >= 6 and hits != expected:
-                missing = sorted(expected - hits)
-                extra = sorted(hits - expected)
+        production, sep, after_tests = source.partition("#[cfg(test)]")
+        # Assertions in test modules name dtypes freely, so they are excluded.
+        # A production fn placed *after* a test module would go unscanned, so
+        # that is checked rather than assumed.
+        if sep and any(
+            dtype_lit.search(line.split("=>", 1)[0])
+            for line in after_tests.splitlines()
+            if "=>" in line
+        ):
+            offenders.append(
+                f"{path.relative_to(root)}: a dtype dispatch appears after "
+                f"#[cfg(test)], where this ratchet does not scan. Move it above "
+                f"the test module so it is checked."
+            )
+
+        # Group arms by enclosing function. Only literals on a line containing
+        # `=>` count, so error-message strings that merely mention dtypes are
+        # not mistaken for a dispatch.
+        current = "<file scope>"
+        per_fn: dict[str, list[str]] = {}
+        for line in production.splitlines():
+            m = fn_start.match(line)
+            if m:
+                current = m.group(1)
+            if "=>" in line:
+                # Only the arm *key* counts. `cast_err(row_idx, "i64")` in an
+                # arm body names a dtype without dispatching on it.
+                for lit in dtype_lit.findall(line.split("=>", 1)[0]):
+                    per_fn.setdefault(current, []).append(lit)
+
+        for fn_name, names in per_fn.items():
+            counts = Counter(names)
+            if set(counts) != expected:
+                missing = sorted(expected - set(counts))
+                unknown = sorted(set(counts) - expected)
                 offenders.append(
-                    f"{path.relative_to(root)} (missing={missing}, unknown={extra})"
+                    f"{path.relative_to(root)}::{fn_name} "
+                    f"(missing={missing}, unknown={unknown})"
+                )
+            elif len(set(counts.values())) != 1:
+                uneven = {n: c for n, c in sorted(counts.items())}
+                offenders.append(
+                    f"{path.relative_to(root)}::{fn_name} holds more than one "
+                    f"dtype dispatch and they disagree: {uneven}"
                 )
 
     assert not offenders, (
-        "these files dispatch on dtype names but do not agree with "
-        f"dtype_table! in view-buffer/src/core/dtype.rs: {offenders}"
+        "these dtype dispatches do not agree with dtype_table! in "
+        f"view-buffer/src/core/dtype.rs: {offenders}"
     )
+
+
+def test_contour_dtype_map_matches_rust() -> None:
+    """The metrics contour matcher builds pipeline sources without going
+    through the plugin, so it keeps its own Polars-type -> dtype-name map.
+    The correspondence is its own, but the names must be the Rust ones."""
+    from polars_cv.metrics._matching._contour import _POLARS_TO_CV_DTYPE
+
+    expected = {short for _variant, short, _code, _numpy in _dtype_table_rows()}
+    actual = set(_POLARS_TO_CV_DTYPE.values())
+    assert actual == expected, (
+        "_POLARS_TO_CV_DTYPE has drifted from dtype_table!: "
+        f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+    )
+
+
+def test_contour_source_rejects_non_buffer_element_types() -> None:
+    """A List(Boolean) mask must be refused, not silently called f32."""
+    from polars_cv.metrics._matching._contour import _detect_source_info
+
+    schema = {"mask": pl.List(pl.List(pl.Boolean))}
+    with pytest.raises(ValueError, match="not a buffer element type"):
+        _detect_source_info(schema, "mask")

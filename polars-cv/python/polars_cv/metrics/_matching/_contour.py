@@ -48,6 +48,10 @@ _EXTRACTED_CONTOUR_SET_SCHEMA = pl.List(_EXTRACTED_CONTOUR_SCHEMA)
 # Source format detection
 # ---------------------------------------------------------------------------
 
+# Polars leaf type -> polars-cv dtype name. The names are the ones
+# ``dtype_table!`` declares in view-buffer/src/core/dtype.rs;
+# ``test_contour_dtype_map_matches_rust`` pins this against them, since this
+# module builds pipeline sources without going through the plugin.
 _POLARS_TO_CV_DTYPE: dict[pl.DataType, str] = {
     pl.Float32: "f32",
     pl.Float64: "f64",
@@ -81,14 +85,28 @@ def _leaf_dtype(dtype: pl.DataType) -> pl.DataType:
     return dtype
 
 
-def _polars_dtype_to_cv(dtype: pl.DataType) -> str:
+def _polars_dtype_to_cv(dtype: pl.DataType, col: str) -> str:
     """Map a Polars leaf dtype to a polars-cv dtype string.
 
-    Uses equality comparison to match Polars DataTypeClass objects
-    which are metaclass singletons.  Falls back to ``"f32"`` for
-    unrecognised types.
+    Uses equality comparison to match Polars DataTypeClass objects, which are
+    metaclass singletons.
+
+    Raises:
+        ValueError: If the leaf type is not a buffer element type. This used to
+            fall back to ``"f32"``, which meant a ``List(Boolean)`` mask built a
+            source declaring float elements it does not have — the surrounding
+            function already refuses column types it does not support, so a
+            leaf type it does not support belongs in the same error, not in a
+            guess.
     """
-    return _POLARS_TO_CV_DTYPE.get(dtype, "f32")
+    try:
+        return _POLARS_TO_CV_DTYPE[dtype]
+    except KeyError:
+        raise ValueError(
+            f"Column {col!r} has element type {dtype}, which is not a buffer "
+            f"element type. Expected one of: "
+            f"{', '.join(sorted(_POLARS_TO_CV_DTYPE.values()))}."
+        ) from None
 
 
 def _detect_source_info(schema: dict[str, pl.DataType], col: str) -> _SourceInfo:
@@ -114,12 +132,12 @@ def _detect_source_info(schema: dict[str, pl.DataType], col: str) -> _SourceInfo
 
     if isinstance(dtype, pl.List):
         leaf = _leaf_dtype(dtype)
-        cv_dtype = _polars_dtype_to_cv(leaf)
+        cv_dtype = _polars_dtype_to_cv(leaf, col)
         return _SourceInfo(format="list", kwargs={"dtype": cv_dtype})
 
     if isinstance(dtype, pl.Array):
         leaf = _leaf_dtype(dtype)
-        cv_dtype = _polars_dtype_to_cv(leaf)
+        cv_dtype = _polars_dtype_to_cv(leaf, col)
         return _SourceInfo(format="array", kwargs={"dtype": cv_dtype})
 
     raise ValueError(
