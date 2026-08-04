@@ -302,7 +302,15 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             strategy: Matching strategy. Currently only ``"greedy"`` is supported.
 
         Returns:
-            A struct containing per-prediction match indices, IoUs, and TP/FP/FN counts.
+            A struct matching ``polars_cv.geometry.MATCH_RESULT_SCHEMA`` —
+            per-prediction match indices, IoUs, and TP/FP/FN counts.
+
+        Note:
+            ``n_fn`` (and the other count fields) are computed **per row**
+            (typically one image). Summing ``n_fn`` over a frame that omits
+            images with ground truth and no detections undercounts false
+            negatives. Keep one row per image in the evaluation population
+            (e.g. a full outer join against the image list) before aggregating.
         """
         binder = _ArgBinder()
         binder.add_data("other", other)

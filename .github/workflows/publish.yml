@@ -7,8 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Clear .cargo/config.toml's `build.rustflags = ["-C", "target-cpu=x86-64-v3"]`
-  # so published wheels are portable (no AVX2/BMI2/FMA requirement baked in).
+  # Clear .cargo/config.toml's per-x86_64 `target-cpu=x86-64-v3` rustflags so
+  # published wheels are portable (no AVX2/BMI2/FMA requirement baked in).
   # RUSTFLAGS (not CARGO_BUILD_RUSTFLAGS) is required: an empty
   # CARGO_BUILD_RUSTFLAGS is treated as unset and falls back to the config file.
   RUSTFLAGS: ""

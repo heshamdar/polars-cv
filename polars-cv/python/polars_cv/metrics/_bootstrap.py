@@ -209,9 +209,12 @@ def bootstrap_pr_auc(
     # Trapezoidal AUC per bootstrap_id using shift + diff
     auc_per_boot = (
         pr_per_boot.with_columns(
+            # Anchor the first point at recall = 0 (fill_null with the current
+            # recall so the first slice width is recall − 0), mirroring
+            # `_all_points_ap`.
             d_recall=(
                 pl.col("recall") - pl.col("recall").shift(1).over("bootstrap_id")
-            ).fill_null(0.0),
+            ).fill_null(pl.col("recall")),
             avg_precision=(
                 (
                     pl.col("precision")

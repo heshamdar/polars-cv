@@ -104,14 +104,15 @@ class LROCResult(MetricResult):
             f"Unknown method {method!r}. Expected 'trapezoidal' or 'mann_whitney'."
         )
 
-    def sensitivity_at_fpf(self, fpf: float) -> float:
+    def sensitivity_at_fpf(self, fpf: float) -> float | None:
         """Interpolate sensitivity at a requested false-positive fraction.
 
         Args:
             fpf: Target false-positive fraction.
 
         Returns:
-            Interpolated sensitivity value.
+            Interpolated sensitivity, or ``None`` when ``fpf`` is outside
+            the observed range of the curve.
         """
         return self.interpolate(x_col="fpf", y_col="sensitivity", at=fpf)
 
@@ -378,4 +379,6 @@ def _build_lroc_curve(per_image: pl.DataFrame) -> pl.DataFrame:
     lower_right = pl.DataFrame(
         {"threshold": [float("-inf")], "fpf": [1.0], "sensitivity": [max_sens]}
     )
-    return pl.concat([bucketed, inf_row, lower_right], how="vertical").sort("threshold")
+    # Sort by fpf ascending so the curve is in the conventional plotting
+    # order (plt.step(..., where="post") draws correctly).
+    return pl.concat([bucketed, inf_row, lower_right], how="vertical").sort("fpf")

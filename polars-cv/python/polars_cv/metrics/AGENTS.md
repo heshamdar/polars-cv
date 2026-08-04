@@ -113,6 +113,7 @@ metrics/
 
 ### Sorting and aggregation
 - `to_per_image()` uses `sort_by()` within `group_by().agg()` — never rely on `.sort()` before `.group_by()` since Polars does not guarantee order preservation across `group_by`.
+- FROC / LROC curves are returned sorted by ascending `fp_per_image` / `fpf` (plotting order), not ascending threshold.
 
 ### IoU re-thresholding
 - `at_iou_threshold()` only works reliably when *raising* the threshold. Lowering has no effect (unmatched detections lack stored IoU). A `UserWarning` is emitted.
@@ -121,7 +122,27 @@ metrics/
 - `"best_tp"` (default): effective score = highest-scoring TP detection for positive images.
 - `"top_scoring"`: effective score = single highest-scoring detection regardless of TP/FP (classical Swensson 1996).
 
+### PreMatchedAdapter population
+- Prefer `image_meta=` covering the full evaluation population. Without it the
+  adapter derives metadata from detections only and silently drops images with
+  zero detections (inflating recall / FP-per-image); a `UserWarning` is emitted.
+
+### Duplicate `image_id` in metadata
+- When the same `image_id` (and `class_id`, when present) appears more than
+  once in `image_metadata` (e.g. one rendered image owned by two cases), FROC
+  weight lookups dedupe by that key so detections are not fan-out-multiplied.
+  Equal weights are fine; conflicting weights raise `ValueError` (numerator
+  would pick an arbitrary row while denominators sum every row). Prefer a
+  composite key in `image_id` when each ownership should be a distinct
+  evaluation unit.
+
+### Interpolation beyond the curve
+- `MetricResult.interpolate` / `sensitivity_at_fp` / `sensitivity_at_fpf` /
+  `summary_table` return `None` / null for x-values outside the observed
+  range — no endpoint clamping.
+
 ## Known Issues
 
 - Bbox matching converts to contours internally. Correct but suboptimal for axis-aligned boxes.
 - Score + extract cannot be merged into one graph: `label_reduce` requires contours as an expression parameter, so they must exist as a column before the scoring pipeline runs.
+- `rasterize(anti_alias=)` is plumbed but view-buffer's rasterizer ignores the flag.

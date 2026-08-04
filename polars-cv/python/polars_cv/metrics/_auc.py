@@ -119,12 +119,17 @@ def partial_auc(
     clipped_x = x.filter(mask)
     clipped_y = y.filter(mask)
 
-    # Prepend lo boundary (clamped or interpolated)
+    # Prepend lo boundary (clamped or interpolated). partial_auc fills the
+    # integration window to [lo, hi] even when the curve does not span it,
+    # so out-of-range bounds fall back to endpoint y (unlike MetricResult
+    # interpolate, which returns None).
     if lo < x0_val:
         clipped_x = pl.concat([pl.Series("x", [lo]), clipped_x])
         clipped_y = pl.concat([pl.Series("y", [y0_val]), clipped_y])
     elif clipped_x.len() == 0 or float(clipped_x[0]) > lo:
         y_lo = _interp(x, y, lo)
+        if y_lo is None:
+            y_lo = y0_val
         clipped_x = pl.concat([pl.Series("x", [lo]), clipped_x])
         clipped_y = pl.concat([pl.Series("y", [y_lo]), clipped_y])
 
@@ -132,10 +137,16 @@ def partial_auc(
     if clipped_x.len() == 0:
         y_lo = _interp(x, y, lo)
         y_hi = _interp(x, y, hi)
+        if y_lo is None:
+            y_lo = y0_val
+        if y_hi is None:
+            y_hi = float(y[-1])
         clipped_x = pl.Series("x", [lo, hi])
         clipped_y = pl.Series("y", [y_lo, y_hi])
     elif float(clipped_x[-1]) < hi:
         y_hi = _interp(x, y, hi)
+        if y_hi is None:
+            y_hi = float(y[-1])
         clipped_x = pl.concat([clipped_x, pl.Series("x", [hi])])
         clipped_y = pl.concat([clipped_y, pl.Series("y", [y_hi])])
 
@@ -218,8 +229,8 @@ def detection_level_mann_whitney(
     return mann_whitney_u_auc(tp_scores, fp_scores)
 
 
-def _interp(x: pl.Series, y: pl.Series, xq: float) -> float:
-    """Interpolate y(xq) linearly with endpoint clamping.
+def _interp(x: pl.Series, y: pl.Series, xq: float) -> float | None:
+    """Interpolate y(xq) linearly; return ``None`` outside the observed range.
 
     Args:
         x: Sorted x-values (Polars Series).
@@ -227,11 +238,14 @@ def _interp(x: pl.Series, y: pl.Series, xq: float) -> float:
         xq: Query x-value.
 
     Returns:
-        Interpolated y-value.
+        Interpolated y-value, or ``None`` when ``xq`` falls outside
+        ``[x[0], x[-1]]`` (no extrapolation).
     """
-    if xq <= float(x[0]):
+    if xq < float(x[0]) or xq > float(x[-1]):
+        return None
+    if xq == float(x[0]):
         return float(y[0])
-    if xq >= float(x[-1]):
+    if xq == float(x[-1]):
         return float(y[-1])
     idx = x.search_sorted(xq, side="right") - 1
     x0_val = float(x[idx])

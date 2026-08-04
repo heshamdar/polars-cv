@@ -4,3 +4,4 @@
 # with E0658. (1.78+ is also required for Cargo.lock version 4.)
 [toolchain]
 channel = "stable"
+components = ["rust-analyzer", "rustfmt"]

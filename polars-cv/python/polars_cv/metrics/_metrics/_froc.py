@@ -10,6 +10,7 @@ import polars as pl
 from .._auc import CorrectionMethod, detection_level_mann_whitney, mann_whitney_u_auc
 from .._result import MetricResult
 from .._types import (
+    COL_CLASS_ID,
     COL_GT_LABEL,
     COL_IMAGE_ID,
     COL_IS_TP,
@@ -89,14 +90,15 @@ class FROCResult(MetricResult):
             f"Unknown method {method!r}. Expected 'trapezoidal' or 'mann_whitney'."
         )
 
-    def sensitivity_at_fp(self, fp_per_image: float) -> float:
+    def sensitivity_at_fp(self, fp_per_image: float) -> float | None:
         """Interpolate sensitivity at a requested FP/image rate.
 
         Args:
             fp_per_image: Target false-positive-per-image rate.
 
         Returns:
-            Interpolated sensitivity value.
+            Interpolated sensitivity, or ``None`` when ``fp_per_image`` is
+            outside the observed range of the curve.
         """
         return self.interpolate(
             x_col="fp_per_image", y_col="sensitivity", at=fp_per_image
@@ -149,12 +151,10 @@ class FROCResult(MetricResult):
         meta_df = sampled_meta.collect(engine="streaming")
 
         n_images = len(sampled_ids)
-        total_targets = int(
-            meta_df.select(COL_IMAGE_ID, COL_N_GTS)
-            .unique(subset=[COL_IMAGE_ID])
-            .select(pl.col(COL_N_GTS).sum())
-            .item()
-        )
+        # Sum over all resampled rows (no image_id dedup): a repeatedly-drawn
+        # image must contribute its n_gts once per draw, matching how
+        # froc_curve() sums meta_df directly and how n_images counts draws.
+        total_targets = int(meta_df.select(pl.col(COL_N_GTS).sum()).item())
 
         curve = _curve_from_detections(det_df, meta_df, n_images, total_targets)
 
@@ -331,9 +331,20 @@ def _curve_from_detections(
         total_weighted_gts_f = max(total_weighted_gts, 1.0)
         weight_sum_f = max(weight_sum, 1.0)
 
+        # Attach one weight per lookup key so a repeated metadata row
+        # (shared image across cases, or bootstrap-with-replacement draws)
+        # does not fan every detection out before aggregation. Conflicting
+        # weights for the same key are ill-defined (numerator would pick an
+        # arbitrary row while denominators sum every row) — raise instead.
+        weight_keys = _weight_lookup_keys(meta_df)
+        _raise_on_conflicting_weights(meta_df, weight_keys)
+        lookup_cols = [*weight_keys, COL_WEIGHT]
+        weight_lookup = meta_df.select(lookup_cols).unique(
+            subset=weight_keys, keep="first"
+        )
         det_with_weight = det_df.join(
-            meta_df.select(COL_IMAGE_ID, COL_WEIGHT),
-            on=COL_IMAGE_ID,
+            weight_lookup,
+            on=weight_keys,
             how="left",
         ).with_columns(pl.col(COL_WEIGHT).fill_null(1.0))
 
@@ -429,7 +440,63 @@ def _curve_from_detections(
             "sensitivity": pl.Float64,
         },
     )
-    return pl.concat([inf_row, bucketed], how="vertical").sort("threshold")
+    # Sort by fp_per_image ascending so the curve is in the conventional
+    # plotting order (plt.step(..., where="post") draws correctly).
+    return pl.concat([inf_row, bucketed], how="vertical").sort("fp_per_image")
+
+
+def _weight_lookup_keys(meta_df: pl.DataFrame) -> list[str]:
+    """Return the columns that identify a weight-lookup unit.
+
+    Prefer ``(image_id, class_id)`` when class is present so multi-class
+    rows that share an image are not collapsed; otherwise ``image_id``.
+    """
+    if COL_CLASS_ID in meta_df.columns:
+        return [COL_IMAGE_ID, COL_CLASS_ID]
+    return [COL_IMAGE_ID]
+
+
+def _raise_on_conflicting_weights(
+    meta_df: pl.DataFrame,
+    weight_keys: list[str],
+) -> None:
+    """Raise when a lookup key has more than one distinct weight.
+
+    Equal weights on duplicate keys are fine (shared image / bootstrap
+    redraws). Conflicting weights make the weighted FROC numerator
+    (first-row weight) disagree with the denominators (sum of every row)
+    in an order-dependent way.
+
+    Args:
+        meta_df: Image metadata frame that includes ``weight``.
+        weight_keys: Columns identifying a weight-lookup unit.
+
+    Raises:
+        ValueError: If any key group has more than one distinct weight.
+    """
+    conflicts = (
+        meta_df.group_by(weight_keys)
+        .agg(
+            n_weights=pl.col(COL_WEIGHT).n_unique(),
+            weights=pl.col(COL_WEIGHT).unique().sort(),
+        )
+        .filter(pl.col("n_weights") > 1)
+    )
+    if conflicts.height == 0:
+        return
+
+    examples: list[str] = []
+    for row in conflicts.head(3).iter_rows(named=True):
+        key_parts = [f"{k}={row[k]!r}" for k in weight_keys]
+        examples.append(f"({', '.join(key_parts)}): weights={row['weights']}")
+    raise ValueError(
+        "image_metadata has conflicting weights for the same "
+        f"{'+'.join(weight_keys)} key(s). Weighted FROC attaches one weight "
+        "per key to detections while denominators sum every metadata row, "
+        "so disagreeing weights make sensitivity order-dependent. Use a "
+        "single weight per unit, or a composite image_id when each ownership "
+        f"is a distinct evaluation unit. Examples: {'; '.join(examples)}"
+    )
 
 
 def _empty_froc_result(table: DetectionTable) -> FROCResult:

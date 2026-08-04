@@ -369,6 +369,10 @@ def _all_points_ap(curve: pl.DataFrame) -> float:
 
     # Monotone decreasing envelope: reverse, cum_max, reverse back
     envelope = precision.reverse().cum_max().reverse()
+    # Anchor at recall = 0 so the leftmost block (recall[0] × envelope[0])
+    # is included — matches COCO / scikit-learn Σ (Rₙ − Rₙ₋₁) · Pₙ with R₀ = 0.
+    recall = pl.concat([pl.Series([0.0]), recall])
+    envelope = pl.concat([pl.Series([envelope[0]]), envelope])
     return float(trapz_auc(recall, envelope))
 
 

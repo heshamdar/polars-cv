@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -36,7 +37,17 @@ class PreMatchedAdapter:
     * ``score`` (float) — confidence score
     * ``is_tp`` (bool) — whether this detection is a true positive
 
-    Plus per-image metadata either inline or via ``n_gts`` column.
+    Plus per-image metadata either via ``image_meta`` or derived from the
+    detection rows (``n_gts`` column / defaults).
+
+    .. warning::
+
+        Without ``image_meta``, the adapter derives the image population
+        by grouping the detection frame. Images with no detections are
+        then missing from ``image_metadata``, which silently deletes the
+        negative population and inflates recall / FP-per-image. Prefer
+        passing an explicit ``image_meta`` that covers the full evaluation
+        population whenever any image may carry zero detections.
     """
 
     def match(
@@ -54,6 +65,7 @@ class PreMatchedAdapter:
         gt_label_col: str | None = None,
         iou_col: str | None = None,
         det_idx_col: str | None = None,
+        image_meta: pl.LazyFrame | pl.DataFrame | None = None,
     ) -> DetectionTable:
         """Wrap pre-matched data into a ``DetectionTable``.
 
@@ -70,6 +82,13 @@ class PreMatchedAdapter:
             gt_label_col: Column with per-image positive/negative label.
             iou_col: Optional column with per-detection IoU values.
             det_idx_col: Optional column with detection index within image.
+            image_meta: Optional per-image (or per-image-class) frame that
+                defines the evaluation population. Must contain ``image_id``
+                and ``n_gts``; ``class_id``, ``weight``, and ``gt_label`` are
+                filled with defaults when absent. When provided this is the
+                sole source of ``image_metadata`` — images with zero
+                detections are retained. When omitted, metadata is derived
+                from the detection rows and a ``UserWarning`` is emitted.
 
         Returns:
             Validated ``DetectionTable``.
@@ -133,47 +152,107 @@ class PreMatchedAdapter:
                 .alias(COL_DET_IDX)
             )
 
-        # Build image metadata from the enriched input (lf), which retains
-        # all original columns alongside the canonical ones we added.
-        enriched_lf = lf.with_columns(
-            pl.col(resolved_tp).cast(pl.Boolean).alias(COL_IS_TP),
-            *(
-                [pl.col(class_col).cast(pl.String).alias(COL_CLASS_ID)]
-                if class_col is not None
-                else [pl.lit(DEFAULT_CLASS).alias(COL_CLASS_ID)]
-            ),
-        )
-
-        meta_agg: list[pl.Expr] = []
-
-        if n_gts_col is not None and n_gts_col in schema_names:
-            meta_agg.append(pl.col(n_gts_col).first().cast(pl.Int64).alias(COL_N_GTS))
+        if image_meta is not None:
+            meta_lf = _canonicalize_image_meta(image_meta)
         else:
-            meta_agg.append(pl.col(COL_IS_TP).sum().cast(pl.Int64).alias(COL_N_GTS))
-
-        if weight_col is not None and weight_col in schema_names:
-            meta_agg.append(
-                pl.col(weight_col).first().cast(pl.Float64).alias(COL_WEIGHT)
+            warnings.warn(
+                "PreMatchedAdapter.match() was called without image_meta. "
+                "Image metadata is derived from the detection frame, so any "
+                "image with zero detections is dropped from the evaluation "
+                "population (inflating recall and FP-per-image). Pass an "
+                "explicit image_meta covering the full population to avoid "
+                "this.",
+                UserWarning,
+                stacklevel=2,
             )
-        else:
-            meta_agg.append(pl.lit(1.0, dtype=pl.Float64).alias(COL_WEIGHT))
-
-        if gt_label_col is not None and gt_label_col in schema_names:
-            meta_agg.append(
-                pl.col(gt_label_col).first().cast(pl.Boolean).alias(COL_GT_LABEL)
+            # Build image metadata from the enriched input (lf), which retains
+            # all original columns alongside the canonical ones we added.
+            enriched_lf = lf.with_columns(
+                pl.col(resolved_tp).cast(pl.Boolean).alias(COL_IS_TP),
+                *(
+                    [pl.col(class_col).cast(pl.String).alias(COL_CLASS_ID)]
+                    if class_col is not None
+                    else [pl.lit(DEFAULT_CLASS).alias(COL_CLASS_ID)]
+                ),
             )
-        else:
-            meta_agg.append((pl.col(COL_IS_TP).any()).alias(COL_GT_LABEL))
 
-        meta_lf = enriched_lf.group_by(COL_IMAGE_ID, COL_CLASS_ID).agg(meta_agg)
+            meta_agg: list[pl.Expr] = []
 
-        if group_col is not None and group_col in list(lf.collect_schema().names()):
-            group_map = lf.select(
-                pl.col(image_id_col or COL_IMAGE_ID)
-                .cast(pl.String)
-                .alias(COL_IMAGE_ID),
-                pl.col(group_col).cast(pl.String).alias(COL_GROUP_ID),
-            ).unique()
-            meta_lf = meta_lf.join(group_map, on=COL_IMAGE_ID, how="left")
+            if n_gts_col is not None and n_gts_col in schema_names:
+                meta_agg.append(
+                    pl.col(n_gts_col).first().cast(pl.Int64).alias(COL_N_GTS)
+                )
+            else:
+                meta_agg.append(pl.col(COL_IS_TP).sum().cast(pl.Int64).alias(COL_N_GTS))
+
+            if weight_col is not None and weight_col in schema_names:
+                meta_agg.append(
+                    pl.col(weight_col).first().cast(pl.Float64).alias(COL_WEIGHT)
+                )
+            else:
+                meta_agg.append(pl.lit(1.0, dtype=pl.Float64).alias(COL_WEIGHT))
+
+            if gt_label_col is not None and gt_label_col in schema_names:
+                meta_agg.append(
+                    pl.col(gt_label_col).first().cast(pl.Boolean).alias(COL_GT_LABEL)
+                )
+            else:
+                meta_agg.append((pl.col(COL_IS_TP).any()).alias(COL_GT_LABEL))
+
+            meta_lf = enriched_lf.group_by(COL_IMAGE_ID, COL_CLASS_ID).agg(meta_agg)
+
+            if group_col is not None and group_col in list(lf.collect_schema().names()):
+                group_map = lf.select(
+                    pl.col(image_id_col or COL_IMAGE_ID)
+                    .cast(pl.String)
+                    .alias(COL_IMAGE_ID),
+                    pl.col(group_col).cast(pl.String).alias(COL_GROUP_ID),
+                ).unique()
+                meta_lf = meta_lf.join(group_map, on=COL_IMAGE_ID, how="left")
 
         return DetectionTable.from_matched(detections_lf, meta_lf)
+
+
+def _canonicalize_image_meta(
+    image_meta: pl.LazyFrame | pl.DataFrame,
+) -> pl.LazyFrame:
+    """Normalize a caller-supplied image population to canonical columns.
+
+    Args:
+        image_meta: Per-image (or per-image-class) frame. Must contain
+            ``image_id`` and ``n_gts``; ``class_id``, ``weight``, and
+            ``gt_label`` are filled with defaults when absent.
+
+    Returns:
+        LazyFrame with the required ``IMAGE_META_REQUIRED`` columns.
+
+    Raises:
+        ValueError: If ``image_id`` or ``n_gts`` is missing.
+    """
+    meta_lf = to_lazy(image_meta)
+    schema_names = list(meta_lf.collect_schema().names())
+    ensure_columns_exist(schema_names, [COL_IMAGE_ID, COL_N_GTS])
+
+    select_exprs: list[pl.Expr] = [
+        pl.col(COL_IMAGE_ID).cast(pl.String).alias(COL_IMAGE_ID),
+        (
+            pl.col(COL_CLASS_ID).cast(pl.String).alias(COL_CLASS_ID)
+            if COL_CLASS_ID in schema_names
+            else pl.lit(DEFAULT_CLASS).alias(COL_CLASS_ID)
+        ),
+        pl.col(COL_N_GTS).cast(pl.Int64).alias(COL_N_GTS),
+        (
+            pl.col(COL_WEIGHT).cast(pl.Float64).alias(COL_WEIGHT)
+            if COL_WEIGHT in schema_names
+            else pl.lit(1.0, dtype=pl.Float64).alias(COL_WEIGHT)
+        ),
+        (
+            pl.col(COL_GT_LABEL).cast(pl.Boolean).alias(COL_GT_LABEL)
+            if COL_GT_LABEL in schema_names
+            else (pl.col(COL_N_GTS).cast(pl.Int64) > 0).alias(COL_GT_LABEL)
+        ),
+    ]
+    if COL_GROUP_ID in schema_names:
+        select_exprs.append(pl.col(COL_GROUP_ID).cast(pl.String).alias(COL_GROUP_ID))
+
+    return meta_lf.select(select_exprs)

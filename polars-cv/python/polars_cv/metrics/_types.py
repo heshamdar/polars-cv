@@ -79,6 +79,14 @@ class DetectionTable:
     * **image_metadata** — one row per (image, class) with ``n_gts``,
       ``weight``, ``gt_label``, and optionally ``group_id``.
 
+    When the same ``image_id`` (and ``class_id``, when present) appears more
+    than once in ``image_metadata`` (e.g. one rendered image owned by two
+    cases), FROC weight lookups dedupe by that key so detections are not
+    fan-out-multiplied. Equal weights on the duplicates are fine; conflicting
+    weights raise ``ValueError`` because the numerator would pick an arbitrary
+    row while denominators sum every row. Prefer a composite key in
+    ``image_id`` when each ownership should be a distinct evaluation unit.
+
     Use :meth:`from_matched` to construct with schema validation.
     """
 
