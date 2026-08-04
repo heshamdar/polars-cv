@@ -108,7 +108,8 @@ class TestFrocMetrics:
         }
         assert result.curve.height >= 1
         assert 0.0 <= result.auc() <= 10.0
-        assert 0.0 <= result.sensitivity_at_fp(1.0) <= 1.0
+        sens = result.sensitivity_at_fp(1.0)
+        assert sens is None or 0.0 <= sens <= 1.0
 
     def test_froc_no_resize_trusts_user(self) -> None:
         """With auto_resize=False, no shape validation is performed."""
@@ -172,7 +173,8 @@ class TestLrocMetrics:
         assert set(result.curve.columns) == {"threshold", "fpf", "sensitivity"}
         assert result.curve.height >= 1
         assert 0.0 <= result.auc() <= 1.0
-        assert 0.0 <= result.sensitivity_at_fpf(0.25) <= 1.0
+        sens = result.sensitivity_at_fpf(0.25)
+        assert sens is None or 0.0 <= sens <= 1.0
 
     def test_lroc_allows_multiple_targets_per_positive(self) -> None:
         """LROC computes image-level localization when positives have multiple GTs."""

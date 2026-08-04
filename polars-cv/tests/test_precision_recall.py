@@ -153,13 +153,13 @@ class TestAveragePrecision:
         assert 0.0 <= ap <= 1.0
 
     def test_perfect_detector(self) -> None:
-        """Perfect detector (all detections are TP, no FP) has high AP.
+        """Perfect detector (all detections are TP, no FP) has AP = 1.0.
 
         With 2 GTs and 2 TPs scored [0.9, 0.8]:
         - rank 1: P=1/1=1.0, R=1/2=0.5
         - rank 2: P=2/2=1.0, R=2/2=1.0
-        Trapezoidal AUC from (0.5, 1.0) to (1.0, 1.0) = 0.5.
-        11-point AP = 1.0 (precision is 1.0 at all recall levels).
+        With the recall=0 anchor, all-points AP integrates to 1.0
+        (matching 11-point AP and sklearn average_precision_score).
         """
         det_df = pl.DataFrame(
             {
@@ -191,12 +191,10 @@ class TestAveragePrecision:
             }
         )
         table = DetectionTable.from_matched(det_df, meta_df)
-        # 11-point interpolation gives 1.0 since precision is always 1.0
         ap_11 = average_precision(table, interpolation="11_point")
         assert abs(ap_11 - 1.0) < 0.01
-        # Trapezoidal AUC is 0.5 because curve starts at recall=0.5
-        ap_trap = average_precision(table, interpolation="all_points")
-        assert abs(ap_trap - 0.5) < 0.01
+        ap_all = average_precision(table, interpolation="all_points")
+        assert abs(ap_all - 1.0) < 0.01
 
 
 class TestMeanAveragePrecision:

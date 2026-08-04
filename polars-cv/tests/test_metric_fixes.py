@@ -325,9 +325,9 @@ class TestPrApEnvelope:
     def test_perfect_detector_ap_equals_one(self) -> None:
         """Perfect detector (all TP, no FP) has AP = 1.0 with envelope.
 
-        Recall goes from 0.5 to 1.0, precision is always 1.0.
-        Raw AUC = 0.5, but 11-point AP = 1.0. Envelope AP should also
-        equal raw AUC here since precision is already monotone.
+        Recall goes from 0.5 to 1.0, precision is always 1.0. With the
+        recall=0 anchor the envelope integrates to 1.0 (matching 11-point
+        AP and sklearn average_precision_score).
         """
         det_df = pl.DataFrame(
             {
@@ -360,7 +360,7 @@ class TestPrApEnvelope:
         )
         table = DetectionTable.from_matched(det_df, meta_df)
         result = precision_recall_curve(table)
-        assert result.auc() == pytest.approx(0.5, abs=0.01)
+        assert result.auc() == pytest.approx(1.0, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -901,3 +901,434 @@ class TestBootstrapPrAucEstimatorConsistency:
         table = self._dipping_table()
         result = bootstrap_pr_auc(table, n_bootstrap=8, seed=7)
         assert result.ci_lower <= result.point_estimate <= result.ci_upper
+
+    def test_recall_anchor_matches_average_precision(self) -> None:
+        """bootstrap_pr_auc point estimate equals average_precision after
+        the shared recall=0 anchor fix (issue 1 paired fix)."""
+        from polars_cv.metrics import average_precision
+        from polars_cv.metrics._bootstrap import bootstrap_pr_auc
+
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 3,
+                COL_SCORE: [0.9, 0.8, 0.7],
+                COL_IS_TP: [True, True, False],
+                COL_GT_IDX: [0, 0, None],
+                COL_IOU: [0.6, 0.6, 0.0],
+                COL_DET_IDX: [0, 0, 0],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 3,
+                COL_N_GTS: [1, 1, 1],
+                COL_WEIGHT: [1.0] * 3,
+                COL_GT_LABEL: [True] * 3,
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        point = average_precision(table)
+        result = bootstrap_pr_auc(table, n_bootstrap=5, seed=1)
+        assert point == pytest.approx(2.0 / 3.0, abs=1e-9)
+        assert result.point_estimate == pytest.approx(point, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Issue 1: all_points AP must anchor at recall = 0
+# ---------------------------------------------------------------------------
+
+
+class TestAllPointsApRecallAnchor:
+    """all_points AP must include the leftmost recall segment (R₀ = 0)."""
+
+    def test_sklearn_repro(self) -> None:
+        """Exact upstream repro: AP must be 2/3, not 1/3."""
+        from polars_cv.metrics import average_precision
+
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 3,
+                COL_SCORE: [0.9, 0.8, 0.7],
+                COL_IS_TP: [True, True, False],
+                COL_GT_IDX: [0, 0, None],
+                COL_IOU: [0.6, 0.6, 0.0],
+                COL_DET_IDX: [0, 0, 0],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 3,
+                COL_N_GTS: [1, 1, 1],
+                COL_WEIGHT: [1.0] * 3,
+                COL_GT_LABEL: [True] * 3,
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        assert average_precision(table) == pytest.approx(2.0 / 3.0, abs=1e-9)
+
+    def test_degenerate_perfect_result(self) -> None:
+        """When every recall value is 1.0, AP must be 1.0 (not 0.0).
+
+        Without the recall=0 anchor every trapezoid has zero width.
+        """
+        from polars_cv.metrics import average_precision
+
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "a"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 2,
+                COL_SCORE: [0.9, 0.4],
+                COL_IS_TP: [True, False],
+                COL_GT_IDX: [0, None],
+                COL_IOU: [0.9, 0.0],
+                COL_DET_IDX: [0, 1],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a"],
+                COL_CLASS_ID: [DEFAULT_CLASS],
+                COL_N_GTS: [1],
+                COL_WEIGHT: [1.0],
+                COL_GT_LABEL: [True],
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        assert average_precision(table) == pytest.approx(1.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Issue 2: PreMatchedAdapter must accept an explicit image population
+# ---------------------------------------------------------------------------
+
+
+class TestPreMatchedAdapterPopulation:
+    """PreMatchedAdapter must not silently drop zero-detection images."""
+
+    def test_image_meta_retains_zero_detection_images(self) -> None:
+        """Passing image_meta keeps images that carry no detections."""
+        from polars_cv.metrics import PreMatchedAdapter
+
+        data = pl.DataFrame(
+            {
+                "image_id": ["a"],
+                "score": [0.9],
+                "is_tp": [True],
+            }
+        )
+        image_meta = pl.DataFrame(
+            {
+                "image_id": ["a", "b", "c"],
+                "n_gts": [1, 0, 1],
+                "weight": [1.0, 1.0, 1.0],
+                "gt_label": [True, False, True],
+            }
+        )
+        table = PreMatchedAdapter().match(
+            data,
+            pred_col="score",
+            gt_col="is_tp",
+            image_id_col="image_id",
+            image_meta=image_meta,
+        )
+        _, meta = table.collect()
+        assert meta.height == 3
+        assert set(meta["image_id"].to_list()) == {"a", "b", "c"}
+
+    def test_omitting_image_meta_warns(self) -> None:
+        """Calling without image_meta emits a UserWarning."""
+        from polars_cv.metrics import PreMatchedAdapter
+
+        data = pl.DataFrame(
+            {
+                "image_id": ["a"],
+                "score": [0.9],
+                "is_tp": [True],
+                "n_gts": [1],
+            }
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            table = PreMatchedAdapter().match(
+                data,
+                pred_col="score",
+                gt_col="is_tp",
+                image_id_col="image_id",
+                n_gts_col="n_gts",
+            )
+            assert any(
+                issubclass(w.category, UserWarning) and "image_meta" in str(w.message)
+                for w in caught
+            )
+        _, meta = table.collect()
+        assert meta.height == 1
+
+
+# ---------------------------------------------------------------------------
+# Issues 3 & 4: FROC weight-join fan-out
+# ---------------------------------------------------------------------------
+
+
+class TestFrocSharedImageId:
+    """Duplicate image_id in metadata must not fan out detections."""
+
+    def test_shared_image_not_double_counted(self) -> None:
+        """Exact upstream repro: tp=1, fp=1, sensitivity=0.5."""
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["shared", "shared"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 2,
+                COL_SCORE: [0.8, 0.7],
+                COL_IS_TP: [True, False],
+                COL_GT_IDX: [0, None],
+                COL_IOU: [0.6, 0.0],
+                COL_DET_IDX: [0, 1],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["shared", "shared"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 2,
+                COL_N_GTS: [1, 1],
+                COL_WEIGHT: [1.0, 1.0],
+                COL_GT_LABEL: [True, True],
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        curve = froc_curve(table).curve
+        low = curve.filter(pl.col("threshold") == 0.7)
+        assert low.height == 1
+        assert int(low["tp"].item()) == 1
+        assert int(low["fp"].item()) == 1
+        assert float(low["sensitivity"].item()) == pytest.approx(0.5)
+
+    def test_conflicting_weights_raise(self) -> None:
+        """Conflicting weights on a shared image_id raise ValueError.
+
+        Both row orders must raise — the bug was that they produced different
+        numeric sensitivities instead of failing loudly.
+        """
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["shared", "shared"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 2,
+                COL_SCORE: [0.8, 0.7],
+                COL_IS_TP: [True, False],
+                COL_GT_IDX: [0, None],
+                COL_IOU: [0.6, 0.0],
+                COL_DET_IDX: [0, 1],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        for weights in ([1.0, 5.0], [5.0, 1.0]):
+            meta_df = pl.DataFrame(
+                {
+                    COL_IMAGE_ID: ["shared", "shared"],
+                    COL_CLASS_ID: [DEFAULT_CLASS] * 2,
+                    COL_N_GTS: [1, 1],
+                    COL_WEIGHT: weights,
+                    COL_GT_LABEL: [True, True],
+                }
+            )
+            table = DetectionTable.from_matched(det_df, meta_df)
+            with pytest.raises(ValueError, match="conflicting weights"):
+                froc_curve(table)
+
+    def test_equal_weights_remain_stable(self) -> None:
+        """Equal duplicate weights still yield tp=1, fp=1, sensitivity=0.5."""
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["shared", "shared"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 2,
+                COL_SCORE: [0.8, 0.7],
+                COL_IS_TP: [True, False],
+                COL_GT_IDX: [0, None],
+                COL_IOU: [0.6, 0.0],
+                COL_DET_IDX: [0, 1],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["shared", "shared"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 2,
+                COL_N_GTS: [1, 1],
+                COL_WEIGHT: [1.0, 1.0],
+                COL_GT_LABEL: [True, True],
+            }
+        )
+        curve = froc_curve(DetectionTable.from_matched(det_df, meta_df)).curve
+        low = curve.filter(pl.col("threshold") == 0.7)
+        assert int(low["tp"].item()) == 1
+        assert int(low["fp"].item()) == 1
+        assert float(low["sensitivity"].item()) == pytest.approx(0.5)
+
+
+class TestFrocBootstrapCiContainsPoint:
+    """FROC bootstrap CI must bracket the point estimate (issue 4)."""
+
+    def test_ci_contains_point_and_sensitivity_bounded(self) -> None:
+        """Replica sensitivity stays ≤ 1 and the CI brackets the point."""
+        image_ids = [f"p{i}" for i in range(10)] + [f"n{i}" for i in range(10)]
+        det_rows: list[tuple[str, float, bool, int | None, float, int]] = []
+        for i in range(10):
+            det_rows.append((f"p{i}", 0.9, True, 0, 0.8, 0))
+        for i in range(10):
+            det_rows.append((f"n{i}", 0.5, False, None, 0.0, 0))
+
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: [r[0] for r in det_rows],
+                COL_CLASS_ID: [DEFAULT_CLASS] * len(det_rows),
+                COL_SCORE: [r[1] for r in det_rows],
+                COL_IS_TP: [r[2] for r in det_rows],
+                COL_GT_IDX: [r[3] for r in det_rows],
+                COL_IOU: [r[4] for r in det_rows],
+                COL_DET_IDX: [r[5] for r in det_rows],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: image_ids,
+                COL_CLASS_ID: [DEFAULT_CLASS] * 20,
+                COL_N_GTS: [1] * 10 + [0] * 10,
+                COL_WEIGHT: [1.0] * 20,
+                COL_GT_LABEL: [True] * 10 + [False] * 10,
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        result = froc_curve(table)
+        point = result.auc()
+        ci = result.bootstrap_ci(n_bootstrap=200, seed=0)
+        assert ci.ci_lower <= point <= ci.ci_upper
+        assert max(ci.distribution) <= 1.0 + 1e-9
+
+        # Replica curves themselves must keep sensitivity ≤ 1.
+        ids_series = pl.Series("id", image_ids)
+        for i in range(50):
+            sampled = ids_series.sample(
+                n=len(image_ids), with_replacement=True, seed=i
+            ).to_list()
+            replica = result._reconstruct(sampled)
+            assert float(replica.curve["sensitivity"].max()) <= 1.0 + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Issue 5.1: FROC / LROC curve plotting order
+# ---------------------------------------------------------------------------
+
+
+class TestFrocCurveOrder:
+    """FROC curve must be ordered by ascending fp_per_image."""
+
+    def test_fp_per_image_non_decreasing(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """fp_per_image is non-decreasing down the returned frame."""
+        curve = froc_curve(simple_detection_table).curve
+        vals = curve["fp_per_image"].to_list()
+        for i in range(1, len(vals)):
+            assert vals[i] >= vals[i - 1] - 1e-12
+
+
+class TestLrocCurveOrder:
+    """LROC curve must be ordered by ascending fpf."""
+
+    def test_fpf_non_decreasing(self, simple_detection_table: DetectionTable) -> None:
+        """fpf is non-decreasing down the returned frame."""
+        curve = lroc_curve(simple_detection_table).curve
+        vals = curve["fpf"].to_list()
+        for i in range(1, len(vals)):
+            assert vals[i] >= vals[i - 1] - 1e-12
+
+
+# ---------------------------------------------------------------------------
+# Issue 5.2: interpolate returns None beyond the observed range
+# ---------------------------------------------------------------------------
+
+
+class TestInterpolateNullBeyondRange:
+    """sensitivity_at_fp returns None past the curve's observed max FP rate."""
+
+    def test_beyond_max_returns_none(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """Querying past the observed max fp_per_image yields None."""
+        result = froc_curve(simple_detection_table)
+        max_fp = float(result.curve["fp_per_image"].max())
+        assert result.sensitivity_at_fp(max_fp + 1.0) is None
+
+    def test_summary_table_nulls_beyond_range(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """summary_table writes null for unreachable operating points."""
+        result = froc_curve(simple_detection_table)
+        max_fp = float(result.curve["fp_per_image"].max())
+        summary = result.summary_table(fp_rates=[0.0, max_fp + 10.0])
+        assert summary["sensitivity"][0] is not None
+        assert summary["sensitivity"][1] is None

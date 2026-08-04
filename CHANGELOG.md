@@ -470,6 +470,57 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   continuation replay without overriding later ops that legitimately change the
   shape (`assert_shape(channels=3).grayscale()` still reports 1 channel).
 
+- **`average_precision(interpolation="all_points")` omitted the first recall
+  segment.** `_all_points_ap` built the monotone precision envelope correctly
+  then integrated only over the recall values present in the curve, never
+  anchoring at recall = 0. The leftmost block — `recall[0] × envelope[0]` —
+  was dropped every time, so a three-detection curve that should score 2/3
+  reported 1/3, and a perfect single-TP result reported 0.0. Both
+  `_all_points_ap` and the matching per-replicate trapezoid in
+  `bootstrap_pr_auc` now prepend a recall-0 anchor (COCO / scikit-learn
+  `Σ (Rₙ − Rₙ₋₁) · Pₙ` with `R₀ = 0`). **This changes reported AP numbers**
+  for `interpolation="all_points"` (the default); `11_point` is unaffected.
+
+- **`PreMatchedAdapter` derived the image population from detections only.**
+  Images with no detections got no metadata row, silently deleting the
+  negative population and inflating recall / FP-per-image. `match()` now
+  accepts an optional `image_meta` frame that defines the full evaluation
+  population; omitting it keeps the previous behaviour but emits a
+  `UserWarning`.
+
+- **FROC double-counted detections when `image_id` repeated in metadata.**
+  `_curve_from_detections` joined detections to `image_metadata` weights
+  without deduping by `image_id`, so a shared rendered image owned by two
+  cases (or a bootstrap-with-replacement draw) fan-out-multiplied every
+  detection before TP/FP aggregation. The weight lookup is now unique by
+  `image_id`. The same join bug made `FROCResult.bootstrap_ci` produce
+  intervals that excluded the point estimate and replica sensitivities
+  above 1.0; both are fixed. `FROCResult._reconstruct` also no longer
+  dedupes `n_gts` before summing, so resampled draws contribute once per
+  draw.
+
+- **FROC / LROC curves were returned in ascending-threshold order**, so
+  `fp_per_image` / `fpf` ran downwards through the frame and
+  `plt.step(..., where="post")` drew backwards. Curves are now sorted by
+  ascending `fp_per_image` / `fpf`. **This changes reported FROC/LROC AUC**:
+  ascending order changes trapezoids at tied `x=0` points (the upper
+  envelope at the origin), so printed AUCs can move slightly
+  (e.g. `0.025526 → 0.025780` on a low-FP sample).
+
+- **FROC weighted sensitivity was order-dependent when a duplicated
+  `image_id` carried conflicting weights.** The weight lookup deduped by
+  `image_id` (first row wins) while denominators summed every metadata row,
+  so `[1, 5]` vs `[5, 1]` flipped sensitivity (`0.1667` vs `0.8333`). Equal
+  weights still dedupe cleanly; conflicting weights now raise `ValueError`
+  pointing at a composite `image_id` or a single weight per unit. The lookup
+  key is `(image_id, class_id)` when class is present.
+
+- **`MetricResult.interpolate` (and `sensitivity_at_fp` /
+  `sensitivity_at_fpf` / `summary_table`) clamped past the observed x-range
+  instead of returning null.** Queries beyond the curve's max now return
+  `None` / null so an unreachable operating point is visible rather than
+  silently repeating the last y value.
+
 - **`.contour.label_reduce()` was a second, divergent implementation.** The
   accessor scored contours with a plugin-local routine while
   `Pipeline.label_reduce()` used the engine's `score_contours_on_buffer` — the

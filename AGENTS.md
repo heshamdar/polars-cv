@@ -166,6 +166,10 @@ uv run ruff check python/ tests/   # Lint Python
 cargo clippy --workspace           # Lint Rust
 ```
 
+Local x86_64 builds pick up `target-cpu=x86-64-v3` from [`.cargo/config.toml`](.cargo/config.toml)
+(per-triple, not `[build].rustflags` — a global flag breaks aarch64 Darwin/`ring`).
+CI and wheel jobs clear it with `RUSTFLAGS=""`.
+
 ## Known Issues
 
 - **f64 chains stay unfused:** the FusedKernel computes in f32, so the float-promoting scalar family is correct-but-unfused for f64 inputs (`view-buffer/src/expr.rs::extract_ops`).

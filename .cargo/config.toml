@@ -1,15 +1,30 @@
-[build]
-# Enables AVX2/BMI2 auto-vectorization for local development builds.
-# Benefits: grayscale_u8, threshold_simd (32-byte chunks), FusedKernel,
-# and the separable blur inner loops.
+# Local-dev SIMD flags — x86_64 hosts only.
 #
-# `x86-64-v3` (AVX2/BMI2/FMA) rather than `native`: native builds embed
-# whatever the *build* host's CPUID reports, which traps with SIGILL when the
-# process later runs on a host without those features (observed with AVX-VNNI
-# under virtualized/heterogeneous hosts — the crash kills the whole Python
-# process and cannot be caught). v3 covers every x86 CPU since ~2015 and
-# retains the vectorization wins listed above.
+# Enables AVX2/BMI2/FMA auto-vectorization for grayscale_u8, threshold_simd
+# (32-byte chunks), FusedKernel, and the separable blur inner loops.
 #
-# Disabled in CI/wheel builds via CARGO_BUILD_RUSTFLAGS="" env override
-# (see .github/workflows/ci.yml and publish.yml) so wheels are portable.
+# `x86-64-v3` rather than `native`: native embeds whatever the *build* host's
+# CPUID reports, which traps with SIGILL when the process later runs on a host
+# without those features (observed with AVX-VNNI under virtualized/heterogeneous
+# hosts — the crash kills the whole Python process and cannot be caught). v3
+# covers every x86 CPU since ~2015 and retains the vectorization wins above.
+#
+# Must NOT live under `[build].rustflags`: that applies to every target, and on
+# aarch64-apple-darwin it strips the NEON/AES features `ring` asserts at
+# compile time (E0080 in cpu/arm/darwin.rs). Scope per x86_64 triple instead.
+#
+# Cleared in CI/wheel builds via `RUSTFLAGS=""` (see .github/workflows/ci.yml
+# and publish.yml) so wheels stay portable. An empty CARGO_BUILD_RUSTFLAGS is
+# treated as unset and falls back to this file — use RUSTFLAGS.
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+
+[target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-cpu=x86-64-v3"]

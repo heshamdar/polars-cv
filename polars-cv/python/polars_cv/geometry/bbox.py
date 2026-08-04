@@ -62,7 +62,14 @@ class BBoxNamespace(_GeomNullPolicy, _PluginNamespace):
             strategy: Matching strategy (only ``"greedy"`` is supported).
 
         Returns:
-            Struct expression matching ``MATCH_RESULT_SCHEMA``.
+            A struct matching ``polars_cv.geometry.MATCH_RESULT_SCHEMA``.
+
+        Note:
+            ``n_fn`` (and the other count fields) are computed **per row**
+            (typically one image). Summing ``n_fn`` over a frame that omits
+            images with ground truth and no detections undercounts false
+            negatives. Keep one row per image in the evaluation population
+            before aggregating.
         """
         binder = _ArgBinder()
         binder.add_data("other", other)

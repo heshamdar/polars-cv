@@ -71,7 +71,7 @@ class MetricResult:
     # Interpolation
     # ------------------------------------------------------------------
 
-    def interpolate(self, *, x_col: str, y_col: str, at: float) -> float:
+    def interpolate(self, *, x_col: str, y_col: str, at: float) -> float | None:
         """Linearly interpolate a y-value at a given x-value.
 
         Args:
@@ -80,13 +80,14 @@ class MetricResult:
             at: The x-value at which to interpolate.
 
         Returns:
-            Interpolated y-value.
+            Interpolated y-value, or ``None`` when ``at`` falls outside the
+            observed x-range of the curve (no extrapolation).
         """
         sorted_curve = self.curve.sort(x_col)
         x = sorted_curve[x_col].cast(pl.Float64)
         y = sorted_curve[y_col].fill_null(0.0).cast(pl.Float64)
         if x.len() == 0:
-            return 0.0
+            return None
         return _interp(x, y, at)
 
     # ------------------------------------------------------------------
@@ -108,7 +109,8 @@ class MetricResult:
             operating_points: x-values at which to report interpolated y.
 
         Returns:
-            DataFrame with ``x_col`` and ``y_col`` columns.
+            DataFrame with ``x_col`` and ``y_col`` columns. ``y_col`` is
+            null for operating points outside the observed x-range.
         """
         return pl.DataFrame(
             {
