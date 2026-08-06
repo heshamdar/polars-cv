@@ -38,6 +38,7 @@ import pytest
 import polars_cv
 from polars_cv import Pipeline
 from tests._dtype_ratchet import dispatch_offenders
+from tests._schema_parity import assert_plan_equals_exec, leaf_dtype
 from tests.conftest import plugin_required
 
 # ---------------------------------------------------------------------------
@@ -81,18 +82,18 @@ def _png(
 
 
 def _planned_and_realized(df: pl.DataFrame, expr: pl.Expr, col: str = "out"):
-    """Return (planned_dtype, realized_dtype) for an expression over ``df``."""
-    lf = df.lazy().select(**{col: expr})
-    planned = lf.collect_schema()[col]
-    realized = lf.collect()[col].dtype
+    """Return (planned_dtype, realized_dtype) for an expression over ``df``.
+
+    Backed by the shared harness, so every call site here also gets the
+    streaming engine and the engine-agreement check, not just in-memory.
+    """
+    planned = df.lazy().with_columns(**{col: expr}).collect_schema()[col]
+    realized = assert_plan_equals_exec(df, expr, name=col).dtype
     return planned, realized
 
 
-def _leaf_dtype(dtype: pl.DataType) -> pl.DataType:
-    """Peel nested List/Array wrappers to the innermost element dtype."""
-    while isinstance(dtype, (pl.List, pl.Array)):
-        dtype = dtype.inner
-    return dtype
+#: Peeling nested List/Array wrappers is one operation; it lives in the harness.
+_leaf_dtype = leaf_dtype
 
 
 # ---------------------------------------------------------------------------
@@ -338,12 +339,14 @@ def _known_ops_from_rust():
 @plugin_required
 def test_registry_parity_pipeline_ops_are_executable():
     """Every op a Pipeline can emit must be known to the Rust executor (B1)."""
+    # These used to `pytest.skip` on the symbols being "not implemented yet
+    # (Phase 3)". All three have existed for releases, so the skips were dead
+    # guards: had the FFI regressed, this parity check would have gone quiet
+    # instead of failing. Assert them instead.
     rust_ops = _known_ops_from_rust()
-    if rust_ops is None:
-        pytest.skip("_lib.known_ops() not implemented yet (Phase 3)")
+    assert rust_ops is not None, "_lib.known_ops() is missing from the compiled plugin"
     pipeline_ops = getattr(Pipeline, "OP_NAMES", None)
-    if pipeline_ops is None:
-        pytest.skip("Pipeline.OP_NAMES not implemented yet (Phase 3)")
+    assert pipeline_ops is not None, "Pipeline.OP_NAMES is missing"
     missing = set(pipeline_ops) - rust_ops
     assert not missing, f"Pipeline ops with no Rust executor arm: {sorted(missing)}"
 
@@ -363,8 +366,7 @@ def test_registry_parity_all_rust_ops_are_reachable():
     ``vb_graph``/``known_ops()`` and so are (correctly) not part of this set.
     """
     rust_ops = _known_ops_from_rust()
-    if rust_ops is None:
-        pytest.skip("_lib.known_ops() not implemented yet (Phase 3)")
+    assert rust_ops is not None, "_lib.known_ops() is missing from the compiled plugin"
     pipeline_ops = set(Pipeline.OP_NAMES)
     unreachable = rust_ops - pipeline_ops
     assert not unreachable, (
@@ -544,8 +546,7 @@ def test_registry_parity_no_dead_contracts():
 
     lib = _lib()
     contract_fn = getattr(lib, "op_contract", None) if lib is not None else None
-    if not callable(contract_fn):
-        pytest.skip("_lib.op_contract() not implemented yet (Phase 1/3)")
+    assert callable(contract_fn), "_lib.op_contract() is missing from the plugin"
     # sobel/laplacian/sharpen lower to convolve2d; they are not real executable
     # ops, so resolving them must fail (their standalone contracts are dead, B2).
     for lowered in ("sobel", "laplacian", "sharpen"):

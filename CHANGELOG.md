@@ -9,6 +9,86 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **A schema-parity matrix: plan-time dtype == execution-time dtype, swept.**
+  Polars publishes an expression's dtype at planning time and again when the
+  data arrives, and in this plugin the two are computed by different code —
+  `dtype_for_output` from the hint bundle Python folds into the graph JSON, and
+  `build_series_from_spec` from the buffers execution actually produced. The
+  runtime half *reads the data* to decide: the typed list builder takes both
+  the leaf dtype and the nesting depth from the first non-null row, and
+  `resolved_output_specs` resolves every output's `"auto"` dtype from
+  `inputs.first()`. Whether that agrees with the plan depended on which row
+  happened to be first.
+
+  Six new files under `tests/test_schema_parity_*.py`, on a shared harness
+  (`tests/_schema_parity.py`) that asserts the planned dtype against the
+  produced one under **both** engines, streaming first, and checks the engines
+  agree. Rejection at build or plan time is an acceptable outcome for any cell;
+  planning succeeding and execution then failing or producing something else is
+  not. Every sweep carries an `assert_not_vacuous` check, because a sweep whose
+  cells all reject is green and worthless.
+
+  The axes:
+  - **Row layout.** Nine patterns — all-null, null-first, null-last, a null run
+    longer than a morsel, 64 alternating rows across a streaming batch
+    boundary, and rows whose shapes differ from one another, chunked so the
+    boundaries do not line up with the nulls. This is the axis that
+    distinguishes "the plan" from "row 0".
+  - **Operations.** All 71 chainable ops, driven from `tests/_op_cases.py` —
+    the table `test_op_case_table_is_complete` already pins to
+    `_chainable_pipeline_ops()`, moved out of `test_append_contract.py` so both
+    read one copy. An op cannot join the library without getting a
+    plan-vs-exec cell. Roughly forty had none before, including every
+    reduction, all four morphology ops, every colour conversion, and all five
+    histogram output modes.
+  - **Sources and dtypes.** Every `SourceFormat` (including `auto`, the
+    default, which had no plan-vs-exec test at all) and all ten `DType`s; only
+    four were previously compared against data. Channel counts 1/2/3/4,
+    including the 2-channel `GrayA` that `StripProcessRestore` produces and
+    that nothing had ever sunk.
+  - **Chains.** Composed effects asserted at every prefix, the steps
+    `op_infer_shape` refuses, all eleven binary ops (read from Rust's
+    `BINARY_OPS` registry), CSE-shared prefixes, two-root graphs, and affine
+    fusion.
+  - **`sink("array")`**, asserted in both directions: a knowable shape must be
+    accepted and exact, an unknowable one refused while planning. Its
+    dimensions are cross-checked against the shape the `numpy` sink reports for
+    the same pipeline — two independent producers of one fact.
+  - **The namespace accessors.** `.cv`, `.contour`, `.point` and `.bbox` are
+    separate `#[polars_expr]` functions declaring their own output types, a
+    second plan/runtime pair with no parity test — a gap
+    `geometry/AGENTS.md` flagged. The case tables are completeness-asserted
+    against the namespaces' real public methods.
+
+  Three files carried their own copy of the plan-vs-exec assertion
+  (`_assert_plan_matches_data`, `_planned_and_realized`,
+  `_assert_plan_equals_exec`); they now call the harness, and pick up the
+  streaming engine in the process.
+
+  **Two divergences found, both pinned as `xfail(strict=True)` so the marker
+  cannot outlive the defect:**
+
+  - `source("auto")` on a **Binary** column plans `List(UInt8)` and executes to
+    `List(List(List(UInt8)))`. `auto` leaves `_expected_ndim` unset and the
+    `list` sink waives the unknown-ndim error for it, on the theory that Rust
+    resolves the rank from the column type — true for List/Array columns, not
+    for image bytes, whose rank is only known after decoding. The all-null
+    column agrees with the plan, which is the fingerprint: with no row to read,
+    the builder falls back to the spec.
+  - The **image-encoder sinks check their preconditions in the encoder, not the
+    planner.** `png`/`jpeg`/`webp`/`tiff` each reject some dtypes, and all four
+    need an image-shaped buffer; both facts are on the `OutputSpec` at plan
+    time. A pipeline that promotes to f32, or flattens to rank 1, plans as
+    `Binary` and dies inside `collect()`. `test_sink_contract.py` missed it
+    because its one base pipeline ends in `cast("u8")`.
+
+  Also recorded, without a bug marker: `expected_shape` is gated on rank 3, so
+  a rank-1 or rank-2 pipeline can never auto-shape an array sink even when the
+  planner has the dimensions. That is a deliberate conservative choice —
+  publishing `[H, W, C]` for a rank-2 output is how `channel_select` once
+  declared a schema execution could not produce — and the test asserts both the
+  refusal and that the withheld dimensions were correct.
+
 - **`allowed_roots`: a sandbox for path columns.** `source("file_path",
   allowed_roots=[...])` and `.cv.read_bytes(allowed_roots=[...])` restrict
   which locations a path column may read from. Until now neither surface
