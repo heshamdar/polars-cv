@@ -497,11 +497,18 @@ fn known_ops() -> Vec<String> {
 /// Return the full contract for a single serialized op spec.
 ///
 /// Returns a dict with the canonical `dtype_rule`, `rank_rule` and
-/// `channel_rule` plus `input_domain` and `output_domain` (from view-buffer's
+/// `channel_rule` plus `input_domains` and `output_domain` (from view-buffer's
 /// `Domain::name()`). This is the single authority the Python schema layer reads
 /// instead of re-declaring, covering the dtype, dimensionality/channel and
 /// domain knowledge that previously lived in parallel Python tables
 /// (`OPERATION_CONTRACTS` and `_OPERATION_OUTPUT_DOMAIN`).
+///
+/// Input domain is published only as the *set* `input_domains`. A singular
+/// `input_domain` key was published alongside it and read by nothing: two
+/// spellings of one fact across an FFI boundary, free to disagree the moment a
+/// step's accepted set stopped being a single domain — which is exactly what
+/// binary ops and reductions did. `GraphStep::input_domain` remains internal to
+/// the executor, where the primary domain is what geometry encoding needs.
 #[pyfunction]
 fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
     let dto = resolve_op_from_json(op_json)?;
@@ -509,7 +516,6 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
     dict.set_item("dtype_rule", dtype_rule_name(dto.output_dtype_rule()))?;
     dict.set_item("rank_rule", rank_rule_name(dto.output_rank_rule()))?;
     dict.set_item("channel_rule", channel_rule_name(dto.output_channel_rule()))?;
-    dict.set_item("input_domain", dto.input_domain().name())?;
     dict.set_item(
         "input_domains",
         dto.input_domains()

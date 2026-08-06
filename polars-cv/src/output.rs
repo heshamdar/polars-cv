@@ -56,13 +56,6 @@ pub fn numpy_output_dtype() -> DataType {
     ])
 }
 
-/// Convert a view-buffer DType to a string name.
-///
-/// These names match numpy dtype names for easy conversion on the Python side.
-pub fn dtype_to_string(dtype: VbDType) -> &'static str {
-    dtype.numpy_name()
-}
-
 /// Encoded numpy output for a single row.
 ///
 /// This struct holds the components that will become the Struct column fields.
@@ -91,7 +84,7 @@ impl NumpyRowOutput {
 
         Self {
             data,
-            dtype: dtype_to_string(dtype),
+            dtype: dtype.numpy_name(),
             shape: shape.into_iter().map(|d| d as u64).collect(),
             strides: strides.into_iter().map(|s| s as i64).collect(),
             offset: offset as u64,
@@ -443,10 +436,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dtype_to_string() {
-        assert_eq!(dtype_to_string(VbDType::U8), "uint8");
-        assert_eq!(dtype_to_string(VbDType::F32), "float32");
-        assert_eq!(dtype_to_string(VbDType::I64), "int64");
+    fn numpy_row_output_names_its_dtype_from_the_dtype_table() {
+        // `dtype_to_string` used to sit here as a second name for
+        // `DType::numpy_name`. The struct field is the only thing that ever
+        // needed it, so it reads the authority directly.
+        let buf = ViewBuffer::from_vec_with_shape(vec![0.0f32; 4], vec![2, 2]);
+        assert_eq!(NumpyRowOutput::from_buffer(buf).dtype, "float32");
     }
 
     #[test]

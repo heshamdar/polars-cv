@@ -284,11 +284,18 @@ class Pipeline:
     """
 
     # Registry of every operation name a pipeline can emit (via builder methods
-    # here and the binary-op helpers in lazy.py). It must be a subset of the
-    # Rust executor's registry (``_lib.known_ops()``) — equal to it, not merely
-    # a subset — so every emitted op is
-    # executable — enforced by ``test_registry_parity_*`` and kept honest by a
-    # source-scan drift test in test_sanitation.py.
+    # here and the binary-op helpers in lazy.py). It must be *equal* to the Rust
+    # executor's registry (``_lib.known_ops()`` / ``KNOWN_OPS``), not merely a
+    # subset: an op here that Rust cannot resolve fails at execution, and an op
+    # Rust knows that is missing here cannot be built at all. Both directions
+    # are enforced by ``test_registry_parity_*``, and by
+    # ``test_op_names_matches_rust_known_ops_without_the_plugin``, which reads
+    # KNOWN_OPS from the Rust source so the check still runs when the extension
+    # is stale or unbuilt (when the other two quietly skip).
+    #
+    # It is a hand-written mirror on purpose — deriving it from ``known_ops()``
+    # would make importing the builder require the compiled plugin, which the
+    # plan-time test lane deliberately does without.
     OP_NAMES: frozenset[str] = frozenset(
         {
             "add",

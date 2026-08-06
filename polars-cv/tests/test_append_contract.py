@@ -196,7 +196,7 @@ def test_domain_vocabulary_declared_once() -> None:
     assert not leaked, f"Pipeline must not re-declare domain constants: {leaked}"
     assert not hasattr(Pipeline, "_validate_domain"), (
         "_validate_domain re-declared each op's input domain in Python; the "
-        "check now reads op_contract(...)['input_domain']"
+        "check now reads op_contract(...)['input_domains']"
     )
     source = Path(polars_cv.pipeline.__file__).read_text()
     assert "_validate_domain" not in source

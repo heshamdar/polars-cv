@@ -228,13 +228,13 @@ class LazyPipelineExpr:
             new_pipeline._assertions = {
                 i: dict(a) for i, a in pipeline._assertions.items()
             }
-            for op_idx, op_spec in enumerate(pipeline._ops):
-                # An assert_shape() written before this op outranks whatever
-                # the preceding ops inferred, so it is replayed at its own
-                # position rather than overlaid at the end.
-                new_pipeline._apply_assertions_at(op_idx)
+            # An assert_shape() written before the first op has no preceding
+            # append to apply it; every later position is applied by the
+            # `_push_op` that lands on it, so the replay is just the append
+            # path run once per op.
+            new_pipeline._apply_assertions_at(0)
+            for op_spec in pipeline._ops:
                 new_pipeline._push_op(op_spec)
-            new_pipeline._apply_assertions_at(len(pipeline._ops))
 
             # Ops referencing other nodes (rasterize(shape=...)) make those
             # nodes upstream dependencies so they execute first.

@@ -109,10 +109,13 @@ def _polars_dtype_to_cv(dtype: pl.DataType, col: str) -> str:
     try:
         return _POLARS_TO_CV_DTYPE[dtype]
     except KeyError:
+        # Name the *Polars* types, which is what the caller supplied and can
+        # change. Listing our dtype names instead told them nothing actionable
+        # and repeated "u8" twice, since two Polars types map onto it.
+        accepted = ", ".join(sorted(str(t) for t in _POLARS_TO_CV_DTYPE))
         raise ValueError(
             f"Column {col!r} has element type {dtype}, which has no meaningful "
-            f"buffer representation. Expected one of: "
-            f"{', '.join(sorted(_POLARS_TO_CV_DTYPE.values()))}."
+            f"buffer representation. Expected one of: {accepted}."
         ) from None
 
 

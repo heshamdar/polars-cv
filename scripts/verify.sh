@@ -22,8 +22,12 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-: "${RUSTUP_TOOLCHAIN:=1.96}"
-export RUSTUP_TOOLCHAIN
+# No toolchain is pinned here on purpose. `rust-toolchain.toml` at the repo
+# root is the single authority and rustup honours it automatically; CI uses
+# `dtolnay/rust-toolchain@stable`, which resolves to the same channel. Naming a
+# version here made this a third declaration that could disagree with both --
+# and it did: it pinned 1.96 while the manifest says `stable`, so a local run
+# silently checked a different compiler than CI, downloading it to do so.
 
 FAST=0
 [[ "${1:-}" == "--fast" ]] && FAST=1
