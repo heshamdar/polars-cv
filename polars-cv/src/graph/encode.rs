@@ -266,17 +266,32 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
     // follow, so the disagreement is an error rather than a silent
     // reinterpretation.
     let first_row = rows.iter().find_map(|r| r.as_ref());
-    if let Some((data, _)) = first_row {
-        if data.dtype_str() != dtype_str {
-            return Err(polars_err!(
-                ComputeError:
-                "planned element dtype {} but execution produced {}. The planner's \
-                 dtype contract disagrees with the Rust implementation.",
-                dtype_str,
-                data.dtype_str()
-            ));
+
+    // `"auto"` means the planner declared no element dtype, so there is no
+    // promise here to violate and the data is the only thing to go on. That is
+    // not the loophole it looks like: `dtype_for_output` refuses `"auto"` for
+    // the typed list and array sinks, so a *planned* query never arrives here
+    // with it — only direct callers of the graph executor do, such as the
+    // hand-written JSON graphs in the unit tests. `validate_output_schema`
+    // draws the line in the same place and for the same reason.
+    let dtype_str = if dtype_str == "auto" {
+        first_row
+            .map(|(data, _)| data.dtype_str())
+            .unwrap_or(dtype_str)
+    } else {
+        if let Some((data, _)) = first_row {
+            if data.dtype_str() != dtype_str {
+                return Err(polars_err!(
+                    ComputeError:
+                    "planned element dtype {} but execution produced {}. The planner's \
+                     dtype contract disagrees with the Rust implementation.",
+                    dtype_str,
+                    data.dtype_str()
+                ));
+            }
         }
-    }
+        dtype_str
+    };
 
     let ndim = expected_shape
         .map(|shape| shape.len())
