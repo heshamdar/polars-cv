@@ -258,15 +258,14 @@ current instead.
 5. *The sink contract.* `encode_node_output` keyed on the planned domain rather
    than the runtime `NodeOutput` variant, so the dtype the planner publishes and
    the value execution produces come from one key. (A1/A2/A3 sink half.)
+6. *Path sandboxing.* `fetch::PathPolicy` and the `allowed_roots` option on
+   `source("file_path", ...)` and `.cv.read_bytes(...)`. Opt-in, so the default
+   is unchanged; once asked for, it denies by default. Both fetch functions
+   take the policy as a *required* argument, so a new caller cannot reach a
+   path by omitting it.
 
 **Open, in rough priority order.**
 
-- **Path sandboxing** (`polars-cv/src/fetch.rs`). Neither the `file_path`
-  source nor `.cv.read_bytes()` sanitizes paths — they read whatever the column
-  names, local or remote. The TODO sits in `fetch.rs` rather than at either
-  call site because that module is the one stage both share, so an allowlist
-  belongs there and lands for both at once. Safe today only when the path
-  column is trusted input.
 - **`shear` and `rotate_and_scale` require `output_size` / `center`.** Both
   raise rather than auto-computing from the input shape. They fail loudly, so
   this is a missing feature and not the `anti_alias` class of defect — but the

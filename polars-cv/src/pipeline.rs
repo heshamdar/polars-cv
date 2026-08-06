@@ -54,6 +54,10 @@ pub struct SourceSpec {
     /// Error handling for source decoding: "raise" (default) or "null".
     #[serde(default = "default_on_error")]
     pub on_error: String,
+    /// Locations this source's path column may read from. Empty/absent means
+    /// unrestricted, which is the default; see `crate::fetch::PathPolicy`.
+    #[serde(default)]
+    pub allowed_roots: Option<Vec<String>>,
 }
 
 fn default_on_error() -> String {

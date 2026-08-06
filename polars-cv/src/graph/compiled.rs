@@ -92,6 +92,10 @@ pub struct CompiledGraph {
     /// Per-node cloud credentials for `file_path` sources, parsed once at
     /// the edge from the source spec's string map.
     cloud_options: HashMap<String, crate::cloud::CloudOptions>,
+    /// Per-node path allowlist, resolved once at the edge. A node with no
+    /// `allowed_roots` is absent here and reads with an unrestricted policy,
+    /// which is the default for every existing pipeline.
+    path_policies: HashMap<String, crate::fetch::PathPolicy>,
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
@@ -156,11 +160,15 @@ impl CompiledGraph {
             }
         }
 
-        // Parse per-node cloud credentials once at the edge.
+        // Parse per-node cloud credentials and path policies once at the edge.
         let mut cloud_options: HashMap<String, crate::cloud::CloudOptions> = HashMap::new();
+        let mut path_policies: HashMap<String, crate::fetch::PathPolicy> = HashMap::new();
         for (node_id, node) in &graph.nodes {
             if let Some(map) = &node.source.cloud_options {
                 cloud_options.insert(node_id.clone(), crate::cloud::CloudOptions::from_map(map));
+            }
+            if let Some(roots) = &node.source.allowed_roots {
+                path_policies.insert(node_id.clone(), crate::fetch::PathPolicy::new(roots));
             }
         }
 
@@ -214,6 +222,7 @@ impl CompiledGraph {
             name_to_slot,
             source_null_nodes,
             cloud_options,
+            path_policies,
             key: GraphKwargsKey {
                 graph_json: graph_json.to_string(),
                 expr_column_names: expr_column_names.to_vec(),
@@ -577,6 +586,7 @@ impl CompiledGraph {
                                             batch,
                                             path,
                                             self.cloud_options.get(node_id),
+                                            &self.path_policy(node_id),
                                         )?;
                                         // Stage 2: file_path contents decode like
                                         // image bytes.
@@ -1021,6 +1031,15 @@ impl CompiledGraph {
     /// auto source over a `String` column resolves to `file_path`, and the
     /// `series.str()` check below naturally skips auto nodes bound to any other
     /// column type.
+    /// This node's path allowlist, or the unrestricted default.
+    ///
+    /// Returned by value so both fetch stages take the same thing; the policy
+    /// is a short list of resolved roots, and building an empty one for an
+    /// unrestricted node allocates nothing.
+    fn path_policy(&self, node_id: &str) -> crate::fetch::PathPolicy {
+        self.path_policies.get(node_id).cloned().unwrap_or_default()
+    }
+
     fn prefetch_remote_sources(
         &self,
         inputs: &[Series],
@@ -1045,6 +1064,7 @@ impl CompiledGraph {
                     ca,
                     self.cloud_options.get(node_id),
                     crate::fetch::DEFAULT_CONCURRENCY,
+                    &self.path_policy(node_id),
                 ),
             );
         }

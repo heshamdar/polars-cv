@@ -263,7 +263,7 @@ Rust: view-buffer (the engine)
 - `params.rs` — `ParamValue` resolving literals vs per-row Polars column values
 - `pipeline.rs` — serde types for the JSON graph spec crossing the plugin boundary
 - `cloud.rs` — remote/cloud transport (`object_store` backends, `cloud_options`, bounded-concurrency reads)
-- `fetch.rs` — stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `parse_on_error`), shared by the `file_path` source and `read_bytes.rs`; owns the path-sandboxing TODO
+- `fetch.rs` — stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `parse_on_error`), shared by the `file_path` source and `read_bytes.rs`; owns `PathPolicy` (the `allowed_roots` sandbox)
 - `read_bytes.rs` — `read_file_bytes` plugin function (`.cv.read_bytes()`) — `fetch.rs` with the decode omitted, for byte-identical passthrough
 - `image_metadata.rs` — header-only metadata plugin functions (`.cv.width()`/`height()`/`channels()`/`image_dtype()`)
 - `output.rs` — zero-copy numpy/torch struct output encoding

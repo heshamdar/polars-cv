@@ -655,6 +655,10 @@ class SourceSpec:
     # Explicit decode-scale assertion: the pipeline only needs this many
     # pixels on the decoded image's long side (JPEG uses IDCT scaling).
     decode_max_size: int | None = None
+    # Locations this source's path column may read from. None (default) is
+    # unrestricted; a tuple restricts reads to those roots. A tuple rather than
+    # a list because SourceSpec is hashed for CSE.
+    allowed_roots: tuple[str, ...] | None = None
 
     def __eq__(self, other: object) -> bool:
         """Compare two SourceSpecs for equality."""
@@ -672,6 +676,7 @@ class SourceSpec:
             and self.require_contiguous == other.require_contiguous
             and self.on_error == other.on_error
             and self.decode_max_size == other.decode_max_size
+            and self.allowed_roots == other.allowed_roots
         )
 
     def __hash__(self) -> int:
@@ -689,6 +694,7 @@ class SourceSpec:
                 self.require_contiguous,
                 self.on_error,
                 self.decode_max_size,
+                self.allowed_roots,
             )
         )
 
@@ -725,6 +731,14 @@ class SourceSpec:
             result["decode_max_size"] = self.decode_max_size
         if self.on_error != "raise":
             result["on_error"] = self.on_error
+        # A path allowlist rides for the source formats that read paths.
+        # Emitted only when set, so an unrestricted source's spec — and the
+        # graph-cache key built from it — is byte-identical to before.
+        if (
+            self.format in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
+            and self.allowed_roots is not None
+        ):
+            result["allowed_roots"] = list(self.allowed_roots)
         return result
 
 
