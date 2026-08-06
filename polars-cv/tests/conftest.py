@@ -63,6 +63,87 @@ def make_test_png(
         return b""
 
 
+#: PIL mode per channel count. 2 channels is grayscale+alpha, which is what the
+#: ``StripProcessRestore`` channel rule produces from RGBA and which nothing
+#: fed through a sink before the schema-parity matrix existed.
+_MODE_FOR_CHANNELS = {1: "L", 2: "LA", 3: "RGB", 4: "RGBA"}
+
+
+def make_image_png(
+    height: int = 8,
+    width: int = 8,
+    channels: int = 3,
+    *,
+    sixteen_bit: bool = False,
+    seed: int = 0,
+) -> bytes:
+    """Encode a deterministic PNG with an exact channel count.
+
+    ``create_test_png``/``make_test_png`` only make flat RGB images. The schema
+    matrix needs every channel count the alpha rules distinguish (1, 2, 3, 4)
+    and a 16-bit path for the ``u16`` decode, at sizes it chooses, with varying
+    pixel content so operations like ``equalize_histogram`` and ``canny`` have
+    something to act on.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        pytest.skip("PIL/Pillow required for this test")
+        return b""
+
+    buf = io.BytesIO()
+    if sixteen_bit:
+        rng = np.random.default_rng(seed)
+        arr = rng.integers(0, 65535, size=(height, width), dtype=np.uint16)
+        Image.fromarray(arr, mode="I;16").save(buf, format="PNG")
+        return buf.getvalue()
+
+    mode = _MODE_FOR_CHANNELS.get(channels)
+    if mode is None:
+        raise ValueError(f"unsupported channel count for a PNG: {channels}")
+
+    rng = np.random.default_rng(seed)
+    arr = rng.integers(0, 256, size=(height, width, channels), dtype=np.uint8)
+    if channels == 1:
+        arr = arr[:, :, 0]
+    Image.fromarray(arr, mode=mode).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def make_rect_png(height: int = 100, width: int = 200, channels: int = 3) -> bytes:
+    """A black image with one white filled rectangle.
+
+    Contour pipelines need an image that thresholds into a small, predictable
+    number of regions. Noise thresholds into hundreds of one-pixel contours,
+    which is slow and makes any downstream assertion depend on the RNG.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        pytest.skip("PIL/Pillow required for this test")
+        return b""
+
+    arr = np.zeros((height, width, channels), dtype=np.uint8)
+    arr[height // 4 : 3 * height // 4, width // 4 : 3 * width // 4] = 255
+    if channels == 1:
+        arr = arr[:, :, 0]
+    buf = io.BytesIO()
+    Image.fromarray(arr, mode=_MODE_FOR_CHANNELS[channels]).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.fixture
+def image_png() -> Callable[..., bytes]:
+    """Fixture form of :func:`make_image_png`."""
+    return make_image_png
+
+
+@pytest.fixture
+def rect_png() -> Callable[..., bytes]:
+    """Fixture form of :func:`make_rect_png`."""
+    return make_rect_png
+
+
 @pytest.fixture
 def create_test_png() -> Callable[[int, int, tuple[int, int, int]], bytes]:
     """

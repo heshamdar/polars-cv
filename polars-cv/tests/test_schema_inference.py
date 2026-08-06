@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
+from tests.conftest import plugin_required
 
 # ============================================================
 # Helpers
@@ -36,6 +37,7 @@ def _make_list_column(data: np.ndarray) -> pl.Series:
 # ============================================================
 
 
+@plugin_required
 class TestListSinkInference:
     """Tests for inferring output schema from list source → list sink."""
 
@@ -131,6 +133,7 @@ class TestListSinkInference:
 # ============================================================
 
 
+@plugin_required
 class TestArraySinkValidation:
     """Tests for array sink shape requirements."""
 
@@ -162,6 +165,7 @@ class TestArraySinkValidation:
 # ============================================================
 
 
+@plugin_required
 class TestSchemaInferenceExecution:
     """Tests that execution produces correct results with auto-inferred schema."""
 
@@ -185,6 +189,7 @@ class TestSchemaInferenceExecution:
 # ============================================================
 
 
+@plugin_required
 class TestNullDataSchemaConsistency:
     """Execution-time schema must match planning-time schema even with null data."""
 

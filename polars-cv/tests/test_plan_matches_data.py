@@ -19,16 +19,17 @@ import numpy as np
 import polars as pl
 
 from polars_cv import Pipeline
+from tests._schema_parity import assert_plan_equals_exec
 from tests.conftest import plugin_required
 
 
 def _assert_plan_matches_data(df: pl.DataFrame, expr: pl.Expr) -> pl.DataType:
-    """Assert the planned and executed dtypes for `out` are identical."""
-    lf = df.lazy().with_columns(out=expr)
-    planned = lf.collect_schema()["out"]
-    executed = lf.collect().schema["out"]
-    assert planned == executed, f"plan schema {planned!r} != data schema {executed!r}"
-    return executed
+    """Assert the planned and executed dtypes for `out` are identical.
+
+    A thin adapter over the shared harness (``tests/_schema_parity.py``), which
+    also runs the streaming engine and checks the two engines agree.
+    """
+    return assert_plan_equals_exec(df, expr).dtype
 
 
 @plugin_required

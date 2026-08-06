@@ -33,6 +33,8 @@ from PIL import Image
 import polars_cv
 from polars_cv import Pipeline
 
+from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES
+from ._schema_parity import assert_plan_equals_exec
 from .conftest import plugin_required
 
 # ---------------------------------------------------------------------------
@@ -249,99 +251,13 @@ def test_input_domain_matches_the_rust_contract() -> None:
 
 #: Per-op arguments for the eager/lazy parity sweep.
 #:
-#: ``None`` marks an op that cannot be compared by this harness, with the
-#: reason. Everything else is ``(domain, kwargs)`` where *domain* selects the
-#: base pipeline. The table is completeness-asserted against the real
-#: chainable-op list below, so a new op cannot be added without a decision here.
-_BUFFER, _CONTOUR = "buffer", "contour"
+#: The table itself lives in ``tests/_op_cases.py`` because the schema-parity
+#: matrix drives the same axis from it. It is completeness-asserted below, so a
+#: new op cannot join the library without a case — and therefore without both
+#: an eager/lazy cell here and a plan-vs-exec cell in the matrix.
+_BUFFER, _CONTOUR = BUFFER, CONTOUR
 
-_OP_CASES: dict[str, tuple[str, dict] | None] = {
-    # --- buffer -> buffer -------------------------------------------------
-    "adjust_brightness": (_BUFFER, {"factor": 1.2}),
-    "adjust_contrast": (_BUFFER, {"factor": 1.2}),
-    "adjust_gamma": (_BUFFER, {"gamma": 1.5}),
-    "blur": (_BUFFER, {"sigma": 1.0}),
-    "canny": (_BUFFER, {}),
-    "cast": (_BUFFER, {"dtype": "f32"}),
-    "channel_select": (_BUFFER, {"index": 0}),
-    "channel_swap": (_BUFFER, {"order": [2, 1, 0]}),
-    "clamp": (_BUFFER, {"min_val": 0.0, "max_val": 1.0}),
-    "convert_color": (_BUFFER, {"from_space": "rgb", "to_space": "hsv"}),
-    "convolve2d": (_BUFFER, {"kernel": [0.0] * 9, "ksize": 3}),
-    "crop": (_BUFFER, {"top": 0, "left": 0, "height": 50, "width": 50}),
-    "dilate": (_BUFFER, {"ksize": 3}),
-    "equalize_histogram": (_BUFFER, {}),
-    "erode": (_BUFFER, {"ksize": 3}),
-    "flip": (_BUFFER, {"axes": [0]}),
-    "flip_h": (_BUFFER, {}),
-    "flip_v": (_BUFFER, {}),
-    "grayscale": (_BUFFER, {}),
-    "invert": (_BUFFER, {}),
-    "laplacian": (_BUFFER, {}),
-    "letterbox": (_BUFFER, {"height": 128, "width": 128}),
-    "morphology_close": (_BUFFER, {"ksize": 3}),
-    "morphology_gradient": (_BUFFER, {"ksize": 3}),
-    "morphology_open": (_BUFFER, {"ksize": 3}),
-    "normalize": (_BUFFER, {"method": "minmax"}),
-    "pad": (_BUFFER, {"top": 10, "bottom": 10, "left": 0, "right": 0}),
-    "pad_to_size": (_BUFFER, {"height": 150, "width": 250}),
-    "relu": (_BUFFER, {}),
-    "reshape": (_BUFFER, {"shape": [100, 200, 3]}),
-    "resize": (_BUFFER, {"height": 64, "width": 32}),
-    "resize_max": (_BUFFER, {"max_size": 120}),
-    "resize_min": (_BUFFER, {"min_size": 40}),
-    "resize_scale": (_BUFFER, {"scale_x": 0.5, "scale_y": 0.5}),
-    "resize_to_height": (_BUFFER, {"height": 50}),
-    "resize_to_width": (_BUFFER, {"width": 50}),
-    "rotate": (_BUFFER, {"angle": 90}),
-    "rotate_and_scale": (
-        _BUFFER,
-        {"angle": 45.0, "scale": 1.5, "center": (50.0, 100.0), "output_size": (64, 64)},
-    ),
-    "scale": (_BUFFER, {"factor": 2.0}),
-    "sharpen": (_BUFFER, {}),
-    "shear": (_BUFFER, {"sx": 0.2, "output_size": (100, 200)}),
-    "sobel": (_BUFFER, {}),
-    "threshold": (_BUFFER, {"value": 128}),
-    "to_bgr": (_BUFFER, {}),
-    "to_hsv": (_BUFFER, {}),
-    "to_lab": (_BUFFER, {}),
-    "to_ycbcr": (_BUFFER, {}),
-    "transpose": (_BUFFER, {"axes": [1, 0, 2]}),
-    "warp_affine": (
-        _BUFFER,
-        {"matrix": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0], "output_size": (64, 64)},
-    ),
-    # --- buffer -> other domains -----------------------------------------
-    "extract_contours": (_BUFFER, {}),
-    "extract_shape": (_BUFFER, {}),
-    "histogram": (_BUFFER, {"bins": 8}),
-    "perceptual_hash": (_BUFFER, {}),
-    "reduce_argmax": (_BUFFER, {"axis": 0}),
-    "reduce_argmin": (_BUFFER, {"axis": 0}),
-    "reduce_max": (_BUFFER, {}),
-    "reduce_mean": (_BUFFER, {}),
-    "reduce_min": (_BUFFER, {}),
-    "reduce_percentile": (_BUFFER, {"q": 50.0}),
-    "reduce_popcount": (_BUFFER, {}),
-    "reduce_std": (_BUFFER, {}),
-    "reduce_sum": (_BUFFER, {}),
-    # --- contour domain ---------------------------------------------------
-    "area": (_CONTOUR, {}),
-    "bounding_box": (_CONTOUR, {}),
-    "centroid": (_CONTOUR, {}),
-    "convex_hull": (_CONTOUR, {}),
-    "perimeter": (_CONTOUR, {}),
-    "rasterize": (_CONTOUR, {"width": 32, "height": 32}),
-    "scale_contour": (_CONTOUR, {"sx": 2.0, "sy": 2.0}),
-    "simplify": (_CONTOUR, {"tolerance": 1.0}),
-    "translate": (_CONTOUR, {"dx": 1.0, "dy": 2.0}),
-    # --- not comparable by this harness -----------------------------------
-    "assert_shape": None,  # sets hints directly; covered by its own test below
-    "label_reduce": None,  # takes a contour *column*, not a plain value
-    "on_error": None,  # graph-level policy, appends no op
-    "on_null_param": None,  # graph-level policy, appends no op
-}
+_OP_CASES = OP_CASES
 
 
 def _base(domain: str) -> Pipeline:
@@ -381,23 +297,7 @@ def test_op_case_table_is_complete() -> None:
 #: Extra parameterisations for ops whose interesting behaviour is in a branch
 #: the single case in ``_OP_CASES`` does not reach. Kept separate so the
 #: completeness assertion above stays a strict one-case-per-op check.
-_EXTRA_CASES: list[tuple[str, str, dict]] = [
-    # rotate's zero-copy 90/180/270 fast path vs the affine path vs expand.
-    ("rotate", _BUFFER, {"angle": 45.0}),
-    ("rotate", _BUFFER, {"angle": 45.0, "expand": True}),
-    ("rotate", _BUFFER, {"angle": 180}),
-    # Axis reductions drop a dimension; the no-axis form does not.
-    ("reduce_max", _BUFFER, {"axis": 0}),
-    ("reduce_min", _BUFFER, {"axis": 1}),
-    ("reduce_mean", _BUFFER, {"axis": 2}),
-    ("reduce_std", _BUFFER, {"axis": 0}),
-    # Non-square and rank-changing reshapes.
-    ("reshape", _BUFFER, {"shape": [200, 100, 3]}),
-    ("reshape", _BUFFER, {"shape": [60000]}),
-    # crop with only an offset, and histogram's struct-encoded output.
-    ("crop", _BUFFER, {"top": 10, "left": 20}),
-    ("histogram", _BUFFER, {"bins": 8, "output": "buckets"}),
-]
+_EXTRA_CASES = EXTRA_CASES
 
 
 @plugin_required
@@ -486,11 +386,9 @@ def non_square_png() -> bytes:
     return buf.getvalue()
 
 
-def _assert_plan_equals_exec(df: pl.DataFrame, expr: pl.Expr) -> None:
-    lf = df.lazy().select(out=expr)
-    planned = lf.collect_schema()["out"]
-    produced = lf.collect()["out"].dtype
-    assert planned == produced, f"planned {planned} but produced {produced}"
+#: The plan-vs-exec assertion lives in ``tests/_schema_parity.py``; this file
+#: used to carry its own copy, as did two others.
+_assert_plan_equals_exec = assert_plan_equals_exec
 
 
 @plugin_required

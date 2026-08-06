@@ -2,8 +2,10 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
+from tests.conftest import plugin_required
 
 
+@plugin_required
 def test_lazy_schema_resize_list():
     """Test that resize correctly updates schema for list sink."""
     pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=100, width=200)
@@ -20,6 +22,7 @@ def test_lazy_schema_resize_list():
     assert schema["image"] == expected_type
 
 
+@plugin_required
 def test_lazy_schema_resize_array():
     """Test that resize correctly updates schema for array sink."""
     pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=100, width=200)
@@ -36,6 +39,7 @@ def test_lazy_schema_resize_array():
     assert schema["image"] == expected_type
 
 
+@plugin_required
 def test_lazy_schema_cast():
     """Test that cast correctly updates schema."""
     pipe = Pipeline().source("image_bytes").resize(height=100, width=200).cast("f32")
@@ -50,6 +54,7 @@ def test_lazy_schema_cast():
     assert schema["image"] == expected_type
 
 
+@plugin_required
 def test_lazy_schema_grayscale():
     """Test that grayscale updates channels in schema."""
     pipe = (
@@ -69,6 +74,7 @@ def test_lazy_schema_grayscale():
     assert schema["image"] == expected_type
 
 
+@plugin_required
 def test_lazy_schema_assert_shape():
     """Test that assert_shape provides schema info."""
     pipe = (
@@ -88,6 +94,7 @@ def test_lazy_schema_assert_shape():
     assert schema["image"] == expected_type
 
 
+@plugin_required
 def test_lazy_schema_complex_chain():
     """Test a complex chain of operations."""
     pipe = (
@@ -107,6 +114,7 @@ def test_lazy_schema_complex_chain():
     assert schema["image"] == expected_type
 
 
+@plugin_required
 def test_lazy_schema_unknown_shape_known_ndim():
     """Test that file_path source (unknown shape) still provides 3D nesting for list sink."""
     pipe = Pipeline().source("file_path", dtype="u8")
@@ -121,6 +129,7 @@ def test_lazy_schema_unknown_shape_known_ndim():
     assert schema["img_path"] == expected_type
 
 
+@plugin_required
 def test_lazy_schema_array_sink_requires_shape():
     """Test that array sink fails if shape is not deterministic and not provided."""
     # dtype is supplied so the failure under test is specifically the missing shape.
@@ -132,6 +141,7 @@ def test_lazy_schema_array_sink_requires_shape():
         df.lazy().select(pl.col("img_path").cv.pipe(pipe).sink("array"))
 
 
+@plugin_required
 def test_lazy_schema_array_sink_with_manual_shape():
     """Test that array sink works with manual shape even if source shape is unknown."""
     pipe = Pipeline().source("file_path", dtype="u8")
