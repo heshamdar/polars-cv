@@ -113,54 +113,71 @@ def _logical_lines(text: str):
         yield buf
 
 
-def _production_source(source: str) -> str:
-    """Strip block comments and test modules, keeping post-test production fns.
+def _literals_removed(line: str) -> str:
+    """A line with its comment, string and char literals blanked out.
 
-    Test modules name dtypes freely in assertions. Everything at indent 0 after
-    the test module is production code and is kept: an earlier version reported
-    that region as unscannable, which false-positived on any ``#[cfg(test)]``
-    helper that happened to hold a complete dispatch.
+    For brace counting only: a `{` inside `"{"`, `'{'` or a trailing comment
+    must not move the depth.
+    """
+    bare = _strip_line_comment(line)
+    bare = re.sub(r'"(?:[^"\\]|\\.)*"', "", bare)
+    return re.sub(r"'(?:[^'\\]|\\.)'", "", bare)
+
+
+def _production_source(source: str) -> str:
+    """Strip block comments and every ``#[cfg(test)]`` item, keeping the rest.
+
+    Test modules name dtypes freely in assertions, so scanning one reports a
+    deliberately partial test helper as production drift. Production code that
+    *follows* a test module is kept: an early version dropped it, which is the
+    opposite error.
+
+    Each attributed item is skipped by brace depth from its own attribute,
+    rather than by partitioning on the first ``#[cfg(test)]`` and guessing
+    where the module ends. That guess was wrong two ways, both live in this
+    tree:
+
+    - A file with two test modules (``polars-cv/src/execute.rs``) had the
+      second scanned as production, because only the first was skipped.
+    - A ``#[cfg(test)] fn`` whose signature wraps
+      (``view-buffer/src/geometry/rasterize.rs``) ended the skip on its opening
+      line, because brace depth was still 0 there — the body's ``{`` sits on
+      the line with the return type. The scan then resumed at the next column-0
+      item, which in that file is the test module.
+
+    Both routes end in the same place: test code scanned as production. Neither
+    fired at the time, which is the point — the tree was one committed test
+    helper away from a guard that reports correct code, and a guard that does
+    that gets weakened by whoever hits it next.
     """
     source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
-    production, sep, after_tests = source.partition("#[cfg(test)]")
-    if not sep:
-        return production
-    # Any column-0 item after the test module is production code: `fn`, but
-    # also `impl`/`mod`/`trait` blocks, whose bodies were dropped entirely by an
-    # earlier version that looked for `fn` alone.
-    top_item = re.compile(r"^(?:pub\b.*)?(?:fn|impl|mod|trait)\b")
-    lines = after_tests.splitlines()
-
-    # The first top-level item after the attribute *is* the test module. Skip
-    # to its end by brace depth, so a one-line `mod t { .. }` and a multi-line
-    # one behave the same. Keeping it would report a test helper's deliberately
-    # partial dispatch as production drift. String contents are removed first
-    # so a brace inside a literal cannot move the depth.
-    i, depth, started = 0, 0, False
+    lines = source.splitlines()
+    kept: list[str] = []
+    i = 0
     while i < len(lines):
-        bare = re.sub(r'"(?:[^"\\]|\\.)*"', "", lines[i])
-        if (
-            not started
-            and top_item.match(lines[i])
-            and not lines[i].startswith((" ", "\t"))
-        ):
-            started = True
-        if started:
+        if "#[cfg(test)]" not in lines[i]:
+            kept.append(lines[i])
+            i += 1
+            continue
+        # Skip the attributed item. Start counting from the remainder of the
+        # attribute's own line so `#[cfg(test)] fn f() { .. }` on one line is
+        # handled like the multi-line form.
+        rest = lines[i].split("#[cfg(test)]", 1)[1]
+        depth, opened = 0, False
+        while True:
+            bare = _literals_removed(rest)
             depth += bare.count("{") - bare.count("}")
-            if depth <= 0:
+            opened = opened or "{" in bare
+            # `#[cfg(test)] use foo::bar;` and `#[cfg(test)] mod t;` have no
+            # block to close.
+            if (opened and depth <= 0) or (not opened and ";" in bare):
                 i += 1
                 break
-        i += 1
-
-    keep, inside = [], False
-    for line in lines[i:]:
-        if not line.startswith((" ", "\t")) and top_item.match(line):
-            inside = True
-        if inside:
-            keep.append(line)
-            if line.startswith("}"):
-                inside = False
-    return production + "\n" + "\n".join(keep)
+            i += 1
+            if i >= len(lines):
+                break
+            rest = lines[i]
+    return "\n".join(kept)
 
 
 def dispatch_offenders(

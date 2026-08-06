@@ -159,6 +159,17 @@ BAD_FIXTURES = [
         # A production fn placed after the test module must still be scanned.
         id="production-fn-after-test-module",
     ),
+    pytest.param(
+        "#[cfg(test)]\nfn helper(\n    s: &str,\n) -> u8 {\n    match s {\n"
+        '        "u8" => 1,\n        _ => 0,\n    }\n}\n\n'
+        + _key_dispatch(sorted(NAMES - {"f64"}), "after_wrapped_cfg_fn"),
+        "missing",
+        # The pair of the good fixture above: skipping the wrapped `#[cfg(test)]
+        # fn` correctly must not also swallow the production code following it.
+        # Widening the strip until nothing false-positives is the other way to
+        # get a guard that catches nothing.
+        id="production-fn-after-cfg-test-fn-with-wrapped-signature",
+    ),
 ]
 
 # Correct code that must NOT be reported. Three rewrites false-positived here.
@@ -180,6 +191,28 @@ GOOD_FIXTURES = [
         + "\n            _ => 0,\n        }\n    }\n}",
         # A partial dispatch inside a test module is not production drift.
         id="incomplete-dispatch-inside-test-module",
+    ),
+    pytest.param(
+        "#[cfg(test)]\nmod first {\n    fn a() {}\n}\n\n"
+        "#[cfg(test)]\nmod second {\n    fn parse(s: &str) -> u8 {\n        match s {\n"
+        + "\n".join(f'            "{n}" => 1,' for n in sorted(NAMES - {"f64"}))
+        + "\n            _ => 0,\n        }\n    }\n}",
+        # Only the *first* test module used to be skipped, so a helper in the
+        # second was scanned as production. `polars-cv/src/execute.rs` has two;
+        # the tree was one committed helper away from a false positive.
+        id="incomplete-dispatch-in-second-test-module",
+    ),
+    pytest.param(
+        # `view-buffer/src/geometry/rasterize.rs` is shaped exactly like this: a
+        # `#[cfg(test)] fn` whose signature wraps, then the test module. Brace
+        # depth was still 0 at the end of the fn's opening line, so the skip
+        # ended there and resumed at the next column-0 item -- the test module,
+        # which was then scanned as production.
+        "#[cfg(test)]\nfn helper(\n    c: &Contour,\n) -> u8 {\n    0\n}\n\n"
+        "#[cfg(test)]\nmod tests {\n    fn parse(s: &str) -> u8 {\n        match s {\n"
+        + "\n".join(f'            "{n}" => 1,' for n in sorted(NAMES - {"f64"}))
+        + "\n            _ => 0,\n        }\n    }\n}",
+        id="incomplete-dispatch-after-cfg-test-fn-with-wrapped-signature",
     ),
     pytest.param(
         "pub fn get_i64(&self, r: usize) -> Res {\n    match col {\n"
