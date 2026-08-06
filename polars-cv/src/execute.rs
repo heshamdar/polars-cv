@@ -18,6 +18,13 @@ use crate::pipeline::{OpSpec, SinkSpec, SourceSpec};
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::naming;
 
+/// The name Python queries [`BINARY_OPS`] under via `enum_variants`.
+///
+/// This family is the one enum-shaped vocabulary view-buffer's registry cannot
+/// hold, because the table below lives in this crate. Naming it here keeps the
+/// string next to what it names rather than loose in the FFI.
+pub(crate) const BINARY_OP_ENUM: &str = "BinaryOp";
+
 /// The Python-facing name of every two-buffer binary operation.
 ///
 /// Single authority consumed by `resolve_op` (one match arm for the whole
@@ -92,18 +99,17 @@ fn resolve_border_value(
     get::opt_f64(params, "border_value", 0.0, row_idx, ctx)
 }
 
-/// Parse rasterize's optional style parameters `(fill_value, background,
-/// anti_alias)` — shared with the graph executor's rasterize-by-shape-ref
-/// path so the two sites cannot diverge.
+/// Parse rasterize's optional style parameters `(fill_value, background)` —
+/// shared with the graph executor's rasterize-by-shape-ref path so the two
+/// sites cannot diverge.
 pub(crate) fn resolve_rasterize_style(
     params: &HashMap<String, ParamValue>,
     row_idx: usize,
     ctx: &ParamCtx,
-) -> PolarsResult<(u8, u8, bool)> {
+) -> PolarsResult<(u8, u8)> {
     Ok((
         get::opt_u8(params, "fill_value", 255, row_idx, ctx)?,
         get::opt_u8(params, "background", 0, row_idx, ctx)?,
-        get::opt_bool_dyn(params, "anti_alias", false, row_idx, ctx)?,
     ))
 }
 
@@ -124,9 +130,7 @@ pub fn decode_contour_source(
     let (fill_value, background) = source.resolve_fill(row_idx, ctx)?;
 
     // Rasterize the contour to a ViewBuffer
-    Ok(rasterize(
-        &contour, width, height, fill_value, background, false, // anti_alias not yet supported
-    ))
+    Ok(rasterize(&contour, width, height, fill_value, background))
 }
 
 /// Decode a contour source with explicit dimensions (for graph execution with shape inference).
@@ -144,9 +148,7 @@ pub fn decode_contour_source_with_dims(
     let contour = crate::contour::parse_contour(value)?;
 
     // Rasterize the contour to a ViewBuffer
-    Ok(rasterize(
-        &contour, width, height, fill_value, background, false, // anti_alias not yet supported
-    ))
+    Ok(rasterize(&contour, width, height, fill_value, background))
 }
 
 /// Resolve contour dimensions from pipeline source spec.
@@ -763,14 +765,12 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "rasterize" => {
             let width = get_param(&op_spec.params, "width")?.resolve_usize(row_idx, ctx)? as u32;
             let height = get_param(&op_spec.params, "height")?.resolve_usize(row_idx, ctx)? as u32;
-            let (fill_value, background, anti_alias) =
-                resolve_rasterize_style(&op_spec.params, row_idx, ctx)?;
+            let (fill_value, background) = resolve_rasterize_style(&op_spec.params, row_idx, ctx)?;
             Ok(GraphStep::Geometry(GeometryOp::Rasterize {
                 width,
                 height,
                 fill_value,
                 background,
-                anti_alias,
             }))
         }
         "extract_contours" => {
@@ -1290,11 +1290,6 @@ mod strict_param_tests {
         #[allow(clippy::type_complexity)]
         let cases: &[(&str, &str, &[(&str, serde_json::Value)])] = &[
             ("rotate", "expand", &[("angle", json!(45.0))]),
-            (
-                "rasterize",
-                "anti_alias",
-                &[("width", json!(8)), ("height", json!(8))],
-            ),
             ("contour_area", "signed", &[]),
             (
                 "convolve2d",
@@ -1410,10 +1405,50 @@ mod known_ops_tests {
                 .find("Unknown operation")
                 .expect("resolve_op catch-all not found");
         let mut arm_names: Vec<&str> = Vec::new();
+        let mut guard_arms: Vec<&str> = Vec::new();
         for line in src[start..end].lines() {
             let trimmed = line.trim_start();
             let indent = line.len() - trimmed.len();
-            if indent != 8 || !trimmed.starts_with('"') {
+            if indent != 8 {
+                continue;
+            }
+            // Continuation lines of a wrapped arm, and the closing brace of a
+            // block-bodied one, carry no pattern. Everything else at this
+            // indent starts an arm and must be classified.
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with('}')
+                || trimmed.starts_with("=>")
+                || trimmed.starts_with("&&")
+                || trimmed.starts_with("||")
+                || trimmed.starts_with('|')
+            {
+                continue;
+            }
+            if trimmed.starts_with('"') {
+                // Fall through to the string-literal handling below.
+            } else {
+                // Anything else registers ops without naming them in a form
+                // this scan can read: a guard arm, an `@` binding, a bare
+                // binder. Record the whole pattern and require it to be
+                // explicitly known below.
+                //
+                // The previous version only recognised a guard arm when the
+                // pattern and its `=>` shared a line, and silently skipped
+                // every other shape. rustfmt moves `=>` to the next line once
+                // the condition is long enough, and an `@` binding never had
+                // one -- both let a whole op family become executable with no
+                // KNOWN_OPS entry. "Anything I do not recognise is ignored"
+                // was the bug; "anything I do not recognise fails" is the
+                // guard.
+                let pattern = trimmed
+                    .split("=>")
+                    .next()
+                    .unwrap_or(trimmed)
+                    .trim()
+                    .trim_end_matches('{')
+                    .trim();
+                guard_arms.push(pattern);
                 continue;
             }
             // Arm patterns look like `"name" => {` or `"a" | "b" => ...`;
@@ -1425,14 +1460,43 @@ mod known_ops_tests {
                 }
             }
         }
-        // Sanity floor so the scan can't silently rot to zero. The binary-op
-        // family dispatches through one BINARY_OPS-guarded arm (not string
-        // patterns), so the floor is below KNOWN_OPS.len().
+        // Every op in KNOWN_OPS is either a string arm found above or covered
+        // by one of the known guard arms below, so the scan cannot rot to a
+        // subset without this failing. A count floor was used here before; it
+        // was both too weak (10 arms could drop out of indent 8 unnoticed) and
+        // too brittle (deprecating an op tripped it), so the relationship is
+        // pinned instead of a magic number.
+        let guarded: Vec<&str> = BINARY_OPS.iter().map(|(n, _)| *n).collect();
+        let unaccounted: Vec<&&str> = KNOWN_OPS
+            .iter()
+            .filter(|n| !arm_names.contains(n) && !guarded.contains(n))
+            .collect();
         assert!(
-            arm_names.len() >= 60,
-            "arm scan found only {} arms — the source scan has rotted, fix the test",
-            arm_names.len()
+            unaccounted.is_empty(),
+            "these KNOWN_OPS have no string arm and are not in a known guarded \
+             family: {unaccounted:?} — either resolve_op changed shape or the \
+             source scan has rotted"
         );
+        // Guard arms register a whole family at once. Each one needs a rule
+        // above tying its table to KNOWN_OPS; a new one has none, so fail
+        // until it is given one rather than let it register ops invisibly.
+        const KNOWN_GUARD_ARMS: &[&str] = &[
+            // Registers the whole binary-op family; its table is checked
+            // against KNOWN_OPS below.
+            "name if naming::lookup(BINARY_OPS, name).is_some()",
+            // The catch-all that produces the "Unknown operation" error this
+            // scan terminates on. Registers nothing.
+            "other",
+        ];
+        for arm in &guard_arms {
+            assert!(
+                KNOWN_GUARD_ARMS.contains(arm),
+                "resolve_op has an unrecognised guard arm '{arm}'. Guard arms \
+                 register ops without naming them, so add it to \
+                 KNOWN_GUARD_ARMS here along with a check that its table is \
+                 fully listed in KNOWN_OPS (see BINARY_OPS below)."
+            );
+        }
         // The guarded binary-op family must still be fully registered.
         for (name, _) in BINARY_OPS {
             assert!(

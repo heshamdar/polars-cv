@@ -39,8 +39,7 @@ Python. `polars_cv.build_info()` reports the three versions that must agree
 ### Test
 
 ```bash
-uv run pytest tests/                            # Full test suite (requires plugin built first)
-uv run pytest tests/ -k "not plugin_required"  # Schema/builder tests only (no Rust needed)
+uv run pytest tests/                            # Full suite; plugin tests self-skip if unbuilt
 uv run pytest tests/test_pipeline_builder.py   # Single test file
 uv run pytest tests/ -k "test_resize"          # Single test by name
 python scripts/test_multiple_python.py --all   # Test across Python 3.10–3.13
@@ -139,7 +138,7 @@ Rust: view-buffer (the engine)
 
 **view-buffer/src/** (see `view-buffer/AGENTS.md` for the full module tree)
 - `core/` — `ViewBuffer` (strided N-D array), `DType`, `Layout`
-- `ops/` — operation definitions by category (`image.rs`, `color.rs`, `compute.rs`, `scalar.rs`, `filter.rs`, `affine.rs`, `view.rs`, `binary.rs`, `reduction.rs`, `histogram.rs`, `phash.rs`, `pad.rs`, `mask.rs`), plus `shape_rule.rs` (the plan-time rank/channel authority), `validation.rs`, `cost.rs`, `traits.rs`, `io.rs`
+- `ops/` — operation definitions by category (`image.rs`, `color.rs`, `compute.rs`, `scalar.rs`, `filter.rs`, `affine.rs`, `view.rs`, `binary.rs`, `reduction.rs`, `histogram.rs`, `phash.rs`, `pad.rs`, `mask.rs`), plus `shape_rule.rs` (the plan-time rank/channel authority), `validation.rs`, `traits.rs`, `util.rs`
 - `ops/dto.rs` — `ViewDto` enum: the serializable bridge between JSON and Rust op code
 - `expr.rs` — `ViewExpr` lazy builder with `.plan()` / `.execute()`
 - `execution/` — `ExecutionPlan`, runner, kernel fusion

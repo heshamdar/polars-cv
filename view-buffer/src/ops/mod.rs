@@ -9,7 +9,6 @@
 //! - Reduction operations (statistical aggregations)
 //! - Histogram operations (binning and quantization)
 //! - Perceptual hash operations (image fingerprinting)
-//! - I/O operations (sources and sinks)
 //!
 //! # Typed Pipeline Nodes
 //!
@@ -29,12 +28,10 @@ pub mod affine;
 pub mod binary;
 pub mod color;
 pub mod compute;
-pub mod cost;
 pub mod dto;
 pub mod filter;
 pub mod histogram;
 pub mod image;
-pub mod io;
 pub mod mask;
 pub mod pad;
 pub mod phash;
@@ -49,12 +46,10 @@ pub mod view;
 pub use binary::BinaryOp;
 pub use color::{ColorConvertOp, ColorSpace};
 pub use compute::{ComputeOp, NormalizeMethod};
-pub use cost::{OpCost, OpCostReport};
 pub use dto::ViewDto;
 pub use filter::{BorderMode, ConvolveOp};
 pub use histogram::{HistogramOp, HistogramOutput};
 pub use image::{FilterType, ImageOp, ImageOpKind};
-pub use io::{PlaceholderMeta, SinkFormat, SourceFormat};
 pub use mask::apply_mask;
 pub use pad::{PadMode, PadPosition};
 pub use phash::{HashAlgorithm, PerceptualHashOp};

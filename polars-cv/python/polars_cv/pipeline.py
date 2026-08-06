@@ -21,6 +21,7 @@ from polars_cv._types import (
     BorderMode,
     CloudOptions,
     ColorSpace,
+    Domain,
     DType,
     ExtractMode,
     FilterType,
@@ -142,6 +143,27 @@ def _literal_matrix_values(matrix_param: "ParamValue") -> "list[float] | None":
     return out
 
 
+#: view-buffer's identity domain (`Domain::Any`): a step declaring it accepts
+#: whatever it is handed, mirroring `Domain::accepts` on the Rust side. It is
+#: deliberately *not* a member of the user-facing `Domain` enum — no pipeline is
+#: ever *in* this domain, so `test_enum_parity_domain` excludes it from the
+#: surfaced variant set. No step currently declares it — binary ops and
+#: reductions list `["buffer", "vector"]` explicitly rather than opting out of
+#: the check entirely — but the contract may return it, so the reader honours it.
+_DOMAIN_ANY = "any"
+
+
+def _op_contract_for(spec: "OpSpec") -> dict:
+    """Read one operation's Rust contract (domains + rank/channel rules).
+
+    Single entry point so an append reads the contract exactly once and shares
+    it between the input-domain check and channel inference.
+    """
+    from polars_cv._lib import op_contract
+
+    return op_contract(json.dumps(spec.to_dict()))
+
+
 def _reject_expr(value: Any, what: str) -> None:
     """Reject a Polars expression for a structural parameter.
 
@@ -261,15 +283,10 @@ class Pipeline:
     - vector: Multiple numeric values (e.g., bounding boxes)
     """
 
-    # Domain constants
-    DOMAIN_BUFFER = "buffer"
-    DOMAIN_CONTOUR = "contour"
-    DOMAIN_SCALAR = "scalar"
-    DOMAIN_VECTOR = "vector"
-
     # Registry of every operation name a pipeline can emit (via builder methods
     # here and the binary-op helpers in lazy.py). It must be a subset of the
-    # Rust executor's registry (``_lib.known_ops()``) so every emitted op is
+    # Rust executor's registry (``_lib.known_ops()``) — equal to it, not merely
+    # a subset — so every emitted op is
     # executable — enforced by ``test_registry_parity_*`` and kept honest by a
     # source-scan drift test in test_sanitation.py.
     OP_NAMES: frozenset[str] = frozenset(
@@ -355,7 +372,7 @@ class Pipeline:
         self._ops: list[OpSpec] = []
         self._expr_refs: list[pl.Expr] = []
         # Domain tracking for typed pipelines
-        self._current_domain: str = self.DOMAIN_BUFFER
+        self._current_domain: str = Domain.BUFFER.value
         # Output dtype tracking — "auto" means unknown until runtime or
         # until an operation with a deterministic output dtype resolves it.
         self._output_dtype: str = "auto"
@@ -372,6 +389,11 @@ class Pipeline:
         self._hint_snapshots: dict[
             int, tuple[ParamValue | None, ParamValue | None]
         ] = {}
+        # Shape dimensions the user asserted via assert_shape(), keyed by the
+        # op position the assertion was written at. Distinguishes a user
+        # assertion (authoritative, must survive a continuation replay) from a
+        # hint an operation computed (recomputed by the replay).
+        self._assertions: dict[int, dict[str, ParamValue]] = {}
         # Per-row error policy for the executed graph ("raise" by default).
         self._on_error: str = "raise"
         # What a null in a per-row expression parameter means ("raise" by
@@ -441,6 +463,7 @@ class Pipeline:
         new._initial_output_dtype = self._initial_output_dtype
         new._initial_expected_ndim = self._initial_expected_ndim
         new._hint_snapshots = dict(self._hint_snapshots)
+        new._assertions = {i: dict(a) for i, a in self._assertions.items()}
         new._expected_ndim = self._expected_ndim
         new._on_error = self._on_error
         new._on_null_param = self._on_null_param
@@ -539,24 +562,6 @@ class Pipeline:
         new._on_null_param = policy
         return new
 
-    def _validate_domain(self, expected: str, op_name: str) -> None:
-        """
-        Validate that the current domain matches the expected domain.
-
-        Args:
-            expected: Expected domain ("buffer", "contour", "scalar", "vector").
-            op_name: Name of the operation for error messages.
-
-        Raises:
-            ValueError: If current domain doesn't match expected.
-        """
-        if self._current_domain != expected:
-            raise ValueError(
-                f"{op_name}() expects {expected} input but pipeline is currently in "
-                f"{self._current_domain} domain. Add a domain-converting operation "
-                f"(e.g., rasterize() for contour→buffer, extract_contours() for buffer→contour)."
-            )
-
     def current_domain(self) -> str:
         """
         Get the current data domain of the pipeline.
@@ -599,7 +604,173 @@ class Pipeline:
                     return "histogram_buckets"
         return None
 
-    def _update_output_dtype(self, op_name: str) -> None:
+    def _append_op(
+        self,
+        op_name: str,
+        build_params: "Callable[[Pipeline], dict[str, ParamValue]]",
+    ) -> "Pipeline":
+        """Append one operation and apply its full plan-time effect.
+
+        Every builder method routes through this. An operation therefore
+        cannot be appended without also validating its input domain and
+        updating **both** the tracked domain/dtype/ndim and the shape hints.
+        Skipping the latter is what let ``transpose``/``channel_select``
+        desync the planned schema from execution; making the sequence
+        unskippable is the fix.
+
+        Args:
+            op_name: The operation name (must be in :attr:`OP_NAMES`).
+            build_params: Callable receiving the *cloned* pipeline and
+                returning the op's parameters. It runs after the clone so it
+                can register per-row expressions via that clone's
+                ``_track_expr`` (and, for ``rasterize``, record a shape
+                reference) without mutating the receiver.
+
+        Returns:
+            A new Pipeline with the operation appended and all state updated.
+        """
+        new = self._clone()
+        spec = OpSpec(op=op_name, params=build_params(new))
+        # One contract read serves both the input-domain check and the channel
+        # rule, so an append still costs a constant number of FFI calls.
+        new._push_op(spec)
+        return new
+
+    def _push_op(
+        self,
+        spec: "OpSpec",
+        contract: dict | None = None,
+        *,
+        update_dtype: bool = True,
+    ) -> None:
+        """Append ``spec`` **in place** and run its full plan-time update.
+
+        **The single mutator of ``_ops`` in the package.** :meth:`_append_op`
+        wraps it for the immutable builder path; the graph hooks
+        (:meth:`_add_binary_op`, :meth:`_add_channel_merge`) call it directly
+        because they mutate an already-cloned pipeline. Both the schema fold
+        and the shape-hint update are unconditional, so no caller can append
+        an op while tracking only half its effect.
+
+        The guard is ``test_op_append_is_structurally_exclusive``, which walks
+        this module's AST and fails if anything else mutates ``_ops``.
+
+        Args:
+            spec: The operation to append.
+            contract: A pre-read contract, reused to avoid a second FFI call.
+            update_dtype: Only :meth:`_add_binary_op` passes False. A
+                two-input dtype rule is not expressible through ``op_schema``;
+                the lazy layer resolves it via ``binary_output_dtype``
+                instead. The shape-hint update still runs.
+        """
+        if contract is None:
+            contract = _op_contract_for(spec)
+        self._require_input_domain(spec, contract)
+        # The rank the op *consumes*, captured before the schema fold below
+        # advances it — `op_infer_shape` describes a transform of the input.
+        input_ndim = self._expected_ndim
+        self._ops.append(spec)
+        if update_dtype:
+            self._update_output_dtype()
+        self._update_shape_hints(contract=contract, input_ndim=input_ndim)
+        # An assertion recorded *after* this op outranks what the contract
+        # inferred. rasterize(shape=<node>) is the case that needs it: its
+        # canvas comes from another node's buffer, which no contract on this
+        # op can describe.
+        self._apply_assertions_at(len(self._ops))
+
+    def _apply_assertions_at(self, position: int) -> None:
+        """Overlay any ``assert_shape`` recorded at op ``position``.
+
+        A user assertion outranks whatever the ops inferred, but only from the
+        point it was written — which is why it is replayed positionally rather
+        than applied once at the end.
+        """
+        for dim, param in self._assertions.get(position, {}).items():
+            setattr(self._shape_hints, dim, param)
+
+    def _set_ops_slice(self, ops: "list[OpSpec]", *, shift: int) -> None:
+        """Replace the whole op list, re-keying everything keyed by op index.
+
+        The sanctioned wholesale replacement, for CSE (``_graph.py``), which
+        splits one pipeline's ops across a shared prefix node and a suffix
+        node. Distinct from :meth:`_push_op`, which appends a single op and
+        advances the tracked state; here the state is supplied by the caller
+        and only the index-keyed side tables move.
+
+        It exists so no code outside this module has to assign ``_ops``
+        directly — every such assignment has to remember which side tables are
+        keyed by op position, and the CSE path had already forgotten
+        ``_assertions``.
+
+        Args:
+            ops: The new op list.
+            shift: How far each surviving op moved left (``prefix_len`` for a
+                suffix node, ``0`` when keeping a prefix).
+        """
+        self._ops = list(ops)
+        self._hint_snapshots = {
+            i - shift: v
+            for i, v in self._hint_snapshots.items()
+            if shift <= i < shift + len(ops)
+        }
+        self._assertions = {
+            i - shift: dict(a)
+            for i, a in self._assertions.items()
+            if shift <= i <= shift + len(ops)
+        }
+
+    def _require_axes_within_rank(self, axes: "Sequence[int]", label: str) -> None:
+        """Reject an axis list that does not address the tracked rank.
+
+        The rank is only known some of the time (an ``auto`` source leaves it
+        ``None``), so this is a check that fires when it can rather than a
+        guarantee. It has to exist because ``infer_shape`` indexes the input
+        shape directly: a ``transpose`` carrying three axes over rank-2 data
+        would otherwise reach the engine and abort, and the planner calls
+        ``infer_shape`` from an ordinary builder where a clean ValueError is
+        the contract.
+        """
+        ndim = self._expected_ndim
+        if ndim is None:
+            return
+        # Only range-check plain integers. A Polars expression here is a
+        # *structural* violation with its own error, raised by `_literal_axes`
+        # further down; pre-empting it with a range message would bury the
+        # real problem.
+        bad = [a for a in axes if isinstance(a, int) and not -ndim <= a < ndim]
+        if bad:
+            msg = (
+                f"{label} {list(axes)} is out of range for a {ndim}-dimensional "
+                f"input (valid axes: 0..{ndim - 1})."
+            )
+            raise ValueError(msg)
+
+    def _require_input_domain(self, spec: "OpSpec", contract: dict) -> None:
+        """Reject an operation whose input domain is not the current domain.
+
+        The accepted domains are read from the op's Rust contract
+        (``op_contract(...)["input_domains"]``) rather than restated in Python.
+        It is the same authority the executor dispatches on, so the builder
+        cannot disagree with what will actually run — the input-domain mirror
+        of ``op_schema`` supplying the output domain.
+
+        It is a *set*: binary ops and reductions accept a buffer or a vector,
+        because a perceptual hash is a 1-D buffer encoded as a vector.
+        ``Domain::Any`` means the step accepts whatever it is handed.
+        """
+        accepted = contract["input_domains"]
+        if _DOMAIN_ANY in accepted or self._current_domain in accepted:
+            return
+        expected = " or ".join(accepted)
+        raise ValueError(
+            f"{spec.op}() expects {expected} input but pipeline is currently "
+            f"in {self._current_domain} domain. Add a domain-converting "
+            f"operation (e.g., rasterize() for contour→buffer, "
+            f"extract_contours() for buffer→contour)."
+        )
+
+    def _update_output_dtype(self) -> None:
         """
         Apply the just-appended operation's schema effect (domain, dtype,
         ndim) to the pipeline's tracked state.
@@ -610,9 +781,6 @@ class Pipeline:
         reductions' ndim). Domain now comes from the same single authority
         as dtype and ndim; builder methods no longer assign
         ``_current_domain`` by hand.
-
-        Args:
-            op_name: Name of the operation being added (for error context).
         """
         from polars_cv._lib import op_schema
 
@@ -627,13 +795,7 @@ class Pipeline:
         self._output_dtype = dtype
         self._expected_ndim = ndim
 
-    def _update_shape_hints(
-        self,
-        op_name: str,
-        params: dict[str, ParamValue],
-        op_spec: "OpSpec | None" = None,
-        op_index: int | None = None,
-    ) -> None:
+    def _update_shape_hints(self, contract: dict, input_ndim: "int | None") -> None:
         """
         Update shape hints based on the operation being added.
 
@@ -642,22 +804,24 @@ class Pipeline:
         its channel rule via :meth:`_update_channels_from_rule`. No shape math
         is re-implemented in Python.
 
+        Always describes the op just appended (``_ops[-1]``); there is one
+        caller, :meth:`_push_op`, and both arguments are required so the
+        method cannot be invoked with a silently wrong default.
+
         Args:
-            op_name: Name of the operation.
-            params: Parameters of the operation.
-            op_spec: The op spec the channel rule should be resolved for.
-                Defaults to the most recently appended op; continuation
-                replays (``LazyPipelineExpr.pipe``) pass each op explicitly.
-            op_index: Index of the op these hints are updated for. Defaults
-                to the most recently appended op; continuation replays pass
-                the index explicitly because ``_ops`` is already fully
-                populated while they replay.
+            contract: The op contract :meth:`_push_op` already read, so an
+                append still costs a constant number of FFI calls.
+            input_ndim: The rank the op consumes, captured before the schema
+                fold advances ``_expected_ndim`` — ``infer_shape`` describes a
+                transform *of the input*, so the post-op rank would misstate
+                every rank-changing op. ``None`` means the rank is genuinely
+                unknown, not "look it up".
         """
         # Record the hints ENTERING this op (before the update below) so
         # affine fusion can convert a rotate with the shape at its own
         # position. Any assert_shape() between ops is naturally captured:
         # it mutated _shape_hints before this append.
-        idx = op_index if op_index is not None else len(self._ops) - 1
+        idx = len(self._ops) - 1
         if idx >= 0:
             self._hint_snapshots[idx] = (
                 copy.deepcopy(self._shape_hints.height),
@@ -669,18 +833,35 @@ class Pipeline:
         # and per-row expression params propagate to unknown (None) output
         # dims; the previous hand-written per-op geometry (and the rotate
         # bounding-box math) is gone. ---
-        spec = (
-            op_spec
-            if op_spec is not None
-            else (self._ops[idx] if 0 <= idx < len(self._ops) else None)
-        )
+        spec = self._ops[idx] if idx >= 0 else None
         if spec is not None:
-            self._update_hw_from_infer_shape(spec)
+            self._update_hw_from_infer_shape(spec, input_ndim)
 
         # --- Channel updates driven by the Rust channel rule ---
-        self._update_channels_from_rule(op_spec)
+        self._update_channels_from_rule(contract)
+        self._drop_hints_below_rank()
 
-    def _update_channels_from_rule(self, op_spec: "OpSpec | None" = None) -> None:
+    def _drop_hints_below_rank(self) -> None:
+        """Discard hints for dimensions the output rank does not have.
+
+        Rank is the authority (``op_schema``); a hint is only meaningful when
+        the dimension exists. ``channel_select`` is the case that made this
+        load-bearing: it drops rank 3 → 2 while its channel rule is ``n/a``
+        ("leave unchanged"), so a stale channel count survived onto a rank-2
+        output and ``expected_shape`` published a three-dimensional shape for
+        two-dimensional data.
+        """
+        ndim = self._expected_ndim
+        if ndim is None:
+            return
+        if ndim < 3:
+            self._shape_hints.channels = None
+        if ndim < 2:
+            self._shape_hints.width = None
+        if ndim < 1:
+            self._shape_hints.height = None
+
+    def _update_channels_from_rule(self, contract: dict) -> None:
         """Update channel hints from the operation's view-buffer channel rule.
 
         Reads ``output_channel_rule`` from the op contract (the single
@@ -694,11 +875,7 @@ class Pipeline:
         - ``strip_restore:<c>``: ``c`` color channels plus a preserved input
           alpha channel (an input channel count of 2 or 4).
         """
-        from polars_cv._lib import op_contract
-
-        spec = op_spec if op_spec is not None else self._ops[-1]
-        op_json = json.dumps(spec.to_dict())
-        rule = op_contract(op_json)["channel_rule"]
+        rule = contract["channel_rule"]
 
         if rule in ("preserve", "n/a"):
             return
@@ -742,7 +919,9 @@ class Pipeline:
             dims[2] = int(c.value)
         return dims
 
-    def _update_hw_from_infer_shape(self, spec: "OpSpec") -> None:
+    def _update_hw_from_infer_shape(
+        self, spec: "OpSpec", input_ndim: "int | None"
+    ) -> None:
         """Set H/W hints from the op's view-buffer ``infer_shape`` (single
         authority), replacing the old per-op geometry.
 
@@ -750,8 +929,13 @@ class Pipeline:
         dim or a per-row expression param yields a ``None`` output dim) — and
         maps the leading two output dims onto the H/W hints. Channels stay with
         :meth:`_update_channels_from_rule`; rank stays with ``op_schema``.
+
+        ``input_ndim`` is the rank the op *consumes*, and is required rather
+        than defaulted: falling back to ``self._expected_ndim`` here would read
+        the *post*-op rank the schema fold just wrote, which is exactly the
+        misstatement this argument exists to prevent.
         """
-        ndim = self._expected_ndim
+        ndim = input_ndim
         if ndim is None or ndim < 1:
             # Rank unknown → per-dim H/W not tracked here.
             return
@@ -761,8 +945,18 @@ class Pipeline:
         try:
             out = op_infer_shape(json.dumps(spec.to_dict()), dims)
         except ValueError:
-            # Not a single-buffer op (e.g. a domain-changing step) — it has no
-            # inferable H/W here; leave the hints for the domain logic.
+            # No inferable shape for this step — an axis reduction, a
+            # histogram, a channel merge, a binary op, or an op whose params
+            # disagree with the input rank.
+            #
+            # Invalidate rather than keep the pre-op values. Several of these
+            # steps *do* change H/W (an axis reduction drops a dimension), so
+            # leaving the old hints in place is how a pipeline came to publish
+            # `[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown
+            # is always safe: `expected_shape` reports None and the sink asks
+            # for an explicit shape.
+            self._shape_hints.height = None
+            self._shape_hints.width = None
             return
 
         def _dim(i: int) -> "ParamValue | None":
@@ -1157,14 +1351,22 @@ class Pipeline:
             Self for chaining.
         """
         new = self._clone()
-        if height is not None:
-            new._shape_hints.height = new._track_expr(height)
-        if width is not None:
-            new._shape_hints.width = new._track_expr(width)
-        if channels is not None:
-            new._shape_hints.channels = new._track_expr(channels)
-        if batch is not None:
-            new._shape_hints.batch = new._track_expr(batch)
+        # Recorded against the current op position so a continuation can replay
+        # the assertion at the point the user wrote it. Without the position an
+        # assertion could not be told apart from a hint an op computed, and
+        # replaying it at the end would override later ops that legitimately
+        # change the shape (assert channels=3, then grayscale → 1).
+        asserted = new._assertions.setdefault(len(new._ops), {})
+        for dim, value in (
+            ("height", height),
+            ("width", width),
+            ("channels", channels),
+            ("batch", batch),
+        ):
+            if value is not None:
+                param = new._track_expr(value)
+                setattr(new._shape_hints, dim, param)
+                asserted[dim] = param
         return new
 
     # --- View Operations (zero-copy where possible) ---
@@ -1179,16 +1381,21 @@ class Pipeline:
         Returns:
             Self for chaining.
         """
-        new = self._clone()
         # Axes are always literals (list of ints)
-        new._ops.append(
-            OpSpec(
-                op="transpose",
-                params={"axes": _literal_axes(axes, "axes")},
+        self._require_axes_within_rank(axes, "transpose axes")
+        if (
+            self._expected_ndim is not None
+            and all(isinstance(a, int) for a in axes)
+            and len(axes) != self._expected_ndim
+        ):
+            msg = (
+                f"transpose axes {list(axes)} must name every one of the "
+                f"{self._expected_ndim} input dimensions exactly once."
             )
+            raise ValueError(msg)
+        return self._append_op(
+            "transpose", lambda p: {"axes": _literal_axes(axes, "axes")}
         )
-        new._update_output_dtype("transpose")
-        return new
 
     def reshape(self, shape: list[int | pl.Expr]) -> "Pipeline":
         """
@@ -1200,23 +1407,12 @@ class Pipeline:
         Returns:
             Self for chaining.
         """
-        new = self._clone()
-        # Handle mixed literal/expr shapes
-        shape_params = [new._track_expr(s) for s in shape]
-        new._ops.append(
-            OpSpec(
-                op="reshape",
-                params={
-                    "shape": ParamValue(
-                        is_expr=False,
-                        value=[p.to_dict() for p in shape_params],
-                    )
-                },
-            )
+        # Mixed literal/expr shapes: each entry is tracked independently, so
+        # the entry *count* stays structural while any element may be per-row.
+        return self._append_op(
+            "reshape",
+            lambda p: {"shape": _param_list(shape, p._track_expr)},
         )
-        new._update_output_dtype("reshape")
-        new._update_shape_hints("reshape", new._ops[-1].params)
-        return new
 
     def flip(self, axes: list[int]) -> "Pipeline":
         """
@@ -1228,15 +1424,8 @@ class Pipeline:
         Returns:
             Self for chaining.
         """
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="flip",
-                params={"axes": _literal_axes(axes, "axes")},
-            )
-        )
-        new._update_output_dtype("flip")
-        return new
+        self._require_axes_within_rank(axes, "flip axes")
+        return self._append_op("flip", lambda p: {"axes": _literal_axes(axes, "axes")})
 
     def flip_h(self) -> "Pipeline":
         """
@@ -1273,20 +1462,19 @@ class Pipeline:
             height: Crop height (None = to end).
             width: Crop width (None = to end).
         """
-        new = self._clone()
-        params: dict[str, ParamValue] = {
-            "top": new._track_expr(top),
-            "left": new._track_expr(left),
-        }
-        if height is not None:
-            params["height"] = new._track_expr(height)
-        if width is not None:
-            params["width"] = new._track_expr(width)
 
-        new._ops.append(OpSpec(op="crop", params=params))
-        new._update_output_dtype("crop")
-        new._update_shape_hints("crop", new._ops[-1].params)
-        return new
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {
+                "top": p._track_expr(top),
+                "left": p._track_expr(left),
+            }
+            if height is not None:
+                params["height"] = p._track_expr(height)
+            if width is not None:
+                params["width"] = p._track_expr(width)
+            return params
+
+        return self._append_op("crop", _params)
 
     # --- Compute Operations ---
 
@@ -1303,18 +1491,11 @@ class Pipeline:
         Raises:
             ValueError: If dtype is invalid or domain is not buffer.
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "cast")
-        new = self._clone()
         dtype_enum = _validate_enum(dtype, DType, "dtype")
-
-        new._ops.append(
-            OpSpec(
-                op="cast",
-                params={"dtype": ParamValue(is_expr=False, value=dtype_enum.value)},
-            )
+        return self._append_op(
+            "cast",
+            lambda p: {"dtype": ParamValue(is_expr=False, value=dtype_enum.value)},
         )
-        new._update_output_dtype("cast")
-        return new
 
     def _preserve_dtype_target(self, op_name: str, out_dtype: str | None) -> str:
         """Resolve the dtype a ``preserve_dtype=True`` scalar op casts back to.
@@ -1375,22 +1556,20 @@ class Pipeline:
             ValueError: If domain is not buffer, or ``preserve_dtype`` cannot
                 be honored (unknown input dtype / combined with ``out_dtype``).
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "scale")
         pre_dtype = (
             self._preserve_dtype_target("scale", out_dtype) if preserve_dtype else None
         )
-        new = self._clone()
-        params: dict[str, ParamValue] = {
-            "factor": new._track_expr(factor),
-        }
 
-        # Add out_dtype if specified
-        if out_dtype is not None:
-            out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
-            params["out_dtype"] = ParamValue(is_expr=False, value=out_dtype_enum.value)
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {"factor": p._track_expr(factor)}
+            if out_dtype is not None:
+                out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
+                params["out_dtype"] = ParamValue(
+                    is_expr=False, value=out_dtype_enum.value
+                )
+            return params
 
-        new._ops.append(OpSpec(op="scale", params=params))
-        new._update_output_dtype("scale")
+        new = self._append_op("scale", _params)
         if pre_dtype is not None:
             new = self._apply_preserve_dtype(new, pre_dtype)
         return new
@@ -1444,46 +1623,50 @@ class Pipeline:
             ...     std=[0.229, 0.224, 0.225],
             ... )
         """
-        new = self._clone()
         method_enum = _validate_enum(method, NormalizeMethod, "normalize method")
 
-        params: dict[str, ParamValue] = {
-            "method": ParamValue(is_expr=False, value=method_enum.value),
-        }
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {
+                "method": ParamValue(is_expr=False, value=method_enum.value),
+            }
 
-        # Handle preset method with mean/std
-        if method_enum == NormalizeMethod.PRESET:
-            if mean is None or std is None:
-                msg = "method='preset' requires both 'mean' and 'std' parameters"
+            # Handle preset method with mean/std
+            if method_enum == NormalizeMethod.PRESET:
+                if mean is None or std is None:
+                    msg = "method='preset' requires both 'mean' and 'std' parameters"
+                    raise ValueError(msg)
+                if len(mean) != len(std):
+                    msg = (
+                        f"mean length ({len(mean)}) must match std length ({len(std)})"
+                    )
+                    raise ValueError(msg)
+                params["mean"] = _param_list(mean, p._track_expr)
+                params["std"] = _param_list(std, p._track_expr)
+            elif mean is not None or std is not None:
+                msg = "mean/std parameters are only valid for method='preset'"
                 raise ValueError(msg)
-            if len(mean) != len(std):
-                msg = f"mean length ({len(mean)}) must match std length ({len(std)})"
-                raise ValueError(msg)
-            params["mean"] = _param_list(mean, new._track_expr)
-            params["std"] = _param_list(std, new._track_expr)
-        elif mean is not None or std is not None:
-            msg = "mean/std parameters are only valid for method='preset'"
-            raise ValueError(msg)
 
-        # Add out_dtype if specified. Normalization computes in f32 and casts the
-        # result to this dtype at execution (so plan == production). "preserve" is
-        # not meaningful here — normalization inherently produces floats and has
-        # no input dtype to preserve — so reject it explicitly rather than let it
-        # fail opaquely at plan build (parse_dtype has no "preserve").
-        if out_dtype is not None:
-            out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
-            if out_dtype_enum == OutputDType.PRESERVE:
-                msg = (
-                    "normalize does not support out_dtype='preserve' (normalization "
-                    "produces floats and has no input dtype to preserve); use "
-                    "'f32', 'f64', or 'u8'."
+            # Add out_dtype if specified. Normalization computes in f32 and
+            # casts the result to this dtype at execution (so plan ==
+            # production). "preserve" is not meaningful here — normalization
+            # inherently produces floats and has no input dtype to preserve —
+            # so reject it explicitly rather than let it fail opaquely at plan
+            # build (parse_dtype has no "preserve").
+            if out_dtype is not None:
+                out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
+                if out_dtype_enum == OutputDType.PRESERVE:
+                    msg = (
+                        "normalize does not support out_dtype='preserve' "
+                        "(normalization produces floats and has no input dtype to "
+                        "preserve); use 'f32', 'f64', or 'u8'."
+                    )
+                    raise ValueError(msg)
+                params["out_dtype"] = ParamValue(
+                    is_expr=False, value=out_dtype_enum.value
                 )
-                raise ValueError(msg)
-            params["out_dtype"] = ParamValue(is_expr=False, value=out_dtype_enum.value)
+            return params
 
-        new._ops.append(OpSpec(op="normalize", params=params))
-        new._update_output_dtype("normalize")
-        return new
+        return self._append_op("normalize", _params)
 
     def clamp(
         self,
@@ -1518,23 +1701,23 @@ class Pipeline:
             ValueError: If domain is not buffer, or ``preserve_dtype`` cannot
                 be honored (unknown input dtype / combined with ``out_dtype``).
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "clamp")
         pre_dtype = (
             self._preserve_dtype_target("clamp", out_dtype) if preserve_dtype else None
         )
-        new = self._clone()
-        params: dict[str, ParamValue] = {
-            "min": new._track_expr(min_val),
-            "max": new._track_expr(max_val),
-        }
 
-        # Add out_dtype if specified
-        if out_dtype is not None:
-            out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
-            params["out_dtype"] = ParamValue(is_expr=False, value=out_dtype_enum.value)
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {
+                "min": p._track_expr(min_val),
+                "max": p._track_expr(max_val),
+            }
+            if out_dtype is not None:
+                out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
+                params["out_dtype"] = ParamValue(
+                    is_expr=False, value=out_dtype_enum.value
+                )
+            return params
 
-        new._ops.append(OpSpec(op="clamp", params=params))
-        new._update_output_dtype("clamp")
+        new = self._append_op("clamp", _params)
         if pre_dtype is not None:
             new = self._apply_preserve_dtype(new, pre_dtype)
         return new
@@ -1557,11 +1740,7 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").relu()
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "relu")
-        new = self._clone()
-        new._ops.append(OpSpec(op="relu", params={}))
-        new._update_output_dtype("relu")
-        return new
+        return self._append_op("relu", lambda p: {})
 
     # --- Channel Operations ---
 
@@ -1585,16 +1764,9 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").channel_select(index=0)  # Red channel
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "channel_select")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="channel_select",
-                params={"index": new._track_expr(index)},
-            )
+        return self._append_op(
+            "channel_select", lambda p: {"index": p._track_expr(index)}
         )
-        new._update_output_dtype("channel_select")
-        return new
 
     def channel_swap(self, *, order: list[IntOrExpr]) -> "Pipeline":
         """
@@ -1616,16 +1788,9 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "channel_swap")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="channel_swap",
-                params={"order": _param_list(order, new._track_expr)},
-            )
+        return self._append_op(
+            "channel_swap", lambda p: {"order": _param_list(order, p._track_expr)}
         )
-        new._update_output_dtype("channel_swap")
-        return new
 
     # --- Intensity Adjustments ---
 
@@ -1648,16 +1813,9 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.5)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "adjust_contrast")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="adjust_contrast",
-                params={"factor": new._track_expr(factor)},
-            )
+        return self._append_op(
+            "adjust_contrast", lambda p: {"factor": p._track_expr(factor)}
         )
-        new._update_output_dtype("adjust_contrast")
-        return new
 
     def adjust_gamma(self, *, gamma: FloatOrExpr) -> "Pipeline":
         """
@@ -1678,16 +1836,9 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "adjust_gamma")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="adjust_gamma",
-                params={"gamma": new._track_expr(gamma)},
-            )
+        return self._append_op(
+            "adjust_gamma", lambda p: {"gamma": p._track_expr(gamma)}
         )
-        new._update_output_dtype("adjust_gamma")
-        return new
 
     def adjust_brightness(
         self, *, factor: FloatOrExpr, preserve_dtype: bool = False
@@ -1740,11 +1891,7 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").invert()
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "invert")
-        new = self._clone()
-        new._ops.append(OpSpec(op="invert", params={}))
-        new._update_output_dtype("invert")
-        return new
+        return self._append_op("invert", lambda p: {})
 
     # --- Color Space Conversion ---
 
@@ -1766,23 +1913,16 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "convert_color")
         # Validate enum values
         ColorSpace(from_space)
         ColorSpace(to_space)
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="cvt_color",
-                params={
-                    "from_space": ParamValue(is_expr=False, value=from_space),
-                    "to_space": ParamValue(is_expr=False, value=to_space),
-                },
-            )
+        return self._append_op(
+            "cvt_color",
+            lambda p: {
+                "from_space": ParamValue(is_expr=False, value=from_space),
+                "to_space": ParamValue(is_expr=False, value=to_space),
+            },
         )
-        new._update_output_dtype("cvt_color")
-        new._update_shape_hints("cvt_color", new._ops[-1].params)
-        return new
 
     def to_hsv(self) -> "Pipeline":
         """Convert from RGB to HSV color space.
@@ -1855,7 +1995,6 @@ class Pipeline:
             ... )
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "convolve2d")
         if isinstance(ksize, pl.Expr):
             # `ksize` is only known per row, but the kernel *length* is
             # structural and still checkable: it must be an odd perfect square.
@@ -1877,22 +2016,15 @@ class Pipeline:
                     f"kernel length {len(kernel)} doesn't match ksize²={ksize * ksize}"
                 )
                 raise ValueError(msg)
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="convolve2d",
-                params={
-                    "kernel": _param_list(kernel, new._track_expr),
-                    "ksize": new._track_expr(ksize),
-                    "normalize": new._track_expr(normalize),
-                    "border": _enum_param(
-                        border, BorderMode, "border mode", new._track_expr
-                    ),
-                },
-            )
+        return self._append_op(
+            "convolve2d",
+            lambda p: {
+                "kernel": _param_list(kernel, p._track_expr),
+                "ksize": p._track_expr(ksize),
+                "normalize": p._track_expr(normalize),
+                "border": _enum_param(border, BorderMode, "border mode", p._track_expr),
+            },
         )
-        new._update_output_dtype("convolve2d")
-        return new
 
     def sobel(self, *, axis: str = "x", ksize: int = 3) -> "Pipeline":
         """
@@ -2016,20 +2148,13 @@ class Pipeline:
             >>> edges = Pipeline().source("image_bytes").canny(low_threshold=50, high_threshold=150)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "canny")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="canny",
-                params={
-                    "low_threshold": new._track_expr(low_threshold),
-                    "high_threshold": new._track_expr(high_threshold),
-                },
-            )
+        return self._append_op(
+            "canny",
+            lambda p: {
+                "low_threshold": p._track_expr(low_threshold),
+                "high_threshold": p._track_expr(high_threshold),
+            },
         )
-        new._update_output_dtype("canny")
-        new._update_shape_hints("canny", {})
-        return new
 
     # --- Morphological Operations ---
 
@@ -2057,20 +2182,13 @@ class Pipeline:
             >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "erode")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="erode",
-                params={
-                    "ksize": new._track_expr(ksize),
-                    "iterations": new._track_expr(iterations),
-                },
-            )
+        return self._append_op(
+            "erode",
+            lambda p: {
+                "ksize": p._track_expr(ksize),
+                "iterations": p._track_expr(iterations),
+            },
         )
-        new._update_output_dtype("erode")
-        new._update_shape_hints("erode", {})
-        return new
 
     def dilate(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> "Pipeline":
         """
@@ -2096,20 +2214,13 @@ class Pipeline:
             >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "dilate")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="dilate",
-                params={
-                    "ksize": new._track_expr(ksize),
-                    "iterations": new._track_expr(iterations),
-                },
-            )
+        return self._append_op(
+            "dilate",
+            lambda p: {
+                "ksize": p._track_expr(ksize),
+                "iterations": p._track_expr(iterations),
+            },
         )
-        new._update_output_dtype("dilate")
-        new._update_shape_hints("dilate", {})
-        return new
 
     def morphology_open(self, *, ksize: IntOrExpr = 3) -> "Pipeline":
         """
@@ -2178,19 +2289,12 @@ class Pipeline:
             >>> edges = Pipeline().source("image_bytes").grayscale().threshold(128).morphology_gradient(ksize=3)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "morphology_gradient")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="morphology_gradient",
-                params={
-                    "ksize": new._track_expr(ksize),
-                },
-            )
+        return self._append_op(
+            "morphology_gradient",
+            lambda p: {
+                "ksize": p._track_expr(ksize),
+            },
         )
-        new._update_output_dtype("morphology_gradient")
-        new._update_shape_hints("morphology_gradient", {})
-        return new
 
     # --- Histogram Equalization ---
 
@@ -2212,11 +2316,7 @@ class Pipeline:
             >>> eq = Pipeline().source("image_bytes").grayscale().equalize_histogram()
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "equalize_histogram")
-        new = self._clone()
-        new._ops.append(OpSpec(op="equalize_histogram", params={}))
-        new._update_output_dtype("equalize_histogram")
-        return new
+        return self._append_op("equalize_histogram", lambda p: {})
 
     # --- Image Operations ---
 
@@ -2238,24 +2338,15 @@ class Pipeline:
         Example:
             >>> Pipeline().source("image_bytes").resize(height=224, width=224)
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "resize")
-        new = self._clone()
 
-        new._ops.append(
-            OpSpec(
-                op="resize",
-                params={
-                    "height": new._track_expr(height),
-                    "width": new._track_expr(width),
-                    "filter": _enum_param(
-                        filter, FilterType, "filter", new._track_expr
-                    ),
-                },
-            )
+        return self._append_op(
+            "resize",
+            lambda p: {
+                "height": p._track_expr(height),
+                "width": p._track_expr(width),
+                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
+            },
         )
-        new._update_output_dtype("resize")
-        new._update_shape_hints("resize", new._ops[-1].params)
-        return new
 
     def resize_scale(
         self,
@@ -2299,7 +2390,6 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").resize_scale(scale=pl.col("zoom"))
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "resize_scale")
 
         # Resolve scale factors
         if scale is None and scale_x is None and scale_y is None:
@@ -2313,23 +2403,14 @@ class Pipeline:
             msg = "Must specify both scale factors or use 'scale' for uniform scaling"
             raise ValueError(msg)
 
-        new = self._clone()
-
-        new._ops.append(
-            OpSpec(
-                op="resize_scale",
-                params={
-                    "scale_x": new._track_expr(actual_scale_x),
-                    "scale_y": new._track_expr(actual_scale_y),
-                    "filter": _enum_param(
-                        filter, FilterType, "filter", new._track_expr
-                    ),
-                },
-            )
+        return self._append_op(
+            "resize_scale",
+            lambda p: {
+                "scale_x": p._track_expr(actual_scale_x),
+                "scale_y": p._track_expr(actual_scale_y),
+                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
+            },
         )
-        new._update_output_dtype("resize_scale")
-        new._update_shape_hints("resize_scale", new._ops[-1].params)
-        return new
 
     def resize_to_height(
         self,
@@ -2359,23 +2440,14 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").resize_to_height(224)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "resize_to_height")
-        new = self._clone()
 
-        new._ops.append(
-            OpSpec(
-                op="resize_to_height",
-                params={
-                    "height": new._track_expr(height),
-                    "filter": _enum_param(
-                        filter, FilterType, "filter", new._track_expr
-                    ),
-                },
-            )
+        return self._append_op(
+            "resize_to_height",
+            lambda p: {
+                "height": p._track_expr(height),
+                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
+            },
         )
-        new._update_output_dtype("resize_to_height")
-        new._update_shape_hints("resize_to_height", new._ops[-1].params)
-        return new
 
     def resize_to_width(
         self,
@@ -2405,23 +2477,14 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").resize_to_width(224)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "resize_to_width")
-        new = self._clone()
 
-        new._ops.append(
-            OpSpec(
-                op="resize_to_width",
-                params={
-                    "width": new._track_expr(width),
-                    "filter": _enum_param(
-                        filter, FilterType, "filter", new._track_expr
-                    ),
-                },
-            )
+        return self._append_op(
+            "resize_to_width",
+            lambda p: {
+                "width": p._track_expr(width),
+                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
+            },
         )
-        new._update_output_dtype("resize_to_width")
-        new._update_shape_hints("resize_to_width", new._ops[-1].params)
-        return new
 
     def resize_max(
         self,
@@ -2452,23 +2515,14 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").resize_max(224)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "resize_max")
-        new = self._clone()
 
-        new._ops.append(
-            OpSpec(
-                op="resize_max",
-                params={
-                    "max_size": new._track_expr(max_size),
-                    "filter": _enum_param(
-                        filter, FilterType, "filter", new._track_expr
-                    ),
-                },
-            )
+        return self._append_op(
+            "resize_max",
+            lambda p: {
+                "max_size": p._track_expr(max_size),
+                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
+            },
         )
-        new._update_output_dtype("resize_max")
-        new._update_shape_hints("resize_max", new._ops[-1].params)
-        return new
 
     def resize_min(
         self,
@@ -2499,23 +2553,14 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").resize_min(224)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "resize_min")
-        new = self._clone()
 
-        new._ops.append(
-            OpSpec(
-                op="resize_min",
-                params={
-                    "min_size": new._track_expr(min_size),
-                    "filter": _enum_param(
-                        filter, FilterType, "filter", new._track_expr
-                    ),
-                },
-            )
+        return self._append_op(
+            "resize_min",
+            lambda p: {
+                "min_size": p._track_expr(min_size),
+                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
+            },
         )
-        new._update_output_dtype("resize_min")
-        new._update_shape_hints("resize_min", new._ops[-1].params)
-        return new
 
     # --- Padding Operations ---
 
@@ -2555,25 +2600,18 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").pad(left=20, right=20, value=128)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "pad")
 
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="pad",
-                params={
-                    "top": new._track_expr(top),
-                    "bottom": new._track_expr(bottom),
-                    "left": new._track_expr(left),
-                    "right": new._track_expr(right),
-                    "value": new._track_expr(value),
-                    "mode": _enum_param(mode, PadMode, "pad mode", new._track_expr),
-                },
-            )
+        return self._append_op(
+            "pad",
+            lambda p: {
+                "top": p._track_expr(top),
+                "bottom": p._track_expr(bottom),
+                "left": p._track_expr(left),
+                "right": p._track_expr(right),
+                "value": p._track_expr(value),
+                "mode": _enum_param(mode, PadMode, "pad mode", p._track_expr),
+            },
         )
-        new._update_output_dtype("pad")
-        new._update_shape_hints("pad", new._ops[-1].params)
-        return new
 
     def pad_to_size(
         self,
@@ -2613,25 +2651,18 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").pad_to_size(height=100, width=200)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "pad_to_size")
 
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="pad_to_size",
-                params={
-                    "height": new._track_expr(height),
-                    "width": new._track_expr(width),
-                    "position": _enum_param(
-                        position, PadPosition, "position", new._track_expr
-                    ),
-                    "value": new._track_expr(value),
-                },
-            )
+        return self._append_op(
+            "pad_to_size",
+            lambda p: {
+                "height": p._track_expr(height),
+                "width": p._track_expr(width),
+                "position": _enum_param(
+                    position, PadPosition, "position", p._track_expr
+                ),
+                "value": p._track_expr(value),
+            },
         )
-        new._update_output_dtype("pad_to_size")
-        new._update_shape_hints("pad_to_size", new._ops[-1].params)
-        return new
 
     def letterbox(
         self,
@@ -2667,25 +2698,16 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").letterbox(height=224, width=224)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "letterbox")
 
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="letterbox",
-                params={
-                    "height": new._track_expr(height),
-                    "width": new._track_expr(width),
-                    "value": new._track_expr(value),
-                    "filter": _enum_param(
-                        filter, FilterType, "filter", new._track_expr
-                    ),
-                },
-            )
+        return self._append_op(
+            "letterbox",
+            lambda p: {
+                "height": p._track_expr(height),
+                "width": p._track_expr(width),
+                "value": p._track_expr(value),
+                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
+            },
         )
-        new._update_output_dtype("letterbox")
-        new._update_shape_hints("letterbox", new._ops[-1].params)
-        return new
 
     def grayscale(self) -> "Pipeline":
         """
@@ -2693,12 +2715,7 @@ class Pipeline:
 
         Uses standard luminance formula: 0.299R + 0.587G + 0.114B.
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "grayscale")
-        new = self._clone()
-        new._ops.append(OpSpec(op="grayscale", params={}))
-        new._update_output_dtype("grayscale")
-        new._update_shape_hints("grayscale", {})
-        return new
+        return self._append_op("grayscale", lambda p: {})
 
     def threshold(self, value: "IntOrExpr | FloatOrExpr") -> "Pipeline":
         """
@@ -2714,16 +2731,7 @@ class Pipeline:
         Args:
             value: Threshold value (int or float, or Polars expression).
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "threshold")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="threshold",
-                params={"value": new._track_expr(value)},
-            )
-        )
-        new._update_output_dtype("threshold")
-        return new
+        return self._append_op("threshold", lambda p: {"value": p._track_expr(value)})
 
     def blur(self, sigma: FloatOrExpr) -> "Pipeline":
         """
@@ -2732,16 +2740,7 @@ class Pipeline:
         Args:
             sigma: Standard deviation for Gaussian kernel.
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "blur")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="blur",
-                params={"sigma": new._track_expr(sigma)},
-            )
-        )
-        new._update_output_dtype("blur")
-        return new
+        return self._append_op("blur", lambda p: {"sigma": p._track_expr(sigma)})
 
     def rotate(
         self,
@@ -2798,20 +2797,17 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").rotate(30, interpolation="nearest")
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "rotate")
-        new = self._clone()
-        params: dict[str, ParamValue] = {
-            "angle": new._track_expr(angle),
-            "expand": ParamValue(is_expr=False, value=expand),
-            "interpolation": _enum_param(
-                interpolation, InterpolationType, "interpolation", new._track_expr
-            ),
-            "border_value": new._track_expr(border_value),
-        }
-        new._ops.append(OpSpec(op="rotate", params=params))
-        new._update_output_dtype("rotate")
-        new._update_shape_hints("rotate", new._ops[-1].params)
-        return new
+        return self._append_op(
+            "rotate",
+            lambda p: {
+                "angle": p._track_expr(angle),
+                "expand": ParamValue(is_expr=False, value=expand),
+                "interpolation": _enum_param(
+                    interpolation, InterpolationType, "interpolation", p._track_expr
+                ),
+                "border_value": p._track_expr(border_value),
+            },
+        )
 
     # --- Affine Transform Operations ---
 
@@ -2874,35 +2870,22 @@ class Pipeline:
         if len(matrix) != 6:
             msg = f"Affine matrix must have 6 elements, got {len(matrix)}"
             raise ValueError(msg)
-        self._validate_domain(self.DOMAIN_BUFFER, "warp_affine")
-        new = self._clone()
         h, w = output_size
-        # Track each matrix element independently so any of them can be a per-row
-        # expression (resolved element-by-element in Rust via as_param_list).
-        matrix_params = [new._track_expr(m) for m in matrix]
-        new._ops.append(
-            OpSpec(
-                op="warp_affine",
-                params={
-                    "matrix": ParamValue(
-                        is_expr=False,
-                        value=[p.to_dict() for p in matrix_params],
-                    ),
-                    "output_height": new._track_expr(h),
-                    "output_width": new._track_expr(w),
-                    "interpolation": _enum_param(
-                        interpolation,
-                        InterpolationType,
-                        "interpolation",
-                        new._track_expr,
-                    ),
-                    "border_value": new._track_expr(border_value),
-                },
-            )
+        # Each matrix element is tracked independently so any of them may be a
+        # per-row expression (resolved element-by-element in Rust via
+        # as_param_list); the element *count* stays structural.
+        return self._append_op(
+            "warp_affine",
+            lambda p: {
+                "matrix": _param_list(matrix, p._track_expr),
+                "output_height": p._track_expr(h),
+                "output_width": p._track_expr(w),
+                "interpolation": _enum_param(
+                    interpolation, InterpolationType, "interpolation", p._track_expr
+                ),
+                "border_value": p._track_expr(border_value),
+            },
         )
-        new._update_output_dtype("warp_affine")
-        new._update_shape_hints("warp_affine", new._ops[-1].params)
-        return new
 
     def shear(
         self,
@@ -3025,7 +3008,6 @@ class Pipeline:
         Example:
             >>> Pipeline().source("image_bytes").perceptual_hash()
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "perceptual_hash")
 
         # `algorithm` is paired with the structural `hash_size` and stays
         # literal; reject an expression here rather than letting it fall past
@@ -3044,21 +3026,16 @@ class Pipeline:
             msg = "hash_size must be a positive integer"
             raise ValueError(msg)
 
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="perceptual_hash",
-                params={
-                    "algorithm": ParamValue(is_expr=False, value=algorithm.value),
-                    "hash_size": ParamValue(is_expr=False, value=hash_size),
-                },
-            )
-        )
         # Transitions to the vector domain (fixed-length 1-D u8 fingerprint).
         # The domain comes from the op's Rust contract (GraphStep::PerceptualHash
         # → Domain::Vector), read via op_schema — not assigned here.
-        new._update_output_dtype("perceptual_hash")
-        return new
+        return self._append_op(
+            "perceptual_hash",
+            lambda p: {
+                "algorithm": ParamValue(is_expr=False, value=algorithm.value),
+                "hash_size": ParamValue(is_expr=False, value=hash_size),
+            },
+        )
 
     # --- Contour/Geometry Operations ---
 
@@ -3070,7 +3047,6 @@ class Pipeline:
         shape: "LazyPipelineExpr | None" = None,
         fill_value: IntOrExpr = 255,
         background: IntOrExpr = 0,
-        anti_alias: BoolOrExpr = False,
     ) -> "Pipeline":
         """
         Rasterize contour to a binary mask.
@@ -3089,16 +3065,9 @@ class Pipeline:
                 for per-row dynamic values.
             background: Outside value (default 0). Accepts a Polars expression
                 for per-row dynamic values.
-            anti_alias: **Accepted but not yet implemented** — view-buffer's
-                rasterizer ignores it, so the mask is hard-edged either way.
-                The value is plumbed through (and may be a per-row expression)
-                so it takes effect as soon as the kernel supports it.
 
         Domain transition: contour → buffer
         """
-        self._validate_domain(self.DOMAIN_CONTOUR, "rasterize")
-        new = self._clone()
-
         has_explicit = width is not None or height is not None
         has_shape = shape is not None
 
@@ -3109,49 +3078,58 @@ class Pipeline:
             msg = "Specify width/height or shape, not both"
             raise ValueError(msg)
 
-        params: dict[str, ParamValue] = {
-            "fill_value": new._track_expr(fill_value),
-            "background": new._track_expr(background),
-            "anti_alias": new._track_expr(anti_alias),
-        }
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {
+                "fill_value": p._track_expr(fill_value),
+                "background": p._track_expr(background),
+            }
 
-        if has_explicit:
-            if width is None or height is None:
-                msg = "Both width and height must be specified"
-                raise ValueError(msg)
-            params["width"] = new._track_expr(width)
-            params["height"] = new._track_expr(height)
-        else:
-            # 'shape' parameter - store as reference for graph composition
-            # This will be resolved during graph execution
-            from polars_cv.lazy import LazyPipelineExpr
+            if has_explicit:
+                if width is None or height is None:
+                    msg = "Both width and height must be specified"
+                    raise ValueError(msg)
+                params["width"] = p._track_expr(width)
+                params["height"] = p._track_expr(height)
+                # No hint assignment here: the canvas size is fixed by these
+                # params, so `GeometryOp::Rasterize::infer_shape` is the
+                # authority and `_push_op` reads it via `op_infer_shape`.
+                # Setting the hints here instead made them a side effect of
+                # building the params, which the lazy continuation replay
+                # (which re-pushes an already-built spec) silently skipped.
+            else:
+                # 'shape' parameter - store as reference for graph composition.
+                # This will be resolved during graph execution.
+                from polars_cv.lazy import LazyPipelineExpr
 
-            if not isinstance(shape, LazyPipelineExpr):
-                msg = "'shape' must be a LazyPipelineExpr"
-                raise TypeError(msg)
-            params["shape_ref"] = ParamValue(is_expr=False, value=shape._node_id)
-            # The referenced node must execute before this one; graph wiring
-            # (cv.pipe / LazyPipelineExpr.pipe) adds it as an upstream dep.
-            new._shape_refs.append(shape)
-            # Plan-time shape knowledge flows from the referenced pipeline.
-            ref_hints = shape._pipeline._shape_hints
-            for dim in ("height", "width"):
-                value = getattr(ref_hints, dim)
-                if value is not None and not value.is_expr:
-                    setattr(new._shape_hints, dim, value)
-                else:
-                    setattr(new._shape_hints, dim, None)
+                if not isinstance(shape, LazyPipelineExpr):
+                    msg = "'shape' must be a LazyPipelineExpr"
+                    raise TypeError(msg)
+                params["shape_ref"] = ParamValue(is_expr=False, value=shape._node_id)
+                # The referenced node must execute before this one; graph wiring
+                # (cv.pipe / LazyPipelineExpr.pipe) adds it as an upstream dep.
+                p._shape_refs.append(shape)
+                # Recorded as an assertion at this op's position: the canvas
+                # comes from another node's buffer, so no contract on *this*
+                # op can supply it. Assertions are replayed positionally, so
+                # this survives a continuation like a user `assert_shape`.
+                ref_hints = shape._pipeline._shape_hints
+                # Recorded one position *past* this op, so it is applied after
+                # the op's own (placeholder) inferred shape rather than before.
+                asserted = p._assertions.setdefault(len(p._ops) + 1, {})
+                for dim in ("height", "width"):
+                    value = getattr(ref_hints, dim)
+                    concrete = (
+                        value if value is not None and not value.is_expr else None
+                    )
+                    setattr(p._shape_hints, dim, concrete)
+                    asserted[dim] = concrete
+            return params
 
-        if has_explicit:
-            h = params.get("height")
-            w = params.get("width")
-            new._shape_hints.height = h if h and not h.is_expr else None
-            new._shape_hints.width = w if w and not w.is_expr else None
-
-        new._ops.append(OpSpec(op="rasterize", params=params))
-        new._update_output_dtype("rasterize")
-        new._shape_hints.channels = ParamValue(is_expr=False, value=1)
-        return new
+        # H/W come from `GeometryOp::Rasterize::infer_shape` for the explicit
+        # width/height form, and from the referenced node for the `shape=`
+        # form; the single-channel output comes from the op's `fixed:1`
+        # channel rule. None of it is re-derived here.
+        return self._append_op("rasterize", _params)
 
     def extract_contours(
         self,
@@ -3182,20 +3160,17 @@ class Pipeline:
 
         Domain transition: buffer → contour
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "extract_contours")
-        new = self._clone()
 
-        params: dict[str, ParamValue] = {
-            "mode": _enum_param(mode, ExtractMode, "mode", new._track_expr),
-            "method": _enum_param(method, ApproxMethod, "method", new._track_expr),
-        }
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {
+                "mode": _enum_param(mode, ExtractMode, "mode", p._track_expr),
+                "method": _enum_param(method, ApproxMethod, "method", p._track_expr),
+            }
+            if min_area is not None:
+                params["min_area"] = p._track_expr(min_area)
+            return params
 
-        if min_area is not None:
-            params["min_area"] = new._track_expr(min_area)
-
-        new._ops.append(OpSpec(op="extract_contours", params=params))
-        new._update_output_dtype("extract_contours")
-        return new
+        return self._append_op("extract_contours", _params)
 
     # --- Buffer Reduction Operations (buffer → scalar) ---
 
@@ -3205,11 +3180,7 @@ class Pipeline:
 
         Domain transition: buffer → scalar
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "reduce_sum")
-        new = self._clone()
-        new._ops.append(OpSpec(op="reduce_sum", params={}))
-        new._update_output_dtype("reduce_sum")
-        return new
+        return self._append_op("reduce_sum", lambda p: {})
 
     def reduce_percentile(self, q: FloatOrExpr) -> "Pipeline":
         """
@@ -3223,16 +3194,7 @@ class Pipeline:
 
         Domain transition: buffer -> scalar
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "reduce_percentile")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="reduce_percentile",
-                params={"q": new._track_expr(q)},
-            )
-        )
-        new._update_output_dtype("reduce_percentile")
-        return new
+        return self._append_op("reduce_percentile", lambda p: {"q": p._track_expr(q)})
 
     def reduce_popcount(self) -> "Pipeline":
         """
@@ -3240,11 +3202,7 @@ class Pipeline:
 
         Domain transition: buffer → scalar
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "reduce_popcount")
-        new = self._clone()
-        new._ops.append(OpSpec(op="reduce_popcount", params={}))
-        new._update_output_dtype("reduce_popcount")
-        return new
+        return self._append_op("reduce_popcount", lambda p: {})
 
     def reduce_max(self, axis: int | None = None) -> "Pipeline":
         """
@@ -3277,14 +3235,14 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").reduce_max(axis=0)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "reduce_max")
-        new = self._clone()
-        params: dict[str, ParamValue] = {}
-        if axis is not None:
-            params["axis"] = ParamValue(is_expr=False, value=axis)
-        new._ops.append(OpSpec(op="reduce_max", params=params))
-        new._update_output_dtype("reduce_max")
-        return new
+
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {}
+            if axis is not None:
+                params["axis"] = ParamValue(is_expr=False, value=axis)
+            return params
+
+        return self._append_op("reduce_max", _params)
 
     def reduce_min(self, axis: int | None = None) -> "Pipeline":
         """
@@ -3317,14 +3275,14 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").reduce_min(axis=1)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "reduce_min")
-        new = self._clone()
-        params: dict[str, ParamValue] = {}
-        if axis is not None:
-            params["axis"] = ParamValue(is_expr=False, value=axis)
-        new._ops.append(OpSpec(op="reduce_min", params=params))
-        new._update_output_dtype("reduce_min")
-        return new
+
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {}
+            if axis is not None:
+                params["axis"] = ParamValue(is_expr=False, value=axis)
+            return params
+
+        return self._append_op("reduce_min", _params)
 
     def reduce_mean(self, axis: int | None = None) -> "Pipeline":
         """
@@ -3337,14 +3295,14 @@ class Pipeline:
             - axis=None: buffer → scalar
             - axis=N: buffer → buffer (reduced shape)
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "reduce_mean")
-        new = self._clone()
-        params: dict[str, ParamValue] = {}
-        if axis is not None:
-            params["axis"] = ParamValue(is_expr=False, value=axis)
-        new._ops.append(OpSpec(op="reduce_mean", params=params))
-        new._update_output_dtype("reduce_mean")
-        return new
+
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {}
+            if axis is not None:
+                params["axis"] = ParamValue(is_expr=False, value=axis)
+            return params
+
+        return self._append_op("reduce_mean", _params)
 
     def reduce_std(self, axis: int | None = None, ddof: IntOrExpr = 0) -> "Pipeline":
         """
@@ -3380,16 +3338,14 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").reduce_std(ddof=1)
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "reduce_std")
-        new = self._clone()
-        params: dict[str, ParamValue] = {
-            "ddof": new._track_expr(ddof),
-        }
-        if axis is not None:
-            params["axis"] = ParamValue(is_expr=False, value=axis)
-        new._ops.append(OpSpec(op="reduce_std", params=params))
-        new._update_output_dtype("reduce_std")
-        return new
+
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {"ddof": p._track_expr(ddof)}
+            if axis is not None:
+                params["axis"] = ParamValue(is_expr=False, value=axis)
+            return params
+
+        return self._append_op("reduce_std", _params)
 
     def reduce_argmax(self, axis: int) -> "Pipeline":
         """
@@ -3416,15 +3372,11 @@ class Pipeline:
             >>> df.with_columns(max_col=pl.col("image").cv.pipe(pipe).sink("list"))
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "reduce_argmax")
-        new = self._clone()
-        params: dict[str, ParamValue] = {
-            "axis": ParamValue(is_expr=False, value=axis),
-        }
-        new._ops.append(OpSpec(op="reduce_argmax", params=params))
-        # argmax always returns buffer with reduced shape (indices)
-        new._update_output_dtype("reduce_argmax")
-        return new
+        # argmax always returns a buffer with reduced shape (indices)
+        return self._append_op(
+            "reduce_argmax",
+            lambda p: {"axis": ParamValue(is_expr=False, value=axis)},
+        )
 
     def reduce_argmin(self, axis: int) -> "Pipeline":
         """
@@ -3451,15 +3403,11 @@ class Pipeline:
             >>> df.with_columns(min_col=pl.col("image").cv.pipe(pipe).sink("list"))
             ```
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "reduce_argmin")
-        new = self._clone()
-        params: dict[str, ParamValue] = {
-            "axis": ParamValue(is_expr=False, value=axis),
-        }
-        new._ops.append(OpSpec(op="reduce_argmin", params=params))
-        # argmin always returns buffer with reduced shape (indices)
-        new._update_output_dtype("reduce_argmin")
-        return new
+        # argmin always returns a buffer with reduced shape (indices)
+        return self._append_op(
+            "reduce_argmin",
+            lambda p: {"axis": ParamValue(is_expr=False, value=axis)},
+        )
 
     def extract_shape(self) -> "Pipeline":
         """
@@ -3467,11 +3415,7 @@ class Pipeline:
 
         Domain transition: buffer → vector
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "extract_shape")
-        new = self._clone()
-        new._ops.append(OpSpec(op="extract_shape", params={}))
-        new._update_output_dtype("extract_shape")
-        return new
+        return self._append_op("extract_shape", lambda p: {})
 
     def label_reduce(
         self,
@@ -3504,27 +3448,21 @@ class Pipeline:
             ValueError: If current domain is not buffer or args are invalid.
             TypeError: If `contours` is not a Polars expression.
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "label_reduce")
         if not isinstance(contours, pl.Expr):
             msg = "`contours` must be a Polars expression"
             raise TypeError(msg)
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="label_reduce",
-                params={
-                    "contours": new._track_expr(contours),
-                    "reduction": _enum_param(
-                        reduction, LabelReduction, "reduction", new._track_expr
-                    ),
-                    "region_mode": _enum_param(
-                        region_mode, LabelRegionMode, "region_mode", new._track_expr
-                    ),
-                },
-            )
+        return self._append_op(
+            "label_reduce",
+            lambda p: {
+                "contours": p._track_expr(contours),
+                "reduction": _enum_param(
+                    reduction, LabelReduction, "reduction", p._track_expr
+                ),
+                "region_mode": _enum_param(
+                    region_mode, LabelRegionMode, "region_mode", p._track_expr
+                ),
+            },
         )
-        new._update_output_dtype("label_reduce")
-        return new
 
     def histogram(
         self,
@@ -3548,33 +3486,29 @@ class Pipeline:
         Example:
             >>> Pipeline().source("image_bytes").grayscale().histogram(bins=8)
         """
-        self._validate_domain(self.DOMAIN_BUFFER, "histogram")
 
         # Validate output mode
         output_mode = _validate_enum(output, HistogramOutput, "histogram output mode")
         closed_mode = _validate_enum(closed, HistogramClosed, "closed mode")
 
-        new = self._clone()
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            bins_param: ParamValue
+            if isinstance(bins, list):
+                bins_param = ParamValue(is_expr=False, value=bins)
+            else:
+                bins_param = p._track_expr(bins)
 
-        bins_param: ParamValue
-        if isinstance(bins, list):
-            bins_param = ParamValue(is_expr=False, value=bins)
-        else:
-            bins_param = new._track_expr(bins)
+            params: dict[str, ParamValue] = {
+                "bins": bins_param,
+                "closed": ParamValue(is_expr=False, value=closed_mode.value),
+                "output": ParamValue(is_expr=False, value=output_mode.value),
+            }
+            if range is not None:
+                params["range_min"] = p._track_expr(range[0])
+                params["range_max"] = p._track_expr(range[1])
+            return params
 
-        params: dict[str, ParamValue] = {
-            "bins": bins_param,
-            "closed": ParamValue(is_expr=False, value=closed_mode.value),
-            "output": ParamValue(is_expr=False, value=output_mode.value),
-        }
-
-        if range is not None:
-            params["range_min"] = new._track_expr(range[0])
-            params["range_max"] = new._track_expr(range[1])
-
-        new._ops.append(OpSpec(op="histogram", params=params))
-        new._update_output_dtype("histogram")
-        return new
+        return self._append_op("histogram", _params)
 
     # --- Contour Measure Operations (contour → scalar/vector) ---
 
@@ -3593,16 +3527,9 @@ class Pipeline:
         Raises:
             ValueError: If current domain is not contour.
         """
-        self._validate_domain(self.DOMAIN_CONTOUR, "area")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="contour_area",
-                params={"signed": new._track_expr(signed)},
-            )
+        return self._append_op(
+            "contour_area", lambda p: {"signed": p._track_expr(signed)}
         )
-        new._update_output_dtype("contour_area")
-        return new
 
     def perimeter(self) -> "Pipeline":
         """
@@ -3616,11 +3543,7 @@ class Pipeline:
         Raises:
             ValueError: If current domain is not contour.
         """
-        self._validate_domain(self.DOMAIN_CONTOUR, "perimeter")
-        new = self._clone()
-        new._ops.append(OpSpec(op="contour_perimeter", params={}))
-        new._update_output_dtype("contour_perimeter")
-        return new
+        return self._append_op("contour_perimeter", lambda p: {})
 
     def centroid(self) -> "Pipeline":
         """
@@ -3634,11 +3557,7 @@ class Pipeline:
         Raises:
             ValueError: If current domain is not contour.
         """
-        self._validate_domain(self.DOMAIN_CONTOUR, "centroid")
-        new = self._clone()
-        new._ops.append(OpSpec(op="contour_centroid", params={}))
-        new._update_output_dtype("contour_centroid")
-        return new
+        return self._append_op("contour_centroid", lambda p: {})
 
     def bounding_box(self) -> "Pipeline":
         """
@@ -3652,11 +3571,7 @@ class Pipeline:
         Raises:
             ValueError: If current domain is not contour.
         """
-        self._validate_domain(self.DOMAIN_CONTOUR, "bounding_box")
-        new = self._clone()
-        new._ops.append(OpSpec(op="contour_bounding_box", params={}))
-        new._update_output_dtype("contour_bounding_box")
-        return new
+        return self._append_op("contour_bounding_box", lambda p: {})
 
     # --- Contour Transform Operations (contour → contour) ---
 
@@ -3676,19 +3591,13 @@ class Pipeline:
         Raises:
             ValueError: If current domain is not contour.
         """
-        self._validate_domain(self.DOMAIN_CONTOUR, "translate")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="contour_translate",
-                params={
-                    "dx": new._track_expr(dx),
-                    "dy": new._track_expr(dy),
-                },
-            )
+        return self._append_op(
+            "contour_translate",
+            lambda p: {
+                "dx": p._track_expr(dx),
+                "dy": p._track_expr(dy),
+            },
         )
-        new._update_output_dtype("contour_translate")
-        return new
 
     def scale_contour(
         self,
@@ -3711,19 +3620,13 @@ class Pipeline:
         Raises:
             ValueError: If current domain is not contour.
         """
-        self._validate_domain(self.DOMAIN_CONTOUR, "scale_contour")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="contour_scale",
-                params={
-                    "sx": new._track_expr(sx),
-                    "sy": new._track_expr(sy),
-                },
-            )
+        return self._append_op(
+            "contour_scale",
+            lambda p: {
+                "sx": p._track_expr(sx),
+                "sy": p._track_expr(sy),
+            },
         )
-        new._update_output_dtype("contour_scale")
-        return new
 
     def simplify(self, *, tolerance: FloatOrExpr) -> "Pipeline":
         """
@@ -3740,16 +3643,9 @@ class Pipeline:
         Raises:
             ValueError: If current domain is not contour.
         """
-        self._validate_domain(self.DOMAIN_CONTOUR, "simplify")
-        new = self._clone()
-        new._ops.append(
-            OpSpec(
-                op="contour_simplify",
-                params={"tolerance": new._track_expr(tolerance)},
-            )
+        return self._append_op(
+            "contour_simplify", lambda p: {"tolerance": p._track_expr(tolerance)}
         )
-        new._update_output_dtype("contour_simplify")
-        return new
 
     def convex_hull(self) -> "Pipeline":
         """
@@ -3763,11 +3659,7 @@ class Pipeline:
         Raises:
             ValueError: If current domain is not contour.
         """
-        self._validate_domain(self.DOMAIN_CONTOUR, "convex_hull")
-        new = self._clone()
-        new._ops.append(OpSpec(op="contour_convex_hull", params={}))
-        new._update_output_dtype("contour_convex_hull")
-        return new
+        return self._append_op("contour_convex_hull", lambda p: {})
 
     # --- Validation ---
 
@@ -3862,18 +3754,15 @@ class Pipeline:
             # Root node: use original source
             sub._source = self._source
 
-        sub._shape_hints = self._shape_hints
-        sub._ops = self._ops[start_op:end_op]
+        sub._shape_hints = copy.deepcopy(self._shape_hints)
         sub._expr_refs = self._expr_refs.copy()
         sub._initial_output_dtype = self._initial_output_dtype
         sub._initial_expected_ndim = self._initial_expected_ndim
-        # Re-key the entering-hints snapshots to the sliced op indices so
+        # The op slice carries its position-keyed side tables with it, so
         # affine fusion in the sub-pipeline still sees per-position shapes.
-        sub._hint_snapshots = {
-            i - start_op: v
-            for i, v in self._hint_snapshots.items()
-            if start_op <= i < end_op
-        }
+        sub._hint_snapshots = dict(self._hint_snapshots)
+        sub._assertions = {i: dict(a) for i, a in self._assertions.items()}
+        sub._set_ops_slice(self._ops[start_op:end_op], shift=start_op)
 
         # Compute the correct domain and dtype for this subset of operations.
         # The fold covers ops[0:end_op], so it must be seeded with the
@@ -3918,13 +3807,12 @@ class Pipeline:
         for key, value in kwargs.items():
             params[key] = self._track_expr(value)
 
-        self._ops.append(OpSpec(op=op, params=params))
-        # Binary ops are elementwise: H/W hints pass through unchanged, but
-        # the entering-hints snapshot must still exist for this position.
-        self._hint_snapshots[len(self._ops) - 1] = (
-            copy.deepcopy(self._shape_hints.height),
-            copy.deepcopy(self._shape_hints.width),
-        )
+        # Binary ops are elementwise, so H/W pass through unchanged — but the
+        # append still routes through `_push_op`, which records the
+        # entering-hints snapshot and applies the channel rule. `op_schema`
+        # cannot express a two-input dtype rule, so the dtype is left to the
+        # lazy layer's `binary_output_dtype`.
+        self._push_op(OpSpec(op=op, params=params), update_dtype=False)
 
     def _add_channel_merge(self, other_node_ids: list[str]) -> None:
         """
@@ -3938,7 +3826,10 @@ class Pipeline:
         Args:
             other_node_ids: Node IDs of the other single-channel operands.
         """
-        self._ops.append(
+        # Rank ([H, W] → [H, W, C]) and channel count change; both are sourced
+        # from the Rust contract (op_schema for domain/dtype/ndim, the channel
+        # rule for the channel hint) rather than re-declared here.
+        self._push_op(
             OpSpec(
                 op="channel_merge",
                 params={
@@ -3946,15 +3837,6 @@ class Pipeline:
                 },
             )
         )
-        # Rank ([H, W] → [H, W, C]) and channel count change; both are sourced
-        # from the Rust contract (op_schema for domain/dtype/ndim, the channel
-        # rule for the channel hint) rather than re-declared here.
-        self._update_output_dtype("channel_merge")
-        self._hint_snapshots[len(self._ops) - 1] = (
-            copy.deepcopy(self._shape_hints.height),
-            copy.deepcopy(self._shape_hints.width),
-        )
-        self._update_channels_from_rule()
 
     def _fuse_affine_ops(self, ops: list[OpSpec]) -> list[OpSpec]:
         """Compose consecutive affine-compatible ops into a single ``warp_affine``.
@@ -4137,12 +4019,18 @@ class Pipeline:
         The node-level ``domain``/``output_dtype`` are Python-side
         visualization metadata (consumed by ``_graph_viz.parse_logical_graph``
         for intermediate nodes, which the terminal-only ``OutputSpec`` cannot
-        supply). Rust's ``GraphNode`` deliberately ignores them and computes
-        its own schema from the ops; both are derived from the same
-        ``op_schema`` authority, so they cannot drift.
+        supply). Rust's ``GraphNode`` declares but ignores them, computing its
+        own schema from the ops; both are derived from the same ``op_schema``
+        authority, so they cannot drift.
+
+        Shape hints are deliberately *not* emitted: no Rust code ever read the
+        key, and because ``graph_json`` is the compiled-graph cache key, two
+        pipelines that execute identically but carry different hints occupied
+        separate cache entries. Plan-time shape still crosses the boundary as
+        ``expected_shape`` on the output spec, which Rust does read.
 
         Returns:
-            Dictionary with source, shape_hints, ops, domain, and output_dtype.
+            Dictionary with source, ops, domain, and output_dtype.
         """
         optimized_ops = self._fuse_affine_ops(self._ops)
         spec: dict = {
@@ -4151,9 +4039,6 @@ class Pipeline:
             "domain": self._current_domain,
             "output_dtype": self._output_dtype,
         }
-
-        if self._shape_hints.has_any():
-            spec["shape_hints"] = self._shape_hints.to_dict()
 
         return spec
 
@@ -4175,10 +4060,6 @@ class Pipeline:
             "source": self._source.to_dict() if self._source else None,
             "ops": [op.to_dict() for op in self._ops],
         }
-
-        if self._shape_hints.has_any():
-            spec["shape_hints"] = self._shape_hints.to_dict()
-
         return json.dumps(spec)
 
     def _get_expr_columns(self) -> list[pl.Expr]:

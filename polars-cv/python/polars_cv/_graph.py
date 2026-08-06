@@ -7,6 +7,7 @@ pipeline operations and handles serialization for the Rust backend.
 
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -68,7 +69,15 @@ class GraphNode:
 
     @property
     def expected_shape(self) -> list[int] | None:
-        """Get the expected output shape of this node's pipeline if deterministic."""
+        """Get the expected output shape of this node's pipeline if deterministic.
+
+        Only reported for a rank-3 ``[H, W, C]`` output. The hints track H/W/C
+        specifically, so at any other rank they cannot describe the shape —
+        publishing ``[H, W, C]`` for a rank-2 output is exactly how
+        ``channel_select`` used to declare a schema execution could not produce.
+        """
+        if self.pipeline._expected_ndim != 3:
+            return None
         hints = self.pipeline._shape_hints
         if (
             hints.height
@@ -369,8 +378,9 @@ class PipelineGraph:
         # Create a new pipeline with just the prefix operations
         shared_pipeline = Pipeline()
         shared_pipeline._source = template_node.pipeline._source
-        shared_pipeline._shape_hints = template_node.pipeline._shape_hints
-        shared_pipeline._ops = list(prefix_ops)  # Copy the prefix ops
+        shared_pipeline._shape_hints = copy.deepcopy(
+            template_node.pipeline._shape_hints
+        )
         shared_pipeline._expr_refs = template_node.pipeline._expr_refs.copy()
         shared_pipeline._initial_output_dtype = (
             template_node.pipeline._initial_output_dtype
@@ -378,13 +388,14 @@ class PipelineGraph:
         shared_pipeline._initial_expected_ndim = (
             template_node.pipeline._initial_expected_ndim
         )
-        # The prefix ops keep their original indices, so their entering-hints
-        # snapshots carry over directly (affine fusion reads them).
-        shared_pipeline._hint_snapshots = {
-            i: v
-            for i, v in template_node.pipeline._hint_snapshots.items()
-            if i < len(prefix_ops)
+        # The prefix ops keep their original indices, so everything keyed by
+        # op position carries over unshifted (affine fusion reads the
+        # entering-hints snapshots).
+        shared_pipeline._hint_snapshots = dict(template_node.pipeline._hint_snapshots)
+        shared_pipeline._assertions = {
+            i: dict(a) for i, a in template_node.pipeline._assertions.items()
         }
+        shared_pipeline._set_ops_slice(prefix_ops, shift=0)
 
         # Compute the correct domain and dtype for the prefix operations.
         # The fold starts at op 0, so it is seeded with the template's
@@ -422,14 +433,10 @@ class PipelineGraph:
             shared_id: The ID of the shared node to use as upstream.
             prefix_len: Number of operations that are now in the shared node.
         """
-        # Remove the prefix operations from this node's pipeline
-        node.pipeline._ops = node.pipeline._ops[prefix_len:]
-        # Re-key the entering-hints snapshots to the shifted op indices.
-        node.pipeline._hint_snapshots = {
-            i - prefix_len: v
-            for i, v in node.pipeline._hint_snapshots.items()
-            if i >= prefix_len
-        }
+        # Remove the prefix operations from this node's pipeline. Everything
+        # keyed by op index (entering-hints snapshots, assert_shape positions)
+        # shifts with them.
+        node.pipeline._set_ops_slice(node.pipeline._ops[prefix_len:], shift=prefix_len)
         # The node's pre-op state is now the shared node's output state.
         shared_pipeline = self._nodes[shared_id].pipeline
         node.pipeline._initial_output_dtype = shared_pipeline._output_dtype

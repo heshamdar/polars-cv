@@ -262,20 +262,29 @@ impl TypedBufferData {
             TypedBufferData::F64(_) => DataType::Float64,
         }
     }
-    /// Get the dtype string for this typed data.
-    pub(crate) fn dtype_str(&self) -> &'static str {
+    /// The view-buffer dtype this variant holds.
+    pub(crate) fn dtype(&self) -> view_buffer::DType {
+        use view_buffer::DType;
         match self {
-            TypedBufferData::U8(_) => "u8",
-            TypedBufferData::I8(_) => "i8",
-            TypedBufferData::U16(_) => "u16",
-            TypedBufferData::I16(_) => "i16",
-            TypedBufferData::U32(_) => "u32",
-            TypedBufferData::I32(_) => "i32",
-            TypedBufferData::U64(_) => "u64",
-            TypedBufferData::I64(_) => "i64",
-            TypedBufferData::F32(_) => "f32",
-            TypedBufferData::F64(_) => "f64",
+            TypedBufferData::U8(_) => DType::U8,
+            TypedBufferData::I8(_) => DType::I8,
+            TypedBufferData::U16(_) => DType::U16,
+            TypedBufferData::I16(_) => DType::I16,
+            TypedBufferData::U32(_) => DType::U32,
+            TypedBufferData::I32(_) => DType::I32,
+            TypedBufferData::U64(_) => DType::U64,
+            TypedBufferData::I64(_) => DType::I64,
+            TypedBufferData::F32(_) => DType::F32,
+            TypedBufferData::F64(_) => DType::F64,
         }
+    }
+
+    /// Get the dtype string for this typed data.
+    ///
+    /// Spelled by `dtype_table!`, not here: this maps a variant to a dtype and
+    /// lets that dtype name itself.
+    pub(crate) fn dtype_str(&self) -> &'static str {
+        self.dtype().short_name()
     }
 }
 /// Output value from encoding - can be binary, contour struct, scalar, or array.
@@ -305,7 +314,14 @@ pub(crate) enum OutputValue {
     HistogramBuckets(Vec<f64>),
 }
 /// A node in the pipeline graph.
+///
+/// `deny_unknown_fields` closes this end of the wire format. It was permissive,
+/// so a stale or misspelled key was silently dropped — which is how node-level
+/// `shape_hints` went on being serialized long after the last reader was
+/// removed. Anything Python sends must be declared here, including the fields
+/// only Python consumes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GraphNode {
     /// Source specification for this node's input.
     pub source: SourceSpec,
@@ -320,4 +336,13 @@ pub struct GraphNode {
     #[serde(default)]
     #[allow(dead_code)]
     pub alias: Option<String>,
+    /// Planner metadata for graph visualization only; the executor computes
+    /// its own schema from `ops`. Declared so the node stays closed.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub domain: Option<String>,
+    /// See [`GraphNode::domain`].
+    #[serde(default, rename = "output_dtype")]
+    #[allow(dead_code)]
+    pub output_dtype: Option<String>,
 }

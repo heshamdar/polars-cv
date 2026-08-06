@@ -182,8 +182,6 @@ rank, or dtype**. Everything else follows from that one invariant.
    `pad_to_size(position)`, `convolve2d(border)`, extract_contours
    `mode`/`method`, label_reduce `reduction`/`region_mode`,
    `apply_mask(invert)`, `area(signed)`, `convolve2d(normalize)`.
-   (`rasterize(anti_alias)` is plumbed the same way but view-buffer's
-   rasterizer ignores the flag, so it has no observable effect yet.)
 
 **Plan-time probing is why enums need care.** `op_infer_shape` (`lib.rs`) runs
 each op four times with every expression param bound to an *integer* probe. A
@@ -254,14 +252,41 @@ the same mixin unless `.cv` genuinely honours it.
 
 ## Adding a New Operation (Python Side)
 
-1. **`pipeline.py`**: Add a method to `Pipeline` class:
-   - Validate domain with `_validate_domain()`
-   - Clone with `_clone()`
-   - Append `OpSpec` with params wrapped in `ParamValue`
-   - Call `_update_output_dtype()` — one incremental `op_schema` FFI call
-     that updates the tracked domain, dtype, and ndim from the op's own Rust
-     contract. Never assign `_current_domain`/`_output_dtype` by hand.
-   - Return new Pipeline
+1. **`pipeline.py`**: Add a method to `Pipeline` that returns
+   `self._append_op("<op_name>", lambda p: {...params...})`. That is the whole
+   builder — there is no sequence to get right:
+
+   ```python
+   def erode(self, *, ksize: IntOrExpr = 3, iterations: IntOrExpr = 1) -> "Pipeline":
+       """..."""
+       return self._append_op(
+           "erode",
+           lambda p: {
+               "ksize": p._track_expr(ksize),
+               "iterations": p._track_expr(iterations),
+           },
+       )
+   ```
+
+   The callback receives the *cloned* pipeline, so `p._track_expr` registers
+   per-row expressions on the clone rather than the receiver. `_append_op`
+   then validates the input domain against `op_contract(...)["input_domain"]`
+   and hands off to `_push_op`, which appends and applies **both** halves of
+   the plan-time effect: the `op_schema` fold (domain/dtype/ndim) and the
+   shape hints (`op_infer_shape` for H/W, the channel rule for C).
+
+   **Do not touch `_ops` directly.** `_push_op` is the only function permitted
+   to mutate it, enforced by `test_op_append_is_structurally_exclusive` in
+   `tests/test_append_contract.py`. That guard exists because the previous
+   convention — each builder calling the update methods by hand — let 41 of 60
+   builders skip the shape-hint half and publish a planned schema execution
+   could not produce. Never assign `_current_domain` / `_output_dtype` /
+   `_shape_hints` by hand either; they follow from the op's Rust contract.
+
+   Validation that must happen before the op is built (a kernel-size check, an
+   enum parse) goes in the method body before the `return`; work that must
+   happen *after* the append (e.g. `scale`'s `preserve_dtype` cast-back) reads
+   the returned pipeline. Both compose without bypassing the append path.
 
 2. **`lazy.py`**: Nothing to add for an ordinary op. `LazyPipelineExpr` generates a
    forwarder for every chainable `Pipeline` method at import time
@@ -299,7 +324,14 @@ Fusible operations:
 `_update_shape_hints()` no longer re-derives any per-dimension geometry in
 Python. It reads the op's view-buffer `infer_shape` through the `op_infer_shape`
 FFI (`_update_hw_from_infer_shape`), the same authority execution uses, so the
-tracked H/W can never drift from what the op actually produces. Unknowns
+tracked H/W cannot disagree with what the op produces.
+
+Not every step *has* an inferable shape: axis reductions, histograms, channel
+merge and the binary ops are graph-level steps `op_infer_shape` rejects. For
+those the H/W hints are **invalidated**, not carried forward — several of them
+do change H/W, and keeping the pre-op values is how a pipeline came to publish
+`[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown is always safe:
+`expected_shape` reports `None` and a typed sink asks for an explicit shape. Unknowns
 propagate automatically: an unknown input dim or a per-row expression param
 yields a `None` output dim. This covers every op uniformly — including rotation
 (static 90/270 swap, static-angle expand bounding box, and expression-angle

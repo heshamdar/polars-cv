@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use view_buffer::geometry::label::score_contours_on_buffer;
 use view_buffer::ops::NodeOutput;
-use view_buffer::{ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{DType as VbDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
 use crate::execute::{
@@ -755,7 +755,7 @@ impl CompiledGraph {
                                 let height = dims[0] as u32;
                                 let width = dims[1] as u32;
                                 ctx.clear_null();
-                                let (fill_value, background, anti_alias) =
+                                let (fill_value, background) =
                                     match crate::execute::resolve_rasterize_style(
                                         &spec.params,
                                         row_idx,
@@ -770,7 +770,6 @@ impl CompiledGraph {
                                     height,
                                     fill_value,
                                     background,
-                                    anti_alias,
                                 };
                                 current_output = execute_geometry_op(current_output, &geo_op)?;
                                 continue;
@@ -1272,8 +1271,14 @@ pub(crate) fn resolved_output_specs(
             match &leaf_dtype {
                 // Image/file sources: cannot infer buffer dtype from column type.
                 DataType::Binary | DataType::String | DataType::Null => {}
-                // List/array sources: leaf type is meaningful.
-                _ => spec.expected_dtype = inferred_dtype_str.to_string(),
+                // List/array sources: leaf type is meaningful, when it maps to
+                // a buffer element type at all. If it does not, leave "auto"
+                // rather than asserting a dtype the column does not have.
+                _ => {
+                    if let Some(s) = inferred_dtype_str {
+                        spec.expected_dtype = s.to_string();
+                    }
+                }
             }
         }
         // Output rank was left unknown by the Python planner (source rank was
@@ -1369,20 +1374,32 @@ fn peel_nesting(dt: &DataType) -> (DataType, usize) {
 }
 
 /// Convert a Polars DataType to the dtype string used in output specs.
-fn polars_dtype_to_str(dt: &DataType) -> &'static str {
-    match dt {
-        DataType::UInt8 => "u8",
-        DataType::Int8 => "i8",
-        DataType::UInt16 => "u16",
-        DataType::Int16 => "i16",
-        DataType::UInt32 => "u32",
-        DataType::Int32 => "i32",
-        DataType::UInt64 => "u64",
-        DataType::Int64 => "i64",
-        DataType::Float32 => "f32",
-        DataType::Float64 => "f64",
-        _ => "u8", // fallback for non-numeric types
-    }
+///
+/// `None` for a type that is not one of the buffer element types. The naming
+/// itself comes from `DType::short_name` rather than a literal here, so this
+/// stays one mapping (Polars type → our dtype) instead of also being a second
+/// place that decides what a dtype is called.
+///
+/// This used to fall back to `"u8"` for anything unmatched, which meant a
+/// `List(Boolean)` or `List(Decimal)` column silently claimed to be a buffer
+/// of bytes and the graph proceeded on that false claim. An unmappable column
+/// is a column we cannot infer a buffer dtype from, and the caller leaves
+/// `expected_dtype` as `"auto"` for the executor to reject with a real error.
+fn polars_dtype_to_str(dt: &DataType) -> Option<&'static str> {
+    let dtype = match dt {
+        DataType::UInt8 => VbDType::U8,
+        DataType::Int8 => VbDType::I8,
+        DataType::UInt16 => VbDType::U16,
+        DataType::Int16 => VbDType::I16,
+        DataType::UInt32 => VbDType::U32,
+        DataType::Int32 => VbDType::I32,
+        DataType::UInt64 => VbDType::U64,
+        DataType::Int64 => VbDType::I64,
+        DataType::Float32 => VbDType::F32,
+        DataType::Float64 => VbDType::F64,
+        _ => return None,
+    };
+    Some(dtype.short_name())
 }
 
 // ============================================================================

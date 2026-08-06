@@ -29,12 +29,15 @@ deleted and re-added later.
 from __future__ import annotations
 
 import io
+import re
+from pathlib import Path
 
 import polars as pl
 import pytest
 
 import polars_cv
 from polars_cv import Pipeline
+from tests._dtype_ratchet import dispatch_offenders
 from tests.conftest import plugin_required
 
 # ---------------------------------------------------------------------------
@@ -478,6 +481,7 @@ def _emitted_op_names_from_source():
     names: set[str] = set()
     text = (pkg / "pipeline.py").read_text()
     names |= set(re.findall(r'op="([a-z_0-9]+)"', text))
+    names |= set(re.findall(r'_append_op\(\s*"([a-z_0-9]+)"', text))
     lazy = (pkg / "lazy.py").read_text()
     names |= set(re.findall(r'_(?:add_)?binary_op\("([a-z_]+)"', lazy))
     return names
@@ -494,6 +498,42 @@ def test_op_names_covers_all_emitted_ops():
     assert emitted == declared, (
         f"OP_NAMES out of sync with builders: "
         f"missing={sorted(emitted - declared)} stale={sorted(declared - emitted)}"
+    )
+
+
+def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
+    """``Pipeline.OP_NAMES`` must equal Rust's ``KNOWN_OPS``, checked from source.
+
+    The two ``test_registry_parity_*`` tests already pin this equality in both
+    directions, but both are ``@plugin_required`` and skip when the extension
+    is not built. That is not a hypothetical lane: the editable install leaves
+    the compiled ``.so`` at its last ``maturin develop`` while Python sources
+    track the working tree, so a contributor adding a builder op and running
+    the suite before rebuilding gets two skips where they expect two failures.
+
+    Reading ``KNOWN_OPS`` out of the Rust source needs no plugin, so the drift
+    is caught in that window too. Source-scanning is the weaker technique and
+    is used here only because the stronger one is unavailable by construction;
+    it asserts it parsed a plausible registry rather than matching nothing.
+    """
+    src = _rust_src_dir()
+    if src is None:
+        pytest.skip("Rust sources not available (installed wheel)")
+
+    text = (src / "execute.rs").read_text()
+    m = re.search(r"pub const KNOWN_OPS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
+    assert m, "could not find KNOWN_OPS in execute.rs — scan is out of date"
+    # Strip comments first: this codebase explains absences inline (`// "sobel"
+    # is deliberately absent`), and a quoted name in one would read as an op.
+    body = re.sub(r"(?m)//.*$", "", m.group(1))
+    rust_ops = set(re.findall(r'"([a-z0-9_]+)"', body))
+    assert len(rust_ops) > 50, f"KNOWN_OPS scan found only {len(rust_ops)} ops"
+
+    declared = set(Pipeline.OP_NAMES)
+    assert declared == rust_ops, (
+        "Pipeline.OP_NAMES has drifted from Rust KNOWN_OPS: "
+        f"python-only={sorted(declared - rust_ops)}, "
+        f"rust-only={sorted(rust_ops - declared)}"
     )
 
 
@@ -520,6 +560,7 @@ _REQUIRED_LIB_HOOKS = (
     "binary_output_dtype",
     "known_ops",
     "enum_variants",
+    "enum_names",
 )
 
 
@@ -761,26 +802,42 @@ def test_enum_parity_domain():
     assert py == surfaced, f"Domain: python {py} != surfaced rust {surfaced}"
 
 
+# Enums whose Python mirror is a plain `_types` enum of the same name, checked
+# uniformly below. `test_every_rust_enum_is_parity_checked` asserts this list
+# plus the bespoke cases account for every enum Rust surfaces, so adding one in
+# Rust fails here until it is either mirrored or explicitly excused.
+_UNIFORM_PARITY_ENUMS = [
+    "NormalizeMethod",
+    "ColorSpace",
+    "HashAlgorithm",
+    "HistogramOutput",
+    "PadMode",
+    "PadPosition",
+    "BorderMode",
+    "HistogramClosed",
+    "LabelReduction",
+    "LabelRegionMode",
+    "FilterType",
+    "ExtractMode",
+    "ApproxMethod",
+    "InterpolationType",
+]
+
+# Checked, but not by the uniform test: their Python side needs special
+# handling (a subtracted internal variant, an extra sub-assertion).
+_BESPOKE_PARITY_ENUMS = {"DType", "Domain"}
+
+# Surfaced by `enum_variants` with no Python enum to compare against.
+_NO_PYTHON_MIRROR = {
+    # Binary ops are Python *methods* (`.add()`, `.blend()`), not an enum, so
+    # there is no member set to diff. `test_binary_ops_match_rust` pins the
+    # names against the Rust table instead.
+    "BinaryOp",
+}
+
+
 @plugin_required
-@pytest.mark.parametrize(
-    "enum_name",
-    [
-        "NormalizeMethod",
-        "ColorSpace",
-        "HashAlgorithm",
-        "HistogramOutput",
-        "PadMode",
-        "PadPosition",
-        "BorderMode",
-        "HistogramClosed",
-        "LabelReduction",
-        "LabelRegionMode",
-        "FilterType",
-        "ExtractMode",
-        "ApproxMethod",
-        "InterpolationType",
-    ],
-)
+@pytest.mark.parametrize("enum_name", _UNIFORM_PARITY_ENUMS)
 def test_enum_parity_api_enums(enum_name):
     """Each user-facing API enum must equal its view-buffer authority set (A4)."""
     rust = _rust_enum_variants(enum_name)
@@ -817,10 +874,62 @@ def test_filter_type_exposes_every_rust_variant():
     assert py == rust, f"FilterType: python {py} != rust {rust}"
 
 
-# SourceFormat/SinkFormat are intentionally NOT enum-parity-checked: view-buffer
-# defines its own (CamelCase) format enums while the graph boundary uses plain
-# strings and Python defines a third set — a three-way representation split to
-# consolidate in Phase 2, not a simple drift to assert away here.
+@plugin_required
+def test_every_rust_enum_is_parity_checked():
+    """Every enum ``enum_variants`` answers for must be checked by some test.
+
+    The list of enums to check used to be hand-written, and had drifted:
+    ``LabelReduction`` and ``LabelRegionMode`` both had authoritative Rust
+    tables and neither appeared in any parity test, so a Python/Rust
+    divergence in either would have shipped. Reading the enum names from Rust
+    closes that: a newly registered enum lands in ``enum_names()`` and fails
+    here until it is mirrored in ``_types`` or explicitly excused above.
+    """
+    fn = getattr(_lib(), "enum_names", None)
+    if not callable(fn):
+        pytest.skip("_lib.enum_names() not built")
+
+    surfaced = set(fn())
+    accounted = set(_UNIFORM_PARITY_ENUMS) | _BESPOKE_PARITY_ENUMS | _NO_PYTHON_MIRROR
+    unchecked = surfaced - accounted
+    assert not unchecked, (
+        f"these Rust enums are surfaced to Python but no parity test covers "
+        f"them: {sorted(unchecked)}. Add each to _UNIFORM_PARITY_ENUMS (with a "
+        f"matching polars_cv._types enum), or to _NO_PYTHON_MIRROR with a "
+        f"reason."
+    )
+
+    # The reverse direction: an excused or bespoke name that Rust no longer
+    # surfaces is a stale entry that would quietly stop checking anything.
+    stale = accounted - surfaced
+    assert not stale, (
+        f"these names are listed as parity-checked but Rust does not surface "
+        f"them: {sorted(stale)}"
+    )
+
+
+@plugin_required
+def test_binary_ops_match_rust():
+    """``BinaryOp`` has no Python enum, so pin the method names instead."""
+    rust = _rust_enum_variants("BinaryOp")
+    if rust is None:
+        pytest.skip("_lib.enum_variants() not built")
+    # `hasattr(LazyPipelineExpr, name)` would be a weak proxy: the class
+    # generates methods from Pipeline, so a Rust op whose name collided with an
+    # unrelated generated method would pass. Compare against the names the lazy
+    # API actually emits as binary ops.
+    emitted = _binary_op_names_from_source()
+    assert emitted, "no binary ops scanned from lazy.py — scan regex out of date?"
+    assert emitted == rust, (
+        f"BinaryOp drift between Rust and lazy.py: "
+        f"rust-only={sorted(rust - emitted)}, python-only={sorted(emitted - rust)}"
+    )
+
+
+# SourceFormat/SinkFormat have no Rust enum to be checked against: the graph
+# boundary carries them as plain strings, and view-buffer's shadowing copies
+# were deleted along with its unreachable pipeline-composition layer. Python's
+# enums are now the single definition, so there is nothing to pin them to.
 
 
 # ---------------------------------------------------------------------------
@@ -1180,53 +1289,24 @@ def test_reshape_rank_tracked_eagerly() -> None:
     assert dyn._expected_ndim == 2
 
 
-def test_every_op_append_updates_tracked_state() -> None:
-    """Ratchet: every Pipeline builder method that appends an OpSpec must run
-    the appended op through the op_schema authority (_update_output_dtype).
-    A method that skips the call leaves the eager tracked state stale while
-    the lazy fold sees the op — the eager/lazy drift class of bug.
+def test_op_append_ratchet_moved_to_the_append_contract_suite() -> None:
+    """The per-call ratchet has been replaced by a structural guard.
 
-    Exception: _add_binary_op is an internal hook whose schema effect is
-    resolved by LazyPipelineExpr via binary_output_dtype (a two-input rule
-    op_schema cannot express).
+    This test used to assert that every builder appending an OpSpec also
+    called ``_update_output_dtype`` — one of the *two* updates an append
+    requires. Its own docstring named the failure mode it was meant to stop
+    ("the eager/lazy drift class of bug"), and the ops that skipped the other
+    update (``_update_shape_hints``) shipped a plan/exec divergence underneath
+    it: enumerating required calls only guards the calls you enumerated.
+
+    ``tests/test_append_contract.py`` now forbids anything but
+    ``Pipeline._push_op`` from mutating ``_ops`` at all, which makes the whole
+    sequence unskippable rather than checked. Kept as a pointer so the weaker
+    form is not reintroduced.
     """
-    import ast
-    from pathlib import Path
+    from tests import test_append_contract
 
-    import polars_cv.pipeline as pipeline_mod
-
-    source = Path(pipeline_mod.__file__).read_text()
-    tree = ast.parse(source)
-    pipeline_cls = next(
-        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Pipeline"
-    )
-
-    def calls_in(node: ast.AST, attr: str) -> bool:
-        return any(
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr == attr
-            for sub in ast.walk(node)
-        )
-
-    offenders = [
-        method.name
-        for method in pipeline_cls.body
-        if isinstance(method, ast.FunctionDef)
-        and method.name != "_add_binary_op"
-        and any(
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr == "append"
-            and isinstance(sub.func.value, ast.Attribute)
-            and sub.func.value.attr == "_ops"
-            for sub in ast.walk(method)
-        )
-        and not calls_in(method, "_update_output_dtype")
-    ]
-    assert not offenders, (
-        f"builder methods append an OpSpec without _update_output_dtype: {offenders}"
-    )
+    assert hasattr(test_append_contract, "test_op_append_is_structurally_exclusive")
 
 
 def test_histogram_schema_declared_once() -> None:
@@ -1313,3 +1393,269 @@ def test_no_local_png_factories() -> None:
         str(p.name) for p in _test_files() if "def create_test_png" in p.read_text()
     ]
     assert not offenders, f"local create_test_png definitions in: {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# dtype spellings: one authority (dtype_table! in view-buffer/src/core/dtype.rs)
+# ---------------------------------------------------------------------------
+
+
+def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
+    """Parse ``dtype_table!``'s rows out of the Rust source.
+
+    Read from source rather than the FFI because the wire codes are not
+    surfaced across it — ``enum_variants`` carries names only. Source-scanning
+    is the weaker technique, so it is used for exactly the part the FFI cannot
+    answer, and the parse asserts it found a plausible table rather than
+    silently matching nothing.
+    """
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "view-buffer"
+        / "src"
+        / "core"
+        / "dtype.rs"
+    ).read_text()
+    assert "dtype_table!(" in src, "dtype_table! invocation not found — parse is broken"
+    body = src.split("dtype_table!(", 1)[1]
+    end = re.search(r"^\s*\);", body, re.M)
+    assert end, "could not find the end of the dtype_table! invocation"
+    body = body[: end.start()]
+    rows = re.findall(
+        r'\(\s*(\w+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*\)', body
+    )
+    # Cross-checked against an independent count of the invocation's rows, so a
+    # mis-parse that swallows the rest of the file fails, while legitimately
+    # adding an 11th dtype does not read as a parse bug.
+    row_lines = [ln for ln in body.splitlines() if ln.strip().startswith("(")]
+    assert len(rows) == len(row_lines), (
+        f"dtype_table! parse found {len(rows)} rows but the invocation has "
+        f"{len(row_lines)} lines starting a row — the scan is out of date"
+    )
+    return [(v, s, int(c), n) for v, s, c, n in rows]
+
+
+def test_display_wire_codes_match_the_rust_dtype_table() -> None:
+    """``display.py`` renders VIEW blobs without going through the plugin, so
+    it keeps its own wire-code map. Pin it to the Rust table it copies."""
+    import numpy as np
+
+    import polars_cv.display as display_mod
+
+    numpy_by_name = {
+        "uint8": np.uint8,
+        "int8": np.int8,
+        "uint16": np.uint16,
+        "int16": np.int16,
+        "uint32": np.uint32,
+        "int32": np.int32,
+        "uint64": np.uint64,
+        "int64": np.int64,
+        "float32": np.float32,
+        "float64": np.float64,
+    }
+    expected = {
+        code: numpy_by_name[numpy_name]
+        for _variant, _short, code, numpy_name in _dtype_table_rows()
+    }
+
+    source = Path(display_mod.__file__).read_text()
+    body = source.split("dtype_map = {", 1)[1].split("}", 1)[0]
+    actual = {
+        int(code): getattr(np, name)
+        for code, name in re.findall(r"(\d+):\s*np\.(\w+)", body)
+    }
+
+    assert actual == expected, (
+        "display.py's VIEW wire-code map has drifted from dtype_table! in "
+        f"view-buffer/src/core/dtype.rs: {actual} != {expected}"
+    )
+
+
+def test_display_rejects_unknown_wire_codes() -> None:
+    """An unrecognised dtype code must raise, not render as uint8. Guessing
+    reinterprets the payload and produces a plausible but meaningless image."""
+    import polars_cv.display as display_mod
+
+    blob = bytearray(b"VIEW" + bytes(60))
+    blob[6] = 200  # not a dtype code
+    blob[7] = 2
+    with pytest.raises(ValueError, match="unknown VIEW dtype code"):
+        display_mod._view_to_png(bytes(blob))
+
+
+# Functions that map to a *subset* of DType variants on purpose. The ratchet
+# fails on any unlisted partial rather than skipping it: every blind spot it has
+# had was something it chose to skip, so an unrecognised shape must be an
+# explicit, reviewable entry here rather than silence.
+ALLOWED_PARTIAL_VARIANT_MAPS = frozenset(
+    {
+        # Arrow FFI import supports a subset by design and rejects the rest
+        # with "Unsupported Arrow type" rather than guessing, so the missing
+        # arms are an honest refusal, not silent drift.
+        "view-buffer/src/interop/arrow_ffi.rs::from_arrow_ffi",
+    }
+)
+
+
+def test_no_second_dtype_spelling_table() -> None:
+    """Ratchet: dtype names are declared in ``dtype_table!`` only.
+
+    Some dispatch genuinely has to name every dtype: matching a string to a
+    Polars ``DataType``, or to a macro arm that needs the variant as a literal
+    token. Those are correspondences, not naming decisions, and cannot be
+    derived away. What must not happen is one of them disagreeing with the
+    authority — a missing arm or a stray ``"f16"`` is how a dtype ends up
+    handled in nine places and forgotten in the tenth.
+
+    So this does not forbid the tables; it requires any dtype dispatch to name
+    *exactly* the ten that ``dtype_table!`` declares. New code that only needs
+    the name should still use ``DType::short_name`` / ``numpy_name`` /
+    ``wire_code`` rather than adding an eleventh site.
+
+    Two earlier versions of this test were unsound, so the technique matters:
+
+    - Checking per *file* let ``encode.rs``'s two dispatches cover for each
+      other, so deleting an arm from one passed.
+    - Checking per brace-matched ``match`` block fixed that but was
+      non-monotonic: with a "six or more names must be all ten" threshold,
+      dropping four arms failed while dropping five *passed*, because the
+      block fell under the threshold. Damage concealed itself by growing. The
+      brace matcher was also defeatable by an unbalanced ``{`` inside a string
+      literal (``polars_bail!("expected one of {")``) and by a brace in the
+      scrutinee (``match Key { id: 1 } {``), either of which merged sibling
+      blocks and restored the per-file hole.
+
+    This version does no brace matching and has no threshold. It groups arms
+    by enclosing function and requires each function's dtype-arm set to be
+    exactly the ten. Multiplicity is checked too: a function holding two
+    dispatches names every dtype twice, so dropping one arm makes the counts
+    uneven even though the *set* is still complete.
+
+    Two limits, stated because a guard that overstates its reach is how this
+    test went wrong twice already:
+
+    - It checks that the arm *keys* are all present, never that a key maps to
+      the right thing. ``"u32" | "u64" => build_typed_list_u32(..)`` folds two
+      dtypes onto one builder and passes: the set is complete. Only a test that
+      executes the dispatch can catch that.
+    - It reads ``match`` arms. A dtype table written as an if/else chain or a
+      ``HashMap`` literal is invisible. Arm keys and ``DType::`` variant keys
+      can be found without parsing Rust, and the two parsing attempts above are
+      what produced two unsound versions.
+    """
+    root = Path(__file__).resolve().parents[2]
+    allowed = {
+        # The authority itself.
+        root / "view-buffer" / "src" / "core" / "dtype.rs",
+        # Pins the frozen VIEW codes literally, on purpose.
+        root / "view-buffer" / "tests" / "dtype_single_authority.rs",
+    }
+    expected_pairs = {
+        (variant, short) for variant, short, _code, _numpy in _dtype_table_rows()
+    }
+
+    offenders = []
+    for path in sorted(root.glob("**/*.rs")):
+        if path in allowed or "/target/" in str(path):
+            continue
+        offenders += dispatch_offenders(
+            path.read_text(),
+            str(path.relative_to(root)),
+            expected_pairs,
+            ALLOWED_PARTIAL_VARIANT_MAPS,
+        )
+
+    assert not offenders, (
+        "these dtype dispatches do not agree with dtype_table! in "
+        f"view-buffer/src/core/dtype.rs: {offenders}"
+    )
+
+
+def test_contour_dtype_map_matches_rust() -> None:
+    """The metrics contour matcher builds pipeline sources without going
+    through the plugin, so it keeps its own Polars-type -> dtype-name map.
+    The correspondence is its own, but the names must be the Rust ones."""
+    from polars_cv.metrics._matching._contour import _POLARS_TO_CV_DTYPE
+
+    expected = {short for _variant, short, _code, _numpy in _dtype_table_rows()}
+    actual = set(_POLARS_TO_CV_DTYPE.values())
+    assert actual == expected, (
+        "_POLARS_TO_CV_DTYPE has drifted from dtype_table!: "
+        f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+    )
+
+
+def test_contour_source_accepts_boolean_masks() -> None:
+    """A ``List(Boolean)`` mask is the documented shape for ``gt_col``.
+
+    Regression guard. It briefly raised, on the theory that Boolean is not a
+    buffer element type and declaring one was a silent lie. The source decoder
+    *casts* rather than reinterprets (``series_to_bytes`` in graph/decode.rs),
+    so the declared dtype was always honest and boolean masks worked; the
+    rejection broke them.
+    """
+    from polars_cv.metrics._matching._contour import _detect_source_info
+
+    info = _detect_source_info({"mask": pl.List(pl.List(pl.Boolean))}, "mask")
+    assert info.kwargs["dtype"] == "u8"
+
+
+def test_contour_source_rejects_types_with_no_buffer_meaning() -> None:
+    """Types whose cast would fail or lose meaning must still be refused up
+    front, rather than becoming an f32 source that fails later and deeper."""
+    from polars_cv.metrics._matching._contour import _detect_source_info
+
+    for leaf in (pl.String, pl.Duration):
+        with pytest.raises(ValueError, match="no meaningful buffer"):
+            _detect_source_info({"mask": pl.List(pl.List(leaf))}, "mask")
+
+
+# ---------------------------------------------------------------------------
+# The verification entry point must not drift from CI
+# ---------------------------------------------------------------------------
+
+
+def test_verify_script_covers_every_ci_check() -> None:
+    """``scripts/verify.sh`` must run every check CI runs.
+
+    The script exists so a full verification is one command with per-check exit
+    codes, rather than a set of commands whose output someone reads and
+    summarises — reading a filtered view is what produced false "all green"
+    reports here more than once. That only holds if the script stays complete,
+    so the two are pinned together: a check added to CI and not to the script
+    would leave the local run passing while CI fails.
+    """
+    root = Path(__file__).resolve().parents[2]
+    ci = (root / ".github" / "workflows" / "ci.yml").read_text()
+    script = (root / "scripts" / "verify.sh").read_text()
+
+    # (substring identifying the check in CI, substring identifying it in the
+    # script). Matched loosely on purpose: flags legitimately differ (CI adds
+    # -x/-v, the script adds -q), and pinning exact command lines would make
+    # this fail on formatting rather than on a missing check.
+    required = [
+        ("cargo fmt --all -- --check", "cargo fmt --all -- --check"),
+        ("cargo clippy", "cargo clippy"),
+        ("cargo test -p view-buffer", "cargo test -p view-buffer"),
+        ("maturin develop", "maturin develop"),
+        ('-m "not network and not slow"', '-m "not network and not slow"'),
+        ('-m "slow and not network"', '-m "slow and not network"'),
+        ("ruff check", "ruff check"),
+        ("ruff format --check", "ruff format --check"),
+    ]
+    missing = [
+        ci_frag
+        for ci_frag, script_frag in required
+        if ci_frag in ci and script_frag not in script
+    ]
+    assert not missing, (
+        f"scripts/verify.sh is missing checks that CI runs: {missing}. "
+        f"A local 'PASS' would not mean CI passes."
+    )
+
+    stale = [ci_frag for ci_frag, _ in required if ci_frag not in ci]
+    assert not stale, (
+        f"this test expects CI to run checks it no longer does: {stale}. "
+        f"Update the list rather than leaving it asserting nothing."
+    )

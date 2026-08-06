@@ -7,7 +7,152 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Removed
+
+- **`rasterize(anti_alias=)`.** It was threaded from the builder through the op
+  spec, the JSON graph, `resolve_rasterize_style` and `GeometryOp::Rasterize`
+  into `geometry::rasterize`, whose signature named it `_anti_alias` and ignored
+  it. Documented as "not yet implemented", but not free: it entered the op's
+  identity, so two pipelines that behave identically hashed differently for CSE
+  and compiled to separate graph-cache entries. Passing it now raises
+  `TypeError` instead of being silently discarded.
+
+- **view-buffer's unreachable pipeline-composition layer.** `ops/io.rs`
+  (`SourceFormat`, `SinkFormat`, `PlaceholderMeta`) and the `ExprNode`
+  variants only it fed — `LazySource`, `Placeholder`, `Sink` — plus their
+  constructors. Nothing in the workspace called them; the plugin builds its own
+  source/sink vocabulary. Every `match` over `ExprNode` carried arms for them,
+  two of which were `panic!("must be resolved before building plan")`. Also
+  removes the never-enabled `numpy_interop` / `torch_interop` features, and
+  retires the "three-way format representation split" that two comments
+  described as a divergence to live with.
+
+- **The cost-reporting subsystem.** `ops/cost.rs`, `OpCost`, `OpCostReport`,
+  `PipelineCostReport`, `ViewExpr::cost_report()`, `explain_costs()` and
+  `Op::intrinsic_cost()`. Exercised only by view-buffer's own tests — no Python
+  surface reached it, so every op author maintained a declaration for nobody.
+  `MemoryEffect` is retained and its documentation corrected: it called itself
+  legacy and pointed at `intrinsic_cost()`, when it is in fact the
+  materialisation authority (`build_plan` inserts `MaterializeContiguous` from
+  it) and cost could never have replaced it, because the `MemoryEffect ->
+  OpCost` conversion collapsed `StridePreserving` and `RequiresContiguous` into
+  a single value.
+
+- **Node-level `shape_hints` from the graph JSON.** No Rust code ever read the
+  key. Because `graph_json` is the compiled-graph cache key, two pipelines that
+  execute identically but carry different hints occupied separate cache
+  entries. Plan-time shape still crosses the boundary as `expected_shape` on
+  the output spec, which Rust does read.
+
+### Changed
+
+- **The graph wire format is closed at the node.** `GraphNode` now carries
+  `#[serde(deny_unknown_fields)]`, so a stale or misspelled key fails loudly
+  instead of being silently dropped — which is how `shape_hints` went on being
+  emitted long after its last reader. Fields only Python consumes
+  (`domain`, `output_dtype`) are declared on the Rust struct to keep it closed.
+  `OpSpec` is deliberately *not* closed: its parameters ride on
+  `#[serde(flatten)]`, which serde documents as incompatible with
+  `deny_unknown_fields`.
+
+  **This is a behaviour change under version skew.** A newer Python emitting a
+  node field an older compiled `.so` does not declare now fails the query
+  rather than dropping the field silently. The install is editable, so a stale
+  extension is the normal state after pulling Rust changes — re-run
+  `maturin develop`, or check `polars_cv.build_info()`, which reports the three
+  versions that must agree.
+
+- **Two `unreachable!()` panics removed from `build_plan`.** They were reachable
+  by an op author declaring `MemoryEffect::View` on a compute or image op — a
+  runtime abort for a contract mistake. The materialisation decision is now a
+  direct comparison that treats a `View` declaration as "no materialisation
+  needed", which is what it means.
+
 ### Fixed
+
+- **Plan-time shape tracking was opt-in, and most builders opted out.** Appending
+  an operation required a sequence of calls each builder made by hand. All 60
+  ran the schema fold (`_update_output_dtype`); only 19 also updated the shape
+  hints. Ops that change shape but skipped it published a planned schema
+  execution could not produce, which surfaced at `collect()` as
+  *"planned shape [...] but execution produced [...]. The planner's shape
+  contract disagrees with the Rust implementation."*
+
+  - `transpose(axes)` kept the pre-transpose H/W (a 100×200 image still reported
+    100×200 after `[1,0,2]`) and kept a channel count its `unknown` channel rule
+    says is not knowable.
+  - `channel_select(index)` dropped rank 3 → 2 while `expected_shape` kept
+    publishing a three-dimensional shape.
+  - `channel_merge` kept the first operand's channel count.
+
+  `Pipeline._push_op()` is now the only code that may mutate `_ops`, and it
+  applies the domain check, the schema fold and the hint update together.
+  Guarded structurally by `test_op_append_is_structurally_exclusive`, which
+  fails if anything else touches `_ops` — replacing a ratchet that enumerated
+  one of the two required calls.
+
+- **The lazy continuation's shape replay never ran.** `LazyPipelineExpr.pipe()`
+  re-applied each op's shape effect over the upstream hints, but assigned
+  `_expected_ndim` *after* that loop, so every replayed op saw `ndim = None` and
+  the H/W half of the replay returned at its opening guard. A post-loop overlay
+  masked it for absolute targets like `resize(h, w)` while producing wrong
+  values elsewhere — `.pipe(p).resize_to_height(50)` reported a width of 50,
+  `resize_max(120)` reported a square, and `pad`/`pad_to_size`/`rotate` silently
+  kept the upstream shape.
+
+  The continuation now folds state and hints together one op at a time through
+  the same append path the eager builders use, so the two spellings of an
+  operation — `.pipe(p.op())` and `.pipe(p).op()` — agree by construction.
+  Pinned by `test_eager_and_lazy_agree_on_shape_state` across every chainable
+  op, with the op table completeness-asserted so a new operation cannot join
+  without a case.
+
+### Changed
+
+- **Binary ops and reductions declare that they accept a vector.** Their
+  `GraphStep` contract said `buffer`, which read as "images only" and was
+  wrong: a perceptual hash is a 1-D `u8` buffer encoded as a `vector`, and the
+  library's own `hamming_distance` is `hash_a ^ hash_b → reduce_popcount` with
+  both operands in `vector`. Nothing enforced input domains from that contract
+  until the planner started to, so the mistake was invisible. `input_domains()`
+  is now a set (`["buffer", "vector"]` for those two), which keeps
+  `extract_contours().reduce_sum()` rejected at build time — widening them to
+  `Domain::Any` would not have. The rejection message names the accepted set,
+  so it now reads "expects buffer or vector input".
+
+- **Shape hints are invalidated, not carried forward, when a step has no
+  inferable shape.** Axis reductions, histograms, channel merge and the binary
+  ops are graph-level steps `op_infer_shape` rejects; keeping the pre-op H/W
+  across them let a pipeline publish `[100, 200, 2]` for data that executes as
+  `[200, 3, 2]`. Unknown is always safe — a typed sink asks for an explicit
+  shape instead of planning a wrong one.
+
+- **`transpose` and `flip` validate their axes against the tracked rank.**
+  `transpose([1,0,2])` after a `channel_select` (rank 2) reached view-buffer's
+  `infer_shape`, which indexes the input shape unchecked, and surfaced as a
+  `PanicException` with a Rust backtrace from an ordinary builder call. The
+  builders now raise `ValueError`, and `op_infer_shape` catches unwinds so no
+  future op can leak a panic into the planner.
+
+- **Each operation's input domain now comes from its Rust contract.** Builders
+  passed their own expected domain to `_validate_domain(self.DOMAIN_BUFFER, ...)`
+  at 53 call sites, restating a fact `op_contract(...)["input_domain"]` already
+  published and nothing read. The check moved into the append path, and
+  `Pipeline`'s `DOMAIN_*` string constants — a third copy of the domain
+  vocabulary behind Rust's `Domain::NAMED` and the Python `Domain` enum — are
+  gone.
+
+- **`op_infer_shape` now covers geometry steps.** `rasterize`'s output canvas is
+  fixed by its own width/height, but the FFI accepted only buffer ops, so the
+  Python builder assigned those hints itself as a side effect of building the
+  op's parameters — which the continuation replay skipped. `GeometryOp`'s
+  `infer_shape` is now read like any other, and a step whose shape is genuinely
+  data-dependent (`extract_contours`) reports "not knowable" rather than rank 0.
+
+- **`assert_shape()` records the position it was written at.** A user assertion
+  outranks inference, but only from that point on, so it can survive a
+  continuation replay without overriding later ops that legitimately change the
+  shape (`assert_shape(channels=3).grayscale()` still reports 1 channel).
 
 - **`.contour.label_reduce()` was a second, divergent implementation.** The
   accessor scored contours with a plugin-local routine while

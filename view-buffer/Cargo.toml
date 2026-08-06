@@ -67,10 +67,6 @@ image_interop = ["dep:image", "dep:fast_image_resize", "dep:tiff"]
 arrow_interop = ["dep:arrow"]
 polars_interop = ["dep:polars-arrow", "dep:polars-buffer"]
 
-# Output format support (no external deps, just format logic)
-numpy_interop = []
-torch_interop = []
-
 # Perceptual hashing support (requires image_interop)
 perceptual_hash = ["dep:image_hasher", "image_interop"]
 
@@ -80,8 +76,6 @@ all_interops = [
     "image_interop",
     "arrow_interop",
     "polars_interop",
-    "numpy_interop",
-    "torch_interop",
     "perceptual_hash",
 ]
 

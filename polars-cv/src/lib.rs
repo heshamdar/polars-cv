@@ -23,6 +23,8 @@ use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
 
+use crate::execute::BINARY_OP_ENUM;
+
 /// Python module entry point for maturin.
 /// The module name `_lib` must match pyproject.toml's `module-name = "polars_cv._lib"`.
 #[pymodule]
@@ -38,6 +40,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(op_schema, m)?)?;
     m.add_function(wrap_pyfunction!(op_infer_shape, m)?)?;
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
+    m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
     Ok(())
 }
@@ -239,16 +242,47 @@ fn infer_shape_probe(op_json: &str, input_dims: &[Option<i64>], probe: i64) -> P
     use crate::graph::step::GraphStep;
 
     let step = resolve_op_from_json_probe(op_json, probe)?;
-    let GraphStep::Buffer(dto) = step else {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "op_infer_shape: only single-buffer ops have an inferable shape",
-        ));
+    // Buffer ops and geometry steps both carry an `Op` with a real
+    // `infer_shape`. Geometry has to be included or the planner has no shape
+    // authority for `rasterize`, whose output canvas is fixed by its own
+    // width/height params — the Python side then had to assign those hints
+    // itself, a side effect the lazy continuation replay silently skipped.
+    let op: &dyn view_buffer::Op = match &step {
+        GraphStep::Buffer(dto) => dto.as_op(),
+        GraphStep::Geometry(geo) => geo,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "op_infer_shape: only buffer and geometry ops have an inferable shape",
+            ))
+        }
     };
     let input_shape: Vec<usize> = input_dims
         .iter()
         .map(|d| d.unwrap_or(probe).max(1) as usize)
         .collect();
-    let out = dto.as_op().infer_shape(&[input_shape.as_slice()]);
+    // `infer_shape` implementations index their input shape directly, so an
+    // op whose parameters disagree with the input rank (a transpose carrying
+    // three axes over rank-2 data) panics rather than returning an error.
+    // This is a *planning* call reached from an ordinary Python builder, so a
+    // panic here would escape as a `PanicException` with a Rust backtrace
+    // instead of the ValueError the builder contract promises. Catch it and
+    // report "not inferable"; the builder validates the parameters itself and
+    // raises the actionable message.
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        op.infer_shape(&[input_shape.as_slice()])
+    }))
+    .map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(
+            "op_infer_shape: operation parameters are inconsistent with the input rank",
+        )
+    })?;
+    // A step whose output shape is data-dependent (extract_contours) returns
+    // an empty shape; report it as "not inferable" rather than as rank 0.
+    if out.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "op_infer_shape: output shape is not knowable at plan time",
+        ));
+    }
     Ok(out.iter().map(|&x| x as i64).collect())
 }
 
@@ -401,51 +435,50 @@ fn out_dtype_override(op_json: &str) -> PyResult<Option<view_buffer::DType>> {
 
 /// Return the string variants of a Rust enum, for Python<->Rust parity checks.
 ///
-/// Every enum's names come from its canonical `NAMED` table in view-buffer
-/// (see `view_buffer::naming`) — the same table the executor's parameter
-/// parser consumes — so the names surfaced to Python and the names the
-/// executor accepts cannot drift. Format enums are intentionally not exposed
-/// here: view-buffer's `SourceFormat`/`SinkFormat` use a different vocabulary
-/// than the graph's string formats, a divergence slated for consolidation
-/// rather than enforcement.
+/// Reads `view_buffer::naming::REGISTRY`, so registering an enum there is what
+/// makes it queryable from Python — one act, not two. Its names come from the
+/// same canonical `NAMED` table the executor's parameter parser consumes, so
+/// the names surfaced to Python and the names the executor accepts cannot
+/// drift.
+///
+/// The graph's source/sink formats are not here because they have no Rust
+/// enum: the boundary carries them as plain strings and Python's
+/// `SourceFormat`/`SinkFormat` are their single definition. view-buffer's
+/// shadowing copies were deleted with its unreachable composition layer, so
+/// there is no longer a format vocabulary to reconcile.
 #[pyfunction]
 fn enum_variants(name: &str) -> PyResult<Vec<String>> {
-    use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
-    use view_buffer::geometry::ops::{ApproxMethod, ExtractMode};
-    use view_buffer::naming::names;
-    use view_buffer::ops::dto::{PadMode, PadPosition};
-    use view_buffer::ops::filter::BorderMode;
-    use view_buffer::ops::histogram::HistogramClosed;
-    use view_buffer::ops::Domain;
-    use view_buffer::ops::{ColorSpace, FilterType, HashAlgorithm, HistogramOutput};
-    use view_buffer::{DType, InterpolationType};
-
-    let variants: Vec<&str> = match name {
-        "DType" => names(DType::NAMED),
-        "Domain" => names(Domain::NAMED),
-        "ColorSpace" => names(ColorSpace::NAMED),
-        "HashAlgorithm" => names(HashAlgorithm::NAMED),
-        "HistogramOutput" => names(HistogramOutput::NAMED),
-        "HistogramClosed" => names(HistogramClosed::NAMED),
-        "PadMode" => names(PadMode::NAMED),
-        "PadPosition" => names(PadPosition::NAMED),
-        "FilterType" => names(FilterType::NAMED),
-        "InterpolationType" => names(InterpolationType::NAMED),
-        "BorderMode" => names(BorderMode::NAMED),
-        "LabelReduction" => names(LabelReduction::NAMED),
-        "LabelRegionMode" => names(LabelRegionMode::NAMED),
-        "ExtractMode" => names(ExtractMode::NAMED),
-        "ApproxMethod" => names(ApproxMethod::NAMED),
-        // `Preset` carries payload, so NormalizeMethod exposes names only.
-        "NormalizeMethod" => view_buffer::ops::NormalizeMethod::NAMES.to_vec(),
-        "BinaryOp" => crate::execute::BINARY_OPS.iter().map(|(n, _)| *n).collect(),
-        other => {
+    let variants: Vec<&str> = match view_buffer::naming::registered_variants(name) {
+        Some(v) => v,
+        // `BinaryOp` is the one queryable vocabulary view-buffer does not own:
+        // `BINARY_OPS` lives in this crate, so it cannot be in the engine's
+        // registry. Everything else comes from there.
+        None if name == BINARY_OP_ENUM => {
+            crate::execute::BINARY_OPS.iter().map(|(n, _)| *n).collect()
+        }
+        None => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "no canonical Rust enum named {other}"
+                "no canonical Rust enum named {name}; known: {:?}",
+                enum_names()
             )))
         }
     };
     Ok(variants.into_iter().map(str::to_string).collect())
+}
+
+/// The name of every enum `enum_variants` can answer for.
+///
+/// Exists so the Python parity tests can iterate the vocabularies rather than
+/// hand-listing them. A hand-written list is what let `LabelReduction` and
+/// `LabelRegionMode` sit unchecked: they had `NAMED` tables, and no test named
+/// them, so nothing noticed. A test that reads this cannot miss a new enum.
+#[pyfunction]
+fn enum_names() -> Vec<String> {
+    view_buffer::naming::registered_names()
+        .into_iter()
+        .chain(std::iter::once(BINARY_OP_ENUM))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Return the names of every operation the executor can resolve.
@@ -477,6 +510,13 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
     dict.set_item("rank_rule", rank_rule_name(dto.output_rank_rule()))?;
     dict.set_item("channel_rule", channel_rule_name(dto.output_channel_rule()))?;
     dict.set_item("input_domain", dto.input_domain().name())?;
+    dict.set_item(
+        "input_domains",
+        dto.input_domains()
+            .iter()
+            .map(|d| d.name())
+            .collect::<Vec<_>>(),
+    )?;
     dict.set_item("output_domain", dto.output_domain().name())?;
     Ok(dict.into())
 }

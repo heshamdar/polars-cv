@@ -50,15 +50,38 @@ pub(crate) enum GraphStep {
 }
 
 impl GraphStep {
-    /// The domain this step consumes.
+    /// Every domain this step can consume.
+    ///
+    /// A set rather than a single domain because two families genuinely accept
+    /// more than one: binary ops and reductions consume any numeric container,
+    /// which is `buffer` *and* `vector` (a perceptual hash is a 1-D u8 buffer
+    /// that happens to be encoded as a vector — the library's own
+    /// `hamming_distance` is `hash_a ^ hash_b -> reduce_popcount`, with both
+    /// operands in `vector`).
+    ///
+    /// Declaring a single `Buffer` read as "images only" and was wrong; it went
+    /// unnoticed because nothing enforced input domains from this contract
+    /// until the planner started to. Widening those two to `Domain::Any`
+    /// instead would have been wrong in the other direction — it would stop
+    /// rejecting `extract_contours().reduce_sum()`, which the suite pins.
+    pub fn input_domains(&self) -> Vec<Domain> {
+        match self {
+            GraphStep::Binary { .. } | GraphStep::Reduction(_) => {
+                vec![Domain::Buffer, Domain::Vector]
+            }
+            _ => vec![self.input_domain()],
+        }
+    }
+
+    /// The primary domain this step consumes.
     pub fn input_domain(&self) -> Domain {
         match self {
             GraphStep::Buffer(dto) => dto.input_domain(),
             GraphStep::Geometry(op) => op.input_domain(),
             GraphStep::Binary { .. }
+            | GraphStep::Reduction(_)
             | GraphStep::ApplyMask { .. }
             | GraphStep::ChannelMerge { .. }
-            | GraphStep::Reduction(_)
             | GraphStep::Histogram(_)
             | GraphStep::PerceptualHash(_)
             | GraphStep::ExtractShape

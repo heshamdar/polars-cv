@@ -60,18 +60,7 @@ pub fn numpy_output_dtype() -> DataType {
 ///
 /// These names match numpy dtype names for easy conversion on the Python side.
 pub fn dtype_to_string(dtype: VbDType) -> &'static str {
-    match dtype {
-        VbDType::U8 => "uint8",
-        VbDType::I8 => "int8",
-        VbDType::U16 => "uint16",
-        VbDType::I16 => "int16",
-        VbDType::U32 => "uint32",
-        VbDType::I32 => "int32",
-        VbDType::U64 => "uint64",
-        VbDType::I64 => "int64",
-        VbDType::F32 => "float32",
-        VbDType::F64 => "float64",
-    }
+    dtype.numpy_name()
 }
 
 /// Encoded numpy output for a single row.

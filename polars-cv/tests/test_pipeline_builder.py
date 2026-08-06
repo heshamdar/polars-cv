@@ -94,12 +94,14 @@ class TestPipelineSerialization:
         assert len(data["ops"]) == 1
         assert "sink" not in data
 
-    def test_serialize_pipeline_with_shape_hints(self) -> None:
+    def test_serialize_pipeline_omits_shape_hints(self) -> None:
         """Shape hints are preserved in serialized output."""
         pipe = Pipeline().source().assert_shape(channels=3)
         data = json.loads(pipe._to_json())
-        assert "shape_hints" in data
-        assert data["shape_hints"]["channels"]["value"] == 3
+        # Shape hints are plan-time state, not wire format (nothing in Rust
+        # reads the key); `expected_shape` on the output spec carries what
+        # execution needs.
+        assert "shape_hints" not in data
 
 
 class TestPipelineRepr:

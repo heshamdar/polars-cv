@@ -701,28 +701,6 @@ class TestFlagParamsAcceptExpressions:
             column="n",
         )
 
-    def test_rasterize_anti_alias_accepts_expr(self, image_bytes: bytes) -> None:
-        """`anti_alias` is plumbed per-row even though the kernel ignores it.
-
-        view-buffer's rasterizer takes `_anti_alias` and does nothing with it
-        (documented "not yet implemented"), so there is no output difference to
-        assert — only that the builder emits an expression and execution
-        resolves it. Once the kernel honours the flag this should become a
-        value-level comparison.
-        """
-        df = pl.DataFrame({"image": [image_bytes, image_bytes], "aa": [True, False]})
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .grayscale()
-            .threshold(128)
-            .extract_contours()
-            .rasterize(width=24, height=24, anti_alias=pl.col("aa"))
-        )
-        assert pipe._ops[-1].params["anti_alias"].is_expr
-        out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
-        assert out["r"].null_count() == 0
-
     def test_pipeline_area_signed_accepts_expr(self, image_bytes: bytes) -> None:
         """`Pipeline.area` accepts the flag its namespace twin accepts.
 

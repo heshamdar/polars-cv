@@ -27,7 +27,9 @@ def _plugin_available() -> bool:
     return len(so_files) > 0
 
 
-# Mark tests with plugin_required marker for easy filtering
+# Skip, rather than fail, when the compiled extension is absent. This is a
+# `skipif` and not a named marker, so it cannot be selected with `-k`/`-m`;
+# tests carrying it drop out on their own when the plugin is not built.
 plugin_required = pytest.mark.skipif(
     not _plugin_available(),
     reason="Requires compiled plugin (run maturin develop first)",

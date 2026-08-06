@@ -11,13 +11,17 @@ use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use std::io::Cursor;
 use view_buffer::protocol::{u8_to_dtype, HEADER_SIZE, MAGIC_BYTES};
+use view_buffer::DType as VbDType;
 
 /// Parsed metadata from an image or VIEW blob header.
 struct ImageMeta {
     width: u32,
     height: u32,
-    channels: u32,
-    dtype: &'static str,
+    /// `None` when the colour type was not recognised. Dimensions are read
+    /// from the header before the colour type is consulted and stay valid,
+    /// so an unknown colour type nulls these two fields only.
+    channels: Option<u32>,
+    dtype: Option<&'static str>,
 }
 
 /// Try to extract metadata from VIEW protocol header (first 64 bytes).
@@ -28,18 +32,7 @@ fn try_view_header(bytes: &[u8]) -> Option<ImageMeta> {
     let dtype_code = bytes[6];
     let rank = bytes[7] as usize;
     let dt = u8_to_dtype(dtype_code)?;
-    let dtype_str = match dt {
-        view_buffer::DType::U8 => "uint8",
-        view_buffer::DType::I8 => "int8",
-        view_buffer::DType::U16 => "uint16",
-        view_buffer::DType::I16 => "int16",
-        view_buffer::DType::U32 => "uint32",
-        view_buffer::DType::I32 => "int32",
-        view_buffer::DType::U64 => "uint64",
-        view_buffer::DType::I64 => "int64",
-        view_buffer::DType::F32 => "float32",
-        view_buffer::DType::F64 => "float64",
-    };
+    let dtype_str = dt.numpy_name();
 
     // Shape dimensions are stored after the 64-byte header, each as u64 LE
     let shape_start = HEADER_SIZE;
@@ -65,8 +58,8 @@ fn try_view_header(bytes: &[u8]) -> Option<ImageMeta> {
     Some(ImageMeta {
         width,
         height,
-        channels,
-        dtype: dtype_str,
+        channels: Some(channels),
+        dtype: Some(dtype_str),
     })
 }
 
@@ -82,32 +75,39 @@ fn try_image_header(bytes: &[u8]) -> Option<ImageMeta> {
     let (width, height) = decoder.dimensions();
     let color = decoder.color_type();
 
-    let channels = match color {
-        image::ColorType::L8 | image::ColorType::L16 => 1,
-        image::ColorType::La8 | image::ColorType::La16 => 2,
-        image::ColorType::Rgb8 | image::ColorType::Rgb16 | image::ColorType::Rgb32F => 3,
-        image::ColorType::Rgba8 | image::ColorType::Rgba16 | image::ColorType::Rgba32F => 4,
-        _ => 1,
-    };
-
-    let dtype_str = match color {
-        image::ColorType::L8
-        | image::ColorType::La8
-        | image::ColorType::Rgb8
-        | image::ColorType::Rgba8 => "uint8",
-        image::ColorType::L16
-        | image::ColorType::La16
-        | image::ColorType::Rgb16
-        | image::ColorType::Rgba16 => "uint16",
-        image::ColorType::Rgb32F | image::ColorType::Rgba32F => "float32",
-        _ => "uint8",
+    // Channel count and dtype are two facts about one colour type, so they are
+    // read in one match: splitting them let the two arms disagree about which
+    // variants they covered, and each carried its own `_` guess (1 channel,
+    // "uint8") for the ones it did not. `image::ColorType` is `#[non_exhaustive]`,
+    // so a catch-all is mandatory — but an unrecognised colour type means we do
+    // not know these two facts, and `None` says that. Reporting a confident
+    // "uint8"/1-channel answer for a format we failed to recognise is worse
+    // than a null: it is indistinguishable from a real greyscale image.
+    //
+    // Only these two are nulled. `width`/`height` come off the header above,
+    // before the colour type is consulted, and are equally valid whether or
+    // not we recognise it — failing them too would make a future `image`
+    // release that adds a variant silently regress `.cv.width()`/`.cv.height()`
+    // on files whose dimensions we read perfectly well.
+    let channels_and_dtype = match color {
+        image::ColorType::L8 => Some((1, VbDType::U8)),
+        image::ColorType::L16 => Some((1, VbDType::U16)),
+        image::ColorType::La8 => Some((2, VbDType::U8)),
+        image::ColorType::La16 => Some((2, VbDType::U16)),
+        image::ColorType::Rgb8 => Some((3, VbDType::U8)),
+        image::ColorType::Rgb16 => Some((3, VbDType::U16)),
+        image::ColorType::Rgb32F => Some((3, VbDType::F32)),
+        image::ColorType::Rgba8 => Some((4, VbDType::U8)),
+        image::ColorType::Rgba16 => Some((4, VbDType::U16)),
+        image::ColorType::Rgba32F => Some((4, VbDType::F32)),
+        _ => None,
     };
 
     Some(ImageMeta {
         width,
         height,
-        channels,
-        dtype: dtype_str,
+        channels: channels_and_dtype.map(|(c, _)| c),
+        dtype: channels_and_dtype.map(|(_, d)| d.numpy_name()),
     })
 }
 
@@ -144,7 +144,7 @@ fn image_channels(inputs: &[Series]) -> PolarsResult<Series> {
     let ca = inputs[0].binary()?;
     let out: UInt32Chunked = ca
         .iter()
-        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.channels)))
+        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).and_then(|m| m.channels)))
         .collect();
     Ok(out.with_name(ca.name().clone()).into_series())
 }
@@ -155,7 +155,7 @@ fn image_dtype(inputs: &[Series]) -> PolarsResult<Series> {
     let ca = inputs[0].binary()?;
     let out: StringChunked = ca
         .iter()
-        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).map(|m| m.dtype)))
+        .map(|opt_bytes| opt_bytes.and_then(|b| extract_metadata(b).and_then(|m| m.dtype)))
         .collect();
     Ok(out.with_name(ca.name().clone()).into_series())
 }

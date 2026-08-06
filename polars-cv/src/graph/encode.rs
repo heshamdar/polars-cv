@@ -52,7 +52,6 @@ pub(crate) fn execute_geometry_op(
             height,
             fill_value,
             background,
-            anti_alias,
         } => {
             let contours = input
                 .as_contours()
@@ -65,17 +64,9 @@ pub(crate) fn execute_geometry_op(
                 Ok(NodeOutput::from_buffer(mask))
             } else {
                 // Render all contours onto the same canvas by folding with max.
-                let mut canvas = rasterize(
-                    &contours[0],
-                    *width,
-                    *height,
-                    *fill_value,
-                    *background,
-                    *anti_alias,
-                );
+                let mut canvas = rasterize(&contours[0], *width, *height, *fill_value, *background);
                 for c in &contours[1..] {
-                    let overlay =
-                        rasterize(c, *width, *height, *fill_value, *background, *anti_alias);
+                    let overlay = rasterize(c, *width, *height, *fill_value, *background);
                     canvas = BinaryOp::Maximum.execute(&canvas, &overlay);
                 }
                 Ok(NodeOutput::from_buffer(canvas))
@@ -300,7 +291,13 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
         "i64" => build_typed_list_i64(name, rows),
         "f32" => build_typed_list_f32(name, rows),
         "f64" => build_typed_list_f64(name, rows),
-        _ => build_typed_list_u8(name, rows),
+        // Not a fallback: building a u8 list for an unrecognised dtype would
+        // reinterpret every element and hand back a plausible-looking wrong
+        // answer. The dtype string is produced upstream by `dtype_table!`, so
+        // reaching this arm means the two have drifted.
+        other => Err(polars_err!(
+            ComputeError: "unknown dtype {} when building a list series", other
+        )),
     }
 }
 /// Build a nested List series preserving multi-dimensional shape.

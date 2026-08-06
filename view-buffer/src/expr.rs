@@ -5,8 +5,6 @@ use crate::core::dtype::DType;
 use crate::core::layout::Layout;
 use crate::execution::{ExecutionPlan, PlanStep};
 use crate::ops::affine::AffineParams;
-use crate::ops::cost::{OpCost, OpCostReport};
-use crate::ops::io::{PlaceholderMeta, SinkFormat, SourceFormat};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::MemoryEffect;
 use crate::ops::{
@@ -19,15 +17,6 @@ use crate::ops::{
 pub enum ExprNode {
     /// Concrete source data.
     Source(Arc<ViewBuffer>),
-
-    /// Lazy source - data stored but not decoded until execution.
-    LazySource {
-        format: SourceFormat,
-        data: Arc<[u8]>,
-    },
-
-    /// Placeholder - pipeline defined without data, shape/dtype provided at bind time.
-    Placeholder(PlaceholderMeta),
 
     /// View operation (zero-copy).
     View(ViewOp, Arc<ViewExpr>),
@@ -43,12 +32,6 @@ pub enum ExprNode {
 
     /// 2D convolution.
     Filter(ConvolveOp, Arc<ViewExpr>),
-
-    /// Terminal sink specifying output format.
-    Sink {
-        format: SinkFormat,
-        input: Arc<ViewExpr>,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -69,44 +52,6 @@ impl ViewExpr {
             strides: Some(buffer.strides_bytes().to_vec()),
             dtype: buffer.dtype(),
             node: ExprNode::Source(Arc::new(buffer)),
-        })
-    }
-
-    /// Creates a lazy source that will be decoded at execution time.
-    pub fn new_lazy_source(format: SourceFormat, data: Vec<u8>, dtype: DType) -> Arc<Self> {
-        Arc::new(Self {
-            shape: vec![], // Unknown until execution
-            strides: None,
-            dtype,
-            node: ExprNode::LazySource {
-                format,
-                data: data.into(),
-            },
-        })
-    }
-
-    /// Creates a placeholder for context-free pipeline definition.
-    pub fn new_placeholder(meta: PlaceholderMeta) -> Arc<Self> {
-        Arc::new(Self {
-            shape: meta.expected_shape.clone().unwrap_or_default(),
-            strides: None,
-            dtype: meta.expected_dtype.unwrap_or(DType::U8),
-            node: ExprNode::Placeholder(meta),
-        })
-    }
-
-    // --- Sink Operations ---
-
-    /// Terminates the pipeline with a specific output format.
-    pub fn sink(self: &Arc<Self>, format: SinkFormat) -> Arc<Self> {
-        Arc::new(Self {
-            shape: self.shape.clone(),
-            strides: self.strides.clone(),
-            dtype: self.dtype,
-            node: ExprNode::Sink {
-                format,
-                input: self.clone(),
-            },
         })
     }
 
@@ -256,10 +201,7 @@ impl ViewExpr {
         } else {
             // If input strides are unknown, calculate contiguous strides for allocating ops
             // or ops that require contiguous input
-            let effect = op.memory_effect();
-            if effect == MemoryEffect::RequiresContiguous
-                || op.intrinsic_cost() == crate::ops::OpCost::Allocating
-            {
+            if op.memory_effect() != MemoryEffect::View {
                 let new_dtype = op.resolve_output_dtype(self.dtype, None);
                 let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
                 return Some(l.strides);
@@ -620,8 +562,6 @@ impl ViewExpr {
     pub fn optimize(self: &Arc<Self>) -> Arc<Self> {
         let optimized_node = match &self.node {
             ExprNode::Source(_) => return self.clone(),
-            ExprNode::LazySource { .. } => return self.clone(),
-            ExprNode::Placeholder(_) => return self.clone(),
             ExprNode::View(op, child) => ExprNode::View(op.clone(), child.optimize()),
             ExprNode::Compute(op, children) => {
                 let opt_children: Vec<_> = children.iter().map(|c| c.optimize()).collect();
@@ -630,10 +570,6 @@ impl ViewExpr {
             ExprNode::Image(op, child) => ExprNode::Image(op.clone(), child.optimize()),
             ExprNode::Color(op, child) => ExprNode::Color(op.clone(), child.optimize()),
             ExprNode::Filter(op, child) => ExprNode::Filter(op.clone(), child.optimize()),
-            ExprNode::Sink { format, input } => ExprNode::Sink {
-                format: format.clone(),
-                input: input.optimize(),
-            },
         };
 
         match optimized_node {
@@ -759,12 +695,6 @@ impl ViewExpr {
             ExprNode::Source(_) => {
                 info.push_str(&format!("{indent}  Source: ViewBuffer\n"));
             }
-            ExprNode::LazySource { format, .. } => {
-                info.push_str(&format!("{indent}  Format: {format:?}\n"));
-            }
-            ExprNode::Placeholder(meta) => {
-                info.push_str(&format!("{indent}  Expected: {meta:?}\n"));
-            }
             ExprNode::View(op, child) => {
                 info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 info.push_str(&child.explain_impl(depth + 1));
@@ -787,10 +717,6 @@ impl ViewExpr {
                 info.push_str(&format!("{indent}  Op: {op:?}\n"));
                 info.push_str(&child.explain_impl(depth + 1));
             }
-            ExprNode::Sink { format, input } => {
-                info.push_str(&format!("{indent}  Format: {format:?}\n"));
-                info.push_str(&input.explain_impl(depth + 1));
-            }
         }
         info
     }
@@ -798,263 +724,12 @@ impl ViewExpr {
     fn node_type_name(&self) -> &'static str {
         match &self.node {
             ExprNode::Source(_) => "Source",
-            ExprNode::LazySource { .. } => "LazySource",
-            ExprNode::Placeholder(_) => "Placeholder",
             ExprNode::View(_, _) => "View",
             ExprNode::Compute(_, _) => "Compute",
             ExprNode::Image(_, _) => "Image",
             ExprNode::Color(_, _) => "Color",
             ExprNode::Filter(_, _) => "Filter",
-            ExprNode::Sink { .. } => "Sink",
         }
-    }
-
-    // --- Cost Reporting ---
-
-    /// Generates a cost report for the entire pipeline.
-    pub fn cost_report(&self) -> PipelineCostReport {
-        let mut operations = Vec::new();
-        let mut dtype_flow = Vec::new();
-
-        // Get source dtype
-        let source_dtype = self.get_source_dtype();
-        dtype_flow.push(source_dtype);
-
-        self.collect_costs(&mut operations, &mut dtype_flow);
-
-        let total_allocations = operations
-            .iter()
-            .filter(|r| r.intrinsic_cost == OpCost::Allocating)
-            .count();
-
-        let zero_copy_operations = operations
-            .iter()
-            .filter(|r| r.intrinsic_cost == OpCost::ZeroCopy)
-            .count();
-
-        let io_operations = operations
-            .iter()
-            .filter(|r| r.intrinsic_cost == OpCost::IO)
-            .count();
-
-        let dtype_changes: Vec<_> = operations
-            .iter()
-            .filter_map(|r| {
-                r.dtype_change
-                    .map(|(from, to)| (r.display_name().to_string(), from, to))
-            })
-            .collect();
-
-        let fusion_summary: Vec<_> = operations
-            .iter()
-            .filter_map(|r| r.op_description.clone())
-            .collect();
-
-        // Estimate memory: sum of allocating ops
-        let estimated_memory_bytes: Option<usize> = {
-            let total: usize = operations.iter().filter_map(|r| r.estimated_bytes).sum();
-            if total > 0 {
-                Some(total)
-            } else {
-                None
-            }
-        };
-
-        PipelineCostReport {
-            operations,
-            total_allocations,
-            dtype_changes,
-            io_operations,
-            zero_copy_operations,
-            estimated_memory_bytes,
-            dtype_flow,
-            fusion_summary,
-        }
-    }
-
-    /// Gets the source dtype for this expression.
-    fn get_source_dtype(&self) -> DType {
-        match &self.node {
-            ExprNode::Source(buf) => buf.dtype(),
-            ExprNode::LazySource { .. } => DType::U8, // Default for lazy sources
-            ExprNode::Placeholder(_) => DType::U8,
-            ExprNode::View(_, child) => child.get_source_dtype(),
-            ExprNode::Compute(_, children) => children
-                .first()
-                .map(|c| c.get_source_dtype())
-                .unwrap_or(DType::U8),
-            ExprNode::Image(_, child) => child.get_source_dtype(),
-            ExprNode::Color(_, child) => child.get_source_dtype(),
-            ExprNode::Filter(_, child) => child.get_source_dtype(),
-            ExprNode::Sink { input, .. } => input.get_source_dtype(),
-        }
-    }
-
-    fn collect_costs(&self, ops: &mut Vec<OpCostReport>, dtype_flow: &mut Vec<DType>) {
-        match &self.node {
-            ExprNode::Source(_) => {}
-            ExprNode::LazySource { format, .. } => {
-                let dtype = DType::U8; // Lazy sources typically produce U8
-                ops.push(OpCostReport::new(format.name(), format.cost(), dtype));
-                dtype_flow.push(dtype);
-            }
-            ExprNode::Placeholder(_) => {}
-            ExprNode::View(op, child) => {
-                child.collect_costs(ops, dtype_flow);
-                let current_dtype = *dtype_flow.last().unwrap_or(&DType::U8);
-                ops.push(OpCostReport::new(
-                    op.name(),
-                    op.intrinsic_cost(),
-                    current_dtype,
-                ));
-                // View ops don't change dtype
-                dtype_flow.push(current_dtype);
-            }
-            ExprNode::Compute(op, children) => {
-                for child in children {
-                    child.collect_costs(ops, dtype_flow);
-                }
-                let input_dtype = children.first().map(|c| c.dtype).unwrap_or(DType::U8);
-                let output_dtype = op.resolve_output_dtype(input_dtype, None);
-
-                let report = if let ComputeOp::Fused(kernel) = op {
-                    // Create detailed fused operation report
-                    let fused_names: Vec<String> =
-                        kernel.ops.iter().map(|s| s.name().to_string()).collect();
-                    OpCostReport::fused(fused_names, op.intrinsic_cost(), input_dtype, output_dtype)
-                } else if input_dtype != output_dtype {
-                    OpCostReport::with_dtype_change(
-                        op.name(),
-                        op.intrinsic_cost(),
-                        input_dtype,
-                        output_dtype,
-                    )
-                } else {
-                    OpCostReport::new(op.name(), op.intrinsic_cost(), input_dtype)
-                };
-                ops.push(report);
-                dtype_flow.push(output_dtype);
-            }
-            ExprNode::Image(op, child) => {
-                child.collect_costs(ops, dtype_flow);
-                let input_dtype = child.dtype;
-                let output_dtype = op.resolve_output_dtype(input_dtype, None);
-                if input_dtype != output_dtype {
-                    ops.push(OpCostReport::with_dtype_change(
-                        op.name(),
-                        op.intrinsic_cost(),
-                        input_dtype,
-                        output_dtype,
-                    ));
-                } else {
-                    ops.push(OpCostReport::new(
-                        op.name(),
-                        op.intrinsic_cost(),
-                        input_dtype,
-                    ));
-                }
-                dtype_flow.push(output_dtype);
-            }
-            ExprNode::Color(op, child) => {
-                child.collect_costs(ops, dtype_flow);
-                let input_dtype = child.dtype;
-                let output_dtype = op.resolve_output_dtype(input_dtype, None);
-                ops.push(OpCostReport::with_dtype_change(
-                    Op::name(op),
-                    op.intrinsic_cost(),
-                    input_dtype,
-                    output_dtype,
-                ));
-                dtype_flow.push(output_dtype);
-            }
-            ExprNode::Filter(op, child) => {
-                child.collect_costs(ops, dtype_flow);
-                let input_dtype = child.dtype;
-                let output_dtype = op.resolve_output_dtype(input_dtype, None);
-                ops.push(OpCostReport::with_dtype_change(
-                    op.name(),
-                    op.intrinsic_cost(),
-                    input_dtype,
-                    output_dtype,
-                ));
-                dtype_flow.push(output_dtype);
-            }
-            ExprNode::Sink { format, input } => {
-                input.collect_costs(ops, dtype_flow);
-                let current_dtype = *dtype_flow.last().unwrap_or(&DType::U8);
-                ops.push(OpCostReport::new(
-                    format.name(),
-                    format.cost(),
-                    current_dtype,
-                ));
-            }
-        }
-    }
-
-    /// Returns a human-readable cost explanation.
-    pub fn explain_costs(&self) -> String {
-        let report = self.cost_report();
-        let mut output = String::new();
-
-        output.push_str("Pipeline Cost Summary:\n");
-        output.push_str(&format!(
-            "  Operations: {} ({} zero-copy, {} allocating)\n",
-            report.operations.len(),
-            report.zero_copy_operations,
-            report.total_allocations
-        ));
-        output.push_str(&format!(
-            "  DType changes: {}\n",
-            report.dtype_changes.len()
-        ));
-        output.push_str(&format!("  I/O operations: {}\n", report.io_operations));
-
-        // Show memory estimate if available
-        if let Some(bytes) = report.estimated_memory_bytes {
-            output.push_str(&format!("  Estimated memory: {bytes} bytes\n"));
-        }
-
-        // Show dtype flow
-        if report.dtype_flow.len() > 1 {
-            let flow_str: Vec<String> =
-                report.dtype_flow.iter().map(|d| format!("{d:?}")).collect();
-            // Deduplicate consecutive duplicates
-            let deduped: Vec<&str> = flow_str
-                .iter()
-                .enumerate()
-                .filter(|(i, s)| *i == 0 || flow_str.get(i - 1).map(|p| p != *s).unwrap_or(true))
-                .map(|(_, s)| s.as_str())
-                .collect();
-            output.push_str(&format!("  DType flow: {}\n", deduped.join(" -> ")));
-        }
-
-        // Show fusion summary if any
-        if !report.fusion_summary.is_empty() {
-            output.push_str("\nFusion Summary:\n");
-            for fusion in &report.fusion_summary {
-                output.push_str(&format!("  {fusion}\n"));
-            }
-        }
-
-        output.push_str("\nDetails:\n");
-
-        for op in &report.operations {
-            let display_name = op.display_name();
-            let dtype_info = format!(" {:?} -> {:?}", op.input_dtype, op.output_dtype);
-            let bytes_info = op
-                .estimated_bytes
-                .map(|b| format!(" ({b}B)"))
-                .unwrap_or_default();
-            output.push_str(&format!(
-                "  {} [{}]{}{}\n",
-                display_name,
-                op.intrinsic_cost.symbol(),
-                dtype_info,
-                bytes_info
-            ));
-        }
-
-        output
     }
 
     // --- Execution Planning ---
@@ -1071,12 +746,6 @@ impl ViewExpr {
                 source: buf.as_ref().clone(),
                 steps: Vec::new(),
             },
-            ExprNode::LazySource { .. } => {
-                panic!("LazySource must be resolved before building plan");
-            }
-            ExprNode::Placeholder(_) => {
-                panic!("Placeholder must be bound to data before building plan");
-            }
             ExprNode::View(op, child) => {
                 let mut plan = child.build_plan();
                 plan.steps.push(PlanStep::View(op.clone()));
@@ -1085,14 +754,10 @@ impl ViewExpr {
             ExprNode::Compute(op, children) => {
                 let mut plan = children[0].build_plan();
 
-                match op.memory_effect() {
-                    MemoryEffect::RequiresContiguous => {
-                        if plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous() {
-                            plan.steps.push(PlanStep::MaterializeContiguous);
-                        }
-                    }
-                    MemoryEffect::StridePreserving => {}
-                    MemoryEffect::View => unreachable!(),
+                if op.memory_effect() == MemoryEffect::RequiresContiguous
+                    && (plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous())
+                {
+                    plan.steps.push(PlanStep::MaterializeContiguous);
                 }
 
                 plan.steps.push(PlanStep::Compute(op.clone()));
@@ -1101,14 +766,10 @@ impl ViewExpr {
             ExprNode::Image(op, child) => {
                 let mut plan = child.build_plan();
 
-                match op.memory_effect() {
-                    MemoryEffect::RequiresContiguous => {
-                        if plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous() {
-                            plan.steps.push(PlanStep::MaterializeContiguous);
-                        }
-                    }
-                    MemoryEffect::StridePreserving => {}
-                    MemoryEffect::View => unreachable!(),
+                if op.memory_effect() == MemoryEffect::RequiresContiguous
+                    && (plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous())
+                {
+                    plan.steps.push(PlanStep::MaterializeContiguous);
                 }
 
                 plan.steps.push(PlanStep::Image(op.clone()));
@@ -1130,10 +791,6 @@ impl ViewExpr {
                 plan.steps.push(PlanStep::Filter(op.clone()));
                 plan
             }
-            ExprNode::Sink { input, .. } => {
-                // Sink doesn't add steps; the format is handled after execution
-                input.build_plan()
-            }
         }
     }
 }
@@ -1142,36 +799,19 @@ fn plan_ends_in_view(plan: &ExecutionPlan) -> bool {
     matches!(plan.steps.last(), Some(PlanStep::View(_)))
 }
 
-/// Summary of costs for an entire pipeline.
-#[derive(Debug)]
-pub struct PipelineCostReport {
-    /// Cost reports for each operation.
-    pub operations: Vec<OpCostReport>,
-    /// Total number of allocating operations.
-    pub total_allocations: usize,
-    /// List of (op_name, from_dtype, to_dtype) for dtype changes.
-    pub dtype_changes: Vec<(String, DType, DType)>,
-    /// Number of I/O operations.
-    pub io_operations: usize,
-    /// Number of zero-copy operations.
-    pub zero_copy_operations: usize,
-    /// Estimated total memory allocation in bytes (if shape known).
-    pub estimated_memory_bytes: Option<usize>,
-    /// Chain of dtypes through the pipeline.
-    pub dtype_flow: Vec<DType>,
-    /// Human-readable fusion descriptions.
-    pub fusion_summary: Vec<String>,
-}
-
 // --- Helper for Fusion ---
 
-/// Lower one compute op into fused [`ScalarOp`]s, if it is fusable.
+/// Lowers one `ComputeOp` into the scalar ops a `FusedKernel` runs.
 ///
-/// `input_dtype` is the dtype the op would have received unfused — needed
-/// because some lowerings are dtype-dependent (`Invert`'s max value, gamma's
-/// normalization range). `is_outer` distinguishes the chain's last op: an
-/// outer `Cast` lowers to *no* ops because the kernel's `out_dtype` (pinned
-/// to the chain's planned dtype by [`try_fuse`]) performs the conversion.
+/// `input_dtype` is needed because some lowerings are dtype-dependent:
+/// `Invert` and the gamma family use the dtype's value range, so the same op
+/// becomes different scalar work for `u8` than for `f32`.
+///
+/// `is_outer` marks the op at the end of the chain. An outer `Cast` lowers to
+/// *no* scalar ops at all: the kernel already converts its `f32` result to
+/// `FusedKernel::out_dtype` on write, and `try_fuse` pins that dtype to what
+/// the unfused chain would have produced — so emitting a cast here would apply
+/// the conversion twice.
 fn extract_ops(
     op: &ComputeOp,
     input_dtype: DType,

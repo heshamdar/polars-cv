@@ -48,7 +48,18 @@ _EXTRACTED_CONTOUR_SET_SCHEMA = pl.List(_EXTRACTED_CONTOUR_SCHEMA)
 # Source format detection
 # ---------------------------------------------------------------------------
 
+# Polars leaf type -> polars-cv dtype name. The names are the ones
+# ``dtype_table!`` declares in view-buffer/src/core/dtype.rs;
+# ``test_contour_dtype_map_matches_rust`` pins this against them, since this
+# module builds pipeline sources without going through the plugin.
 _POLARS_TO_CV_DTYPE: dict[pl.DataType, str] = {
+    # A boolean mask is the documented shape for ``gt_col`` and the natural
+    # output of ``np_mask.astype(bool).tolist()``. It is not a buffer element
+    # type, but the source decoder *casts* rather than reinterprets
+    # (``series_to_bytes`` in graph/decode.rs), so u8 gives the 0/1 a mask
+    # means. Rejecting it broke working code; only types whose cast would fail
+    # or lose meaning (String, Decimal, Duration) belong outside this map.
+    pl.Boolean: "u8",
     pl.Float32: "f32",
     pl.Float64: "f64",
     pl.UInt8: "u8",
@@ -81,14 +92,28 @@ def _leaf_dtype(dtype: pl.DataType) -> pl.DataType:
     return dtype
 
 
-def _polars_dtype_to_cv(dtype: pl.DataType) -> str:
+def _polars_dtype_to_cv(dtype: pl.DataType, col: str) -> str:
     """Map a Polars leaf dtype to a polars-cv dtype string.
 
-    Uses equality comparison to match Polars DataTypeClass objects
-    which are metaclass singletons.  Falls back to ``"f32"`` for
-    unrecognised types.
+    Uses equality comparison to match Polars DataTypeClass objects, which are
+    metaclass singletons.
+
+    Raises:
+        ValueError: If the leaf type has no meaningful buffer representation.
+            This used to fall back to ``"f32"`` for *anything* unmapped, so a
+            ``String`` or ``Decimal`` column silently became a float source and
+            failed later, deeper, with a cast error. Types that do convert
+            sensibly are in the map, including ``Boolean``; the fallback only
+            ever helped the types that cannot.
     """
-    return _POLARS_TO_CV_DTYPE.get(dtype, "f32")
+    try:
+        return _POLARS_TO_CV_DTYPE[dtype]
+    except KeyError:
+        raise ValueError(
+            f"Column {col!r} has element type {dtype}, which has no meaningful "
+            f"buffer representation. Expected one of: "
+            f"{', '.join(sorted(_POLARS_TO_CV_DTYPE.values()))}."
+        ) from None
 
 
 def _detect_source_info(schema: dict[str, pl.DataType], col: str) -> _SourceInfo:
@@ -114,12 +139,12 @@ def _detect_source_info(schema: dict[str, pl.DataType], col: str) -> _SourceInfo
 
     if isinstance(dtype, pl.List):
         leaf = _leaf_dtype(dtype)
-        cv_dtype = _polars_dtype_to_cv(leaf)
+        cv_dtype = _polars_dtype_to_cv(leaf, col)
         return _SourceInfo(format="list", kwargs={"dtype": cv_dtype})
 
     if isinstance(dtype, pl.Array):
         leaf = _leaf_dtype(dtype)
-        cv_dtype = _polars_dtype_to_cv(leaf)
+        cv_dtype = _polars_dtype_to_cv(leaf, col)
         return _SourceInfo(format="array", kwargs={"dtype": cv_dtype})
 
     raise ValueError(

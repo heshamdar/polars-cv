@@ -233,20 +233,12 @@ fn dtype_from_polars_datatype(dt: &DataType) -> Option<view_buffer::DType> {
     }
 }
 /// Parse dtype string to view-buffer DType.
+///
+/// The names come from `dtype_table!` via `from_short_name`; this wrapper adds
+/// the graph layer's error string.
 pub(super) fn parse_dtype_str(dtype_str: &str) -> Result<view_buffer::DType, String> {
-    match dtype_str {
-        "u8" => Ok(view_buffer::DType::U8),
-        "i8" => Ok(view_buffer::DType::I8),
-        "u16" => Ok(view_buffer::DType::U16),
-        "i16" => Ok(view_buffer::DType::I16),
-        "u32" => Ok(view_buffer::DType::U32),
-        "i32" => Ok(view_buffer::DType::I32),
-        "u64" => Ok(view_buffer::DType::U64),
-        "i64" => Ok(view_buffer::DType::I64),
-        "f32" => Ok(view_buffer::DType::F32),
-        "f64" => Ok(view_buffer::DType::F64),
-        other => Err(format!("Unknown dtype: {other}")),
-    }
+    view_buffer::DType::from_short_name(dtype_str)
+        .ok_or_else(|| format!("Unknown dtype: {dtype_str}"))
 }
 /// Decode a Polars List or Array value at a specific row into a ViewBuffer.
 ///
@@ -602,10 +594,18 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
         "i64" => DataType::Int64,
         "f32" => DataType::Float32,
         "f64" => DataType::Float64,
-        // "auto" (or any unknown string) means the dtype was not resolved at
-        // planning time. Typed list/array sinks reject this up front (see
-        // `list_array_inner_dtype`); the remaining callers (binary/struct sinks)
-        // do not depend on this value, so a UInt8 fallback is harmless.
+        // Reachable only for "auto", and only where the value is unused.
+        // "auto" means the dtype was not resolved at planning time;
+        // `list_array_inner_dtype` bails on it during schema resolution, which
+        // Polars runs before execution, so the typed list/array builders in
+        // `encode.rs` — the callers that *would* be misled, since they use this
+        // to type the output Series — never see it. The remaining callers
+        // (binary/struct sinks) ignore the value.
+        //
+        // Any *other* unmatched string would be silently typed UInt8 here,
+        // which is why `test_no_second_dtype_spelling_table` requires every
+        // dtype dispatch to name exactly the ten `dtype_table!` declares: the
+        // only way to reach this arm with a real dtype is for a table to drift.
         _ => DataType::UInt8,
     }
 }
@@ -619,10 +619,15 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
 /// materialize a `u8` column that may disagree with execution.
 fn list_array_inner_dtype(dtype: &str, sink: &str) -> PolarsResult<DataType> {
     if dtype == "auto" {
+        // Not labelled an internal error: the common way to get here is a
+        // source column whose element type the planner cannot map to a buffer
+        // dtype (a boolean or decimal list), which is the user's input, not a
+        // bug. The fix is the same either way — say what it is.
         polars_bail!(ComputeError:
-            "internal error: '{sink}' sink reached schema resolution with an \
-             unresolved 'auto' element dtype. Supply an explicit dtype \
-             (e.g. source(..., dtype=\"u16\") or .cast(...)) before the sink."
+            "the '{sink}' sink needs to know the element dtype at planning \
+             time, and it could not be inferred from the input column. \
+             Supply it explicitly, e.g. source(..., dtype=\"u16\") or \
+             .cast(...) before the sink."
         );
     }
     Ok(dtype_str_to_polars(dtype))
