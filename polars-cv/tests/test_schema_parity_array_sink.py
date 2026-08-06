@@ -321,10 +321,12 @@ def test_multi_output_array_branch_honours_an_explicit_shape() -> None:
 
     multi = plan_or_reject(
         df,
-        lambda: pl.col("img")
-        .cv.pipe(unknown)
-        .alias("a")
-        .sink({"a": "array"}, shape=[6, 6, C]),
+        lambda: (
+            pl.col("img")
+            .cv.pipe(unknown)
+            .alias("a")
+            .sink({"a": "array"}, shape=[6, 6, C])
+        ),
     )
     # Record the asymmetry rather than assert it is correct: if the multi
     # branch starts honouring shape= too, this flips and should be updated
