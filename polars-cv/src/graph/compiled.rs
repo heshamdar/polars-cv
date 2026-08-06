@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use view_buffer::geometry::label::score_contours_on_buffer;
 use view_buffer::ops::NodeOutput;
-use view_buffer::{DType as VbDType, ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
 use crate::execute::{
@@ -40,7 +40,7 @@ use super::step::GraphStep;
 
 use super::decode::{
     build_series_from_spec, decode_binary_zero_copy, decode_list_or_array_source,
-    get_binary_row_buffer, null_row_result_for_spec,
+    dtype_from_polars_leaf, get_binary_row_buffer, null_row_result_for_spec,
 };
 use super::encode::{encode_node_output, execute_geometry_op};
 use super::types::{OutputSpec, OutputValue, RowErrorPolicy, RowResult, UnifiedGraph};
@@ -1054,6 +1054,13 @@ impl CompiledGraph {
 
 /// Source formats the executor can decode. Kept in sync with the row loop's
 /// source dispatch and `decode_source`.
+///
+/// The other half of this vocabulary is Python's `SourceFormat` enum
+/// (`python/polars_cv/_types.py`), which is what a user actually names. The two
+/// must be equal — a Python-only format builds a graph this list rejects, a
+/// Rust-only one is a decode path nothing can reach — and
+/// `test_source_formats_match_the_rust_vocabulary` pins them by reading this
+/// declaration, so keep it a plain `&[&str]` literal.
 const KNOWN_SOURCE_FORMATS: &[&str] = &[
     "array",
     "auto",
@@ -1264,7 +1271,11 @@ pub(crate) fn resolved_output_specs(
         return specs;
     };
     let (leaf_dtype, ndim) = peel_nesting(dt);
-    let inferred_dtype_str = polars_dtype_to_str(&leaf_dtype);
+    // Polars leaf type → our dtype comes from `decode::dtype_from_polars_leaf`
+    // (the one such mapping in this crate); the *name* comes from
+    // `DType::short_name` (the one place a dtype is spelled). Neither is
+    // restated here.
+    let inferred_dtype_str = dtype_from_polars_leaf(&leaf_dtype).map(|d| d.short_name());
 
     for (_, spec) in specs.iter_mut() {
         if spec.expected_dtype == "auto" {
@@ -1371,35 +1382,6 @@ fn peel_nesting(dt: &DataType) -> (DataType, usize) {
         }
         other => (other.clone(), 0),
     }
-}
-
-/// Convert a Polars DataType to the dtype string used in output specs.
-///
-/// `None` for a type that is not one of the buffer element types. The naming
-/// itself comes from `DType::short_name` rather than a literal here, so this
-/// stays one mapping (Polars type → our dtype) instead of also being a second
-/// place that decides what a dtype is called.
-///
-/// This used to fall back to `"u8"` for anything unmatched, which meant a
-/// `List(Boolean)` or `List(Decimal)` column silently claimed to be a buffer
-/// of bytes and the graph proceeded on that false claim. An unmappable column
-/// is a column we cannot infer a buffer dtype from, and the caller leaves
-/// `expected_dtype` as `"auto"` for the executor to reject with a real error.
-fn polars_dtype_to_str(dt: &DataType) -> Option<&'static str> {
-    let dtype = match dt {
-        DataType::UInt8 => VbDType::U8,
-        DataType::Int8 => VbDType::I8,
-        DataType::UInt16 => VbDType::U16,
-        DataType::Int16 => VbDType::I16,
-        DataType::UInt32 => VbDType::U32,
-        DataType::Int32 => VbDType::I32,
-        DataType::UInt64 => VbDType::U64,
-        DataType::Int64 => VbDType::I64,
-        DataType::Float32 => VbDType::F32,
-        DataType::Float64 => VbDType::F64,
-        _ => return None,
-    };
-    Some(dtype.short_name())
 }
 
 // ============================================================================

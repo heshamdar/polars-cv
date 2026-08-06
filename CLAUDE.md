@@ -15,6 +15,141 @@ The project is a Rust/Python hybrid built with [Maturin](https://github.com/PyO3
 
 ---
 
+## Working Agreements
+
+How to tackle problems here. These apply to every task in this repository; the
+sections further down describe *what* the code is, this one describes *how* to
+change it.
+
+### Canonical paths are mandatory, and bypasses are rejected
+
+This codebase's defining rule: **for anything with a shared mechanism, the
+shared mechanism is the only way in.** A second implementation is not a
+shortcut, it is a divergence waiting to be discovered by a user.
+
+The enforcement standard is stricter than "prefer the shared path":
+
+- **A bypass must fail, not degrade.** Code that sidesteps a canonical
+  mechanism must be *actively rejected* — a compile error, a raised exception,
+  or a failing guard test — never silently accepted with reduced behaviour. An
+  op that declines to declare its dtype rule must not simply be treated as
+  `PreserveInput`; it must not compile. A dtype string nothing recognises must
+  not fall back to `u8`; it must error. Read the recent `CHANGELOG.md` entries
+  for what silent acceptance actually costs — a fallback that turned an
+  unmappable column into a claimed buffer of bytes, an unread wire field that
+  went on being emitted for releases, a parameter plumbed six layers deep and
+  discarded at the bottom.
+- **Prefer a mechanism callers cannot step around to a test that lists what
+  they must remember.** A ratchet enumerating "you must also call X" fails the
+  day someone adds Y. Make the sequence unskippable instead: one entry point
+  that does the whole thing.
+- **No defaulted contract methods on op traits.** `Op::output_rank_rule`,
+  `output_channel_rule`, `output_dtype_rule` and `memory_effect` are required
+  with no default so a new op cannot inherit a lie. Adding a default to any of
+  them is a regression, however convenient.
+- **One authority per fact, named once.** A dtype's spellings live in
+  `dtype_table!`; enum variant names live in `named_variants!` + the
+  `naming::REGISTRY`; op names live in `KNOWN_OPS`; an op's input domain lives
+  in its Rust contract. If you find yourself writing a `match` that
+  re-enumerates one of those, you are creating the second copy — read from the
+  authority instead.
+- **Registering is the same act as being checked.** Adding an enum to the
+  registry is what surfaces it over FFI *and* what gets it parity-checked;
+  adding an op to `KNOWN_OPS` is what makes it resolvable *and* what pins it to
+  a `resolve_op` arm. Never add a hand-written arm alongside the registry.
+
+See [Canonical Paths](#canonical-paths) below for the concrete list of
+mechanisms and the guard that enforces each one.
+
+### Deleting is part of the work
+
+- A parameter that is accepted and ignored, a field nothing reads, a subsystem
+  no caller reaches — delete it, do not document it as "not yet implemented".
+  Dead paths are not free: they enter op identity (breaking CSE and the
+  compiled-graph cache), they enter every `match`, and they read as coverage.
+- Deletions get a guard too. `tests/test_removed_surfaces.py` pins each removed
+  surface with the reason, so the next author does not "restore" it. Rust-side
+  removals are guarded by the compiler.
+- When a fallback arm exists only to hide the case it cannot handle, remove the
+  arm and raise.
+
+### Guards must be watched failing
+
+- A new guard is not done until you have watched it fail **for the reason it
+  claims**. A checker that silently matches nothing reads as green forever;
+  this repo has shipped that failure mode repeatedly.
+- A guard with non-trivial logic gets committed fixtures (see
+  `tests/_dtype_ratchet.py` and `tests/test_dtype_ratchet_fixtures.py`): both
+  known-bad snippets it must reject and known-good ones it must not.
+- Prefer compiler exhaustiveness > runtime assertion > source scanning, in that
+  order. Reach for a source scan only when the first two cannot express the
+  property, and state its limits in the docstring.
+- Verify at the user-facing entry point, not the helper. Confirming a planner
+  behaviour and inferring the caller is how a working input was broken while
+  claiming to fix a silent lie.
+
+### Verification
+
+- Run `scripts/verify.sh` (add `--fast` to skip the slow lane). It runs every
+  check CI runs, captures each exit code directly, and prints one PASS/FAIL
+  computed from those codes.
+- **Never read a filtered view of a check and call it green.** `grep | head`
+  cuts the failing suite below the fold; `maturin ... | tail` reports tail's
+  exit code, not maturin's. Both have produced false "all green" reports here.
+- The install is editable: Python edits take effect immediately, the compiled
+  `.so` does not. After touching Rust, re-run `maturin develop` or you are
+  testing old Rust against new Python — plugin tests self-skip rather than
+  fail, so the window is silent. `polars_cv.build_info()` reports the three
+  versions that must agree.
+- Never edit or weaken an existing test to make it pass without saying so
+  explicitly and getting agreement. Updating a test because the behaviour it
+  pins was *deliberately* removed is fine — and the removal gets its own guard.
+
+### Dependencies and documentation
+
+- Assume your internal knowledge of any dependency, library, framework or tool
+  is outdated. This applies to all dependencies, not just external APIs.
+- Fetch current documentation before writing code against one — use the
+  `context7` MCP tool if available, otherwise web search/fetch. Do not write
+  from memory and hope.
+
+### Communication
+
+- Lead with the outcome: the first sentence answers "what happened" or "what
+  did you find". Supporting detail follows.
+- Keep it brief and direct. Match written deliverables to substance — no filler
+  sections, redundant summaries or boilerplate.
+- Before the first tool call, say in one sentence what you are about to do.
+  While working, give an update only when you find something important or
+  change direction.
+- Correct an earlier statement only when the error changes the user's code,
+  conclusions or decisions. State the fix plainly and move on.
+- If the request seems mistaken or a better approach exists, say so in one
+  sentence prefixed with `💡 [SUGGESTION]` and continue with the task as asked.
+  Deliver the scope requested — do not quietly narrow, widen or transform it.
+- If required information is missing or no available tool fits, say so directly
+  rather than guessing. Never use placeholders or invented parameters.
+
+### Action defaults
+
+- Implement changes directly rather than only proposing them. Infer intent and
+  use tools to discover details rather than guessing.
+- Issue independent tool calls in parallel.
+- Editing files, running linters and running the test suite need no approval.
+  Ask first for destructive or hard-to-reverse commands: `rm -rf`, dropping
+  tables, `git push --force`, `git reset --hard`, rewriting published history,
+  `--no-verify`, and anything touching shared infrastructure or external APIs
+  with side effects.
+- Delegate to subagents only for genuinely independent, parallelizable
+  investigations. Do not delegate work you can finish in a handful of tool
+  calls, and do not use a subagent to double-check your own work.
+- Do not stop early over token budget — context is compacted automatically.
+  Before a context refresh, save progress to a file or to Git history; after
+  one, read that state back before acting.
+- Clean up scratchpad scripts and temporary test files at the end of a session.
+
+---
+
 ## Commands
 
 All commands should be run from the `polars-cv/` subdirectory unless noted otherwise.
@@ -189,6 +324,33 @@ reads via `channel_rule`:
 - `NotApplicable` / `Unknown` — no `[H, W, C]` image result, or not knowable at
   plan time.
 
+### Canonical Paths
+
+Each row is a fact with exactly one authority, the mechanism that owns it, and
+the guard that rejects a second declaration. **Read from the authority; never
+restate it.** If you need something the authority cannot express, extend the
+authority — do not open a side channel.
+
+| Fact | Single authority | Rejection mechanism |
+|------|------------------|---------------------|
+| Appending an op to a `Pipeline` (domain check + `op_schema` fold + shape hints) | `Pipeline._push_op()` | `test_op_append_is_structurally_exclusive` — AST walk failing if anything but `_push_op`/`_set_ops_slice`/`_clone` touches `_ops` |
+| An op's rank / channel / dtype / memory contract | `Op` trait methods, **no defaults** | Compile error: a new op that omits one does not build |
+| An op's accepted input domains | `op_contract(...)["input_domains"]` (Rust `GraphStep::input_domains`) | `test_domain_vocabulary_declared_once` — `Pipeline` may not carry `DOMAIN_*` constants or a `_validate_domain` |
+| An op's H/W effect | view-buffer `infer_shape`, read via `op_infer_shape` | No inferable shape ⇒ hints invalidated, never carried forward |
+| Which ops exist | Rust `KNOWN_OPS` ↔ Python `OP_NAMES` | `known_ops_all_resolve`, `resolve_op_arms_are_all_known_ops`, `test_op_names_matches_rust_known_ops_without_the_plugin` (works with no `.so`); guard arms in `resolve_op` must be listed in `KNOWN_GUARD_ARMS` |
+| Every spelling of a dtype (short / VIEW wire code / numpy) | `dtype_table!` in `view-buffer/src/core/dtype.rs` | `dtype_single_authority.rs` + `test_no_second_dtype_spelling_table` (a partial dispatch is reported) |
+| Enum variant names crossing the FFI | `named_variants!` + `naming::REGISTRY` | `every_named_enum_is_registered` (a `NAMED` table not in the registry fails), `registered_enums_have_unique_names`, `test_every_rust_enum_is_parity_checked` (iterates `enum_names()`, both directions) |
+| Source format vocabulary | Python `SourceFormat` ↔ Rust `KNOWN_SOURCE_FORMATS` | `test_source_formats_match_the_rust_vocabulary` (runs without the plugin); the graph validator rejects an unlisted format |
+| `LazyPipelineExpr`'s method surface | generated from `Pipeline` at import | `test_lazy_pipeline_method_parity`, `test_lazy_stub_is_current` |
+| The graph wire format's node fields | `GraphNode` with `#[serde(deny_unknown_fields)]` | Deserialization error — a stale or misspelled key fails the query |
+| Null parameter handling | `NullParamPolicy` on `ParamCtx`, via `ParamCol::on_null` | Reviewed by hand: never add per-op or per-parameter null keywords |
+
+Two deliberate exceptions, both documented at the site: `OpSpec` is *not*
+`deny_unknown_fields` (its params ride on `#[serde(flatten)]`, which serde
+documents as incompatible), and `BinaryOp` is not in the engine registry
+(`BINARY_OPS` lives in the plugin crate, which view-buffer cannot reference).
+Neither is a precedent.
+
 ### Test Structure
 
 - Tests requiring the compiled Rust plugin are decorated with `@plugin_required` (class decorator) or use the `plugin_required` fixture from `conftest.py`.
@@ -218,14 +380,31 @@ reads via `channel_rule`:
    returning the `GraphStep`. The Python planner picks up the op's schema
    effect automatically through the `op_schema` FFI — no Python-side schema
    special cases.
-3. Add a method to `Pipeline` in `python/polars_cv/pipeline.py`. The matching
-   `LazyPipelineExpr` method is generated automatically from `Pipeline` at import
-   time (`python/polars_cv/lazy.py`) — do **not** hand-mirror it. If the op needs
+3. Add a method to `Pipeline` in `python/polars_cv/pipeline.py`, appending
+   through `self._append_op(name, build_params)`. That is the only way in: it
+   clones, builds the params, and routes to `_push_op`, which applies the
+   input-domain check, the schema fold and the shape hints together. A builder
+   that assigns `_current_domain`, `_output_dtype`, `_expected_ndim` or
+   `_shape_hints` itself is doing the planner's job by hand and will fail
+   `test_append_contract.py`. The matching `LazyPipelineExpr` method is
+   generated automatically from `Pipeline` at import time
+   (`python/polars_cv/lazy.py`) — do **not** hand-mirror it. If the op needs
    bespoke lazy behaviour (e.g. it takes another `LazyPipelineExpr` operand),
    define it explicitly on `LazyPipelineExpr` and the generator will skip it.
 4. Regenerate the type stub: `python scripts/gen_lazy_stub.py` (CI guards it via
    `test_lazy_stub_is_current`).
 5. Write tests covering both unit (builder validation) and integration (actual execution) cases.
+
+**What makes an op "not implemented properly" here is not style, it is
+reachability.** The registries above are what make an op resolvable, planned,
+and surfaced to Python. An op that skips one of them does not get a degraded
+experience — it gets rejected: no `Op` contract means no compile, no
+`KNOWN_OPS` entry means `resolve_op` returns "Unknown operation" *and* the
+parity tests fail, no `OP_NAMES` entry means the Python builder cannot name it,
+and a shape effect the contract does not describe invalidates the hints rather
+than publishing a schema execution cannot produce. If you are tempted to add a
+Python-side special case for an op's schema, that is the signal the op's Rust
+contract is incomplete — fix the contract.
 
 ---
 

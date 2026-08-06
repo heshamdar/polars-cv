@@ -270,7 +270,7 @@ the same mixin unless `.cv` genuinely honours it.
 
    The callback receives the *cloned* pipeline, so `p._track_expr` registers
    per-row expressions on the clone rather than the receiver. `_append_op`
-   then validates the input domain against `op_contract(...)["input_domain"]`
+   then validates the input domain against `op_contract(...)["input_domains"]`
    and hands off to `_push_op`, which appends and applies **both** halves of
    the plan-time effect: the `op_schema` fold (domain/dtype/ndim) and the
    shape hints (`op_infer_shape` for H/W, the channel rule for C).

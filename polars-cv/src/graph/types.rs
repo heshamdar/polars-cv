@@ -342,7 +342,7 @@ pub struct GraphNode {
     #[allow(dead_code)]
     pub domain: Option<String>,
     /// See [`GraphNode::domain`].
-    #[serde(default, rename = "output_dtype")]
+    #[serde(default)]
     #[allow(dead_code)]
     pub output_dtype: Option<String>,
 }

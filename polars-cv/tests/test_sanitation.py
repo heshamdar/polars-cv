@@ -756,6 +756,45 @@ def test_contract_exposes_rank_and_channel_rules(op_name):
     ), f"{op_name}: unexpected channel_rule {channel!r}"
 
 
+#: Exactly the keys ``op_contract`` publishes. Pinned as a set, in both
+#: directions, so the boundary cannot grow a second spelling of a fact it
+#: already carries.
+_CONTRACT_KEYS = frozenset(
+    {
+        "dtype_rule",
+        "rank_rule",
+        "channel_rule",
+        "input_domains",
+        "output_domain",
+    }
+)
+
+
+@plugin_required
+def test_contract_publishes_no_second_spelling():
+    """``op_contract`` publishes each fact once.
+
+    It used to carry both ``input_domain`` (a single ``Domain``) and
+    ``input_domains`` (the accepted set). Only the set was read, and the two
+    were free to disagree the moment a step accepted more than one domain —
+    which binary ops and reductions do. An unread key on an FFI boundary is not
+    inert: it is the next author's authority.
+    """
+    import json
+
+    contract_fn = getattr(_lib(), "op_contract", None)
+    if not callable(contract_fn):
+        pytest.skip("_lib.op_contract() not built")
+
+    spec = Pipeline().source("image_bytes").grayscale()._ops[-1]
+    keys = set(contract_fn(json.dumps(spec.to_dict())))
+    assert keys == _CONTRACT_KEYS, (
+        f"op_contract's key set changed: added {sorted(keys - _CONTRACT_KEYS)}, "
+        f"removed {sorted(_CONTRACT_KEYS - keys)}. Every key here is read by "
+        f"the Python planner; add one only with the reader that needs it."
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3. Enum parity (A4) — Python user enums match Rust variants
 # ---------------------------------------------------------------------------
@@ -926,10 +965,57 @@ def test_binary_ops_match_rust():
     )
 
 
-# SourceFormat/SinkFormat have no Rust enum to be checked against: the graph
+# SourceFormat/SinkFormat have no Rust *enum* to be checked against: the graph
 # boundary carries them as plain strings, and view-buffer's shadowing copies
-# were deleted along with its unreachable pipeline-composition layer. Python's
-# enums are now the single definition, so there is nothing to pin them to.
+# were deleted along with its unreachable pipeline-composition layer. That is
+# not the same as having nothing to pin them to, which an earlier note here
+# claimed. Source formats do have a Rust vocabulary — `KNOWN_SOURCE_FORMATS` in
+# graph/compiled.rs, which the graph validator rejects unknown formats against
+# — so the two lists must be equal, and the test below pins them.
+#
+# Sink formats genuinely have no list: `encode_node_output` and
+# `output_dtype_for_spec` match on (domain, format) pairs and error on the
+# fall-through, so an unhandled sink is rejected rather than enumerated. There
+# is no second declaration to drift from.
+
+
+def test_source_formats_match_the_rust_vocabulary() -> None:
+    """``SourceFormat`` must equal Rust's ``KNOWN_SOURCE_FORMATS``.
+
+    Both are hand-written lists of the same vocabulary, one per side of the
+    FFI. A Python-only format builds a graph the validator rejects at
+    execution, with an error naming a format the user did pass; a Rust-only
+    one is a decode path nothing can reach. Neither shows up until someone
+    runs the query.
+
+    Read from the Rust source rather than over the FFI so this runs in the
+    plugin-free lane too — the drift is introduced by editing Python, which is
+    exactly when the extension is stale.
+    """
+    src = _rust_src_dir()
+    if src is None:
+        pytest.skip("Rust sources not available (installed wheel)")
+
+    text = (src / "graph" / "compiled.rs").read_text()
+    m = re.search(r"const KNOWN_SOURCE_FORMATS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
+    assert m, (
+        "could not find KNOWN_SOURCE_FORMATS in graph/compiled.rs — the scan is "
+        "out of date, and a scan that matches nothing passes vacuously"
+    )
+    body = re.sub(r"(?m)//.*$", "", m.group(1))
+    rust_formats = set(re.findall(r'"([a-z0-9_]+)"', body))
+    assert len(rust_formats) > 3, (
+        f"KNOWN_SOURCE_FORMATS scan found only {sorted(rust_formats)}"
+    )
+
+    from polars_cv._types import SourceFormat
+
+    declared = {m.value for m in SourceFormat}
+    assert declared == rust_formats, (
+        "SourceFormat has drifted from Rust KNOWN_SOURCE_FORMATS: "
+        f"python-only={sorted(declared - rust_formats)}, "
+        f"rust-only={sorted(rust_formats - declared)}"
+    )
 
 
 # ---------------------------------------------------------------------------

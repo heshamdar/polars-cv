@@ -210,26 +210,44 @@ fn decode_blob_zero_copy(
         ))
     }
 }
+/// The buffer element type a Polars *leaf* type holds, if it is one.
+///
+/// **The single Polars→DType mapping in this crate.** `resolved_output_specs`
+/// (graph/compiled.rs) had a second copy of it that returned dtype *strings*,
+/// so the two were free to disagree about which Polars types are buffer
+/// elements at all — and did: that copy fell back to `"u8"` for everything
+/// unmatched, which is how a `List(Decimal)` column came to claim it was a
+/// buffer of bytes.
+///
+/// `None` means "not a buffer element type", which is a fact about the column,
+/// not an error to paper over. Callers decide what to do with it.
+pub(super) fn dtype_from_polars_leaf(dt: &DataType) -> Option<view_buffer::DType> {
+    Some(match dt {
+        DataType::UInt8 => view_buffer::DType::U8,
+        DataType::Int8 => view_buffer::DType::I8,
+        DataType::UInt16 => view_buffer::DType::U16,
+        DataType::Int16 => view_buffer::DType::I16,
+        DataType::UInt32 => view_buffer::DType::U32,
+        DataType::Int32 => view_buffer::DType::I32,
+        DataType::UInt64 => view_buffer::DType::U64,
+        DataType::Int64 => view_buffer::DType::I64,
+        DataType::Float32 => view_buffer::DType::F32,
+        DataType::Float64 => view_buffer::DType::F64,
+        _ => return None,
+    })
+}
+
 /// Infer view-buffer DType from Polars DataType.
 ///
 /// Recursively traverses nested List/Array types to find the innermost
-/// primitive type.
+/// primitive type, and treats a `Binary` column as the byte buffer it is.
+/// The leaf mapping itself is [`dtype_from_polars_leaf`].
 fn dtype_from_polars_datatype(dt: &DataType) -> Option<view_buffer::DType> {
     match dt {
-        DataType::UInt8 => Some(view_buffer::DType::U8),
-        DataType::Int8 => Some(view_buffer::DType::I8),
-        DataType::UInt16 => Some(view_buffer::DType::U16),
-        DataType::Int16 => Some(view_buffer::DType::I16),
-        DataType::UInt32 => Some(view_buffer::DType::U32),
-        DataType::Int32 => Some(view_buffer::DType::I32),
-        DataType::UInt64 => Some(view_buffer::DType::U64),
-        DataType::Int64 => Some(view_buffer::DType::I64),
-        DataType::Float32 => Some(view_buffer::DType::F32),
-        DataType::Float64 => Some(view_buffer::DType::F64),
         DataType::Binary => Some(view_buffer::DType::U8),
         DataType::List(inner) => dtype_from_polars_datatype(inner.as_ref()),
         DataType::Array(inner, _) => dtype_from_polars_datatype(inner.as_ref()),
-        _ => None,
+        other => dtype_from_polars_leaf(other),
     }
 }
 /// Parse dtype string to view-buffer DType.

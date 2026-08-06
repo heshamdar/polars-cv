@@ -161,30 +161,106 @@ mod tests {
         }
     }
 
-    /// The registry must not be trivially empty or half-populated — a
-    /// regression that would make the test above vacuous.
-    #[test]
-    fn registry_covers_the_known_enums() {
-        let names = super::registered_names();
-        for expected in [
-            "DType",
-            "Domain",
-            "ColorSpace",
-            "FilterType",
-            "BorderMode",
-            "PadMode",
-            "PadPosition",
-            "HashAlgorithm",
-            "HistogramOutput",
-            "HistogramClosed",
-            "InterpolationType",
-            "ExtractMode",
-            "ApproxMethod",
-            "LabelReduction",
-            "LabelRegionMode",
-            "NormalizeMethod",
-        ] {
-            assert!(names.contains(&expected), "{expected} is not registered");
+    /// Enums registered without a `named_variants!` table of their own.
+    ///
+    /// One entry, and it is documented at its `impl NamedEnum` above:
+    /// `NormalizeMethod::Preset` carries payload, so the enum has no value
+    /// table and is registered off its `NAMES` list instead.
+    const REGISTERED_WITHOUT_A_TABLE: &[&str] = &["NormalizeMethod"];
+
+    /// Every `named_variants!` enum in this crate, found by scanning `src/`.
+    ///
+    /// Deliberately not a hand-written list: a list is the thing this test
+    /// exists to eliminate. The invocation is unambiguous (`named_variants!(`
+    /// followed by the type name), so the scan needs no Rust parsing — and the
+    /// set comparison below fails loudly if it ever matches nothing, which is
+    /// the failure mode a source scan has to be protected from.
+    fn declared_enums() -> std::collections::BTreeSet<String> {
+        fn walk(dir: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
+            for entry in std::fs::read_dir(dir).expect("src/ is readable") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let source = std::fs::read_to_string(&path).expect("readable .rs file");
+                    for line in source.lines() {
+                        let trimmed = line.trim_start();
+                        // Skip doc comments (the macro's own usage example)
+                        // and the `macro_rules!` definition itself.
+                        if trimmed.starts_with("//") || trimmed.starts_with("macro_rules!") {
+                            continue;
+                        }
+                        let Some(rest) = line.split_once("named_variants!(") else {
+                            continue;
+                        };
+                        let ty: String = rest
+                            .1
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !ty.is_empty() {
+                            out.insert(ty);
+                        }
+                    }
+                }
+            }
         }
+        let mut found = std::collections::BTreeSet::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        found
+    }
+
+    /// Declaring a `NAMED` table and registering it are the same act.
+    ///
+    /// This is the hole the registry would otherwise leave open. `REGISTRY` is
+    /// what surfaces an enum over the `enum_variants` FFI, what gets its names
+    /// checked for duplicates above, and what puts it in `enum_names()` — which
+    /// the Python suite iterates to decide what to parity-check. So an enum
+    /// with a `named_variants!` table that is *not* registered is invisible to
+    /// every one of those: it would ship with a Python mirror free to disagree
+    /// with it and nothing to notice. Not registering must therefore fail here,
+    /// not silently opt the enum out.
+    ///
+    /// The reverse direction matters as much: it is what stops this test from
+    /// passing vacuously if the scan stops matching. A registry name with no
+    /// `named_variants!` invocation behind it means either the scan rotted or
+    /// the enum was registered without the table that makes it authoritative.
+    #[test]
+    fn every_named_enum_is_registered() {
+        let declared = declared_enums();
+        let registered: std::collections::BTreeSet<String> = super::registered_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        let unregistered: Vec<&String> = declared.difference(&registered).collect();
+        assert!(
+            unregistered.is_empty(),
+            "these enums declare a named_variants! table but are not in \
+             REGISTRY: {unregistered:?}. Add each to the registry! invocation \
+             in this module — that one line is what surfaces it to Python and \
+             what gets it parity-checked. Leaving it out does not make it \
+             private, it makes it unchecked."
+        );
+
+        let exempt: std::collections::BTreeSet<String> = REGISTERED_WITHOUT_A_TABLE
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let unbacked: Vec<&String> = registered
+            .difference(&declared)
+            .filter(|n| !exempt.contains(*n))
+            .collect();
+        assert!(
+            unbacked.is_empty(),
+            "these names are in REGISTRY but no named_variants! invocation was \
+             found for them: {unbacked:?}. Either the source scan in \
+             declared_enums() has stopped matching -- in which case the check \
+             above is passing vacuously -- or the enum was registered without \
+             the NAMED table that makes it authoritative."
+        );
     }
 }

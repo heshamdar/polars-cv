@@ -487,7 +487,12 @@ pub fn read_files_concurrent(
 /// Returns true for:
 /// - Cloud storage URLs: s3://, gs://, az://, abfs://, abfss://
 /// - HTTP URLs: http://, https://
-#[allow(dead_code)]
+///
+/// This is the only remote/local split the fetch path makes. A second
+/// predicate `is_cloud_path` sat here excluding HTTP, called by nothing but
+/// its own test; the distinction it drew is not one any caller needed, and an
+/// unused classifier next to a used one is an invitation to pick the wrong
+/// one.
 pub fn is_remote_path(path: &str) -> bool {
     if let Ok(url) = Url::parse(path) {
         matches!(
@@ -499,37 +504,9 @@ pub fn is_remote_path(path: &str) -> bool {
     }
 }
 
-/// Check if a path is a cloud storage URL (S3, GCS, Azure).
-///
-/// Does NOT include HTTP/HTTPS URLs - use `is_remote_path` for that.
-#[allow(dead_code)]
-pub fn is_cloud_path(path: &str) -> bool {
-    if let Ok(url) = Url::parse(path) {
-        matches!(url.scheme(), "s3" | "gs" | "az" | "abfs" | "abfss")
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_is_cloud_path() {
-        // Cloud storage paths
-        assert!(is_cloud_path("s3://bucket/key"));
-        assert!(is_cloud_path("gs://bucket/key"));
-        assert!(is_cloud_path("az://container/path"));
-        assert!(is_cloud_path("abfs://container/path"));
-        // HTTP is NOT a cloud path (use is_remote_path)
-        assert!(!is_cloud_path("http://example.com/image.png"));
-        assert!(!is_cloud_path("https://example.com/image.png"));
-        // Local paths
-        assert!(!is_cloud_path("/local/path/file.png"));
-        assert!(!is_cloud_path("relative/path.png"));
-        assert!(!is_cloud_path("file:///local/path.png"));
-    }
 
     #[test]
     fn test_is_remote_path() {
