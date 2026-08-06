@@ -25,6 +25,8 @@ from polars_cv._namespace import _PluginNamespace
 from polars_cv._types import normalize_cloud_options
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from polars_cv._types import CloudOptions
     from polars_cv.lazy import LazyPipelineExpr
     from polars_cv.pipeline import Pipeline
@@ -71,6 +73,7 @@ class CvNamespace(_PluginNamespace):
         *,
         cloud_options: "CloudOptions | dict[str, Any] | None" = None,
         on_error: str = "raise",
+        allowed_roots: "Sequence[str] | None" = None,
     ) -> pl.Expr:
         """
         Read the bytes each path names, without decoding them.
@@ -99,16 +102,24 @@ class CvNamespace(_PluginNamespace):
         the final projection — which is the point when you want the originals.
 
         Note:
-            Paths are not sandboxed and file size is not capped: whatever the
+            Without ``allowed_roots`` paths are not sandboxed: whatever the
             column names is read in full, including any local file and any
-            ``http://`` address (link-local metadata endpoints among them). Use
-            with trusted path columns only.
+            ``http://`` address (link-local metadata endpoints among them).
+            That is the right default for your own paths and the wrong one for
+            paths that came from somewhere else. File size is not capped
+            either way.
 
         Args:
             cloud_options: Credentials/settings for remote reads, as
                 ``CloudOptions`` or a dict (see ``Pipeline.source``).
             on_error: ``"raise"`` (default) fails the query on the first
                 unreadable path; ``"null"`` yields null for that row only.
+            allowed_roots: Restrict which locations may be read, exactly as
+                ``Pipeline.source(allowed_roots=...)`` does — one list covering
+                local directories and remote URI prefixes, canonicalized and
+                matched component-wise, denying anything that matches no entry.
+                A refusal follows ``on_error``, so ``on_error="null"`` nulls
+                the offending rows rather than failing the query.
 
         Returns:
             Binary expression with each path's raw file contents.
@@ -124,6 +135,8 @@ class CvNamespace(_PluginNamespace):
         opts = normalize_cloud_options(cloud_options)
         if opts is not None:
             kwargs["cloud_options"] = opts.to_dict()
+        if allowed_roots is not None:
+            kwargs["allowed_roots"] = list(allowed_roots)
         return self._plugin("read_file_bytes", kwargs=kwargs)
 
     # ------------------------------------------------------------------

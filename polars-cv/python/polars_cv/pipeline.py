@@ -995,6 +995,8 @@ class Pipeline:
         on_error: str = "raise",
         # Explicit decode-scale assertion for image sources
         decode_max_size: int | None = None,
+        # Path sandboxing for file_path sources
+        allowed_roots: "Sequence[str] | None" = None,
     ) -> "Pipeline":
         """
         Define the input source format.
@@ -1065,6 +1067,28 @@ class Pipeline:
                 scaled decode followed by a resize is not bit-identical to a
                 full decode followed by the same resize (different
                 resampling path) — hence the explicit opt-in.
+            allowed_roots: Restrict which locations the path column may read
+                from, for ``"file_path"`` (and ``"auto"`` resolving to it).
+                Default ``None`` reads whatever the column names, which is
+                right when the paths are your own and wrong when they are not.
+
+                One list covers local and remote: an entry that parses as a
+                remote URI (``"s3://bucket/public/"``) is matched as a URI
+                prefix, anything else (``"/srv/images"``) as a local directory.
+                Local paths are canonicalized before the comparison, so
+                ``"/srv/images/../../etc/passwd"`` and a symlink out of the
+                tree are both refused rather than compared as text, and
+                matching is component-wise, so ``"/srv/images"`` does not also
+                admit ``"/srv/images-private"``.
+
+                A path matching no entry is refused — the sandbox denies by
+                default once you ask for one — and the refusal is subject to
+                ``on_error``, so ``on_error="null"`` nulls those rows instead
+                of failing the query::
+
+                    >>> pipe = Pipeline().source(
+                    ...     "file_path", allowed_roots=["/srv/images"]
+                    ... )
 
         Example:
             ```python
@@ -1203,6 +1227,9 @@ class Pipeline:
                 require_contiguous=require_contiguous,
                 on_error=on_error,
                 decode_max_size=decode_max_size,
+                allowed_roots=tuple(allowed_roots)
+                if allowed_roots is not None
+                else None,
             )
             # Set dtype and ndim based on source format
             if fmt == SourceFormat.RAW:

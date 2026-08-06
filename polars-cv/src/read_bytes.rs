@@ -30,6 +30,10 @@ pub struct ReadBytesKwargs {
     /// `"raise"` (default) or `"null"`, matching `source(on_error=...)`.
     #[serde(default)]
     pub on_error: Option<String>,
+    /// Locations this call may read from, matching
+    /// `source(allowed_roots=...)`. Absent means unrestricted.
+    #[serde(default)]
+    pub allowed_roots: Option<Vec<String>>,
 }
 
 /// Read each path's bytes into a `Binary` column, without decoding.
@@ -59,7 +63,12 @@ fn read_file_bytes(inputs: &[Series], kwargs: ReadBytesKwargs) -> PolarsResult<S
 
     // Same batching as the `file_path` source: this call's remote paths are
     // deduped and fetched concurrently up front, local ones read per row.
-    let batch = fetch::prefetch(ca, options.as_ref(), fetch::DEFAULT_CONCURRENCY);
+    let policy = kwargs
+        .allowed_roots
+        .as_deref()
+        .map(fetch::PathPolicy::new)
+        .unwrap_or_default();
+    let batch = fetch::prefetch(ca, options.as_ref(), fetch::DEFAULT_CONCURRENCY, &policy);
 
     let mut builder = BinaryChunkedBuilder::new(name, ca.len());
     for path in ca.iter() {
@@ -67,7 +76,7 @@ fn read_file_bytes(inputs: &[Series], kwargs: ReadBytesKwargs) -> PolarsResult<S
             builder.append_null();
             continue;
         };
-        match fetch::row_bytes(&batch, path, options.as_ref()) {
+        match fetch::row_bytes(&batch, path, options.as_ref(), &policy) {
             Ok(bytes) => builder.append_value(bytes.as_ref()),
             Err(_) if null_on_error => builder.append_null(),
             Err(e) => return Err(polars_err!(ComputeError: "{}", e)),

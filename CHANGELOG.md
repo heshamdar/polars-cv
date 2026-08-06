@@ -7,6 +7,36 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`allowed_roots`: a sandbox for path columns.** `source("file_path",
+  allowed_roots=[...])` and `.cv.read_bytes(allowed_roots=[...])` restrict
+  which locations a path column may read from. Until now neither surface
+  sanitized paths — they read whatever the column named, any local file and
+  any reachable URL, which is right for your own paths and wrong for paths
+  that arrived as data.
+
+  **Opt-in.** The default is unrestricted, so every existing pipeline is
+  unaffected and an unrestricted source serializes byte-identically to before
+  (`graph_json` is the compiled-graph cache key, so an always-emitted field
+  would split the cache for everyone and change nothing else). Once you ask
+  for a sandbox it denies by default: a path matching no entry is refused.
+
+  One list covers local and remote — an entry that parses as a remote URI is
+  matched as a URI prefix, anything else as a local directory. Splitting them
+  is how a sandbox comes to cover the filesystem while leaving `s3://` open.
+  Local paths are canonicalized before comparison, so `..` segments and
+  symlinks out of the tree are resolved rather than compared as text, and
+  matching is component-wise, so `/srv/images` does not admit
+  `/srv/images-private`. A refusal is an ordinary read failure as far as
+  `on_error` is concerned, so `on_error="null"` nulls those rows.
+
+  The check lives in `fetch.rs`, the one stage the two surfaces share, and
+  both `prefetch` and `row_bytes` take the policy as a **required** argument —
+  a caller that forgets it fails to compile rather than silently reading
+  unrestricted. Denied remote paths are dropped before the fetch, so a refusal
+  never becomes a network request.
+
 ### Fixed
 
 - **Three vector-domain sinks planned one thing and executed another.** The two
