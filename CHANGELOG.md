@@ -65,22 +65,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `_assert_plan_equals_exec`); they now call the harness, and pick up the
   streaming engine in the process.
 
-  **Two divergences found, both pinned as `xfail(strict=True)` so the marker
-  cannot outlive the defect:**
-
-  - `source("auto")` on a **Binary** column plans `List(UInt8)` and executes to
-    `List(List(List(UInt8)))`. `auto` leaves `_expected_ndim` unset and the
-    `list` sink waives the unknown-ndim error for it, on the theory that Rust
-    resolves the rank from the column type — true for List/Array columns, not
-    for image bytes, whose rank is only known after decoding. The all-null
-    column agrees with the plan, which is the fingerprint: with no row to read,
-    the builder falls back to the spec.
-  - The **image-encoder sinks check their preconditions in the encoder, not the
-    planner.** `png`/`jpeg`/`webp`/`tiff` each reject some dtypes, and all four
-    need an image-shaped buffer; both facts are on the `OutputSpec` at plan
-    time. A pipeline that promotes to f32, or flattens to rank 1, plans as
-    `Binary` and dies inside `collect()`. `test_sink_contract.py` missed it
-    because its one base pipeline ends in `cast("u8")`.
+  **Two divergences found, and fixed** (see *Fixed* below).
 
   Also recorded, without a bug marker: `expected_shape` is gated on rank 3, so
   a rank-1 or rank-2 pipeline can never auto-shape an array sink even when the
@@ -118,6 +103,77 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   never becomes a network request.
 
 ### Fixed
+
+- **The runtime series builders read the data to decide the schema.**
+  `build_typed_list_series_from_rows_with_dtype` took both the element dtype
+  and the nesting depth from the *first non-null row*, using the planner's
+  `expected_dtype`/`expected_shape`/`expected_ndim` only as a fallback when
+  every row was null; the array builder likewise fell back to the first row's
+  shape. That inverts the contract — the spec is what `collect_schema()`
+  already promised — and it made the outcome depend on where the nulls fell: an
+  all-null column honoured the plan while the same pipeline with one value in
+  it did not.
+
+  The spec is now the authority in both builders. A row whose data contradicts
+  it is an error naming both dtypes rather than a silent reinterpretation, and
+  the array builder has no data fallback at all: a fixed-shape column whose
+  dtype depends on which row arrived first is the thing that sink exists to
+  rule out.
+
+- **A multi-root graph resolved every output's dtype from the first column.**
+  `merge_pipe` and the binary ops join two `pl.col()` lineages into one
+  `vb_graph` call, and `resolved_output_specs` filled in each output's still-
+  `"auto"` element dtype from `inputs.first()` regardless of which branch the
+  output belonged to. Two list columns of different leaf types planned
+  `Struct({x: List(UInt8), y: List(UInt8)})` and executed with `y` as Float32 —
+  caught by the per-row `validate_output_schema` guard, so it surfaced as a
+  mid-`collect()` failure rather than a wrong answer, but planned wrong either
+  way. Two *separate* expressions never showed it: each is its own plugin call
+  with its own single input.
+
+  Each output is now resolved against the column its own lineage reads, found
+  by walking `upstream` to a root and reading `column_bindings`.
+
+- **`source("auto")` over a Binary column planned a rank it could not know.**
+  `auto` leaves `_expected_ndim` unset, and the `list` sink waived the
+  unknown-rank error for it on the theory that Rust resolves the rank from the
+  column type. That holds for a List/Array column, where `resolved_output_specs`
+  folds the nesting depth through the op rank rules, and not for image bytes,
+  whose rank is only settled by the decode. `dtype_for_output` fell through to a
+  depth-1 `List(UInt8)` while execution produced `List(List(List(UInt8)))`.
+
+  It now refuses instead, naming the two ways out (name the source, or use a
+  sink that does not encode the rank in its dtype). `auto` over List/Array
+  columns is unaffected.
+
+  **This changes an accepted query into a planning error.**
+  `source("auto", dtype=...)` into a `list` sink over a binary image column was
+  accepted before; it was never correct, and eagerly it happened to return a
+  column, which is why `test_auto_image_list_sink_with_explicit_dtype` passed
+  while asserting only that the column came back. An explicit dtype settles the
+  element type, not the rank.
+
+- **The image-encoder sinks checked their preconditions in the encoder.**
+  `png`, `jpeg`, `webp` and `tiff` each restrict the buffer's dtype, and all
+  four need an image-shaped buffer — facts that follow from the buffer's
+  description, which is exactly what `OutputSpec` carries. Checking them at
+  encode time meant a pipeline that promotes to f32, or flattens to rank 1,
+  planned as `Binary` and then died part-way through `collect()`.
+
+  `ImageCodec::check_support` (view-buffer, `interop/image.rs`) is now the one
+  table: read by `dtype_for_output` when the query is planned, by `encode_sink`,
+  and by the encoders themselves — `encode_tiff`'s fallback arm asks it for the
+  message rather than writing a second one. An unknown is never a rejection, so
+  a source whose dtype is still `"auto"` is not refused; that residual (the
+  float-promoting ops keep `"auto"` rather than resolving to a float) is pinned
+  by `test_an_unknown_dtype_is_not_refused`, which fails the day it closes.
+
+  Guarded in Rust by `the_table_never_promises_what_an_encoder_cannot_deliver`,
+  which runs every (codec, dtype, channels) cell through both the table and the
+  real encoder and requires that the table never admits what the encoder
+  refuses. Two cells where it is deliberately *stricter* — 16-bit JPEG and WebP,
+  which `image` accepts by silently halving the bit depth — are listed with
+  their reason and separately pinned.
 
 - **Three vector-domain sinks planned one thing and executed another.** The two
   halves of the sink contract keyed on different facts: `dtype_for_output`

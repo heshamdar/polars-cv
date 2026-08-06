@@ -589,8 +589,13 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
     // by exactly one piece of logic and cannot diverge.
     let compiled = crate::graph::get_or_compile(&kwargs.graph_json, &kwargs.expr_column_names)?;
     let graph = compiled.graph();
-    let resolved =
-        crate::graph::resolved_output_specs(graph, input_fields.first().map(|f| f.dtype()));
+    let resolved = crate::graph::resolved_output_specs(
+        graph,
+        &input_fields
+            .iter()
+            .map(|f| f.dtype().clone())
+            .collect::<Vec<_>>(),
+    );
 
     // The null_with_message error policy appends a reserved `_error` field,
     // which forces struct output even for single-output graphs. This mirrors

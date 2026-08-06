@@ -7,7 +7,7 @@
 //! - Padding and masking operations
 
 use polars::prelude::*;
-use view_buffer::ViewBuffer;
+use view_buffer::{ImageCodec, ViewBuffer};
 
 use super::encode::{
     build_typed_array_series_from_rows_with_dtype, build_typed_list_series_from_rows_with_dtype,
@@ -664,24 +664,69 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
     let domain = spec.expected_domain.as_str();
     match (domain, format) {
         ("buffer", "numpy" | "torch") => Ok(crate::output::numpy_output_dtype()),
-        ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") => Ok(DataType::Binary),
+        // A VIEW blob is self-describing, so it carries no codec precondition.
+        ("buffer", "blob") => Ok(DataType::Binary),
+        ("buffer", "png" | "jpeg" | "webp" | "tiff") => {
+            // The codec's dtype/rank/channel precondition is decidable now, from
+            // the same OutputSpec that produced this dtype — so decide it now.
+            // Leaving it to the encoder meant a query planned as `Binary` and
+            // then died part-way through `collect()`, which is precisely the
+            // "planned one thing, executed another" failure the sink contract
+            // exists to prevent. `ImageCodec::check_support` is the one table
+            // both halves read, and it treats an unknown as permission, so a
+            // source whose dtype is still "auto" is not refused here.
+            let codec = ImageCodec::from_sink_format(format)
+                .expect("this arm matches exactly the formats from_sink_format parses");
+            let dtype = parse_dtype_str(&spec.expected_dtype).ok();
+            let rank = spec
+                .expected_shape
+                .as_ref()
+                .map(|shape| shape.len())
+                .or(spec.expected_ndim);
+            let channels = spec
+                .expected_shape
+                .as_ref()
+                .and_then(|shape| match shape.len() {
+                    3 => Some(shape[2]),
+                    2 => Some(1),
+                    _ => None,
+                });
+            codec
+                .check_support(dtype, rank, channels)
+                .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
+            Ok(DataType::Binary)
+        }
         ("buffer", "list") => {
             let inner = list_array_inner_dtype(&spec.expected_dtype, "list")?;
-            if let Some(ref shape) = spec.expected_shape {
-                let mut dtype = inner;
-                for _ in 0..shape.len() {
-                    dtype = DataType::List(Box::new(dtype));
-                }
-                Ok(dtype)
-            } else if let Some(ndim) = spec.expected_ndim {
-                let mut dtype = inner;
-                for _ in 0..ndim {
-                    dtype = DataType::List(Box::new(dtype));
-                }
-                Ok(dtype)
-            } else {
-                Ok(DataType::List(Box::new(inner)))
+            let ndim = spec
+                .expected_shape
+                .as_ref()
+                .map(|shape| shape.len())
+                .or(spec.expected_ndim);
+            // Not a fallback to depth 1: the nesting depth *is* the schema for
+            // a list sink, and guessing it is how `source("auto")` on a Binary
+            // column came to publish `List(u8)` for data that executes as
+            // `List(List(List(u8)))`. `auto` is the one source whose rank
+            // Python cannot know, and `resolved_output_specs` can only recover
+            // it from a List/Array column — for image bytes the rank is not
+            // settled until the decode. Refusing here is what turns that into
+            // an error the user sees before any data moves.
+            let Some(ndim) = ndim else {
+                polars_bail!(ComputeError:
+                    "the 'list' sink needs the output rank at planning time, and it \
+                     is not knowable for this source. `source(\"auto\")` over a \
+                     binary column decides between an image and a VIEW blob by \
+                     inspecting the bytes, so the rank is only settled during \
+                     execution. Name the source explicitly \
+                     (e.g. `source(\"image_bytes\")`), or use a `numpy` sink, \
+                     which does not encode the rank in its Polars dtype."
+                );
+            };
+            let mut dtype = inner;
+            for _ in 0..ndim {
+                dtype = DataType::List(Box::new(dtype));
             }
+            Ok(dtype)
         }
         ("buffer", "array") => {
             let inner = list_array_inner_dtype(&spec.expected_dtype, "array")?;

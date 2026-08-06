@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use view_buffer::{
     geometry::rasterize::rasterize, AffineParams, BinaryOp, ComputeOp, DType, FilterType,
-    GeometryOp, ImageAdapter, ImageOp, ImageOpKind, InterpolationType, NormalizeMethod, ViewBuffer,
-    ViewDto, ViewOp,
+    GeometryOp, ImageAdapter, ImageCodec, ImageOp, ImageOpKind, InterpolationType, NormalizeMethod,
+    ViewBuffer, ViewDto, ViewOp,
 };
 
 use crate::graph::step::GraphStep;
@@ -251,41 +251,38 @@ pub fn decode_source(bytes: &[u8], source: &SourceSpec) -> PolarsResult<ViewBuff
 /// nested values, both directly in `graph::encode::encode_node_output` (the
 /// sole caller).
 pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>> {
-    match sink.format.as_str() {
-        "blob" => {
-            // VIEW protocol
-            Ok(buffer.to_blob())
-        }
-        "png" => ImageAdapter::encode(buffer, image::ImageFormat::Png)
+    if sink.format.as_str() == "blob" {
+        // VIEW protocol: self-describing, so no codec precondition applies.
+        return Ok(buffer.to_blob());
+    }
+
+    let Some(codec) = ImageCodec::from_sink_format(sink.format.as_str()) else {
+        return Err(polars_err!(ComputeError: "Unknown sink format: {}", sink.format));
+    };
+
+    // The same check the planner ran before publishing this query's schema
+    // (`dtype_for_output`). Reaching a failure here means the planner had less
+    // information than we do now — a source whose dtype was still "auto", or a
+    // shape only the data could settle — not that the two disagree.
+    let shape = buffer.shape();
+    let channels = match shape.len() {
+        3 => Some(shape[2]),
+        2 => Some(1),
+        _ => None,
+    };
+    codec
+        .check_support(Some(buffer.dtype()), Some(shape.len()), channels)
+        .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
+
+    match codec {
+        ImageCodec::Png => ImageAdapter::encode(buffer, image::ImageFormat::Png)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode PNG: {:?}", e)),
-        "jpeg" => {
-            if buffer.dtype() != DType::U8 {
-                return Err(polars_err!(
-                    ComputeError:
-                    "JPEG is an 8-bit format but the image is {:?}; cast to u8 first \
-                     (.cast(\"u8\")) or sink to PNG/TIFF to preserve higher bit depth.",
-                    buffer.dtype()
-                ));
-            }
-            let quality = sink.quality;
-            ImageAdapter::encode_jpeg(buffer, quality)
-                .map_err(|e| polars_err!(ComputeError: "Failed to encode JPEG: {:?}", e))
-        }
-        "webp" => {
-            if buffer.dtype() != DType::U8 {
-                return Err(polars_err!(
-                    ComputeError:
-                    "WebP is an 8-bit format but the image is {:?}; cast to u8 first \
-                     (.cast(\"u8\")) or sink to PNG/TIFF to preserve higher bit depth.",
-                    buffer.dtype()
-                ));
-            }
-            ImageAdapter::encode(buffer, image::ImageFormat::WebP)
-                .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e))
-        }
-        "tiff" => ImageAdapter::encode_tiff(buffer)
+        ImageCodec::Jpeg => ImageAdapter::encode_jpeg(buffer, sink.quality)
+            .map_err(|e| polars_err!(ComputeError: "Failed to encode JPEG: {:?}", e)),
+        ImageCodec::WebP => ImageAdapter::encode(buffer, image::ImageFormat::WebP)
+            .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e)),
+        ImageCodec::Tiff => ImageAdapter::encode_tiff(buffer)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode TIFF: {:?}", e)),
-        other => Err(polars_err!(ComputeError: "Unknown sink format: {}", other)),
     }
 }
 

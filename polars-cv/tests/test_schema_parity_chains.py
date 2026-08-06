@@ -315,6 +315,37 @@ def test_two_source_columns_in_one_graph() -> None:
 
 
 @plugin_required
+def test_each_output_resolves_against_its_own_root_column() -> None:
+    """A multi-root graph must not resolve every output from column 0.
+
+    ``merge_pipe`` and the binary ops join two ``pl.col()`` lineages into one
+    ``vb_graph`` call. ``resolved_output_specs`` used to fill in every output's
+    ``"auto"`` element dtype from ``inputs.first()``, so the second branch was
+    planned with the first branch's column type: two list columns of different
+    leaf dtypes planned ``Struct({x: List(UInt8), y: List(UInt8)})`` and
+    executed with ``y`` as Float32.
+
+    Two *separate* expressions never showed this — each is its own plugin call
+    with its own single input — so the bug needed one graph with two roots.
+    """
+    df = pl.DataFrame(
+        {"a": [[[1, 2], [3, 4]]], "b": [[[1.5, 2.5], [3.5, 4.5]]]},
+        schema={"a": pl.List(pl.List(pl.UInt8)), "b": pl.List(pl.List(pl.Float32))},
+    )
+    left = pl.col("a").cv.pipe(Pipeline().source("list")).alias("x")
+    right = pl.col("b").cv.pipe(Pipeline().source("list")).alias("y")
+
+    series = assert_plan_equals_exec(
+        df, left.merge_pipe(right).sink({"x": "list", "y": "list"})
+    )
+    fields = dict((f.name, f.dtype) for f in series.dtype.fields)
+    assert fields["x"] == pl.List(pl.List(pl.UInt8))
+    assert fields["y"] == pl.List(pl.List(pl.Float32)), (
+        f"'y' reads the Float32 column; planned {fields['y']}"
+    )
+
+
+@plugin_required
 def test_fused_and_unfused_affine_runs_agree() -> None:
     """Affine fusion rewrites the op list after the schema was folded.
 

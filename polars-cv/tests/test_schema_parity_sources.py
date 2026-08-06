@@ -33,6 +33,7 @@ from tests._schema_parity import (
     HOMOGENEOUS_PATTERNS,
     ParityResult,
     assert_not_vacuous,
+    assert_plan_equals_exec,
     encodable_by_image_codec,
     frame,
     leaf_dtype,
@@ -105,23 +106,30 @@ def _sweep(
 
 
 def test_source_axis_covers_the_vocabulary() -> None:
-    """Every ``SourceFormat`` is exercised by a test in this file.
+    """Every ``SourceFormat`` is exercised by a test that actually exists here.
 
-    Without this the sweep would quietly stop covering a format the day one is
-    added — the failure mode of every hand-maintained table in this repo.
+    The first version of this guard compared a hand-written set against the
+    enum, which says nothing about whether the tests are still present — and it
+    passed happily while five of them were deleted by an editing mistake.
+    Naming the covering test and resolving it in this module's namespace is
+    what makes the check bite: delete or rename a test and this fails.
     """
-    covered = {
-        SourceFormat.AUTO,
-        SourceFormat.IMAGE_BYTES,
-        SourceFormat.BLOB,
-        SourceFormat.RAW,
-        SourceFormat.FILE_PATH,
-        SourceFormat.LIST,
-        SourceFormat.ARRAY,
-        SourceFormat.CONTOUR,
+    covered: dict[SourceFormat, str] = {
+        SourceFormat.AUTO: "test_auto_source_on_a_binary_column",
+        SourceFormat.IMAGE_BYTES: "test_image_bytes_source_every_channel_count",
+        SourceFormat.BLOB: "test_blob_source_round_trips",
+        SourceFormat.RAW: "test_raw_source_every_dtype",
+        SourceFormat.FILE_PATH: "test_file_path_source",
+        SourceFormat.LIST: "test_list_source_every_dtype",
+        SourceFormat.ARRAY: "test_array_source_every_dtype",
+        SourceFormat.CONTOUR: "test_contour_source",
     }
-    assert covered == set(SourceFormat), (
-        f"source formats with no plan-vs-exec test: {set(SourceFormat) - covered}"
+    assert set(covered) == set(SourceFormat), (
+        f"source formats with no plan-vs-exec test: {set(SourceFormat) - set(covered)}"
+    )
+    missing = [name for name in covered.values() if name not in globals()]
+    assert not missing, (
+        f"named as covering a source format but not defined in this module: {missing}"
     )
 
 
@@ -212,44 +220,18 @@ def test_image_bytes_source_every_channel_count(channels: int, pattern: str) -> 
     _sweep(df, pipe, f"image_bytes {channels}ch / {pattern}")
 
 
-#: The ``auto``-on-Binary rank bug needs a non-null row to bite: with nothing
-#: to decode, the runtime builder falls back to the declared spec and honours
-#: the plan. So ``all_null`` is the one layout that agrees — a precise
-#: fingerprint of "the schema is derived from the data", and the reason this
-#: mark is per-pattern instead of blanket.
-_AUTO_BINARY_PATTERNS = [
-    pytest.param(
-        p,
-        marks=(
-            []
-            if p == "all_null"
-            else pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "Known bug: source('auto') on a Binary image column leaves "
-                    "_expected_ndim=None, and lazy.py's 'list' sink waives the "
-                    "unknown-ndim error for AUTO on the theory that Rust "
-                    "resolves the rank from the column type. It cannot for "
-                    "Binary — the rank is only known after decoding — so "
-                    "dtype_for_output falls through to a depth-1 List(UInt8) "
-                    "while execution produces List(List(List(UInt8))). Delete "
-                    "this marker when the waiver is narrowed to List/Array."
-                ),
-            )
-        ),
-    )
-    for p in HOMOGENEOUS_PATTERNS
-]
-
-
 @plugin_required
-@pytest.mark.parametrize("pattern", _AUTO_BINARY_PATTERNS)
+@pytest.mark.parametrize("pattern", HOMOGENEOUS_PATTERNS)
 def test_auto_source_on_a_binary_column(pattern: str) -> None:
     """``auto`` is the default and picks its decode path at runtime.
 
     It is therefore the source whose plan is made with the least information,
-    and it had no plan-vs-exec test of any kind. It turns out to be the one
-    source that publishes a schema execution does not produce.
+    and it had no plan-vs-exec test of any kind. It used to be the one source
+    that published a schema execution did not produce: on a Binary column the
+    rank stayed unknown and the ``list`` sink silently planned a depth-1
+    ``List(UInt8)`` for data that arrives three deep. ``dtype_for_output`` now
+    refuses a list sink whose rank it cannot name, so that cell rejects at plan
+    time and every other sink still holds.
     """
     images = [make_image_png(H, W, 3, seed=s) for s in (1, 2, 3)]
     df = frame(rows_for(pattern, images), pl.Binary)
@@ -259,13 +241,15 @@ def test_auto_source_on_a_binary_column(pattern: str) -> None:
 
 
 @plugin_required
-def test_auto_source_rank_gap_is_confined_to_binary_columns() -> None:
-    """Scope the bug above: it is the *Binary* branch of ``auto`` that lies.
+def test_auto_list_sink_resolves_rank_from_a_columnar_source() -> None:
+    """The fix must refuse only what it cannot know, not everything.
 
-    On a List column ``auto`` resolves the rank from the column dtype and the
-    plan is right, which is what the waiver in ``lazy.py`` was written for.
-    Pinning both halves keeps a fix from being applied too broadly — and keeps
-    the xfail above honest about which case is broken.
+    ``auto`` over a List/Array column *can* resolve its rank —
+    ``resolved_output_specs`` folds the column's nesting depth through the op
+    rank rules — and that path has to keep planning a correct schema. Over a
+    Binary column the rank is settled by inspecting the bytes for the VIEW
+    magic, so it is genuinely unknowable at plan time and the list sink now
+    says so instead of guessing depth 1.
     """
     value = [[1, 2, 3], [4, 5, 6]]
     listed = pl.DataFrame({"img": [value]}, schema={"img": pl.List(pl.List(pl.UInt8))})
@@ -277,29 +261,39 @@ def test_auto_source_rank_gap_is_confined_to_binary_columns() -> None:
     binary = pl.DataFrame(
         {"img": [make_image_png(H, W, 3, seed=1)]}, schema={"img": pl.Binary}
     )
-    lf = binary.lazy().with_columns(
-        out=pl.col("img").cv.pipe(Pipeline().source("auto").cast("u8")).sink("list")
+    refused = plan_or_reject(
+        binary,
+        lambda: (
+            pl.col("img").cv.pipe(Pipeline().source("auto").cast("u8")).sink("list")
+        ),
     )
-    planned = lf.collect_schema()["out"]
-    produced = lf.collect(engine="streaming").schema["out"]
-    assert planned == pl.List(pl.UInt8), (
-        f"the Binary-column gap changed shape: planned {planned}"
+    assert not refused.ok, (
+        f"auto over a Binary column planned {refused.planned!r} for a rank it "
+        f"cannot know"
     )
-    assert produced == pl.List(pl.List(pl.List(pl.UInt8))), (
-        f"the Binary-column gap changed shape: produced {produced}"
-    )
+    assert "rank at planning time" in (refused.reason or ""), refused.reason
 
-    # And the fingerprint: an all-null column of the same type agrees, because
-    # there is no row for the runtime builder to take the rank from. The schema
-    # is being derived from the data, and this is what proves it.
-    empty = pl.DataFrame({"img": [None, None]}, schema={"img": pl.Binary})
-    lf = empty.lazy().with_columns(
-        out=pl.col("img").cv.pipe(Pipeline().source("auto").cast("u8")).sink("list")
+    # Naming the source is the documented way out, and it must still work.
+    named = Pipeline().source("image_bytes").cast("u8")
+    assert_plan_equals_exec(binary, pl.col("img").cv.pipe(named).sink("list"))
+
+
+@plugin_required
+def test_auto_on_binary_still_plans_the_rank_free_sinks() -> None:
+    """Refusing the list sink must not take the rest of ``auto`` down with it.
+
+    ``numpy`` publishes a fixed struct whatever the rank turns out to be, so it
+    is unaffected by the rank being unknown — the refusal has to be scoped to
+    the sinks that actually encode the rank in their Polars dtype.
+    """
+    binary = pl.DataFrame(
+        {"img": [None, make_image_png(H, W, 3, seed=1)]}, schema={"img": pl.Binary}
     )
-    assert lf.collect_schema()["out"] == lf.collect(engine="streaming").schema["out"], (
-        "the all-null case used to agree with the plan; if it no longer does, "
-        "the fallback in build_typed_list_series_from_rows_with_dtype changed"
-    )
+    pipe = Pipeline().source("auto").cast("u8")
+    for sink in ("numpy", "blob", "png"):
+        assert_plan_equals_exec(
+            binary, pl.col("img").cv.pipe(pipe).sink(sink), name=f"o_{sink}"
+        )
 
 
 @plugin_required

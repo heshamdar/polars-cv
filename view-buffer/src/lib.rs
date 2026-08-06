@@ -55,7 +55,7 @@ pub use ops::affine::{AffineParams, InterpolationType};
 pub use geometry::{BoundingBox, Contour, GeometryOp, Point, Winding};
 
 #[cfg(feature = "image_interop")]
-pub use interop::image::{AsImageView, ImageAdapter, ImageView, ImageViewAdapter};
+pub use interop::image::{AsImageView, ImageAdapter, ImageCodec, ImageView, ImageViewAdapter};
 
 #[cfg(feature = "ndarray_interop")]
 pub use interop::ndarray::{AsNdarray, FromNdarray, NdArrayViewAdapter};

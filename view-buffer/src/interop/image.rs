@@ -12,6 +12,142 @@ use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, LumaA, Pixel, Rgb
 use std::marker::PhantomData;
 use std::path::Path;
 
+// --- Image codec support ---
+
+/// The image codecs a buffer can be encoded to.
+///
+/// Each carries a restriction on the buffer's dtype and channel count that has
+/// nothing to do with the pixels: JPEG is an 8-bit format, PNG carries 8- or
+/// 16-bit samples, TIFF has a fixed table of colour types. Those facts are
+/// knowable from a buffer's *description* — they never require looking at the
+/// data — which is why [`ImageCodec::check_support`] exists and why the query
+/// planner can call it before a byte moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageCodec {
+    Png,
+    Jpeg,
+    WebP,
+    Tiff,
+}
+
+impl ImageCodec {
+    /// Parse the plugin's sink-format spelling.
+    pub fn from_sink_format(format: &str) -> Option<Self> {
+        match format {
+            "png" => Some(Self::Png),
+            "jpeg" => Some(Self::Jpeg),
+            "webp" => Some(Self::WebP),
+            "tiff" => Some(Self::Tiff),
+            _ => None,
+        }
+    }
+
+    /// The codec's name, for error messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Png => "PNG",
+            Self::Jpeg => "JPEG",
+            Self::WebP => "WebP",
+            Self::Tiff => "TIFF",
+        }
+    }
+
+    /// Can this codec encode a buffer with the given description?
+    ///
+    /// **This is the single authority for every image-codec precondition.** The
+    /// encoders below call it, and so does the plugin's planner, so a query
+    /// that cannot possibly encode is refused while it is still being planned
+    /// rather than part-way through `collect()`. A second copy of this table
+    /// would be a second answer to "can this be a JPEG".
+    ///
+    /// Every argument is optional because the planner does not always know:
+    /// `dtype` is unknown while a source's decode dtype is still `"auto"`, and
+    /// `channels` is unknown whenever the shape hints are incomplete. **An
+    /// unknown is never a rejection** — this returns `Err` only for a
+    /// combination that could not encode under any completion of the unknowns,
+    /// so a plan-time caller passing less information can only be more
+    /// permissive, never wrong.
+    pub fn check_support(
+        self,
+        dtype: Option<DType>,
+        rank: Option<usize>,
+        channels: Option<usize>,
+    ) -> Result<(), String> {
+        if let Some(rank) = rank {
+            if rank != 2 && rank != 3 {
+                return Err(format!(
+                    "{} encoding needs an image-shaped buffer ([H, W] or [H, W, C]), \
+                     but this is {rank}-dimensional. Reshape before the sink, or use \
+                     a `numpy`/`list`/`array` sink for non-image data.",
+                    self.name()
+                ));
+            }
+        }
+        if let Some(channels) = channels {
+            if !(1..=4).contains(&channels) {
+                return Err(format!(
+                    "{} encoding supports 1 to 4 channels, but this buffer has \
+                     {channels}.",
+                    self.name()
+                ));
+            }
+        }
+
+        let Some(dtype) = dtype else {
+            return Ok(());
+        };
+
+        match self {
+            // Both go through `to_dynamic_image`, which carries 8- and 16-bit
+            // samples only; WebP is additionally 8-bit.
+            Self::Png => {
+                if !matches!(dtype, DType::U8 | DType::U16) {
+                    return Err(format!(
+                        "Image export requires U8 or U16 dtype, got {dtype:?}. \
+                         Cast to an integer dtype first (e.g. `.cast(\"u8\")` or \
+                         `.cast(\"u16\")`), or sink to TIFF to preserve float data."
+                    ));
+                }
+            }
+            Self::Jpeg | Self::WebP => {
+                if dtype != DType::U8 {
+                    return Err(format!(
+                        "{} is an 8-bit format but the image is {dtype:?}; cast to u8 \
+                         first (.cast(\"u8\")) or sink to PNG/TIFF to preserve higher \
+                         bit depth.",
+                        self.name()
+                    ));
+                }
+            }
+            // The tiff crate has a colour type per (dtype, channels) pair, and
+            // the float ones are greyscale only. Mirrors the match in
+            // `encode_tiff` — which is why that match's fallback arm defers
+            // here for its message rather than writing a second one.
+            Self::Tiff => {
+                let ok = match dtype {
+                    DType::U8 | DType::U16 => true,
+                    DType::F32 | DType::F64 => channels.is_none_or(|c| c == 1),
+                    _ => false,
+                };
+                if !ok {
+                    return Err(match (dtype, channels) {
+                        (DType::F32 | DType::F64, Some(c)) => format!(
+                            "TIFF stores floating-point samples as greyscale only, but \
+                             this buffer is {dtype:?} with {c} channels; reduce to one \
+                             channel or cast to u8/u16."
+                        ),
+                        _ => format!(
+                            "TIFF encoding does not support {dtype:?}; cast to u8, u16, \
+                             or a single-channel f32/f64."
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 // --- Image View Types ---
 
 /// A zero-copy view over a ViewBuffer interpreted as an image.
@@ -344,11 +480,22 @@ impl ImageAdapter {
                     .map_err(tiff_err)?;
             }
             (dtype, channels) => {
+                // Unreachable for anything `ImageCodec::Tiff` admits: the arms
+                // above cover exactly its table. Ask it for the message rather
+                // than writing a second one that could describe a different
+                // rule than the planner enforced.
+                let msg = ImageCodec::Tiff
+                    .check_support(Some(dtype), Some(shape.len()), Some(channels))
+                    .err()
+                    .unwrap_or_else(|| {
+                        format!(
+                            "TIFF encoding has no colour type for {dtype:?} with \
+                             {channels} channels"
+                        )
+                    });
                 return Err(image::ImageError::Parameter(
                     image::error::ParameterError::from_kind(
-                        image::error::ParameterErrorKind::Generic(
-                            format!("Unsupported combination for TIFF encoding: {dtype:?} with {channels} channels"),
-                        ),
+                        image::error::ParameterErrorKind::Generic(msg),
                     ),
                 ));
             }
@@ -458,16 +605,26 @@ impl ImageAdapter {
     /// 16-bit buffer round-trips to a 16-bit PNG).
     pub fn to_dynamic_image(buffer: &ViewBuffer) -> Result<DynamicImage, image::ImageError> {
         let dtype = buffer.dtype();
-        if dtype != DType::U8 && dtype != DType::U16 {
-            return Err(image::ImageError::Parameter(
-                image::error::ParameterError::from_kind(image::error::ParameterErrorKind::Generic(
-                    format!(
-                        "Image export requires U8 or U16 dtype, got {dtype:?}. \
-                         Cast to an integer dtype first (e.g. `.cast(\"u8\")` or \
-                         `.cast(\"u16\")`), or sink to TIFF to preserve float data."
-                    ),
-                )),
-            ));
+        // The dtype/channel rule is ImageCodec's, not this function's: the
+        // planner refuses unencodable queries from the same table, and a second
+        // copy here is how the two would come to disagree. PNG is the widest of
+        // the `to_dynamic_image` consumers (8- or 16-bit), so it is the right
+        // gate for the shared conversion; JPEG and WebP narrow it further at
+        // their own entry points.
+        {
+            let shape = buffer.shape();
+            let channels = match shape.len() {
+                3 => Some(shape[2]),
+                2 => Some(1),
+                _ => None,
+            };
+            ImageCodec::Png
+                .check_support(Some(dtype), Some(shape.len()), channels)
+                .map_err(|msg| {
+                    image::ImageError::Parameter(image::error::ParameterError::from_kind(
+                        image::error::ParameterErrorKind::Generic(msg),
+                    ))
+                })?;
         }
 
         let shape = buffer.shape();
@@ -564,6 +721,155 @@ impl ImageAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every codec, every dtype, at the channel counts an image can have.
+    const ALL_DTYPES: &[DType] = &[
+        DType::U8,
+        DType::I8,
+        DType::U16,
+        DType::I16,
+        DType::U32,
+        DType::I32,
+        DType::U64,
+        DType::I64,
+        DType::F32,
+        DType::F64,
+    ];
+    const ALL_CODECS: &[ImageCodec] = &[
+        ImageCodec::Png,
+        ImageCodec::Jpeg,
+        ImageCodec::WebP,
+        ImageCodec::Tiff,
+    ];
+
+    #[test]
+    fn unknowns_are_never_a_rejection() {
+        // The planner calls `check_support` with whatever it knows, which is
+        // often less than the encoder will know. That is only sound if adding
+        // information can turn an Ok into an Err but never the reverse —
+        // otherwise the planner would refuse queries that execute perfectly.
+        for &codec in ALL_CODECS {
+            assert!(
+                codec.check_support(None, None, None).is_ok(),
+                "{codec:?} rejected a fully-unknown buffer"
+            );
+            for &dtype in ALL_DTYPES {
+                for channels in 1..=4usize {
+                    if codec
+                        .check_support(Some(dtype), Some(3), Some(channels))
+                        .is_ok()
+                    {
+                        // Every less-informed call must also be Ok.
+                        assert!(codec.check_support(Some(dtype), Some(3), None).is_ok());
+                        assert!(codec.check_support(None, Some(3), Some(channels)).is_ok());
+                        assert!(codec.check_support(None, None, None).is_ok());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cells where the table is deliberately stricter than the raw encoder.
+    ///
+    /// `image`'s JPEG and WebP writers accept a 16-bit `DynamicImage` and
+    /// quietly downconvert it to 8 bits. Silently halving a user's bit depth is
+    /// worse than refusing, so the plugin has always rejected u16 into those
+    /// two — see `test_jpeg_rejects_u16_with_actionable_error`. The table
+    /// carries that product decision, which is why it says "no" where the
+    /// adapter would have said "yes".
+    const DELIBERATELY_STRICTER: &[(ImageCodec, DType)] = &[
+        (ImageCodec::Jpeg, DType::U16),
+        (ImageCodec::WebP, DType::U16),
+    ];
+
+    #[test]
+    fn the_table_never_promises_what_an_encoder_cannot_deliver() {
+        // The direction that matters. A table that admits something the
+        // encoder then rejects is precisely the plan-then-fail bug this whole
+        // mechanism exists to prevent: the planner would publish a schema and
+        // `collect()` would die. The reverse (table stricter than the encoder)
+        // is safe, and where it is intentional it is listed above.
+        for &codec in ALL_CODECS {
+            for &dtype in ALL_DTYPES {
+                for channels in 1..=4usize {
+                    let buf = ViewBuffer::from_vec_with_shape(
+                        vec![0u8; 4 * channels],
+                        vec![2, 2, channels],
+                    )
+                    .cast_to(dtype);
+                    let permitted = codec
+                        .check_support(Some(dtype), Some(3), Some(channels))
+                        .is_ok();
+                    let encodes = match codec {
+                        ImageCodec::Png => {
+                            ImageAdapter::encode(&buf, image::ImageFormat::Png).is_ok()
+                        }
+                        ImageCodec::Jpeg => ImageAdapter::encode_jpeg(&buf, 85).is_ok(),
+                        ImageCodec::WebP => {
+                            ImageAdapter::encode(&buf, image::ImageFormat::WebP).is_ok()
+                        }
+                        ImageCodec::Tiff => ImageAdapter::encode_tiff(&buf).is_ok(),
+                    };
+                    if permitted {
+                        assert!(
+                            encodes,
+                            "{codec:?} with {dtype:?} x {channels}ch: the table \
+                             permits it but the encoder rejects it — a query \
+                             would plan and then fail at collect()"
+                        );
+                    } else if encodes {
+                        assert!(
+                            DELIBERATELY_STRICTER.contains(&(codec, dtype)),
+                            "{codec:?} with {dtype:?} x {channels}ch: the table \
+                             refuses something the encoder handles. If that is \
+                             intended, add it to DELIBERATELY_STRICTER with the \
+                             reason; otherwise the table is over-rejecting."
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_deliberate_narrowings_are_still_narrowings() {
+        // Guards the exemption list itself: if `image` ever starts rejecting
+        // 16-bit JPEG on its own, the entry becomes dead and should go, and if
+        // the plugin ever stops refusing it the entry is actively wrong.
+        for &(codec, dtype) in DELIBERATELY_STRICTER {
+            assert!(
+                codec.check_support(Some(dtype), Some(3), Some(1)).is_err(),
+                "{codec:?}/{dtype:?} is listed as deliberately refused but the \
+                 table admits it"
+            );
+        }
+    }
+
+    #[test]
+    fn rank_one_is_not_an_image_for_any_codec() {
+        for &codec in ALL_CODECS {
+            assert!(codec.check_support(Some(DType::U8), Some(1), None).is_err());
+            assert!(codec.check_support(Some(DType::U8), Some(4), None).is_err());
+            assert!(codec.check_support(Some(DType::U8), Some(2), None).is_ok());
+            assert!(codec.check_support(Some(DType::U8), Some(3), None).is_ok());
+        }
+    }
+
+    #[test]
+    fn from_sink_format_covers_exactly_the_codec_sinks() {
+        for &codec in ALL_CODECS {
+            let spelling = match codec {
+                ImageCodec::Png => "png",
+                ImageCodec::Jpeg => "jpeg",
+                ImageCodec::WebP => "webp",
+                ImageCodec::Tiff => "tiff",
+            };
+            assert_eq!(ImageCodec::from_sink_format(spelling), Some(codec));
+        }
+        // `blob` is a VIEW dump, not a codec, and must not be parsed as one.
+        assert_eq!(ImageCodec::from_sink_format("blob"), None);
+        assert_eq!(ImageCodec::from_sink_format("numpy"), None);
+    }
 
     #[test]
     fn test_image_roundtrip() {
