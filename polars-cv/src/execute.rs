@@ -1412,25 +1412,43 @@ mod known_ops_tests {
             if indent != 8 {
                 continue;
             }
-            // A guard arm (`name if TABLE.contains(&name) => ...`) registers
-            // whatever its table holds, and names nothing this scan can read.
-            // Collect them so an unrecognised one fails below rather than
-            // slipping through as "not a string arm": that is how an op could
-            // become executable with no KNOWN_OPS entry.
-            if !trimmed.starts_with('"') && trimmed.contains(" if ") && trimmed.contains("=>") {
-                // Key on the guard *condition*, not the binding name: every
-                // guard arm here binds `name`, so allow-listing the binder
-                // would wave through any future arm that reused it.
-                let cond = trimmed
-                    .split(" if ")
-                    .nth(1)
-                    .and_then(|rest| rest.split("=>").next())
-                    .unwrap_or(trimmed)
-                    .trim();
-                guard_arms.push(cond);
+            // Continuation lines of a wrapped arm, and the closing brace of a
+            // block-bodied one, carry no pattern. Everything else at this
+            // indent starts an arm and must be classified.
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with('}')
+                || trimmed.starts_with("=>")
+                || trimmed.starts_with("&&")
+                || trimmed.starts_with("||")
+                || trimmed.starts_with('|')
+            {
                 continue;
             }
-            if !trimmed.starts_with('"') {
+            if trimmed.starts_with('"') {
+                // Fall through to the string-literal handling below.
+            } else {
+                // Anything else registers ops without naming them in a form
+                // this scan can read: a guard arm, an `@` binding, a bare
+                // binder. Record the whole pattern and require it to be
+                // explicitly known below.
+                //
+                // The previous version only recognised a guard arm when the
+                // pattern and its `=>` shared a line, and silently skipped
+                // every other shape. rustfmt moves `=>` to the next line once
+                // the condition is long enough, and an `@` binding never had
+                // one -- both let a whole op family become executable with no
+                // KNOWN_OPS entry. "Anything I do not recognise is ignored"
+                // was the bug; "anything I do not recognise fails" is the
+                // guard.
+                let pattern = trimmed
+                    .split("=>")
+                    .next()
+                    .unwrap_or(trimmed)
+                    .trim()
+                    .trim_end_matches('{')
+                    .trim();
+                guard_arms.push(pattern);
                 continue;
             }
             // Arm patterns look like `"name" => {` or `"a" | "b" => ...`;
@@ -1462,7 +1480,14 @@ mod known_ops_tests {
         // Guard arms register a whole family at once. Each one needs a rule
         // above tying its table to KNOWN_OPS; a new one has none, so fail
         // until it is given one rather than let it register ops invisibly.
-        const KNOWN_GUARD_ARMS: &[&str] = &["naming::lookup(BINARY_OPS, name).is_some()"];
+        const KNOWN_GUARD_ARMS: &[&str] = &[
+            // Registers the whole binary-op family; its table is checked
+            // against KNOWN_OPS below.
+            "name if naming::lookup(BINARY_OPS, name).is_some()",
+            // The catch-all that produces the "Unknown operation" error this
+            // scan terminates on. Registers nothing.
+            "other",
+        ];
         for arm in &guard_arms {
             assert!(
                 KNOWN_GUARD_ARMS.contains(arm),

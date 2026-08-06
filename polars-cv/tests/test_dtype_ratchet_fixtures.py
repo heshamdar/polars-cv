@@ -21,8 +21,20 @@ import pytest
 
 from tests._dtype_ratchet import dispatch_offenders
 
-NAMES = {"u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f32", "f64"}
-VARIANTS = {"U8", "I8", "U16", "I16", "U32", "I32", "U64", "I64", "F32", "F64"}
+PAIRS = {
+    ("U8", "u8"),
+    ("I8", "i8"),
+    ("U16", "u16"),
+    ("I16", "i16"),
+    ("U32", "u32"),
+    ("I32", "i32"),
+    ("U64", "u64"),
+    ("I64", "i64"),
+    ("F32", "f32"),
+    ("F64", "f64"),
+}
+NAMES = {n for _, n in PAIRS}
+VARIANTS = {v for v, _ in PAIRS}
 
 _ALL_ARMS = "\n".join(f'        "{n}" => build_{n}(),' for n in sorted(NAMES))
 
@@ -118,6 +130,29 @@ BAD_FIXTURES = [
         id="arm-yields-two-names",
     ),
     pytest.param(
+        "pub fn to_dtype(t: PolarsType) -> Option<DType> {\n    match t {\n"
+        + "\n".join(
+            f"        PolarsType::{v} => Some(DType::{v}),"
+            for v in sorted(VARIANTS - {"U16", "I16"})
+        )
+        + "\n        _ => None,\n    }\n}",
+        "not all ten",
+        # Defect 8: a foreign-type -> DType table is invisible to both the key
+        # and name checks. Five arms were deletable from two such tables in the
+        # tree with a fully green suite.
+        id="foreign-variant-to-dtype-table-incomplete",
+    ),
+    pytest.param(
+        _value_table(
+            [(v, n) for v, n in _COMPLETE_PAIRS if v not in ("U32", "U64")]
+            + [("U32", "u64"), ("U64", "u32")]
+        ),
+        "wrong pairs",
+        # Permutation blindness: two swapped rows leave both sets complete, so
+        # comparing sets rather than pairs passed while every dtype was misnamed.
+        id="value-side-table-rows-swapped",
+    ),
+    pytest.param(
         "#[cfg(test)]\nmod t { fn helper() {} }\n\n"
         + _key_dispatch(sorted(NAMES - {"f64"}), "after_tests"),
         "missing",
@@ -153,12 +188,6 @@ GOOD_FIXTURES = [
         # A dtype named in an arm *body* is an error message, not a dispatch.
         id="dtype-name-in-arm-body-only",
     ),
-    pytest.param(
-        "pub fn variant(t: Typed) -> DType {\n    match t {\n"
-        "        Typed::U8(_) => DType::U8,\n        Typed::F64(_) => DType::F64,\n    }\n}",
-        # Variant-to-variant mapping yields no name; nothing to check.
-        id="variant-to-variant-no-names",
-    ),
     pytest.param("pub fn nothing() -> u8 { 7 }", id="no-dtypes-at-all"),
 ]
 
@@ -166,7 +195,7 @@ GOOD_FIXTURES = [
 @pytest.mark.parametrize("source,expect_substring", BAD_FIXTURES)
 def test_ratchet_flags_known_defects(source: str, expect_substring: str) -> None:
     """Each past blind spot must still be caught."""
-    offenders = dispatch_offenders(source, "fixture.rs", NAMES, VARIANTS)
+    offenders = dispatch_offenders(source, "fixture.rs", PAIRS)
     assert offenders, "ratchet did not flag a defect it is supposed to catch"
     assert any(expect_substring in o for o in offenders), (
         f"flagged, but not for the expected reason: wanted {expect_substring!r}, "
@@ -181,7 +210,7 @@ def test_ratchet_accepts_correct_code(source: str) -> None:
     False positives are not harmless here: a ratchet that fires on
     ``rustfmt``-clean code gets weakened or deleted by whoever hits it next.
     """
-    offenders = dispatch_offenders(source, "fixture.rs", NAMES, VARIANTS)
+    offenders = dispatch_offenders(source, "fixture.rs", PAIRS)
     assert not offenders, f"false positive on correct code: {offenders}"
 
 
@@ -194,7 +223,5 @@ def test_dropping_any_single_arm_is_caught() -> None:
     ordered = sorted(NAMES)
     for drop in range(1, len(ordered)):
         kept = ordered[drop:]
-        offenders = dispatch_offenders(
-            _key_dispatch(kept), "fixture.rs", NAMES, VARIANTS
-        )
+        offenders = dispatch_offenders(_key_dispatch(kept), "fixture.rs", PAIRS)
         assert offenders, f"dropping {drop} arm(s) was not caught"

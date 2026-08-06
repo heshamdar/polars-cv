@@ -1570,6 +1570,20 @@ def test_display_rejects_unknown_wire_codes() -> None:
         display_mod._view_to_png(bytes(blob))
 
 
+# Functions that map to a *subset* of DType variants on purpose. The ratchet
+# fails on any unlisted partial rather than skipping it: every blind spot it has
+# had was something it chose to skip, so an unrecognised shape must be an
+# explicit, reviewable entry here rather than silence.
+ALLOWED_PARTIAL_VARIANT_MAPS = frozenset(
+    {
+        # Arrow FFI import supports a subset by design and rejects the rest
+        # with "Unsupported Arrow type" rather than guessing, so the missing
+        # arms are an honest refusal, not silent drift.
+        "view-buffer/src/interop/arrow_ffi.rs::from_arrow_ffi",
+    }
+)
+
+
 def test_no_second_dtype_spelling_table() -> None:
     """Ratchet: dtype names are declared in ``dtype_table!`` only.
 
@@ -1623,15 +1637,19 @@ def test_no_second_dtype_spelling_table() -> None:
         # Pins the frozen VIEW codes literally, on purpose.
         root / "view-buffer" / "tests" / "dtype_single_authority.rs",
     }
-    expected = {short for _variant, short, _code, _numpy in _dtype_table_rows()}
-    variants = {v for v, _short, _code, _numpy in _dtype_table_rows()}
+    expected_pairs = {
+        (variant, short) for variant, short, _code, _numpy in _dtype_table_rows()
+    }
 
     offenders = []
     for path in sorted(root.glob("**/*.rs")):
         if path in allowed or "/target/" in str(path):
             continue
         offenders += dispatch_offenders(
-            path.read_text(), str(path.relative_to(root)), expected, variants
+            path.read_text(),
+            str(path.relative_to(root)),
+            expected_pairs,
+            ALLOWED_PARTIAL_VARIANT_MAPS,
         )
 
     assert not offenders, (
