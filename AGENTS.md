@@ -228,3 +228,48 @@ changes; they explain *why* the code is shaped the way it is.
   fold, only 19 of 60 also updated the shape hints, and the ratchet guarding it
   enumerated one of the two calls. Prefer a mechanism callers cannot step
   around over a test that lists what they must remember.
+
+## The Single-Authority Refactor: What Was Done, What Is Left
+
+This is written down because it was not. The phased plan behind the
+single-authority work existed only in the agent session that produced it, so
+recovering it meant reading commit messages and the assessment markers still
+embedded in `tests/test_sanitation.py` (findings A1/A2/A3, A4, A10, B1/B2).
+A plan that lives in a session is a plan that ends with it — keep this section
+current instead.
+
+**Done.**
+
+1. *The mandatory op-append contract.* `Pipeline._push_op` as the only way to
+   append an op, applying the whole plan-time effect. Fixed the `transpose` /
+   `channel_select` / `channel_merge` shape desyncs and the lazy continuation's
+   dead shape replay. (A1/A2/A3 shape half, A10.)
+2. *Deleting what nothing reached.* view-buffer's pipeline-composition layer
+   (`ops/io.rs`) and cost-reporting subsystem (`ops/cost.rs`),
+   `rasterize(anti_alias=)`, node-level `shape_hints`, the geometry validation
+   module. Guarded by `tests/test_removed_surfaces.py`.
+3. *One declaration per fact.* `dtype_table!`, the `naming::REGISTRY`,
+   `KNOWN_OPS` ↔ `OP_NAMES` parity, input domains read from the Rust contract.
+   Two planned items were examined and dropped as not real (a table-driven
+   `resolve_op`, a `node_outputs` newtype) — recorded here so they are not
+   re-proposed.
+4. *Guards that fail closed.* The dtype ratchet under its own fixtures, the
+   `resolve_op` arm scan, `scripts/verify.sh` as one verification entry point.
+5. *The sink contract.* `encode_node_output` keyed on the planned domain rather
+   than the runtime `NodeOutput` variant, so the dtype the planner publishes and
+   the value execution produces come from one key. (A1/A2/A3 sink half.)
+
+**Open, in rough priority order.**
+
+- **Path sandboxing** (`polars-cv/src/fetch.rs`). Neither the `file_path`
+  source nor `.cv.read_bytes()` sanitizes paths — they read whatever the column
+  names, local or remote. The TODO sits in `fetch.rs` rather than at either
+  call site because that module is the one stage both share, so an allowlist
+  belongs there and lands for both at once. Safe today only when the path
+  column is trusted input.
+- **`shear` and `rotate_and_scale` require `output_size` / `center`.** Both
+  raise rather than auto-computing from the input shape. They fail loudly, so
+  this is a missing feature and not the `anti_alias` class of defect — but the
+  planner now tracks input shape well enough to compute both.
+- **f64 through the float-promoting scalar ops is excluded from kernel
+  fusion**, which computes in f32. Correct, but slower than it needs to be.

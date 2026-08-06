@@ -551,88 +551,164 @@ fn slice_typed_data(data: &TypedBufferData, start: usize, end: usize) -> TypedBu
         TypedBufferData::F64(vals) => TypedBufferData::F64(vals[start..end].to_vec()),
     }
 }
-/// Encode a NodeOutput to bytes based on sink format.
+/// The buffer behind a node output, or an error naming what was there instead.
+fn require_buffer<'a>(
+    output: &'a NodeOutput,
+    domain: &str,
+    format: &str,
+) -> Result<&'a ViewBuffer, String> {
+    output.as_buffer().map(|b| &**b).ok_or_else(|| {
+        format!(
+            "the '{format}' sink planned a {domain} output, but execution produced \
+             {:?}. This is a planner/executor disagreement, not a usage error.",
+            output.domain()
+        )
+    })
+}
+
+/// `[H, W, …]`-shaped list encoding of a buffer.
+fn typed_list_of(buf: &ViewBuffer) -> OutputValue {
+    let contig = buf.to_contiguous();
+    let shape = contig.shape().to_vec();
+    OutputValue::TypedList {
+        data: TypedBufferData::from_contiguous_buffer(&contig),
+        shape,
+    }
+}
+
+/// Fixed-shape array encoding of a buffer, validated against the sink's shape.
+fn typed_array_of(
+    buf: &ViewBuffer,
+    spec_shape: Option<&Vec<usize>>,
+) -> Result<OutputValue, String> {
+    let contig = buf.to_contiguous();
+    let buffer_shape = contig.shape().to_vec();
+    let shape = match spec_shape {
+        Some(s) if s != &buffer_shape => {
+            return Err(format!(
+                "Array sink shape {s:?} does not match buffer shape {buffer_shape:?}. \
+                 Use squeeze() or expand_dims() to adjust dimensions, \
+                 or omit shape to infer from buffer."
+            ));
+        }
+        Some(s) => s.clone(),
+        None => buffer_shape,
+    };
+    Ok(OutputValue::TypedArray {
+        data: TypedBufferData::from_contiguous_buffer(&contig),
+        shape,
+    })
+}
+
+/// Encode a NodeOutput to an output value, keyed on the **planned** domain.
 ///
-/// Dispatches to the appropriate encoding based on the output domain.
+/// `dtype_for_output` (graph/decode.rs) decides the Polars *dtype* from
+/// `(expected_domain, format)`; this decides the *value*. Both halves of one
+/// contract, so both read the same key — and the arms below mirror that
+/// function's arms one for one, deliberately, so a reader can check the
+/// correspondence.
+///
+/// This used to match on the `NodeOutput` *variant* instead, which is a
+/// different fact: a domain can arrive in more than one representation. A
+/// perceptual hash is a `vector`-domain output that rides as a `Buffer`
+/// (`apply_perceptual_hash` returns a 1-D `u8` buffer), while `extract_shape`
+/// produces a real `Vector`. Keying the two halves differently meant they
+/// disagreed wherever those diverged, always as plan-says-one-thing,
+/// execution-does-another:
+///
+/// - `perceptual_hash().sink("native")` planned `List(UInt8)` and failed with
+///   "Buffer outputs require explicit format".
+/// - `extract_shape().sink("array", shape=[3])` planned `Array(Float64, 3)`
+///   and failed with "Unsupported sink format: array" — the schema arm for
+///   `("vector", "array")` was added to fix an earlier divergence without the
+///   encode arm that makes it real.
+/// - The pairs that did work did so by coincidence of the two dispatches
+///   agreeing, not by construction.
+///
+/// The `NodeOutput` variant is now used only to *get at the data*, which is
+/// what it actually tells you.
 pub(crate) fn encode_node_output(
     output: &NodeOutput,
     spec: &OutputSpec,
 ) -> Result<OutputValue, String> {
     let sink = &spec.sink;
     let format = sink.format.as_str();
-    match (output, format) {
-        (NodeOutput::Buffer(buf), "numpy" | "torch") => {
-            Ok(OutputValue::NumpyStruct((**buf).clone()))
-        }
-        (NodeOutput::Buffer(buf), "native")
-            if spec.expected_encoding.as_deref() == Some("histogram_buckets") =>
-        {
-            let contig = buf.to_contiguous();
-            Ok(OutputValue::HistogramBuckets(contig.as_slice::<f64>().to_vec()))
-        }
-        (NodeOutput::Buffer(buf), "png" | "jpeg" | "webp" | "tiff" | "blob") => {
-            crate::execute::encode_sink(buf, sink)
+    let domain = spec.expected_domain.as_str();
+
+    // Encoding outranks the (domain, format) pair, exactly as it does in
+    // `dtype_for_output`: histogram buckets are a vector-domain output with
+    // their own struct schema.
+    if spec.expected_encoding.as_deref() == Some("histogram_buckets") {
+        let contig = require_buffer(output, domain, format)?.to_contiguous();
+        return Ok(OutputValue::HistogramBuckets(
+            contig.as_slice::<f64>().to_vec(),
+        ));
+    }
+
+    match (domain, format) {
+        ("buffer", "numpy" | "torch") => Ok(OutputValue::NumpyStruct(
+            require_buffer(output, domain, format)?.clone(),
+        )),
+        ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") => {
+            crate::execute::encode_sink(require_buffer(output, domain, format)?, sink)
                 .map(OutputValue::Binary)
                 .map_err(|e| format!("Encode error: {e}"))
         }
-        (NodeOutput::Buffer(buf), "list") => {
-            let contig = buf.to_contiguous();
-            let shape = contig.shape().to_vec();
-            let data = TypedBufferData::from_contiguous_buffer(&contig);
-            Ok(OutputValue::TypedList {
-                data,
-                shape,
-            })
+        ("buffer", "list") => Ok(typed_list_of(require_buffer(output, domain, format)?)),
+        ("buffer", "array") => {
+            typed_array_of(require_buffer(output, domain, format)?, sink.shape.as_ref())
         }
-        (NodeOutput::Buffer(buf), "array") => {
-            let contig = buf.to_contiguous();
-            let buffer_shape = contig.shape().to_vec();
-            let shape = if let Some(ref spec_shape) = sink.shape {
-                if spec_shape != &buffer_shape {
-                    return Err(
-                        format!(
-                            "Array sink shape {spec_shape:?} does not match buffer shape {buffer_shape:?}. \
-                         Use squeeze() or expand_dims() to adjust dimensions, \
-                         or omit shape to infer from buffer."
-                        ),
-                    );
+        // A vector arrives either as a real `Vector` or as the 1-D buffer a
+        // hash/histogram produces. Both are the same domain to the planner, so
+        // both encode the same way here.
+        ("vector", "native" | "list") => match output {
+            NodeOutput::Vector(vals) => Ok(OutputValue::Vector(vals.clone())),
+            _ => Ok(typed_list_of(require_buffer(output, domain, format)?)),
+        },
+        ("vector", "array") => match output {
+            NodeOutput::Vector(vals) => {
+                let values = vals.as_ref().clone();
+                let shape = sink.shape.clone().unwrap_or_else(|| vec![values.len()]);
+                let planned: usize = shape.iter().product();
+                if planned != values.len() {
+                    return Err(format!(
+                        "Array sink shape {shape:?} holds {planned} elements but the \
+                         vector has {}.",
+                        values.len()
+                    ));
                 }
-                spec_shape.clone()
-            } else {
-                buffer_shape
-            };
-            let data = TypedBufferData::from_contiguous_buffer(&contig);
-            Ok(OutputValue::TypedArray {
-                data,
-                shape,
-            })
-        }
-        (NodeOutput::Buffer(_), "native") => {
-            Err(
-                "Buffer outputs require explicit format (numpy/png/jpeg). Use 'native' for contours/scalars."
-                    .to_string(),
-            )
-        }
-        (NodeOutput::Contours(contours), "native") => {
-            Ok(OutputValue::Contours(contours.clone()))
-        }
-        (NodeOutput::Scalar(val), "native") => Ok(OutputValue::Scalar(*val)),
-        (NodeOutput::Vector(vals), "native") => Ok(OutputValue::Vector(vals.clone())),
-        (NodeOutput::Vector(vals), "list") => Ok(OutputValue::Vector(vals.clone())),
-        (NodeOutput::Contours(_), "numpy" | "png" | "jpeg" | "webp" | "tiff") => {
-            Err(
-                format!(
-                    "Cannot encode Contours as {format}. Use 'native' or add .rasterize() first."
-                ),
-            )
-        }
-        (NodeOutput::Scalar(_), "numpy" | "png" | "jpeg" | "webp" | "tiff") => {
-            Err(format!("Cannot encode Scalar as {format}. Use 'native' format."))
-        }
-        (NodeOutput::Vector(_), "numpy" | "png" | "jpeg" | "webp" | "tiff") => {
-            Err(format!("Cannot encode Vector as {format}. Use 'native' format."))
-        }
-        _ => Err(format!("Unsupported sink format: {format}")),
+                Ok(OutputValue::TypedArray {
+                    data: TypedBufferData::F64(values),
+                    shape,
+                })
+            }
+            _ => typed_array_of(require_buffer(output, domain, format)?, sink.shape.as_ref()),
+        },
+        ("scalar", "native") => match output {
+            NodeOutput::Scalar(val) => Ok(OutputValue::Scalar(*val)),
+            _ => Err(format!(
+                "the 'native' sink planned a scalar output, but execution produced {:?}.",
+                output.domain()
+            )),
+        },
+        ("contour", "native") => match output {
+            NodeOutput::Contours(contours) => Ok(OutputValue::Contours(contours.clone())),
+            _ => Err(format!(
+                "the 'native' sink planned a contour output, but execution produced {:?}.",
+                output.domain()
+            )),
+        },
+        // Mirrors `dtype_for_output`'s arm of the same name. Unreachable in
+        // practice — Polars resolves the schema before executing, so this pair
+        // is rejected there first — but kept so the two match arm for arm.
+        ("buffer", "native") => Err(
+            "'native' sink is not defined for buffer outputs; use an explicit \
+             format (numpy, png, list, array, blob, ...)"
+                .to_string(),
+        ),
+        _ => Err(format!(
+            "Unsupported output combination: domain '{domain}' with sink format '{format}'"
+        )),
     }
 }
 /// Convert contours to Polars AnyValue representation.
