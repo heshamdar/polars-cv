@@ -259,7 +259,10 @@ impl CompiledGraph {
         let state = ExecState {
             inputs,
             ctx: ParamCtx::with_null_policy(inputs, self.graph.on_null_param),
-            resolved_outputs: resolved_output_specs(&self.graph, inputs.first().map(|s| s.dtype())),
+            resolved_outputs: resolved_output_specs(
+                &self.graph,
+                &inputs.iter().map(|s| s.dtype().clone()).collect::<Vec<_>>(),
+            ),
             prefetched: self.prefetch_remote_sources(inputs),
             resolved_auto_formats: self.resolve_auto_source_formats(inputs),
         };
@@ -1276,9 +1279,25 @@ fn bind_param(p: &mut ParamValue, name_to_slot: &HashMap<String, usize>) -> Pola
 /// Only the leaf type of List/Array sources is meaningful for dtype: for
 /// Binary/String (image/file) sources the column type does not reflect the
 /// decoded buffer dtype, so `"auto"` is left unresolved.
+/// Walk to the root of *node_id*'s lineage and return the input column it reads.
+///
+/// A graph can have more than one root — `merge_pipe` and the binary ops join
+/// two `pl.col()` lineages into one `vb_graph` call — and each output belongs
+/// to exactly one of them. Resolving every output against the *first* input
+/// column instead assigned one branch's element type to the other: two
+/// list columns of different leaf dtypes produced a struct whose second field
+/// was planned from the first field's column.
+fn root_column_for(graph: &UnifiedGraph, node_id: &str) -> Option<usize> {
+    let node = graph.nodes.get(node_id)?;
+    match node.upstream.first() {
+        Some(upstream) => root_column_for(graph, upstream),
+        None => graph.column_bindings.get(node_id).copied(),
+    }
+}
+
 pub(crate) fn resolved_output_specs(
     graph: &UnifiedGraph,
-    first_input_dtype: Option<&DataType>,
+    input_dtypes: &[DataType],
 ) -> Vec<(String, OutputSpec)> {
     let mut specs: Vec<(String, OutputSpec)> = graph
         .outputs
@@ -1287,9 +1306,22 @@ pub(crate) fn resolved_output_specs(
         .collect();
     specs.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let Some(dt) = first_input_dtype else {
-        return specs;
-    };
+    for (_, spec) in specs.iter_mut() {
+        // Each output is resolved against the column its own lineage reads.
+        let Some(dt) = root_column_for(graph, &spec.node)
+            .and_then(|idx| input_dtypes.get(idx))
+            .or_else(|| input_dtypes.first())
+        else {
+            continue;
+        };
+        resolve_one_output_spec(graph, spec, dt);
+    }
+    specs
+}
+
+/// Fill in one output's `"auto"` dtype and unknown rank from *dt*, the Polars
+/// type of the column its lineage reads.
+fn resolve_one_output_spec(graph: &UnifiedGraph, spec: &mut OutputSpec, dt: &DataType) {
     let (leaf_dtype, ndim) = peel_nesting(dt);
     // Polars leaf type → our dtype comes from `decode::dtype_from_polars_leaf`
     // (the one such mapping in this crate); the *name* comes from
@@ -1297,7 +1329,7 @@ pub(crate) fn resolved_output_specs(
     // restated here.
     let inferred_dtype_str = dtype_from_polars_leaf(&leaf_dtype).map(|d| d.short_name());
 
-    for (_, spec) in specs.iter_mut() {
+    {
         if spec.expected_dtype == "auto" {
             match &leaf_dtype {
                 // Image/file sources: cannot infer buffer dtype from column type.
@@ -1322,7 +1354,6 @@ pub(crate) fn resolved_output_specs(
             spec.expected_ndim = fold_output_rank(graph, &spec.node, ndim);
         }
     }
-    specs
 }
 
 /// Re-serialize one compiled param into a form `resolve_op_from_json` accepts.

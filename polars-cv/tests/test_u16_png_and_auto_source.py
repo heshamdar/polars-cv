@@ -217,15 +217,34 @@ class TestAutoSource:
         with pytest.raises(Exception, match="dtype|auto"):
             df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("list"))
 
-    def test_auto_image_list_sink_with_explicit_dtype(self) -> None:
-        # Supplying an explicit dtype lets the typed `list` sink plan over an
-        # auto image source (previously the ndim guard rejected this).
+    def test_auto_image_list_sink_is_refused_even_with_an_explicit_dtype(self) -> None:
+        # This test used to assert the opposite: that an explicit dtype "lets
+        # the typed `list` sink plan over an auto image source (previously the
+        # ndim guard rejected this)". The ndim guard was right and the widening
+        # was the bug — an explicit dtype settles the *element type*, not the
+        # *rank*, and a list sink's Polars dtype encodes both.
+        #
+        # It passed because it asserted only that the column came back, and it
+        # ran eagerly, where nothing compares the plan against the result. In
+        # lazy use the same pipeline published `List(UInt8)` and collected to
+        # `List(List(List(UInt8)))`. `dtype_for_output` now refuses a list sink
+        # whose rank it cannot name; the divergence is guarded from the other
+        # side by tests/test_schema_parity_sources.py.
         png = create_test_png(4, 4)
         df = pl.DataFrame({"img": [png]})
 
         pipe = Pipeline().source("auto", dtype="u8")
-        result = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("list"))
-        assert "out" in result.columns
+        with pytest.raises(Exception, match="rank at planning time"):
+            df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("list"))
+
+        # The two documented ways out both work: name the source, so the rank
+        # is known, or use a sink that does not encode the rank in its dtype.
+        named = Pipeline().source("image_bytes", dtype="u8")
+        lf = df.lazy().with_columns(out=pl.col("img").cv.pipe(named).sink("list"))
+        assert lf.collect_schema()["out"] == lf.collect()["out"].dtype
+
+        lf = df.lazy().with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
+        assert lf.collect_schema()["out"] == lf.collect()["out"].dtype
 
     def test_auto_blob_roundtrip(self) -> None:
         """A VIEW-blob Binary column routes through the blob decoder."""

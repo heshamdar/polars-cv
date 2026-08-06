@@ -1,28 +1,25 @@
-"""The image-encoder sinks check their dtype precondition too late.
+"""The image-encoder sinks decide their preconditions at planning time.
 
 ``png``, ``jpeg``, ``webp`` and ``tiff`` each accept only some buffer dtypes:
-jpeg and webp are 8-bit formats, png takes u8 or u16, tiff rejects certain
-dtype/channel combinations, and all four need a buffer shaped like an image
-rather than a flat 1-D run. Every one of those preconditions is decidable at
-planning time — ``OutputSpec`` carries ``expected_dtype`` and
-``expected_ndim``, which is exactly what the encoder later complains about —
-and none of them is checked there. So::
+jpeg and webp are 8-bit formats, png carries 8- or 16-bit samples, tiff has a
+colour type per (dtype, channels) pair and stores floats greyscale-only. All
+four also need a buffer shaped like an image rather than a flat 1-D run.
 
-    Pipeline().source("image_bytes").scale(factor=2.0)   # promotes to f32
-    ...sink("jpeg")
+None of that requires looking at the pixels — it follows from the buffer's
+*description*, which is exactly what `OutputSpec` carries. It used to be
+checked in the encoder anyway, so::
 
-plans as ``Binary`` and then dies inside ``collect()`` with "JPEG is an 8-bit
-format but the image is F32".
+    Pipeline().source("image_bytes", dtype="u8").cast("f32")...sink("jpeg")
 
-That is the failure mode ``test_sink_contract.py`` names as the one thing that
-must never happen: *"planning succeeding and execution then failing"*. It was
-invisible to that file because its single base pipeline ends in ``cast("u8")``,
-and u8 satisfies all four encoders.
+planned as ``Binary`` and then died inside ``collect()``. That is the failure
+``test_sink_contract.py`` names as the one thing that must never happen —
+"planning succeeding and execution then failing" — and it was invisible there
+because its single base pipeline ends in ``cast("u8")``, which every codec
+accepts.
 
-The contract test below is marked ``xfail(strict=True)``. Strict matters: the
-day the planner starts rejecting these combinations the test passes
-unexpectedly, pytest fails the run, and this file has to be deleted. The
-marker cannot outlive the defect.
+``ImageCodec::check_support`` (view-buffer, ``interop/image.rs``) is now the
+one table, read by the planner (``dtype_for_output``), by ``encode_sink``, and
+by the encoders themselves. These tests pin the contract from the outside.
 """
 
 from __future__ import annotations
@@ -38,8 +35,8 @@ from tests.conftest import make_image_png, plugin_required
 
 HEIGHT, WIDTH, CHANNELS = 32, 24, 3
 
-#: Dtypes reachable by casting a decoded u8 image. Every one of them is known
-#: to the planner before a byte of data moves.
+#: Every dtype a `cast()` can reach. All of them are known to the planner
+#: before a byte of data moves.
 CAST_DTYPES: tuple[str, ...] = tuple(d.value for d in DType)
 
 
@@ -68,9 +65,9 @@ def _cell(dtype: str, sink: str, *, flatten: bool = False):
 def test_u8_is_encodable_by_every_image_sink(sink: str) -> None:
     """The baseline the rest of the suite leans on: u8 always encodes.
 
-    Without this, the ``planned_dtype == "u8"`` carve-out in
-    ``test_schema_parity_ops.py`` could be hiding a real failure rather than a
-    known one.
+    Without this, the ``encodable_by_image_codec`` carve-out the broad sweeps
+    apply could be hiding a real failure rather than a known-irrelevant cell —
+    and a check that rejected everything would look like a fix.
     """
     result = _cell("u8", sink)
     assert result.outcome is Outcome.OK, (
@@ -81,23 +78,14 @@ def test_u8_is_encodable_by_every_image_sink(sink: str) -> None:
 
 
 @plugin_required
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known gap: the image-encoder sinks enforce their dtype precondition "
-        "in the encoder instead of the planner, so a non-u8 buffer plans as "
-        "Binary and raises at collect(). Delete this marker when the planner "
-        "rejects the combination at plan time."
-    ),
-)
 @pytest.mark.parametrize("sink", IMAGE_ENCODER_SINKS)
 def test_image_encoder_sinks_decide_at_plan_time(sink: str) -> None:
-    """For every dtype: reject while planning, or execute — never both.
+    """For every dtype and rank: reject while planning, or execute — never both.
 
     This asserts the *relationship* rather than a blessed list of dtypes, so it
-    stays correct as encoder support changes: whether png grows f32 support or
-    loses u16 support, the requirement is only that the decision is made before
-    the schema is published.
+    stays correct as codec support changes: whether png grows f32 support or
+    tiff loses a colour type, the requirement is only that the decision is made
+    before the schema is published.
     """
     plan_then_raise: list[str] = []
     for dtype in CAST_DTYPES:
@@ -112,33 +100,88 @@ def test_image_encoder_sinks_decide_at_plan_time(sink: str) -> None:
     assert not plan_then_raise, (
         f"'{sink}' sink published a schema and then failed at collect() for "
         f"{plan_then_raise}. Both the buffer dtype and its rank are on the "
-        f"OutputSpec at plan time, so this belongs in dtype_for_output "
-        f"(graph/decode.rs), alongside the ('buffer', 'native') arm that "
-        f"already refuses there."
+        f"OutputSpec at plan time — route the check through "
+        f"ImageCodec::check_support in dtype_for_output."
     )
 
 
 @plugin_required
-def test_the_gap_is_a_late_check_not_a_wrong_dtype() -> None:
-    """Pin *which* half of the contract is broken.
-
-    The planner is not lying about the dtype — every encoder sink is Binary and
-    would be Binary if it succeeded. What it fails to do is refuse. Recording
-    that distinction keeps the finding from being "read" as a dtype bug and
-    fixed in the wrong place.
-    """
-    result = None
-    raised = False
-    try:
-        result = _cell("f32", "jpeg")
-    except AssertionError as exc:
-        raised = True
-        assert "planner published Binary" in str(exc), (
-            f"expected a plan-then-raise on Binary, got: {exc}"
-        )
-
-    assert raised, (
-        "f32 -> jpeg no longer plans-then-raises; if the planner now rejects "
-        "it, delete this file along with the xfail above"
+@pytest.mark.parametrize(
+    ("dtype", "sink"),
+    [
+        ("f32", "jpeg"),
+        ("f32", "png"),
+        ("f32", "webp"),
+        ("f32", "tiff"),  # float TIFF is greyscale-only; this base is 3-channel
+        ("u16", "jpeg"),
+        ("u16", "webp"),
+        ("i32", "png"),
+    ],
+)
+def test_unencodable_combinations_are_refused_before_any_data_moves(
+    dtype: str, sink: str
+) -> None:
+    """The refusal must happen at plan time, with a message naming the fix."""
+    result = _cell(dtype, sink)
+    assert result.outcome is Outcome.REJECTED_AT_PLAN, (
+        f"{dtype} -> {sink} should be refused while planning, got "
+        f"{result.outcome.name} (planned {result.planned!r})"
     )
-    assert result is None
+    assert dtype.upper() in (result.reason or "").upper(), (
+        f"the refusal should name the offending dtype: {result.reason}"
+    )
+
+
+@plugin_required
+def test_u16_png_is_not_over_rejected() -> None:
+    """The check must refuse only what cannot encode.
+
+    PNG carries 16-bit samples, so a u16 buffer has to keep working — a check
+    that rejected it would make the whole suite greener while breaking users.
+    """
+    result = _cell("u16", "png")
+    assert result.outcome is Outcome.OK, f"u16 -> png was refused: {result.reason}"
+
+
+@plugin_required
+def test_float_tiff_is_allowed_when_single_channel() -> None:
+    """TIFF stores f32/f64 greyscale, so channel count decides, not dtype alone."""
+    single = (
+        Pipeline()
+        .source("image_bytes")
+        .assert_shape(height=HEIGHT, width=WIDTH, channels=CHANNELS)
+        .grayscale()
+        .cast("f32")
+    )
+    result = plan_or_reject(_df(), lambda: pl.col("img").cv.pipe(single).sink("tiff"))
+    assert result.outcome is Outcome.OK, (
+        f"single-channel f32 -> tiff should encode, got {result.outcome.name}: "
+        f"{result.reason}"
+    )
+
+
+@plugin_required
+def test_an_unknown_dtype_is_not_refused() -> None:
+    """An unknown is permission, not a rejection — the residual, pinned.
+
+    A source whose decode dtype is still ``"auto"`` genuinely has no dtype at
+    plan time, and the float-promoting ops keep it ``"auto"`` rather than
+    resolving to f32. So ``source("image_bytes").scale(...)`` into a codec sink
+    still plans and still fails in the encoder.
+
+    That is the honest limit of a plan-time check, not an oversight: refusing
+    on an unknown would break every correct ``auto``-dtype pipeline. Closing it
+    means teaching the dtype rules that ``PromoteToFloat`` of an unknown is
+    still *some* float, which is a change to the rule vocabulary. This test
+    records the boundary so a future fix moves it deliberately.
+    """
+    pipe = Pipeline().source("image_bytes").scale(factor=2.0)
+    assert pipe.output_dtype() == "auto", (
+        "if PromoteToFloat now resolves an auto input, this residual is closable "
+        "— extend dtype_for_output's check and delete this test"
+    )
+
+    lf = _df().lazy().with_columns(out=pl.col("img").cv.pipe(pipe).sink("jpeg"))
+    assert lf.collect_schema()["out"] == pl.Binary
+    with pytest.raises(Exception, match="8-bit format"):
+        lf.collect(engine="streaming")

@@ -236,14 +236,13 @@ impl_typed_list_builder!(build_typed_list_u64, UInt64Type, extract_as_u64);
 impl_typed_list_builder!(build_typed_list_i64, Int64Type, extract_as_i64);
 impl_typed_list_builder!(build_typed_list_f32, Float32Type, extract_as_f32);
 impl_typed_list_builder!(build_typed_list_f64, Float64Type, extract_as_f64);
-/// Build a typed list series using a statically known dtype.
+/// Build a typed list series from the planner's declared dtype and rank.
 ///
-/// Unlike `build_typed_list_series_from_rows` which infers dtype from data,
-/// this function uses the provided dtype string, allowing proper handling
-/// of all-null data while preserving the expected output type.
-///
-/// If shapes indicate multi-dimensional data (shape.len() > 1), builds nested
-/// List structures to preserve the shape information.
+/// The `_with_dtype` suffix is historical: it distinguished this from a
+/// sibling that inferred the dtype from the data, and that sibling is gone.
+/// Nothing here infers anything — the element dtype and the nesting depth both
+/// come from the `OutputSpec` the lazy schema was published from, which is the
+/// only way the produced column can be guaranteed to match it.
 pub(super) fn build_typed_list_series_from_rows_with_dtype(
     name: PlSmallStr,
     rows: &[TypedListRow],
@@ -251,36 +250,62 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
     expected_shape: Option<&Vec<usize>>,
     expected_ndim: Option<usize>,
 ) -> PolarsResult<Series> {
+    // The *spec* is the authority here, not the data.
+    //
+    // This function used to take the element dtype and the nesting depth from
+    // the first non-null row, falling back to the spec only when every row was
+    // null. That inverts the contract: `dtype_str`, `expected_shape` and
+    // `expected_ndim` are what the planner already published in the lazy
+    // schema, and a column built to match the data instead is exactly how a
+    // query comes to collect to something other than what `collect_schema()`
+    // promised. It also made the outcome depend on *where the nulls fall* —
+    // an all-null column honoured the plan while the same pipeline with one
+    // value in it did not.
+    //
+    // A row whose data contradicts the spec is a bug to surface, not to
+    // follow, so the disagreement is an error rather than a silent
+    // reinterpretation.
     let first_row = rows.iter().find_map(|r| r.as_ref());
-    let actual_dtype_str = first_row
-        .map(|(data, _)| data.dtype_str())
-        .unwrap_or(dtype_str);
-    let shape = first_row
-        .map(|(_, s)| s.clone())
-        .or_else(|| expected_shape.cloned());
+    if let Some((data, _)) = first_row {
+        if data.dtype_str() != dtype_str {
+            return Err(polars_err!(
+                ComputeError:
+                "planned element dtype {} but execution produced {}. The planner's \
+                 dtype contract disagrees with the Rust implementation.",
+                dtype_str,
+                data.dtype_str()
+            ));
+        }
+    }
 
-    // Determine if we need nested List structure
-    let needs_nesting = shape.as_ref().map(|s| s.len() > 1).unwrap_or(false)
-        || expected_ndim.map(|n| n > 1).unwrap_or(false);
+    let ndim = expected_shape
+        .map(|shape| shape.len())
+        .or(expected_ndim)
+        .or_else(|| first_row.map(|(_, s)| s.len()));
+    // `dtype_for_output` refuses a list sink whose rank it cannot name, so a
+    // planned query always reaches here with one. The row fallback above keeps
+    // any non-graph caller working; only a genuinely rankless call fails.
+    let Some(ndim) = ndim else {
+        return Err(polars_err!(
+            ComputeError: "cannot build a list series without a known output rank"
+        ));
+    };
 
-    if needs_nesting {
-        let ndim = shape
-            .as_ref()
-            .map(|s| s.len())
-            .or(expected_ndim)
-            .unwrap_or(1);
-        // Use shape if available, otherwise synthesize a dummy shape with correct ndim.
-        // The nested builder uses shape.len() for recursion depth; actual sizes only
-        // matter for non-null rows (which carry their own shape).
-        let effective_shape = shape.unwrap_or_else(|| vec![0; ndim]);
+    if ndim > 1 {
+        // The nested builder uses shape.len() for recursion depth; the actual
+        // sizes only matter for non-null rows, which carry their own shape.
+        let effective_shape = expected_shape
+            .cloned()
+            .or_else(|| first_row.map(|(_, s)| s.clone()))
+            .unwrap_or_else(|| vec![0; ndim]);
         return build_typed_nested_list_series_from_rows_with_dtype(
             name,
             rows,
-            actual_dtype_str,
+            dtype_str,
             &effective_shape,
         );
     }
-    match actual_dtype_str {
+    match dtype_str {
         "u8" => build_typed_list_u8(name, rows),
         "i8" => build_typed_list_i8(name, rows),
         "u16" => build_typed_list_u16(name, rows),
@@ -378,11 +403,12 @@ fn build_typed_nested_list_value(
         Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &inner_values, &inner_dtype, true)?;
     Ok(AnyValue::List(series))
 }
-/// Build a typed fixed-size array series using a statically known dtype.
+/// Build a typed fixed-size array series from the planner's dtype and shape.
 ///
-/// Unlike `build_typed_array_series_from_rows` which infers dtype from data,
-/// this function uses the provided dtype string and shape, allowing proper
-/// handling of all-null data while preserving the expected output type.
+/// As above, the `_with_dtype` suffix names a distinction that no longer
+/// exists. The shape comes from the sink or the `OutputSpec` and never from
+/// the rows: a fixed-size column whose dimensions depend on which row arrived
+/// first is exactly what this sink exists to rule out.
 pub(super) fn build_typed_array_series_from_rows_with_dtype(
     name: PlSmallStr,
     rows: &[TypedListRow],
@@ -390,10 +416,12 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
     sink_shape: &Option<Vec<usize>>,
     expected_shape: Option<&Vec<usize>>,
 ) -> PolarsResult<Series> {
-    let shape = sink_shape
-        .clone()
-        .or_else(|| expected_shape.cloned())
-        .or_else(|| rows.iter().find_map(|r| r.as_ref().map(|(_, s)| s.clone())));
+    // Spec first, and no data fallback: an `array` sink's whole point is a
+    // fixed shape published at plan time. Taking it from the first non-null row
+    // would make the column's dtype depend on which row happened to arrive
+    // first — and `dtype_for_output` has already refused any array sink whose
+    // shape it could not name, so a planned query always supplies one here.
+    let shape = sink_shape.clone().or_else(|| expected_shape.cloned());
     let Some(shape) = shape else {
         return Err(
             polars_err!(ComputeError: "Cannot determine shape for array sink. Provide shape via .sink(shape=[...]) or use .resize()/.assert_shape()."),
