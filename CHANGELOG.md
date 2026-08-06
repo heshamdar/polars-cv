@@ -7,6 +7,40 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **Three vector-domain sinks planned one thing and executed another.** The two
+  halves of the sink contract keyed on different facts: `dtype_for_output`
+  decides the Polars dtype from `(expected_domain, format)`, while
+  `encode_node_output` decided the *value* from the runtime `NodeOutput`
+  variant. Those are not the same thing — a domain can arrive in more than one
+  representation. A perceptual hash is a `vector`-domain output that rides as a
+  `Buffer` (`apply_perceptual_hash` returns a 1-D `u8` buffer); `extract_shape`
+  produces a real `Vector`. Wherever the two diverged, so did the contract:
+
+  - `perceptual_hash().sink("native")` planned `List(UInt8)` and failed at
+    `collect()` with "Buffer outputs require explicit format" — `native` on a
+    vector output is the documented spelling.
+  - `extract_shape().sink("array", shape=[3])` planned `Array(Float64, 3)` and
+    failed with "Unsupported sink format: array". The schema arm for
+    `("vector", "array")` had been added to fix an earlier divergence *without*
+    the encode arm that makes it real.
+  - `perceptual_hash().sink("array")` reported a shape mismatch against the
+    buffer rather than encoding the hash.
+
+  The pairs that did work did so because the two dispatches happened to agree,
+  not by construction. `encode_node_output` now keys on the planned domain —
+  the same key its counterpart uses — and its arms mirror that function's one
+  for one; the `NodeOutput` variant is used only to reach the data, which is
+  what it actually tells you.
+
+  Guarded by `tests/test_sink_contract.py`, which sweeps every
+  (domain representation × `SinkFormat`) pair and asserts the *relationship*
+  rather than a blessed list: a pair rejected at plan time is fine, but one
+  that survives planning must execute to exactly the dtype planning promised.
+  Both axes are completeness-asserted, and the two vector representations are
+  pinned to encode identically.
+
 ### Changed
 
 - **Declaring a `named_variants!` table and registering it are one act.**
