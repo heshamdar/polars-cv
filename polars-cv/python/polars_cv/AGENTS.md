@@ -348,6 +348,14 @@ its own params and reads no input at all. `rasterize` is the case, and
 it a fully determined mask published no shape, and `sink("array")` demanded an
 explicit one.
 
+A source keyword that does not apply to the chosen format is rejected, from
+one table (`_SOURCE_PARAM_APPLIES`) listing each parameter against the formats
+whose decode reads it. `source()` passes the check its own `locals()`, so the
+validated set is the parameter set; `thumbnail()` reads the table too, since it
+writes `decode_max_size`. Do not add a per-parameter check beside it — that is
+what produced one raise, one warning and five silent drops for the same
+question.
+
 `source("contour")` publishes that same contract: its decode *is* a rasterize,
 so `_seed_from_contour_rasterize` folds `GeometryOp::Rasterize`'s rules (rank 3,
 u8, one channel, the canvas) through the same FFI instead of the source hand-

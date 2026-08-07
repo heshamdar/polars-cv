@@ -136,6 +136,37 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   which of the two routes produced it — asserted by
   `TestMaskContourRoundTrip::test_the_two_routes_to_a_mask_agree`.
 
+- **Source parameters that do not apply to the chosen format were silently
+  ignored, and each one policed itself differently.** `Pipeline.source()` takes
+  eleven keywords, and most apply to a subset of the eight formats. Of the
+  seven with a limited scope, one raised (`decode_max_size`), one warned
+  (`cloud_options`), and five were dropped without a word: `width`, `height`,
+  `shape`, `fill_value` and `background` outside `"contour"`,
+  `require_contiguous` outside the nested-column decode, `allowed_roots`
+  outside a path read. So `source("image_bytes", width=224)` built a pipeline
+  that ignored the size, and `source("contour", allowed_roots=[...])` accepted
+  a sandbox it never applied.
+
+  Applicability now has one authority — `_SOURCE_PARAM_APPLIES`, each parameter
+  against exactly the formats whose decode reads it — and one check, which
+  raises. `_is_supplied` compares against the signature's own defaults, and
+  `source()` hands the check `locals()` rather than a hand-written list, so
+  the parameters it validates are the parameters it has.
+
+  Guarded three ways: the table's keys must equal `source()`'s keywords, so a
+  new parameter cannot inherit "applies everywhere" by omission; the check must
+  read `locals()`; and the full parameter x format grid is swept, every
+  applicable pair accepted and every inapplicable pair rejected. `thumbnail()`
+  reads the table too — it writes `decode_max_size`, and had drifted into
+  refusing an `"auto"` source that `source(decode_max_size=...)` accepted.
+
+  Two behaviour changes: `cloud_options` on a non-path source now raises
+  instead of warning (a warning is filtered out of a query's output and the
+  credentials do nothing either way), and `dtype` on a contour source is
+  rejected as described below. `test_cloud_options_on_non_file_path_source_warns`
+  was rewritten to pin the rejection, and the `decode_max_size` and
+  `thumbnail()` message assertions now match the shared wording.
+
 - **`source("contour")` published a rank and nothing else, then dropped an
   asserted dtype.** The source decodes by rasterizing, so what it hands the
   first op is what the `rasterize` op hands its successor — an `[H, W, 1]` u8

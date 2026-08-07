@@ -152,10 +152,26 @@ class TestCloudOptionsRoundTrip:
         assert "gcs_bearer_token='***'" in text
         assert "google_service_account_key" in text
 
-    def test_cloud_options_on_non_file_path_source_warns(self) -> None:
+    def test_cloud_options_on_non_path_source_is_rejected(self) -> None:
+        """Credentials for a source that never opens a path are an error.
+
+        This warned until source-parameter applicability became one check
+        (`_SOURCE_PARAM_APPLIES`). A warning is the wrong shape for it: the
+        pipeline it describes cannot be fixed by reading the warning and
+        carrying on — the credentials do nothing, whatever the caller intended
+        them for — and warnings are routinely filtered out of a query's output
+        entirely.
+        """
         opts = CloudOptions(aws_region="eu-west-1")
-        with pytest.warns(UserWarning, match="only applied to 'file_path'"):
+        with pytest.raises(ValueError, match="cloud_options does not apply"):
             Pipeline().source("image_bytes", cloud_options=opts)
+
+    def test_cloud_options_still_apply_to_an_auto_source(self) -> None:
+        """`auto` resolves to `file_path` for a String column, so it reads them."""
+        opts = CloudOptions(aws_region="eu-west-1")
+        pipe = Pipeline().source("auto", cloud_options=opts)
+        assert pipe._source is not None
+        assert pipe._source.cloud_options == opts
 
 
 @plugin_required

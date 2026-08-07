@@ -153,6 +153,124 @@ def _literal_matrix_values(matrix_param: "ParamValue") -> "list[float] | None":
 _DOMAIN_ANY = "any"
 
 
+#: Which source formats each :meth:`Pipeline.source` keyword applies to, and
+#: what to do instead when it does not.
+#:
+#: **The single authority for source-parameter applicability.** A parameter is
+#: listed against exactly the formats whose decode path reads it, so "does this
+#: do anything here?" has one answer rather than one per parameter. Before this
+#: table each parameter policed itself, badly and differently: `decode_max_size`
+#: raised, `cloud_options` warned, and `width`/`height`/`shape`/`fill_value`/
+#: `background`/`require_contiguous`/`allowed_roots` were silently dropped for
+#: every format that does not read them — accepted, serialized in some cases,
+#: and never consulted.
+#:
+#: `test_every_source_parameter_declares_its_formats` fails if a keyword is
+#: added to `source()` without an entry here, so a new parameter cannot inherit
+#: "applies everywhere" by omission. Set arithmetic rather than a literal list
+#: where the fact is genuinely "all of them" or "all but one", so a new source
+#: format does not silently fall outside a parameter that should cover it.
+_SOURCE_PARAM_APPLIES: "dict[str, frozenset[SourceFormat]]" = {
+    # Every source carries an element dtype except the contour one, whose
+    # rasterize fixes u8 (`OutputDTypeRule::Fixed(U8)`).
+    "dtype": frozenset(SourceFormat) - {SourceFormat.CONTOUR},
+    # The canvas and its colours: read only by the contour decode's rasterize.
+    "width": frozenset({SourceFormat.CONTOUR}),
+    "height": frozenset({SourceFormat.CONTOUR}),
+    "shape": frozenset({SourceFormat.CONTOUR}),
+    "fill_value": frozenset({SourceFormat.CONTOUR}),
+    "background": frozenset({SourceFormat.CONTOUR}),
+    # Path reads: `file_path`, and `auto` when a String column resolves to one.
+    "cloud_options": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
+    "allowed_roots": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
+    # Zero-copy contiguity applies to the nested-column decode.
+    "require_contiguous": frozenset(
+        {SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO}
+    ),
+    # JPEG IDCT scaling, applied where bytes are decoded as an image.
+    "decode_max_size": frozenset(
+        {SourceFormat.AUTO, SourceFormat.IMAGE_BYTES, SourceFormat.FILE_PATH}
+    ),
+    # Every source can fail to decode, including a contour that will not parse.
+    "on_error": frozenset(SourceFormat),
+}
+
+#: What to do instead, for the parameters where a caller has a real
+#: alternative. Keyed by parameter; appended to the rejection message.
+_SOURCE_PARAM_HINTS: "dict[str, str]" = {
+    "dtype": "rasterizing always produces u8 — use .cast(...) after the source",
+}
+
+
+def _source_param_defaults() -> "dict[str, Any]":
+    """Each ``Pipeline.source`` keyword's default, read from its signature.
+
+    The signature is the authority for what a default *is*, so "the caller
+    passed this" cannot drift from what the function actually does with it.
+    Cached: the signature never changes at runtime, and `source()` is on the
+    builder's hot path.
+    """
+    global _SOURCE_DEFAULTS
+    if _SOURCE_DEFAULTS is None:
+        import inspect
+
+        _SOURCE_DEFAULTS = {
+            name: param.default
+            for name, param in inspect.signature(Pipeline.source).parameters.items()
+            if param.default is not inspect.Parameter.empty
+        }
+    return _SOURCE_DEFAULTS
+
+
+_SOURCE_DEFAULTS: "dict[str, Any] | None" = None
+
+
+def _is_supplied(value: Any, default: Any) -> bool:
+    """Did the caller pass ``value``, or is it the parameter's default?
+
+    Identity first so ``None``/``False`` defaults are exact, then equality for
+    value defaults (``fill_value=255``). A Polars expression short-circuits:
+    no default is an expression, and ``Expr.__ne__`` builds an expression
+    rather than answering, so comparing one would raise "the truth value of an
+    Expr is ambiguous" instead of reporting it as supplied.
+    """
+    if value is default:
+        return False
+    if isinstance(value, pl.Expr):
+        return True
+    return bool(value != default)
+
+
+def _reject_inapplicable_source_params(
+    fmt: "SourceFormat", supplied: "dict[str, Any]"
+) -> None:
+    """Reject source keywords the chosen format's decode never reads.
+
+    Applicability is read from `_SOURCE_PARAM_APPLIES`, so this is the only
+    place the question is asked and every parameter gets the same answer —
+    an error, not a warning and not silence. A parameter that does nothing is
+    not a harmless no-op: `source("image_bytes", width=224)` reads as a decode
+    size, and `source("contour", dtype="f32")` reads as the assertion that
+    makes a typed sink plannable for every other source.
+
+    Args:
+        fmt: The validated source format.
+        supplied: Parameter name → value, for the parameters that differ from
+            their default (see :func:`_is_supplied`).
+    """
+    for name in sorted(supplied):
+        applies = _SOURCE_PARAM_APPLIES[name]
+        if fmt in applies:
+            continue
+        spelled = ", ".join(sorted(f.value for f in applies))
+        hint = _SOURCE_PARAM_HINTS.get(name)
+        msg = (
+            f"{name} does not apply to the '{fmt.value}' source "
+            f"(it applies to: {spelled})"
+        )
+        raise ValueError(f"{msg}; {hint}." if hint else f"{msg}.")
+
+
 def _op_contract_for(spec: "OpSpec") -> dict:
     """Read one operation's Rust contract (domains + rank/channel rules).
 
@@ -1121,6 +1239,12 @@ class Pipeline:
         to u16, and TIFF may produce u8, u16, f32, or f64.  All decoded
         images are always 3D ``[H, W, C]``.
 
+        Each keyword below applies to some formats and not others, and one that
+        does not apply to the format you chose is **rejected** rather than
+        ignored: a ``width`` on an image source, or ``cloud_options`` on a
+        source that never opens a path, has no effect and is a mistake worth
+        hearing about.
+
         Because the dtype is not known until runtime, it starts as ``"auto"``
         in the contract system.  Operations with deterministic output dtypes
         (e.g. ``normalize`` -> f32, ``threshold`` -> u8, ``cast``) resolve it.
@@ -1224,44 +1348,37 @@ class Pipeline:
             >>> expr = pl.col("img").cv.pipe(pipe).sink("png")
             ```
         """
+        # Taken before anything else binds a name: these *are* the parameters,
+        # so the applicability check below cannot be given a stale or partial
+        # list of them (`test_source_applicability_reads_every_parameter`).
+        passed = dict(locals())
+
         from polars_cv.lazy import LazyPipelineExpr
 
         new = self._clone()
         fmt = _validate_enum(format, SourceFormat, "source format")
+        _reject_inapplicable_source_params(
+            fmt,
+            {
+                name: value
+                for name, value in passed.items()
+                if name in _SOURCE_PARAM_APPLIES
+                and _is_supplied(value, _source_param_defaults()[name])
+            },
+        )
 
         if on_error not in ("raise", "null"):
             msg = f"on_error must be 'raise' or 'null', got '{on_error}'"
             raise ValueError(msg)
 
-        if decode_max_size is not None:
-            if fmt not in (
-                SourceFormat.AUTO,
-                SourceFormat.IMAGE_BYTES,
-                SourceFormat.FILE_PATH,
-            ):
-                msg = (
-                    "decode_max_size only applies to 'auto'/'image_bytes'/"
-                    f"'file_path' sources, got '{format}'"
-                )
-                raise ValueError(msg)
-            if not isinstance(decode_max_size, int) or decode_max_size <= 0:
-                msg = f"decode_max_size must be a positive int, got {decode_max_size!r}"
-                raise ValueError(msg)
+        if decode_max_size is not None and (
+            not isinstance(decode_max_size, int) or decode_max_size <= 0
+        ):
+            msg = f"decode_max_size must be a positive int, got {decode_max_size!r}"
+            raise ValueError(msg)
 
         dtype_enum = None
         if dtype is not None:
-            if fmt == SourceFormat.CONTOUR:
-                # The mask's dtype is fixed by the rasterize contract
-                # (`OutputDTypeRule::Fixed(U8)`), and the decode never read this
-                # parameter — it was accepted and dropped, so an asserted "f32"
-                # bought a u8 column. `.cast(...)` after the source is the way
-                # to change it, and it runs through the real cast op.
-                msg = (
-                    "dtype is not accepted for the 'contour' source: rasterizing "
-                    "always produces u8. Use .cast(...) after the source to "
-                    "convert."
-                )
-                raise ValueError(msg)
             dtype_enum = _validate_enum(dtype, DType, "dtype")
 
         # RAW format always requires dtype (no type metadata in raw bytes)
@@ -1464,17 +1581,18 @@ class Pipeline:
         """
         import dataclasses
 
-        from polars_cv._types import SourceFormat
-
         if self._source is None:
             msg = "thumbnail() requires a source; call .source(...) first"
             raise ValueError(msg)
-        if self._source.format not in (
-            SourceFormat.IMAGE_BYTES,
-            SourceFormat.FILE_PATH,
-        ):
+        # `thumbnail()` writes `decode_max_size`, so it applies exactly where
+        # that parameter does — read from the table rather than restated, which
+        # is how the two came to disagree about `auto` (`source()` accepted it,
+        # `thumbnail()` refused it, for the same field on the same spec).
+        applies = _SOURCE_PARAM_APPLIES["decode_max_size"]
+        if self._source.format not in applies:
+            spelled = ", ".join(sorted(f.value for f in applies))
             msg = (
-                "thumbnail() only applies to 'image_bytes'/'file_path' sources, "
+                f"thumbnail() only applies to {spelled} sources, "
                 f"got '{self._source.format.value}'"
             )
             raise ValueError(msg)
