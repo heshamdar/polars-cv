@@ -279,6 +279,44 @@ def test_auto_list_sink_resolves_rank_from_a_columnar_source() -> None:
 
 
 @plugin_required
+@pytest.mark.parametrize(
+    ("op", "expected"),
+    [
+        (lambda p: p, pl.UInt8),  # PreserveInput: the column's own leaf type
+        (lambda p: p.scale(factor=2.0), pl.Float32),  # PromoteToFloat
+        (lambda p: p.cast("i16"), pl.Int16),  # Fixed
+        (lambda p: p.reduce_sum(), pl.Float64),  # ForceF64
+    ],
+)
+def test_auto_dtype_is_folded_through_the_ops_not_taken_from_the_column(
+    op, expected
+) -> None:
+    """An ``auto`` source's *output* dtype is not its column's leaf dtype.
+
+    ``resolved_output_specs`` used to assign the input column's leaf type
+    straight to the output, which is only right for a preserve-input lineage.
+    ``source("list")`` over a ``List(UInt8)`` column followed by ``scale()``
+    planned ``List(UInt8)`` and executed f32 — caught at runtime by
+    ``validate_output_schema``, so it surfaced as a mid-``collect()`` failure
+    rather than a wrong column, but planned wrong all the same.
+
+    The dtype is now folded through the ops' ``OutputDTypeRule``s from the
+    resolved source type, exactly as the rank is folded through their rank
+    rules.
+    """
+    df = pl.DataFrame(
+        {"a": [[[1, 2], [3, 4]]]}, schema={"a": pl.List(pl.List(pl.UInt8))}
+    )
+    pipe = op(Pipeline().source("list"))
+    sink = "native" if pipe.current_domain() == "scalar" else "list"
+
+    series = assert_plan_equals_exec(df, pl.col("a").cv.pipe(pipe).sink(sink))
+    assert leaf_dtype(series.dtype) == expected, (
+        f"folded to {leaf_dtype(series.dtype)}, expected {expected}"
+    )
+
+
+@plugin_required
 def test_auto_on_binary_still_plans_the_rank_free_sinks() -> None:
     """Refusing the list sink must not take the rest of ``auto`` down with it.
 

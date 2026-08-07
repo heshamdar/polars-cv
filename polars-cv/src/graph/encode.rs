@@ -10,7 +10,7 @@ use polars::chunked_array::builder::ListPrimitiveChunkedBuilder;
 use polars::prelude::*;
 use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Contour};
 use view_buffer::ops::NodeOutput;
-use view_buffer::{BinaryOp, GeometryOp, Op, ViewBuffer};
+use view_buffer::{BinaryOp, GeometryOp, Op, PlannedDType, ViewBuffer};
 
 use crate::contour::contour_to_anyvalue;
 
@@ -274,7 +274,7 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
     // with it — only direct callers of the graph executor do, such as the
     // hand-written JSON graphs in the unit tests. `validate_output_schema`
     // draws the line in the same place and for the same reason.
-    let dtype_str = if dtype_str == "auto" {
+    let dtype_str = if !PlannedDType::parse(dtype_str).is_some_and(|d| d.is_concrete()) {
         first_row
             .map(|(data, _)| data.dtype_str())
             .unwrap_or(dtype_str)

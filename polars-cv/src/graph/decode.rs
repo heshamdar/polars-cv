@@ -7,7 +7,7 @@
 //! - Padding and masking operations
 
 use polars::prelude::*;
-use view_buffer::{ImageCodec, ViewBuffer};
+use view_buffer::{ImageCodec, PlannedDType, ViewBuffer};
 
 use super::encode::{
     build_typed_array_series_from_rows_with_dtype, build_typed_list_series_from_rows_with_dtype,
@@ -612,8 +612,9 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
         "i64" => DataType::Int64,
         "f32" => DataType::Float32,
         "f64" => DataType::Float64,
-        // Reachable only for "auto", and only where the value is unused.
-        // "auto" means the dtype was not resolved at planning time;
+        // Reachable only for the unresolved sentinels ("auto",
+        // "auto_float"), and only where the value is unused. They mean the
+        // dtype was not pinned down at planning time;
         // `list_array_inner_dtype` bails on it during schema resolution, which
         // Polars runs before execution, so the typed list/array builders in
         // `encode.rs` — the callers that *would* be misled, since they use this
@@ -636,7 +637,11 @@ pub fn dtype_str_to_polars(dtype: &str) -> DataType {
 /// with `"auto"` is an internal error — fail loudly rather than silently
 /// materialize a `u8` column that may disagree with execution.
 fn list_array_inner_dtype(dtype: &str, sink: &str) -> PolarsResult<DataType> {
-    if dtype == "auto" {
+    // Asked of `PlannedDType`, not compared against `"auto"` by hand: there is
+    // now more than one way to be unresolved (`"auto_float"` means "a float,
+    // but which one depends on the decode"), and a hand-written comparison
+    // would let the new one through to `dtype_str_to_polars`'s UInt8 arm.
+    if !PlannedDType::parse(dtype).is_some_and(|d| d.is_concrete()) {
         // Not labelled an internal error: the common way to get here is a
         // source column whose element type the planner cannot map to a buffer
         // dtype (a boolean or decimal list), which is the user's input, not a
@@ -677,7 +682,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             // source whose dtype is still "auto" is not refused here.
             let codec = ImageCodec::from_sink_format(format)
                 .expect("this arm matches exactly the formats from_sink_format parses");
-            let dtype = parse_dtype_str(&spec.expected_dtype).ok();
+            let dtype = PlannedDType::parse(&spec.expected_dtype).unwrap_or(PlannedDType::Unknown);
             let rank = spec
                 .expected_shape
                 .as_ref()
@@ -692,7 +697,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
                     _ => None,
                 });
             codec
-                .check_support(dtype, rank, channels)
+                .check_planned(dtype, rank, channels)
                 .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
             Ok(DataType::Binary)
         }

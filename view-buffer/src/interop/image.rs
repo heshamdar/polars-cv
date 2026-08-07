@@ -5,7 +5,7 @@
 //! - Image I/O via [`ImageAdapter`]
 
 use crate::core::buffer::{BufferError, ViewBuffer};
-use crate::core::dtype::{DType, ViewType};
+use crate::core::dtype::{DType, PlannedDType, ViewType};
 use crate::core::layout::ExternalLayout;
 use crate::interop::{validate_layout, ExternalView};
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, LumaA, Pixel, Rgb, Rgba};
@@ -73,6 +73,27 @@ impl ImageCodec {
         rank: Option<usize>,
         channels: Option<usize>,
     ) -> Result<(), String> {
+        self.check_planned(
+            dtype.map_or(PlannedDType::Unknown, PlannedDType::Known),
+            rank,
+            channels,
+        )
+    }
+
+    /// [`check_support`](Self::check_support) for a dtype the planner has only
+    /// partially resolved.
+    ///
+    /// Rejects only when *every* dtype the input could still turn out to be is
+    /// unsupported, so a less-resolved state is always more permissive. This is
+    /// what lets the planner refuse `scale(...)` into a JPEG sink over a source
+    /// whose decode dtype is unknown: the op promotes to a float, and no float
+    /// is an 8-bit sample, whichever float it is.
+    pub fn check_planned(
+        self,
+        dtype: PlannedDType,
+        rank: Option<usize>,
+        channels: Option<usize>,
+    ) -> Result<(), String> {
         if let Some(rank) = rank {
             if rank != 2 && rank != 3 {
                 return Err(format!(
@@ -93,10 +114,41 @@ impl ImageCodec {
             }
         }
 
-        let Some(dtype) = dtype else {
+        let candidates = dtype.candidates();
+        if candidates.is_empty() {
             return Ok(());
-        };
+        }
+        // Every candidate must fail before this is a refusal.
+        let mut last_err = None;
+        for &candidate in candidates {
+            match self.check_one_dtype(candidate, channels) {
+                Ok(()) => return Ok(()),
+                Err(msg) => last_err = Some(msg),
+            }
+        }
+        // For a partially-resolved dtype, naming one candidate would be
+        // arbitrary — the user's pipeline does not say "F64", it says "some
+        // float". Describe the constraint that actually rules the sink out.
+        if !dtype.is_concrete() {
+            return Err(format!(
+                "{} cannot encode this pipeline's output. The source's decode \
+                 dtype is not known at planning time, but the operations \
+                 promote it to floating point, and no floating-point buffer is \
+                 encodable here{}. Cast before the sink (e.g. `.cast(\"u8\")`), \
+                 or sink to a format that carries float data.",
+                self.name(),
+                match (self, channels) {
+                    (Self::Tiff, Some(c)) if c != 1 =>
+                        format!(" at {c} channels (TIFF stores floats greyscale-only)"),
+                    _ => String::new(),
+                }
+            ));
+        }
+        Err(last_err.expect("candidates is non-empty"))
+    }
 
+    /// The dtype half of the table, for one concrete dtype.
+    fn check_one_dtype(self, dtype: DType, channels: Option<usize>) -> Result<(), String> {
         match self {
             // Both go through `to_dynamic_image`, which carries 8- and 16-bit
             // samples only; WebP is additionally 8-bit.

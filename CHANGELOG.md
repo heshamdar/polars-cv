@@ -65,7 +65,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `_assert_plan_equals_exec`); they now call the harness, and pick up the
   streaming engine in the process.
 
-  **Two divergences found, and fixed** (see *Fixed* below).
+  **Four divergences found, and fixed** (see *Fixed* below).
 
   Also recorded, without a bug marker: `expected_shape` is gated on rank 3, so
   a rank-1 or rank-2 pipeline can never auto-shape an array sink even when the
@@ -120,6 +120,39 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   dtype depends on which row arrived first is the thing that sink exists to
   rule out.
 
+- **An `"auto"` output dtype was taken from the input column, not folded
+  through the ops.** `resolved_output_specs` assigned the input column's leaf
+  type straight to any output still marked `"auto"`, which is correct only for
+  a preserve-input lineage: `source("list")` over a `List(UInt8)` column
+  followed by `scale()` planned `List(UInt8)` for data that arrives f32. The
+  per-row `validate_output_schema` guard caught it, so it surfaced as a
+  mid-`collect()` failure rather than a wrong column — planned wrong either way.
+
+  The dtype is now folded through the ops' `OutputDTypeRule`s from the resolved
+  source type by `fold_output_dtype`, the exact twin of the `fold_output_rank`
+  that sits beside it and had been doing this for the rank all along.
+
+- **A partially-resolved dtype is no longer discarded.** Folding a rule over an
+  unknown input used to collapse back to `"auto"`, throwing away real
+  information: whatever a PNG or TIFF turns out to decode to, `PromoteToFloat`
+  of it is *a float*. `PlannedDType` (view-buffer, `core/dtype.rs`) is the
+  three-state lattice — `Known(DType)`, `SomeFloat`, `Unknown` — and
+  `OutputDTypeRule::resolve_planned` is the symbolic twin of `resolve`.
+
+  `SomeFloat` is deliberately not a dtype: `PromoteToFloat` yields f32 for
+  integers and preserves f64, so there is no single answer, and inventing one
+  is a lie the runtime guard would catch. It is enough to decide a codec
+  though — `ImageCodec::check_planned` refuses only when *every* candidate
+  fails — which closes the last plan-then-fail case:
+  `source("image_bytes").scale(...).sink("jpeg")` is now a planning error
+  instead of an encoder error, while the same source *without* a promoting op
+  still plans, because it could still decode to u8.
+
+  Every site that compared a dtype string to `"auto"` now asks
+  `PlannedDType::parse(...).is_concrete()` instead — a hand-written comparison
+  would have let the second sentinel through to `dtype_str_to_polars`'s `u8`
+  arm.
+
 - **A multi-root graph resolved every output's dtype from the first column.**
   `merge_pipe` and the binary ops join two `pl.col()` lineages into one
   `vb_graph` call, and `resolved_output_specs` filled in each output's still-
@@ -164,9 +197,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   table: read by `dtype_for_output` when the query is planned, by `encode_sink`,
   and by the encoders themselves — `encode_tiff`'s fallback arm asks it for the
   message rather than writing a second one. An unknown is never a rejection, so
-  a source whose dtype is still `"auto"` is not refused; that residual (the
-  float-promoting ops keep `"auto"` rather than resolving to a float) is pinned
-  by `test_an_unknown_dtype_is_not_refused`, which fails the day it closes.
+  a source that could still decode to u8 is not refused — but "unknown" is now
+  a lattice rather than a single state, so a *partially* resolved dtype is not
+  wasted (see below).
 
   Guarded in Rust by `the_table_never_promises_what_an_encoder_cannot_deliver`,
   which runs every (codec, dtype, channels) cell through both the table and the
