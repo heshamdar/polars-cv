@@ -49,7 +49,13 @@ class PrecisionRecallResult(MetricResult):
                 (matches COCO / scikit-learn AP).
                 ``"11_point"`` uses the Pascal VOC 11-point method.
                 ``"trapezoidal"`` computes raw trapezoidal AUC without the
-                monotone-envelope correction.
+                monotone-envelope correction. The global envelope is not
+                applied, but points sharing one recall value (a run of false
+                positives leaves recall unchanged) still collapse to the
+                highest precision among them — those points span zero width,
+                so the only question they pose is which precision the
+                trapezoid leaving them uses, and "an arbitrary one" is not an
+                answer.
 
         Returns:
             Average Precision value.

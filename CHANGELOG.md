@@ -486,26 +486,69 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   negative population and inflating recall / FP-per-image. `match()` now
   accepts an optional `image_meta` frame that defines the full evaluation
   population; omitting it keeps the previous behaviour but emits a
-  `UserWarning`.
+  `UserWarning`. `image_meta` is the *sole* source of `image_metadata`, so
+  combining it with `n_gts_col` / `weight_col` / `gt_label_col` /
+  `group_col` — which only ever described how to derive metadata from the
+  *detection* frame — raises rather than accepting the arguments and
+  discarding them.
 
 - **FROC double-counted detections when `image_id` repeated in metadata.**
   `_curve_from_detections` joined detections to `image_metadata` weights
   without deduping by `image_id`, so a shared rendered image owned by two
   cases (or a bootstrap-with-replacement draw) fan-out-multiplied every
   detection before TP/FP aggregation. The weight lookup is now unique by
-  `image_id`. The same join bug made `FROCResult.bootstrap_ci` produce
-  intervals that excluded the point estimate and replica sensitivities
-  above 1.0; both are fixed. `FROCResult._reconstruct` also no longer
-  dedupes `n_gts` before summing, so resampled draws contribute once per
-  draw.
+  `(image_id, class_id)`. The same join bug made `FROCResult.bootstrap_ci`
+  produce intervals that excluded the point estimate and replica
+  sensitivities above 1.0; both are fixed.
+
+- **A FROC metadata row is one (image, class), but the FP-per-image
+  denominator counted rows.** `froc_curve` took `n_images` from
+  `image_metadata.height`, so a two-class table divided the false-positive
+  rate by two. The image count is now the number of distinct `image_id`s,
+  read once through `_count_images` by both `froc_curve` and
+  `FROCResult._reconstruct` — the two had drifted apart, the replicate
+  counting draws while the point estimate counted rows, and the bootstrap
+  distribution was therefore not on the same scale as the estimate it
+  bracketed. `_curve_from_detections` no longer takes `n_images` at all; it
+  reads the metadata it was already given.
+
+- **Bootstrap draws are distinct evaluation units, not repeated images.**
+  `FROCResult._reconstruct` resampled with replacement and carried the
+  duplicates as repeated `image_id`s, leaving every downstream count to
+  guess whether a repeat was a redraw or one image legitimately owned by two
+  cases. Each draw now gets a synthetic `image_id` (`<id>#draw<n>`), so a
+  redraw contributes its own detections, its own `n_gts` and its own slot in
+  the FP-per-image denominator, and a repeated `image_id` again means only
+  one thing.
 
 - **FROC / LROC curves were returned in ascending-threshold order**, so
   `fp_per_image` / `fpf` ran downwards through the frame and
   `plt.step(..., where="post")` drew backwards. Curves are now sorted by
-  ascending `fp_per_image` / `fpf`. **This changes reported FROC/LROC AUC**:
-  ascending order changes trapezoids at tied `x=0` points (the upper
-  envelope at the origin), so printed AUCs can move slightly
-  (e.g. `0.025526 → 0.025780` on a low-FP sample).
+  **descending `threshold`**, which is ascending `fp_per_image` / `fpf`.
+  Sorting on the x-column directly looks equivalent and is not: thresholds
+  are unique so the order is total, while `fp_per_image` ties constantly —
+  every threshold bucket adding only true positives leaves it unchanged —
+  and Polars' `sort` defaults to `maintain_order=False`, so the y at each tie
+  boundary, and therefore the trapezoid leaving it, was unspecified and could
+  differ between runs and platforms. (Commit `7829291` fixed the same class
+  of nondeterminism in `bootstrap_pr_auc` after it surfaced as a macOS CI
+  failure.) **This changes reported FROC/LROC AUC**, deterministically.
+
+- **`MetricResult.auc` and `.interpolate` each re-sorted the curve by x
+  alone**, inheriting that same tie ambiguity no matter how the curve was
+  stored, and then read the *first* row of a tie group — so
+  `sensitivity_at_fp(0.0)` reported the origin's `0.0` rather than the
+  sensitivity a detector actually reaches while making no false positives.
+  Both now go through one `MetricResult._curve_xy`, which collapses tied x to
+  the maximum y (the standard ROC upper envelope) and yields strictly
+  increasing x. `summary_table`'s y column is Float64 even when every
+  operating point is out of range, instead of collapsing to `Null` dtype.
+
+- **The unweighted branch of `_curve_from_detections` was unreachable.**
+  `weight` is in `IMAGE_META_REQUIRED` and `DetectionTable.from_matched`
+  validates it, so `has_weights` was always true and the second curve
+  implementation behind it could never run. Deleted; an all-1.0 weight column
+  reduces the weighted formulas to the plain counts exactly.
 
 - **FROC weighted sensitivity was order-dependent when a duplicated
   `image_id` carried conflicting weights.** The weight lookup deduped by
@@ -513,13 +556,29 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   so `[1, 5]` vs `[5, 1]` flipped sensitivity (`0.1667` vs `0.8333`). Equal
   weights still dedupe cleanly; conflicting weights now raise `ValueError`
   pointing at a composite `image_id` or a single weight per unit. The lookup
-  key is `(image_id, class_id)` when class is present.
+  key is `(image_id, class_id)` when class is present, and the *conflict
+  check* is on `image_id` alone — which subsumes it. A `weight` is a property
+  of an image, and the FP-per-image denominator dedupes on `image_id`, so two
+  classes of one image disagreeing about its weight left that denominator
+  depending on which row `unique` happened to keep.
 
 - **`MetricResult.interpolate` (and `sensitivity_at_fp` /
   `sensitivity_at_fpf` / `summary_table`) clamped past the observed x-range
   instead of returning null.** Queries beyond the curve's max now return
   `None` / null so an unreachable operating point is visible rather than
-  silently repeating the last y value.
+  silently repeating the last y value. `examples/06_detection_metrics.py`
+  formats through a `fmt()` helper accordingly — `round(None, 4)` is a
+  `TypeError`.
+
+- **`partial_auc` rejected integer bounds.** The boundary points it appends at
+  `lo` / `hi` were built with an inferred dtype, so the natural spelling of a
+  range — `froc.auc(fp_range=(0, 8))`, as the docs and
+  `examples/06_detection_metrics.py` both write it — produced an `Int64`
+  Series that would not concatenate onto the `Float64` curve and raised
+  `SchemaError: type Int64 is incompatible with expected type Float64`
+  whenever the curve did not already span the requested range. Bounds are
+  coerced to float and the boundary Series are constructed as `Float64`
+  explicitly.
 
 - **`.contour.label_reduce()` was a second, divergent implementation.** The
   accessor scored contours with a plugin-local routine while

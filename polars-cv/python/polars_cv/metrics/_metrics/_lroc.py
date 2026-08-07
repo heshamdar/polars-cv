@@ -379,6 +379,12 @@ def _build_lroc_curve(per_image: pl.DataFrame) -> pl.DataFrame:
     lower_right = pl.DataFrame(
         {"threshold": [float("-inf")], "fpf": [1.0], "sensitivity": [max_sens]}
     )
-    # Sort by fpf ascending so the curve is in the conventional plotting
-    # order (plt.step(..., where="post") draws correctly).
-    return pl.concat([bucketed, inf_row, lower_right], how="vertical").sort("fpf")
+    # Sort by descending threshold, which *is* ascending fpf: the negative
+    # counts are cumulative over descending score. Thresholds are unique
+    # (group_by(max_score) plus the +inf origin and -inf lower-right endpoint)
+    # so this is a total order, while fpf ties and Polars' sort defaults to
+    # maintain_order=False — sorting on fpf would leave the y at each tie
+    # boundary, and therefore the AUC, unspecified. See `_froc.py`.
+    return pl.concat([bucketed, inf_row, lower_right], how="vertical").sort(
+        "threshold", descending=True
+    )

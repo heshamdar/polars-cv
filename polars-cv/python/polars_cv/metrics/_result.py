@@ -32,6 +32,41 @@ class MetricResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
+    # Curve access
+    # ------------------------------------------------------------------
+
+    def _curve_xy(self, x_col: str, y_col: str) -> tuple[pl.Series, pl.Series]:
+        """Return the curve as strictly increasing x with the upper envelope y.
+
+        Every consumer of a curve's geometry goes through here — ``auc`` and
+        ``interpolate`` must not sort for themselves. A curve carries many rows
+        tied at one x (a FROC threshold bucket that adds only true positives
+        leaves ``fp_per_image`` unchanged), and Polars' ``sort`` defaults to
+        ``maintain_order=False``, so a sort on x alone leaves the y at each tie
+        boundary unspecified — the trapezoid there, and therefore the AUC,
+        would vary run to run. Collapsing each tie group to its maximum y is
+        both deterministic and the standard ROC/FROC convention: the operating
+        point reachable at that x is the best one, not an arbitrary one.
+
+        Args:
+            x_col: Column name for the x-axis.
+            y_col: Column name for the y-axis.
+
+        Returns:
+            ``(x, y)`` as Float64 Series, x strictly increasing.
+        """
+        collapsed = (
+            self.curve.select(
+                pl.col(x_col).cast(pl.Float64),
+                pl.col(y_col).fill_null(0.0).cast(pl.Float64),
+            )
+            .group_by(x_col)
+            .agg(pl.col(y_col).max())
+            .sort(x_col)
+        )
+        return collapsed[x_col], collapsed[y_col]
+
+    # ------------------------------------------------------------------
     # AUC
     # ------------------------------------------------------------------
 
@@ -58,9 +93,7 @@ class MetricResult:
         Returns:
             Area under the curve (or partial area).
         """
-        sorted_curve = self.curve.sort(x_col)
-        x = sorted_curve[x_col].cast(pl.Float64)
-        y = sorted_curve[y_col].fill_null(0.0).cast(pl.Float64)
+        x, y = self._curve_xy(x_col, y_col)
         if x.len() == 0:
             return 0.0
         if x_range is None:
@@ -81,11 +114,10 @@ class MetricResult:
 
         Returns:
             Interpolated y-value, or ``None`` when ``at`` falls outside the
-            observed x-range of the curve (no extrapolation).
+            observed x-range of the curve (no extrapolation). At an x the
+            curve visits more than once, the highest y there is returned.
         """
-        sorted_curve = self.curve.sort(x_col)
-        x = sorted_curve[x_col].cast(pl.Float64)
-        y = sorted_curve[y_col].fill_null(0.0).cast(pl.Float64)
+        x, y = self._curve_xy(x_col, y_col)
         if x.len() == 0:
             return None
         return _interp(x, y, at)
@@ -110,15 +142,22 @@ class MetricResult:
 
         Returns:
             DataFrame with ``x_col`` and ``y_col`` columns. ``y_col`` is
-            null for operating points outside the observed x-range.
+            null for operating points outside the observed x-range, and is
+            always Float64 — an all-null column must still be a sensitivity
+            column, not a ``Null``-dtype one that breaks arithmetic
+            downstream.
         """
         return pl.DataFrame(
             {
-                x_col: operating_points,
-                y_col: [
-                    self.interpolate(x_col=x_col, y_col=y_col, at=pt)
-                    for pt in operating_points
-                ],
+                x_col: pl.Series(x_col, operating_points, dtype=pl.Float64),
+                y_col: pl.Series(
+                    y_col,
+                    [
+                        self.interpolate(x_col=x_col, y_col=y_col, at=pt)
+                        for pt in operating_points
+                    ],
+                    dtype=pl.Float64,
+                ),
             }
         )
 

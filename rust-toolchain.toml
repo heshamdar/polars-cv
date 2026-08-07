@@ -2,6 +2,9 @@
 # in polars-ooc, which calls the now-stabilized `std::hint::cold_path()` and
 # `atomic_try_update` without a nightly opt-in, so older stables fail to build
 # with E0658. (1.78+ is also required for Cargo.lock version 4.)
+# rustfmt and clippy both ship in the default profile; naming rustfmt here is
+# belt-and-braces for a minimal profile. rust-analyzer is deliberately absent —
+# it is a ~100 MB download every CI job would pay for an editor feature.
 [toolchain]
 channel = "stable"
-components = ["rust-analyzer", "rustfmt"]
+components = ["rustfmt", "clippy"]
