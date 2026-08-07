@@ -44,23 +44,17 @@ def _require_concrete_sink_dtype(
     if pipeline._output_dtype != "auto":
         return
 
-    from polars_cv._types import SourceFormat
+    from polars_cv._types import SOURCES_RESOLVED_FROM_COLUMN
 
-    # LIST/ARRAY sources resolve their leaf dtype from the Polars column at
+    # These sources resolve their leaf dtype from the Polars column at
     # plan-time-with-input (Rust `resolved_output_specs`). "auto" may resolve to
     # a List/Array column the same way, so defer to that runtime resolution — a
     # Binary/image column under "auto" still surfaces a clear error there
     # (`list_array_inner_dtype`) rather than here.
-    source_resolves_dtype = (
+    if (
         pipeline._source is not None
-        and pipeline._source.format
-        in (
-            SourceFormat.LIST,
-            SourceFormat.ARRAY,
-            SourceFormat.AUTO,
-        )
-    )
-    if source_resolves_dtype:
+        and pipeline._source.format in SOURCES_RESOLVED_FROM_COLUMN
+    ):
         return
 
     where = f" (alias '{alias}')" if alias else ""
@@ -73,25 +67,43 @@ def _require_concrete_sink_dtype(
     raise ValueError(msg)
 
 
-def _validate_sink_dtype(fmt: str, kwargs: dict[str, Any]) -> None:
-    """Validate the optional ``dtype`` kwarg on a ``numpy``/``torch`` sink.
+def _validate_sink_params(fmt: str, kwargs: "dict[str, Any]") -> None:
+    """Check one sink's keywords: which apply to *fmt*, then their values.
 
-    Only ``"f16"`` is accepted: the engine has no native f16 dtype, so f16 is
-    produced purely as an encode-time downcast at the sink boundary (halving the
-    output-tensor bytes / H2D transfer). Every other output dtype is expressible
-    with a pipeline ``.cast()``, which runs through the real cast op so the
-    planned and produced dtypes stay identical — the sink dtype deliberately does
-    *not* duplicate that path.
+    Applicability comes from `SINK_PARAM_APPLIES` — the same table and the same
+    checker the source end uses — so an unknown keyword and one that does not
+    apply to this format both raise here rather than riding into the graph. An
+    unparseable format is left to the encoder's own error: the parameters are
+    not silently accepted, the query simply fails on the format instead.
+
+    Only ``dtype`` has a value constraint. ``"f16"`` alone is accepted: the
+    engine has no native f16 dtype, so f16 is produced purely as an encode-time
+    downcast at the sink boundary (halving the output-tensor bytes / H2D
+    transfer). Every other output dtype is expressible with a pipeline
+    ``.cast()``, which runs through the real cast op so the planned and produced
+    dtypes stay identical — the sink dtype deliberately does *not* duplicate
+    that path.
     """
+    from polars_cv._types import (
+        SINK_PARAM_APPLIES,
+        SinkFormat,
+        reject_inapplicable_params,
+    )
+
+    try:
+        sink_format = SinkFormat(fmt)
+    except ValueError:
+        return
+    reject_inapplicable_params(
+        kind="sink",
+        fmt=sink_format,
+        supplied=kwargs,
+        applies=SINK_PARAM_APPLIES,
+    )
+
     dtype = kwargs.get("dtype")
     if dtype is None:
         return
-    if fmt not in ("numpy", "torch"):
-        msg = (
-            f"sink dtype is only supported for 'numpy'/'torch' sinks, got '{fmt}'. "
-            "For other sinks, cast inside the pipeline with .cast(...)."
-        )
-        raise ValueError(msg)
     if dtype not in ("f16", "float16"):
         msg = (
             f"numpy/torch sink dtype only supports 'f16' (got '{dtype}'). "
@@ -270,18 +282,21 @@ class LazyPipelineExpr:
             format: Output format string (e.g., "numpy", "png") or a dict
                     mapping aliases to formats for multi-output.
             return_expr: If True (default), return a pl.Expr. If False, return the PipelineGraph.
-            kwargs: Parameters for the sink. ``quality`` for jpeg/webp;
-                    ``shape`` for the array sink; ``dtype="f16"`` for the
-                    numpy/torch sink to downcast the output tensor to half
-                    precision at the encode boundary (halving the tensor bytes
-                    and H2D transfer). ``dtype`` only accepts ``"f16"`` — cast
-                    inside the pipeline for other dtypes.
+            kwargs: Parameters for the sink. ``quality`` for the jpeg sink
+                    (the other encoders take none); ``shape`` for the array
+                    sink; ``dtype="f16"`` for the numpy/torch sink to downcast
+                    the output tensor to half precision at the encode boundary
+                    (halving the tensor bytes and H2D transfer). ``dtype`` only
+                    accepts ``"f16"`` — cast inside the pipeline for other
+                    dtypes. A keyword that does not apply to the chosen format
+                    is rejected rather than ignored, as is one that is not a
+                    sink parameter at all.
 
         Returns:
             A Polars expression (or PipelineGraph if return_expr=False).
         """
         from polars_cv._graph import PipelineGraph
-        from polars_cv._types import SourceFormat
+        from polars_cv._types import SOURCES_RESOLVED_FROM_COLUMN
 
         # Validate no cycles
         self._validate_no_cycles()
@@ -307,7 +322,7 @@ class LazyPipelineExpr:
             for alias, fmt_str in format.items():
                 # A sink dtype (f16) in multi-output applies to the shared kwargs;
                 # validate it against each alias's format.
-                _validate_sink_dtype(fmt_str, kwargs)
+                _validate_sink_params(fmt_str, kwargs)
                 # Typed list/array sinks must know their element dtype at plan time.
                 node = self._find_node_by_alias(alias, all_nodes)
                 if node is not None:
@@ -318,16 +333,11 @@ class LazyPipelineExpr:
                 if fmt_str == "list":
                     node = self._find_node_by_alias(alias, all_nodes)
                     if node and node._pipeline._expected_ndim is None:
-                        source_can_resolve = (
-                            node._pipeline._source is not None
-                            and node._pipeline._source.format
-                            in (
-                                SourceFormat.LIST,
-                                SourceFormat.ARRAY,
-                                SourceFormat.AUTO,
-                            )
-                        )
-                        if not source_can_resolve:
+                        if (
+                            node._pipeline._source is None
+                            or node._pipeline._source.format
+                            not in SOURCES_RESOLVED_FROM_COLUMN
+                        ):
                             msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
                             raise ValueError(msg)
 
@@ -341,7 +351,7 @@ class LazyPipelineExpr:
             graph.set_multi_output(format, **kwargs)
         else:
             # Single output mode
-            _validate_sink_dtype(format, kwargs)
+            _validate_sink_params(format, kwargs)
             # Typed list/array sinks must know their element dtype at plan time.
             _require_concrete_sink_dtype(self._pipeline, format)
 
@@ -360,12 +370,11 @@ class LazyPipelineExpr:
                     # plan-time-with-input; "auto" defers to that same runtime
                     # resolution (a Binary/image column then errors on its
                     # unresolved element dtype rather than on ndim).
-                    source_can_resolve = (
-                        self._pipeline._source is not None
-                        and self._pipeline._source.format
-                        in (SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO)
-                    )
-                    if not source_can_resolve:
+                    if (
+                        self._pipeline._source is None
+                        or self._pipeline._source.format
+                        not in SOURCES_RESOLVED_FROM_COLUMN
+                    ):
                         msg = "Number of dimensions (ndim) is unknown for 'list' sink. This should not happen for standard sources."
                         raise ValueError(msg)
 

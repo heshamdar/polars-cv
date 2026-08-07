@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Union
 
 try:
     from typing import TypeAlias
@@ -18,6 +18,9 @@ except ImportError:
     from typing_extensions import TypeAlias
 
 import polars as pl
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # Type alias for values that can be either literals or expressions
 LiteralOrExpr: TypeAlias = Union[int, float, str, pl.Expr]
@@ -742,22 +745,143 @@ class SourceSpec:
         return result
 
 
-@dataclass
-class SinkSpec:
-    """Specification for pipeline output sink."""
+# ---------------------------------------------------------------------------
+# Which format each spec parameter applies to
+# ---------------------------------------------------------------------------
 
-    format: SinkFormat
-    quality: int = 85  # For JPEG and WebP
-    shape: list[int] | None = None  # For ARRAY format
+#: Which source formats each :meth:`Pipeline.source` keyword applies to.
+#:
+#: Each parameter is listed against exactly the formats whose decode path reads
+#: it. Set arithmetic where the fact is genuinely "all of them" or "all but
+#: one", so a new format does not silently fall outside a parameter that should
+#: cover it.
+SOURCE_PARAM_APPLIES: "dict[str, frozenset[SourceFormat]]" = {
+    # Every source carries an element dtype except the contour one, whose
+    # rasterize fixes u8 (`OutputDTypeRule::Fixed(U8)`).
+    "dtype": frozenset(SourceFormat) - {SourceFormat.CONTOUR},
+    # The canvas and its colours: read only by the contour decode's rasterize.
+    "width": frozenset({SourceFormat.CONTOUR}),
+    "height": frozenset({SourceFormat.CONTOUR}),
+    "shape": frozenset({SourceFormat.CONTOUR}),
+    "fill_value": frozenset({SourceFormat.CONTOUR}),
+    "background": frozenset({SourceFormat.CONTOUR}),
+    # Path reads: `file_path`, and `auto` when a String column resolves to one.
+    "cloud_options": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
+    "allowed_roots": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
+    # Zero-copy contiguity applies to the nested-column decode.
+    "require_contiguous": frozenset(
+        {SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO}
+    ),
+    # JPEG IDCT scaling, applied where bytes are decoded as an image.
+    "decode_max_size": frozenset(
+        {SourceFormat.AUTO, SourceFormat.IMAGE_BYTES, SourceFormat.FILE_PATH}
+    ),
+    # Every source can fail to decode, including a contour that will not parse.
+    "on_error": frozenset(SourceFormat),
+}
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
-        result: dict[str, Any] = {"format": self.format.value}
-        if self.format == SinkFormat.JPEG or self.format == SinkFormat.WEBP:
-            result["quality"] = self.quality
-        if self.format == SinkFormat.ARRAY and self.shape is not None:
-            result["shape"] = self.shape
-        return result
+#: Which sink formats each ``.sink()`` keyword applies to.
+#:
+#: The same fact for the other end of the pipeline, read from the same place:
+#: the Rust encoder's use of the `SinkSpec` field.
+#:
+#: `quality` is **jpeg only**. `SinkSpec` documents it as "JPEG and WebP" and
+#: the sink docstring said "jpeg/webp", but `encode_image` passes it to
+#: `encode_jpeg` alone — the WebP arm calls `ImageAdapter::encode`, which has no
+#: quality argument. A webp quality is therefore rejected rather than accepted
+#: and dropped; supporting it is an encoder change, not a parameter change.
+SINK_PARAM_APPLIES: "dict[str, frozenset[SinkFormat]]" = {
+    "quality": frozenset({SinkFormat.JPEG}),
+    "shape": frozenset({SinkFormat.ARRAY}),
+    "dtype": frozenset({SinkFormat.NUMPY, SinkFormat.TORCH}),
+}
+
+#: What to do instead, for the parameters where a caller has a real
+#: alternative. Keyed by ``(kind, parameter)``.
+PARAM_HINTS: "dict[tuple[str, str], str]" = {
+    ("source", "dtype"): (
+        "rasterizing always produces u8 — use .cast(...) after the source"
+    ),
+    ("sink", "dtype"): "cast inside the pipeline with .cast(...) instead",
+    ("sink", "quality"): (
+        "only the JPEG encoder takes a quality; the others encode at their "
+        "own fixed settings"
+    ),
+}
+
+
+def reject_inapplicable_params(
+    *,
+    kind: str,
+    fmt: "SourceFormat | SinkFormat",
+    supplied: "Mapping[str, Any]",
+    applies: "Mapping[str, frozenset[Any]]",
+) -> None:
+    """Reject spec parameters the chosen format never reads.
+
+    **The single answer to "does this parameter do anything here?"**, for both
+    ends of the pipeline. Each surface used to answer it per parameter and
+    differently: of the source's seven scoped keywords one raised, one warned
+    and five were dropped silently, while every scoped sink keyword but
+    ``dtype`` was dropped silently. A parameter that does nothing is not a
+    harmless no-op — ``source("image_bytes", width=224)`` reads as a decode
+    size, and ``sink("png", quality=50)`` reads as compression.
+
+    A name absent from *applies* is rejected as well as one that is present but
+    inapplicable. That is what closes an open ``**kwargs`` surface: ``.sink()``
+    took any keyword at all and serialized it into the graph, so
+    ``sink("jpeg", qualtiy=50)`` silently encoded at the default quality.
+
+    Args:
+        kind: ``"source"`` or ``"sink"``, for the message and the hint lookup.
+        fmt: The chosen format.
+        supplied: Parameter name → value, for what the caller actually passed.
+        applies: The authority for this kind (:data:`SOURCE_PARAM_APPLIES` or
+            :data:`SINK_PARAM_APPLIES`).
+    """
+    for name in sorted(supplied):
+        formats = applies.get(name)
+        if formats is None:
+            known = ", ".join(sorted(applies))
+            raise ValueError(f"{name} is not a {kind} parameter (known: {known}).")
+        if fmt in formats:
+            continue
+        spelled = ", ".join(sorted(f.value for f in formats))
+        hint = PARAM_HINTS.get((kind, name))
+        msg = (
+            f"{name} does not apply to the '{fmt.value}' {kind} "
+            f"(it applies to: {spelled})"
+        )
+        raise ValueError(f"{msg}; {hint}." if hint else f"{msg}.")
+
+
+def is_supplied(value: Any, default: Any) -> bool:
+    """Did the caller pass ``value``, or is it the parameter's default?
+
+    Identity first so ``None``/``False`` defaults are exact, then equality for
+    value defaults (``fill_value=255``). A Polars expression short-circuits: no
+    default is an expression, and ``Expr.__ne__`` builds an expression rather
+    than answering, so comparing one would raise "the truth value of an Expr is
+    ambiguous" instead of reporting it as supplied.
+
+    Only needed where a parameter surface has defaults to compare against —
+    ``.sink()`` takes ``**kwargs``, where every key present was passed.
+    """
+    if value is default:
+        return False
+    if isinstance(value, pl.Expr):
+        return True
+    return bool(value != default)
+
+
+#: The sources whose element dtype and rank are resolved from the Polars column
+#: at plan-time-with-input (Rust ``resolved_output_specs``) rather than at build
+#: time. The typed ``list``/``array`` sinks defer to that instead of demanding
+#: an explicit dtype; spelled once because three separate checks in `lazy.py`
+#: carried their own copy of the tuple.
+SOURCES_RESOLVED_FROM_COLUMN: "frozenset[SourceFormat]" = frozenset(
+    {SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO}
+)
 
 
 @dataclass
@@ -825,78 +949,3 @@ class OpSpec:
         for key, value in self.params.items():
             result[key] = value.to_dict()
         return result
-
-
-@dataclass
-class OutputSpec:
-    """
-    Specification for a single output in multi-output mode.
-
-    Represents one output in a multi-output sink, mapping an alias name
-    to a specific format and optional parameters.
-    """
-
-    alias: str  # The user-defined alias name
-    format: SinkFormat  # Output format for this alias
-    quality: int = 85  # For JPEG and WebP
-    shape: list[int] | None = None  # For ARRAY format
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
-        result: dict[str, Any] = {
-            "alias": self.alias,
-            "format": self.format.value,
-        }
-        if self.format == SinkFormat.JPEG or self.format == SinkFormat.WEBP:
-            result["quality"] = self.quality
-        if self.format == SinkFormat.ARRAY and self.shape is not None:
-            result["shape"] = self.shape
-        return result
-
-
-@dataclass
-class MultiSinkSpec:
-    """
-    Specification for multi-output sink mode.
-
-    When `.sink()` is called with a dict of aliases to formats, this
-    captures all the output specifications for the pipeline.
-    """
-
-    outputs: dict[str, OutputSpec]  # alias -> OutputSpec
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
-        return {
-            "outputs": {alias: spec.to_dict() for alias, spec in self.outputs.items()}
-        }
-
-    @classmethod
-    def from_dict_spec(
-        cls,
-        spec: dict[str, str],
-        quality: int = 85,
-    ) -> "MultiSinkSpec":
-        """
-        Create from a simple dict mapping aliases to format strings.
-
-        Args:
-            spec: Dict mapping alias names to format strings (e.g., {"img": "numpy"})
-            quality: JPEG quality for any jpeg outputs.
-
-        Returns:
-            MultiSinkSpec instance.
-
-        Raises:
-            ValueError: If any format is invalid.
-        """
-        outputs: dict[str, OutputSpec] = {}
-        for alias, fmt_str in spec.items():
-            try:
-                fmt = SinkFormat(fmt_str)
-            except ValueError as e:
-                valid = [f.value for f in SinkFormat]
-                msg = f"Invalid format '{fmt_str}' for alias '{alias}'. Valid: {valid}"
-                raise ValueError(msg) from e
-            outputs[alias] = OutputSpec(alias=alias, format=fmt, quality=quality)
-        return cls(outputs=outputs)

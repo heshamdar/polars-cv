@@ -153,3 +153,29 @@ def test_contour_source_rejects_a_dtype_assertion() -> None:
         Pipeline().source("contour", width=8, height=8, dtype="f32")
     with pytest.raises(ValueError, match="use .cast"):
         Pipeline().source("contour", width=8, height=8, dtype="u8")
+
+
+# ---------------------------------------------------------------------------
+# Python-side sink spec classes: unreachable, and wrong where they disagreed
+# ---------------------------------------------------------------------------
+
+
+def test_the_python_sink_spec_dataclasses_are_gone() -> None:
+    """``_types`` must not carry ``SinkSpec``/``OutputSpec``/``MultiSinkSpec``.
+
+    Nothing in the package or the tests referenced them: a sink is built from
+    the raw ``.sink()`` kwargs in ``_graph.py`` and serialized straight into the
+    graph JSON, and the live specs are the Rust ones in ``pipeline.rs``.
+
+    They were not inert. Each held a copy of which sink parameters apply to
+    which format (``if format == JPEG or WEBP: result["quality"]``), and that
+    copy was wrong in the same way the docstrings were — the WebP encoder takes
+    no quality. `SINK_PARAM_APPLIES` is the one place that fact now lives.
+    """
+    import polars_cv._types as types_module
+
+    for name in ("SinkSpec", "OutputSpec", "MultiSinkSpec"):
+        assert not hasattr(types_module, name), (
+            f"{name} was deleted as unreachable; the sink's wire format is "
+            f"Rust's SinkSpec and its parameter table is SINK_PARAM_APPLIES"
+        )

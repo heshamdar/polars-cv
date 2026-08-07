@@ -246,7 +246,7 @@ Rust: view-buffer (the engine)
 | `pipeline.py` | `Pipeline` builder — all image/array operations as chainable methods |
 | `lazy.py` | `LazyPipelineExpr` — lazy `.pipe()`, `.merge_pipe()`, `.sink()`, binary ops |
 | `expressions.py` | `CvNamespace` — the `.cv` accessor registered on Polars expressions (`.pipe()`, `.read_bytes()`, header-only metadata) |
-| `_types.py` | Core type definitions: `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `Domain`, `DType` |
+| `_types.py` | Core type definitions: `OpSpec`, `ParamValue`, `SourceSpec`, `Domain`, `DType`, and the source/sink parameter-applicability tables |
 | `_graph.py` | `PipelineGraph` / `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
 | `_namespace.py` | Shared base for the `.cv`/`.point`/`.contour`/`.bbox` expression namespaces (plugin-registration boilerplate) |
 | `display.py` | `show_images()` — notebook rendering of image columns |
@@ -341,7 +341,7 @@ authority — do not open a side channel.
 | Every spelling of a dtype (short / VIEW wire code / numpy) | `dtype_table!` in `view-buffer/src/core/dtype.rs` | `dtype_single_authority.rs` + `test_no_second_dtype_spelling_table` (a partial dispatch is reported) |
 | Enum variant names crossing the FFI | `named_variants!` + `naming::REGISTRY` | `every_named_enum_is_registered` (a `NAMED` table not in the registry fails), `registered_enums_have_unique_names`, `test_every_rust_enum_is_parity_checked` (iterates `enum_names()`, both directions) |
 | Source format vocabulary | Python `SourceFormat` ↔ Rust `KNOWN_SOURCE_FORMATS` | `test_source_formats_match_the_rust_vocabulary` (runs without the plugin); the graph validator rejects an unlisted format |
-| Which source formats a `source()` keyword applies to | `_SOURCE_PARAM_APPLIES` in `pipeline.py` | `test_every_source_parameter_declares_where_it_applies` (the table's keys must equal `source()`'s keywords), `test_source_applicability_reads_every_parameter`, and a swept parameter × format grid |
+| Which formats a `source()` / `.sink()` parameter applies to | `SOURCE_PARAM_APPLIES` / `SINK_PARAM_APPLIES` in `_types.py`, read by `reject_inapplicable_params` | `test_param_applicability.py`: the source table's keys must equal `source()`'s keywords and the sink table's must equal `SinkSpec`'s wire fields; the check must read `locals()`; swept parameter × format grids; and the `quality` claim is checked against the encoders. Rust `SinkSpec` is `deny_unknown_fields` |
 | `LazyPipelineExpr`'s method surface | generated from `Pipeline` at import | `test_lazy_pipeline_method_parity`, `test_lazy_stub_is_current` |
 | The graph wire format's node fields | `GraphNode` with `#[serde(deny_unknown_fields)]` | Deserialization error — a stale or misspelled key fails the query |
 | Null parameter handling | `NullParamPolicy` on `ParamCtx`, via `ParamCol::on_null` | Reviewed by hand: never add per-op or per-parameter null keywords |

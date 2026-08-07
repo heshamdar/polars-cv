@@ -84,11 +84,24 @@ impl SourceSpec {
 }
 
 /// Sink format specification.
+///
+/// `deny_unknown_fields` closes this end of the wire format, as `GraphNode`
+/// does for the node end. `.sink()` takes `**kwargs` and spreads them straight
+/// into this object, so every key here was a user keyword: an unknown one was
+/// serialized into the graph and then dropped by serde, and `sink("jpeg",
+/// qualtiy=50)` encoded at the default quality with nothing said. Python now
+/// rejects the keyword at build time (`SINK_PARAM_APPLIES`); this is what stops
+/// a hand-built graph from carrying a field nothing reads.
+///
+/// `OpSpec` below is the documented exception — its parameters ride on
+/// `#[serde(flatten)]`, which serde documents as incompatible with this — and
+/// it is not a precedent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SinkSpec {
     /// The format of the output data.
     pub format: String,
-    /// JPEG quality (for jpeg format).
+    /// JPEG quality (jpeg only — the WebP encoder takes no quality argument).
     #[serde(default = "default_quality")]
     pub quality: u8,
     /// Output shape (for array format).

@@ -24,7 +24,7 @@ The **user-facing Python layer**. Responsible for:
 | `pipeline.py` | `Pipeline` builder — source, operations, domain/dtype/shape tracking |
 | `lazy.py` | `LazyPipelineExpr` — lazy composition, `.pipe()`, `.merge_pipe()`, `.alias()`, `.sink()`, binary ops |
 | `expressions.py` | `CvNamespace` — `.cv.pipe()`, `.cv.read_bytes()`, `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()` |
-| `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `SinkSpec`, `DType`, `ColorSpace`, `Domain` |
+| `_types.py` | `OpSpec`, `ParamValue`, `SourceSpec`, `DType`, `ColorSpace`, `Domain`, the parameter-applicability tables |
 | `_graph.py` | `PipelineGraph`, `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
 | `_graph_viz.py` | Graph visualization (networkx/graphviz) |
 | `display.py` | `show_images()` — notebook image rendering, format detection, VIEW/numpy to PNG |
@@ -348,13 +348,16 @@ its own params and reads no input at all. `rasterize` is the case, and
 it a fully determined mask published no shape, and `sink("array")` demanded an
 explicit one.
 
-A source keyword that does not apply to the chosen format is rejected, from
-one table (`_SOURCE_PARAM_APPLIES`) listing each parameter against the formats
-whose decode reads it. `source()` passes the check its own `locals()`, so the
-validated set is the parameter set; `thumbnail()` reads the table too, since it
-writes `decode_max_size`. Do not add a per-parameter check beside it — that is
-what produced one raise, one warning and five silent drops for the same
-question.
+A `source()` or `.sink()` parameter that the chosen format never reads is
+rejected, from one table per surface (`SOURCE_PARAM_APPLIES`,
+`SINK_PARAM_APPLIES` in `_types.py`) read by one `reject_inapplicable_params`.
+A name absent from the table is rejected too, which is what closes `.sink()`'s
+open `**kwargs`; Rust's `SinkSpec` is `deny_unknown_fields` so the wire is shut
+as well. `source()` passes the check its own `locals()`, so the validated set is
+the parameter set, and `thumbnail()` reads the table since it writes
+`decode_max_size`. Do not add a per-parameter check beside it — that is what
+produced one raise, one warning and five silent drops on the source side, and an
+open keyword surface on the sink side.
 
 `source("contour")` publishes that same contract: its decode *is* a rasterize,
 so `_seed_from_contour_rasterize` folds `GeometryOp::Rasterize`'s rules (rank 3,
