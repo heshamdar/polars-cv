@@ -1034,7 +1034,10 @@ class Pipeline:
                 - "array": Polars fixed-size Array column
                 - "file_path": Read from path (local, s3://, gs://, az://,
                   http://); decodes like ``"image_bytes"``
-                - "contour": Rasterize contour struct to binary mask
+                - "contour": Rasterize geometry to a binary mask. The column
+                  may hold one contour per row (``CONTOUR_SCHEMA``) or a whole
+                  set (``List(CONTOUR_SCHEMA)``, what ``extract_contours()``
+                  sinks); a set paints the union of its members.
             dtype: For ``"raw"``: required data type of the raw bytes.
                 For ``"image_bytes"`` / ``"file_path"``: asserts the expected
                 dtype — at runtime, images with a different dtype are cast to
@@ -3083,13 +3086,19 @@ class Pipeline:
         background: IntOrExpr = 0,
     ) -> "Pipeline":
         """
-        Rasterize contour to a binary mask.
+        Rasterize contours to a binary mask.
 
         A pixel is filled when its centre — ``(x + 0.5, y + 0.5)`` — lies inside
         the contour, boundary included; holes are cut out by the same rule. This
         is the convention ``contains_point`` and the area measures follow, so for
         a shape whose vertices are integers on axis-aligned edges the mask holds
         exactly ``area()`` pixels.
+
+        The contour domain carries a *set* — ``extract_contours()`` generally
+        yields more than one — and the mask is their union: each member's
+        exterior minus its own holes. One member's hole never erases another's
+        fill, and the result does not depend on the set's order. ``fill_value``
+        and ``background`` may be inverted; the same region is painted either way.
 
         Args:
             width: Mask width.

@@ -329,6 +329,43 @@ pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
     }
 }
 
+/// Parse geometry that may be a single contour or a whole set of them.
+///
+/// The contour source's entry point, so a mask can be rasterized from either
+/// shape a geometry column takes: `extract_contours().sink("native")` emits
+/// `List[Contour]`, while a hand-written contour column is one `Struct` per row.
+/// Both arrive here and leave as a set; the rasterizer paints their union.
+///
+/// The two list forms are told apart by the element dtype, not by trying one and
+/// falling back: a `List` whose elements are point structs (an `x` and a `y`
+/// field) is one contour's ring, anything else in a `List` is a set of contours.
+/// A fallback would have to guess, and guessing wrong on a contour set is what
+/// used to surface as `Point struct missing 'x' field`.
+///
+/// Accepted forms:
+/// - `List[Contour]` — a contour set (elements are parsed by [`parse_contour`])
+/// - anything [`parse_contour`] accepts — a single contour, as a one-element set
+/// - null — the empty set, which rasterizes to an all-background mask
+pub(crate) fn parse_contour_set(value: &AnyValue) -> PolarsResult<Vec<Contour>> {
+    match value {
+        AnyValue::Null => Ok(Vec::new()),
+        AnyValue::List(series) if !is_point_dtype(series.dtype()) => parse_contour_list(value),
+        _ => Ok(vec![parse_contour(value)?]),
+    }
+}
+
+/// Does this dtype describe a point (`{x, y}`) rather than a contour?
+///
+/// Reads the same field names [`extract_points_from_series`] reads, so the
+/// dispatch above cannot admit something the parser then rejects.
+fn is_point_dtype(dtype: &DataType) -> bool {
+    let DataType::Struct(fields) = dtype else {
+        return false;
+    };
+    let named = |wanted: [&str; 2]| fields.iter().any(|f| wanted.contains(&f.name().as_str()));
+    named(["x", "X"]) && named(["y", "Y"])
+}
+
 /// Parse a list of contours from an AnyValue list expression.
 pub(crate) fn parse_contour_list(value: &AnyValue) -> PolarsResult<Vec<Contour>> {
     match value {
@@ -1841,6 +1878,86 @@ mod parse_contour_tests {
         let renamed = AnyValue::StructOwned(Box::new((values, fields)));
         let parsed = parse_contour(&renamed).expect("'points' alias must parse");
         assert_eq!(parsed.exterior.len(), 4);
+    }
+
+    /// Build a `List` AnyValue over `dtype` from the given elements.
+    fn list_of(elements: Vec<AnyValue<'static>>, dtype: &DataType) -> AnyValue<'static> {
+        let series =
+            Series::from_any_values_and_dtype(PlSmallStr::from_static("s"), &elements, dtype, true)
+                .expect("test list must build");
+        AnyValue::List(series)
+    }
+
+    /// The dtype `extract_contours().sink("native")` emits, element-wise.
+    fn contour_dtype() -> DataType {
+        let point = DataType::Struct(vec![
+            Field::new(PlSmallStr::from_static("x"), DataType::Float64),
+            Field::new(PlSmallStr::from_static("y"), DataType::Float64),
+        ]);
+        DataType::Struct(vec![
+            Field::new(
+                PlSmallStr::from_static("exterior"),
+                DataType::List(Box::new(point.clone())),
+            ),
+            Field::new(
+                PlSmallStr::from_static("holes"),
+                DataType::List(Box::new(DataType::List(Box::new(point)))),
+            ),
+            Field::new(PlSmallStr::from_static("is_closed"), DataType::Boolean),
+        ])
+    }
+
+    #[test]
+    fn parse_contour_set_reads_a_list_of_contours() {
+        let a = square_with_hole();
+        let b = Contour::new(vec![
+            Point::new(20.0, 20.0),
+            Point::new(30.0, 20.0),
+            Point::new(30.0, 30.0),
+        ]);
+        let value = list_of(
+            vec![contour_to_anyvalue(&a), contour_to_anyvalue(&b)],
+            &contour_dtype(),
+        );
+
+        let parsed = parse_contour_set(&value).expect("a contour set must parse");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].holes.len(), 1);
+        assert_eq!(parsed[1].exterior.len(), 3);
+    }
+
+    #[test]
+    fn parse_contour_set_reads_a_bare_ring_as_one_contour() {
+        // The dispatch is by element dtype: a list of *points* is one contour's
+        // ring, not a set. Guessing here is what surfaced as "Point struct
+        // missing 'x' field" when a genuine set arrived.
+        let av = contour_to_anyvalue(&square_with_hole());
+        let AnyValue::StructOwned(boxed) = av else {
+            panic!("contour_to_anyvalue must build a struct");
+        };
+        let (values, _) = *boxed;
+        let parsed = parse_contour_set(&values[0]).expect("a ring must parse");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].exterior.len(), 4);
+    }
+
+    #[test]
+    fn parse_contour_set_reads_a_lone_struct_as_a_set_of_one() {
+        let contour = square_with_hole();
+        let parsed =
+            parse_contour_set(&contour_to_anyvalue(&contour)).expect("a struct must parse");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].exterior, contour.exterior);
+    }
+
+    #[test]
+    fn parse_contour_set_reads_null_and_empty_as_the_empty_set() {
+        assert!(parse_contour_set(&AnyValue::Null)
+            .expect("null must parse")
+            .is_empty());
+        assert!(parse_contour_set(&list_of(vec![], &contour_dtype()))
+            .expect("an empty list must parse")
+            .is_empty());
     }
 
     #[test]

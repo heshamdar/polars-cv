@@ -104,6 +104,38 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **The contour round trip did not close: `source("contour")` could not read a
+  contour set.** `extract_contours().sink("native")` emits `List(CONTOUR_SCHEMA)`
+  — one *set* per row — but the source parsed a single `Struct` per row and read
+  a list as one contour's ring of points. Feeding the sink's own output back in
+  therefore failed with `Point struct missing 'x' field`, the contour struct's
+  `exterior`/`holes`/`is_closed` being read as a point's `x`/`y`. The asymmetry
+  was known and worked around in `test_schema_parity_sources.py`, which fed back
+  a single element of the set rather than the set.
+
+  The source now reads both shapes, through one parser (`parse_contour_set`).
+  The two list forms are told apart by element dtype — a `List` of point structs
+  is a ring, anything else in a `List` is a set — rather than by trying one and
+  falling back, because the fallback is what turned a legitimate contour set
+  into a complaint about points. Both shapes are now swept by
+  `test_schema_parity_sources.py::test_contour_source`.
+
+- **Rasterizing more than one contour with `fill_value < background` returned an
+  all-background canvas.** The graph executor rendered each contour to its own
+  mask and folded them with `max`, which is only union-like when the fill value
+  is the larger of the two: `rasterize(fill_value=0, background=255)` silently
+  erased every region as soon as the contour set held two of them (one contour
+  was fine, which is why it survived). Sequential painting into one canvas would
+  have swapped that for a different fault — a later contour's hole eating an
+  earlier contour's fill, making the mask depend on the set's order.
+
+  `rasterize` now takes the whole set, resolves coverage as a union first and
+  colours it once, so neither fault is reachable and the single-contour case is
+  the same path (`rasterize_one`) rather than a second implementation. The
+  contour source and the `rasterize` op share it, so a mask no longer depends on
+  which of the two routes produced it — asserted by
+  `TestMaskContourRoundTrip::test_the_two_routes_to_a_mask_agree`.
+
 - **The runtime series builders read the data to decide the schema.**
   `build_typed_list_series_from_rows_with_dtype` took both the element dtype
   and the nesting depth from the *first non-null row*, using the planner's

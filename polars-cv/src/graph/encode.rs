@@ -10,7 +10,7 @@ use polars::chunked_array::builder::ListPrimitiveChunkedBuilder;
 use polars::prelude::*;
 use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Contour};
 use view_buffer::ops::NodeOutput;
-use view_buffer::{BinaryOp, GeometryOp, Op, PlannedDType, ViewBuffer};
+use view_buffer::{GeometryOp, Op, PlannedDType, ViewBuffer};
 
 use crate::contour::contour_to_anyvalue;
 
@@ -56,21 +56,16 @@ pub(crate) fn execute_geometry_op(
             let contours = input
                 .as_contours()
                 .ok_or_else(|| "Rasterize requires Contour input".to_string())?;
-            if contours.is_empty() {
-                let mask = ViewBuffer::from_vec_with_shape(
-                    vec![*background; (*height as usize) * (*width as usize)],
-                    vec![*height as usize, *width as usize, 1],
-                );
-                Ok(NodeOutput::from_buffer(mask))
-            } else {
-                // Render all contours onto the same canvas by folding with max.
-                let mut canvas = rasterize(&contours[0], *width, *height, *fill_value, *background);
-                for c in &contours[1..] {
-                    let overlay = rasterize(c, *width, *height, *fill_value, *background);
-                    canvas = BinaryOp::Maximum.execute(&canvas, &overlay);
-                }
-                Ok(NodeOutput::from_buffer(canvas))
-            }
+            // The whole set in one call: `rasterize` paints their union, which
+            // is order-independent and honours an inverted fill/background pair.
+            // Folding per-contour masks with `max` here did neither.
+            Ok(NodeOutput::from_buffer(rasterize(
+                contours,
+                *width,
+                *height,
+                *fill_value,
+                *background,
+            )))
         }
         GeometryOp::Area { signed } => {
             let contours = input
