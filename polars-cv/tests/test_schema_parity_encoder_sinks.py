@@ -161,27 +161,51 @@ def test_float_tiff_is_allowed_when_single_channel() -> None:
 
 
 @plugin_required
-def test_an_unknown_dtype_is_not_refused() -> None:
-    """An unknown is permission, not a rejection — the residual, pinned.
+def test_a_promoted_but_unresolved_dtype_is_still_refused() -> None:
+    """The planner does not need the exact dtype, only enough of it.
 
-    A source whose decode dtype is still ``"auto"`` genuinely has no dtype at
-    plan time, and the float-promoting ops keep it ``"auto"`` rather than
-    resolving to f32. So ``source("image_bytes").scale(...)`` into a codec sink
-    still plans and still fails in the encoder.
+    ``source("image_bytes")`` has no dtype at plan time — a PNG decodes u8 or
+    u16, a TIFF f32 or f64 — and the float-promoting ops keep it unresolved
+    because the answer is f32 *or* f64 depending on the input. That used to
+    read as "unknown", which `check_planned` treats as permission, so
+    `scale(...)` into a JPEG sink planned `Binary` and died in the encoder.
 
-    That is the honest limit of a plan-time check, not an oversight: refusing
-    on an unknown would break every correct ``auto``-dtype pipeline. Closing it
-    means teaching the dtype rules that ``PromoteToFloat`` of an unknown is
-    still *some* float, which is a change to the rule vocabulary. This test
-    records the boundary so a future fix moves it deliberately.
+    `PlannedDType::SomeFloat` carries the part that *is* known. No float is an
+    8-bit sample whichever float it is, so the sink is refused while planning.
     """
     pipe = Pipeline().source("image_bytes").scale(factor=2.0)
     assert pipe.output_dtype() == "auto", (
-        "if PromoteToFloat now resolves an auto input, this residual is closable "
-        "— extend dtype_for_output's check and delete this test"
+        "the Python planner still reports 'auto'; the refinement happens in "
+        "Rust's resolved_output_specs, which has the input column"
     )
 
-    lf = _df().lazy().with_columns(out=pl.col("img").cv.pipe(pipe).sink("jpeg"))
-    assert lf.collect_schema()["out"] == pl.Binary
-    with pytest.raises(Exception, match="8-bit format"):
-        lf.collect(engine="streaming")
+    result = plan_or_reject(_df(), lambda: pl.col("img").cv.pipe(pipe).sink("jpeg"))
+    assert result.outcome is Outcome.REJECTED_AT_PLAN, (
+        f"expected a plan-time refusal, got {result.outcome.name} "
+        f"(planned {result.planned!r})"
+    )
+    assert "floating point" in (result.reason or ""), result.reason
+
+
+@plugin_required
+def test_an_unresolved_dtype_that_could_encode_is_not_refused() -> None:
+    """Permissiveness is preserved where the constraint does not bite.
+
+    The same unresolved source *without* a promoting op could still decode to
+    u8, so PNG must plan. A check that refused here would break every correct
+    `auto`-dtype pipeline — the failure mode that made the naive fix unsafe.
+    """
+    for pipe, sink in [
+        (Pipeline().source("image_bytes"), "png"),
+        (Pipeline().source("image_bytes"), "jpeg"),
+        (Pipeline().source("image_bytes").grayscale(), "png"),
+        # A float that TIFF *can* carry: greyscale.
+        (Pipeline().source("image_bytes").grayscale().scale(factor=2.0), "tiff"),
+    ]:
+        result = plan_or_reject(
+            _df(), lambda p=pipe, s=sink: pl.col("img").cv.pipe(p).sink(s)
+        )
+        assert result.outcome is Outcome.OK, (
+            f"{sink} was refused for an unresolved dtype that could encode: "
+            f"{result.reason}"
+        )

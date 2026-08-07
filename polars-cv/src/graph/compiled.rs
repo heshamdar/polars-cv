@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use view_buffer::geometry::label::score_contours_on_buffer;
 use view_buffer::ops::NodeOutput;
-use view_buffer::{ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
 use crate::execute::{
@@ -1330,18 +1330,27 @@ fn resolve_one_output_spec(graph: &UnifiedGraph, spec: &mut OutputSpec, dt: &Dat
     let inferred_dtype_str = dtype_from_polars_leaf(&leaf_dtype).map(|d| d.short_name());
 
     {
-        if spec.expected_dtype == "auto" {
-            match &leaf_dtype {
-                // Image/file sources: cannot infer buffer dtype from column type.
-                DataType::Binary | DataType::String | DataType::Null => {}
-                // List/array sources: leaf type is meaningful, when it maps to
-                // a buffer element type at all. If it does not, leave "auto"
-                // rather than asserting a dtype the column does not have.
-                _ => {
-                    if let Some(s) = inferred_dtype_str {
-                        spec.expected_dtype = s.to_string();
-                    }
-                }
+        if !PlannedDType::parse(&spec.expected_dtype).is_some_and(|d| d.is_concrete()) {
+            // The *source* element type, as far as the column reveals it. A
+            // Binary/String column says nothing (a PNG decodes u8 or u16, a
+            // TIFF f32 or f64); a list/array column's leaf type is meaningful
+            // when it maps to a buffer element type at all.
+            let source_dtype = match &leaf_dtype {
+                DataType::Binary | DataType::String | DataType::Null => PlannedDType::Unknown,
+                _ => inferred_dtype_str
+                    .and_then(PlannedDType::parse)
+                    .unwrap_or(PlannedDType::Unknown),
+            };
+            // Fold the ops' dtype rules over it, exactly as the rank is folded
+            // below. Assigning the *column's* type directly was wrong for any
+            // lineage that changes the dtype: `source("list")` over a u8 column
+            // followed by `scale()` was planned u8 and executed f32. Folding
+            // also recovers information from an unknown source — every rule but
+            // PreserveInput either fixes the dtype or pins it to a float.
+            let folded =
+                fold_output_dtype(graph, &spec.node, source_dtype).unwrap_or(PlannedDType::Unknown);
+            if folded != PlannedDType::Unknown {
+                spec.expected_dtype = folded.as_str().to_string();
             }
         }
         // Output rank was left unknown by the Python planner (source rank was
@@ -1418,6 +1427,40 @@ fn fold_output_rank(graph: &UnifiedGraph, node_id: &str, source_rank: usize) -> 
         };
     }
     Some(rank)
+}
+
+/// Fold the ops' dtype rules from *source_dtype* to this node's output.
+///
+/// The dtype twin of [`fold_output_rank`], and it exists for the same reason:
+/// the *source's* element type is not the *output's* element type once an op
+/// changes it. `resolved_output_specs` used to assign the input column's leaf
+/// type straight to the output, so `source("list")` over a `List(UInt8)` column
+/// followed by `scale()` published `List(UInt8)` for data that arrives f32.
+///
+/// Returns `None` if any op in the lineage cannot be resolved, which the caller
+/// treats as "unknown" — the same conservative outcome as before.
+fn fold_output_dtype(
+    graph: &UnifiedGraph,
+    node_id: &str,
+    source_dtype: PlannedDType,
+) -> Option<PlannedDType> {
+    let node = graph.nodes.get(node_id)?;
+    // As in `fold_output_rank`, the primary upstream carries the lineage.
+    // Multi-input steps whose dtype genuinely depends on both operands (the
+    // binary ops) declare `PreserveInput` and are resolved by the Python
+    // planner's `binary_output_dtype`, which has both sides; reaching here with
+    // one still-unknown operand simply yields unknown.
+    let mut dtype = match node.upstream.first() {
+        Some(up) => fold_output_dtype(graph, up, source_dtype)?,
+        None => source_dtype,
+    };
+    for op in &node.ops {
+        let step = crate::resolve_op_from_json(&op_probe_json(op)).ok()?;
+        // `out_dtype` overrides ride on the op's own params, which
+        // `op_probe_json` preserves, so the step's rule already reflects them.
+        dtype = step.output_dtype_rule().resolve_planned(dtype, None);
+    }
+    Some(dtype)
 }
 
 /// Recursively peel List/Array nesting to find the leaf dtype and depth.
