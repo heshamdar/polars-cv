@@ -542,3 +542,132 @@ class TestContourSourceIntegration:
         # Threshold should produce binary output
         unique_values = set(np.unique(arr))
         assert unique_values.issubset({0, 255}), f"Expected binary, got {unique_values}"
+
+
+def _contract(pipe: Pipeline) -> dict:
+    """The plan-time buffer contract a pipeline publishes."""
+
+    def dim(value) -> "int | None":
+        return None if value is None or value.is_expr else value.value
+
+    hints = pipe._shape_hints
+    return {
+        "domain": pipe.current_domain(),
+        "ndim": pipe._expected_ndim,
+        "dtype": pipe.output_dtype(),
+        "height": dim(hints.height),
+        "width": dim(hints.width),
+        "channels": dim(hints.channels),
+    }
+
+
+@plugin_required
+class TestContourSourcePlanTimeContract:
+    """What `source("contour")` promises before a row is read.
+
+    The source decodes by rasterizing, so its output is the `rasterize` op's
+    output: an `[H, W, 1]` u8 mask. It used to publish only a hand-written
+    rank 3 — no dtype, no channels, no canvas — which is a weaker claim than
+    the op's *and* a duplicate of the part it did state.
+    """
+
+    @staticmethod
+    def _via_op(**kwargs) -> Pipeline:
+        return Pipeline().source("image_bytes").extract_contours().rasterize(**kwargs)
+
+    def test_the_source_and_the_op_publish_the_same_contract(self) -> None:
+        """One mask, one plan-time statement, whichever route builds it.
+
+        The equality is the guard: re-hardcoding the rank here, or letting the
+        dtype fall back to "auto", makes the two routes disagree.
+        """
+        assert _contract(
+            Pipeline().source("contour", width=100, height=64)
+        ) == _contract(self._via_op(width=100, height=64))
+
+    def test_it_states_the_whole_contract_not_just_the_rank(self) -> None:
+        """Rank, dtype, channels and canvas — all four, from the op's rules."""
+        assert _contract(Pipeline().source("contour", width=100, height=64)) == {
+            "domain": "buffer",
+            "ndim": 3,
+            "dtype": "u8",
+            "height": 64,
+            "width": 100,
+            "channels": 1,
+        }
+
+    def test_a_per_row_dimension_is_unknown_not_guessed(self) -> None:
+        """An expression canvas has no plan-time size; the rest still holds."""
+        contract = _contract(Pipeline().source("contour", width=pl.col("w"), height=64))
+        assert contract["width"] is None
+        assert (contract["ndim"], contract["dtype"], contract["channels"]) == (
+            3,
+            "u8",
+            1,
+        )
+        assert contract == _contract(self._via_op(width=pl.col("w"), height=64))
+
+    def test_a_shape_reference_carries_the_referenced_canvas(self) -> None:
+        """`shape=<node>` publishes that node's size, and unknown when it has none.
+
+        Introspection has to hand the op *some* width/height to resolve it at
+        all; they are expression placeholders precisely so this reports the
+        canvas as unknown rather than publishing the placeholder as a 1x1 fact.
+        """
+        sized = pl.col("i").cv.pipe(
+            Pipeline().source("image_bytes").resize(width=32, height=16)
+        )
+        unsized = pl.col("i").cv.pipe(Pipeline().source("image_bytes"))
+
+        from_sized = _contract(Pipeline().source("contour", shape=sized))
+        assert (from_sized["height"], from_sized["width"]) == (16, 32)
+        assert from_sized == _contract(self._via_op(shape=sized))
+
+        from_unsized = _contract(Pipeline().source("contour", shape=unsized))
+        assert (from_unsized["height"], from_unsized["width"]) == (None, None)
+        assert from_unsized == _contract(self._via_op(shape=unsized))
+
+    @pytest.mark.parametrize("sink", ["array", "list"])
+    def test_the_published_schema_is_the_one_that_arrives(self, sink: str) -> None:
+        """A typed sink plans off the contract, and the data matches it.
+
+        Both sinks need a concrete element dtype, so with the dtype left "auto"
+        neither could be planned at all and a no-op `.cast("u8")` was the only
+        way through. The `array` sink additionally needs the canvas.
+        """
+        column = pl.Series("c", [create_square_contour(1, 1, 6)], dtype=CONTOUR_SCHEMA)
+        frame = pl.DataFrame({"c": column})
+        expr = (
+            pl.col("c")
+            .cv.pipe(Pipeline().source("contour", width=12, height=10))
+            .sink(sink)
+        )
+
+        planned = frame.lazy().select(out=expr).collect_schema()["out"]
+        actual = frame.lazy().select(out=expr).collect()["out"].dtype
+        assert planned == actual
+
+    def test_the_rasterize_op_publishes_a_sinkable_shape(self) -> None:
+        """The op half of the same fix: `rasterize().sink("array")` needs no shape.
+
+        `GeometryOp::Rasterize::infer_shape` always described this canvas, and
+        the op's docstring said so, but the planner declined to ask for it
+        because the contour domain has no input rank — so a fully determined
+        mask still demanded an explicit `shape=` at the sink.
+        """
+        expr = (
+            pl.col("img")
+            .cv.pipe(
+                Pipeline()
+                .source("image_bytes")
+                .grayscale()
+                .threshold(128)
+                .extract_contours()
+                .rasterize(width=12, height=10)
+            )
+            .sink("array")
+        )
+        frame = pl.DataFrame({"img": [b""]})
+        assert frame.lazy().select(out=expr).collect_schema()["out"] == pl.Array(
+            pl.UInt8, (10, 12, 1)
+        )

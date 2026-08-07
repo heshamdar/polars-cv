@@ -337,7 +337,23 @@ yields a `None` output dim. This covers every op uniformly — including rotatio
 (static 90/270 swap, static-angle expand bounding box, and expression-angle
 "unknown", all computed by the Rust `RotateAffine`/`Rotate90` `infer_shape`).
 Channels stay with `_update_channels_from_rule` (the channel rule); rank stays
-with `op_schema`.
+with `op_schema`. The three fold together in `_apply_shape_contract`.
+
+An unknown input rank normally means "do not ask": `infer_shape` indexes the
+input shape, so a fabricated one publishes a fabricated result. The exception is
+a step that *builds* a buffer out of a non-buffer domain — `input_domains`
+excludes buffer, `output_domain` is buffer — whose output geometry comes from
+its own params and reads no input at all. `rasterize` is the case, and
+`_input_dims_for` recognises it from the contract rather than by name. Without
+it a fully determined mask published no shape, and `sink("array")` demanded an
+explicit one.
+
+`source("contour")` publishes that same contract: its decode *is* a rasterize,
+so `_seed_from_contour_rasterize` folds `GeometryOp::Rasterize`'s rules (rank 3,
+u8, one channel, the canvas) through the same FFI instead of the source hand-
+writing a rank. The spec it builds is never appended to `_ops` — the rasterize
+already happens inside the decode. Whatever the two routes to a mask publish,
+they publish it identically (`TestContourSourcePlanTimeContract`).
 
 ## Common Pitfalls
 
@@ -347,5 +363,5 @@ with `op_schema`.
   contract makes planned and executed schemas diverge (caught by the
   plan==exec tests in `test_sanitation.py`).
 - **Expression params must be tracked.** If an op accepts `pl.Expr` parameters, they must go through `_track_expr()` to be serialized to Rust.
-- **The `auto` dtype.** Sources like `image_bytes` and `file_path` have dtype `auto` because the actual dtype is only known at execution time (after decoding). Operations that need a known dtype (like `sink("list")` or `sink("array")`) must have it resolved before the sink, either via `source(..., dtype="f32")`, `.cast(...)`, or a dtype-fixing operation.
+- **The `auto` dtype.** Sources like `image_bytes` and `file_path` have dtype `auto` because the actual dtype is only known at execution time (after decoding). Operations that need a known dtype (like `sink("list")` or `sink("array")`) must have it resolved before the sink, either via `source(..., dtype="f32")`, `.cast(...)`, or a dtype-fixing operation. `contour` is *not* one of them — rasterizing fixes u8, so it publishes u8 and rejects a `dtype=` assertion rather than accepting one it never reads.
 - **Continuation nodes must inherit upstream typing context.** In `LazyPipelineExpr.pipe()` for op-only continuation pipelines (`source is None`), compute node domain/dtype/ndim using upstream state + new ops. Copying op-only pipeline typing state can cause contract drift (planned dtype mismatch at execution).
