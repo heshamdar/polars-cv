@@ -153,15 +153,20 @@ pub(crate) fn resolve_op_from_json_probe(
     let keep_named = op_spec.op == "label_reduce";
     // rasterize-by-shape-reference carries no width/height (they come from
     // another node's buffer at execution, via the RasterizeShapeRef
-    // resolver). Give introspection placeholder dims; the structural schema
-    // never depends on their values.
+    // resolver). Give introspection placeholder dims so the op resolves; the
+    // structural schema never depends on their values.
+    //
+    // They are *expression* placeholders, not literals, because `op_infer_shape`
+    // does read their values: it reports a dimension as known only when it is
+    // identical across probes, and a literal placeholder would publish a 1x1
+    // canvas as fact for a mask sized by another node.
     if op_spec.op == "rasterize" && op_spec.params.contains_key("shape_ref") {
         for dim in ["width", "height"] {
             op_spec
                 .params
                 .entry(dim.to_string())
-                .or_insert(ParamValue::Literal {
-                    value: serde_json::json!(1),
+                .or_insert(ParamValue::Expr {
+                    col: Some("__shape_ref__".to_string()),
                 });
         }
     }

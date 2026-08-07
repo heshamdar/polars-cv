@@ -134,3 +134,38 @@ class TestOpInferShapeAuthority:
 
         j = self._op_json(Pipeline().source("image_bytes").rotate(pl.col("a")))
         assert op_infer_shape(j, [100, 50, 3]) == [None, None, 3]
+
+    def test_rasterize_literal_canvas_is_known_from_no_input(self) -> None:
+        """The contour domain has no input shape; the canvas is the op's own.
+
+        Asked with no input dims, because that is what a contour input is —
+        `infer_shape` reads none for this op. Answering here is what lets the
+        planner publish a shape for a mask at all.
+        """
+        from polars_cv._lib import op_infer_shape
+
+        j = self._op_json(
+            Pipeline()
+            .source("image_bytes")
+            .extract_contours()
+            .rasterize(width=12, height=10)
+        )
+        assert op_infer_shape(j, []) == [10, 12, 1]
+
+    def test_rasterize_by_shape_reference_is_unknown(self) -> None:
+        """A canvas that comes from another node is not a fact about this op.
+
+        `shape=<node>` carries no width/height, so introspection has to supply
+        placeholders for the op to resolve at all. Literal placeholders made
+        this report a 1x1 canvas — identical across probes, therefore published
+        as known — which is a fabricated shape for a mask sized elsewhere.
+        """
+        from polars_cv._lib import op_infer_shape
+
+        shape = pl.col("i").cv.pipe(
+            Pipeline().source("image_bytes").resize(width=32, height=16)
+        )
+        j = self._op_json(
+            Pipeline().source("image_bytes").extract_contours().rasterize(shape=shape)
+        )
+        assert op_infer_shape(j, []) == [None, None, 1]

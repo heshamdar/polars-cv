@@ -19,8 +19,10 @@ use super::contour::{Contour, Point};
 /// masks with `max`, which is what the graph executor used to do, quietly
 /// returned an all-background canvas for an inverted pair.
 ///
-/// A single contour goes through the same path — see [`rasterize_one`], which is
-/// the caller-facing shorthand rather than a second implementation.
+/// A single contour is the one-element case, not a separate entry point: every
+/// caller holds a set (`parse_contour_set` for the contour source, the contour
+/// domain's own vector for the `rasterize` op), so there is nothing for a
+/// single-contour shorthand to serve.
 ///
 /// # Arguments
 /// * `contours` - The contours to rasterize; an empty set paints nothing
@@ -66,23 +68,6 @@ pub fn rasterize(
         .collect();
 
     ViewBuffer::from_vec_with_shape(data, vec![h, w, 1])
-}
-
-/// Rasterizes a single contour — [`rasterize`] over a one-element set.
-pub fn rasterize_one(
-    contour: &Contour,
-    width: u32,
-    height: u32,
-    fill_value: u8,
-    background: u8,
-) -> ViewBuffer {
-    rasterize(
-        std::slice::from_ref(contour),
-        width,
-        height,
-        fill_value,
-        background,
-    )
 }
 
 /// Scanline polygon fill algorithm.
@@ -215,10 +200,16 @@ mod tests {
         Contour::from_tuples(&[(10.0, 10.0), (90.0, 10.0), (90.0, 90.0), (10.0, 90.0)])
     }
 
+    /// The one-element set, spelled once so the single-contour tests read as
+    /// what they are: `rasterize` over a set of one.
+    fn one(contour: &Contour) -> [Contour; 1] {
+        [contour.clone()]
+    }
+
     #[test]
     fn test_rasterize_shape() {
         let contour = square_contour();
-        let mask = rasterize_one(&contour, 100, 100, 255, 0);
+        let mask = rasterize(&one(&contour), 100, 100, 255, 0);
 
         assert_eq!(mask.shape(), &[100, 100, 1]);
         assert_eq!(mask.dtype(), DType::U8);
@@ -227,7 +218,7 @@ mod tests {
     #[test]
     fn test_rasterize_content() {
         let contour = square_contour();
-        let mask = rasterize_one(&contour, 100, 100, 255, 0);
+        let mask = rasterize(&one(&contour), 100, 100, 255, 0);
 
         // Access the data
         let data = mask.to_contiguous();
@@ -257,7 +248,7 @@ mod tests {
         ];
         let contour = Contour::with_holes(exterior, vec![hole]);
 
-        let mask = rasterize_one(&contour, 100, 100, 255, 0);
+        let mask = rasterize(&one(&contour), 100, 100, 255, 0);
         let data = mask.to_contiguous();
         let ptr = unsafe { data.as_ptr::<u8>() };
         let slice = unsafe { std::slice::from_raw_parts(ptr, 100 * 100) };
@@ -310,7 +301,7 @@ mod tests {
         // An axis-aligned box on integer coordinates puts no pixel centre on an
         // edge, so the count is the area exactly. Filling [10, 90] rasterized 81
         // columns before the span rounding was fixed.
-        let mask = rasterize_one(&square_contour(), 100, 100, 1, 0);
+        let mask = rasterize(&one(&square_contour()), 100, 100, 1, 0);
         let painted: u32 = mask_pixels(&mask, 100 * 100)
             .iter()
             .map(|&v| v as u32)
@@ -321,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_rasterize_zero_sized_canvas_is_empty() {
-        let mask = rasterize_one(&square_contour(), 0, 0, 255, 0);
+        let mask = rasterize(&one(&square_contour()), 0, 0, 255, 0);
         assert_eq!(mask.shape(), &[0, 0, 1]);
     }
 

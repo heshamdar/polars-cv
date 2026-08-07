@@ -678,7 +678,7 @@ class Pipeline:
         input_ndim = self._expected_ndim
         self._ops.append(spec)
         if update_dtype:
-            self._update_output_dtype()
+            self._update_output_dtype(spec)
         self._update_shape_hints(contract=contract, input_ndim=input_ndim)
         # An assertion recorded *after* this op outranks what the contract
         # inferred. rasterize(shape=<node>) is the case that needs it: its
@@ -777,10 +777,10 @@ class Pipeline:
             f"extract_contours() for buffer→contour)."
         )
 
-    def _update_output_dtype(self) -> None:
+    def _update_output_dtype(self, spec: "OpSpec") -> None:
         """
-        Apply the just-appended operation's schema effect (domain, dtype,
-        ndim) to the pipeline's tracked state.
+        Apply an operation's schema effect (domain, dtype, ndim) to the
+        pipeline's tracked state.
 
         Incremental: exactly one ``op_schema`` FFI call per appended op (the
         old implementation replayed every prior op from the already-evolved
@@ -788,12 +788,15 @@ class Pipeline:
         reductions' ndim). Domain now comes from the same single authority
         as dtype and ndim; builder methods no longer assign
         ``_current_domain`` by hand.
+
+        ``spec`` is passed rather than read off ``_ops[-1]`` so the contour
+        source can fold the same rasterize contract without appending an op it
+        does not execute (:meth:`_seed_from_contour_rasterize`).
         """
         from polars_cv._lib import op_schema
 
-        last = self._ops[-1]
         domain, dtype, ndim = op_schema(
-            json.dumps(last.to_dict()),
+            json.dumps(spec.to_dict()),
             self._current_domain,
             self._output_dtype,
             self._expected_ndim,
@@ -828,23 +831,31 @@ class Pipeline:
         # affine fusion can convert a rotate with the shape at its own
         # position. Any assert_shape() between ops is naturally captured:
         # it mutated _shape_hints before this append.
+        # `_push_op` appends before calling, so there is always an op here.
         idx = len(self._ops) - 1
-        if idx >= 0:
-            self._hint_snapshots[idx] = (
-                copy.deepcopy(self._shape_hints.height),
-                copy.deepcopy(self._shape_hints.width),
-            )
+        self._hint_snapshots[idx] = (
+            copy.deepcopy(self._shape_hints.height),
+            copy.deepcopy(self._shape_hints.width),
+        )
+        self._apply_shape_contract(self._ops[idx], contract, input_ndim)
 
-        # --- Height / Width: the op's view-buffer infer_shape is the
-        # single authority, read via op_infer_shape. Unknown input dims
-        # and per-row expression params propagate to unknown (None) output
-        # dims; the previous hand-written per-op geometry (and the rotate
-        # bounding-box math) is gone. ---
-        spec = self._ops[idx] if idx >= 0 else None
-        if spec is not None:
-            self._update_hw_from_infer_shape(spec, input_ndim)
+    def _apply_shape_contract(
+        self, spec: "OpSpec", contract: dict, input_ndim: "int | None"
+    ) -> None:
+        """Fold one op's shape contract into the hints: H/W, channels, rank.
 
-        # --- Channel updates driven by the Rust channel rule ---
+        Height/width come from the op's view-buffer ``infer_shape`` (via
+        ``op_infer_shape``) — the single geometry authority — channels from its
+        channel rule, and both are then clipped to the output rank. No shape
+        math is re-implemented in Python.
+
+        Shared with the contour source, whose decode *is* a rasterize
+        (:meth:`_seed_from_contour_rasterize`), so the source and the
+        ``rasterize`` op cannot publish different shapes for the same mask.
+        """
+        self._update_hw_from_infer_shape(
+            spec, self._input_dims_for(contract, input_ndim)
+        )
         self._update_channels_from_rule(contract)
         self._drop_hints_below_rank()
 
@@ -926,8 +937,38 @@ class Pipeline:
             dims[2] = int(c.value)
         return dims
 
+    def _input_dims_for(
+        self, contract: dict, input_ndim: "int | None"
+    ) -> "list[int | None] | None":
+        """The input shape to hand ``op_infer_shape``, or ``None`` to not ask.
+
+        ``input_ndim`` is the rank the op *consumes*, and is required rather
+        than defaulted: falling back to ``self._expected_ndim`` would read the
+        *post*-op rank the schema fold just wrote, which is exactly the
+        misstatement this argument exists to prevent.
+
+        An unknown input rank normally means "do not ask" — ``infer_shape``
+        indexes the input shape, so a fabricated one would publish a fabricated
+        result. A step that *builds* a buffer out of a non-buffer domain is the
+        exception, and not by special-casing an op name: it consumes no buffer
+        (``input_domains`` excludes it) and produces one, so its output geometry
+        comes from its own parameters and there is no input shape to be unknown
+        about. ``rasterize`` is the case — its canvas is its ``width``/
+        ``height`` — and it is why its explicit-dims form published no shape at
+        all while its docstring said ``infer_shape`` supplied one.
+        """
+        if input_ndim is not None and input_ndim >= 1:
+            return self._current_input_dims(input_ndim)
+        buffer = Domain.BUFFER.value
+        if (
+            buffer not in contract["input_domains"]
+            and contract["output_domain"] == buffer
+        ):
+            return []
+        return None
+
     def _update_hw_from_infer_shape(
-        self, spec: "OpSpec", input_ndim: "int | None"
+        self, spec: "OpSpec", dims: "list[int | None] | None"
     ) -> None:
         """Set H/W hints from the op's view-buffer ``infer_shape`` (single
         authority), replacing the old per-op geometry.
@@ -937,18 +978,13 @@ class Pipeline:
         maps the leading two output dims onto the H/W hints. Channels stay with
         :meth:`_update_channels_from_rule`; rank stays with ``op_schema``.
 
-        ``input_ndim`` is the rank the op *consumes*, and is required rather
-        than defaulted: falling back to ``self._expected_ndim`` here would read
-        the *post*-op rank the schema fold just wrote, which is exactly the
-        misstatement this argument exists to prevent.
+        ``dims`` is the input shape :meth:`_input_dims_for` resolved, or
+        ``None`` when the op must not be asked at all.
         """
-        ndim = input_ndim
-        if ndim is None or ndim < 1:
-            # Rank unknown → per-dim H/W not tracked here.
+        if dims is None:
             return
         from polars_cv._lib import op_infer_shape
 
-        dims = self._current_input_dims(ndim)
         try:
             out = op_infer_shape(json.dumps(spec.to_dict()), dims)
         except ValueError:
@@ -973,6 +1009,77 @@ class Pipeline:
 
         self._shape_hints.height = _dim(0)
         self._shape_hints.width = _dim(1)
+
+    @staticmethod
+    def _shape_ref_dims(
+        shape: "LazyPipelineExpr",
+    ) -> "dict[str, ParamValue | None]":
+        """The canvas a ``shape=<node>`` reference supplies, per dimension.
+
+        The referenced node's own published hints are the authority: no
+        contract on the rasterize itself can describe a canvas that comes from
+        another node's buffer. A per-row (expression) dimension there is not a
+        plan-time fact, so it reads as unknown.
+
+        Shared by ``rasterize(shape=)`` and ``source("contour", shape=)`` —
+        the same mask from the same reference, so they cannot disagree.
+        """
+        hints = shape._pipeline._shape_hints
+        dims: dict[str, ParamValue | None] = {}
+        for dim in ("height", "width"):
+            value = getattr(hints, dim)
+            dims[dim] = value if value is not None and not value.is_expr else None
+        return dims
+
+    def _seed_from_contour_rasterize(self, *, shape: "LazyPipelineExpr | None") -> None:
+        """Publish the ``contour`` source's plan-time buffer contract.
+
+        The source decodes by rasterizing (Rust ``decode_contour_source``), so
+        what it hands the first op is what the ``rasterize`` op hands its
+        successor — an ``[H, W, 1]`` u8 mask. Rank, dtype, channels and canvas
+        are therefore read from ``GeometryOp::Rasterize``'s contract, through
+        the same ``op_contract`` / ``op_schema`` / ``op_infer_shape`` FFI
+        :meth:`_push_op` uses, and are not restated here. Hard-coding rank 3
+        and leaving the dtype ``"auto"`` is what made ``sink("list")`` and
+        ``sink("array")`` unplannable on a contour source (both need a concrete
+        element dtype) and forced a no-op ``.cast("u8")``.
+
+        The fold runs from the *contour* domain, because that is what the
+        column holds — the same transition the op declares, so the two routes
+        to a mask cannot publish different plan-time state.
+
+        The spec built here is **not** appended to ``_ops``: the rasterize
+        happens inside the source's own decode, and appending it would
+        rasterize a second time. Only its contract is read.
+
+        Args:
+            shape: The node a ``shape=`` source takes its canvas from, or
+                ``None`` for the explicit ``width``/``height`` form. Carried
+                into the spec as ``shape_ref`` so the op's own contract reports
+                the canvas as unknown, and read for its published H/W below —
+                the two halves ``rasterize(shape=)`` also uses.
+        """
+        source = self._source
+        assert source is not None  # set by the caller, immediately above
+        params: dict[str, ParamValue] = {
+            "fill_value": source.fill_value,
+            "background": source.background,
+        }
+        if shape is not None:
+            params["shape_ref"] = ParamValue(is_expr=False, value=shape._node_id)
+        else:
+            # Both are present together; the builder rejected a lone one above.
+            params["width"] = source.width
+            params["height"] = source.height
+        spec = OpSpec(op="rasterize", params=params)
+        contract = _op_contract_for(spec)
+
+        self._current_domain = Domain.CONTOUR.value
+        self._update_output_dtype(spec)
+        self._apply_shape_contract(spec, contract, input_ndim=None)
+        if shape is not None:
+            for dim, concrete in self._shape_ref_dims(shape).items():
+                setattr(self._shape_hints, dim, concrete)
 
     # --- Source (required, starts the chain) ---
 
@@ -1037,12 +1144,17 @@ class Pipeline:
                 - "contour": Rasterize geometry to a binary mask. The column
                   may hold one contour per row (``CONTOUR_SCHEMA``) or a whole
                   set (``List(CONTOUR_SCHEMA)``, what ``extract_contours()``
-                  sinks); a set paints the union of its members.
+                  sinks); a set paints the union of its members. The mask is
+                  ``[H, W, 1]`` u8 — the same contract the ``rasterize`` op
+                  publishes — so a typed ``list``/``array`` sink needs neither
+                  a dtype nor a shape.
             dtype: For ``"raw"``: required data type of the raw bytes.
                 For ``"image_bytes"`` / ``"file_path"``: asserts the expected
                 dtype — at runtime, images with a different dtype are cast to
                 this type (no-op if already matching).  For ``"list"`` /
                 ``"array"``: override for the inferred column element type.
+                Rejected for ``"contour"``: rasterizing always produces u8, so
+                there is nothing to assert — use ``.cast(...)`` to convert.
             width: Output mask width for "contour" format.
             height: Output mask height for "contour" format.
             shape: Infer dimensions from another pipeline for "contour" format.
@@ -1138,6 +1250,18 @@ class Pipeline:
 
         dtype_enum = None
         if dtype is not None:
+            if fmt == SourceFormat.CONTOUR:
+                # The mask's dtype is fixed by the rasterize contract
+                # (`OutputDTypeRule::Fixed(U8)`), and the decode never read this
+                # parameter — it was accepted and dropped, so an asserted "f32"
+                # bought a u8 column. `.cast(...)` after the source is the way
+                # to change it, and it runs through the real cast op.
+                msg = (
+                    "dtype is not accepted for the 'contour' source: rasterizing "
+                    "always produces u8. Use .cast(...) after the source to "
+                    "convert."
+                )
+                raise ValueError(msg)
             dtype_enum = _validate_enum(dtype, DType, "dtype")
 
         # RAW format always requires dtype (no type metadata in raw bytes)
@@ -1148,7 +1272,6 @@ class Pipeline:
 
         # Handle contour source format
         if fmt == SourceFormat.CONTOUR:
-            new._expected_ndim = 3  # Rasterized mask is 3D (H, W, 1)
             has_explicit_dims = width is not None or height is not None
             has_shape = shape is not None
 
@@ -1206,6 +1329,7 @@ class Pipeline:
                 shape_pipeline=shape_pipeline_dict,
                 on_error=on_error,
             )
+            new._seed_from_contour_rasterize(shape=shape)
         else:
             # Handle cloud_options for file_path format (and "auto", which can
             # resolve to file_path from a String column at runtime).
@@ -3155,15 +3279,10 @@ class Pipeline:
                 # comes from another node's buffer, so no contract on *this*
                 # op can supply it. Assertions are replayed positionally, so
                 # this survives a continuation like a user `assert_shape`.
-                ref_hints = shape._pipeline._shape_hints
                 # Recorded one position *past* this op, so it is applied after
-                # the op's own (placeholder) inferred shape rather than before.
+                # the op's own (unknown) inferred shape rather than before.
                 asserted = p._assertions.setdefault(len(p._ops) + 1, {})
-                for dim in ("height", "width"):
-                    value = getattr(ref_hints, dim)
-                    concrete = (
-                        value if value is not None and not value.is_expr else None
-                    )
+                for dim, concrete in Pipeline._shape_ref_dims(shape).items():
                     setattr(p._shape_hints, dim, concrete)
                     asserted[dim] = concrete
             return params

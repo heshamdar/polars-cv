@@ -131,10 +131,46 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
   `rasterize` now takes the whole set, resolves coverage as a union first and
   colours it once, so neither fault is reachable and the single-contour case is
-  the same path (`rasterize_one`) rather than a second implementation. The
+  the one-element case rather than a second implementation. The
   contour source and the `rasterize` op share it, so a mask no longer depends on
   which of the two routes produced it — asserted by
   `TestMaskContourRoundTrip::test_the_two_routes_to_a_mask_agree`.
+
+- **`source("contour")` published a rank and nothing else, then dropped an
+  asserted dtype.** The source decodes by rasterizing, so what it hands the
+  first op is what the `rasterize` op hands its successor — an `[H, W, 1]` u8
+  mask. It stated a hand-written `_expected_ndim = 3` and left the dtype
+  `"auto"`, the channel count and the canvas unstated, while
+  `GeometryOp::Rasterize` had declared all four all along. Both typed sinks need
+  a concrete element dtype, so `source("contour").sink("list")` was unplannable
+  and a no-op `.cast("u8")` was the only way through; `sink("array")`
+  additionally demanded an explicit `shape=` for a canvas fixed by the source's
+  own `width`/`height`.
+
+  The source now folds `GeometryOp::Rasterize`'s contract through the same
+  `op_contract` / `op_schema` / `op_infer_shape` FFI an appended op goes
+  through, so the two routes to a mask publish one contract
+  (`TestContourSourcePlanTimeContract`). `source("contour", dtype=...)` is
+  rejected rather than dropped: rasterizing fixes u8, and the parameter reached
+  `SourceSpec.dtype` and stopped there — an asserted `"f32"` bought a u8 column.
+
+- **`rasterize(width=, height=)` published no shape, though its docstring said
+  `infer_shape` supplied one.** The planner declines to call `op_infer_shape`
+  when the input rank is unknown, and the contour domain has no rank — so the
+  one op whose canvas is fixed entirely by its own parameters was the one op
+  never asked. `_input_dims_for` now recognises a step that builds a buffer out
+  of a non-buffer domain (from the contract: `input_domains` excludes buffer,
+  `output_domain` is buffer) and asks with no input dims, which is what a
+  contour input actually is. Ops that consume a buffer are unaffected, and the
+  contour measures — whose `infer_shape` describes one value *per contour*, not
+  the vector's length — stay out of it by producing a vector rather than a
+  buffer.
+
+  `op_infer_shape` on a `rasterize(shape=<node>)` also reported a 1x1 canvas as
+  fact: introspection has to supply width/height for the op to resolve at all,
+  and the placeholders were literals, so they read as fixed across probes. They
+  are expression placeholders now, and the dimension reads as unknown
+  (`TestOpInferShapeAuthority::test_rasterize_by_shape_reference_is_unknown`).
 
 - **The runtime series builders read the data to decide the schema.**
   `build_typed_list_series_from_rows_with_dtype` took both the element dtype

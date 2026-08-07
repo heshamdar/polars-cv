@@ -128,3 +128,28 @@ def test_graph_node_rejects_unknown_fields() -> None:
     assert "definitely_not_a_field" in str(excinfo.value) or "unknown field" in str(
         excinfo.value
     )
+
+
+# ---------------------------------------------------------------------------
+# source("contour", dtype=...): an assertion the decode never read
+# ---------------------------------------------------------------------------
+
+
+def test_contour_source_rejects_a_dtype_assertion() -> None:
+    """``source("contour", dtype=...)`` must raise, not be quietly dropped.
+
+    The parameter reached ``SourceSpec.dtype`` and stopped there: the contour
+    decode rasterizes, and ``rasterize`` fixes its output at u8
+    (``OutputDTypeRule::Fixed(U8)``). So an asserted ``"f32"`` bought a u8
+    column — and for the other sources a dtype assertion is exactly what makes
+    a typed ``list``/``array`` sink plannable, which is the reading a caller
+    would bring to it.
+
+    The dtype is now published from the rasterize contract instead, so the
+    parameter has nothing left to say. ``.cast(...)`` after the source is the
+    supported way to change it, and it runs through the real cast op.
+    """
+    with pytest.raises(ValueError, match="dtype is not accepted"):
+        Pipeline().source("contour", width=8, height=8, dtype="f32")
+    with pytest.raises(ValueError, match="dtype is not accepted"):
+        Pipeline().source("contour", width=8, height=8, dtype="u8")
