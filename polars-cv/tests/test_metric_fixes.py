@@ -31,7 +31,7 @@ from polars_cv.metrics import (
 )
 from polars_cv.metrics._auc import mann_whitney_u_auc, mcclish_correction, partial_auc
 from polars_cv.metrics._matching._contour import ContourMatcher, _detect_source_info
-from polars_cv.metrics._metrics._froc import _curve_from_detections
+from polars_cv.metrics._metrics._froc import FROCResult, _curve_from_detections
 from polars_cv.metrics._metrics._lroc import LROCResult, _build_lroc_curve
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
@@ -126,7 +126,7 @@ class TestFrocCurveFromDetections:
                 COL_WEIGHT: [1.0, 1.0, 1.0],
             }
         )
-        curve = _curve_from_detections(det_df, meta_df, n_images=3, total_targets=2)
+        curve = _curve_from_detections(det_df, meta_df, total_targets=2)
         total_gts_values = curve["total_gts"].unique().to_list()
         for v in total_gts_values:
             assert v == 2, f"total_gts wrong: {v}"
@@ -147,7 +147,7 @@ class TestFrocCurveFromDetections:
                 COL_WEIGHT: [1.0, 1.0],
             }
         )
-        curve = _curve_from_detections(det_df, meta_df, n_images=2, total_targets=2)
+        curve = _curve_from_detections(det_df, meta_df, total_targets=2)
         assert curve.height > 0
         for s in curve["sensitivity"].to_list():
             assert s is None or 0.0 <= s <= 1.0, f"sensitivity out of range: {s}"
@@ -168,7 +168,7 @@ class TestFrocCurveFromDetections:
                 COL_WEIGHT: [1.0, 1.0, 1.0],
             }
         )
-        curve = _curve_from_detections(det_df, meta_df, n_images=3, total_targets=2)
+        curve = _curve_from_detections(det_df, meta_df, total_targets=2)
         # Sort descending so we traverse from high → low threshold
         sorted_curve = curve.sort("threshold", descending=True)
         tp_vals = sorted_curve["tp"].to_list()
@@ -1182,6 +1182,46 @@ class TestFrocSharedImageId:
             with pytest.raises(ValueError, match="conflicting weights"):
                 froc_curve(table)
 
+    def test_conflicting_weights_across_classes_of_one_image_raise(self) -> None:
+        """A weight is a property of an image, not of an (image, class) row.
+
+        The FP-per-image denominator dedupes on ``image_id`` alone, so two
+        classes of one image disagreeing about its weight would make that
+        denominator depend on which row `unique` happened to keep.
+        """
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "a"],
+                COL_CLASS_ID: ["cat", "dog"],
+                COL_SCORE: [0.9, 0.8],
+                COL_IS_TP: [True, False],
+                COL_GT_IDX: [0, None],
+                COL_IOU: [0.9, 0.0],
+                COL_DET_IDX: [0, 0],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "a"],
+                COL_CLASS_ID: ["cat", "dog"],
+                COL_N_GTS: [1, 0],
+                COL_WEIGHT: [1.0, 5.0],
+                COL_GT_LABEL: [True, False],
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        with pytest.raises(ValueError, match="conflicting weights"):
+            froc_curve(table)
+
     def test_equal_weights_remain_stable(self) -> None:
         """Equal duplicate weights still yield tp=1, fp=1, sensitivity=0.5."""
         det_df = pl.DataFrame(
@@ -1332,3 +1372,277 @@ class TestInterpolateNullBeyondRange:
         summary = result.summary_table(fp_rates=[0.0, max_fp + 10.0])
         assert summary["sensitivity"][0] is not None
         assert summary["sensitivity"][1] is None
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up: curve order and AUC must not depend on tie order
+# ---------------------------------------------------------------------------
+
+
+class TestCurveOrderIsDeterministic:
+    """Tied x-values must not leave the curve (or its AUC) order-dependent.
+
+    A FROC curve ties on ``fp_per_image`` constantly — every threshold bucket
+    that adds only true positives leaves it unchanged — and Polars' ``sort``
+    defaults to ``maintain_order=False``. Sorting the curve on x alone
+    therefore leaves the y at each tie boundary unspecified, which is what
+    ``trapz_auc`` reads.
+    """
+
+    @staticmethod
+    def _tied_table() -> DetectionTable:
+        """Four images whose top three detections are all true positives.
+
+        fp_per_image stays at 0.0 across three distinct thresholds while
+        sensitivity climbs 1/3 -> 2/3 -> 1, so the curve carries a four-row tie
+        at x = 0 (with the origin) whose y values differ.
+        """
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c", "d"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 4,
+                COL_SCORE: [0.9, 0.8, 0.7, 0.1],
+                COL_IS_TP: [True, True, True, False],
+                COL_GT_IDX: [0, 0, 0, None],
+                COL_IOU: [0.9, 0.9, 0.9, 0.0],
+                COL_DET_IDX: [0, 0, 0, 0],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c", "d"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 4,
+                COL_N_GTS: [1, 1, 1, 0],
+                COL_WEIGHT: [1.0] * 4,
+                COL_GT_LABEL: [True, True, True, False],
+            }
+        )
+        return DetectionTable.from_matched(det_df, meta_df)
+
+    def test_curve_is_ordered_by_descending_threshold(self) -> None:
+        """The curve's order is the sort key, not a property of the data.
+
+        Limitation: this and ``test_tie_group_is_ordered_by_ascending_y`` pin
+        the invariant rather than reproducing the defect — an unstable sort is
+        *permitted* to preserve input order and on a five-row frame it does,
+        so neither fails against the pre-fix ``.sort("fp_per_image")``. The
+        guards that do fail on it are ``test_auc_is_invariant_to_input_row_order``
+        and ``test_interpolate_at_a_tie_returns_the_upper_envelope``.
+        """
+        table = self._tied_table()
+        thresholds = froc_curve(table).curve["threshold"].to_list()
+        assert thresholds == sorted(thresholds, reverse=True)
+        assert len(set(thresholds)) == len(thresholds), "thresholds must be unique"
+
+    def test_tie_group_is_ordered_by_ascending_y(self) -> None:
+        """Within a tied x, the last row is the highest sensitivity.
+
+        This is what makes the trapezoid leaving the tie use the upper
+        envelope rather than whichever row the sort happened to leave last.
+        """
+        curve = froc_curve(self._tied_table()).curve
+        tied = curve.filter(pl.col("fp_per_image") == 0.0)
+        assert tied.height > 1, "fixture must actually produce a tie"
+        sens = tied["sensitivity"].to_list()
+        assert sens == sorted(sens)
+
+    def test_auc_is_invariant_to_input_row_order(self) -> None:
+        """auc() must not change when the curve frame is shuffled.
+
+        auc() re-sorts by x, so a curve whose tied rows arrive in a different
+        order must still integrate to the same area.
+        """
+        result = froc_curve(self._tied_table())
+        baseline = result.auc()
+        for seed in range(8):
+            shuffled = FROCResult(
+                curve=result.curve.sample(fraction=1.0, shuffle=True, seed=seed),
+                n_images=result.n_images,
+                total_targets=result.total_targets,
+                detection_table=result.detection_table,
+            )
+            assert shuffled.auc() == pytest.approx(baseline, abs=1e-12)
+
+    def test_interpolate_at_a_tie_returns_the_upper_envelope(self) -> None:
+        """sensitivity_at_fp(0.0) is the sensitivity reachable at zero FPs.
+
+        The origin row (fp=0, sensitivity=0) shares x with every zero-FP
+        operating point; returning its y would report that a detector making no
+        false positives also finds nothing.
+        """
+        result = froc_curve(self._tied_table())
+        assert result.sensitivity_at_fp(0.0) == pytest.approx(1.0)
+
+
+class TestSummaryTableDtype:
+    """summary_table's y column stays Float64 even when every point is null."""
+
+    def test_all_out_of_range_is_still_float64(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """A fully unreachable operating-point set must not yield Null dtype."""
+        result = froc_curve(simple_detection_table)
+        max_fp = float(result.curve["fp_per_image"].max())
+        summary = result.summary_table(fp_rates=[max_fp + 10.0, max_fp + 20.0])
+        assert summary["sensitivity"].dtype == pl.Float64
+        assert summary["fp_per_image"].dtype == pl.Float64
+        assert summary["sensitivity"].to_list() == [None, None]
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up: image_meta is the sole source of metadata
+# ---------------------------------------------------------------------------
+
+
+class TestPreMatchedAdapterRejectsIgnoredParams:
+    """image_meta cannot be combined with the derive-from-detections columns."""
+
+    @staticmethod
+    def _detections() -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "image_id": ["a", "b"],
+                "score": [0.9, 0.4],
+                "is_tp": [True, False],
+                "n_gts": [1, 1],
+                "weight": [1.0, 1.0],
+            }
+        )
+
+    @staticmethod
+    def _meta() -> pl.DataFrame:
+        return pl.DataFrame({"image_id": ["a", "b", "c"], "n_gts": [1, 1, 1]})
+
+    @pytest.mark.parametrize(
+        "kwarg", ["n_gts_col", "weight_col", "gt_label_col", "group_col"]
+    )
+    def test_conflicting_kwarg_raises(self, kwarg: str) -> None:
+        """Each per-image column argument is rejected alongside image_meta."""
+        from polars_cv.metrics import PreMatchedAdapter
+
+        with pytest.raises(ValueError, match="image_meta cannot be combined"):
+            PreMatchedAdapter().match(
+                self._detections(),
+                image_id_col="image_id",
+                image_meta=self._meta(),
+                **{kwarg: "n_gts"},
+            )
+
+    def test_image_meta_alone_is_accepted(self) -> None:
+        """The supported call still works and keeps the zero-detection image."""
+        from polars_cv.metrics import PreMatchedAdapter
+
+        table = PreMatchedAdapter().match(
+            self._detections(),
+            image_id_col="image_id",
+            image_meta=self._meta(),
+        )
+        meta = table.image_metadata.collect()
+        assert sorted(meta[COL_IMAGE_ID].to_list()) == ["a", "b", "c"]
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up: one definition of a FROC evaluation unit
+# ---------------------------------------------------------------------------
+
+
+class TestFrocImageCount:
+    """FP-per-image counts images, not (image, class) metadata rows."""
+
+    def test_multi_class_denominator_is_the_image_count(self) -> None:
+        """Two classes over two images give fp_per_image = fp / 2, not / 4."""
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b"],
+                COL_CLASS_ID: ["cat", "dog"],
+                COL_SCORE: [0.9, 0.8],
+                COL_IS_TP: [False, False],
+                COL_GT_IDX: [None, None],
+                COL_IOU: [0.0, 0.0],
+                COL_DET_IDX: [0, 0],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        # One row per (image, class): four rows, two images.
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "a", "b", "b"],
+                COL_CLASS_ID: ["cat", "dog", "cat", "dog"],
+                COL_N_GTS: [1, 0, 0, 1],
+                COL_WEIGHT: [1.0] * 4,
+                COL_GT_LABEL: [True, False, False, True],
+            }
+        )
+        result = froc_curve(DetectionTable.from_matched(det_df, meta_df))
+        assert result.n_images == 2
+        # Both detections are false positives, so the last point is 2 FP / 2
+        # images = 1.0. Counting metadata rows would report 0.5.
+        assert float(result.curve["fp_per_image"].max()) == pytest.approx(1.0)
+
+
+class TestFrocBootstrapDrawsAreDistinctUnits:
+    """Each bootstrap draw is its own evaluation unit, not a repeated image."""
+
+    def test_repeated_draw_counts_once_per_draw(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """Drawing one image three times gives three images and three GTs."""
+        result = froc_curve(simple_detection_table)
+        replicate = result._reconstruct(["a", "a", "a"])
+        assert replicate.n_images == 3
+        assert replicate.total_targets == 3
+        # Three copies of the same single TP: sensitivity reaches exactly 1.0
+        # and never exceeds it.
+        assert float(replicate.curve["sensitivity"].max()) == pytest.approx(1.0)
+
+    def test_draw_ids_are_distinct(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """The replicate's own table carries one id per draw, not per image."""
+        result = froc_curve(simple_detection_table)
+        replicate = result._reconstruct(["a", "a", "b"])
+        meta = replicate.detection_table.image_metadata.collect()
+        assert meta[COL_IMAGE_ID].n_unique() == 3
+
+
+class TestPartialAucIntegerBounds:
+    """partial_auc accepts integer bounds, the natural spelling of fp_range."""
+
+    def test_integer_hi_beyond_the_curve(self) -> None:
+        """`fp_range=(0, 8)` must integrate, not raise a SchemaError.
+
+        The boundary point appended at `hi` was built with an inferred dtype,
+        so an int bound produced an Int64 Series that would not concat onto
+        the Float64 curve — which is every `froc.auc(fp_range=(0, 8))` call in
+        the docs and the metrics example.
+        """
+        x = pl.Series("x", [0.0, 0.5, 1.0])
+        y = pl.Series("y", [0.0, 0.5, 0.9])
+        assert partial_auc(x, y, 0, 8, "normalize") == pytest.approx(
+            partial_auc(x, y, 0.0, 8.0, "normalize")
+        )
+
+    def test_integer_lo_below_the_curve(self) -> None:
+        """The prepended `lo` boundary has the same dtype requirement."""
+        x = pl.Series("x", [2.0, 3.0])
+        y = pl.Series("y", [0.4, 0.8])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            assert partial_auc(x, y, 0, 4) == pytest.approx(partial_auc(x, y, 0.0, 4.0))

@@ -150,9 +150,17 @@ Evaluate object detectors with industry-standard metrics:
 ```python
 from polars_cv.metrics import PreMatchedAdapter, precision_recall_curve, average_precision
 
-# Wrap pre-matched detection data
+# Wrap pre-matched detection data. `image_meta` (one row per evaluated slide,
+# with image_id + n_gts) defines the population, so slides with no detections
+# are not dropped from the denominators.
 adapter = PreMatchedAdapter()
-table = adapter.match(df, pred_col="confidence", gt_col="is_tp", image_id_col="slide_id")
+table = adapter.match(
+    df,
+    pred_col="confidence",
+    gt_col="is_tp",
+    image_id_col="slide_id",
+    image_meta=slides,
+)
 
 # Compute metrics
 pr = precision_recall_curve(table)

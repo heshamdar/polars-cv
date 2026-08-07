@@ -83,16 +83,46 @@ class PreMatchedAdapter:
             iou_col: Optional column with per-detection IoU values.
             det_idx_col: Optional column with detection index within image.
             image_meta: Optional per-image (or per-image-class) frame that
-                defines the evaluation population. Must contain ``image_id``
-                and ``n_gts``; ``class_id``, ``weight``, and ``gt_label`` are
-                filled with defaults when absent. When provided this is the
-                sole source of ``image_metadata`` — images with zero
-                detections are retained. When omitted, metadata is derived
+                defines the evaluation population. Must use the canonical
+                column names ``image_id`` and ``n_gts``; ``class_id``,
+                ``weight``, ``gt_label`` and ``group_id`` are filled with
+                defaults when absent. When provided this is the *sole* source
+                of ``image_metadata`` — images with zero detections are
+                retained — so it may not be combined with the per-image
+                column arguments below. When omitted, metadata is derived
                 from the detection rows and a ``UserWarning`` is emitted.
 
         Returns:
             Validated ``DetectionTable``.
+
+        Raises:
+            ValueError: If ``image_meta`` is combined with ``n_gts_col``,
+                ``weight_col``, ``gt_label_col`` or ``group_col``, or if a
+                named column is missing from ``data``.
         """
+        if image_meta is not None:
+            # image_meta is the whole population, so the per-image column
+            # arguments have nothing to read: they only ever described how to
+            # derive metadata *from the detection frame*. Accepting and
+            # ignoring them would let a caller believe a weight column was
+            # honoured when it was not.
+            conflicting = {
+                "n_gts_col": n_gts_col,
+                "weight_col": weight_col,
+                "gt_label_col": gt_label_col,
+                "group_col": group_col,
+            }
+            supplied = sorted(name for name, val in conflicting.items() if val)
+            if supplied:
+                raise ValueError(
+                    f"image_meta cannot be combined with {', '.join(supplied)}. "
+                    "image_meta is the sole source of image_metadata, so those "
+                    "arguments — which describe how to derive metadata from the "
+                    "detection frame — would be silently ignored. Put the "
+                    "per-image values in image_meta under the canonical names "
+                    "(n_gts, weight, gt_label, group_id) instead."
+                )
+
         lf = to_lazy(data)
         schema_names = list(lf.collect_schema().names())
 

@@ -113,7 +113,15 @@ metrics/
 
 ### Sorting and aggregation
 - `to_per_image()` uses `sort_by()` within `group_by().agg()` — never rely on `.sort()` before `.group_by()` since Polars does not guarantee order preservation across `group_by`.
-- FROC / LROC curves are returned sorted by ascending `fp_per_image` / `fpf` (plotting order), not ascending threshold.
+- FROC / LROC curves are returned sorted by **descending `threshold`**, which is
+  ascending `fp_per_image` / `fpf` (plotting order). Sort on the threshold, never
+  on the x-column: thresholds are unique so the order is total, while `fp_per_image`
+  ties constantly and Polars' `sort` defaults to `maintain_order=False`, leaving
+  the y at each tie boundary — and therefore the AUC — unspecified.
+- Every consumer of a curve's geometry goes through `MetricResult._curve_xy`,
+  which collapses tied x to the maximum y (the ROC upper envelope) before
+  integrating or interpolating. `auc()` and `interpolate()` must not sort for
+  themselves; a second sort is a second answer.
 
 ### IoU re-thresholding
 - `at_iou_threshold()` only works reliably when *raising* the threshold. Lowering has no effect (unmatched detections lack stored IoU). A `UserWarning` is emitted.
@@ -126,20 +134,41 @@ metrics/
 - Prefer `image_meta=` covering the full evaluation population. Without it the
   adapter derives metadata from detections only and silently drops images with
   zero detections (inflating recall / FP-per-image); a `UserWarning` is emitted.
+- `image_meta` is the *sole* source of `image_metadata`, so combining it with
+  `n_gts_col` / `weight_col` / `gt_label_col` / `group_col` raises — those
+  arguments only ever described how to derive metadata from the detection
+  frame, and accepting them alongside `image_meta` would silently discard them.
+
+### The FROC evaluation unit
+- An `image_metadata` row is one (image, class). The **image count** — the
+  FP-per-image denominator, and `FROCResult.n_images` — is the number of
+  distinct `image_id`s, read once via `_count_images`. Counting rows divides
+  the false-positive rate by the number of classes.
+- Bootstrap draws are renamed to distinct synthetic `image_id`s
+  (`<image_id>#draw<n>`) in `FROCResult._reconstruct`, so a redraw is a
+  separate evaluation unit rather than a duplicate id. Nothing downstream has
+  to guess whether a repeated id is a redraw or shared ownership.
 
 ### Duplicate `image_id` in metadata
-- When the same `image_id` (and `class_id`, when present) appears more than
-  once in `image_metadata` (e.g. one rendered image owned by two cases), FROC
-  weight lookups dedupe by that key so detections are not fan-out-multiplied.
-  Equal weights are fine; conflicting weights raise `ValueError` (numerator
-  would pick an arbitrary row while denominators sum every row). Prefer a
-  composite key in `image_id` when each ownership should be a distinct
-  evaluation unit.
+- A repeated `image_id` (and `class_id`, when present) now means only one
+  thing: one rendered image owned by two cases. FROC weight lookups dedupe by
+  that key so detections are not fan-out-multiplied. Equal weights are fine;
+  conflicting weights raise `ValueError` (the numerator would pick an arbitrary
+  row while denominators sum every row). Prefer a composite key in `image_id`
+  when each ownership should be a distinct evaluation unit.
+- The conflict check is on `image_id` alone, which subsumes the
+  `(image_id, class_id)` check: a `weight` is a property of an *image*, and the
+  FP-per-image denominator dedupes on `image_id`, so two classes of one image
+  disagreeing about its weight is exactly as ill-defined.
 
 ### Interpolation beyond the curve
 - `MetricResult.interpolate` / `sensitivity_at_fp` / `sensitivity_at_fpf` /
   `summary_table` return `None` / null for x-values outside the observed
-  range — no endpoint clamping.
+  range — no endpoint clamping. `summary_table`'s y column is Float64 even when
+  every point is null.
+- At an x the curve visits more than once, the *highest* y there is returned:
+  `sensitivity_at_fp(0.0)` is the sensitivity reachable with no false
+  positives, not the origin's zero.
 
 ## Known Issues
 

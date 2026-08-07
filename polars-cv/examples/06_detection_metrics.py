@@ -32,6 +32,16 @@ from polars_cv.metrics._types import COL_CLASS_ID, COL_IMAGE_ID
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 
 
+def fmt(value: float | None, digits: int = 4) -> str:
+    """Format a metric value, tolerating an out-of-range operating point.
+
+    ``sensitivity_at_fp`` / ``sensitivity_at_fpf`` return ``None`` when the
+    requested operating point lies beyond the observed curve — an unreachable
+    point is reported rather than silently clamped to the last y-value.
+    """
+    return "n/a" if value is None else str(round(value, digits))
+
+
 def plot_curve(
     df: pl.DataFrame, x_col: str, y_col: str, title: str, out_name: str
 ) -> None:
@@ -49,26 +59,34 @@ def plot_curve(
     print("Saved:", out)
 
 
-def build_prematched_input_from_table(table: object) -> pl.DataFrame:
+def build_prematched_input_from_table(
+    table: object,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Build adapter input from a matched DetectionTable.
 
     This demonstrates the intended use of ``PreMatchedAdapter``: when TP/FP
     assignments are already available from an upstream system, you can still
     reuse the metric API.
+
+    Returns both halves the adapter wants — the detection rows, and the image
+    population to pass as ``image_meta``. The population is the point: derived
+    from detections alone, an image the detector found nothing in would have no
+    metadata row and would silently vanish from the denominators.
     """
     detections_df, meta_df = table.collect(engine="streaming")  # type: ignore[call-arg]
-    return detections_df.join(
-        meta_df.select([COL_IMAGE_ID, COL_CLASS_ID, "n_gts", "gt_label"]),
-        on=[COL_IMAGE_ID, COL_CLASS_ID],
-        how="left",
-    ).select(
+    detections = detections_df.select(
         image_id=pl.col(COL_IMAGE_ID),
         class_id=pl.col(COL_CLASS_ID),
         score=pl.col("score"),
         is_tp=pl.col("is_tp"),
+    )
+    population = meta_df.select(
+        image_id=pl.col(COL_IMAGE_ID),
+        class_id=pl.col(COL_CLASS_ID),
         n_gts=pl.col("n_gts"),
         gt_label=pl.col("gt_label"),
     )
+    return detections, population
 
 
 def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> object:
@@ -103,7 +121,7 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
         "\nFROC MW-U (detection):",
         round(froc.auc(method="mann_whitney", level="detection"), 4),
         "\nSens@1FP:",
-        round(froc.sensitivity_at_fp(1.0), 4),
+        fmt(froc.sensitivity_at_fp(1.0)),
     )
     print(
         "LROC AUC:",
@@ -117,7 +135,7 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
         "\nLROC MW-U (image):",
         round(lroc.auc(method="mann_whitney", level="image"), 4),
         "\nSens@0.5FPF:",
-        round(lroc.sensitivity_at_fpf(0.5), 4),
+        fmt(lroc.sensitivity_at_fpf(0.5)),
     )
     print(
         f"Threshold metrics @{args.score_threshold}:",
@@ -186,15 +204,14 @@ def bbox_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> object:
 
 def prematched_section(bbox_table: object) -> None:
     """Run metrics through PreMatchedAdapter from already matched detections."""
-    pre = build_prematched_input_from_table(bbox_table)
+    pre, population = build_prematched_input_from_table(bbox_table)
     table = PreMatchedAdapter().match(
         pre,
         pred_col="score",
         gt_col="is_tp",
         image_id_col="image_id",
         class_col="class_id",
-        n_gts_col="n_gts",
-        gt_label_col="gt_label",
+        image_meta=population,
     )
     pr = precision_recall_curve(table, class_id="lesion")
     lroc = lroc_curve(table)

@@ -114,6 +114,16 @@ def partial_auc(
                 stacklevel=2,
             )
 
+    # Boundary points are built as Float64 explicitly. `lo`/`hi` come straight
+    # from the caller's `fp_range`, and the natural spelling of a bound is an
+    # int — `fp_range=(0, 8)` — which `pl.Series` would infer as Int64 and
+    # then refuse to concat onto a Float64 curve.
+    lo = float(lo)
+    hi = float(hi)
+
+    def _bound(name: str, *values: float) -> pl.Series:
+        return pl.Series(name, list(values), dtype=pl.Float64)
+
     # Vectorized clip: keep points within [lo, hi]
     mask = (x >= lo) & (x <= hi)
     clipped_x = x.filter(mask)
@@ -124,14 +134,14 @@ def partial_auc(
     # so out-of-range bounds fall back to endpoint y (unlike MetricResult
     # interpolate, which returns None).
     if lo < x0_val:
-        clipped_x = pl.concat([pl.Series("x", [lo]), clipped_x])
-        clipped_y = pl.concat([pl.Series("y", [y0_val]), clipped_y])
+        clipped_x = pl.concat([_bound("x", lo), clipped_x])
+        clipped_y = pl.concat([_bound("y", y0_val), clipped_y])
     elif clipped_x.len() == 0 or float(clipped_x[0]) > lo:
         y_lo = _interp(x, y, lo)
         if y_lo is None:
             y_lo = y0_val
-        clipped_x = pl.concat([pl.Series("x", [lo]), clipped_x])
-        clipped_y = pl.concat([pl.Series("y", [y_lo]), clipped_y])
+        clipped_x = pl.concat([_bound("x", lo), clipped_x])
+        clipped_y = pl.concat([_bound("y", y_lo), clipped_y])
 
     # Append hi boundary (interpolated) if curve doesn't reach hi
     if clipped_x.len() == 0:
@@ -141,14 +151,14 @@ def partial_auc(
             y_lo = y0_val
         if y_hi is None:
             y_hi = float(y[-1])
-        clipped_x = pl.Series("x", [lo, hi])
-        clipped_y = pl.Series("y", [y_lo, y_hi])
+        clipped_x = _bound("x", lo, hi)
+        clipped_y = _bound("y", y_lo, y_hi)
     elif float(clipped_x[-1]) < hi:
         y_hi = _interp(x, y, hi)
         if y_hi is None:
             y_hi = float(y[-1])
-        clipped_x = pl.concat([clipped_x, pl.Series("x", [hi])])
-        clipped_y = pl.concat([clipped_y, pl.Series("y", [y_hi])])
+        clipped_x = pl.concat([clipped_x, _bound("x", hi)])
+        clipped_y = pl.concat([clipped_y, _bound("y", y_hi)])
 
     raw = trapz_auc(clipped_x, clipped_y)
 

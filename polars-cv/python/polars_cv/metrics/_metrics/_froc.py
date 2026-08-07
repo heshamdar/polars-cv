@@ -20,6 +20,44 @@ from .._types import (
     DetectionTable,
 )
 
+# Columns the bootstrap uses to name each draw before it becomes the image_id.
+_COL_DRAW_ID = "_draw_id"
+_COL_DRAW_IDX = "_draw_idx"
+
+
+def _draw_frame(sampled_ids: list[str]) -> pl.LazyFrame:
+    """Name each bootstrap draw as a distinct evaluation unit.
+
+    Returns a frame mapping ``image_id`` (the drawn id, for joining) to
+    ``_draw_id`` (``<image_id>#draw<n>``, which becomes the replicate's
+    ``image_id``). Sampling is with replacement, so the same image can appear
+    several times and each appearance is its own unit.
+    """
+    return (
+        pl.DataFrame({COL_IMAGE_ID: sampled_ids})
+        .with_row_index(_COL_DRAW_IDX)
+        .with_columns(
+            (
+                pl.col(COL_IMAGE_ID)
+                + pl.lit("#draw")
+                + pl.col(_COL_DRAW_IDX).cast(pl.String)
+            ).alias(_COL_DRAW_ID)
+        )
+        .drop(_COL_DRAW_IDX)
+        .lazy()
+    )
+
+
+def _count_images(meta_df: pl.DataFrame) -> int:
+    """Count evaluation units in an image-metadata frame.
+
+    Metadata carries one row per (image, class), so the row count is not the
+    image count — using it divides FP-per-image by the number of classes.
+    This is the single definition both ``froc_curve`` and
+    ``FROCResult._reconstruct`` read.
+    """
+    return int(meta_df.select(pl.col(COL_IMAGE_ID).n_unique()).item())
+
 
 @dataclass(frozen=True)
 class FROCResult(MetricResult):
@@ -136,27 +174,43 @@ class FROCResult(MetricResult):
     def _reconstruct(self, sampled_ids: list[str]) -> FROCResult:
         """Rebuild a FROCResult from bootstrap-sampled image IDs.
 
-        Joins sampled IDs against the detections and metadata tables
-        and re-derives the FROC curve via cumulative sums.
+        Joins sampled IDs against the detections and metadata tables and
+        re-derives the FROC curve via cumulative sums.
+
+        Sampling is with replacement, so the same image can be drawn more than
+        once and each draw is its own evaluation unit: it contributes its own
+        detections, its own ``n_gts``, and its own slot in the FP-per-image
+        denominator. Each draw therefore gets a distinct synthetic
+        ``image_id`` before the join. Carrying the duplicates as repeated
+        ``image_id``s instead would leave every downstream count guessing
+        whether a repeat is a redraw or one image legitimately owned twice —
+        which is exactly the ambiguity ``_curve_from_detections`` has to raise
+        on.
         """
         table = self._get_detection_table()
 
-        sampled_ids_lf = pl.DataFrame({COL_IMAGE_ID: sampled_ids}).lazy()
-        sampled_det = sampled_ids_lf.join(table.detections, on=COL_IMAGE_ID, how="left")
-        sampled_meta = sampled_ids_lf.join(
-            table.image_metadata, on=COL_IMAGE_ID, how="left"
+        draws = _draw_frame(sampled_ids)
+
+        sampled_det = (
+            draws.join(table.detections, on=COL_IMAGE_ID, how="left")
+            .drop(COL_IMAGE_ID)
+            .rename({_COL_DRAW_ID: COL_IMAGE_ID})
+        )
+        sampled_meta = (
+            draws.join(table.image_metadata, on=COL_IMAGE_ID, how="left")
+            .drop(COL_IMAGE_ID)
+            .rename({_COL_DRAW_ID: COL_IMAGE_ID})
         )
 
         det_df = sampled_det.collect(engine="streaming")
         meta_df = sampled_meta.collect(engine="streaming")
 
-        n_images = len(sampled_ids)
-        # Sum over all resampled rows (no image_id dedup): a repeatedly-drawn
-        # image must contribute its n_gts once per draw, matching how
-        # froc_curve() sums meta_df directly and how n_images counts draws.
+        n_images = _count_images(meta_df)
+        # Sum over every row: one row per (draw, class), so a repeatedly-drawn
+        # image contributes its n_gts once per draw.
         total_targets = int(meta_df.select(pl.col(COL_N_GTS).sum()).item())
 
-        curve = _curve_from_detections(det_df, meta_df, n_images, total_targets)
+        curve = _curve_from_detections(det_df, meta_df, total_targets)
 
         sampled_table = DetectionTable.from_matched(sampled_det, sampled_meta)
 
@@ -251,10 +305,10 @@ def froc_curve(
     if det_df.height == 0:
         return _empty_froc_result(table)
 
-    n_images = meta_df.height
+    n_images = _count_images(meta_df)
     total_targets = int(meta_df.select(pl.col(COL_N_GTS).sum()).item())
 
-    curve = _curve_from_detections(det_df, meta_df, n_images, total_targets)
+    curve = _curve_from_detections(det_df, meta_df, total_targets)
 
     if thresholds is not None:
         threshold_set = set(thresholds)
@@ -277,18 +331,22 @@ def froc_curve(
 def _curve_from_detections(
     det_df: pl.DataFrame,
     meta_df: pl.DataFrame,
-    n_images: int,
     total_targets: int,
 ) -> pl.DataFrame:
     """Build a FROC curve from detections using cumulative sums.
 
-    Sorts detections by score descending and computes running TP/FP counts.
-    Supports weighted images via the ``weight`` column in ``meta_df``.
+    Sorts detections by score descending and computes running TP/FP counts,
+    weighting each image by its ``weight`` in ``meta_df``.
+
+    The image count is read from ``meta_df`` rather than passed in: the
+    FP-per-image denominator and the ``n_images`` a caller reports must be the
+    same number, and two ways of arriving at it is how they came to disagree
+    between the point estimate and the bootstrap replicate.
 
     Args:
         det_df: Collected detections DataFrame.
-        meta_df: Collected image metadata DataFrame.
-        n_images: Number of images (may include duplicates from bootstrap).
+        meta_df: Collected image metadata DataFrame, one row per
+            (image, class). Bootstrap draws arrive as distinct ``image_id``s.
         total_targets: Total ground-truth target count.
 
     Returns:
@@ -317,107 +375,87 @@ def _curve_from_detections(
             },
         )
 
-    has_weights = COL_WEIGHT in meta_df.columns
-    n_images_f = float(max(n_images, 1))
-    total_gts_f = float(max(total_targets, 1))
+    # `weight` is in IMAGE_META_REQUIRED and `from_matched` validates it, so
+    # every metadata frame reaching here is weighted — an all-1.0 weight column
+    # reduces the formulas below to the plain counts exactly. There is no
+    # unweighted branch to fall into, and adding one back would be a second
+    # implementation of the same curve.
+    total_weighted_gts = float(
+        meta_df.select(
+            (pl.col(COL_N_GTS).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum()
+        ).item()
+    )
+    total_weighted_gts_f = max(total_weighted_gts, 1.0)
 
-    if has_weights:
-        total_weighted_gts = float(
-            meta_df.select(
-                (pl.col(COL_N_GTS).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum()
-            ).item()
-        )
-        weight_sum = float(meta_df.select(pl.col(COL_WEIGHT).sum()).item())
-        total_weighted_gts_f = max(total_weighted_gts, 1.0)
-        weight_sum_f = max(weight_sum, 1.0)
+    # Attach one weight per lookup key so a repeated metadata row (one rendered
+    # image owned by two cases) does not fan every detection out before
+    # aggregation. Conflicting weights for the same key are ill-defined — the
+    # numerator would pick an arbitrary row while the denominator sums every
+    # row — so raise instead.
+    weight_keys = _weight_lookup_keys(meta_df)
+    # Check on image_id alone, which subsumes the (image_id, class_id) check:
+    # a weight is a property of an *image*, and the FP-per-image denominator
+    # below dedupes on image_id, so two classes of one image disagreeing about
+    # its weight is exactly as ill-defined as two rows of one class doing so.
+    _raise_on_conflicting_weights(meta_df, [COL_IMAGE_ID])
+    lookup_cols = [*weight_keys, COL_WEIGHT]
+    weight_lookup = meta_df.select(lookup_cols).unique(subset=weight_keys, keep="first")
 
-        # Attach one weight per lookup key so a repeated metadata row
-        # (shared image across cases, or bootstrap-with-replacement draws)
-        # does not fan every detection out before aggregation. Conflicting
-        # weights for the same key are ill-defined (numerator would pick an
-        # arbitrary row while denominators sum every row) — raise instead.
-        weight_keys = _weight_lookup_keys(meta_df)
-        _raise_on_conflicting_weights(meta_df, weight_keys)
-        lookup_cols = [*weight_keys, COL_WEIGHT]
-        weight_lookup = meta_df.select(lookup_cols).unique(
-            subset=weight_keys, keep="first"
-        )
-        det_with_weight = det_df.join(
-            weight_lookup,
-            on=weight_keys,
-            how="left",
-        ).with_columns(pl.col(COL_WEIGHT).fill_null(1.0))
+    # FP-per-image counts *images*, so its denominator sums one weight per
+    # image_id — not one per metadata row. A multi-class table carries a row
+    # per (image, class), and summing those would divide the false-positive
+    # rate by the number of classes.
+    weight_sum = float(
+        meta_df.select(COL_IMAGE_ID, COL_WEIGHT)
+        .unique(subset=[COL_IMAGE_ID], keep="first")
+        .select(pl.col(COL_WEIGHT).sum())
+        .item()
+    )
+    weight_sum_f = max(weight_sum, 1.0)
 
-        # Bucket detections by score, aggregate weighted TP/FP
-        bucketed = (
-            det_with_weight.group_by(COL_SCORE)
-            .agg(
-                tp_count=pl.col(COL_IS_TP).sum().cast(pl.Int64),
-                fp_count=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
-                weighted_tp=(
-                    pl.col(COL_IS_TP).cast(pl.Float64) * pl.col(COL_WEIGHT)
-                ).sum(),
-                weighted_fp=(
-                    (~pl.col(COL_IS_TP)).cast(pl.Float64) * pl.col(COL_WEIGHT)
-                ).sum(),
-            )
-            .sort(COL_SCORE, descending=True)
-            .with_columns(
-                tp=pl.col("tp_count").cum_sum(),
-                fp=pl.col("fp_count").cum_sum(),
-                cum_weighted_tp=pl.col("weighted_tp").cum_sum(),
-                cum_weighted_fp=pl.col("weighted_fp").cum_sum(),
-            )
-            .rename({COL_SCORE: "threshold"})
-            .with_columns(
-                total_gts=pl.lit(total_targets, dtype=pl.Int64),
-                fn=(pl.lit(total_targets, dtype=pl.Int64) - pl.col("tp")).clip(
-                    lower_bound=0
-                ),
-                sensitivity=pl.col("cum_weighted_tp") / pl.lit(total_weighted_gts_f),
-                fp_per_image=pl.col("cum_weighted_fp") / pl.lit(weight_sum_f),
-            )
-            .select(
-                "threshold",
-                "tp",
-                "fp",
-                "fn",
-                "total_gts",
-                "fp_per_image",
-                "sensitivity",
-            )
+    det_with_weight = det_df.join(
+        weight_lookup,
+        on=weight_keys,
+        how="left",
+    ).with_columns(pl.col(COL_WEIGHT).fill_null(1.0))
+
+    # Bucket detections by score, aggregate weighted TP/FP
+    bucketed = (
+        det_with_weight.group_by(COL_SCORE)
+        .agg(
+            tp_count=pl.col(COL_IS_TP).sum().cast(pl.Int64),
+            fp_count=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
+            weighted_tp=(pl.col(COL_IS_TP).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
+            weighted_fp=(
+                (~pl.col(COL_IS_TP)).cast(pl.Float64) * pl.col(COL_WEIGHT)
+            ).sum(),
         )
-    else:
-        bucketed = (
-            det_df.group_by(COL_SCORE)
-            .agg(
-                tp_count=pl.col(COL_IS_TP).sum().cast(pl.Int64),
-                fp_count=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
-            )
-            .sort(COL_SCORE, descending=True)
-            .with_columns(
-                tp=pl.col("tp_count").cum_sum(),
-                fp=pl.col("fp_count").cum_sum(),
-            )
-            .rename({COL_SCORE: "threshold"})
-            .with_columns(
-                total_gts=pl.lit(total_targets, dtype=pl.Int64),
-                fn=(pl.lit(total_targets, dtype=pl.Int64) - pl.col("tp")).clip(
-                    lower_bound=0
-                ),
-                sensitivity=pl.col("tp").cast(pl.Float64) / pl.lit(total_gts_f),
-                fp_per_image=pl.col("fp").cast(pl.Float64) / pl.lit(n_images_f),
-            )
-            .select(
-                "threshold",
-                "tp",
-                "fp",
-                "fn",
-                "total_gts",
-                "fp_per_image",
-                "sensitivity",
-            )
+        .sort(COL_SCORE, descending=True)
+        .with_columns(
+            tp=pl.col("tp_count").cum_sum(),
+            fp=pl.col("fp_count").cum_sum(),
+            cum_weighted_tp=pl.col("weighted_tp").cum_sum(),
+            cum_weighted_fp=pl.col("weighted_fp").cum_sum(),
         )
+        .rename({COL_SCORE: "threshold"})
+        .with_columns(
+            total_gts=pl.lit(total_targets, dtype=pl.Int64),
+            fn=(pl.lit(total_targets, dtype=pl.Int64) - pl.col("tp")).clip(
+                lower_bound=0
+            ),
+            sensitivity=pl.col("cum_weighted_tp") / pl.lit(total_weighted_gts_f),
+            fp_per_image=pl.col("cum_weighted_fp") / pl.lit(weight_sum_f),
+        )
+        .select(
+            "threshold",
+            "tp",
+            "fp",
+            "fn",
+            "total_gts",
+            "fp_per_image",
+            "sensitivity",
+        )
+    )
 
     # Prepend origin point (threshold=inf, everything zero)
     inf_row = pl.DataFrame(
@@ -440,9 +478,18 @@ def _curve_from_detections(
             "sensitivity": pl.Float64,
         },
     )
-    # Sort by fp_per_image ascending so the curve is in the conventional
-    # plotting order (plt.step(..., where="post") draws correctly).
-    return pl.concat([inf_row, bucketed], how="vertical").sort("fp_per_image")
+    # Sort by descending threshold, which *is* ascending fp_per_image: tp/fp
+    # are cumulative over descending score, so a lower threshold can only add
+    # false positives. Sorting on fp_per_image directly would look equivalent
+    # and is not — thresholds are unique (group_by(score) plus the +inf origin)
+    # so this is a total order, while fp_per_image ties constantly (every
+    # bucket that adds only TPs leaves it unchanged) and Polars' sort defaults
+    # to maintain_order=False, leaving those ties in an unspecified order.
+    # Descending threshold also puts each tie group's rows in ascending
+    # sensitivity, so the plotting order is the upper envelope.
+    return pl.concat([inf_row, bucketed], how="vertical").sort(
+        "threshold", descending=True
+    )
 
 
 def _weight_lookup_keys(meta_df: pl.DataFrame) -> list[str]:

@@ -41,9 +41,23 @@ table = adapter.match(
     pred_col="confidence",
     gt_col="is_tp",
     image_id_col="image_id",
+    # image_population has one row per evaluated image, with columns
+    # image_id and n_gts (plus optional class_id / weight / gt_label).
+    image_meta=image_population,
 )
 result = precision_recall_curve(table)
 ```
+
+Pass `image_meta` whenever any image may carry zero detections. Without it the
+adapter derives the population by grouping the detection frame, so an image the
+detector found nothing in has no metadata row at all — which deletes the
+negative population and inflates recall and FP-per-image. Omitting it emits a
+`UserWarning`.
+
+`image_meta` is the sole source of image metadata, so it cannot be combined
+with `n_gts_col`, `weight_col`, `gt_label_col` or `group_col` — those describe
+how to derive metadata from the *detection* frame, and passing both raises
+rather than silently ignoring them.
 
 ### ContourMatcher
 
@@ -104,6 +118,12 @@ print(result.sensitivity_at_fp(1.0))
 print(result.summary_table())
 ```
 
+`sensitivity_at_fp` returns `None` — and `summary_table` a null — when the
+requested FP/image rate lies beyond the curve's observed range. An operating
+point the detector never reaches is reported as unreachable rather than
+clamped to the last value on the curve. Where an x is visited more than once,
+the highest sensitivity there is returned.
+
 ### LROC
 
 ```python
@@ -111,7 +131,7 @@ from polars_cv.metrics import lroc_curve
 
 result = lroc_curve(table)
 print(result.auc())
-print(result.sensitivity_at_fpf(0.5))
+print(result.sensitivity_at_fpf(0.5))  # None if 0.5 FPF is off the curve
 ```
 
 ### Confusion Matrix
