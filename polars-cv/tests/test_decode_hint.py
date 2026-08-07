@@ -59,7 +59,10 @@ def _png(width: int, height: int) -> bytes:
 
 class TestDecodeMaxSizeValidation:
     def test_rejected_for_non_image_sources(self) -> None:
-        with pytest.raises(ValueError, match="decode_max_size only applies"):
+        # Applicability is decided by `_SOURCE_PARAM_APPLIES` for every source
+        # keyword alike, so the message is the shared one; this parameter's own
+        # bespoke check (the only one of the seven that raised) is gone.
+        with pytest.raises(ValueError, match="decode_max_size does not apply"):
             Pipeline().source("blob", decode_max_size=100)
 
     def test_rejected_for_non_positive(self) -> None:

@@ -149,7 +149,7 @@ def test_contour_source_rejects_a_dtype_assertion() -> None:
     parameter has nothing left to say. ``.cast(...)`` after the source is the
     supported way to change it, and it runs through the real cast op.
     """
-    with pytest.raises(ValueError, match="dtype is not accepted"):
+    with pytest.raises(ValueError, match="dtype does not apply"):
         Pipeline().source("contour", width=8, height=8, dtype="f32")
-    with pytest.raises(ValueError, match="dtype is not accepted"):
+    with pytest.raises(ValueError, match="use .cast"):
         Pipeline().source("contour", width=8, height=8, dtype="u8")
