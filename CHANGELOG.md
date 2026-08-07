@@ -136,6 +136,41 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   which of the two routes produced it — asserted by
   `TestMaskContourRoundTrip::test_the_two_routes_to_a_mask_agree`.
 
+- **`.sink()` accepted any keyword at all, and dropped the ones its format
+  does not read.** The sink takes `**kwargs` and spreads them into the graph's
+  `SinkSpec`, so `sink("jpeg", qualtiy=50)` built a graph carrying `qualtiy`,
+  serde dropped it as an unknown field, and the query encoded at the default
+  quality with nothing said. Of the three real keywords only `dtype` policed
+  where it applied: `quality` on a png sink and `shape` on a png sink were
+  accepted and ignored.
+
+  `quality` turned out to be jpeg-only. `SinkSpec` documented it as "JPEG and
+  WebP" and the sink docstring said "jpeg/webp", but the WebP arm of
+  `encode_image` calls an encoder that takes no quality argument — so a webp
+  quality has always been silently discarded. It is now rejected rather than
+  accepted-and-dropped; supporting it is an encoder change, not a parameter
+  change.
+
+  Both ends of the pipeline now answer this question from one place:
+  `SOURCE_PARAM_APPLIES` and `SINK_PARAM_APPLIES` in `_types.py`, next to the
+  specs they describe, read by one `reject_inapplicable_params`. A name that is
+  not in the table is rejected too, which is what closes the open `**kwargs`.
+  Rust's `SinkSpec` gained `#[serde(deny_unknown_fields)]`, the same mechanism
+  `GraphNode` already uses, so a hand-built graph cannot carry a sink field
+  nothing reads either.
+
+  The `quality` declaration is checked against the encoders rather than merely
+  asserted: for each image sink, whether the output changes between quality 10
+  and 95 must equal what the table claims.
+
+- **Three Python spec classes nothing referenced.** `_types.SinkSpec`,
+  `OutputSpec` and `MultiSinkSpec` were unreachable — the sink is built from
+  raw kwargs in `_graph.py`, and nothing in the package or tests names them.
+  They also carried a fourth, stale copy of the applicability fact
+  (`if format == JPEG or WEBP: result["quality"]`), wrong about WebP in exactly
+  the way the docstrings were. Deleted, with a guard in
+  `test_removed_surfaces.py`.
+
 - **Source parameters that do not apply to the chosen format were silently
   ignored, and each one policed itself differently.** `Pipeline.source()` takes
   eleven keywords, and most apply to a subset of the eight formats. Of the
@@ -161,7 +196,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   refusing an `"auto"` source that `source(decode_max_size=...)` accepted.
 
   Two behaviour changes: `cloud_options` on a non-path source now raises
-  instead of warning (a warning is filtered out of a query's output and the
+  instead of warning (and its warn-and-drop branch, unreachable once the check
+  ran first, is gone rather than left behind) (a warning is filtered out of a query's output and the
   credentials do nothing either way), and `dtype` on a contour source is
   rejected as described below. `test_cloud_options_on_non_file_path_source_warns`
   was rewritten to pin the rejection, and the `decode_max_size` and

@@ -10,12 +10,12 @@ from __future__ import annotations
 import copy
 import json
 import math
-import warnings
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
 from polars_cv._types import (
+    SOURCE_PARAM_APPLIES,
     ApproxMethod,
     BoolOrExpr,
     BorderMode,
@@ -43,7 +43,9 @@ from polars_cv._types import (
     SourceFormat,
     SourceSpec,
     StrOrExpr,
+    is_supplied,
     normalize_cloud_options,
+    reject_inapplicable_params,
 )
 
 if TYPE_CHECKING:
@@ -153,55 +155,6 @@ def _literal_matrix_values(matrix_param: "ParamValue") -> "list[float] | None":
 _DOMAIN_ANY = "any"
 
 
-#: Which source formats each :meth:`Pipeline.source` keyword applies to, and
-#: what to do instead when it does not.
-#:
-#: **The single authority for source-parameter applicability.** A parameter is
-#: listed against exactly the formats whose decode path reads it, so "does this
-#: do anything here?" has one answer rather than one per parameter. Before this
-#: table each parameter policed itself, badly and differently: `decode_max_size`
-#: raised, `cloud_options` warned, and `width`/`height`/`shape`/`fill_value`/
-#: `background`/`require_contiguous`/`allowed_roots` were silently dropped for
-#: every format that does not read them — accepted, serialized in some cases,
-#: and never consulted.
-#:
-#: `test_every_source_parameter_declares_its_formats` fails if a keyword is
-#: added to `source()` without an entry here, so a new parameter cannot inherit
-#: "applies everywhere" by omission. Set arithmetic rather than a literal list
-#: where the fact is genuinely "all of them" or "all but one", so a new source
-#: format does not silently fall outside a parameter that should cover it.
-_SOURCE_PARAM_APPLIES: "dict[str, frozenset[SourceFormat]]" = {
-    # Every source carries an element dtype except the contour one, whose
-    # rasterize fixes u8 (`OutputDTypeRule::Fixed(U8)`).
-    "dtype": frozenset(SourceFormat) - {SourceFormat.CONTOUR},
-    # The canvas and its colours: read only by the contour decode's rasterize.
-    "width": frozenset({SourceFormat.CONTOUR}),
-    "height": frozenset({SourceFormat.CONTOUR}),
-    "shape": frozenset({SourceFormat.CONTOUR}),
-    "fill_value": frozenset({SourceFormat.CONTOUR}),
-    "background": frozenset({SourceFormat.CONTOUR}),
-    # Path reads: `file_path`, and `auto` when a String column resolves to one.
-    "cloud_options": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
-    "allowed_roots": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
-    # Zero-copy contiguity applies to the nested-column decode.
-    "require_contiguous": frozenset(
-        {SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO}
-    ),
-    # JPEG IDCT scaling, applied where bytes are decoded as an image.
-    "decode_max_size": frozenset(
-        {SourceFormat.AUTO, SourceFormat.IMAGE_BYTES, SourceFormat.FILE_PATH}
-    ),
-    # Every source can fail to decode, including a contour that will not parse.
-    "on_error": frozenset(SourceFormat),
-}
-
-#: What to do instead, for the parameters where a caller has a real
-#: alternative. Keyed by parameter; appended to the rejection message.
-_SOURCE_PARAM_HINTS: "dict[str, str]" = {
-    "dtype": "rasterizing always produces u8 — use .cast(...) after the source",
-}
-
-
 def _source_param_defaults() -> "dict[str, Any]":
     """Each ``Pipeline.source`` keyword's default, read from its signature.
 
@@ -223,52 +176,6 @@ def _source_param_defaults() -> "dict[str, Any]":
 
 
 _SOURCE_DEFAULTS: "dict[str, Any] | None" = None
-
-
-def _is_supplied(value: Any, default: Any) -> bool:
-    """Did the caller pass ``value``, or is it the parameter's default?
-
-    Identity first so ``None``/``False`` defaults are exact, then equality for
-    value defaults (``fill_value=255``). A Polars expression short-circuits:
-    no default is an expression, and ``Expr.__ne__`` builds an expression
-    rather than answering, so comparing one would raise "the truth value of an
-    Expr is ambiguous" instead of reporting it as supplied.
-    """
-    if value is default:
-        return False
-    if isinstance(value, pl.Expr):
-        return True
-    return bool(value != default)
-
-
-def _reject_inapplicable_source_params(
-    fmt: "SourceFormat", supplied: "dict[str, Any]"
-) -> None:
-    """Reject source keywords the chosen format's decode never reads.
-
-    Applicability is read from `_SOURCE_PARAM_APPLIES`, so this is the only
-    place the question is asked and every parameter gets the same answer —
-    an error, not a warning and not silence. A parameter that does nothing is
-    not a harmless no-op: `source("image_bytes", width=224)` reads as a decode
-    size, and `source("contour", dtype="f32")` reads as the assertion that
-    makes a typed sink plannable for every other source.
-
-    Args:
-        fmt: The validated source format.
-        supplied: Parameter name → value, for the parameters that differ from
-            their default (see :func:`_is_supplied`).
-    """
-    for name in sorted(supplied):
-        applies = _SOURCE_PARAM_APPLIES[name]
-        if fmt in applies:
-            continue
-        spelled = ", ".join(sorted(f.value for f in applies))
-        hint = _SOURCE_PARAM_HINTS.get(name)
-        msg = (
-            f"{name} does not apply to the '{fmt.value}' source "
-            f"(it applies to: {spelled})"
-        )
-        raise ValueError(f"{msg}; {hint}." if hint else f"{msg}.")
 
 
 def _op_contract_for(spec: "OpSpec") -> dict:
@@ -1357,14 +1264,16 @@ class Pipeline:
 
         new = self._clone()
         fmt = _validate_enum(format, SourceFormat, "source format")
-        _reject_inapplicable_source_params(
-            fmt,
-            {
+        reject_inapplicable_params(
+            kind="source",
+            fmt=fmt,
+            supplied={
                 name: value
                 for name, value in passed.items()
-                if name in _SOURCE_PARAM_APPLIES
-                and _is_supplied(value, _source_param_defaults()[name])
+                if name not in ("self", "format")
+                and is_supplied(value, _source_param_defaults()[name])
             },
+            applies=SOURCE_PARAM_APPLIES,
         )
 
         if on_error not in ("raise", "null"):
@@ -1448,21 +1357,11 @@ class Pipeline:
             )
             new._seed_from_contour_rasterize(shape=shape)
         else:
-            # Handle cloud_options for file_path format (and "auto", which can
-            # resolve to file_path from a String column at runtime).
-            cloud_opts = None
-            if (
-                fmt in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
-                and cloud_options is not None
-            ):
-                cloud_opts = normalize_cloud_options(cloud_options)
-            elif cloud_options is not None:
-                warnings.warn(
-                    f"cloud_options is only applied to 'file_path'/'auto' sources; "
-                    f"ignoring it for '{fmt.value}' source.",
-                    UserWarning,
-                    stacklevel=2,
-                )
+            # Reaching here at all means the format accepts them: the
+            # applicability check rejected every other format above, so the
+            # `fmt in (FILE_PATH, AUTO)` test that used to guard this — and the
+            # warn-and-drop branch beside it — are gone rather than restated.
+            cloud_opts = normalize_cloud_options(cloud_options)
 
             new._source = SourceSpec(
                 format=fmt,
@@ -1588,7 +1487,7 @@ class Pipeline:
         # that parameter does — read from the table rather than restated, which
         # is how the two came to disagree about `auto` (`source()` accepted it,
         # `thumbnail()` refused it, for the same field on the same spec).
-        applies = _SOURCE_PARAM_APPLIES["decode_max_size"]
+        applies = SOURCE_PARAM_APPLIES["decode_max_size"]
         if self._source.format not in applies:
             spelled = ", ".join(sorted(f.value for f in applies))
             msg = (
