@@ -113,7 +113,11 @@ pub(crate) fn resolve_rasterize_style(
     ))
 }
 
-/// Decode a contour source by parsing the struct and rasterizing to ViewBuffer.
+/// Decode a contour source by parsing the geometry and rasterizing to ViewBuffer.
+///
+/// The column may hold one contour per row or a whole set (`List[Contour]`) —
+/// `parse_contour_set` accepts both, and the set is painted as a union, exactly
+/// as the `rasterize` op paints the set `extract_contours` produces.
 pub fn decode_contour_source(
     value: &AnyValue,
     row_idx: usize,
@@ -121,7 +125,7 @@ pub fn decode_contour_source(
     ctx: &ParamCtx,
 ) -> PolarsResult<ViewBuffer> {
     // Parse via the plugin's single contour parser (contour.rs).
-    let contour = crate::contour::parse_contour(value)?;
+    let contours = crate::contour::parse_contour_set(value)?;
 
     // Resolve dimensions
     let (width, height) = resolve_contour_dimensions(row_idx, source, ctx)?;
@@ -129,8 +133,8 @@ pub fn decode_contour_source(
     // Get fill and background values (both per-row capable)
     let (fill_value, background) = source.resolve_fill(row_idx, ctx)?;
 
-    // Rasterize the contour to a ViewBuffer
-    Ok(rasterize(&contour, width, height, fill_value, background))
+    // Rasterize the contours to a ViewBuffer
+    Ok(rasterize(&contours, width, height, fill_value, background))
 }
 
 /// Decode a contour source with explicit dimensions (for graph execution with shape inference).
@@ -145,10 +149,10 @@ pub fn decode_contour_source_with_dims(
     background: u8,
 ) -> PolarsResult<ViewBuffer> {
     // Parse via the plugin's single contour parser (contour.rs).
-    let contour = crate::contour::parse_contour(value)?;
+    let contours = crate::contour::parse_contour_set(value)?;
 
-    // Rasterize the contour to a ViewBuffer
-    Ok(rasterize(&contour, width, height, fill_value, background))
+    // Rasterize the contours to a ViewBuffer
+    Ok(rasterize(&contours, width, height, fill_value, background))
 }
 
 /// Resolve contour dimensions from pipeline source spec.

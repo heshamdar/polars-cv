@@ -129,7 +129,7 @@ match op_spec.op.as_str() {
 | `blob` | VIEW protocol binary (header + data) → `ViewBuffer` |
 | `raw` | Raw bytes with explicit dtype → `ViewBuffer` |
 | `file_path` | Two stages: `fetch.rs` reads the bytes from local/cloud/HTTP, then they decode as `image_bytes` (alpha channels preserved). The fetch stage is also exposed on its own as `.cv.read_bytes()` (`read_bytes.rs`) — same code, decode omitted |
-| `contour` | Parse Struct column into `Contour`, optionally rasterize to mask |
+| `contour` | Parse geometry into `Contour`s and rasterize to a mask. `parse_contour_set` (`contour.rs`) accepts either shape the column takes — one contour per row (`Struct`) or the whole set (`List(Struct)`, what `extract_contours().sink("native")` emits) — dispatching on the list's *element dtype*, since a `List` of point structs is one contour's ring. The set paints as a union via `geometry::rasterize::rasterize`, the same call the `rasterize` op makes |
 | `list` / `array` | Zero-copy (when contiguous) or copy from Polars nested types |
 
 Alpha channels are always preserved during image decoding. RGBA → `[H, W, 4]`, GrayA → `[H, W, 2]`. Each op's `ViewDto` contract exposes a channel rule that the Python planner reads for planning-time channel inference; Rust implements the corresponding behavior based on the buffer's actual channel count.

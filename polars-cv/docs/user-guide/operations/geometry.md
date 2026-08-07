@@ -99,6 +99,33 @@ result = df.with_columns(
 )
 ```
 
+The column may hold **one contour per row** (`CONTOUR_SCHEMA`) or a **whole set**
+(`List(CONTOUR_SCHEMA)`) — the source reads both, and a set paints the *union* of
+its members: each member's exterior minus its own holes. One contour's hole never
+erases another's fill, and the mask does not depend on the order of the set.
+
+That is what closes the loop, because `extract_contours()` sinks a contour set:
+
+```python
+contours = (
+    pl.col("image")
+    .cv.pipe(Pipeline().source("image_bytes").grayscale().threshold(128).extract_contours())
+    .sink("native")                      # List(CONTOUR_SCHEMA), one set per row
+)
+
+mask = pl.col("contours").cv.pipe(Pipeline().source("contour", width=200, height=200))
+```
+
+The trip back is lossy in one known direction: `extract_contours()` traces the
+*centres* of the boundary pixels, so a region filling `w x h` pixels returns
+bounding `(w-1) x (h-1)` and re-rasterizing erodes it by a pixel per round trip.
+
+Staying inside one pipeline — `extract_contours().rasterize(...)` — produces the
+same mask as sinking the set and reading it back through `source("contour")`.
+
+`fill_value` and `background` may be inverted (`fill_value=0, background=255`);
+the same region is painted either way.
+
 Infer dimensions from an existing image:
 
 ```python
@@ -110,11 +137,13 @@ mask = pl.col("contour").cv.pipe(Pipeline().source("contour", shape=img))
 dimensions: the referenced pipeline's output `[H, W]` is resolved and used to size
 the raster canvas, so the mask matches the source image without hard-coding its
 size. The same `shape=` reference is accepted by `rasterize(...)` directly when
-you already have a contour-domain pipeline:
+you already have a contour-domain pipeline — which is what `extract_contours()`
+leaves you with:
 
 ```python
 mask = (
-    pl.col("contour").cv.pipe(Pipeline().source("contour"))
+    pl.col("image")
+    .cv.pipe(Pipeline().source("image_bytes").grayscale().threshold(128).extract_contours())
     .rasterize(shape=img)
 )
 ```

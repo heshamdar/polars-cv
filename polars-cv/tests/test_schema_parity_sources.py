@@ -408,15 +408,16 @@ def test_blob_source_round_trips(pattern: str) -> None:
 
 
 @plugin_required
-def test_contour_source() -> None:
+@pytest.mark.parametrize("shape", ["struct", "set"])
+def test_contour_source(shape: str) -> None:
     """The contour source rasterises geometry back into the buffer domain.
 
-    Note the asymmetry this test had to work around: ``extract_contours()
-    .sink("native")`` emits a contour *set* per row (``List(Struct)``), while
-    ``source("contour")`` parses a *single* contour per row (``Struct``). The
-    sink's output is therefore not directly re-readable by the source, and
-    feeding it back reports ``Point struct missing 'x' field`` — the contour
-    set's ``exterior``/``holes``/``is_closed`` struct being read as a point.
+    Both shapes a geometry column takes are swept, because both reach the same
+    source: one contour per row (``Struct``), and the contour *set* per row
+    (``List(Struct)``) that ``extract_contours().sink("native")`` emits. The
+    set used to be rejected with ``Point struct missing 'x' field`` — its
+    ``exterior``/``holes``/``is_closed`` struct read as a point — which left the
+    sink's own output not re-readable by the source.
     """
     contour_set = (
         pl.DataFrame(
@@ -436,11 +437,22 @@ def test_contour_source() -> None:
         )
         .collect()["out"]
     )
-    one = contour_set[0][0]
-    df = pl.DataFrame({"img": [one, None, one]}, schema={"img": CONTOUR_SCHEMA})
+    if shape == "struct":
+        one = contour_set[0][0]
+        df = pl.DataFrame({"img": [one, None, one]}, schema={"img": CONTOUR_SCHEMA})
+    else:
+        whole = contour_set[0]
+        df = pl.DataFrame(
+            {"img": [whole, None, whole]}, schema={"img": pl.List(CONTOUR_SCHEMA)}
+        )
 
     pipe = Pipeline().source("contour", width=16, height=16).cast("u8")
-    _sweep(df, pipe, "contour source", sinks=tuple(s for s in SINKS if s != "native"))
+    _sweep(
+        df,
+        pipe,
+        f"contour source / {shape}",
+        sinks=tuple(s for s in SINKS if s != "native"),
+    )
 
 
 # ---------------------------------------------------------------------------
