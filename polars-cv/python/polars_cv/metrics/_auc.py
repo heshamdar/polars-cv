@@ -139,7 +139,12 @@ def partial_auc(
     elif clipped_x.len() == 0 or float(clipped_x[0]) > lo:
         y_lo = _interp(x, y, lo)
         if y_lo is None:
-            y_lo = y0_val
+            # `_interp` declines outside `[x[0], x[-1]]`, and this branch has
+            # already established `lo >= x[0]`, so the only way to get here is
+            # `lo > x[-1]` — the window starts past the end of the curve.
+            # Clamp to the last y, not the first: a request beyond the curve
+            # continues its final value, and `y[0]` is the opposite end.
+            y_lo = float(y[-1])
         clipped_x = pl.concat([_bound("x", lo), clipped_x])
         clipped_y = pl.concat([_bound("y", y_lo), clipped_y])
 

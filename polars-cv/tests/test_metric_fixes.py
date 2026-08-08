@@ -1863,3 +1863,28 @@ class TestSeededBootstrapIsReproducible:
             for _ in range(5)
         }
         assert len(runs) == 1, f"seeded distribution varied: {runs}"
+
+
+class TestPartialAucWindowPastTheCurve:
+    """A window starting beyond the curve clamps to the last y, not the first.
+
+    `partial_auc` fills `[lo, hi]` even when the curve does not span it. When
+    `lo` sits above the curve's maximum x, `_interp` declines and the fallback
+    took `y[0]` — the value at the *opposite* end. A FROC curve reaching
+    2 FP/image, asked for `fp_range=(5, 10)`, was credited with the
+    sensitivity it had at zero false positives.
+    """
+
+    def test_lo_above_the_curve_uses_the_final_y(self) -> None:
+        x = pl.Series("x", [0.0, 1.0, 2.0])
+        y = pl.Series("y", [0.1, 0.5, 0.9])
+        # Whole window past x[-1]: the curve is flat at y[-1] there, so the
+        # area is that value across the window's width.
+        assert partial_auc(x, y, 5.0, 10.0) == pytest.approx(0.9 * 5.0)
+        assert partial_auc(x, y, 5.0, 10.0, "normalize") == pytest.approx(0.9)
+
+    def test_lo_inside_the_curve_still_interpolates(self) -> None:
+        """The in-range path is untouched."""
+        x = pl.Series("x", [0.0, 1.0, 2.0])
+        y = pl.Series("y", [0.0, 1.0, 2.0])
+        assert partial_auc(x, y, 0.5, 1.5) == pytest.approx(1.0)

@@ -153,6 +153,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   **Reported confidence intervals change**, for every seed: the draws a seed
   selects are different now that the pool it indexes into is ordered.
 
+- **`partial_auc` clamped to the wrong end of the curve** when the requested
+  window started past it. It fills `[lo, hi]` even where the curve does not
+  reach, and `_interp` declines outside the observed range — but the fallback
+  took `y[0]`, the value at the opposite end, rather than `y[-1]`. A FROC curve
+  reaching 2 FP/image, asked for `fp_range=(5, 10)`, was credited with the
+  sensitivity it had at *zero* false positives. Windows that overlap the curve
+  at all are unaffected.
+
 - **The contour round trip did not close: `source("contour")` could not read a
   contour set.** `extract_contours().sink("native")` emits `List(CONTOUR_SCHEMA)`
   — one *set* per row — but the source parsed a single `Struct` per row and read
