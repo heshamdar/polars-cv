@@ -174,6 +174,7 @@ class MetricResult:
         metric: str | dict[str, dict[str, Any]] = "auc",
         metric_kwargs: dict[str, Any] | None = None,
         sample_col: str | None = None,
+        stratify: bool = False,
     ) -> BootstrapResult | dict[str, BootstrapResult]:
         """Estimate confidence intervals via bootstrap sampling.
 
@@ -208,6 +209,12 @@ class MetricResult:
                 ``None`` (default), sampling happens at the ``image_id``
                 level. When set (e.g. ``"case_id"``), sampling happens
                 at the entity level and expands back to image IDs.
+            stratify: Draw within positive/negative image strata (on
+                ``gt_label``) instead of from one pool. ``False`` (default) is
+                the plain nonparametric bootstrap. See the note below for
+                which one your data calls for. Cannot be combined with
+                ``sample_col``: an entity can own images on both sides of the
+                label, so there is no one stratum to draw it from.
 
         Returns:
             ``BootstrapResult`` for single-metric mode, or
@@ -218,18 +225,36 @@ class MetricResult:
                 metric name is invalid.
 
         Note:
-            Resampling here is **unstratified**: every sampling unit is drawn
-            from one pool, so a replicate's positive/negative image balance
-            varies. This is not the same scheme as
-            :func:`~polars_cv.metrics.bootstrap_pr_auc`, which stratifies draws
-            on ``gt_label`` and therefore holds that balance fixed. The two
-            answer the same question with different variance; do not compare a
-            FROC/LROC interval from here against a PR interval from there as
-            though they were computed alike. Use ``sample_col`` when the
-            sampling unit should be an entity (a case, a patient) rather than
-            an image.
+            **Which resampling scheme is correct is a property of your study
+            design, not of the metric**, which is why it is a parameter and
+            has no universally right value:
+
+            - *Consecutive or simple random sample* — you collected N images
+              and the positive/negative split is whatever came out. That split
+              is itself random, so the bootstrap has to let it vary:
+              ``stratify=False``. Stratifying here holds fixed something that
+              was genuinely random, removing real variance and producing
+              intervals that are **too narrow**.
+            - *Enriched or case-control* — you deliberately enrolled so many
+              positives and so many negatives. Those margins are fixed by
+              design rather than sampled, so the bootstrap should hold them
+              fixed: ``stratify=True``. Drawing from one pool injects
+              variability the design excluded, giving intervals that are too
+              wide.
+
+            The default is ``False`` because it is the plain nonparametric
+            bootstrap and it errs toward *over*stating uncertainty — the
+            direction that does not silently overstate a result's precision.
+
+            Note that the stratum is ``gt_label``, a binary "this image holds
+            at least one ground truth". It balances positive and negative
+            *image counts*, not lesion burden, so it is a coarse control on a
+            table whose ``n_gts`` varies widely.
+
+            Use ``sample_col`` when the sampling unit should be an entity (a
+            case, a patient) rather than an image.
         """
-        from ._bootstrap import _finalize, _validate_bootstrap_params
+        from ._bootstrap import _draw_once, _finalize, _validate_bootstrap_params
 
         table = self._get_detection_table()
 
@@ -243,8 +268,18 @@ class MetricResult:
             multi_mode = True
             metric_specs = metric
 
+        if stratify and sample_col is not None:
+            raise ValueError(
+                "stratify=True cannot be combined with sample_col="
+                f"{sample_col!r}. Stratification assigns each sampling unit to "
+                "one stratum, and an entity may own images on both sides of "
+                "gt_label, so there is no stratum to draw it from. Sample at "
+                "the entity level or stratify on the label, not both."
+            )
+
         # Resolve sampling entities and get image ID expansion
         sample_ids, entity_to_images = _resolve_sampling_entities(table, sample_col)
+        _, strata = table.image_ids_and_strata(stratify=stratify)
 
         _validate_bootstrap_params(n_bootstrap, confidence, sample_ids)
 
@@ -254,15 +289,15 @@ class MetricResult:
             kw = {k: v for k, v in spec.items() if k != "metric"}
             point_estimates[name] = self._resolve_metric(spec["metric"], kw)
 
-        # Bootstrap loop with shared reconstruction
+        # Bootstrap loop with shared reconstruction. The draw itself comes from
+        # `_draw_once`, the same routine the vectorized path builds its samples
+        # with, so "what does one replicate draw" has one answer across both
+        # bootstraps rather than an inline loop here and a helper there.
         distributions: dict[str, list[float]] = defaultdict(list)
-        ids_series = pl.Series("id", sample_ids)
 
         for i in range(n_bootstrap):
             iter_seed = (seed + i) if seed is not None else None
-            sampled_entities = ids_series.sample(
-                n=ids_series.len(), with_replacement=True, seed=iter_seed
-            ).to_list()
+            sampled_entities = _draw_once(sample_ids, strata, iter_seed)
 
             if entity_to_images is not None:
                 sampled_image_ids: list[str] = []

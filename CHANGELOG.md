@@ -141,6 +141,34 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   200 random untied cases, and against an independent reference implementation
   over 200 more that include heavily-tied ones.
 
+- **Stratified resampling was decided for you, differently on each path.**
+  Which bootstrap scheme is correct is a property of the study design, not of
+  the metric — stratifying is right when the positive/negative counts were
+  fixed by enrolment, and wrong when they were whatever the sample contained,
+  where holding them fixed removes real variance and yields intervals that are
+  **too narrow**. The mechanism to choose had been built and never exposed:
+  `_draw_once` (then two inline copies) has always had both branches and
+  `bootstrap_metric_sequential` has always taken `strata`, but
+  `image_ids_and_strata` returned the mapping unconditionally. So
+  `bootstrap_pr_auc`, which passed it on, could not turn stratification *off*,
+  and `MetricResult.bootstrap_ci`, which read it into a variable it never used,
+  could not turn it *on*. Two schemes, no switch, and no note that the FROC
+  interval and the PR interval beside it were not comparable.
+
+  `stratify` is now a parameter on both, defaulting to `False` — the plain
+  nonparametric bootstrap, which errs toward overstating uncertainty rather
+  than overstating a result's precision. `stratify=True` with `sample_col` is
+  rejected: an entity can own images on both sides of the label, so there is no
+  one stratum to draw it from.
+
+  **`bootstrap_pr_auc`'s intervals widen at the default**, since it used to
+  stratify unconditionally; pass `stratify=True` to keep the old behaviour.
+  `bootstrap_ci` is unchanged at the default and can now stratify.
+
+  The draw itself is one routine (`_draw_once`) rather than three — the
+  vectorized path's helper, the sequential fallback's loop, and `bootstrap_ci`'s
+  own inline copy, which is the one that had no stratified branch at all.
+
 - **A seeded bootstrap did not reproduce.** `DetectionTable.image_ids_and_strata`
   built the sampling pool with `unique()`, which promises no particular order,
   and `Series.sample(seed=...)` selects *positions*. Five identical calls

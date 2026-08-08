@@ -17,6 +17,7 @@ Covers:
 
 from __future__ import annotations
 
+import random
 import warnings
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,7 @@ from polars_cv.metrics import (
     precision_recall_curve,
 )
 from polars_cv.metrics._auc import mann_whitney_u_auc, mcclish_correction, partial_auc
+from polars_cv.metrics._bootstrap import _draw_once
 from polars_cv.metrics._matching._contour import ContourMatcher, _detect_source_info
 from polars_cv.metrics._metrics._froc import FROCResult, _curve_from_detections
 from polars_cv.metrics._metrics._lroc import LROCResult, _build_lroc_curve
@@ -1888,3 +1890,102 @@ class TestPartialAucWindowPastTheCurve:
         x = pl.Series("x", [0.0, 1.0, 2.0])
         y = pl.Series("y", [0.0, 1.0, 2.0])
         assert partial_auc(x, y, 0.5, 1.5) == pytest.approx(1.0)
+
+
+class TestStratificationIsAChoice:
+    """Stratified resampling is a study-design question, so it is a parameter.
+
+    The mechanism was always built — `_draw_once` has both branches and
+    `bootstrap_metric_sequential` has always taken `strata` — but nothing
+    exposed it: `image_ids_and_strata` returned the mapping unconditionally,
+    so `bootstrap_pr_auc` (which passed it on) could not turn stratification
+    off and `bootstrap_ci` (which dropped it) could not turn it on. Neither
+    scheme is universally right, so neither may be the only one reachable.
+    """
+
+    N_POS, N_NEG = 4, 12
+
+    @classmethod
+    def _ids(cls) -> list[str]:
+        return [f"p{i}" for i in range(cls.N_POS)] + [f"n{i}" for i in range(cls.N_NEG)]
+
+    @classmethod
+    def _table(cls) -> DetectionTable:
+        """An enriched set: 4 positive images against 12 negative.
+
+        Scores deliberately overlap between the classes. A separable set
+        scores AP 1.0 in every replicate, which hides any difference between
+        the two schemes — the first version of this fixture did exactly that
+        and reported a zero-width interval for both.
+        """
+        ids = cls._ids()
+        rng = random.Random(0)
+        data = pl.DataFrame(
+            {
+                "image_id": ids,
+                "score": [round(rng.random(), 4) for _ in ids],
+                "is_tp": [i < cls.N_POS for i in range(len(ids))],
+            }
+        )
+        meta = pl.DataFrame(
+            {"image_id": ids, "n_gts": [1] * cls.N_POS + [0] * cls.N_NEG}
+        )
+        return PreMatchedAdapter().match(data, image_id_col="image_id", image_meta=meta)
+
+    def test_unstratified_is_the_default(self) -> None:
+        """The default must be the plain nonparametric bootstrap."""
+        _, strata = self._table().image_ids_and_strata()
+        assert strata is None
+
+    def test_stratified_draws_hold_the_class_margins_fixed(self) -> None:
+        """That is what stratifying *is* — and what unstratified must not do."""
+        table = self._table()
+        positives = {f"p{i}" for i in range(self.N_POS)}
+
+        pool, strata = table.image_ids_and_strata(stratify=True)
+        stratified = {
+            sum(1 for x in _draw_once(pool, strata, s) if x in positives)
+            for s in range(50)
+        }
+        assert stratified == {self.N_POS}
+
+        pool_u, _ = table.image_ids_and_strata(stratify=False)
+        unstratified = {
+            sum(1 for x in _draw_once(pool_u, None, s) if x in positives)
+            for s in range(50)
+        }
+        assert len(unstratified) > 1, (
+            "unstratified draws must let the class balance vary; "
+            f"got only {unstratified}"
+        )
+
+    def test_both_bootstrap_paths_honour_the_flag(self) -> None:
+        """Neither path may be stuck on one scheme."""
+        table = self._table()
+        for stratify in (False, True):
+            vec = bootstrap_pr_auc(table, n_bootstrap=40, seed=1, stratify=stratify)
+            seq = precision_recall_curve(table).bootstrap_ci(
+                n_bootstrap=40, seed=1, stratify=stratify
+            )
+            assert vec.ci_lower == pytest.approx(seq.ci_lower)
+            assert vec.ci_upper == pytest.approx(seq.ci_upper)
+
+    def test_the_two_schemes_actually_differ(self) -> None:
+        """A flag that changes nothing is not a fix.
+
+        On an enriched set the stratified interval is the narrower one — it
+        holds fixed a margin the unstratified scheme lets vary. That is the
+        whole reason the default is unstratified: narrower here means
+        *anticonservative* for anyone whose margins were not fixed by design.
+        """
+        table = self._table()
+        wide = bootstrap_pr_auc(table, n_bootstrap=60, seed=1, stratify=False)
+        narrow = bootstrap_pr_auc(table, n_bootstrap=60, seed=1, stratify=True)
+        assert (narrow.ci_upper - narrow.ci_lower) < (wide.ci_upper - wide.ci_lower)
+
+    def test_stratify_with_sample_col_is_rejected(self) -> None:
+        """An entity can own images on both sides of the label."""
+        with pytest.raises(ValueError, match="cannot be combined with sample_col"):
+            precision_recall_curve(self._table()).bootstrap_ci(
+                n_bootstrap=5, stratify=True, sample_col="image_id"
+            )
