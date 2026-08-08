@@ -107,6 +107,13 @@ ap = average_precision(table)
 map_val = mean_average_precision(table, iou_thresholds=[0.5, 0.55, 0.6, ..., 0.95])
 ```
 
+The curve carries **one point per distinct score**, not one per detection. A
+threshold cannot admit one detection of a tied group and reject another, so a
+run of tied scores is a single operating point — and computing it that way is
+what makes AP a function of the detections alone rather than of the order they
+happened to arrive in. `average_precision` applies the monotone precision
+envelope and sums `Σ (Rₙ − Rₙ₋₁) · Pₙ`, matching COCO and scikit-learn.
+
 ### FROC
 
 ```python
@@ -155,6 +162,25 @@ ci = result.bootstrap_ci(n_bootstrap=1000, seed=42)
 # Vectorized (faster, for PR AUC)
 from polars_cv.metrics import bootstrap_pr_auc
 ci = bootstrap_pr_auc(table, n_bootstrap=1000, seed=42)
+```
+
+These are not the same resampling scheme, and the difference is not only speed:
+
+- `result.bootstrap_ci(...)` draws every sampling unit from one pool
+  (**unstratified**), so a replicate's positive/negative image balance varies.
+- `bootstrap_pr_auc(...)` **stratifies** draws on `gt_label`, holding that
+  balance fixed across replicates.
+
+Both are defensible estimators, but they have different variance. Do not quote a
+FROC interval from the first alongside a PR interval from the second as though
+they were computed alike.
+
+Pass `sample_col` to `bootstrap_ci` when the sampling unit should be an entity
+rather than an image — draws are then taken over the entity and expanded back to
+the images it owns:
+
+```python
+ci = result.bootstrap_ci(n_bootstrap=1000, seed=42, sample_col="case_id")
 ```
 
 ## IoU Re-thresholding

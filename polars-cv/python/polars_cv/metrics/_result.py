@@ -216,6 +216,18 @@ class MetricResult:
         Raises:
             ValueError: If ``detection_table`` is not available or the
                 metric name is invalid.
+
+        Note:
+            Resampling here is **unstratified**: every sampling unit is drawn
+            from one pool, so a replicate's positive/negative image balance
+            varies. This is not the same scheme as
+            :func:`~polars_cv.metrics.bootstrap_pr_auc`, which stratifies draws
+            on ``gt_label`` and therefore holds that balance fixed. The two
+            answer the same question with different variance; do not compare a
+            FROC/LROC interval from here against a PR interval from there as
+            though they were computed alike. Use ``sample_col`` when the
+            sampling unit should be an entity (a case, a patient) rather than
+            an image.
         """
         from ._bootstrap import _finalize, _validate_bootstrap_params
 
@@ -233,7 +245,6 @@ class MetricResult:
 
         # Resolve sampling entities and get image ID expansion
         sample_ids, entity_to_images = _resolve_sampling_entities(table, sample_col)
-        _, strata = table.image_ids_and_strata()
 
         _validate_bootstrap_params(n_bootstrap, confidence, sample_ids)
 

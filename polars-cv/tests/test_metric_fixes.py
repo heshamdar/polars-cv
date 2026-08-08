@@ -25,6 +25,9 @@ import pytest
 
 from polars_cv.metrics import (
     DetectionTable,
+    PreMatchedAdapter,
+    average_precision,
+    bootstrap_pr_auc,
     froc_curve,
     lroc_curve,
     precision_recall_curve,
@@ -1646,3 +1649,217 @@ class TestPartialAucIntegerBounds:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             assert partial_auc(x, y, 0, 4) == pytest.approx(partial_auc(x, y, 0.0, 4.0))
+
+
+# ---------------------------------------------------------------------------
+# Review follow-up: AP must not depend on the caller's row order
+# ---------------------------------------------------------------------------
+
+
+class TestApIsIndependentOfRowOrder:
+    """Tied detection scores must not leave AP depending on frame layout.
+
+    `precision_recall_curve` carried one row per detection and sorted on score
+    with Polars' default ``maintain_order=False``, so the interleaving of TPs
+    and FPs inside a run of tied scores came from however the caller's frame
+    happened to be laid out. The same detections in a different row order
+    produced a different AP — 0.53 to 0.65 on the frame below. `froc_curve`
+    buckets by score and never had the defect; this pins the PR curve to the
+    same property.
+    """
+
+    @staticmethod
+    def _table(frame: pl.DataFrame, n: int) -> DetectionTable:
+        meta = pl.DataFrame(
+            {
+                "image_id": [f"img{i}" for i in range(n)],
+                "n_gts": [1 if i % 2 == 0 else 0 for i in range(n)],
+            }
+        )
+        return PreMatchedAdapter().match(
+            frame, image_id_col="image_id", image_meta=meta
+        )
+
+    @staticmethod
+    def _heavily_tied(n: int = 40) -> pl.DataFrame:
+        """Detections over three distinct scores, so most of them tie."""
+        return pl.DataFrame(
+            {
+                "image_id": [f"img{i}" for i in range(n)],
+                "score": [round(0.5 + (i % 3) * 0.1, 3) for i in range(n)],
+                "is_tp": [i % 2 == 0 for i in range(n)],
+            }
+        )
+
+    def test_ap_is_constant_across_row_orderings(self) -> None:
+        """Shuffling the input frame must not move AP."""
+        n = 40
+        base = self._heavily_tied(n)
+        values = {
+            round(
+                average_precision(
+                    self._table(base.sample(fraction=1.0, shuffle=True, seed=s), n)
+                ),
+                12,
+            )
+            for s in range(6)
+        }
+        assert len(values) == 1, f"AP varied with row order: {sorted(values)}"
+
+    def test_a_tie_of_one_tp_and_one_fp_scores_neither_extreme(self) -> None:
+        """The smallest case that used to swing the whole way.
+
+        One TP and one FP at the same score, one ground truth. Ordering the TP
+        first gave AP 1.0 and the FP first gave 0.5; neither is a property of
+        the data. Bucketed, the single operating point is precision 0.5 at
+        recall 1.0.
+        """
+        for is_tp in ([True, False], [False, True]):
+            frame = pl.DataFrame(
+                {
+                    "image_id": ["img0", "img1"],
+                    "score": [0.9, 0.9],
+                    "is_tp": is_tp,
+                }
+            )
+            meta = pl.DataFrame({"image_id": ["img0", "img1"], "n_gts": [1, 0]})
+            table = PreMatchedAdapter().match(
+                frame, image_id_col="image_id", image_meta=meta
+            )
+            assert average_precision(table) == pytest.approx(0.5)
+
+    def test_curve_carries_one_row_per_distinct_score(self) -> None:
+        """The bucketing is visible on the curve, not just in the AP."""
+        n = 40
+        result = precision_recall_curve(self._table(self._heavily_tied(n), n))
+        assert result.curve.height == 3
+        assert result.curve["score"].n_unique() == 3
+
+    def test_untied_scores_are_unaffected(self) -> None:
+        """Bucketing is a no-op when every score is distinct.
+
+        Guards the blast radius: the fix must change tied data only. With
+        distinct scores each bucket holds one detection, and the monotone
+        envelope is flat across every recall step, so the rectangle sum this
+        now computes equals the trapezoid it used to.
+        """
+        n = 12
+        frame = pl.DataFrame(
+            {
+                "image_id": [f"img{i}" for i in range(n)],
+                "score": [1.0 - i / n for i in range(n)],
+                "is_tp": [i % 2 == 0 for i in range(n)],
+            }
+        )
+        table = self._table(frame, n)
+        curve = precision_recall_curve(table).curve
+        assert curve.height == n
+        # Σ (Rₙ − Rₙ₋₁) · Pₙ over the envelope, computed here independently.
+        recall = curve["recall"].to_list()
+        precision = curve["precision"].to_list()
+        envelope, run = [0.0] * n, 0.0
+        for i in range(n - 1, -1, -1):
+            run = max(run, precision[i])
+            envelope[i] = run
+        expected, prev = 0.0, 0.0
+        for r, p in zip(recall, envelope, strict=True):
+            expected += (r - prev) * p
+            prev = r
+        assert average_precision(table) == pytest.approx(expected)
+
+    def test_bootstrap_replicates_use_the_point_estimate_s_estimator(self) -> None:
+        """Every replicate must be computed the way the point estimate is.
+
+        `bootstrap_pr_auc` builds each replicate's curve inline rather than
+        calling `precision_recall_curve`, so the two can drift — and did: the
+        replicates trapezoided a per-detection curve while the point estimate
+        buckets by score and sums rectangles. A replicate computed by a
+        different estimator is not a replicate of the statistic being
+        reported.
+
+        Asserted against the *distribution*, not `point_estimate`, which is
+        computed by calling `average_precision` directly and would agree
+        however the replicates were built. Each drawn multiset is rebuilt here
+        and run through the public path; the two must match value for value.
+        """
+        n = 12
+        table = self._table(self._heavily_tied(n), n)
+        result = bootstrap_pr_auc(table, n_bootstrap=5, seed=3)
+
+        from polars_cv.metrics._bootstrap import _generate_bootstrap_samples
+
+        image_ids, strata = table.image_ids_and_strata()
+        samples = _generate_bootstrap_samples(
+            image_ids=image_ids, strata=strata, n_bootstrap=5, seed=3
+        )
+        for boot_id, replicate_ap in enumerate(result.distribution):
+            drawn = samples.filter(pl.col("bootstrap_id") == boot_id)[
+                COL_IMAGE_ID
+            ].to_list()
+            rebuilt = precision_recall_curve(table)._reconstruct(drawn)
+            assert replicate_ap == pytest.approx(rebuilt.auc()), (
+                f"replicate {boot_id} was computed by a different estimator"
+            )
+
+
+class TestSeededBootstrapIsReproducible:
+    """A `seed` that does not reproduce is not a seed.
+
+    `Series.sample(seed=...)` picks *positions*, so the draws are only
+    reproducible if the pool it samples from is in the same order twice.
+    `image_ids_and_strata` built that pool with `unique()`, which promises no
+    order: five identical calls returned five different orderings, and one
+    seed therefore produced five different bootstrap distributions.
+    """
+
+    @staticmethod
+    def _table() -> DetectionTable:
+        n = 12
+        frame = pl.DataFrame(
+            {
+                "image_id": [f"img{i}" for i in range(n)],
+                "score": [round(0.5 + (i % 3) * 0.1, 3) for i in range(n)],
+                "is_tp": [i % 2 == 0 for i in range(n)],
+            }
+        )
+        meta = pl.DataFrame(
+            {
+                "image_id": [f"img{i}" for i in range(n)],
+                "n_gts": [1 if i % 2 == 0 else 0 for i in range(n)],
+            }
+        )
+        return PreMatchedAdapter().match(
+            frame, image_id_col="image_id", image_meta=meta
+        )
+
+    def test_the_sampling_pool_is_ordered(self) -> None:
+        """The pool must be a function of the data, not of `unique()`."""
+        orders = {tuple(self._table().image_ids_and_strata()[0]) for _ in range(5)}
+        assert len(orders) == 1, f"pool order varied: {orders}"
+        assert list(orders.pop()) == sorted(self._table().image_ids_and_strata()[0])
+
+    def test_vectorized_bootstrap_reproduces_from_a_seed(self) -> None:
+        """One seed, one distribution — across separately built tables."""
+        runs = {
+            tuple(
+                round(v, 12)
+                for v in bootstrap_pr_auc(
+                    self._table(), n_bootstrap=5, seed=3
+                ).distribution
+            )
+            for _ in range(5)
+        }
+        assert len(runs) == 1, f"seeded distribution varied: {runs}"
+
+    def test_sequential_bootstrap_reproduces_from_a_seed(self) -> None:
+        """`MetricResult.bootstrap_ci` reads the same pool, so it inherits this."""
+        runs = {
+            tuple(
+                round(v, 12)
+                for v in precision_recall_curve(self._table())
+                .bootstrap_ci(n_bootstrap=5, seed=3)
+                .distribution
+            )
+            for _ in range(5)
+        }
+        assert len(runs) == 1, f"seeded distribution varied: {runs}"

@@ -160,7 +160,7 @@ def bootstrap_pr_auc(
 
     # Join samples with detections. The per-bootstrap total_gts is joined in
     # here too, *before* the sort below: every operation after the sort
-    # (cum_sum, the precision envelope, the trapezoid shift) depends on rows
+    # (cum_sum, the precision envelope, the recall shift) depends on rows
     # staying in sorted-by-score order within each bootstrap group, and a
     # `join` does not preserve row order — its parallel execution reorders
     # rows differently depending on the runtime thread count. A join placed
@@ -180,14 +180,27 @@ def bootstrap_pr_auc(
         .join(boot_gts, on="bootstrap_id", how="left")
     )
 
-    # Compute PR curve per bootstrap: sort by score, cumulative TP/FP, then
-    # the same monotone precision envelope average_precision applies (the
-    # point estimate's estimator), then trapezoidal AUC via diff + product.
+    # Compute the PR curve per bootstrap with exactly the estimator
+    # `precision_recall_curve` + `_all_points_ap` use for the point estimate:
+    # bucket by score, accumulate over descending score, apply the monotone
+    # precision envelope, then sum Σ (Rₙ − Rₙ₋₁) · Pₙ. A replicate computed a
+    # different way is not a replicate of the statistic being reported.
+    #
+    # The (bootstrap_id, score) group_by is also what makes each replicate
+    # independent of row order, the same fix and for the same reason as in
+    # `precision_recall_curve`: tied detections land in one bucket, so no
+    # windowed op below can depend on how they were interleaved.
     pr_per_boot = (
-        expanded.sort("bootstrap_id", COL_SCORE, descending=[False, True])
+        expanded.group_by("bootstrap_id", COL_SCORE)
+        .agg(
+            tp_count=pl.col(COL_IS_TP).sum().cast(pl.Int64),
+            fp_count=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
+            total_gts=pl.col("total_gts").first(),
+        )
+        .sort("bootstrap_id", COL_SCORE, descending=[False, True])
         .with_columns(
-            cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum().over("bootstrap_id"),
-            cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum().over("bootstrap_id"),
+            cum_tp=pl.col("tp_count").cum_sum().over("bootstrap_id"),
+            cum_fp=pl.col("fp_count").cum_sum().over("bootstrap_id"),
         )
         .with_columns(
             precision=pl.col("cum_tp")
@@ -195,8 +208,7 @@ def bootstrap_pr_auc(
             recall=pl.col("cum_tp").cast(pl.Float64) / pl.col("total_gts"),
         )
         # Monotone decreasing envelope per replicate (reverse, cum_max,
-        # reverse back) — mirrors `_all_points_ap` so every replicate uses
-        # the same estimator as the point estimate.
+        # reverse back) — mirrors `_all_points_ap`.
         .with_columns(
             precision=pl.col("precision")
             .reverse()
@@ -206,7 +218,9 @@ def bootstrap_pr_auc(
         )
     )
 
-    # Trapezoidal AUC per bootstrap_id using shift + diff
+    # Σ (Rₙ − Rₙ₋₁) · Pₙ per bootstrap_id, via shift + diff. Rectangles, not
+    # trapezoids: `_all_points_ap` stopped being able to use the trapezoid when
+    # the curve went to one point per score, and this has to match it.
     auc_per_boot = (
         pr_per_boot.with_columns(
             # Anchor the first point at recall = 0 (fill_null with the current
@@ -215,16 +229,9 @@ def bootstrap_pr_auc(
             d_recall=(
                 pl.col("recall") - pl.col("recall").shift(1).over("bootstrap_id")
             ).fill_null(pl.col("recall")),
-            avg_precision=(
-                (
-                    pl.col("precision")
-                    + pl.col("precision").shift(1).over("bootstrap_id")
-                )
-                / 2.0
-            ).fill_null(pl.col("precision")),
         )
         .with_columns(
-            slice_area=pl.col("d_recall") * pl.col("avg_precision"),
+            slice_area=pl.col("d_recall") * pl.col("precision"),
         )
         .group_by("bootstrap_id")
         .agg(ap=pl.col("slice_area").sum())
