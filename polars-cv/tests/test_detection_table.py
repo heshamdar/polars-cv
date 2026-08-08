@@ -181,8 +181,31 @@ class TestDetectionTableViews:
         assert isinstance(meta_df, pl.DataFrame)
 
     def test_image_ids_and_strata(self, detection_table: DetectionTable) -> None:
-        """image_ids_and_strata returns IDs and stratification dict."""
-        ids, strata = detection_table.image_ids_and_strata()
+        """The strata are returned when asked for, and withheld otherwise.
+
+        This used to assert `strata is not None` unconditionally, because the
+        mapping was built unconditionally. That is the behaviour that was
+        removed: returning it always made stratification mandatory for any
+        caller that passed the result on, and the `stratify` flag now decides.
+        Both directions are pinned here so neither can quietly become the only
+        one — see `TestStratificationIsAChoice` in test_metric_fixes.py for the
+        sampling behaviour each produces.
+        """
+        ids, strata = detection_table.image_ids_and_strata(stratify=True)
         assert len(ids) == 2
         assert strata is not None
         assert len(strata) == 2
+
+        ids_default, strata_default = detection_table.image_ids_and_strata()
+        assert ids_default == ids, "the pool must not depend on stratify"
+        assert strata_default is None, "unstratified is the default"
+
+    def test_image_ids_are_sorted(self, detection_table: DetectionTable) -> None:
+        """The pool is ordered, so a seeded draw reproduces.
+
+        `sample(seed=)` picks positions, and `unique()` promises no order.
+        Pinned for both settings, since they take different code paths.
+        """
+        for stratify in (False, True):
+            ids, _ = detection_table.image_ids_and_strata(stratify=stratify)
+            assert ids == sorted(ids)

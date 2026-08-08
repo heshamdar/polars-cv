@@ -701,46 +701,53 @@ class SourceSpec:
             )
         )
 
+    def _applies(self, param: str) -> bool:
+        """Does *param* reach this format's decode?
+
+        Read from :data:`SOURCE_PARAM_APPLIES` rather than restated, because a
+        second copy of "which formats read this" would be free to disagree with
+        the one :func:`reject_inapplicable_params` polices — and the way it
+        would show is a parameter ``source()`` accepted being dropped on the
+        wire without a word, which is the exact defect that table exists to
+        close.
+        """
+        return self.format in SOURCE_PARAM_APPLIES[param]
+
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
+        """Serialize to dictionary.
+
+        Every scoped field is gated on the applicability table, so a spec only
+        ever emits what its format's decode reads. Fields are emitted only when
+        set, so an unrestricted source's spec — and the graph-cache key built
+        from it — stays byte-identical to one that never had the parameter.
+        """
         result: dict[str, Any] = {"format": self.format.value}
-        if self.dtype is not None:
+        if self._applies("dtype") and self.dtype is not None:
             result["dtype"] = self.dtype.value
-        # Include contour-specific parameters if source is contour
-        if self.format == SourceFormat.CONTOUR:
-            if self.width is not None:
-                result["width"] = self.width.to_dict()
-            if self.height is not None:
-                result["height"] = self.height.to_dict()
-            if self.fill_value is not None:
-                result["fill_value"] = self.fill_value.to_dict()
-            if self.background is not None:
-                result["background"] = self.background.to_dict()
-            if self.shape_pipeline is not None:
-                result["shape_pipeline"] = self.shape_pipeline
-        # Include require_contiguous for list/array sources ("auto" may resolve
-        # to a list/array column at runtime).
-        if self.format in (SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO):
+        # The contour canvas and its colours.
+        if self._applies("width") and self.width is not None:
+            result["width"] = self.width.to_dict()
+        if self._applies("height") and self.height is not None:
+            result["height"] = self.height.to_dict()
+        if self._applies("fill_value") and self.fill_value is not None:
+            result["fill_value"] = self.fill_value.to_dict()
+        if self._applies("background") and self.background is not None:
+            result["background"] = self.background.to_dict()
+        if self._applies("shape") and self.shape_pipeline is not None:
+            result["shape_pipeline"] = self.shape_pipeline
+        # Unconditional for the nested-column decode: it is a bool with a
+        # meaningful default, not an optional.
+        if self._applies("require_contiguous"):
             result["require_contiguous"] = self.require_contiguous
-        # Cloud credentials must round-trip for file_path sources so graph
-        # execution can authenticate remote reads ("auto" may resolve to
-        # file_path from a String column at runtime).
-        if (
-            self.format in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
-            and self.cloud_options is not None
-        ):
+        # Cloud credentials must round-trip so graph execution can authenticate
+        # remote reads.
+        if self._applies("cloud_options") and self.cloud_options is not None:
             result["cloud_options"] = self.cloud_options.to_dict()
-        if self.decode_max_size is not None:
+        if self._applies("decode_max_size") and self.decode_max_size is not None:
             result["decode_max_size"] = self.decode_max_size
-        if self.on_error != "raise":
+        if self._applies("on_error") and self.on_error != "raise":
             result["on_error"] = self.on_error
-        # A path allowlist rides for the source formats that read paths.
-        # Emitted only when set, so an unrestricted source's spec — and the
-        # graph-cache key built from it — is byte-identical to before.
-        if (
-            self.format in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
-            and self.allowed_roots is not None
-        ):
+        if self._applies("allowed_roots") and self.allowed_roots is not None:
             result["allowed_roots"] = list(self.allowed_roots)
         return result
 

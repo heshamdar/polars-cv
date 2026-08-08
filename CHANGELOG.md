@@ -5,7 +5,7 @@ All notable changes to **polars-cv** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.19.0] — 2026-08-08
 
 ### Added
 
@@ -103,6 +103,91 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   never becomes a network request.
 
 ### Fixed
+
+- **Average Precision depended on the order of the caller's DataFrame rows.**
+  `precision_recall_curve` carried one row per detection and sorted on score
+  with Polars' default `maintain_order=False`, so wherever detections tied on
+  score, the interleaving of true and false positives inside that run came from
+  however the input frame happened to be laid out. The same detections in six
+  different row orders produced APs from **0.531 to 0.649**. `froc_curve` has
+  always bucketed by score and was never affected — the two estimators simply
+  disagreed about whether a tie is one operating point or several.
+
+  It is one: a threshold cannot admit one detection of a tied group and reject
+  another, so the intermediate points inside a run were not operating points a
+  detector can be set to. The curve now carries **one row per distinct score**,
+  which is also what scikit-learn reports.
+
+  Two consequences, both deliberate:
+
+  - `_all_points_ap` now sums `Σ (Rₙ − Rₙ₋₁) · Pₙ` directly instead of calling
+    `trapz_auc`. The two agreed only while the monotone envelope was flat
+    across every recall step, which held only because a step came from a single
+    true positive. A bucket can add true and false positives together and lower
+    the envelope across a step of non-zero width, where the trapezoid credits
+    the average of two precisions and COCO credits the right-hand one. The
+    definition the docstring already claimed is now the one that runs.
+  - `bootstrap_pr_auc` builds each replicate's curve inline rather than calling
+    `precision_recall_curve`, so it needed the same two changes; a replicate
+    computed by a different estimator is not a replicate of the reported
+    statistic. Pinned by rebuilding each drawn multiset through the public path
+    and comparing value for value — asserted against the *distribution*, since
+    `point_estimate` calls `average_precision` directly and would agree however
+    the replicates were built.
+
+  **Reported AP and mAP change for any data carrying tied scores.** Data with
+  no ties is unaffected: bucketing is a no-op there and the envelope is flat, so
+  the rectangle sum equals the trapezoid it replaced — checked to 2.2e-16 over
+  200 random untied cases, and against an independent reference implementation
+  over 200 more that include heavily-tied ones.
+
+- **Stratified resampling was decided for you, differently on each path.**
+  Which bootstrap scheme is correct is a property of the study design, not of
+  the metric — stratifying is right when the positive/negative counts were
+  fixed by enrolment, and wrong when they were whatever the sample contained,
+  where holding them fixed removes real variance and yields intervals that are
+  **too narrow**. The mechanism to choose had been built and never exposed:
+  `_draw_once` (then two inline copies) has always had both branches and
+  `bootstrap_metric_sequential` has always taken `strata`, but
+  `image_ids_and_strata` returned the mapping unconditionally. So
+  `bootstrap_pr_auc`, which passed it on, could not turn stratification *off*,
+  and `MetricResult.bootstrap_ci`, which read it into a variable it never used,
+  could not turn it *on*. Two schemes, no switch, and no note that the FROC
+  interval and the PR interval beside it were not comparable.
+
+  `stratify` is now a parameter on both, defaulting to `False` — the plain
+  nonparametric bootstrap, which errs toward overstating uncertainty rather
+  than overstating a result's precision. `stratify=True` with `sample_col` is
+  rejected: an entity can own images on both sides of the label, so there is no
+  one stratum to draw it from.
+
+  **`bootstrap_pr_auc`'s intervals widen at the default**, since it used to
+  stratify unconditionally; pass `stratify=True` to keep the old behaviour.
+  `bootstrap_ci` is unchanged at the default and can now stratify.
+
+  The draw itself is one routine (`_draw_once`) rather than three — the
+  vectorized path's helper, the sequential fallback's loop, and `bootstrap_ci`'s
+  own inline copy, which is the one that had no stratified branch at all.
+
+- **A seeded bootstrap did not reproduce.** `DetectionTable.image_ids_and_strata`
+  built the sampling pool with `unique()`, which promises no particular order,
+  and `Series.sample(seed=...)` selects *positions*. Five identical calls
+  returned five different orderings of the same twelve images, so one seed
+  produced five different bootstrap distributions — and therefore five different
+  confidence intervals. A `seed` that does not reproduce is not a seed. The pool
+  is now sorted, making it a function of the data. Both bootstrap paths read it,
+  so both were affected and both are fixed.
+
+  **Reported confidence intervals change**, for every seed: the draws a seed
+  selects are different now that the pool it indexes into is ordered.
+
+- **`partial_auc` clamped to the wrong end of the curve** when the requested
+  window started past it. It fills `[lo, hi]` even where the curve does not
+  reach, and `_interp` declines outside the observed range — but the fallback
+  took `y[0]`, the value at the opposite end, rather than `y[-1]`. A FROC curve
+  reaching 2 FP/image, asked for `fp_range=(5, 10)`, was credited with the
+  sensitivity it had at *zero* false positives. Windows that overlap the curve
+  at all are unaffected.
 
 - **The contour round trip did not close: `source("contour")` could not read a
   contour set.** `extract_contours().sink("native")` emits `List(CONTOUR_SCHEMA)`
@@ -375,6 +460,43 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   Both axes are completeness-asserted, and the two vector representations are
   pinned to encode identically.
 
+- **Plan-time shape tracking was opt-in, and most builders opted out.** Appending
+  an operation required a sequence of calls each builder made by hand. All 60
+  ran the schema fold (`_update_output_dtype`); only 19 also updated the shape
+  hints. Ops that change shape but skipped it published a planned schema
+  execution could not produce, which surfaced at `collect()` as
+  *"planned shape [...] but execution produced [...]. The planner's shape
+  contract disagrees with the Rust implementation."*
+
+  - `transpose(axes)` kept the pre-transpose H/W (a 100×200 image still reported
+    100×200 after `[1,0,2]`) and kept a channel count its `unknown` channel rule
+    says is not knowable.
+  - `channel_select(index)` dropped rank 3 → 2 while `expected_shape` kept
+    publishing a three-dimensional shape.
+  - `channel_merge` kept the first operand's channel count.
+
+  `Pipeline._push_op()` is now the only code that may mutate `_ops`, and it
+  applies the domain check, the schema fold and the hint update together.
+  Guarded structurally by `test_op_append_is_structurally_exclusive`, which
+  fails if anything else touches `_ops` — replacing a ratchet that enumerated
+  one of the two required calls.
+
+- **The lazy continuation's shape replay never ran.** `LazyPipelineExpr.pipe()`
+  re-applied each op's shape effect over the upstream hints, but assigned
+  `_expected_ndim` *after* that loop, so every replayed op saw `ndim = None` and
+  the H/W half of the replay returned at its opening guard. A post-loop overlay
+  masked it for absolute targets like `resize(h, w)` while producing wrong
+  values elsewhere — `.pipe(p).resize_to_height(50)` reported a width of 50,
+  `resize_max(120)` reported a square, and `pad`/`pad_to_size`/`rotate` silently
+  kept the upstream shape.
+
+  The continuation now folds state and hints together one op at a time through
+  the same append path the eager builders use, so the two spellings of an
+  operation — `.pipe(p.op())` and `.pipe(p).op()` — agree by construction.
+  Pinned by `test_eager_and_lazy_agree_on_shape_state` across every chainable
+  op, with the op table completeness-asserted so a new operation cannot join
+  without a case.
+
 ### Changed
 
 - **Declaring a `named_variants!` table and registering it are one act.**
@@ -610,6 +732,45 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   area. (`geo` treats a `LineString` as one-dimensional with zero area, so the
   ring is measured as the hole-free polygon it bounds.)
 
+- **`SourceSpec.to_dict` gates every scoped field on the applicability table.**
+  It carried five hand-written format sets — `CONTOUR` for the canvas
+  parameters, `(LIST, ARRAY, AUTO)` for `require_contiguous`, `(FILE_PATH,
+  AUTO)` twice for `cloud_options` and `allowed_roots` — restating what
+  `SOURCE_PARAM_APPLIES` already owns, in the same file, ten lines away. The
+  wire output is unchanged (the two copies agreed); what changes is that they
+  can no longer disagree. A drift would have shown as a parameter `source()`
+  accepted being dropped on the wire without a word, which is the defect that
+  table exists to close.
+
+### Documentation
+
+- **`allowed_roots` is documented on the site**, not only in the docstrings.
+  The sources guide gained a section covering what the check guarantees —
+  deny-by-default, canonicalized rather than textual, component-wise, remote
+  `..` refused, denied remote paths never requested — and the standing
+  "Paths are not sandboxed" warning on `.cv.read_bytes()` now says how to
+  sandbox them. It had been left describing the state before the feature landed.
+
+- **`cloud_options` on a non-path source raises**, and the sources guide said
+  it was "ignored (with a warning)". The guide also gained the source-parameter
+  applicability table and a matching sink-parameter section under
+  *Sink Formats*, including that `quality` is JPEG-only and that an unknown
+  `.sink()` keyword is rejected rather than serialized — user-facing behaviour
+  this cycle introduced with no user-facing documentation.
+
+- **`docs/panic-audit.md` re-verified.** Two of its triage entries had been
+  handled since it was written (`ops/mask.rs` indexes `buf_shape[2]` only
+  inside a rank check; `graph/encode.rs` no longer indexes `contours[0]`) and
+  are now recorded as resolved rather than left to be re-found. Line references
+  are marked as the convenience they are, since each site is identified by its
+  expression.
+
+- `MetricResult.bootstrap_ci` states that its resampling is unstratified, and
+  that `bootstrap_pr_auc` stratifies on `gt_label` instead — the two schemes
+  produce intervals that are not comparable, which nothing said. The dead
+  `strata` read in `bootstrap_ci`, the fossil of an intended stratification
+  that was never wired, is removed.
+
 ### Removed
 
 - **Three surviving second copies.** `polars_dtype_to_str` (graph/compiled.rs)
@@ -685,45 +846,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   exception classes were never raised, so nothing could catch them. The
   `Raises: OpenContourError` line on `.contour.area()` documented an error that
   could not occur.
-
-### Fixed
-
-- **Plan-time shape tracking was opt-in, and most builders opted out.** Appending
-  an operation required a sequence of calls each builder made by hand. All 60
-  ran the schema fold (`_update_output_dtype`); only 19 also updated the shape
-  hints. Ops that change shape but skipped it published a planned schema
-  execution could not produce, which surfaced at `collect()` as
-  *"planned shape [...] but execution produced [...]. The planner's shape
-  contract disagrees with the Rust implementation."*
-
-  - `transpose(axes)` kept the pre-transpose H/W (a 100×200 image still reported
-    100×200 after `[1,0,2]`) and kept a channel count its `unknown` channel rule
-    says is not knowable.
-  - `channel_select(index)` dropped rank 3 → 2 while `expected_shape` kept
-    publishing a three-dimensional shape.
-  - `channel_merge` kept the first operand's channel count.
-
-  `Pipeline._push_op()` is now the only code that may mutate `_ops`, and it
-  applies the domain check, the schema fold and the hint update together.
-  Guarded structurally by `test_op_append_is_structurally_exclusive`, which
-  fails if anything else touches `_ops` — replacing a ratchet that enumerated
-  one of the two required calls.
-
-- **The lazy continuation's shape replay never ran.** `LazyPipelineExpr.pipe()`
-  re-applied each op's shape effect over the upstream hints, but assigned
-  `_expected_ndim` *after* that loop, so every replayed op saw `ndim = None` and
-  the H/W half of the replay returned at its opening guard. A post-loop overlay
-  masked it for absolute targets like `resize(h, w)` while producing wrong
-  values elsewhere — `.pipe(p).resize_to_height(50)` reported a width of 50,
-  `resize_max(120)` reported a square, and `pad`/`pad_to_size`/`rotate` silently
-  kept the upstream shape.
-
-  The continuation now folds state and hints together one op at a time through
-  the same append path the eager builders use, so the two spellings of an
-  operation — `.pipe(p.op())` and `.pipe(p).op()` — agree by construction.
-  Pinned by `test_eager_and_lazy_agree_on_shape_state` across every chainable
-  op, with the op table completeness-asserted so a new operation cannot join
-  without a case.
 
 ## [0.18.0] — 2026-07-31
 
@@ -1292,6 +1414,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.19.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.19.0
 [0.18.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.18.0
 [0.17.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.17.0
 [0.16.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.16.0

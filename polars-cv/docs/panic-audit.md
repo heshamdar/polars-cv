@@ -9,6 +9,13 @@ here for triage per the agreed scope ("fix the cheap ones, list the rest").
 Counts at audit time: ~103 sites in `polars-cv/src`, ~77 in `view-buffer/src`
 (both include test modules). The vast majority are **not** input-reachable.
 
+!!! note "Line references drift"
+    Every site below is named by file *and* by the expression it refers to. The
+    expression is the identifier; the line number is a convenience that goes
+    stale with the next edit. Re-verified against `0.19.0` — two entries from
+    the original audit were found already handled and have been struck (see
+    *Resolved since the audit*).
+
 ## Summary of findings
 
 | Layer | Verdict |
@@ -16,7 +23,7 @@ Counts at audit time: ~103 sites in `polars-cv/src`, ~77 in `view-buffer/src`
 | `polars-cv` param resolution (`params.rs`) | **Safe.** Typed downcasts (`series.u8().unwrap()`) are guarded by the matching `DataType` arm; `resolve_usize` rejects negatives; `resolve_i64/f64` return `Result`. |
 | `polars-cv` op dispatch (`execute.rs`) | **Safe.** Every arm returns `PolarsResult`. The `warp_affine` matrix `try_into` is length-checked first; enum/binary lookups `.expect()` only after a membership guard; remaining `.expect()`s are in `#[cfg(test)]`. |
 | `polars-cv` source decode (`graph/decode.rs`) | **Safe.** The blob/VIEW header parse is gated by `total_len < HEADER_SIZE` (64) before any fixed-offset read, and shape/stride loops bounds-check every slice; shape-product uses `checked_mul`. |
-| `polars-cv` sink encode (`graph/encode.rs`) | **Mostly safe** (Result-returning), but a few `shape[0]`/`contours[0]` accesses assume a rank/non-empty that the planner is expected to guarantee — see triage list. |
+| `polars-cv` sink encode (`graph/encode.rs`) | **Mostly safe** (Result-returning), but a few `shape[0]` accesses assume a rank the planner is expected to guarantee — see triage list. |
 | **`view-buffer` op apply fns** | **Reachable panic class.** `validate()` is defined per op but **never called on the execution path** (only in tests), and apply fns index `shape[2]` etc. without a runtime rank guard. A buffer whose rank/shape doesn't match the op (e.g. a 2-D buffer reaching an HWC color op via `reshape`/`squeeze` with a per-row expr the planner can't see) panics with an index-out-of-bounds instead of a graceful error. |
 
 Net: the **Result-returning `polars-cv` layer is defensively written** — no cheap
@@ -52,24 +59,34 @@ inputs or it will reject currently-working pipelines — needs a test pass.
 
 Each indexes a fixed axis assuming rank ≥ 3 (HWC) with no runtime guard:
 
-- `view-buffer/src/ops/color.rs:164` — `(h, w, c) = (shape[0], shape[1], shape[2])`
-- `view-buffer/src/ops/color.rs:458`, `:485` — same pattern
-- `view-buffer/src/ops/mask.rs:30` — `c = buf_shape[2]`
-- `view-buffer/src/execution/runner.rs:115-116` — `shape()[0]/[1]`
-- `view-buffer/src/execution/runner.rs:433` — `c = shape[2]`
-- `view-buffer/src/execution/runner.rs:484-485` — `buffers[0].shape()[0]/[1]` (also assumes `buffers` non-empty for channel-merge)
+- `view-buffer/src/ops/color.rs` (`~:160`, `~:454`, `~:481`) —
+  `(h, w, c) = (shape[0], shape[1], shape[2])`
+- `view-buffer/src/execution/runner.rs` (`~:115-116`) — `buf.shape()[0]/[1]`
+- `view-buffer/src/execution/runner.rs` (`~:433`) — `let c = shape[2]`
+- `view-buffer/src/execution/runner.rs` (`~:484-485`) — `buffers[0].shape()[0]/[1]`
+  (also assumes `buffers` is non-empty for channel-merge)
 
 Sites that already guard (`if shape.len() == 3 { shape[2] } else { 1 }`) — e.g.
-`color.rs:213/259`, `compute.rs:234`, `pad.rs:170`, `runner.rs:227/286` — are
-**not** reachable panics and need no change.
+`color.rs` (`~:209`, `~:255`), `compute.rs`, `pad.rs`, `runner.rs` (`~:227`,
+`~:286`) — are **not** reachable panics and need no change.
 
 ## Secondary triage (polars-cv encode)
 
-- `graph/encode.rs:385/517/535` — `shape[0]` on the reduction/vector encode path;
-  reachable only if an empty-shape buffer arrives. Low risk (reductions produce
-  rank ≥ 1) but worth a defensive `first()` check when the validate wiring lands.
-- `graph/encode.rs:69` — `&contours[0]` assumes a non-empty contour set; confirm
-  the geometry domain guarantees ≥ 1 element or guard it.
+- `graph/encode.rs` (`~:396`, `~:531`, `~:549`) — `shape[0]` on the
+  reduction/vector encode path; reachable only if an empty-shape buffer arrives.
+  Low risk (reductions produce rank ≥ 1) but worth a defensive `first()` check
+  when the validate wiring lands.
+
+## Resolved since the audit
+
+Two entries from the original list no longer hold and are recorded here so they
+are not "re-found" and re-triaged:
+
+- `view-buffer/src/ops/mask.rs` — `c = buf_shape[2]` was listed as unguarded. It
+  is reached only inside `if mask_shape.len() == 2 && buf_shape.len() == 3`, so
+  the rank is checked before the index. Not a reachable panic.
+- `polars-cv/src/graph/encode.rs` — `&contours[0]` no longer exists; the contour
+  encode paths iterate the set rather than indexing its first element.
 
 ## Out of scope (confirmed safe / not user input)
 

@@ -33,6 +33,35 @@ column raises and names the alternatives — or when you want to override the
 inference (for example `source("raw", dtype="u8")` over a `Binary` column that
 would otherwise be treated as encoded image bytes).
 
+## Parameters Are Scoped to the Format
+
+Most `source()` keywords only mean something for a subset of the formats:
+`width`/`height`/`shape`/`fill_value`/`background` are read by the `contour`
+rasterize, `cloud_options`/`allowed_roots` by a path read, `require_contiguous`
+by the nested-column decode, `decode_max_size` by an image decode.
+
+Passing one where it does not apply **raises**, rather than being dropped:
+
+```python
+Pipeline().source("image_bytes", width=224)
+# ValueError: width does not apply to the 'image_bytes' source
+#             (it applies to: contour).
+```
+
+That is deliberate — `source("image_bytes", width=224)` reads as a decode size,
+and silently ignoring it is how a pipeline comes to run at a size nobody asked
+for. The same rule governs `.sink()` keywords (see
+[Sink Formats](pipelines.md#sink-formats)).
+
+| Parameter | Applies to |
+|-----------|-----------|
+| `dtype` | every format except `contour` (rasterizing fixes `u8`) |
+| `width`, `height`, `shape`, `fill_value`, `background` | `contour` |
+| `cloud_options`, `allowed_roots` | `file_path`, `auto` |
+| `require_contiguous` | `list`, `array`, `auto` |
+| `decode_max_size` | `image_bytes`, `file_path`, `auto` |
+| `on_error` | every format |
+
 ## Image Sources: `image_bytes` and `file_path`
 
 Both `image_bytes` and `file_path` decode images with automatic format and dtype detection:
@@ -202,8 +231,8 @@ pipe = Pipeline().source("file_path", cloud_options=options)
 ```
 
 `cloud_options` also applies to the default `auto` source, since it can resolve
-to `file_path` from a `String` column. It is ignored (with a warning) for
-sources that never read remotely.
+to `file_path` from a `String` column. It is **rejected** for sources that never
+read remotely — see [Parameters are scoped to the format](#parameters-are-scoped-to-the-format).
 
 Remote requests are **signed by default**. To read from a public bucket without
 credentials, opt into anonymous access explicitly with
@@ -252,6 +281,59 @@ It does **not** apply to S3, which authenticates with SigV4 rather than a bearer
 token — supplying it with an `s3://` source raises; use the `aws_*` fields or
 `storage_options` for AWS credentials instead.
 
+### Restricting where a path column may read: `allowed_roots`
+
+A path column is an instruction to open a file, so a column you did not write is
+an instruction you did not write. `allowed_roots` restricts what such a column is
+permitted to reach — on both `source("file_path", ...)` and
+[`.cv.read_bytes(...)`](#reading-bytes-without-decoding):
+
+```python
+pipe = Pipeline().source("file_path", allowed_roots=["/srv/images"])
+
+df.with_columns(raw=pl.col("path").cv.read_bytes(allowed_roots=["/srv/images"]))
+```
+
+The default is `None` — unrestricted, which is right for your own paths and
+wrong for paths that came from somewhere else.
+
+One list covers local and remote. An entry that parses as a remote URI
+(`"s3://bucket/public/"`) is matched as a URI prefix; anything else
+(`"/srv/images"`) as a local directory.
+
+```python
+Pipeline().source("file_path", allowed_roots=["/srv/images", "s3://bucket/public/"])
+```
+
+What the check guarantees:
+
+- **Deny by default.** Once you pass a non-empty list, a path matching no entry
+  is refused. A root that does not exist denies everything rather than being
+  dropped, so a typo cannot silently widen the policy.
+- **Resolved, not textual.** Local paths are canonicalized first, so
+  `/srv/images/../../etc/passwd` and a symlink pointing out of the tree are both
+  refused instead of being compared as strings.
+- **Component-wise.** `/srv/images` does not also admit `/srv/images-private`,
+  and `s3://bucket/public/` does not admit `s3://bucket/public-evil/`.
+- **Remote `..` segments are refused outright**, since an HTTP frontend may
+  normalize them and walk out of the prefix.
+- **The request is never made.** Denied remote paths are dropped before the
+  prefetch, not after.
+
+A refusal follows `on_error`, so `on_error="null"` nulls the offending rows
+rather than failing the query:
+
+```python
+pipe = Pipeline().source(
+    "file_path", allowed_roots=["/srv/images"], on_error="null"
+)
+```
+
+!!! warning "What `allowed_roots` does not do"
+    It bounds *where* reads may go, not how large they are: there is no per-file
+    size cap either way. An `http://` root still reaches whatever that host
+    serves, so prefer naming the specific prefix over an entire scheme.
+
 ## Reading Bytes Without Decoding
 
 The `file_path` source is two stages: fetch the bytes a path names, then decode
@@ -294,6 +376,7 @@ fetch independently.
 |----------|---------|
 | `cloud_options` | Credentials/settings for remote reads. Same `CloudOptions` (or dict) the `file_path` source takes. |
 | `on_error` | `"raise"` (default) fails the query on the first unreadable path; `"null"` yields null for that row only. |
+| `allowed_roots` | Restrict which locations may be read, exactly as [`source(allowed_roots=...)`](#restricting-where-a-path-column-may-read-allowed_roots) does. Default `None` is unrestricted. |
 
 ### Memory and streaming
 
@@ -313,14 +396,17 @@ every file at once. There is also no per-file size cap — whatever the path nam
 is read in full. Use `engine="streaming"`, or slice the frame, when the corpus
 does not fit in memory.
 
-!!! warning "Paths are not sandboxed"
-    `read_bytes` reads whatever the column names, local or remote, with no
-    allowlisting — the same caveat that applies to the `file_path` source, but
-    over any file rather than only decodable images. Two edges are sharper here
-    than for the source: any local file is returned verbatim rather than having
-    to survive an image decode, and an `http://` path is fetched as-is, which
-    reaches link-local addresses such as cloud instance-metadata endpoints. Use
-    it with trusted path columns only.
+!!! warning "Without `allowed_roots`, paths are not sandboxed"
+    By default `read_bytes` reads whatever the column names, local or remote —
+    the same caveat that applies to the `file_path` source, but over any file
+    rather than only decodable images. Two edges are sharper here than for the
+    source: any local file is returned verbatim rather than having to survive an
+    image decode, and an `http://` path is fetched as-is, which reaches
+    link-local addresses such as cloud instance-metadata endpoints.
+
+    Pass [`allowed_roots=[...]`](#restricting-where-a-path-column-may-read-allowed_roots)
+    whenever the path column did not come from you. File size is not capped
+    either way.
 
 ## Contour Source and Shape Inference
 

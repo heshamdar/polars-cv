@@ -7,7 +7,6 @@ from typing import Literal
 
 import polars as pl
 
-from .._auc import trapz_auc
 from .._result import MetricResult
 from .._types import (
     COL_IMAGE_ID,
@@ -45,17 +44,20 @@ class PrecisionRecallResult(MetricResult):
         Args:
             method: Computation method.
                 ``"all_points"`` (default) applies the standard monotonically
-                decreasing precision envelope before trapezoidal integration
-                (matches COCO / scikit-learn AP).
+                decreasing precision envelope, then sums
+                ``Σ (Rₙ − Rₙ₋₁) · Pₙ`` (matches COCO / scikit-learn AP).
                 ``"11_point"`` uses the Pascal VOC 11-point method.
                 ``"trapezoidal"`` computes raw trapezoidal AUC without the
                 monotone-envelope correction. The global envelope is not
-                applied, but points sharing one recall value (a run of false
-                positives leaves recall unchanged) still collapse to the
+                applied, but points sharing one recall value (a bucket of pure
+                false positives leaves recall unchanged) still collapse to the
                 highest precision among them — those points span zero width,
                 so the only question they pose is which precision the
                 trapezoid leaving them uses, and "an arbitrary one" is not an
                 answer.
+
+        All three read a curve carrying one point per distinct score, so none
+        of them depends on the order of the frame the detections came in.
 
         Returns:
             Average Precision value.
@@ -134,16 +136,31 @@ def precision_recall_curve(
 ) -> PrecisionRecallResult:
     """Compute a precision-recall curve from a DetectionTable.
 
-    Detections are sorted by confidence score (descending). At each rank, cumulative
-    TP/FP are computed and precision/recall derived. All computation uses Polars
-    lazy expressions.
+    Detections are bucketed by confidence score and the buckets accumulated in
+    descending score order, giving **one curve point per distinct score**.
+    Precision and recall are derived from the running totals. All computation
+    uses Polars lazy expressions.
+
+    One point per *score*, not per detection, is what makes the curve — and
+    therefore every AP computed from it — a function of the data alone. A row
+    per detection puts tied detections in some order, and `sort` defaults to
+    ``maintain_order=False``, so the interleaving of the TPs and FPs inside a
+    tie run came from how the caller's frame happened to be laid out: the same
+    detections in a different row order produced a different AP, by as much as
+    0.53 vs 0.65 on a frame with heavy ties. A threshold cannot admit one
+    detection of a tied group and reject another, so the intermediate points
+    inside a run were not operating points the detector can be set to either.
+    ``froc_curve`` has always bucketed this way; this is the PR curve catching
+    up, and it matches scikit-learn, which likewise reports one point per
+    distinct threshold.
 
     Args:
         table: Canonical detection table.
         class_id: Restrict to a specific class. ``None`` uses all detections.
 
     Returns:
-        ``PrecisionRecallResult`` with the PR curve.
+        ``PrecisionRecallResult`` with the PR curve, one row per distinct
+        score, ordered by descending score (ascending recall).
     """
     if class_id is not None:
         table = table.filter_class(class_id)
@@ -172,14 +189,26 @@ def precision_recall_curve(
 
     curve = (
         det_df.lazy()
+        # Bucket first, accumulate second. Grouping on the score is what makes
+        # the result independent of the input frame's row order: every
+        # detection sharing a score lands in one bucket, so there is no
+        # intra-tie ordering left for the cumulative sums to depend on. The
+        # sort that follows is then a total order (scores are unique after the
+        # group_by), which `maintain_order=False` cannot disturb.
+        .group_by(COL_SCORE)
+        .agg(
+            tp_count=pl.col(COL_IS_TP).sum().cast(pl.Int64),
+            fp_count=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
+        )
         .sort(COL_SCORE, descending=True)
         .with_columns(
-            cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum(),
-            cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum(),
+            cum_tp=pl.col("tp_count").cum_sum(),
+            cum_fp=pl.col("fp_count").cum_sum(),
         )
         .with_columns(
-            precision=pl.col("cum_tp") / (pl.col("cum_tp") + pl.col("cum_fp")),
-            recall=pl.col("cum_tp") / pl.lit(float(total_gts)),
+            precision=pl.col("cum_tp")
+            / (pl.col("cum_tp") + pl.col("cum_fp")).cast(pl.Float64),
+            recall=pl.col("cum_tp").cast(pl.Float64) / pl.lit(float(total_gts)),
         )
         .select(
             pl.col(COL_SCORE).alias("score"),
@@ -358,11 +387,25 @@ def _all_points_ap(curve: pl.DataFrame) -> float:
     """Compute AP using monotone-envelope interpolation.
 
     Applies the standard monotonically decreasing precision envelope
-    (right-to-left cumulative maximum) before trapezoidal integration.
-    This matches the COCO and scikit-learn AP definitions.
+    (right-to-left cumulative maximum), then sums the rectangles
+    ``Σ (Rₙ − Rₙ₋₁) · Pₙ`` with ``R₀ = 0`` — the COCO / scikit-learn
+    definition, spelled directly.
+
+    The rectangle sum is written out rather than delegated to
+    :func:`trapz_auc`, which is what this used to call. The two agree only
+    while the envelope is flat across every recall step, and that held only
+    because the curve carried one row per detection: a step then came from a
+    single TP, which raises raw precision, which forces the right-to-left
+    cumulative maximum to be equal on both sides of it. Now that the curve
+    carries one row per *score*, a bucket can add true and false positives
+    together and lower the envelope across a step of non-zero width — where
+    the trapezoid would credit the average of the two precisions and COCO
+    credits the right-hand one. The definition the docstring claims is the one
+    that runs.
 
     Args:
-        curve: PR curve DataFrame with ``recall`` and ``precision``.
+        curve: PR curve DataFrame with ``recall`` and ``precision``, ordered
+            by ascending recall.
 
     Returns:
         All-points interpolated AP with monotone envelope.
@@ -375,11 +418,11 @@ def _all_points_ap(curve: pl.DataFrame) -> float:
 
     # Monotone decreasing envelope: reverse, cum_max, reverse back
     envelope = precision.reverse().cum_max().reverse()
-    # Anchor at recall = 0 so the leftmost block (recall[0] × envelope[0])
-    # is included — matches COCO / scikit-learn Σ (Rₙ − Rₙ₋₁) · Pₙ with R₀ = 0.
-    recall = pl.concat([pl.Series([0.0]), recall])
-    envelope = pl.concat([pl.Series([envelope[0]]), envelope])
-    return float(trapz_auc(recall, envelope))
+    # Widths against the previous recall, the first measured from R₀ = 0 so
+    # the leftmost block is included.
+    widths = recall.diff()
+    widths[0] = recall[0]
+    return float((widths * envelope).sum())
 
 
 def _eleven_point_ap(curve: pl.DataFrame) -> float:

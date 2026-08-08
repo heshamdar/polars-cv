@@ -66,35 +66,11 @@ def bootstrap_metric_sequential(
         ``BootstrapResult`` with percentile confidence interval.
     """
     _validate_bootstrap_params(n_bootstrap, confidence, image_ids)
+
     distribution: list[float] = []
-
-    if strata is None:
-        ids_series = pl.Series(COL_IMAGE_ID, image_ids)
-        for i in range(n_bootstrap):
-            iter_seed = (seed + i) if seed is not None else None
-            sampled = ids_series.sample(
-                n=ids_series.len(), with_replacement=True, seed=iter_seed
-            )
-            distribution.append(float(metric_fn(sampled.to_list())))
-    else:
-        grouped: dict[str, list[str]] = {}
-        for image_id in image_ids:
-            key = strata.get(image_id, "__missing__")
-            grouped.setdefault(key, []).append(image_id)
-        grouped_series = {k: pl.Series(k, v) for k, v in grouped.items()}
-
-        for i in range(n_bootstrap):
-            iter_seed = (seed + i) if seed is not None else None
-            sampled_ids: list[str] = []
-            for j, (key, s) in enumerate(grouped_series.items()):
-                stratum_seed = (
-                    (iter_seed * len(grouped_series) + j)
-                    if iter_seed is not None
-                    else None
-                )
-                sampled = s.sample(n=s.len(), with_replacement=True, seed=stratum_seed)
-                sampled_ids.extend(sampled.to_list())
-            distribution.append(float(metric_fn(sampled_ids)))
+    for i in range(n_bootstrap):
+        iter_seed = (seed + i) if seed is not None else None
+        distribution.append(float(metric_fn(_draw_once(image_ids, strata, iter_seed))))
 
     return _finalize(distribution, point_estimate, confidence)
 
@@ -111,6 +87,7 @@ def bootstrap_pr_auc(
     confidence: float = 0.95,
     seed: int | None = None,
     class_id: str | None = None,
+    stratify: bool = False,
 ) -> BootstrapResult:
     """Vectorized bootstrap for precision-recall AUC.
 
@@ -124,11 +101,17 @@ def bootstrap_pr_auc(
         confidence: Confidence level in ``(0, 1)``.
         seed: Optional RNG seed.
         class_id: Optional class filter.
+        stratify: Draw within positive/negative image strata instead of from
+            one pool. See :meth:`MetricResult.bootstrap_ci` for which of the
+            two your study design calls for — the short version is that
+            stratifying is right when the positive/negative counts were fixed
+            by enrolment and wrong when they were whatever the sample
+            happened to contain.
 
     Returns:
         ``BootstrapResult`` with percentile confidence interval.
     """
-    image_ids, strata = table.image_ids_and_strata()
+    image_ids, strata = table.image_ids_and_strata(stratify=stratify)
     _validate_bootstrap_params(n_bootstrap, confidence, image_ids)
 
     if class_id is not None:
@@ -160,7 +143,7 @@ def bootstrap_pr_auc(
 
     # Join samples with detections. The per-bootstrap total_gts is joined in
     # here too, *before* the sort below: every operation after the sort
-    # (cum_sum, the precision envelope, the trapezoid shift) depends on rows
+    # (cum_sum, the precision envelope, the recall shift) depends on rows
     # staying in sorted-by-score order within each bootstrap group, and a
     # `join` does not preserve row order — its parallel execution reorders
     # rows differently depending on the runtime thread count. A join placed
@@ -180,14 +163,27 @@ def bootstrap_pr_auc(
         .join(boot_gts, on="bootstrap_id", how="left")
     )
 
-    # Compute PR curve per bootstrap: sort by score, cumulative TP/FP, then
-    # the same monotone precision envelope average_precision applies (the
-    # point estimate's estimator), then trapezoidal AUC via diff + product.
+    # Compute the PR curve per bootstrap with exactly the estimator
+    # `precision_recall_curve` + `_all_points_ap` use for the point estimate:
+    # bucket by score, accumulate over descending score, apply the monotone
+    # precision envelope, then sum Σ (Rₙ − Rₙ₋₁) · Pₙ. A replicate computed a
+    # different way is not a replicate of the statistic being reported.
+    #
+    # The (bootstrap_id, score) group_by is also what makes each replicate
+    # independent of row order, the same fix and for the same reason as in
+    # `precision_recall_curve`: tied detections land in one bucket, so no
+    # windowed op below can depend on how they were interleaved.
     pr_per_boot = (
-        expanded.sort("bootstrap_id", COL_SCORE, descending=[False, True])
+        expanded.group_by("bootstrap_id", COL_SCORE)
+        .agg(
+            tp_count=pl.col(COL_IS_TP).sum().cast(pl.Int64),
+            fp_count=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
+            total_gts=pl.col("total_gts").first(),
+        )
+        .sort("bootstrap_id", COL_SCORE, descending=[False, True])
         .with_columns(
-            cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum().over("bootstrap_id"),
-            cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum().over("bootstrap_id"),
+            cum_tp=pl.col("tp_count").cum_sum().over("bootstrap_id"),
+            cum_fp=pl.col("fp_count").cum_sum().over("bootstrap_id"),
         )
         .with_columns(
             precision=pl.col("cum_tp")
@@ -195,8 +191,7 @@ def bootstrap_pr_auc(
             recall=pl.col("cum_tp").cast(pl.Float64) / pl.col("total_gts"),
         )
         # Monotone decreasing envelope per replicate (reverse, cum_max,
-        # reverse back) — mirrors `_all_points_ap` so every replicate uses
-        # the same estimator as the point estimate.
+        # reverse back) — mirrors `_all_points_ap`.
         .with_columns(
             precision=pl.col("precision")
             .reverse()
@@ -206,7 +201,9 @@ def bootstrap_pr_auc(
         )
     )
 
-    # Trapezoidal AUC per bootstrap_id using shift + diff
+    # Σ (Rₙ − Rₙ₋₁) · Pₙ per bootstrap_id, via shift + diff. Rectangles, not
+    # trapezoids: `_all_points_ap` stopped being able to use the trapezoid when
+    # the curve went to one point per score, and this has to match it.
     auc_per_boot = (
         pr_per_boot.with_columns(
             # Anchor the first point at recall = 0 (fill_null with the current
@@ -215,16 +212,9 @@ def bootstrap_pr_auc(
             d_recall=(
                 pl.col("recall") - pl.col("recall").shift(1).over("bootstrap_id")
             ).fill_null(pl.col("recall")),
-            avg_precision=(
-                (
-                    pl.col("precision")
-                    + pl.col("precision").shift(1).over("bootstrap_id")
-                )
-                / 2.0
-            ).fill_null(pl.col("precision")),
         )
         .with_columns(
-            slice_area=pl.col("d_recall") * pl.col("avg_precision"),
+            slice_area=pl.col("d_recall") * pl.col("precision"),
         )
         .group_by("bootstrap_id")
         .agg(ap=pl.col("slice_area").sum())
@@ -241,6 +231,58 @@ def bootstrap_pr_auc(
 # ---------------------------------------------------------------------------
 
 
+def _draw_once(
+    ids: list[str],
+    strata: dict[str, str] | None,
+    iter_seed: int | None,
+) -> list[str]:
+    """Draw one bootstrap replicate from *ids*.
+
+    **The single definition of what one replicate is**, for every bootstrap in
+    this package: the vectorized PR path, the sequential fallback, and
+    ``MetricResult.bootstrap_ci``, which used to carry its own inline copy and
+    was the one that could not stratify at all.
+
+    ``strata`` is the whole of the stratified/unstratified choice. ``None``
+    draws ``len(ids)`` units from one pool — the plain nonparametric bootstrap,
+    which lets each stratum's share vary as it did in the sample. A mapping
+    draws each stratum to its own size, holding those shares fixed, which is
+    what a design that fixed them by enrolment calls for. Callers decide by
+    what they pass; nothing below re-decides.
+
+    Args:
+        ids: The sampling pool, in a stable order — ``sample(seed=)`` picks
+            positions, so a reproducible seed needs a reproducible pool.
+        strata: Optional unit->stratum mapping. ``None`` samples one pool.
+        iter_seed: This replicate's seed, or ``None`` for an unseeded draw.
+
+    Returns:
+        The drawn ids, with replacement, one replicate's worth.
+    """
+    if strata is None:
+        series = pl.Series(COL_IMAGE_ID, ids)
+        return series.sample(
+            n=series.len(), with_replacement=True, seed=iter_seed
+        ).to_list()
+
+    grouped: dict[str, list[str]] = {}
+    for iid in ids:
+        grouped.setdefault(strata.get(iid, "__missing__"), []).append(iid)
+
+    drawn: list[str] = []
+    for j, (key, members) in enumerate(grouped.items()):
+        # Each stratum needs its own seed, or every stratum of one replicate
+        # would draw the same positions.
+        stratum_seed = (iter_seed * len(grouped) + j) if iter_seed is not None else None
+        series = pl.Series(key, members)
+        drawn.extend(
+            series.sample(
+                n=series.len(), with_replacement=True, seed=stratum_seed
+            ).to_list()
+        )
+    return drawn
+
+
 def _generate_bootstrap_samples(
     *,
     image_ids: list[str],
@@ -252,8 +294,6 @@ def _generate_bootstrap_samples(
 
     Returns a DataFrame with columns ``bootstrap_id`` (Int32) and
     ``image_id`` (String), with ``n_bootstrap * len(image_ids)`` rows.
-
-    Uses ``pl.Series.sample()`` for Polars-native resampling.
 
     Args:
         image_ids: Base image IDs.
@@ -267,33 +307,11 @@ def _generate_bootstrap_samples(
     boot_ids: list[int] = []
     img_ids: list[str] = []
 
-    if strata is None:
-        ids_series = pl.Series(COL_IMAGE_ID, image_ids)
-        for b in range(n_bootstrap):
-            iter_seed = (seed + b) if seed is not None else None
-            sampled = ids_series.sample(
-                n=ids_series.len(), with_replacement=True, seed=iter_seed
-            )
-            boot_ids.extend([b] * sampled.len())
-            img_ids.extend(sampled.to_list())
-    else:
-        grouped: dict[str, list[str]] = {}
-        for iid in image_ids:
-            key = strata.get(iid, "__missing__")
-            grouped.setdefault(key, []).append(iid)
-        grouped_series = {k: pl.Series(k, v) for k, v in grouped.items()}
-
-        for b in range(n_bootstrap):
-            iter_seed = (seed + b) if seed is not None else None
-            for j, (key, s) in enumerate(grouped_series.items()):
-                stratum_seed = (
-                    (iter_seed * len(grouped_series) + j)
-                    if iter_seed is not None
-                    else None
-                )
-                sampled = s.sample(n=s.len(), with_replacement=True, seed=stratum_seed)
-                boot_ids.extend([b] * sampled.len())
-                img_ids.extend(sampled.to_list())
+    for b in range(n_bootstrap):
+        iter_seed = (seed + b) if seed is not None else None
+        sampled = _draw_once(image_ids, strata, iter_seed)
+        boot_ids.extend([b] * len(sampled))
+        img_ids.extend(sampled)
 
     return pl.DataFrame(
         {

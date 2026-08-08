@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING
 
 import polars as pl
 
@@ -24,9 +23,6 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
-
-if TYPE_CHECKING:
-    pass
 
 
 class PreMatchedAdapter:

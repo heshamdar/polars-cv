@@ -83,6 +83,33 @@ If you use `sink("list")` or `sink("array")`, dtype must be known at planning ti
 Float buffers cannot be encoded to PNG/JPEG/WebP — `.cast("u8")`/`.cast("u16")`
 first, or sink to `tiff`, which stores floating point directly.
 
+### Sink Parameters
+
+`.sink()` takes three keywords, each scoped to the formats whose encoder reads
+it:
+
+| Parameter | Applies to | Meaning |
+|-----------|-----------|---------|
+| `quality` | `jpeg` | JPEG encoder quality (1–100). |
+| `shape` | `array` | Fixed-size Array dimensions, when the planner cannot infer them. |
+| `dtype` | `numpy`, `torch` | `"f16"` only — an encode-boundary downcast. Use `.cast(...)` for anything else. |
+
+Anything else raises, and so does a keyword passed to a format that does not
+read it:
+
+```python
+pl.col("img").cv.pipe(pipe).sink("png", quality=50)
+# ValueError: quality does not apply to the 'png' sink (it applies to: jpeg);
+#             only the JPEG encoder takes a quality; the others encode at their
+#             own fixed settings.
+
+pl.col("img").cv.pipe(pipe).sink("jpeg", qualtiy=50)
+# ValueError: qualtiy is not a sink parameter (known: dtype, quality, shape).
+```
+
+`quality` is **JPEG only**. The WebP encoder takes no quality argument, so a
+WebP quality is rejected rather than accepted and discarded.
+
 ## Chaining Operations
 
 Operations are chained fluently. Most operation parameters accept both literal

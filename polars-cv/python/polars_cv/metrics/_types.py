@@ -302,16 +302,52 @@ class DetectionTable:
 
     def image_ids_and_strata(
         self,
+        *,
+        stratify: bool = False,
     ) -> tuple[list[str], dict[str, str] | None]:
-        """Extract image IDs and optional stratification mapping.
+        """Extract image IDs and, when asked for, the stratification mapping.
+
+        The IDs are returned **sorted**. This is the sampling pool every
+        bootstrap draws from, and a bootstrap's ``seed`` promises reproducible
+        draws: ``Series.sample(seed=...)`` picks *positions*, so the same seed
+        selects the same images only if the pool is in the same order twice.
+        ``unique()`` does not promise an order — five identical calls returned
+        five different orderings, and therefore five different distributions
+        from one seed. Sorting makes the pool a function of the data.
+
+        ``stratify`` is what decides whether a caller resamples stratified,
+        and it is answered here rather than by each caller, because the
+        ``None`` a caller passes downstream *is* the choice: every consumer of
+        this mapping treats ``None`` as "draw from one pool". Returning the
+        dict unconditionally, as this used to, made stratification unavoidable
+        for whoever passed the result on and unreachable for whoever dropped
+        it — which is exactly how the two bootstrap paths came to disagree
+        without either exposing a switch.
+
+        Args:
+            stratify: Whether to return strata at all. ``False`` (default)
+                returns ``None``, giving the plain nonparametric bootstrap.
 
         Returns:
-            Tuple of ``(image_ids, strata_dict | None)``.
+            Tuple of ``(image_ids, strata_dict | None)``, ``image_ids``
+            sorted. When requested, ``strata`` maps each image to its
+            ``gt_label``, so stratified resampling holds the
+            positive/negative image balance fixed across replicates.
         """
+        if not stratify:
+            meta_df = (
+                self._image_meta.select(COL_IMAGE_ID)
+                .unique()
+                .collect(engine="streaming")
+                .sort(COL_IMAGE_ID)
+            )
+            return [str(v) for v in meta_df[COL_IMAGE_ID].to_list()], None
+
         meta_df = (
             self._image_meta.select(COL_IMAGE_ID, COL_GT_LABEL)
             .unique()
             .collect(engine="streaming")
+            .sort(COL_IMAGE_ID)
         )
         image_ids = [str(v) for v in meta_df[COL_IMAGE_ID].to_list()]
         strata = {

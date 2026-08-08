@@ -40,7 +40,9 @@ answer whichever way each ring is wound.
 The region a contour describes is its exterior minus the **union** of its hole
 rings. Overlapping rings are not subtracted twice, and a ring nested inside
 another hole remains a hole. Winding is reported by
-[`.contour.winding()`](#winding) and set by [`.contour.ensure_winding()`](#transforms),
+[`.contour.winding()`](#polars_cv.geometry.contours.ContourNamespace.winding) and
+set by
+[`.contour.ensure_winding()`](#polars_cv.geometry.contours.ContourNamespace.ensure_winding),
 and is consulted nowhere else.
 
 `is_closed` is reserved: it is always written as `True` and never read back. Rings

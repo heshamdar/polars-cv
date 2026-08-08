@@ -107,6 +107,13 @@ ap = average_precision(table)
 map_val = mean_average_precision(table, iou_thresholds=[0.5, 0.55, 0.6, ..., 0.95])
 ```
 
+The curve carries **one point per distinct score**, not one per detection. A
+threshold cannot admit one detection of a tied group and reject another, so a
+run of tied scores is a single operating point — and computing it that way is
+what makes AP a function of the detections alone rather than of the order they
+happened to arrive in. `average_precision` applies the monotone precision
+envelope and sums `Σ (Rₙ − Rₙ₋₁) · Pₙ`, matching COCO and scikit-learn.
+
 ### FROC
 
 ```python
@@ -156,6 +163,49 @@ ci = result.bootstrap_ci(n_bootstrap=1000, seed=42)
 from polars_cv.metrics import bootstrap_pr_auc
 ci = bootstrap_pr_auc(table, n_bootstrap=1000, seed=42)
 ```
+
+Both default to the plain **unstratified** nonparametric bootstrap: every
+sampling unit is drawn from one pool, so a replicate's positive/negative image
+balance varies as it did in your sample.
+
+### Stratified or not?
+
+This is a question about your study design, not about the metric — which is why
+it is a parameter rather than a fixed choice:
+
+| Your design | Use | Why |
+|-------------|-----|-----|
+| Consecutive series / simple random sample — you collected N images and the positive/negative split is whatever came out | `stratify=False` (default) | That split is itself random, so the bootstrap has to let it vary |
+| Enriched / case-control — you deliberately enrolled *n* positives and *m* negatives | `stratify=True` | Those margins were fixed by design, not sampled, so the bootstrap should hold them fixed |
+
+```python
+ci = bootstrap_pr_auc(table, n_bootstrap=1000, seed=42, stratify=True)
+ci = result.bootstrap_ci(n_bootstrap=1000, seed=42, stratify=True)
+```
+
+Getting this wrong is not symmetric. Stratifying a consecutive series holds
+fixed something that was genuinely random, removing real variance and giving
+intervals that are **too narrow** — it overstates your result's precision.
+Drawing from one pool on an enriched set does the opposite: intervals that are
+too wide, which is wasteful but not misleading. That asymmetry is why the
+default is `False`.
+
+The stratum is `gt_label` — a binary "this image holds at least one ground
+truth". It balances positive and negative *image counts*, not lesion burden, so
+it is a coarse control when `n_gts` varies widely across your positives.
+
+### Entity-level sampling
+
+Pass `sample_col` to `bootstrap_ci` when the sampling unit should be an entity
+rather than an image — draws are then taken over the entity and expanded back to
+the images it owns:
+
+```python
+ci = result.bootstrap_ci(n_bootstrap=1000, seed=42, sample_col="case_id")
+```
+
+`sample_col` cannot be combined with `stratify=True`: an entity may own images
+on both sides of `gt_label`, so there is no single stratum to draw it from.
 
 ## IoU Re-thresholding
 

@@ -65,7 +65,7 @@ from .metrics import (
 )
 from .pipeline import Pipeline
 
-__version__ = "0.18.0"
+__version__ = "0.19.0"
 
 
 def build_info() -> dict[str, str | None]:
