@@ -77,6 +77,36 @@ fn lexical_absolute(path: &Path) -> PathBuf {
     out
 }
 
+/// Canonicalize `path` if it exists; otherwise resolve as much of it as does
+/// exist and lexically reattach the missing suffix.
+///
+/// A plain `canonicalize` fails outright for a path that has not been created
+/// yet, and falling all the way back to [`lexical_absolute`] leaves any
+/// symlinked ancestor unresolved — on macOS, `std::env::temp_dir()` lives
+/// under `/var`, itself a symlink to `/private/var`, so a not-yet-existing
+/// file under an allowed temp-dir root would compare unequal to that root's
+/// canonicalized form even though both denote the same location. Walking up
+/// to the nearest existing ancestor and reattaching the missing suffix keeps
+/// the two forms comparable.
+fn resolve_best_effort(path: &Path) -> PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    let absolute = lexical_absolute(path);
+    let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut ancestor = absolute.as_path();
+    while let Some(parent) = ancestor.parent() {
+        suffix.push(ancestor.file_name().unwrap_or_default());
+        ancestor = parent;
+        if let Ok(mut resolved) = std::fs::canonicalize(ancestor) {
+            suffix.reverse();
+            resolved.extend(suffix);
+            return resolved;
+        }
+    }
+    absolute
+}
+
 /// One allowed location: a local directory or a remote URI prefix.
 #[derive(Debug, Clone)]
 enum AllowedRoot {
@@ -124,9 +154,7 @@ impl PathPolicy {
                         AllowedRoot::Remote(prefix)
                     } else {
                         let path = Path::new(root);
-                        AllowedRoot::Local(
-                            std::fs::canonicalize(path).unwrap_or_else(|_| lexical_absolute(path)),
-                        )
+                        AllowedRoot::Local(resolve_best_effort(path))
                     }
                 })
                 .collect(),
@@ -138,8 +166,9 @@ impl PathPolicy {
     /// Local paths are canonicalized before comparison, so `..` segments and
     /// symlinks are resolved rather than compared as text — a check against the
     /// literal string would be defeated by `/allowed/../etc/passwd`. When the
-    /// file does not exist, canonicalization cannot run and the lexical form is
-    /// used; the read then fails as not-found, which is the same answer.
+    /// file itself does not exist, [`resolve_best_effort`] resolves as much of
+    /// its ancestry as does exist so a symlinked root still compares equal; the
+    /// read then fails as not-found, which is the same answer.
     ///
     /// The comparison is component-wise ([`Path::starts_with`]), so an allowed
     /// root of `/data/images` does not also admit `/data/images-private`.
@@ -172,8 +201,7 @@ impl PathPolicy {
         }
         let stripped = path.strip_prefix("file://").unwrap_or(path);
         let candidate = Path::new(stripped);
-        let resolved =
-            std::fs::canonicalize(candidate).unwrap_or_else(|_| lexical_absolute(candidate));
+        let resolved = resolve_best_effort(candidate);
         let allowed = self.roots.iter().any(|root| match root {
             AllowedRoot::Local(dir) => resolved.starts_with(dir),
             AllowedRoot::Remote(_) => false,
