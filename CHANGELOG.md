@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-08-09
+
 ### Added
 
 - **Operation parameters that no code path reads are now rejected.** `OpSpec`
