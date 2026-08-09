@@ -218,6 +218,11 @@ where
     P::Subpixel: ViewType + 'static,
 {
     /// Returns the pixel data at the given coordinates.
+    ///
+    /// Kept despite having no caller inside this workspace: it is the only
+    /// accessor on [`ImageView`], which `AsImageView` hands to downstream users
+    /// of the crate. Deleting it would leave the view type with no way to read
+    /// what it borrows.
     pub fn get_pixel(&self, x: u32, y: u32) -> &[P::Subpixel] {
         let start = (y as usize * self.row_stride) + (x as usize * P::CHANNEL_COUNT as usize);
         &self.data[start..start + P::CHANNEL_COUNT as usize]

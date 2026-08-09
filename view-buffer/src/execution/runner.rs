@@ -1375,20 +1375,26 @@ where
     // The user-facing matrix follows OpenCV convention (forward mapping).
     // Invert the 2x3 matrix for inverse-mapping interpolation.
     let [a_fwd, b_fwd, tx_fwd, c_fwd, d_fwd, ty_fwd] = params.matrix;
-    let det = a_fwd * d_fwd - b_fwd * c_fwd;
-    let (a, b, tx, c, d, ty) = if det.abs() < 1e-15 {
-        // Singular matrix — fall back to identity (no-op)
-        (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-    } else {
-        let inv_det = 1.0 / det;
-        let ai = d_fwd * inv_det;
-        let bi = -b_fwd * inv_det;
-        let ci = -c_fwd * inv_det;
-        let di = a_fwd * inv_det;
-        let txi = -(ai * tx_fwd + bi * ty_fwd);
-        let tyi = -(ci * tx_fwd + di * ty_fwd);
-        (ai, bi, txi, ci, di, tyi)
-    };
+    // A singular matrix is rejected where the user supplies it (the plugin's
+    // `warp_affine` arm, via `AffineParams::is_invertible`), so it cannot reach
+    // here. This used to substitute the identity instead, which handed back the
+    // input and reported a transform that had not happened — a fallback that
+    // hid the one case inverse mapping cannot express. `debug_assert` pins the
+    // invariant at its consumer without a release-build branch; the arithmetic
+    // below has no other way to fail.
+    debug_assert!(
+        params.is_invertible(),
+        "affine warp reached the runner with a singular matrix (det = {}); \
+         invertibility is enforced when the matrix is accepted",
+        params.determinant()
+    );
+    let inv_det = 1.0 / params.determinant();
+    let a = d_fwd * inv_det;
+    let b = -b_fwd * inv_det;
+    let c = -c_fwd * inv_det;
+    let d = a_fwd * inv_det;
+    let tx = -(a * tx_fwd + b * ty_fwd);
+    let ty = -(c * tx_fwd + d * ty_fwd);
 
     let contig_buf = if buf.layout.is_contiguous() {
         buf

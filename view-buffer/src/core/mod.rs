@@ -3,7 +3,7 @@
 //! This module contains the fundamental types used throughout the crate:
 //! - [`DType`] - Data type enumeration
 //! - [`ViewType`] - Trait for mapping Rust types to DType
-//! - [`Layout`], [`LayoutFacts`], [`LayoutReport`] - Memory layout tracking
+//! - [`Layout`], [`LayoutFacts`] - Memory layout tracking
 //! - [`ViewBuffer`], [`BufferStorage`], [`BufferError`] - Buffer storage and views
 
 pub mod buffer;
@@ -14,4 +14,4 @@ pub mod layout;
 pub use buffer::{BufferError, BufferStorage, ViewBuffer};
 pub use bytes::AlignedBytes;
 pub use dtype::{DType, ViewType};
-pub use layout::{ExternalLayout, Layout, LayoutFacts, LayoutReport};
+pub use layout::{ExternalLayout, Layout, LayoutFacts};

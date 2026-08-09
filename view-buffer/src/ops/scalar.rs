@@ -32,18 +32,6 @@ impl ScalarOp {
             ScalarOp::Clamp(min, max) => format!("Clamp({min:.2}, {max:.2})"),
         }
     }
-
-    /// Returns the operation type name without parameters.
-    pub fn op_type(&self) -> &'static str {
-        match self {
-            ScalarOp::Add(_) => "Add",
-            ScalarOp::Mul(_) => "Mul",
-            ScalarOp::Div(_) => "Div",
-            ScalarOp::Pow(_) => "Pow",
-            ScalarOp::Relu => "Relu",
-            ScalarOp::Clamp(_, _) => "Clamp",
-        }
-    }
 }
 
 #[cfg(feature = "serde")]

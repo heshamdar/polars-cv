@@ -105,23 +105,6 @@ class ColorSpace(str, Enum):
     GRAY = "gray"
 
 
-class OutputDType(str, Enum):
-    """
-    Output dtype specification for operations that support dtype configuration.
-
-    This allows users to control the output dtype of operations like normalize,
-    scale, etc. The default behavior promotes integers to float32.
-    """
-
-    # Explicit dtype options
-    F32 = "f32"  # Always output float32 (default for most operations)
-    F64 = "f64"  # Output float64 for higher precision
-    U8 = "u8"  # Output uint8 (useful for image pipelines)
-
-    # Special options
-    PRESERVE = "preserve"  # Keep input dtype (floats preserved, integers -> f32)
-
-
 class FilterType(str, Enum):
     """Image resize filter types.
 

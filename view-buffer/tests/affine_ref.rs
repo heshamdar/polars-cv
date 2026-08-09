@@ -33,20 +33,16 @@ fn naive_affine_reference<T: Copy + Default>(
     let out_h = params.output_height as usize;
     let out_w = params.output_width as usize;
 
+    // Every matrix reaching here is invertible (see `test_matrices`), so the
+    // reference inverts unconditionally — exactly as the runner does.
     let [a_fwd, b_fwd, tx_fwd, c_fwd, d_fwd, ty_fwd] = params.matrix;
-    let det = a_fwd * d_fwd - b_fwd * c_fwd;
-    let (a, b, tx, c, d, ty) = if det.abs() < 1e-15 {
-        (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-    } else {
-        let inv_det = 1.0 / det;
-        let ai = d_fwd * inv_det;
-        let bi = -b_fwd * inv_det;
-        let ci = -c_fwd * inv_det;
-        let di = a_fwd * inv_det;
-        let txi = -(ai * tx_fwd + bi * ty_fwd);
-        let tyi = -(ci * tx_fwd + di * ty_fwd);
-        (ai, bi, txi, ci, di, tyi)
-    };
+    let inv_det = 1.0 / (a_fwd * d_fwd - b_fwd * c_fwd);
+    let a = d_fwd * inv_det;
+    let b = -b_fwd * inv_det;
+    let c = -c_fwd * inv_det;
+    let d = a_fwd * inv_det;
+    let tx = -(a * tx_fwd + b * ty_fwd);
+    let ty = -(c * tx_fwd + d * ty_fwd);
 
     let border_val: T = from_f64(params.border_value);
     let mut dst_data: Vec<T> = vec![border_val; out_h * out_w * channels];
@@ -189,12 +185,11 @@ fn test_matrices(h: usize, w: usize) -> Vec<(&'static str, [f64; 6], u32, u32)> 
             (w / 2).max(1) as u32,
         ),
         ("shear", [1.0, 0.3, 0.0, 0.1, 1.0, 0.0], h as u32, w as u32),
-        (
-            "near_singular",
-            [1e-20, 0.0, 0.0, 0.0, 1e-20, 0.0],
-            h as u32,
-            w as u32,
-        ),
+        // A singular matrix is deliberately absent: it has no inverse, so
+        // there is no reference result to match. It used to sit here pinning
+        // the runner's identity fallback — see `singular_matrices_are_not_
+        // invertible` below, and the plugin's `warp_affine` arm, which rejects
+        // one before it can reach execution.
     ]
 }
 
@@ -346,4 +341,51 @@ fn affine_interior_span_edge_cases() {
             "span case mismatch: {name}"
         );
     }
+}
+
+/// The matrices the equivalence sweep above must never be handed.
+///
+/// Inverse mapping has no answer for a transform that collapses the plane, so
+/// these are rejected where a matrix is accepted rather than silently replaced
+/// with the identity — which is what the runner used to do, reporting a warp
+/// that had not happened. `is_invertible` is the single authority for the
+/// question; both the plugin's rejection and the runner's `debug_assert` read
+/// it.
+#[test]
+fn singular_matrices_are_not_invertible() {
+    let singular: &[(&str, [f64; 6])] = &[
+        ("zero scale on both axes", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        ("zero scale on x", [0.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+        ("zero scale on y", [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        ("proportional rows", [1.0, 2.0, 0.0, 2.0, 4.0, 0.0]),
+        ("underflows to zero", [1e-20, 0.0, 0.0, 0.0, 1e-20, 0.0]),
+    ];
+    for (name, matrix) in singular {
+        let params = AffineParams {
+            matrix: *matrix,
+            output_height: 8,
+            output_width: 8,
+            interpolation: InterpolationType::Bilinear,
+            border_value: 0.0,
+        };
+        assert!(
+            !params.is_invertible(),
+            "{name}: {matrix:?} has determinant {} and must be refused",
+            params.determinant()
+        );
+    }
+
+    // The counterpart: an extreme but genuine transform stays usable. A
+    // conditioning test rather than a zero test would have failed here.
+    let stretched = AffineParams {
+        matrix: [1e-6, 0.0, 0.0, 0.0, 1e-6, 0.0],
+        output_height: 8,
+        output_width: 8,
+        interpolation: InterpolationType::Bilinear,
+        border_value: 0.0,
+    };
+    assert!(
+        stretched.is_invertible(),
+        "a heavily stretched but invertible matrix must still be accepted"
+    );
 }

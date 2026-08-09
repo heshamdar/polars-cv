@@ -24,9 +24,9 @@ pub mod ops;
 pub mod protocol;
 
 // Re-exports - Core types
-pub use core::buffer::{SlicePolicy, ViewBuffer};
+pub use core::buffer::{SlicePolicy, ViewBuffer, SIMD_ALIGNMENT};
 pub use core::dtype::{DType, OutputDTypeRule, PlannedDType};
-pub use core::layout::{ExternalLayout, LayoutFacts, LayoutReport};
+pub use core::layout::{ExternalLayout, LayoutFacts};
 
 // Re-exports - Execution
 pub use execution::{

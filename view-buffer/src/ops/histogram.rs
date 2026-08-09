@@ -347,9 +347,19 @@ impl Op for HistogramOp {
     }
 
     fn output_channel_rule(&self) -> OutputChannelRule {
-        // Bin vectors/tables have no channel concept; quantized output mirrors
-        // the input channels but is consumed as a relabelled buffer.
-        OutputChannelRule::NotApplicable
+        match self.output {
+            // Quantized relabels each element in place, so the buffer keeps
+            // every dimension it had — channels included. Declaring this
+            // `NotApplicable` was a mislabelling: it is the one histogram mode
+            // that still produces an `[H, W, C]` image, and the rank rule above
+            // already says so by preserving the rank.
+            HistogramOutput::Quantized => OutputChannelRule::PreserveChannels,
+            // Bin vectors and the bucket table have no channel concept.
+            HistogramOutput::Counts
+            | HistogramOutput::Normalized
+            | HistogramOutput::Edges
+            | HistogramOutput::Buckets => OutputChannelRule::NotApplicable,
+        }
     }
 
     fn memory_effect(&self) -> MemoryEffect {

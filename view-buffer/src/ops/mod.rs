@@ -160,40 +160,14 @@ impl NodeOutput {
         }
     }
 
-    /// Try to extract a scalar from this output.
-    pub fn as_scalar(&self) -> Option<f64> {
-        match self {
-            NodeOutput::Scalar(val) => Some(*val),
-            _ => None,
-        }
-    }
-
-    /// Try to extract a vector from this output.
-    pub fn as_vector(&self) -> Option<&Arc<Vec<f64>>> {
-        match self {
-            NodeOutput::Vector(vec) => Some(vec),
-            _ => None,
-        }
-    }
-
     /// Create a Buffer output from a ViewBuffer (takes ownership).
     pub fn from_buffer(buf: ViewBuffer) -> Self {
         NodeOutput::Buffer(Arc::new(buf))
     }
 
-    /// Create a Buffer output from an Arc<ViewBuffer>.
-    pub fn from_arc_buffer(buf: Arc<ViewBuffer>) -> Self {
-        NodeOutput::Buffer(buf)
-    }
-
     /// Create a Contours output from a Vec of contours.
     pub fn from_contours(contours: Vec<Contour>) -> Self {
         NodeOutput::Contours(Arc::new(contours))
-    }
-
-    /// Create a Contours output from an Arc.
-    pub fn from_arc_contours(contours: Arc<Vec<Contour>>) -> Self {
-        NodeOutput::Contours(contours)
     }
 
     /// Create a Scalar output.

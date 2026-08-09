@@ -39,6 +39,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(op_schema, m)?)?;
     m.add_function(wrap_pyfunction!(op_infer_shape, m)?)?;
+    m.add_function(wrap_pyfunction!(op_output_channels, m)?)?;
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
@@ -238,6 +239,30 @@ fn op_infer_shape(op_json: &str, input_dims: Vec<Option<i64>>) -> PyResult<Vec<O
             runs.iter().all(|r| r[i] == v).then_some(v)
         })
         .collect())
+}
+
+/// Plan-time output channel count for a single op — the single authority the
+/// Python planner reads instead of re-deriving the rule's arithmetic.
+///
+/// `input_channels` is the current channel hint, `None` when unknown at plan
+/// time. The result is `None` whenever the count is not determinable: the op
+/// produces no `[H, W, C]` image (`NotApplicable`), its effect is not knowable
+/// from the rule alone (`Unknown`), or a channel-dependent rule was given an
+/// unknown input.
+///
+/// This exists because the Python side used to re-implement
+/// `OutputChannelRule::apply` by parsing the stringified rule, and the two
+/// readings disagreed: `apply` returns `None` for `NotApplicable` while Python
+/// left the hint unchanged. That divergence was invisible only because every
+/// `NotApplicable` op also dropped below rank 3 — where the planner clears the
+/// channel hint anyway — except `histogram(output="quantized")`, which was
+/// mislabelled and happens to preserve channels. Two errors cancelling is not
+/// a contract, so the arithmetic now lives in one place.
+#[pyfunction]
+#[pyo3(signature = (op_json, input_channels=None))]
+fn op_output_channels(op_json: &str, input_channels: Option<usize>) -> PyResult<Option<usize>> {
+    let step = resolve_op_from_json(op_json)?;
+    Ok(step.output_channel_rule().apply(input_channels))
 }
 
 /// One probe of [`op_infer_shape`]: resolve the op with expression params bound

@@ -156,14 +156,3 @@ impl From<&Layout> for LayoutFacts {
         Self::new(&l.shape, &l.strides, l.dtype, l.offset)
     }
 }
-
-/// A report of layout properties for inspection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LayoutReport {
-    pub shape: Vec<usize>,
-    pub strides: Vec<isize>,
-    pub dtype: DType,
-    pub contiguous: bool,
-    pub image_compatible: bool,
-    pub ndarray_compatible: bool,
-}

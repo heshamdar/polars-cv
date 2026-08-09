@@ -13,6 +13,7 @@
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
+use std::collections::HashMap;
 
 /// What a **null** in a per-row expression parameter column means.
 ///
@@ -659,6 +660,102 @@ impl<'a> ParamCtx<'a> {
     }
 }
 
+/// One op's parameter map, plus the record of which names were looked up.
+///
+/// `OpSpec` is the documented exception to this crate's `deny_unknown_fields`
+/// rule — its params ride on `#[serde(flatten)]`, which serde cannot combine
+/// with unknown-field rejection — so the wire format cannot refuse a parameter
+/// no operation understands. Nothing else refused one either: `scale` and
+/// `clamp` both accepted an `out_dtype` that entered the op's identity (and so
+/// the CSE and compiled-graph cache keys) and was then read by no `resolve_op`
+/// arm and no dtype rule.
+///
+/// This type closes that hole at the only door into the arms. Every read goes
+/// through [`OpParams::get`] or [`OpParams::contains_key`] and is recorded;
+/// [`resolve_op`](crate::execute::resolve_op) then rejects anything the arm did
+/// not touch. An arm cannot opt out, because it never receives the underlying
+/// map — which is the point: a guard listing the parameters each op must
+/// remember to read would go stale the day someone adds one it has not heard
+/// of.
+///
+/// Reads are recorded in a bitmask over the map's key order rather than a set
+/// of names, so tracking allocates nothing: `resolve_op` runs per row for ops
+/// with expression parameters, and ops carry a handful of parameters at most.
+pub struct OpParams<'a> {
+    map: &'a HashMap<String, ParamValue>,
+    read: Cell<u64>,
+}
+
+impl<'a> OpParams<'a> {
+    /// The widest parameter map the read-tracking bitmask can cover.
+    const CAPACITY: usize = 64;
+
+    /// Wrap an op's parameters for tracked access.
+    pub fn new(map: &'a HashMap<String, ParamValue>) -> Self {
+        Self {
+            map,
+            read: Cell::new(0),
+        }
+    }
+
+    /// Record `name` as read, if the map carries it.
+    fn mark(&self, name: &str) {
+        if let Some(idx) = self.map.keys().position(|k| k == name) {
+            if idx < Self::CAPACITY {
+                self.read.set(self.read.get() | (1u64 << idx));
+            }
+        }
+    }
+
+    /// Look up a parameter, recording the read.
+    pub fn get(&self, name: &str) -> Option<&'a ParamValue> {
+        self.mark(name);
+        self.map.get(name)
+    }
+
+    /// Test for a parameter's presence, recording the read.
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.mark(name);
+        self.map.contains_key(name)
+    }
+
+    /// Record `name` as read without returning it.
+    ///
+    /// For parameters an arm legitimately does not consume because a layer
+    /// above it does: `rasterize`'s `shape_ref` names another graph node, and
+    /// is resolved by `CompiledGraph::compile` before the op is reached. The
+    /// acknowledgement is explicit and lives on the arm, so the parameter is
+    /// *declared* as belonging to the op rather than special-cased inside the
+    /// checker, where it would read as a hole in the rule.
+    pub fn acknowledge(&self, name: &str) {
+        self.mark(name);
+    }
+
+    /// Parameter names present on the wire that nothing read.
+    ///
+    /// Empty is the only acceptable result; see [`OpParams`].
+    pub fn unread(&self) -> PolarsResult<Vec<&'a str>> {
+        if self.map.len() > Self::CAPACITY {
+            // Refusing to answer beats answering wrongly: past `CAPACITY` the
+            // mask cannot represent the read, and reporting those names as
+            // unread would be a false accusation while ignoring them would be
+            // a silent blind spot.
+            polars_bail!(ComputeError:
+                "operation has {} parameters, more than the {} the parameter-use \
+                 checker can track; raise OpParams::CAPACITY",
+                self.map.len(), Self::CAPACITY);
+        }
+        let read = self.read.get();
+        Ok(self
+            .map
+            .keys()
+            .enumerate()
+            .filter(|(idx, _)| read & (1u64 << idx) == 0)
+            .map(|(_, k)| k.as_str())
+            .collect())
+    }
+}
+
 /// Shared accessors for optional and enum-valued operation parameters.
 ///
 /// These implement the **single parameter failure policy** for `resolve_op`:
@@ -677,11 +774,12 @@ impl<'a> ParamCtx<'a> {
 /// here may turn a null into its default — that would silently compute a wrong
 /// result for a missing input.
 pub mod get {
-    use super::{ParamCtx, ParamValue};
+    use super::{OpParams, ParamCtx, ParamValue};
     use polars::prelude::*;
-    use std::collections::HashMap;
 
-    type Params = HashMap<String, ParamValue>;
+    /// Every helper here reads through the tracking wrapper, so using one is
+    /// what records the parameter as consumed. There is no untracked overload.
+    type Params<'a> = OpParams<'a>;
 
     fn named(name: &str, e: PolarsError) -> PolarsError {
         polars_err!(ComputeError: "parameter '{}': {}", name, e)
@@ -690,7 +788,7 @@ pub mod get {
     /// Optional boolean. Booleans are structural: only a literal
     /// `true`/`false` is accepted — strings, numbers, and expressions error
     /// instead of silently reading as `false`.
-    pub fn opt_bool(params: &Params, name: &str, default: bool) -> PolarsResult<bool> {
+    pub fn opt_bool(params: &Params<'_>, name: &str, default: bool) -> PolarsResult<bool> {
         match params.get(name) {
             None => Ok(default),
             Some(ParamValue::Literal {
@@ -705,7 +803,7 @@ pub mod get {
 
     /// Optional u32 with a default for absence.
     pub fn opt_u32(
-        params: &Params,
+        params: &Params<'_>,
         name: &str,
         default: u32,
         row_idx: usize,
@@ -722,7 +820,7 @@ pub mod get {
     /// shape/length (e.g. `perceptual_hash(hash_size)`). Literal-only: a bound
     /// expression `Slot` (or any non-literal form) errors, because letting the
     /// value vary per row would desync the plan-time schema from the data.
-    pub fn opt_u32_literal(params: &Params, name: &str, default: u32) -> PolarsResult<u32> {
+    pub fn opt_u32_literal(params: &Params<'_>, name: &str, default: u32) -> PolarsResult<u32> {
         match params.get(name) {
             None => Ok(default),
             Some(ParamValue::Literal { value }) => {
@@ -747,7 +845,7 @@ pub mod get {
     /// reduction `axis`: absent = "global"). Literal-only: the axis fixes the
     /// output rank at plan time, so a bound expression `Slot` errors rather
     /// than silently changing rank per row.
-    pub fn maybe_usize_literal(params: &Params, name: &str) -> PolarsResult<Option<usize>> {
+    pub fn maybe_usize_literal(params: &Params<'_>, name: &str) -> PolarsResult<Option<usize>> {
         match params.get(name) {
             None => Ok(None),
             Some(ParamValue::Literal { value }) => {
@@ -780,7 +878,7 @@ pub mod get {
     /// Optional f64 where absence is meaningful (e.g. `min_area`: absent
     /// means "no filter"). Present-but-invalid still errors.
     pub fn maybe_f64(
-        params: &Params,
+        params: &Params<'_>,
         name: &str,
         row_idx: usize,
         ctx: &ParamCtx,
@@ -793,7 +891,7 @@ pub mod get {
 
     /// Optional f64 with a default for absence.
     pub fn opt_f64(
-        params: &Params,
+        params: &Params<'_>,
         name: &str,
         default: f64,
         row_idx: usize,
@@ -809,7 +907,7 @@ pub mod get {
     /// Optional u8 with a default for absence; range-checked so 300 errors
     /// instead of silently truncating.
     pub fn opt_u8(
-        params: &Params,
+        params: &Params<'_>,
         name: &str,
         default: u8,
         row_idx: usize,
@@ -855,7 +953,7 @@ pub mod get {
     /// must keep using [`ParamValue::resolve_string`], which rejects
     /// expressions outright.
     pub fn req_enum<T: Copy>(
-        params: &Params,
+        params: &Params<'_>,
         name: &str,
         canonical: &[(&str, T)],
         aliases: &[(&str, T)],
@@ -884,7 +982,7 @@ pub mod get {
 
     /// Optional enum-valued parameter with a default for absence.
     pub fn opt_enum<T: Copy>(
-        params: &Params,
+        params: &Params<'_>,
         name: &str,
         canonical: &[(&str, T)],
         aliases: &[(&str, T)],
@@ -906,7 +1004,7 @@ pub mod get {
     /// the produced data. Rejects a bound expression slot as defense in depth,
     /// mirroring `opt_u32_literal` / `maybe_usize_literal` for numbers.
     pub fn req_enum_literal<T: Copy>(
-        params: &Params,
+        params: &Params<'_>,
         name: &str,
         canonical: &[(&str, T)],
         aliases: &[(&str, T)],
@@ -931,7 +1029,7 @@ pub mod get {
 
     /// Optional literal-only enum parameter with a default for absence.
     pub fn opt_enum_literal<T: Copy>(
-        params: &Params,
+        params: &Params<'_>,
         name: &str,
         canonical: &[(&str, T)],
         aliases: &[(&str, T)],
@@ -951,7 +1049,7 @@ pub mod get {
     /// *do* change the output shape — `rotate(expand)` — must keep using
     /// [`opt_bool`], which is literal-only.
     pub fn opt_bool_dyn(
-        params: &Params,
+        params: &Params<'_>,
         name: &str,
         default: bool,
         row_idx: usize,
@@ -1150,12 +1248,12 @@ mod tests {
         for bad in [ParamValue::Slot { idx: 0 }, ParamValue::Expr { col: None }] {
             let mut params: HashMap<String, ParamValue> = HashMap::new();
             params.insert("axis".into(), bad.clone());
-            let err = get::maybe_usize_literal(&params, "axis").unwrap_err();
+            let err = get::maybe_usize_literal(&OpParams::new(&params), "axis").unwrap_err();
             assert!(err.to_string().contains("structural"), "got: {err}");
 
             let mut params2: HashMap<String, ParamValue> = HashMap::new();
             params2.insert("hash_size".into(), bad);
-            let err = get::opt_u32_literal(&params2, "hash_size", 64).unwrap_err();
+            let err = get::opt_u32_literal(&OpParams::new(&params2), "hash_size", 64).unwrap_err();
             assert!(err.to_string().contains("structural"), "got: {err}");
         }
 
@@ -1167,9 +1265,13 @@ mod tests {
                 value: serde_json::json!(2),
             },
         );
-        assert_eq!(get::maybe_usize_literal(&lit, "axis").unwrap(), Some(2));
         assert_eq!(
-            get::opt_u32_literal(&HashMap::new(), "hash_size", 64).unwrap(),
+            get::maybe_usize_literal(&OpParams::new(&lit), "axis").unwrap(),
+            Some(2)
+        );
+        let empty: HashMap<String, ParamValue> = HashMap::new();
+        assert_eq!(
+            get::opt_u32_literal(&OpParams::new(&empty), "hash_size", 64).unwrap(),
             64
         );
     }

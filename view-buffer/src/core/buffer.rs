@@ -36,7 +36,7 @@ use thiserror::Error;
 
 use crate::core::bytes::AlignedBytes;
 use crate::core::dtype::{DType, ViewType};
-use crate::core::layout::{ExternalLayout, Layout, LayoutFacts, LayoutReport};
+use crate::core::layout::{ExternalLayout, Layout, LayoutFacts};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::protocol::{dtype_to_u8, u8_to_dtype, ViewHeader, HEADER_SIZE, MAGIC_BYTES, VERSION};
 
@@ -175,6 +175,12 @@ pub struct ViewBuffer {
 }
 
 /// Default SIMD alignment (64 bytes for AVX-512 compatibility).
+///
+/// The named argument for [`ViewBuffer::from_slice_aligned`] and
+/// [`ViewBuffer::is_aligned`], which together are this crate's alignment API.
+/// Zero-argument wrappers hardcoding it (`from_slice_simd_aligned`,
+/// `is_simd_aligned`) had no caller and were removed; the parameterised pair
+/// answers strictly more.
 pub const SIMD_ALIGNMENT: usize = 64;
 
 impl ViewBuffer {
@@ -204,10 +210,11 @@ impl ViewBuffer {
     ///
     /// # Example
     /// ```
-    /// use view_buffer::ViewBuffer;
+    /// use view_buffer::{ViewBuffer, SIMD_ALIGNMENT};
     /// let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
-    /// let buf = ViewBuffer::from_slice_aligned(&data, 64);
+    /// let buf = ViewBuffer::from_slice_aligned(&data, SIMD_ALIGNMENT);
     /// assert_eq!(buf.shape(), &[4]);
+    /// assert!(buf.is_aligned(SIMD_ALIGNMENT));
     /// ```
     pub fn from_slice_aligned<T: ViewType>(data: &[T], alignment: usize) -> Self {
         debug_assert!(alignment.is_power_of_two(), "Alignment must be power of 2");
@@ -235,11 +242,6 @@ impl ViewBuffer {
             data: BufferStorage::Rust(Arc::new(aligned)),
             layout,
         }
-    }
-
-    /// Creates a ViewBuffer with default SIMD alignment (64 bytes).
-    pub fn from_slice_simd_aligned<T: ViewType>(data: &[T]) -> Self {
-        Self::from_slice_aligned(data, SIMD_ALIGNMENT)
     }
 
     /// Creates a ViewBuffer from a Vec with a specific shape.
@@ -438,11 +440,6 @@ impl ViewBuffer {
         (ptr as usize).is_multiple_of(alignment)
     }
 
-    /// Returns true if the buffer is aligned for SIMD operations (64-byte alignment).
-    pub fn is_simd_aligned(&self) -> bool {
-        self.is_aligned(SIMD_ALIGNMENT)
-    }
-
     /// Creates a ViewBuffer from an Arrow buffer (zero-copy).
     #[cfg(feature = "arrow_interop")]
     pub fn from_arrow_buffer(
@@ -605,16 +602,6 @@ impl ViewBuffer {
     /// Returns the strides in bytes.
     pub fn strides_bytes(&self) -> &[isize] {
         &self.layout.strides
-    }
-
-    /// Returns the number of bytes occupied by the logical elements of this view.
-    ///
-    /// For non-contiguous views this is the number of *elements* × element size,
-    /// not the underlying storage size.  Used by the execution strategy to
-    /// decide whether tiling is worthwhile.
-    #[inline]
-    pub fn size_bytes(&self) -> usize {
-        self.layout.num_elements() * self.layout.dtype.size_of()
     }
 
     /// Returns a raw pointer to the start of the view data.
@@ -1215,19 +1202,6 @@ impl ViewBuffer {
     /// Returns true if the buffer is compatible with the target external layout.
     pub fn is_compatible_with(&self, target: ExternalLayout) -> bool {
         self.layout_facts().compatible_with(target)
-    }
-
-    /// Returns a layout report for inspection.
-    pub fn layout_report(&self) -> LayoutReport {
-        let facts = self.layout_facts();
-        LayoutReport {
-            shape: facts.shape.clone(),
-            strides: facts.strides.clone(),
-            dtype: facts.dtype,
-            contiguous: facts.is_contiguous(),
-            image_compatible: facts.compatible_with(ExternalLayout::ImageCrate),
-            ndarray_compatible: facts.compatible_with(ExternalLayout::NdArray),
-        }
     }
 
     // --- Serialization (Protocol) ---
