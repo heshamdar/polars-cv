@@ -4,7 +4,6 @@
 //! including parameter resolution and view-buffer integration.
 
 use polars::prelude::*;
-use std::collections::HashMap;
 
 use view_buffer::{
     geometry::rasterize::rasterize, AffineParams, BinaryOp, ComputeOp, DType, FilterType,
@@ -13,7 +12,7 @@ use view_buffer::{
 };
 
 use crate::graph::step::GraphStep;
-use crate::params::{get, ParamCtx, ParamValue};
+use crate::params::{get, OpParams, ParamCtx, ParamValue};
 use crate::pipeline::{OpSpec, SinkSpec, SourceSpec};
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::naming;
@@ -48,7 +47,7 @@ pub(crate) const BINARY_OPS: &[(&str, BinaryOp)] = &[
 /// `warp_affine`; defaults to bilinear). Resolved per row: the choice of
 /// interpolation affects pixel values, never output shape or dtype.
 fn resolve_interpolation(
-    params: &HashMap<String, ParamValue>,
+    params: &OpParams<'_>,
     row_idx: usize,
     ctx: &ParamCtx,
 ) -> PolarsResult<InterpolationType> {
@@ -74,7 +73,7 @@ fn resolve_interpolation(
 /// plan-time probe context, where no concrete value exists yet and the choice
 /// cannot affect the inferred schema.
 fn resolve_filter(
-    params: &HashMap<String, ParamValue>,
+    params: &OpParams<'_>,
     row_idx: usize,
     ctx: &ParamCtx,
 ) -> PolarsResult<FilterType> {
@@ -92,7 +91,7 @@ fn resolve_filter(
 /// Parse the optional `border_value` parameter (shared by `rotate` and
 /// `warp_affine`; defaults to 0.0).
 fn resolve_border_value(
-    params: &HashMap<String, ParamValue>,
+    params: &OpParams<'_>,
     row_idx: usize,
     ctx: &ParamCtx,
 ) -> PolarsResult<f64> {
@@ -103,7 +102,7 @@ fn resolve_border_value(
 /// shared with the graph executor's rasterize-by-shape-ref path so the two
 /// sites cannot diverge.
 pub(crate) fn resolve_rasterize_style(
-    params: &HashMap<String, ParamValue>,
+    params: &OpParams<'_>,
     row_idx: usize,
     ctx: &ParamCtx,
 ) -> PolarsResult<(u8, u8)> {
@@ -383,16 +382,61 @@ fn buffer_step(dto: ViewDto) -> PolarsResult<GraphStep> {
 /// engine's `ViewExpr`); multi-input and domain-changing ops become typed
 /// graph-level steps. Node references and expression column names enter the
 /// step here — they never reach the engine's `ViewDto`.
+///
+/// Every parameter on the spec must be read by the arm that handles it. See
+/// [`resolve_op_inner`] for why, and [`OpParams`] for how.
 pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
-    match op_spec.op.as_str() {
+    let params = OpParams::new(&op_spec.params);
+    let step = resolve_op_inner(&op_spec.op, &params, row_idx, ctx)?;
+
+    // A parameter the arm never looked at is a parameter that did nothing. It
+    // still rode in the op's identity — so two pipelines that behave
+    // identically hash differently for CSE and compile to separate graph-cache
+    // entries — and it read, to whoever passed it, as a request that was
+    // honoured. `scale`/`clamp` carried an `out_dtype` like that.
+    //
+    // This runs at both ends of the boundary with no extra wiring:
+    // `resolve_op_from_json` backs the `op_schema` FFI, so a stray parameter
+    // fails in Python while the `Pipeline` is being built, and
+    // `CompiledGraph::compile` resolves every spec before any row executes.
+    let unread = params.unread()?;
+    if !unread.is_empty() {
+        let mut names: Vec<&str> = unread;
+        names.sort_unstable();
+        polars_bail!(ComputeError:
+            "operation '{}': parameter(s) {:?} are not read by this operation. \
+             A parameter that reaches no code path is not a no-op — it enters \
+             the op's identity and silently discards what the caller asked for.",
+            op_spec.op, names);
+    }
+    Ok(step)
+}
+
+/// The per-operation dispatch behind [`resolve_op`].
+///
+/// Split out so the parameter-use check has exactly one place to run and the
+/// arms have no way to return past it.
+///
+/// It takes the op *name* and an [`OpParams`], never the `OpSpec` — an arm that
+/// could still reach `op_spec.params` could read a parameter without recording
+/// it, which is not a tracker so much as a suggestion. Two of `crop`'s reads
+/// were exactly that shape before the signature was narrowed, and the compiler
+/// is what found them.
+fn resolve_op_inner(
+    op_name: &str,
+    params: &OpParams<'_>,
+    row_idx: usize,
+    ctx: &ParamCtx,
+) -> PolarsResult<GraphStep> {
+    match op_name {
         // View operations
         "transpose" => {
-            let axes = get_param(&op_spec.params, "axes")?.as_int_list()?;
+            let axes = get_param(params, "axes")?.as_int_list()?;
             buffer_step(ViewDto::View(ViewOp::Transpose(axes)))
         }
         "reshape" => {
             // Borrow the compiled `List` on the hot path; parse once otherwise.
-            let shape_param = get_param(&op_spec.params, "shape")?;
+            let shape_param = get_param(params, "shape")?;
             let owned_shape;
             let shape_params: &[ParamValue] = match shape_param.as_param_slice() {
                 Some(slice) => slice,
@@ -408,22 +452,21 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             buffer_step(ViewDto::View(ViewOp::Reshape(shape)))
         }
         "flip" => {
-            let axes = get_param(&op_spec.params, "axes")?.as_int_list()?;
+            let axes = get_param(params, "axes")?.as_int_list()?;
             buffer_step(ViewDto::View(ViewOp::Flip(axes)))
         }
         "crop" => {
             // Allow negative values for top/left and clamp to 0
             // This makes the API more forgiving and follows NumPy/OpenCV conventions
-            let top_raw = get_param(&op_spec.params, "top")?.resolve_i64(row_idx, ctx)?;
-            let left_raw = get_param(&op_spec.params, "left")?.resolve_i64(row_idx, ctx)?;
+            let top_raw = get_param(params, "top")?.resolve_i64(row_idx, ctx)?;
+            let left_raw = get_param(params, "left")?.resolve_i64(row_idx, ctx)?;
 
             // Clamp negative values to 0
             let top = top_raw.max(0) as usize;
             let left = left_raw.max(0) as usize;
 
             // Height and width might be optional - these should still be non-negative
-            let height = op_spec
-                .params
+            let height = params
                 .get("height")
                 .map(|p| {
                     let h = p.resolve_i64(row_idx, ctx)?;
@@ -431,8 +474,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                     Ok::<usize, PolarsError>(h.max(0) as usize)
                 })
                 .transpose()?;
-            let width = op_spec
-                .params
+            let width = params
                 .get("width")
                 .map(|p| {
                     let w = p.resolve_i64(row_idx, ctx)?;
@@ -457,16 +499,16 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Compute operations
         "cast" => {
-            let dtype_str = get_param(&op_spec.params, "dtype")?.resolve_string()?;
+            let dtype_str = get_param(params, "dtype")?.resolve_string()?;
             let dtype = parse_dtype(dtype_str)?;
             buffer_step(ViewDto::Compute(ComputeOp::Cast(dtype)))
         }
         "scale" => {
-            let factor = get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, ctx)?;
+            let factor = get_param(params, "factor")?.resolve_f32(row_idx, ctx)?;
             buffer_step(ViewDto::Compute(ComputeOp::Scale(factor)))
         }
         "normalize" => {
-            let method_str = get_param(&op_spec.params, "method")?.resolve_string()?;
+            let method_str = get_param(params, "method")?.resolve_string()?;
             let method = match method_str {
                 "minmax" => NormalizeMethod::MinMax,
                 "zscore" => NormalizeMethod::ZScore,
@@ -474,9 +516,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                     // Per-element ParamValues, so a per-row mean/std (dataset
                     // statistics joined in as columns) resolves per row. The
                     // element count is the channel count and stays structural.
-                    let mean =
-                        get_param(&op_spec.params, "mean")?.resolve_f32_list(row_idx, ctx)?;
-                    let std = get_param(&op_spec.params, "std")?.resolve_f32_list(row_idx, ctx)?;
+                    let mean = get_param(params, "mean")?.resolve_f32_list(row_idx, ctx)?;
+                    let std = get_param(params, "std")?.resolve_f32_list(row_idx, ctx)?;
 
                     NormalizeMethod::Preset { mean, std }
                 }
@@ -490,24 +531,24 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             // the planner's `Configurable(F32)` resolution (default f32). Without
             // this, `normalize(out_dtype=...)` planned one dtype and executed
             // another — a plan/execution contract violation.
-            let out_dtype = match op_spec.params.get("out_dtype") {
+            let out_dtype = match params.get("out_dtype") {
                 Some(p) => parse_dtype(p.resolve_string()?)?,
                 None => DType::F32,
             };
             buffer_step(ViewDto::Compute(ComputeOp::Normalize(method, out_dtype)))
         }
         "clamp" => {
-            let min = get_param(&op_spec.params, "min")?.resolve_f32(row_idx, ctx)?;
-            let max = get_param(&op_spec.params, "max")?.resolve_f32(row_idx, ctx)?;
+            let min = get_param(params, "min")?.resolve_f32(row_idx, ctx)?;
+            let max = get_param(params, "max")?.resolve_f32(row_idx, ctx)?;
             buffer_step(ViewDto::Compute(ComputeOp::Clamp { min, max }))
         }
         "relu" => buffer_step(ViewDto::Compute(ComputeOp::Relu)),
 
         // Image operations
         "resize" => {
-            let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
-            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
+            let height = get_param(params, "height")?.resolve_u32(row_idx, ctx)?;
+            let width = get_param(params, "width")?.resolve_u32(row_idx, ctx)?;
+            let filter = resolve_filter(params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Resize {
@@ -518,9 +559,9 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             }))
         }
         "resize_scale" => {
-            let scale_x = get_param(&op_spec.params, "scale_x")?.resolve_f32(row_idx, ctx)?;
-            let scale_y = get_param(&op_spec.params, "scale_y")?.resolve_f32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
+            let scale_x = get_param(params, "scale_x")?.resolve_f32(row_idx, ctx)?;
+            let scale_y = get_param(params, "scale_y")?.resolve_f32(row_idx, ctx)?;
+            let filter = resolve_filter(params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeScale {
@@ -531,32 +572,32 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             }))
         }
         "resize_to_height" => {
-            let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
+            let height = get_param(params, "height")?.resolve_u32(row_idx, ctx)?;
+            let filter = resolve_filter(params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeToHeight { height, filter },
             }))
         }
         "resize_to_width" => {
-            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
+            let width = get_param(params, "width")?.resolve_u32(row_idx, ctx)?;
+            let filter = resolve_filter(params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeToWidth { width, filter },
             }))
         }
         "resize_max" => {
-            let max_size = get_param(&op_spec.params, "max_size")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
+            let max_size = get_param(params, "max_size")?.resolve_u32(row_idx, ctx)?;
+            let filter = resolve_filter(params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeMax { max_size, filter },
             }))
         }
         "resize_min" => {
-            let min_size = get_param(&op_spec.params, "min_size")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
+            let min_size = get_param(params, "min_size")?.resolve_u32(row_idx, ctx)?;
+            let filter = resolve_filter(params, row_idx, ctx)?;
 
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ResizeMin { min_size, filter },
@@ -567,13 +608,13 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "pad" => {
             use view_buffer::ops::dto::PadMode;
 
-            let top = get_param(&op_spec.params, "top")?.resolve_u32(row_idx, ctx)?;
-            let bottom = get_param(&op_spec.params, "bottom")?.resolve_u32(row_idx, ctx)?;
-            let left = get_param(&op_spec.params, "left")?.resolve_u32(row_idx, ctx)?;
-            let right = get_param(&op_spec.params, "right")?.resolve_u32(row_idx, ctx)?;
-            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
+            let top = get_param(params, "top")?.resolve_u32(row_idx, ctx)?;
+            let bottom = get_param(params, "bottom")?.resolve_u32(row_idx, ctx)?;
+            let left = get_param(params, "left")?.resolve_u32(row_idx, ctx)?;
+            let right = get_param(params, "right")?.resolve_u32(row_idx, ctx)?;
+            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
             let mode = get::req_enum(
-                &op_spec.params,
+                params,
                 "mode",
                 PadMode::NAMED,
                 &[],
@@ -596,11 +637,11 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "pad_to_size" => {
             use view_buffer::ops::dto::PadPosition;
 
-            let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
-            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
-            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
+            let height = get_param(params, "height")?.resolve_u32(row_idx, ctx)?;
+            let width = get_param(params, "width")?.resolve_u32(row_idx, ctx)?;
+            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
             let position = get::req_enum(
-                &op_spec.params,
+                params,
                 "position",
                 PadPosition::NAMED,
                 &[],
@@ -619,14 +660,14 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             }))
         }
         "letterbox" => {
-            let height = get_param(&op_spec.params, "height")?.resolve_u32(row_idx, ctx)?;
-            let width = get_param(&op_spec.params, "width")?.resolve_u32(row_idx, ctx)?;
-            let value = get_param(&op_spec.params, "value")?.resolve_f32(row_idx, ctx)?;
+            let height = get_param(params, "height")?.resolve_u32(row_idx, ctx)?;
+            let width = get_param(params, "width")?.resolve_u32(row_idx, ctx)?;
+            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
 
             // Letterbox has always resized with lanczos3, so that stays the
             // default; the builder now exposes it, per row like every other
             // resize variant's filter.
-            let filter = resolve_filter(&op_spec.params, row_idx, ctx)?;
+            let filter = resolve_filter(params, row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Letterbox {
                     height,
@@ -640,20 +681,30 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             kind: ImageOpKind::Grayscale,
         })),
         "threshold" => {
-            let value = get_param(&op_spec.params, "value")?.resolve_f64(row_idx, ctx)?;
+            let value = get_param(params, "value")?.resolve_f64(row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Threshold(value),
             }))
         }
         "blur" => {
-            let sigma = get_param(&op_spec.params, "sigma")?.resolve_f32(row_idx, ctx)?;
+            let sigma = get_param(params, "sigma")?.resolve_f32(row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Blur { sigma },
             }))
         }
         "rotate" => {
-            let angle = get_param(&op_spec.params, "angle")?.resolve_f32(row_idx, ctx)?;
-            let expand = get::opt_bool(&op_spec.params, "expand", false)?;
+            let angle = get_param(params, "angle")?.resolve_f32(row_idx, ctx)?;
+            let expand = get::opt_bool(params, "expand", false)?;
+
+            // The lattice rotations (90/180/270) and the 0° no-op below are
+            // exact permutations of the input pixels: nothing is resampled and
+            // no out-of-bounds region is exposed, so `interpolation` and
+            // `border_value` have no effect on those branches — they are
+            // inapplicable there, not discarded. Declaring them here rather
+            // than in whichever branch happens to read them also means a new
+            // branch cannot silently drop them.
+            params.acknowledge("interpolation");
+            params.acknowledge("border_value");
 
             let normalized_angle = angle % 360.0;
             let normalized_angle = if normalized_angle < 0.0 {
@@ -681,8 +732,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 // Route arbitrary angles through AffineParams for unified code path.
                 // The affine matrix is built at execution time from the current
                 // buffer dimensions (handled by RotateToAffine).
-                let interpolation = resolve_interpolation(&op_spec.params, row_idx, ctx)?;
-                let border_value = resolve_border_value(&op_spec.params, row_idx, ctx)?;
+                let interpolation = resolve_interpolation(params, row_idx, ctx)?;
+                let border_value = resolve_border_value(params, row_idx, ctx)?;
 
                 buffer_step(ViewDto::Compute(ComputeOp::RotateAffine {
                     angle_deg: normalized_angle,
@@ -699,7 +750,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             // a per-row expression (a different affine per row in one call). The
             // compiled graph pre-parses this into a `List`, borrowed here with no
             // per-row allocation; the JSON-introspection path parses once.
-            let matrix_param = get_param(&op_spec.params, "matrix")?;
+            let matrix_param = get_param(params, "matrix")?;
             let owned_matrix;
             let matrix_params: &[ParamValue] = match matrix_param.as_param_slice() {
                 Some(slice) => slice,
@@ -722,21 +773,40 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 .try_into()
                 .map_err(|_| polars_err!(ComputeError: "warp_affine: matrix conversion failed"))?;
 
-            let output_height =
-                get_param(&op_spec.params, "output_height")?.resolve_u32(row_idx, ctx)?;
-            let output_width =
-                get_param(&op_spec.params, "output_width")?.resolve_u32(row_idx, ctx)?;
+            let output_height = get_param(params, "output_height")?.resolve_u32(row_idx, ctx)?;
+            let output_width = get_param(params, "output_width")?.resolve_u32(row_idx, ctx)?;
 
-            let interpolation = resolve_interpolation(&op_spec.params, row_idx, ctx)?;
-            let border_value = resolve_border_value(&op_spec.params, row_idx, ctx)?;
+            let interpolation = resolve_interpolation(params, row_idx, ctx)?;
+            let border_value = resolve_border_value(params, row_idx, ctx)?;
 
-            buffer_step(ViewDto::Compute(ComputeOp::Affine(AffineParams {
+            let affine = AffineParams {
                 matrix,
                 output_height,
                 output_width,
                 interpolation,
                 border_value,
-            })))
+            };
+            // Warping is inverse mapping — for each output pixel, ask where it
+            // came from — so a matrix that collapses the plane onto a line or a
+            // point has no answer. The runner used to substitute the identity
+            // for one, handing back the input as though the transform had been
+            // applied. Reject it here, where the user supplied it, and name the
+            // determinant so the offending coefficients are findable.
+            //
+            // Not under a plan-time probe: every expression parameter is bound
+            // to the *same* placeholder there, so a per-row matrix arrives as
+            // six equal coefficients and is singular by construction. Its real
+            // values only exist per row, which is where this same arm runs for
+            // a dynamic op — so the check still covers them, just later.
+            if !ctx.is_probe() && !affine.is_invertible() {
+                return Err(polars_err!(ComputeError:
+                    "warp_affine: matrix {:?} is singular (determinant {}), so it \
+                     has no inverse and the warp is undefined. A row of zeros, a \
+                     zero scale factor on an axis, or two proportional rows will \
+                     do this.",
+                    affine.matrix, affine.determinant()));
+            }
+            buffer_step(ViewDto::Compute(ComputeOp::Affine(affine)))
         }
 
         // Perceptual hash operation — a graph-level vector producer (image
@@ -747,7 +817,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             // Paired with the structural `hash_size` below; kept literal so
             // the fingerprint's identity is fixed at planning time.
             let algorithm = get::opt_enum_literal(
-                &op_spec.params,
+                params,
                 "algorithm",
                 HashAlgorithm::NAMED,
                 &[],
@@ -755,7 +825,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             )?;
             // `hash_size` fixes the output vector length, so it is a structural
             // (literal-only) param — reject a bound expression slot.
-            let hash_size = get::opt_u32_literal(&op_spec.params, "hash_size", 64)?;
+            let hash_size = get::opt_u32_literal(params, "hash_size", 64)?;
 
             Ok(GraphStep::PerceptualHash(
                 PerceptualHashOp::new(algorithm).with_hash_size(hash_size),
@@ -764,9 +834,14 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Geometry operations
         "rasterize" => {
-            let width = get_param(&op_spec.params, "width")?.resolve_usize(row_idx, ctx)? as u32;
-            let height = get_param(&op_spec.params, "height")?.resolve_usize(row_idx, ctx)? as u32;
-            let (fill_value, background) = resolve_rasterize_style(&op_spec.params, row_idx, ctx)?;
+            // `rasterize(shape=<node>)` names another graph node to take the
+            // mask dimensions from. `CompiledGraph::compile` resolves it before
+            // this arm is reached and substitutes the concrete width/height, so
+            // the parameter belongs to the op but is consumed a layer up.
+            params.acknowledge("shape_ref");
+            let width = get_param(params, "width")?.resolve_usize(row_idx, ctx)? as u32;
+            let height = get_param(params, "height")?.resolve_usize(row_idx, ctx)? as u32;
+            let (fill_value, background) = resolve_rasterize_style(params, row_idx, ctx)?;
             Ok(GraphStep::Geometry(GeometryOp::Rasterize {
                 width,
                 height,
@@ -778,7 +853,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             use view_buffer::geometry::ops::{ApproxMethod, ExtractMode};
 
             let mode = get::opt_enum(
-                &op_spec.params,
+                params,
                 "mode",
                 ExtractMode::NAMED,
                 &[],
@@ -787,7 +862,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 ctx,
             )?;
             let method = get::opt_enum(
-                &op_spec.params,
+                params,
                 "method",
                 ApproxMethod::NAMED,
                 &[],
@@ -795,7 +870,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 row_idx,
                 ctx,
             )?;
-            let min_area = get::maybe_f64(&op_spec.params, "min_area", row_idx, ctx)?;
+            let min_area = get::maybe_f64(params, "min_area", row_idx, ctx)?;
 
             Ok(GraphStep::Geometry(GeometryOp::ExtractContours {
                 mode,
@@ -806,7 +881,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Geometry measure operations
         "contour_area" => {
-            let signed = get::opt_bool_dyn(&op_spec.params, "signed", false, row_idx, ctx)?;
+            let signed = get::opt_bool_dyn(params, "signed", false, row_idx, ctx)?;
             Ok(GraphStep::Geometry(GeometryOp::Area { signed }))
         }
         "contour_perimeter" => Ok(GraphStep::Geometry(GeometryOp::Perimeter)),
@@ -816,13 +891,13 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Geometry transforms
         "contour_translate" => {
-            let dx = get_param(&op_spec.params, "dx")?.resolve_f64(row_idx, ctx)?;
-            let dy = get_param(&op_spec.params, "dy")?.resolve_f64(row_idx, ctx)?;
+            let dx = get_param(params, "dx")?.resolve_f64(row_idx, ctx)?;
+            let dy = get_param(params, "dy")?.resolve_f64(row_idx, ctx)?;
             Ok(GraphStep::Geometry(GeometryOp::Translate { dx, dy }))
         }
         "contour_scale" => {
-            let sx = get_param(&op_spec.params, "sx")?.resolve_f64(row_idx, ctx)?;
-            let sy = get_param(&op_spec.params, "sy")?.resolve_f64(row_idx, ctx)?;
+            let sx = get_param(params, "sx")?.resolve_f64(row_idx, ctx)?;
+            let sy = get_param(params, "sy")?.resolve_f64(row_idx, ctx)?;
             Ok(GraphStep::Geometry(GeometryOp::Scale {
                 sx,
                 sy,
@@ -830,7 +905,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             }))
         }
         "contour_simplify" => {
-            let tolerance = get_param(&op_spec.params, "tolerance")?.resolve_f64(row_idx, ctx)?;
+            let tolerance = get_param(params, "tolerance")?.resolve_f64(row_idx, ctx)?;
             Ok(GraphStep::Geometry(GeometryOp::Simplify { tolerance }))
         }
 
@@ -838,7 +913,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         // dispatched through the BINARY_OPS name table.
         name if naming::lookup(BINARY_OPS, name).is_some() => {
             let op = naming::lookup(BINARY_OPS, name).expect("guard checked membership");
-            let other_node_id = get_param(&op_spec.params, "other_node")?
+            let other_node_id = get_param(params, "other_node")?
                 .resolve_string()?
                 .to_string();
             Ok(GraphStep::Binary {
@@ -862,39 +937,39 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             use view_buffer::ops::ReductionOp;
             // `axis` is structural — it fixes the output rank at plan time, so
             // it must be a literal (a bound expression slot is rejected).
-            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?;
+            let axis = get::maybe_usize_literal(params, "axis")?;
             Ok(GraphStep::Reduction(ReductionOp::Max { axis }))
         }
         "reduce_min" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?;
+            let axis = get::maybe_usize_literal(params, "axis")?;
             Ok(GraphStep::Reduction(ReductionOp::Min { axis }))
         }
         "reduce_mean" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?;
+            let axis = get::maybe_usize_literal(params, "axis")?;
             Ok(GraphStep::Reduction(ReductionOp::Mean { axis }))
         }
         "reduce_std" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?;
-            let ddof = get::opt_u8(&op_spec.params, "ddof", 0, row_idx, ctx)?;
+            let axis = get::maybe_usize_literal(params, "axis")?;
+            let ddof = get::opt_u8(params, "ddof", 0, row_idx, ctx)?;
             Ok(GraphStep::Reduction(ReductionOp::Std { axis, ddof }))
         }
         "reduce_percentile" => {
             use view_buffer::ops::ReductionOp;
-            let q = get_param(&op_spec.params, "q")?.resolve_f64(row_idx, ctx)?;
+            let q = get_param(params, "q")?.resolve_f64(row_idx, ctx)?;
             Ok(GraphStep::Reduction(ReductionOp::Percentile { q }))
         }
         "reduce_argmax" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?
+            let axis = get::maybe_usize_literal(params, "axis")?
                 .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: axis"))?;
             Ok(GraphStep::Reduction(ReductionOp::ArgMax { axis }))
         }
         "reduce_argmin" => {
             use view_buffer::ops::ReductionOp;
-            let axis = get::maybe_usize_literal(&op_spec.params, "axis")?
+            let axis = get::maybe_usize_literal(params, "axis")?
                 .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: axis"))?;
             Ok(GraphStep::Reduction(ReductionOp::ArgMin { axis }))
         }
@@ -903,7 +978,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             Ok(GraphStep::ExtractShape)
         }
         "label_reduce" => {
-            let contours_param = get_param(&op_spec.params, "contours")?;
+            let contours_param = get_param(params, "contours")?;
             // The contour column is referenced by *name* inside the step, so
             // graph compilation deliberately leaves this param unbound; the
             // executor maps the name to its input slot via
@@ -922,7 +997,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 }
             };
             let reduction = get::opt_enum(
-                &op_spec.params,
+                params,
                 "reduction",
                 LabelReduction::NAMED,
                 &[],
@@ -931,7 +1006,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
                 ctx,
             )?;
             let region_mode = get::opt_enum(
-                &op_spec.params,
+                params,
                 "region_mode",
                 LabelRegionMode::NAMED,
                 &[],
@@ -950,7 +1025,7 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "histogram" => {
             use view_buffer::ops::histogram::{HistogramClosed, HistogramOp, HistogramOutput};
 
-            let bins_param = get_param(&op_spec.params, "bins")?;
+            let bins_param = get_param(params, "bins")?;
             let (bins_count, edges) = if let Some(edges) = bins_param.as_f64_vec() {
                 // If it's a vector, those are the edges
                 (edges.len().saturating_sub(1), Some(edges))
@@ -960,19 +1035,13 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
             // `closed` and `output` shape the histogram's dtype/semantics at plan
             // time, so both stay literal-only.
-            let closed =
-                get::req_enum_literal(&op_spec.params, "closed", HistogramClosed::NAMED, &[])?;
-            let output =
-                get::req_enum_literal(&op_spec.params, "output", HistogramOutput::NAMED, &[])?;
+            let closed = get::req_enum_literal(params, "closed", HistogramClosed::NAMED, &[])?;
+            let output = get::req_enum_literal(params, "output", HistogramOutput::NAMED, &[])?;
 
             // Parse optional range
-            let range = if op_spec.params.contains_key("range_min")
-                && op_spec.params.contains_key("range_max")
-            {
-                let range_min =
-                    get_param(&op_spec.params, "range_min")?.resolve_f64(row_idx, ctx)?;
-                let range_max =
-                    get_param(&op_spec.params, "range_max")?.resolve_f64(row_idx, ctx)?;
+            let range = if params.contains_key("range_min") && params.contains_key("range_max") {
+                let range_min = get_param(params, "range_min")?.resolve_f64(row_idx, ctx)?;
+                let range_max = get_param(params, "range_max")?.resolve_f64(row_idx, ctx)?;
                 Some((range_min, range_max))
             } else {
                 None
@@ -993,19 +1062,19 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Channel operations
         "channel_select" => {
-            let index = get_param(&op_spec.params, "index")?.resolve_usize(row_idx, ctx)?;
+            let index = get_param(params, "index")?.resolve_usize(row_idx, ctx)?;
             buffer_step(ViewDto::View(ViewOp::ChannelSelect { index }))
         }
         "channel_swap" => {
             // A permutation: the element count is structural (channel count is
             // preserved) but the indices themselves may be per-row.
-            let order = get_param(&op_spec.params, "order")?.resolve_usize_list(row_idx, ctx)?;
+            let order = get_param(params, "order")?.resolve_usize_list(row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::ChannelSwap { order },
             }))
         }
         "channel_merge" => {
-            let other_nodes_param = get_param(&op_spec.params, "other_nodes")?;
+            let other_nodes_param = get_param(params, "other_nodes")?;
             let other_node_ids = match other_nodes_param {
                 ParamValue::Literal {
                     value: serde_json::Value::Array(arr),
@@ -1031,11 +1100,11 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Intensity operations
         "adjust_contrast" => {
-            let factor = get_param(&op_spec.params, "factor")?.resolve_f32(row_idx, ctx)?;
+            let factor = get_param(params, "factor")?.resolve_f32(row_idx, ctx)?;
             buffer_step(ViewDto::Compute(ComputeOp::AdjustContrast(factor)))
         }
         "adjust_gamma" => {
-            let gamma = get_param(&op_spec.params, "gamma")?.resolve_f32(row_idx, ctx)?;
+            let gamma = get_param(params, "gamma")?.resolve_f32(row_idx, ctx)?;
             buffer_step(ViewDto::Compute(ComputeOp::AdjustGamma(gamma)))
         }
         "invert" => buffer_step(ViewDto::Compute(ComputeOp::Invert)),
@@ -1044,8 +1113,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         "cvt_color" => {
             use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
 
-            let from_str = get_param(&op_spec.params, "from_space")?.resolve_string()?;
-            let to_str = get_param(&op_spec.params, "to_space")?.resolve_string()?;
+            let from_str = get_param(params, "from_space")?.resolve_string()?;
+            let to_str = get_param(params, "to_space")?.resolve_string()?;
             let from = ColorSpace::from_str_name(from_str).ok_or_else(|| {
                 polars_err!(ComputeError:
                     "parameter 'from_space': unknown color space '{}', expected one of {:?}",
@@ -1066,11 +1135,11 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             // Each coefficient is its own ParamValue, so a kernel whose values
             // derive from a column (an unsharp mask with a per-row strength)
             // resolves per row. The kernel *length* stays structural.
-            let kernel = get_param(&op_spec.params, "kernel")?.resolve_f32_list(row_idx, ctx)?;
-            let ksize = get_param(&op_spec.params, "ksize")?.resolve_usize(row_idx, ctx)?;
-            let normalize = get::opt_bool_dyn(&op_spec.params, "normalize", false, row_idx, ctx)?;
+            let kernel = get_param(params, "kernel")?.resolve_f32_list(row_idx, ctx)?;
+            let ksize = get_param(params, "ksize")?.resolve_usize(row_idx, ctx)?;
+            let normalize = get::opt_bool_dyn(params, "normalize", false, row_idx, ctx)?;
             let border = get::opt_enum(
-                &op_spec.params,
+                params,
                 "border",
                 BorderMode::NAMED,
                 &[],
@@ -1087,31 +1156,29 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
             }))
         }
         "erode" => {
-            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
-            let iterations = get::opt_u32(&op_spec.params, "iterations", 1, row_idx, ctx)?;
+            let ksize = get_param(params, "ksize")?.resolve_u32(row_idx, ctx)?;
+            let iterations = get::opt_u32(params, "iterations", 1, row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Erode { ksize, iterations },
             }))
         }
         "dilate" => {
-            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
-            let iterations = get::opt_u32(&op_spec.params, "iterations", 1, row_idx, ctx)?;
+            let ksize = get_param(params, "ksize")?.resolve_u32(row_idx, ctx)?;
+            let iterations = get::opt_u32(params, "iterations", 1, row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Dilate { ksize, iterations },
             }))
         }
         "morphology_gradient" => {
-            let ksize = get_param(&op_spec.params, "ksize")?.resolve_u32(row_idx, ctx)?;
+            let ksize = get_param(params, "ksize")?.resolve_u32(row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::MorphGradient { ksize },
             }))
         }
 
         "canny" => {
-            let low_threshold =
-                get_param(&op_spec.params, "low_threshold")?.resolve_f32(row_idx, ctx)?;
-            let high_threshold =
-                get_param(&op_spec.params, "high_threshold")?.resolve_f32(row_idx, ctx)?;
+            let low_threshold = get_param(params, "low_threshold")?.resolve_f32(row_idx, ctx)?;
+            let high_threshold = get_param(params, "high_threshold")?.resolve_f32(row_idx, ctx)?;
             buffer_step(ViewDto::Image(ImageOp {
                 kind: ImageOpKind::Canny {
                     low_threshold,
@@ -1125,10 +1192,10 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
 
         // Mask operation
         "apply_mask" => {
-            let mask_node_id = get_param(&op_spec.params, "other_node")?
+            let mask_node_id = get_param(params, "other_node")?
                 .resolve_string()?
                 .to_string();
-            let invert = get::opt_bool_dyn(&op_spec.params, "invert", false, row_idx, ctx)?;
+            let invert = get::opt_bool_dyn(params, "invert", false, row_idx, ctx)?;
             Ok(GraphStep::ApplyMask {
                 mask: mask_node_id,
                 invert,
@@ -1139,11 +1206,8 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
     }
 }
 
-/// Get a required parameter from the params map.
-fn get_param<'a>(
-    params: &'a HashMap<String, ParamValue>,
-    name: &str,
-) -> PolarsResult<&'a ParamValue> {
+/// Get a required parameter, recording the read.
+fn get_param<'a>(params: &OpParams<'a>, name: &str) -> PolarsResult<&'a ParamValue> {
     params
         .get(name)
         .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: {}", name))
@@ -1388,19 +1452,23 @@ mod known_ops_tests {
         assert!(err.to_string().contains("Unknown operation"));
     }
 
-    /// Reverse guard: every top-level match arm in `resolve_op` must be listed
-    /// in KNOWN_OPS, so a new arm cannot silently bypass the registry (the
-    /// forward direction is covered by `known_ops_all_resolve`).
+    /// Reverse guard: every top-level match arm in `resolve_op_inner` must be
+    /// listed in KNOWN_OPS, so a new arm cannot silently bypass the registry
+    /// (the forward direction is covered by `known_ops_all_resolve`).
     ///
-    /// The scan reads this file's source between the `resolve_op` header and
-    /// its "Unknown operation" catch-all. Top-level arm patterns sit at one
-    /// match-nesting level (8-space indent under rustfmt, which CI enforces);
-    /// deeper string arms (e.g. normalize's method match) are excluded by the
-    /// indent check.
+    /// The scan reads this file's source between the `resolve_op_inner` header
+    /// and its "Unknown operation" catch-all. That is where the arms live —
+    /// `resolve_op` is the wrapper that runs the parameter-use check around
+    /// them, and anchoring here rather than on it keeps the scanned region to
+    /// the match itself. Top-level arm patterns sit at one match-nesting level
+    /// (8-space indent under rustfmt, which CI enforces); deeper string arms
+    /// (e.g. normalize's method match) are excluded by the indent check.
     #[test]
     fn resolve_op_arms_are_all_known_ops() {
         let src = include_str!("execute.rs");
-        let start = src.find("pub fn resolve_op").expect("resolve_op not found");
+        let start = src
+            .find("fn resolve_op_inner")
+            .expect("resolve_op_inner not found");
         let end = start
             + src[start..]
                 .find("Unknown operation")
@@ -1523,6 +1591,169 @@ mod known_ops_tests {
                 "KNOWN_OPS must be sorted/unique; '{}' !< '{}'",
                 pair[0],
                 pair[1]
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod unread_param_tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    /// Build an `OpSpec` from a name and literal params.
+    fn op_with(name: &str, params: &[(&str, serde_json::Value)]) -> OpSpec {
+        OpSpec {
+            op: name.to_string(),
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), ParamValue::Literal { value: v.clone() }))
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    /// `(op name, base params, the parameter under test)`.
+    type UnreadCase<'a> = (&'a str, &'a [(&'a str, serde_json::Value)], &'a str);
+
+    /// `(op name, params that must all be consumed)`.
+    type AcceptedCase<'a> = (&'a str, &'a [(&'a str, serde_json::Value)]);
+
+    fn resolve_err(spec: &OpSpec) -> String {
+        resolve_op(spec, 0, &ParamCtx::empty())
+            .expect_err("expected resolve_op to reject the spec")
+            .to_string()
+    }
+
+    /// The known-bad half: a parameter no arm reads must be rejected, by name.
+    ///
+    /// `scale`/`clamp` are the two ops that actually shipped this — they
+    /// accepted an `out_dtype` that entered the op's identity and reached no
+    /// code path. The fabricated cases alongside them keep the check honest for
+    /// ops that never had the bug.
+    #[test]
+    fn a_parameter_no_arm_reads_is_rejected() {
+        let cases: &[UnreadCase<'_>] = &[
+            ("scale", &[("factor", json!(2.0))], "out_dtype"),
+            (
+                "clamp",
+                &[("min", json!(0.0)), ("max", json!(1.0))],
+                "out_dtype",
+            ),
+            ("grayscale", &[], "sigma"),
+            (
+                "resize",
+                &[
+                    ("height", json!(4)),
+                    ("width", json!(4)),
+                    ("filter", json!("nearest")),
+                ],
+                "antialias",
+            ),
+        ];
+        for (op, base, stray) in cases {
+            let mut params = base.to_vec();
+            params.push((stray, json!("u8")));
+            let err = resolve_err(&op_with(op, &params));
+            assert!(
+                err.contains(stray) && err.contains(op),
+                "{op}: error must name the operation and the unread parameter \
+                 '{stray}', got: {err}"
+            );
+        }
+    }
+
+    /// A singular matrix must be refused where the user supplies it.
+    ///
+    /// The runner substituted the identity for one, so a caller who asked for a
+    /// degenerate transform got their input back and no signal that nothing had
+    /// happened. `AffineParams::is_invertible` is the single authority; this
+    /// pins the boundary that consults it.
+    #[test]
+    fn warp_affine_rejects_a_singular_matrix() {
+        let elements = |m: [f64; 6]| {
+            serde_json::Value::Array(
+                m.iter()
+                    .map(|v| json!({"type": "literal", "value": v}))
+                    .collect(),
+            )
+        };
+        let spec = |m: [f64; 6]| {
+            op_with(
+                "warp_affine",
+                &[
+                    ("matrix", elements(m)),
+                    ("output_height", json!(8)),
+                    ("output_width", json!(8)),
+                ],
+            )
+        };
+
+        let err = resolve_err(&spec([0.0, 0.0, 0.0, 0.0, 1.0, 0.0]));
+        assert!(
+            err.contains("singular") && err.contains("determinant"),
+            "the error must say what is wrong and name the determinant: {err}"
+        );
+
+        // An extreme but invertible transform is still accepted — the check is
+        // for degeneracy, not for poor conditioning.
+        assert!(
+            resolve_op(
+                &spec([1e-6, 0.0, 0.0, 0.0, 1e-6, 0.0]),
+                0,
+                &ParamCtx::empty()
+            )
+            .is_ok(),
+            "a heavily stretched but invertible matrix must resolve"
+        );
+    }
+
+    /// The known-good half: a checker that rejects everything proves nothing.
+    ///
+    /// These specs carry parameters read through *helpers* rather than a
+    /// literal `get_param` call in the arm (`resolve_filter`,
+    /// `resolve_border_value`, `resolve_rasterize_style`) plus `rasterize`'s
+    /// `shape_ref`, which a layer above the arm consumes. All must resolve.
+    #[test]
+    fn parameters_read_through_helpers_are_accepted() {
+        let cases: &[AcceptedCase<'_>] = &[
+            (
+                "resize",
+                &[
+                    ("height", json!(4)),
+                    ("width", json!(4)),
+                    ("filter", json!("nearest")),
+                ],
+            ),
+            (
+                "rotate",
+                &[
+                    ("angle", json!(45.0)),
+                    ("expand", json!(false)),
+                    ("interpolation", json!("nearest")),
+                    ("border_value", json!(7.0)),
+                ],
+            ),
+            (
+                "rasterize",
+                &[
+                    ("width", json!(8)),
+                    ("height", json!(8)),
+                    ("fill_value", json!(255)),
+                    ("background", json!(0)),
+                    ("shape_ref", json!("other_node")),
+                ],
+            ),
+            ("scale", &[("factor", json!(2.0))]),
+            ("clamp", &[("min", json!(0.0)), ("max", json!(1.0))]),
+        ];
+        for (op, params) in cases {
+            let spec = op_with(op, params);
+            assert!(
+                resolve_op(&spec, 0, &ParamCtx::empty()).is_ok(),
+                "{op}: every parameter here is consumed, so it must resolve; \
+                 got: {}",
+                resolve_err(&spec)
             );
         }
     }

@@ -768,9 +768,10 @@ impl CompiledGraph {
                                 let height = dims[0] as u32;
                                 let width = dims[1] as u32;
                                 ctx.clear_null();
+                                let style_params = crate::params::OpParams::new(&spec.params);
                                 let (fill_value, background) =
                                     match crate::execute::resolve_rasterize_style(
-                                        &spec.params,
+                                        &style_params,
                                         row_idx,
                                         ctx,
                                     ) {

@@ -73,16 +73,6 @@ pub fn is_image_like(shape: &[usize]) -> bool {
     shape.len() == 3 && matches!(shape[2], 1 | 3 | 4)
 }
 
-/// Checks if shape has exactly the specified rank.
-pub fn has_rank(shape: &[usize], rank: usize) -> bool {
-    shape.len() == rank
-}
-
-/// Checks if shape has rank within the specified range (inclusive).
-pub fn has_rank_range(shape: &[usize], min: usize, max: usize) -> bool {
-    shape.len() >= min && shape.len() <= max
-}
-
 // --- DType Predicates ---
 
 /// Checks if dtype is a floating-point type.

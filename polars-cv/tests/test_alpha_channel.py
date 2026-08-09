@@ -469,3 +469,90 @@ class TestAlphaEncoding:
         result2 = df2.with_columns(output=pl.col("image").cv.pipe(pipe2).sink("numpy"))
         arr = numpy_from_struct(result2["output"][0])
         assert arr.shape[2] == 4
+
+
+@plugin_required
+class TestChannelRuleHasOneAuthority:
+    """The channel hint comes from view-buffer's rule, not a Python copy of it.
+
+    ``_update_channels_from_rule`` used to re-derive the answer by parsing the
+    stringified rule, and disagreed with ``OutputChannelRule::apply`` on
+    ``NotApplicable``: ``apply`` says "no channel count", Python left the hint
+    untouched. It stayed invisible because every ``NotApplicable`` op also drops
+    below rank 3 — where ``_drop_hints_below_rank`` clears channels anyway —
+    except ``histogram(output="quantized")``, which preserves rank *and* was
+    mislabelled ``NotApplicable`` while actually preserving channels. The two
+    errors cancelled.
+
+    Both have been fixed: quantized declares ``PreserveChannels``, and Python
+    reads ``apply`` through ``op_output_channels``. These pin the outcome so a
+    future change to either cannot quietly re-introduce the pair.
+    """
+
+    def test_quantized_histogram_preserves_channels(self) -> None:
+        """The case the old cancelling pair happened to get right.
+
+        Quantized relabels each element in place, so the buffer keeps every
+        dimension it had. If this regressed to ``None`` the refactor would have
+        changed behaviour rather than consolidated it.
+        """
+        for channels in (1, 3, 4):
+            pipe = (
+                Pipeline()
+                .source("image_bytes")
+                .assert_shape(channels=channels)
+                .histogram(bins=8, output="quantized")
+            )
+            assert pipe._shape_hints.channels is not None, (
+                f"{channels}ch: quantized histogram preserves the channel axis"
+            )
+            assert pipe._shape_hints.channels.value == channels
+
+    def test_vector_histogram_modes_have_no_channel_count(self) -> None:
+        """The other four modes produce bin vectors/tables, not images."""
+        for output in ("counts", "normalized", "edges", "buckets"):
+            pipe = (
+                Pipeline()
+                .source("image_bytes")
+                .assert_shape(channels=3)
+                .histogram(bins=8, output=output)
+            )
+            assert pipe._shape_hints.channels is None, (
+                f"{output}: a bin vector has no channel count"
+            )
+
+    def test_python_holds_no_copy_of_the_rule_arithmetic(self) -> None:
+        """The planner must not re-implement ``OutputChannelRule::apply``.
+
+        A source scan, because the property is "this code does not exist". The
+        rule *strings* still reach Python through ``op_contract`` for the
+        vocabulary checks in ``test_sanitation``; what must not come back is
+        Python branching on them to compute a channel count.
+        """
+        import inspect
+
+        from polars_cv.pipeline import Pipeline as P
+
+        src = inspect.getsource(P._update_channels_from_rule)
+        for spelling in ("strip_restore", "fixed:", '"preserve"', '"n/a"'):
+            assert spelling not in src, (
+                f"{spelling!r} is back in _update_channels_from_rule: the "
+                f"channel arithmetic belongs to OutputChannelRule::apply, "
+                f"reached via op_output_channels"
+            )
+
+    def test_the_ffi_agrees_with_the_planner(self) -> None:
+        """Two ways to the same fact must give the same answer.
+
+        The planner folds the rule per appended op; this asks the FFI directly
+        for the same op. A divergence here is the class of bug this whole change
+        is about.
+        """
+        import json
+
+        from polars_cv._lib import op_output_channels
+
+        pipe = Pipeline().source("image_bytes").assert_shape(channels=4).grayscale()
+        spec = pipe._ops[-1]
+        assert op_output_channels(json.dumps(spec.to_dict()), 4) == 1
+        assert pipe._shape_hints.channels.value == 1

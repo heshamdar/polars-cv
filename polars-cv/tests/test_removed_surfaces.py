@@ -179,3 +179,82 @@ def test_the_python_sink_spec_dataclasses_are_gone() -> None:
             f"{name} was deleted as unreachable; the sink's wire format is "
             f"Rust's SinkSpec and its parameter table is SINK_PARAM_APPLIES"
         )
+
+
+# ---------------------------------------------------------------------------
+# OutputDType: a partial second dtype table whose one distinct value was a
+# synonym for the default
+# ---------------------------------------------------------------------------
+
+
+def test_the_output_dtype_strategy_enum_is_gone() -> None:
+    """``_types`` must not carry ``OutputDType``.
+
+    It listed ``f32``/``f64``/``u8`` — a partial second copy of the dtype
+    spellings ``dtype_table!`` already owns — plus one value that was not a
+    dtype: ``"preserve"``.
+
+    ``"preserve"`` documented itself, in the enum and in ``clamp``'s docstring,
+    as "keep input dtype (floats preserved, integers -> f32)". That is
+    character for character what ``OutputDTypeRule::PromoteToFloat`` does, i.e.
+    what passing nothing already did — so it was a synonym for the default, not
+    an unimplemented feature. ``normalize`` had to reject it by hand for that
+    reason, and ``scale``/``clamp`` accepted it into the op's identity and
+    dropped it.
+
+    The behaviour the word suggests (u8 in, u8 out) is ``preserve_dtype=True``,
+    which is wired. ``out_dtype`` now validates against ``DType``, so every
+    dtype is requestable and there is one table of dtype names.
+    """
+    import polars_cv._types as types_module
+
+    assert not hasattr(types_module, "OutputDType"), (
+        "OutputDType was deleted: out_dtype validates against DType, the single "
+        "dtype-name authority, and 'preserve' was a synonym for the default "
+        "(preserve_dtype=True is the input-dtype-preserving behaviour)"
+    )
+
+
+@pytest.mark.parametrize("op", ["scale", "clamp", "normalize"])
+def test_out_dtype_rejects_the_preserve_strategy(op: str) -> None:
+    """``out_dtype="preserve"`` must fail: it is not a dtype.
+
+    Previously this was accepted and silently ignored by ``scale``/``clamp``
+    (it never reached Rust, where ``parse_dtype`` has no ``"preserve"``), and
+    rejected by a bespoke check in ``normalize``. One authority, one answer.
+    """
+    pipe = Pipeline().source("list", dtype="u8")
+    build = {
+        "scale": lambda: pipe.scale(2.0, out_dtype="preserve"),
+        "clamp": lambda: pipe.clamp(0.0, 1.0, out_dtype="preserve"),
+        "normalize": lambda: pipe.normalize(method="minmax", out_dtype="preserve"),
+    }[op]
+    with pytest.raises(ValueError, match="preserve"):
+        build()
+
+
+@pytest.mark.parametrize("op", ["scale", "clamp"])
+def test_out_dtype_does_not_reach_the_op_params(op: str) -> None:
+    """``scale``/``clamp`` must not carry ``out_dtype`` on the wire.
+
+    They have no configurable output dtype — their rule is ``PromoteToFloat``,
+    which ``output_dtype_for`` does not honour an override for, and neither
+    ``resolve_op`` arm ever read the parameter. It rode in the op's identity
+    (so two pipelines that behave identically hashed differently for CSE) and
+    was discarded at execution.
+
+    The request is now lowered to a trailing ``cast`` op, which is the
+    mechanism that actually performs it.
+    """
+    pipe = Pipeline().source("list", dtype="u8")
+    built = {
+        "scale": lambda: pipe.scale(2.0, out_dtype="u8"),
+        "clamp": lambda: pipe.clamp(0.0, 1.0, out_dtype="u8"),
+    }[op]()
+    assert [spec.op for spec in built._ops] == [op, "cast"], (
+        f"{op}(out_dtype=...) must lower to the op plus a cast, got "
+        f"{[spec.op for spec in built._ops]}"
+    )
+    assert "out_dtype" not in built._ops[0].params, (
+        f"{op} must not serialize out_dtype: no resolve_op arm reads it"
+    )

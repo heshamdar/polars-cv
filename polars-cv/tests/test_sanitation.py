@@ -558,6 +558,7 @@ _REQUIRED_LIB_HOOKS = (
     "op_contract",
     "op_schema",
     "op_infer_shape",
+    "op_output_channels",
     "binary_output_dtype",
     "known_ops",
     "enum_variants",
@@ -1031,24 +1032,31 @@ def test_no_duplicate_expected_dtype_enum():
     assert not hasattr(t, "ExpectedDType"), "ExpectedDType should be folded into DType"
 
 
-def test_output_dtype_is_strategy_not_dtype_duplicate():
-    """OutputDType is an out-dtype *strategy*, not a second copy of DType (A4).
+def test_dtype_is_the_only_python_dtype_name_table():
+    """No Python enum may re-list dtype spellings alongside DType (A4).
 
-    It carries the `preserve` strategy (keep input dtype, promoting ints to f32)
-    that DType cannot express, and exposes only the handful of dtypes worth
-    requesting as an output override — so it is deliberately kept distinct rather
-    than folded into DType. Guard that it stays a strategy (i.e. not equal to the
-    full dtype set and still offering `preserve`).
+    `OutputDType` used to: `f32`/`f64`/`u8` plus a `preserve` value that was a
+    synonym for the default rather than a dtype. It is gone (see
+    `test_removed_surfaces.py`), and `out_dtype` validates against `DType` —
+    which is itself checked against Rust's `dtype_table!` authority by the
+    parity tests. Guard that a second partial table does not reappear.
     """
+    import enum
+
     import polars_cv._types as t
 
-    out_values = {m.value for m in t.OutputDType}
     dtype_values = {m.value for m in t.DType}
-    assert "preserve" in out_values, "OutputDType must offer the preserve strategy"
-    assert "preserve" not in dtype_values, "DType must not carry a strategy value"
-    assert out_values != dtype_values, (
-        "OutputDType must remain a strategy enum distinct from DType, not a duplicate"
-    )
+    for name in dir(t):
+        member = getattr(t, name)
+        if name == "DType" or not isinstance(member, type):
+            continue
+        if not issubclass(member, enum.Enum):
+            continue
+        overlap = {m.value for m in member} & dtype_values
+        assert not overlap, (
+            f"{name} re-lists dtype names {sorted(overlap)}; DType is the single "
+            f"Python dtype-name table (Rust's authority is dtype_table!)"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -92,6 +92,33 @@ impl AffineParams {
             && ty.abs() < 1e-12
     }
 
+    /// The determinant of the matrix's linear part, `a*d - b*c`.
+    ///
+    /// Zero means the transform collapses the plane onto a line or a point, so
+    /// it has no inverse — and warping is implemented by inverse mapping (for
+    /// each output pixel, where did it come from?). See
+    /// [`is_invertible`](Self::is_invertible).
+    pub fn determinant(&self) -> f64 {
+        let [a, b, _, c, d, _] = self.matrix;
+        a * d - b * c
+    }
+
+    /// Whether the transform can be inverted, and so applied at all.
+    ///
+    /// The single authority for this question, so the check cannot be spelled
+    /// one way at the boundary that rejects a bad matrix and another way in the
+    /// runner that would have to cope with one.
+    ///
+    /// The threshold is deliberately an exact-zero neighbourhood rather than a
+    /// conditioning test: a nearly-singular matrix is a legitimate (if extreme)
+    /// transform and produces a real, if heavily stretched, image.
+    pub fn is_invertible(&self) -> bool {
+        self.determinant().abs() >= Self::SINGULAR_EPSILON
+    }
+
+    /// Below this, [`determinant`](Self::determinant) counts as zero.
+    pub const SINGULAR_EPSILON: f64 = 1e-15;
+
     /// Build an `AffineParams` that performs a rotation around the image
     /// center, optionally expanding the canvas to fit the full rotated image.
     pub fn from_rotation(

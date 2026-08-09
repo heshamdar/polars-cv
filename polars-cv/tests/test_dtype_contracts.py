@@ -508,9 +508,111 @@ class TestNormalizeOutDtypeContract:
         assert self._inner_dtype(out["out"].dtype) == pl.Float64
 
     def test_out_dtype_preserve_rejected(self) -> None:
-        # "preserve" is advertised by OutputDType but ill-defined for normalize;
-        # it must be rejected cleanly, not fail opaquely at plan build.
+        # "preserve" is not a dtype — `parse_dtype` has no such name — so it is
+        # rejected by validating against DType rather than by a bespoke check
+        # here. See `test_removed_surfaces.py` for why it existed at all.
         with pytest.raises(ValueError, match="preserve"):
             Pipeline().source("list", dtype="f32").normalize(
                 method="minmax", out_dtype="preserve"
             )
+
+
+@plugin_required
+class TestScalarOpOutDtypeIsHonored:
+    """``scale``/``clamp`` must land in the dtype ``out_dtype`` names.
+
+    The parameter used to be accepted, validated, serialized into the op's
+    params — so it entered the op's identity and the CSE / compiled-graph cache
+    key — and then read by nobody: ``resolve_op``'s arms never looked at it, and
+    ``output_dtype_for`` honours an override only for the ``Configurable`` rule,
+    which is ``normalize``'s, not theirs (``PromoteToFloat``).
+
+    That made it invisible to a plan-vs-exec test: plan and execution *agreed*,
+    both reporting the promoted float. What was wrong was the value they agreed
+    on. So these assert the dtype itself, on both halves of the promise.
+    """
+
+    #: A value that survives a u8 round trip exactly, so an integer target can
+    #: be asserted on the value as well as the dtype.
+    SRC = 3.0
+
+    def _run(self, build_pipe, src_dtype: str = "f64") -> pl.DataFrame:
+        df = pl.DataFrame(
+            {"x": [[[[self.SRC]], [[1.0]]]]},
+            schema={"x": pl.List(pl.List(pl.List(pl.Float64)))},
+        )
+        pipe = build_pipe(Pipeline().source("list", dtype=src_dtype))
+        lf = df.lazy().with_columns(out=pl.col("x").cv.pipe(pipe).sink("list"))
+        planned = lf.collect_schema()["out"]
+        out = lf.collect()
+        assert planned == out["out"].dtype, f"plan {planned} != exec {out['out'].dtype}"
+        return out
+
+    @pytest.mark.parametrize(
+        ("out_dtype", "leaf"),
+        [
+            ("u8", pl.UInt8),
+            ("i32", pl.Int32),
+            ("f32", pl.Float32),
+            ("f64", pl.Float64),
+        ],
+    )
+    def test_scale_out_dtype(self, out_dtype: str, leaf: pl.DataType) -> None:
+        out = self._run(lambda p: p.scale(2.0, out_dtype=out_dtype))
+        assert self._inner_dtype(out["out"].dtype) == leaf
+        assert out["out"][0][0][0][0] == self.SRC * 2.0
+
+    @pytest.mark.parametrize(
+        ("out_dtype", "leaf"),
+        [("u8", pl.UInt8), ("i32", pl.Int32), ("f32", pl.Float32)],
+    )
+    def test_clamp_out_dtype(self, out_dtype: str, leaf: pl.DataType) -> None:
+        out = self._run(lambda p: p.clamp(0.0, 2.0, out_dtype=out_dtype))
+        assert self._inner_dtype(out["out"].dtype) == leaf
+        # 3.0 clamped to [0, 2] is 2.0, in whatever dtype was asked for.
+        assert out["out"][0][0][0][0] == 2.0
+
+    @staticmethod
+    def _inner_dtype(dtype: pl.DataType) -> pl.DataType:
+        while isinstance(dtype, pl.List):
+            dtype = dtype.inner
+        return dtype
+
+    def test_out_dtype_does_not_downgrade_the_default(self) -> None:
+        """Omitting ``out_dtype`` must still promote-to-float, preserving f64.
+
+        The alternative fix — giving the ops a ``Configurable(F32)`` rule like
+        ``normalize``'s — would have silently turned f64 input into f32 here.
+        """
+        out = self._run(lambda p: p.scale(2.0))
+        assert self._inner_dtype(out["out"].dtype) == pl.Float64
+
+    def test_preserve_dtype_and_out_dtype_reach_the_same_place(self) -> None:
+        """The two spellings are one mechanism, so they must agree.
+
+        ``preserve_dtype=True`` names the target by reading the pipeline's
+        pre-op dtype; ``out_dtype`` names it outright. Given the same target
+        they must produce the same column.
+        """
+        explicit = self._run(lambda p: p.scale(2.0, out_dtype="f64"))
+        derived = self._run(lambda p: p.scale(2.0, preserve_dtype=True))
+        assert explicit["out"].dtype == derived["out"].dtype
+        assert explicit["out"].to_list() == derived["out"].to_list()
+
+    def test_integer_target_rounds_and_saturates(self) -> None:
+        """The cast is the real one, not a reinterpretation.
+
+        ``scale`` computes in f32/f64 and the result is cast round-then-
+        saturate, matching what ``preserve_dtype`` has always done and what
+        ``normalize(out_dtype=...)`` does in the runner.
+        """
+        df = pl.DataFrame(
+            {"x": [[[[200.0]], [[-5.0]], [[2.6]]]]},
+            schema={"x": pl.List(pl.List(pl.List(pl.Float64)))},
+        )
+        pipe = Pipeline().source("list", dtype="f64").scale(2.0, out_dtype="u8")
+        out = (
+            df.lazy().with_columns(out=pl.col("x").cv.pipe(pipe).sink("list")).collect()
+        )
+        vals = [row[0][0] for row in out["out"][0]]
+        assert vals == [255, 0, 5], f"expected saturate/round, got {vals}"

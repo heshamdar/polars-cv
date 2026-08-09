@@ -9,6 +9,28 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Operation parameters that no code path reads are now rejected.** `OpSpec`
+  is the documented exception to this crate's `deny_unknown_fields` rule — its
+  params ride on `#[serde(flatten)]`, which serde cannot combine with
+  unknown-field rejection — so the wire format could not refuse a parameter no
+  operation understood, and nothing else did either. That is how `scale` and
+  `clamp` carried an `out_dtype` for releases.
+
+  Every parameter read now goes through `OpParams`, a tracking wrapper, and
+  `resolve_op` rejects any name the arm did not touch. `resolve_op_inner` takes
+  the op *name* and the wrapper, never the `OpSpec`, so an arm cannot reach the
+  underlying map and read without recording — the compiler found two of `crop`'s
+  reads doing exactly that when the signature was narrowed. Reads are recorded
+  in a bitmask over the map's key order, so tracking allocates nothing on the
+  per-row path. It fires at both ends of the boundary with no extra wiring:
+  `resolve_op_from_json` backs `op_schema`, so a stray parameter fails in Python
+  while the `Pipeline` is being built, and `CompiledGraph::compile` resolves
+  every spec before any row executes. `OpParams::acknowledge` is the explicit
+  escape for a parameter a layer above the arm consumes (`rasterize`'s
+  `shape_ref`) or that a branch legitimately cannot use (`rotate`'s
+  `interpolation` and `border_value` on the lattice rotations, which resample
+  nothing).
+
 - **A schema-parity matrix: plan-time dtype == execution-time dtype, swept.**
   Polars publishes an expression's dtype at planning time and again when the
   data arrives, and in this plugin the two are computed by different code —
@@ -103,6 +125,52 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   never becomes a network request.
 
 ### Fixed
+
+- **`scale(out_dtype=...)` and `clamp(out_dtype=...)` were accepted and then
+  discarded.** The parameter was validated, serialized into the op's params —
+  so it entered the op's identity, and therefore the CSE and compiled-graph
+  cache keys — and read by nobody: no `resolve_op` arm looked at it, and
+  `output_dtype_for` honours an `out_dtype` override only for the
+  `Configurable` dtype rule, which is `normalize`'s, not theirs
+  (`PromoteToFloat`). A plan-vs-exec test could not see it, because plan and
+  execution *agreed*; they agreed on the promoted float rather than on what was
+  asked for.
+
+  Both now honour it, by lowering the request to a trailing `cast` — the
+  mechanism `preserve_dtype=True` already used, and the one kernel fusion
+  already handles exactly once (`try_fuse` pins `FusedKernel::out_dtype` to what
+  the unfused chain would have produced). Giving the ops their own output dtype
+  instead would have meant teaching `extract_ops` and that pinning about it, and
+  would have turned `PromoteToFloat` — which preserves f64 input — into a
+  `Configurable(F32)` that silently downgrades it. `out_dtype` and
+  `preserve_dtype` are now one mechanism with one target, in
+  `_out_dtype_target` / `_apply_out_dtype`.
+
+- **`warp_affine` silently substituted the identity for a singular matrix.**
+  Warping is inverse mapping — for each output pixel, ask where it came from —
+  so a matrix collapsing the plane onto a line or a point has no answer. The
+  runner returned the input unchanged and reported success, so a caller who
+  passed a degenerate transform got their image back with no signal. It is now
+  rejected where the user supplies it, naming the determinant.
+  `AffineParams::is_invertible` is the single authority, read by both the
+  rejection and the runner's `debug_assert`. The check is skipped under a
+  plan-time probe, where every expression parameter is bound to the same
+  placeholder and a per-row matrix is singular by construction; per-row values
+  are checked per row, where they exist.
+
+- **The channel rule had two readings.** Python's `_update_channels_from_rule`
+  re-derived the output channel count by parsing the stringified rule, and
+  disagreed with view-buffer's `OutputChannelRule::apply` on `NotApplicable`:
+  `apply` returns "no channel count", Python left the hint unchanged. It stayed
+  invisible because every `NotApplicable` op also drops below rank 3, where
+  `_drop_hints_below_rank` clears channels anyway — except
+  `histogram(output="quantized")`, which preserves rank and was mislabelled
+  `NotApplicable` while actually preserving channels. Two errors cancelled.
+
+  Quantized now declares `PreserveChannels` (its own comment already said so),
+  and Python reads `apply` through a new `op_output_channels` FFI instead of
+  holding a copy of the arithmetic. `_drop_hints_below_rank` stays: it is a
+  separate, correct invariant, not the mitigation it was doubling as.
 
 - **The contour round trip did not close: `source("contour")` could not read a
   contour set.** `extract_contours().sink("native")` emits `List(CONTOUR_SCHEMA)`
@@ -611,6 +679,30 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   ring is measured as the hole-free polygon it bounds.)
 
 ### Removed
+
+- **`OutputDType`, a partial second dtype table whose one distinct value meant
+  "the default".** It listed `f32`/`f64`/`u8` alongside the spellings
+  `dtype_table!` already owns, plus `"preserve"`, documented in the enum and in
+  `clamp`'s docstring as "keep input dtype (floats preserved, integers -> f32)"
+  — character for character what `OutputDTypeRule::PromoteToFloat` does, which
+  is what passing nothing already did. It was a synonym for the default, not an
+  unimplemented feature: `normalize` rejected it by hand for that reason, and
+  `scale`/`clamp` accepted it into the op's identity and dropped it.
+
+  The behaviour the word suggests (u8 in, u8 out) is `preserve_dtype=True`,
+  which is wired and tested. `out_dtype` now validates against `DType`, so every
+  dtype is requestable and there is one table of dtype names.
+
+- **Ten unreferenced `view-buffer` public items.** Zero-argument wrappers over a
+  parameterised primitive (`from_slice_simd_aligned`, `is_simd_aligned` — the
+  `from_slice_aligned` / `is_aligned` pair answers strictly more, and
+  `SIMD_ALIGNMENT` is now the named argument in their documented example), a
+  `size_bytes` whose docstring claimed a tiling caller that did not exist, the
+  `layout_report` / `LayoutReport` inspection pair with no consumer, `ScalarOp::
+  op_type` superseded by the `description` beside it, and four `NodeOutput`
+  accessors and constructors nothing called. `ImageView::get_pixel` was kept
+  and documented instead: it is that public view type's only accessor, so
+  deleting it would leave it unable to read what it borrows.
 
 - **Three surviving second copies.** `polars_dtype_to_str` (graph/compiled.rs)
   was a second Polars-type→dtype map beside `decode::dtype_from_polars_datatype`

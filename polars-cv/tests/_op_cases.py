@@ -127,6 +127,23 @@ EXTRA_CASES: list[tuple[str, str, dict]] = [
     # crop with only an offset, and histogram's struct-encoded output.
     ("crop", BUFFER, {"top": 10, "left": 20}),
     ("histogram", BUFFER, {"bins": 8, "output": "buckets"}),
+    # The float-promoting scalar ops asked to land somewhere other than the
+    # promoted float. `out_dtype` was silently discarded — accepted, serialized
+    # into the op's identity, and read by no `resolve_op` arm and no dtype rule
+    # — so neither op had a plan-vs-exec cell for it, and planner and execution
+    # agreed on the *wrong* answer.
+    #
+    # Only the `out_dtype` spelling appears here. `preserve_dtype=True` is the
+    # same mechanism with the target read off the pipeline, so it requires a
+    # concrete input dtype and cannot run against the `image_bytes` base these
+    # tables share (`auto` until the source declares one). It is covered on a
+    # typed source by `test_preserve_dtype.py` and by
+    # `TestScalarOpOutDtypeIsHonored` in `test_dtype_contracts.py`, which
+    # asserts the two spellings reach the same column.
+    ("scale", BUFFER, {"factor": 2.0, "out_dtype": "u8"}),
+    ("scale", BUFFER, {"factor": 2.0, "out_dtype": "f64"}),
+    ("clamp", BUFFER, {"min_val": 0.0, "max_val": 1.0, "out_dtype": "u8"}),
+    ("clamp", BUFFER, {"min_val": 0.0, "max_val": 1.0, "out_dtype": "i32"}),
 ]
 
 #: The five ``histogram(output=...)`` modes. Each lands in a different

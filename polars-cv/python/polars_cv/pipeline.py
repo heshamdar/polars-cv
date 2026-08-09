@@ -35,7 +35,6 @@ from polars_cv._types import (
     LabelRegionMode,
     NormalizeMethod,
     OpSpec,
-    OutputDType,
     PadMode,
     PadPosition,
     ParamValue,
@@ -881,17 +880,21 @@ class Pipeline:
         self._update_hw_from_infer_shape(
             spec, self._input_dims_for(contract, input_ndim)
         )
-        self._update_channels_from_rule(contract)
+        self._update_channels_from_rule(spec)
         self._drop_hints_below_rank()
 
     def _drop_hints_below_rank(self) -> None:
         """Discard hints for dimensions the output rank does not have.
 
         Rank is the authority (``op_schema``); a hint is only meaningful when
-        the dimension exists. ``channel_select`` is the case that made this
-        load-bearing: it drops rank 3 → 2 while its channel rule is ``n/a``
-        ("leave unchanged"), so a stale channel count survived onto a rank-2
-        output and ``expected_shape`` published a three-dimensional shape for
+        the dimension exists. This is its own invariant, not a patch over the
+        channel rule: an op can drop rank while the channel rule still has
+        something to say, and a dimension that does not exist cannot have a
+        size whatever any rule reports.
+
+        ``channel_select`` is the case that made it load-bearing — it drops
+        rank 3 → 2, and a stale channel count surviving onto a rank-2 output is
+        how ``expected_shape`` came to publish a three-dimensional shape for
         two-dimensional data.
         """
         ndim = self._expected_ndim
@@ -904,42 +907,36 @@ class Pipeline:
         if ndim < 1:
             self._shape_hints.height = None
 
-    def _update_channels_from_rule(self, contract: dict) -> None:
-        """Update channel hints from the operation's view-buffer channel rule.
+    def _update_channels_from_rule(self, spec: "OpSpec") -> None:
+        """Set the channel hint from the op's view-buffer channel rule.
 
-        Reads ``output_channel_rule`` from the op contract (the single
-        authority) rather than re-declaring alpha handling in Python. The op
-        defaults to ``self._ops[-1]`` so its full parameter set (e.g. an erode
-        ``ksize``, a convert_color target space) is available to resolve the rule:
+        Defers to ``op_output_channels``, which runs view-buffer's
+        ``OutputChannelRule::apply`` — the same authority that declares the
+        rule. Python holds no copy of the arithmetic: alpha handling
+        (``StripProcessRestore``), fixed counts, and every "not determinable"
+        case are answered once, in Rust.
 
-        - ``preserve`` / ``n/a``: leave the channel hint unchanged.
-        - ``unknown``: the effect is not knowable at plan time → drop the hint.
-        - ``fixed:<n>``: the op always produces ``n`` channels (e.g. grayscale).
-        - ``strip_restore:<c>``: ``c`` color channels plus a preserved input
-          alpha channel (an input channel count of 2 or 4).
+        This used to re-derive the answer by parsing the stringified rule, and
+        the two readings disagreed on ``NotApplicable``: ``apply`` returns
+        "no channel count", Python left the hint untouched. See
+        ``op_output_channels`` for why that stayed invisible.
+
+        An expression-valued incoming hint enters as ``None`` and so leaves as
+        ``None``: a per-row channel count is not a plan-time integer, which is
+        exactly how ``expected_shape`` and ``_current_input_dims`` already read
+        it. The assertion that produced it is replayed from ``_assertions``, not
+        from this hint, so nothing is lost.
         """
-        rule = contract["channel_rule"]
+        from polars_cv._lib import op_output_channels
 
-        if rule in ("preserve", "n/a"):
-            return
-        if rule == "unknown":
-            self._shape_hints.channels = None
-            return
-        if rule.startswith("fixed:"):
-            self._shape_hints.channels = ParamValue(
-                is_expr=False, value=int(rule.split(":", 1)[1])
-            )
-            return
-        if rule.startswith("strip_restore:"):
-            color_channels = int(rule.split(":", 1)[1])
-            input_c = self._shape_hints.channels
-            if input_c is not None and not input_c.is_expr:
-                has_alpha = input_c.value in (2, 4)
-                self._shape_hints.channels = ParamValue(
-                    is_expr=False, value=color_channels + (1 if has_alpha else 0)
-                )
-            else:
-                self._shape_hints.channels = None
+        current = self._shape_hints.channels
+        input_channels = (
+            None if current is None or current.is_expr else int(current.value)
+        )
+        out = op_output_channels(json.dumps(spec.to_dict()), input_channels)
+        self._shape_hints.channels = (
+            None if out is None else ParamValue(is_expr=False, value=out)
+        )
 
     def _current_input_dims(self, ndim: int) -> list[int | None]:
         """The current per-dimension sizes as ``op_infer_shape`` input.
@@ -1675,41 +1672,65 @@ class Pipeline:
             lambda p: {"dtype": ParamValue(is_expr=False, value=dtype_enum.value)},
         )
 
-    def _preserve_dtype_target(self, op_name: str, out_dtype: str | None) -> str:
-        """Resolve the dtype a ``preserve_dtype=True`` scalar op casts back to.
+    def _out_dtype_target(
+        self, op_name: str, out_dtype: str | None, preserve_dtype: bool
+    ) -> str | None:
+        """Resolve the dtype a float-promoting scalar op's result ends in.
 
-        Returns the planned dtype *before* the op. Raises when it cannot be
-        honored: the parameter is mutually exclusive with ``out_dtype``, and
-        the pre-op dtype must be concrete (image sources default to "auto"
-        unless the source declares a dtype).
+        ``out_dtype`` and ``preserve_dtype=True`` are two spellings of one
+        request — "leave this op in a dtype other than the promoted float" —
+        so they resolve to a single target here and are lowered by a single
+        mechanism (:meth:`_apply_out_dtype`). ``out_dtype`` names the target
+        outright; ``preserve_dtype`` computes it from the pipeline's dtype
+        *before* the op. Returns ``None`` when neither was asked for, leaving
+        the op's own ``OutputDTypeRule`` to decide.
+
+        Raises when the request cannot be honored: both spellings at once, an
+        unrecognised dtype name, or ``preserve_dtype`` over a pipeline whose
+        dtype is not concrete (image sources are "auto" until the source
+        declares one).
         """
-        if out_dtype is not None:
+        if out_dtype is not None and preserve_dtype:
             msg = (
                 f"{op_name}: preserve_dtype=True and out_dtype are mutually "
                 "exclusive; pass one or the other."
             )
             raise ValueError(msg)
+        if out_dtype is not None:
+            return _validate_enum(out_dtype, DType, "out_dtype").value
+        if not preserve_dtype:
+            return None
         pre_dtype = self._output_dtype
-        if pre_dtype == "auto":
+        # `DType` is the dtype-name authority, so "concrete" is membership in
+        # it rather than a hand-listed set of sentinels ("auto", …) that would
+        # go stale the day another one is added.
+        if pre_dtype not in {member.value for member in DType}:
             msg = (
                 f"{op_name}: preserve_dtype=True requires a known input dtype, "
-                "but the pipeline's dtype is 'auto'. Declare the source dtype "
-                "(e.g. .source('image_bytes', dtype='u8')) or use an explicit "
-                ".cast(...) instead."
+                f"but the pipeline's dtype is {pre_dtype!r}. Declare the source "
+                "dtype (e.g. .source('image_bytes', dtype='u8')) or use an "
+                "explicit .cast(...) instead."
             )
             raise ValueError(msg)
         return pre_dtype
 
-    def _apply_preserve_dtype(self, new: "Pipeline", pre_dtype: str) -> "Pipeline":
-        """Append the cast-back for ``preserve_dtype=True`` when needed.
+    def _apply_out_dtype(self, new: "Pipeline", target: str | None) -> "Pipeline":
+        """Append the cast that lands a scalar op on ``target``, when needed.
 
-        The cast lowers into the existing fused-kernel cast support
-        (round-then-saturate for float→int), so no new execution paths are
-        involved. A no-op cast (op already produced ``pre_dtype``) is skipped.
+        This is how ``out_dtype`` and ``preserve_dtype`` are *honored*, and
+        deliberately not by giving the op its own output dtype: a trailing
+        ``cast`` lowers into the existing fused-kernel cast support
+        (round-then-saturate for float→int), which ``try_fuse`` already pins to
+        the dtype the unfused chain would have produced. An op-carried dtype
+        would instead need `extract_ops` and that pinning taught about it, and
+        would turn the op's ``PromoteToFloat`` rule — which preserves f64 input
+        — into a ``Configurable`` one that silently downgrades it to f32.
+
+        A no-op cast (the op already produced ``target``) is skipped.
         """
-        if new._output_dtype == pre_dtype:
+        if target is None or new._output_dtype == target:
             return new
-        return new.cast(pre_dtype)
+        return new.cast(target)
 
     def scale(
         self,
@@ -1722,35 +1743,25 @@ class Pipeline:
 
         Args:
             factor: Scale factor.
-            out_dtype: Output type (promotes to f32 if None and input is int).
-            preserve_dtype: If True, cast the result back to the input dtype
-                (round-then-saturate for integer targets). The computation
-                still happens in f32; this only restores the storage dtype,
-                e.g. u8 in → u8 out instead of the promoted f32. Requires the
-                pipeline's dtype to be known (not "auto") and is mutually
-                exclusive with ``out_dtype``.
+            out_dtype: Dtype to leave the result in. Any :class:`DType` name;
+                the multiply itself still happens in f32 (f64 for f64 input)
+                and the result is cast, round-then-saturate for integer
+                targets. Defaults to None — the op's own promote-to-float rule,
+                which turns integers into f32 and preserves float input.
+                Mutually exclusive with ``preserve_dtype``.
+            preserve_dtype: If True, cast the result back to the input dtype,
+                e.g. u8 in → u8 out instead of the promoted f32. The same
+                mechanism as ``out_dtype``, with the target read off the
+                pipeline, so it requires that dtype to be known (not "auto").
 
         Raises:
-            ValueError: If domain is not buffer, or ``preserve_dtype`` cannot
-                be honored (unknown input dtype / combined with ``out_dtype``).
+            ValueError: If domain is not buffer, or the output dtype cannot be
+                honored (unknown dtype name, unknown input dtype under
+                ``preserve_dtype``, or both keywords at once).
         """
-        pre_dtype = (
-            self._preserve_dtype_target("scale", out_dtype) if preserve_dtype else None
-        )
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {"factor": p._track_expr(factor)}
-            if out_dtype is not None:
-                out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
-                params["out_dtype"] = ParamValue(
-                    is_expr=False, value=out_dtype_enum.value
-                )
-            return params
-
-        new = self._append_op("scale", _params)
-        if pre_dtype is not None:
-            new = self._apply_preserve_dtype(new, pre_dtype)
-        return new
+        target = self._out_dtype_target("scale", out_dtype, preserve_dtype)
+        new = self._append_op("scale", lambda p: {"factor": p._track_expr(factor)})
+        return self._apply_out_dtype(new, target)
 
     def normalize(
         self,
@@ -1782,10 +1793,10 @@ class Pipeline:
                 ``mean``.
             out_dtype: Output dtype (default f32). Normalization always computes
                 in f32; the result is then cast to this dtype at execution, so
-                the produced dtype always matches the planned dtype. Accepts
-                ``"f32"``/``"f64"``/``"u8"``. For half precision use the sink
-                dtype instead — ``.sink("numpy", dtype="f16")`` — since the engine
-                has no native f16 type.
+                the produced dtype always matches the planned dtype. Accepts any
+                :class:`DType` name. For half precision use the sink dtype
+                instead — ``.sink("numpy", dtype="f16")`` — since the engine has
+                no native f16 type.
 
         Returns:
             Self for chaining.
@@ -1826,19 +1837,12 @@ class Pipeline:
 
             # Add out_dtype if specified. Normalization computes in f32 and
             # casts the result to this dtype at execution (so plan ==
-            # production). "preserve" is not meaningful here — normalization
-            # inherently produces floats and has no input dtype to preserve —
-            # so reject it explicitly rather than let it fail opaquely at plan
-            # build (parse_dtype has no "preserve").
+            # production). Unlike `scale`/`clamp`, this one rides on the op:
+            # `Normalize`'s dtype rule is `Configurable(F32)`, the one rule
+            # `output_dtype_for` honours an override for, and the runner's
+            # `apply_normalize` performs the cast.
             if out_dtype is not None:
-                out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
-                if out_dtype_enum == OutputDType.PRESERVE:
-                    msg = (
-                        "normalize does not support out_dtype='preserve' "
-                        "(normalization produces floats and has no input dtype to "
-                        "preserve); use 'f32', 'f64', or 'u8'."
-                    )
-                    raise ValueError(msg)
+                out_dtype_enum = _validate_enum(out_dtype, DType, "out_dtype")
                 params["out_dtype"] = ParamValue(
                     is_expr=False, value=out_dtype_enum.value
                 )
@@ -1862,43 +1866,35 @@ class Pipeline:
         Args:
             min_val: Minimum value (literal or expression).
             max_val: Maximum value (literal or expression).
-            out_dtype: Output dtype. Options:
-                - None: Promote integers to f32, preserve floats
-                - "f32": Output float32
-                - "f64": Output float64
-                - "preserve": Keep input dtype (floats preserved, integers -> f32)
-            preserve_dtype: If True, cast the result back to the input dtype
-                (round-then-saturate for integer targets). Requires the
-                pipeline's dtype to be known (not "auto") and is mutually
-                exclusive with ``out_dtype``.
+            out_dtype: Dtype to leave the result in. Any :class:`DType` name;
+                the clamp itself still happens in f32 (f64 for f64 input) and
+                the result is cast, round-then-saturate for integer targets.
+                Defaults to None — the op's own promote-to-float rule, which
+                turns integers into f32 and preserves float input. Mutually
+                exclusive with ``preserve_dtype``.
+            preserve_dtype: If True, cast the result back to the input dtype,
+                e.g. u8 in → u8 out instead of the promoted f32. The same
+                mechanism as ``out_dtype``, with the target read off the
+                pipeline, so it requires that dtype to be known (not "auto").
 
         Returns:
             Self for chaining.
 
         Raises:
-            ValueError: If domain is not buffer, or ``preserve_dtype`` cannot
-                be honored (unknown input dtype / combined with ``out_dtype``).
+            ValueError: If domain is not buffer, or the output dtype cannot be
+                honored (unknown dtype name, unknown input dtype under
+                ``preserve_dtype``, or both keywords at once).
         """
-        pre_dtype = (
-            self._preserve_dtype_target("clamp", out_dtype) if preserve_dtype else None
-        )
+        target = self._out_dtype_target("clamp", out_dtype, preserve_dtype)
 
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {
+        new = self._append_op(
+            "clamp",
+            lambda p: {
                 "min": p._track_expr(min_val),
                 "max": p._track_expr(max_val),
-            }
-            if out_dtype is not None:
-                out_dtype_enum = _validate_enum(out_dtype, OutputDType, "out_dtype")
-                params["out_dtype"] = ParamValue(
-                    is_expr=False, value=out_dtype_enum.value
-                )
-            return params
-
-        new = self._append_op("clamp", _params)
-        if pre_dtype is not None:
-            new = self._apply_preserve_dtype(new, pre_dtype)
-        return new
+            },
+        )
+        return self._apply_out_dtype(new, target)
 
     def relu(self) -> "Pipeline":
         """
@@ -2043,15 +2039,9 @@ class Pipeline:
             >>> pipe = Pipeline().source("image_bytes").adjust_brightness(factor=1.2)
             ```
         """
-        pre_dtype = (
-            self._preserve_dtype_target("adjust_brightness", None)
-            if preserve_dtype
-            else None
-        )
+        target = self._out_dtype_target("adjust_brightness", None, preserve_dtype)
         new = self.scale(factor=factor).clamp(min_val=0.0, max_val=255.0)
-        if pre_dtype is not None:
-            new = self._apply_preserve_dtype(new, pre_dtype)
-        return new
+        return self._apply_out_dtype(new, target)
 
     def invert(self) -> "Pipeline":
         """
