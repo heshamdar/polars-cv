@@ -19,16 +19,32 @@ import pytest
 import tomllib
 
 import polars_cv
+from tests._discovery import CHECKOUT_MARKERS, requires_checkout
 from tests.conftest import plugin_required
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Every file that records the version, and the TOML path to it within that file.
+# The keys are the same manifests `_discovery.CHECKOUT_MARKERS` uses to decide
+# whether a source checkout is present — asserted below rather than restated, so
+# a manifest added to one list cannot go missing from the other.
 VERSION_SOURCES = {
     "polars-cv/pyproject.toml": ("project", "version"),
     "polars-cv/Cargo.toml": ("package", "version"),
     "view-buffer/Cargo.toml": ("package", "version"),
 }
+
+
+def test_version_sources_are_the_checkout_markers() -> None:
+    """The two lists naming the manifests are one fact, not two.
+
+    ``_discovery.CHECKOUT_MARKERS`` decides whether the repository is present;
+    ``VERSION_SOURCES`` decides which manifests carry the version. They have
+    always held the same three paths, and a fourth manifest added to one and
+    not the other would either go unversioned or make every source-scanning
+    guard skip. Pinned in both directions rather than kept in step by hand.
+    """
+    assert set(VERSION_SOURCES) == set(CHECKOUT_MARKERS)
 
 
 def _declared_version(relative_path: str, keys: tuple[str, ...]) -> str:
@@ -37,17 +53,6 @@ def _declared_version(relative_path: str, keys: tuple[str, ...]) -> str:
         document = document[key]
     assert isinstance(document, str)
     return document
-
-
-def _running_from_checkout() -> bool:
-    """True when the repository layout these tests read is actually present."""
-    return all((REPO_ROOT / path).is_file() for path in VERSION_SOURCES)
-
-
-requires_checkout = pytest.mark.skipif(
-    not _running_from_checkout(),
-    reason="version manifests are not available outside a source checkout",
-)
 
 
 @requires_checkout
