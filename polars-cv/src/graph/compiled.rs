@@ -1673,19 +1673,23 @@ mod tests {
         assert_eq!(decoded.as_slice::<f32>(), &[1.0, 2.0, 3.0]);
     }
 
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+
+    use crate::execute::KNOWN_OPS;
+
     /// The variant a step belongs to.
     ///
     /// Exhaustive, so adding a `GraphStep` fails to compile here. That alone
     /// only forced *this match* to grow: the per-variant graphs in
     /// `every_graph_step_variant_executes` are hand-written, and
     /// `assert_step_covered` was called exactly once — with a `Buffer` step —
-    /// so nothing checked that the other nine had a graph. The reachability
-    /// test below closes it against `KNOWN_OPS`, the same way
-    /// `every_graph_geometry_op_executes` does in `encode.rs`.
-    use std::collections::BTreeSet;
-
-    use crate::execute::KNOWN_OPS;
-
+    /// so nothing checked that the other nine had a graph. Two tests close
+    /// that now: `every_graph_step_variant_is_reachable_from_a_known_op`
+    /// against `KNOWN_OPS`, the same way `every_graph_geometry_op_executes`
+    /// does in `encode.rs`, and the coverage assertion at the end of
+    /// `every_graph_step_variant_executes`, which records what that test
+    /// actually ran.
     fn step_name(step: &GraphStep) -> &'static str {
         match step {
             GraphStep::Buffer(_) => "Buffer",
@@ -1724,10 +1728,6 @@ mod tests {
             names.len()
         );
         names
-    }
-
-    fn assert_step_covered(step: &GraphStep) {
-        let _ = step_name(step);
     }
 
     /// Every `GraphStep` variant is reachable from some registered op.
@@ -1794,11 +1794,40 @@ mod tests {
         );
     }
 
+    thread_local! {
+        /// `GraphStep` variants `exec` has compiled on this thread.
+        ///
+        /// Thread-local because each `#[test]` runs on its own thread, so this
+        /// records exactly what the calling test ran and nothing another test
+        /// happened to execute in parallel. Written by [`exec`], read by
+        /// `every_graph_step_variant_executes`.
+        static EXECUTED_STEPS: RefCell<BTreeSet<&'static str>> =
+            const { RefCell::new(BTreeSet::new()) };
+    }
+
     fn exec(graph: &str, names: &[String], inputs: &[Series]) -> Series {
-        CompiledGraph::compile(graph, names)
-            .expect("graph must compile")
-            .execute(inputs)
-            .expect("graph must execute")
+        let compiled = CompiledGraph::compile(graph, names).expect("graph must compile");
+        EXECUTED_STEPS.with(|seen| {
+            let mut seen = seen.borrow_mut();
+            for resolver in compiled.resolvers.values().flatten() {
+                // A literal-param op holds its step already; a slot-bound one
+                // re-resolves per row, and resolving it against an empty
+                // context is enough to learn which variant it is. Failures are
+                // skipped rather than asserted: this is bookkeeping for the
+                // coverage assertion, and the execute() below is what proves
+                // the graph runs.
+                let step = match resolver {
+                    OpResolver::Static(step) => Some(Cow::Borrowed(step)),
+                    OpResolver::Dynamic(spec) | OpResolver::RasterizeShapeRef { spec, .. } => {
+                        resolve_op(spec, 0, &ParamCtx::empty()).ok().map(Cow::Owned)
+                    }
+                };
+                if let Some(step) = step {
+                    seen.insert(step_name(&step));
+                }
+            }
+        });
+        compiled.execute(inputs).expect("graph must execute")
     }
 
     fn mask_blob() -> Vec<u8> {
@@ -1812,6 +1841,16 @@ mod tests {
         ViewBuffer::from_vec_with_shape(data, vec![4, 4, 1]).to_blob()
     }
 
+    /// Every `GraphStep` variant executes end-to-end through
+    /// `CompiledGraph::execute`.
+    ///
+    /// The graphs below are hand-written, one per variant, and the assertion
+    /// at the end is what makes them a *set*: `exec` records the variants each
+    /// graph compiled to, and the recorded set must cover every arm
+    /// `step_name` acknowledges. Before that, this test called
+    /// `assert_step_covered` exactly once — with a `Buffer` step — so a new
+    /// variant could be acknowledged, be reachable from an op, and still have
+    /// no graph here, while the test's name went on claiming otherwise.
     #[test]
     fn every_graph_step_variant_executes() {
         let f32_blob =
@@ -1819,16 +1858,6 @@ mod tests {
         let no_names: Vec<String> = vec![];
 
         // Buffer (relu executes via the fused ViewExpr run).
-        let step = resolve_op(
-            &OpSpec {
-                op: "relu".into(),
-                params: HashMap::new(),
-            },
-            0,
-            &ParamCtx::empty(),
-        )
-        .unwrap();
-        assert_step_covered(&step);
         let out = exec(
             SIMPLE_GRAPH,
             &no_names,
@@ -1986,6 +2015,19 @@ mod tests {
             &[Series::new("b".into(), &[mask_blob()]), cont_col],
         );
         assert_eq!(out.null_count(), 0);
+
+        // The set assertion. Without it the graphs above are a list somebody
+        // remembered to extend, which is the shape this repo keeps regretting.
+        let executed = EXECUTED_STEPS.with(|seen| seen.borrow().clone());
+        let missing: Vec<String> = acknowledged_steps()
+            .into_iter()
+            .filter(|name| !executed.contains(name.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these GraphStep variants have no graph in this test, so nothing \
+             here executes them: {missing:?} (executed: {executed:?})"
+        );
     }
 
     /// An axis reduction over a 1-D buffer yields shape [1] but its declared
