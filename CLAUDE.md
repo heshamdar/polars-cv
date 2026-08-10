@@ -345,6 +345,9 @@ authority — do not open a side channel.
 | `LazyPipelineExpr`'s method surface | generated from `Pipeline` at import | `test_lazy_pipeline_method_parity`, `test_lazy_stub_is_current` |
 | The graph wire format's node fields | `GraphNode` with `#[serde(deny_unknown_fields)]` | Deserialization error — a stale or misspelled key fails the query |
 | Null parameter handling | `NullParamPolicy` on `ParamCtx`, via `ParamCol::on_null` | Reviewed by hand: never add per-op or per-parameter null keywords |
+| What a `(domain, sink format)` pair produces | `SinkKind::resolve` in `src/graph/sink_kind.rs` | Compile error: the four halves of the sink contract (`dtype_for_output`, `encode_node_output`, `null_row_result_for_spec`, `build_series_from_spec`) match on the enum, so a new kind is non-exhaustive in all four at once; `every_kind_is_produced_by_some_pair` rejects a kind no pair names |
+| Which files a source-scanning guard reads | `tests/_discovery.py` — every accessor raises rather than returning empty | `test_scans_go_through_discovery` (AST walk: a direct `glob`/`rglob` in `tests/` fails unless the file is in `_DISCOVERY_EXEMPT` with a reason), `test_discovery_fixtures.py` |
+| Dtype spellings on the Python side | `python/polars_cv/_dtype_names.py`, generated from `dtype_table!` by `scripts/gen_dtype_names.py` | `test_dtype_names_module_is_current` (regenerate-and-diff), `test_engine_dtype_names_match_the_generated_table` pins `_types.DType` to it without the plugin |
 
 Two deliberate exceptions, both documented at the site: `OpSpec` is *not*
 `deny_unknown_fields` (its params ride on `#[serde(flatten)]`, which serde

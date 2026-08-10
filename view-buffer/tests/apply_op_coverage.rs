@@ -4,8 +4,10 @@
 //! no silent no-ops. This test executes one probe per variant end-to-end
 //! (`apply_op` → `plan()` → `execute()`) and checks the result against the
 //! variant's own declared contracts (`infer_shape` via the backing `Op`, and
-//! `output_dtype_rule`). The exhaustive match in `assert_probed` makes adding
-//! a `ViewDto` variant a compile error until a probe exists here.
+//! `output_dtype_rule`). The exhaustive match in `variant_name` makes adding a
+//! `ViewDto` variant a compile error until it is acknowledged, and
+//! `every_view_dto_variant_has_a_probe` reads that match back out of this file
+//! so acknowledging a variant and probing it are the same act.
 
 #![cfg(feature = "image_interop")]
 

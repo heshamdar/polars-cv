@@ -7,6 +7,49 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **`.contour.ensure_winding()` and `.contour.scale(origin=)` reject a value
+  they do not recognise instead of guessing one.** These were the only two
+  user-facing string parameters in the plugin that did not read a `NAMED`
+  table. Both parsed by hand and ended in `_ => <default>`, so a spelling the
+  parser did not know was answered with a plausible one:
+  `ensure_winding("CW")` returned *counter*-clockwise — the opposite of the
+  request — and `scale(origin="top_left")` scaled about the centroid. Silently,
+  in both cases; a capitalisation that does not match is not an exotic input.
+
+  `ScaleOrigin` and `Winding` now go through `named_variants!` + `registry!`
+  like every other enum, which is also what makes them checkable: they are
+  surfaced over `enum_variants`, covered by `every_named_enum_is_registered`,
+  and demanded by `test_every_rust_enum_is_parity_checked` — hence
+  `_types.ScaleOrigin` and `_types.Winding`, which replace the `Literal[...]`
+  annotations that used to shadow them. The long `"clockwise"` /
+  `"counterclockwise"` spellings the parser has always accepted are kept, as
+  aliases inside `NAMED` rather than a second table.
+
+  One behaviour change beyond the rejection: a `contour_scale` graph that omits
+  `origin` entirely now defaults to `Origin` rather than `Centroid`, matching
+  what the Python signature has always declared. Every pipeline built through
+  `.contour.scale()` already sent an explicit value, so this is reachable only
+  by hand-writing the plugin kwargs.
+
+- **`numpy_from_struct()` no longer reads `"u8"` as `uint64`.** Its dtype
+  allowlist was hand-typed and admitted numpy's *character codes* alongside its
+  spelled names. numpy reads `"u8"` as uint64 and `"i8"` as int64 — the
+  opposite of what those strings mean everywhere else in this project, where
+  they are `dtype_table!`'s short names for uint8 and int8. So a caller
+  hand-building a struct with `dtype="u8"` — the spelling `.cast("u8")` uses —
+  got a uint64 reinterpretation of the bytes: wrong values, and either a wrong
+  shape or a `reshape` error far from the cause. The function is exported from
+  the package root and takes a plain dict, so this needed no compiled plugin to
+  reach. The list also admitted `bool`/`b1`/`f2`, which the engine cannot
+  produce.
+
+  The accepted names are now generated into `python/polars_cv/_dtype_names.py`
+  from `dtype_table!` by `scripts/gen_dtype_names.py`, guarded by
+  regenerate-and-diff. Character codes are rejected; the numpy/torch sink has
+  never emitted them.
+
 ## [0.19.0] — 2026-08-09
 
 ### Added

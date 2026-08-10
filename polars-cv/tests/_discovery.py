@@ -22,7 +22,9 @@ skips.
 
 Callers must not glob for themselves. ``test_scans_go_through_discovery`` in
 ``test_sanitation.py`` walks the test suite's AST and fails on a direct
-``glob``/``rglob`` outside the two places where an empty answer is the point.
+``glob``/``rglob`` outside this module and the files listed in its
+``_DISCOVERY_EXEMPT``, each of which is a place where finding nothing is a
+meaningful answer rather than a broken scan.
 """
 
 from __future__ import annotations

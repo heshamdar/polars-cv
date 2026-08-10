@@ -1770,8 +1770,8 @@ def test_verify_script_covers_every_ci_check() -> None:
 # Discovery: no guard may find its own files
 # ---------------------------------------------------------------------------
 
-#: Where a direct filesystem walk is legitimate, with the reason. Both entries
-#: are places where finding *nothing* is a meaningful answer rather than a
+#: Where a direct filesystem walk is legitimate, with the reason. Every entry
+#: is a place where finding *nothing* is a meaningful answer rather than a
 #: broken scan, which is exactly the property `_discovery` refuses to allow.
 _DISCOVERY_EXEMPT: dict[str, str] = {
     "_discovery.py": "the discovery module itself",
