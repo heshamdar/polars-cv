@@ -240,30 +240,77 @@ mod parity_tests {
         ]
     }
 
-    /// Completeness guard: adding an `ImageOpKind` variant fails to compile
-    /// here until it is listed — add a matching probe to
-    /// `image_kind_probes()` at the same time.
-    fn _assert_image_kind_probed(kind: &ImageOpKind) {
+    /// The variant a kind belongs to.
+    ///
+    /// Exhaustive, so adding an `ImageOpKind` fails to compile here. That alone
+    /// only forced *this match* to grow: `image_kind_probes()` is a separate
+    /// list, and adding an arm without a probe compiled and passed, which is
+    /// the gap `every_image_kind_has_a_probe` below closes.
+    fn image_kind_name(kind: &ImageOpKind) -> &'static str {
         match kind {
-            ImageOpKind::Threshold(_)
-            | ImageOpKind::Resize { .. }
-            | ImageOpKind::Blur { .. }
-            | ImageOpKind::Grayscale
-            | ImageOpKind::Canny { .. }
-            | ImageOpKind::HistogramEqualize
-            | ImageOpKind::Erode { .. }
-            | ImageOpKind::Dilate { .. }
-            | ImageOpKind::MorphGradient { .. }
-            | ImageOpKind::ResizeScale { .. }
-            | ImageOpKind::ResizeToHeight { .. }
-            | ImageOpKind::ResizeToWidth { .. }
-            | ImageOpKind::ResizeMax { .. }
-            | ImageOpKind::ResizeMin { .. }
-            | ImageOpKind::Pad { .. }
-            | ImageOpKind::PadToSize { .. }
-            | ImageOpKind::Letterbox { .. }
-            | ImageOpKind::ChannelSwap { .. } => (),
+            ImageOpKind::Threshold(_) => "Threshold",
+            ImageOpKind::Resize { .. } => "Resize",
+            ImageOpKind::Blur { .. } => "Blur",
+            ImageOpKind::Grayscale => "Grayscale",
+            ImageOpKind::Canny { .. } => "Canny",
+            ImageOpKind::HistogramEqualize => "HistogramEqualize",
+            ImageOpKind::Erode { .. } => "Erode",
+            ImageOpKind::Dilate { .. } => "Dilate",
+            ImageOpKind::MorphGradient { .. } => "MorphGradient",
+            ImageOpKind::ResizeScale { .. } => "ResizeScale",
+            ImageOpKind::ResizeToHeight { .. } => "ResizeToHeight",
+            ImageOpKind::ResizeToWidth { .. } => "ResizeToWidth",
+            ImageOpKind::ResizeMax { .. } => "ResizeMax",
+            ImageOpKind::ResizeMin { .. } => "ResizeMin",
+            ImageOpKind::Pad { .. } => "Pad",
+            ImageOpKind::PadToSize { .. } => "PadToSize",
+            ImageOpKind::Letterbox { .. } => "Letterbox",
+            ImageOpKind::ChannelSwap { .. } => "ChannelSwap",
         }
+    }
+
+    /// The variants `image_kind_name` acknowledges, read back from this file.
+    ///
+    /// Rust cannot enumerate an enum's variants without a derive or a second
+    /// list, and a second list is what this replaces. The parse asserts it
+    /// found a plausible match rather than silently matching nothing.
+    fn acknowledged_image_kinds() -> Vec<String> {
+        let src = include_str!("shape_rule.rs");
+        let body = src
+            .split("fn image_kind_name(kind: &ImageOpKind) -> &'static str {")
+            .nth(1)
+            .expect("image_kind_name's definition moved — this scan reads nothing");
+        let body = body
+            .split("\n    }")
+            .next()
+            .expect("image_kind_name's body has no closing brace");
+        let names: Vec<String> = body
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("ImageOpKind::"))
+            .filter_map(|rest| rest.split([' ', '(']).next())
+            .map(str::to_string)
+            .collect();
+        assert!(
+            names.len() >= 18,
+            "parsed {} arms from image_kind_name; the scan is out of date",
+            names.len()
+        );
+        names
+    }
+
+    #[test]
+    fn every_image_kind_has_a_probe() {
+        let probed: std::collections::BTreeSet<&str> =
+            image_kind_probes().iter().map(image_kind_name).collect();
+        let missing: Vec<String> = acknowledged_image_kinds()
+            .into_iter()
+            .filter(|name| !probed.contains(name.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these ImageOpKind variants are acknowledged but never probed \
+             against infer_shape: {missing:?}"
+        );
     }
 
     #[test]

@@ -34,7 +34,7 @@ import polars_cv
 from polars_cv import Pipeline
 
 from ._discovery import package_modules
-from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES
+from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES, base_pipeline
 from ._schema_parity import assert_plan_equals_exec
 from .conftest import plugin_required
 
@@ -259,16 +259,6 @@ _BUFFER, _CONTOUR = BUFFER, CONTOUR
 _OP_CASES = OP_CASES
 
 
-def _base(domain: str) -> Pipeline:
-    """A pipeline in *domain* with fully known, non-square shape hints."""
-    pipe = (
-        Pipeline().source("image_bytes").assert_shape(height=100, width=200, channels=3)
-    )
-    if domain == _CONTOUR:
-        return pipe.grayscale().threshold(128).extract_contours()
-    return pipe
-
-
 def _state(pipe: Pipeline) -> tuple:
     hints = pipe._shape_hints
     dims = tuple(
@@ -307,7 +297,7 @@ _EXTRA_CASES = EXTRA_CASES
 )
 def test_eager_and_lazy_agree_on_extra_branches(op, domain, kwargs) -> None:
     """Branch coverage for ops whose single parity case misses the interesting path."""
-    base = _base(domain)
+    base = base_pipeline(domain)
     eager = getattr(base, op)(**kwargs)
     lazy = getattr(pl.col("img").cv.pipe(base), op)(**kwargs)._pipeline
     assert _state(eager) == _state(lazy), (
@@ -329,7 +319,7 @@ def test_eager_and_lazy_agree_on_shape_state(op) -> None:
     with their eager spelling, ``pad`` and ``rotate`` among them.
     """
     domain, kwargs = _OP_CASES[op]
-    base = _base(domain)
+    base = base_pipeline(domain)
 
     eager = getattr(base, op)(**kwargs)
     lazy = getattr(pl.col("img").cv.pipe(base), op)(**kwargs)._pipeline

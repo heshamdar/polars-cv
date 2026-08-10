@@ -17,6 +17,11 @@ op is appended to.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polars_cv import Pipeline
+
 BUFFER = "buffer"
 CONTOUR = "contour"
 
@@ -209,3 +214,37 @@ def contour_ops() -> list[str]:
 def comparable_ops() -> list[str]:
     """Every op with a callable case, in a stable order."""
     return sorted(name for name, case in OP_CASES.items() if case is not None)
+
+
+def base_pipeline(domain: str) -> "Pipeline":
+    """A pipeline in *domain* with fully known, non-square shape hints.
+
+    ``assert_shape`` records an assertion and sets hints without appending to
+    ``_ops``, so the op under test is still ``_ops[-1]`` and the domain fold
+    still sees only real operations.
+    """
+    from polars_cv import Pipeline
+
+    pipe = (
+        Pipeline().source("image_bytes").assert_shape(height=100, width=200, channels=3)
+    )
+    if domain == CONTOUR:
+        return pipe.grayscale().threshold(128).extract_contours()
+    return pipe
+
+
+def build_case(op: str) -> "Pipeline":
+    """The pipeline for *op*'s case, with that op last.
+
+    The one way to turn a row of this table into a pipeline. Guards that want
+    "every op, called somehow" read it from here rather than keeping their own
+    op → builder map: ``test_sanitation.py`` kept one covering 22 of the ~90
+    ops, so the other ~70 never had their domain or rank/channel rule checked
+    against the Rust contract at all.
+    """
+    case = OP_CASES[op]
+    if case is None:
+        msg = f"{op} has no callable case"
+        raise ValueError(msg)
+    domain, kwargs = case
+    return getattr(base_pipeline(domain), op)(**kwargs)

@@ -47,6 +47,7 @@ from tests._discovery import (
     suite_modules,
 )
 from tests._dtype_ratchet import dispatch_offenders
+from tests._op_cases import build_case, comparable_ops
 from tests._schema_parity import assert_plan_equals_exec, leaf_dtype
 from tests.conftest import plugin_required
 
@@ -656,53 +657,16 @@ def test_op_schema_rules_are_required_not_defaulted():
 # class of bug that made the old blur contract say u8 while execution produced
 # f32).
 
-# op name -> builder producing a Pipeline whose LAST op is the op under test,
-# using only literal params (so resolve_op needs no expression columns).
-_OP_BUILDERS = {
-    "resize": lambda: Pipeline().source("image_bytes").resize(height=4, width=4),
-    "grayscale": lambda: Pipeline().source("image_bytes").grayscale(),
-    "threshold": lambda: Pipeline().source("image_bytes").grayscale().threshold(128),
-    "blur": lambda: Pipeline().source("image_bytes").blur(sigma=1.0),
-    "scale": lambda: Pipeline().source("image_bytes").scale(2.0),
-    "clamp": lambda: Pipeline().source("image_bytes").clamp(0.0, 255.0),
-    "relu": lambda: Pipeline().source("image_bytes").relu(),
-    "invert": lambda: Pipeline().source("image_bytes").invert(),
-    "adjust_contrast": lambda: (
-        Pipeline().source("image_bytes").adjust_contrast(factor=1.2)
-    ),
-    "adjust_gamma": lambda: Pipeline().source("image_bytes").adjust_gamma(gamma=1.2),
-    "cvt_color": lambda: Pipeline().source("image_bytes").convert_color("rgb", "hsv"),
-    "convolve2d": lambda: (
-        Pipeline().source("image_bytes").convolve2d([0, 0, 0, 0, 1, 0, 0, 0, 0], 3)
-    ),
-    "erode": lambda: (
-        Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
-    ),
-    "dilate": lambda: (
-        Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
-    ),
-    "morphology_gradient": lambda: (
-        Pipeline()
-        .source("image_bytes")
-        .grayscale()
-        .threshold(128)
-        .morphology_gradient(ksize=3)
-    ),
-    "canny": lambda: Pipeline().source("image_bytes").grayscale().canny(),
-    "equalize_histogram": lambda: (
-        Pipeline().source("image_bytes").grayscale().equalize_histogram()
-    ),
-    "channel_select": lambda: Pipeline().source("image_bytes").channel_select(index=0),
-    "channel_swap": lambda: (
-        Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
-    ),
-    "flip": lambda: Pipeline().source("image_bytes").flip([0]),
-    "perceptual_hash": lambda: Pipeline().source("image_bytes").perceptual_hash(),
-}
+# Every op with a callable case, driven from `tests/_op_cases.py` — the table
+# `test_op_case_table_is_complete` pins to `_chainable_pipeline_ops()` in both
+# directions. This replaced a local op -> builder map that named 22 of the ~90
+# ops, so the other ~70 never had their domain or rank/channel rule checked
+# against the Rust contract at all: the failure mode of every hand-maintained
+# list in this repo, sitting inside the file that polices them.
 
 
 @plugin_required
-@pytest.mark.parametrize("op_name", sorted(_OP_BUILDERS))
+@pytest.mark.parametrize("op_name", comparable_ops())
 def test_planner_domain_is_sourced_from_rust(op_name):
     """The planner derives each op's output domain from the view-buffer
     contract (ViewDto::output_domain) rather than a Python domain table (A10).
@@ -717,7 +681,7 @@ def test_planner_domain_is_sourced_from_rust(op_name):
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not built")
 
-    pipe = _OP_BUILDERS[op_name]()
+    pipe = build_case(op_name)
     rust_domain = contract_fn(json.dumps(pipe._ops[-1].to_dict()))["output_domain"]
     planned_domain, _, _ = Pipeline._compute_output_domain_dtype_ndim(
         pipe._ops, initial_domain="buffer", initial_dtype="u8"
@@ -729,7 +693,7 @@ def test_planner_domain_is_sourced_from_rust(op_name):
 
 
 @plugin_required
-@pytest.mark.parametrize("op_name", sorted(_OP_BUILDERS))
+@pytest.mark.parametrize("op_name", comparable_ops())
 def test_contract_exposes_rank_and_channel_rules(op_name):
     """Every op's contract exposes a rank_rule and channel_rule in the known
     vocabulary — the single authority the Python planner reads instead of
@@ -740,7 +704,7 @@ def test_contract_exposes_rank_and_channel_rules(op_name):
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not built")
 
-    contract = contract_fn(json.dumps(_OP_BUILDERS[op_name]()._ops[-1].to_dict()))
+    contract = contract_fn(json.dumps(build_case(op_name)._ops[-1].to_dict()))
     rank, channel = contract["rank_rule"], contract["channel_rule"]
 
     assert rank in ("preserve", "reduce_one", "unknown") or (
