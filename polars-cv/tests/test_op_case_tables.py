@@ -34,8 +34,10 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from polars_cv import Pipeline
 from polars_cv._types import ColorSpace, HistogramOutput, SinkFormat
 
+from ._expr_param_runner import run, sink_for
 from ._op_cases import (
     BUFFER,
     COLOR_SPACES,
@@ -157,6 +159,19 @@ def test_extra_cases_reach_a_branch_the_base_case_does_not() -> None:
 _SINGLE_CHANNEL_REFUSAL = "single-channel"
 
 
+def _probe_sink(pipe: Pipeline) -> str:
+    """A sink that renders *pipe*'s output without adding a precondition.
+
+    The runner's default for a buffer is ``list``, which needs a concrete
+    element dtype — and the shared ``base_pipeline`` sources ``image_bytes``
+    with no ``dtype=``, so it is ``auto`` until runtime and the sink refuses to
+    plan. ``blob`` is self-describing and carries no such requirement, which is
+    what this probe needs: the only refusal it wants to observe is the kernel's.
+    Non-buffer outputs keep the runner's domain default.
+    """
+    return "blob" if pipe.current_domain() == BUFFER else sink_for(pipe)
+
+
 @plugin_required
 def test_single_channel_ops_are_exactly_the_ops_that_refuse_three_channels() -> None:
     """The table must equal what the kernels actually refuse.
@@ -169,19 +184,41 @@ def test_single_channel_ops_are_exactly_the_ops_that_refuse_three_channels() -> 
     erroring), and an op that stops refusing while the table still puts a
     ``grayscale()`` in front of it (so the sweep quietly tests something else).
     """
-    df = pl.DataFrame({"img": [make_image_png(height=16, width=24, channels=3)]})
+    # The image has to match the shape `base_pipeline` asserts, and each op
+    # needs the sink its *output* domain has (a reduction has no blob). Both
+    # were got wrong in the first draft of this test, and it passed anyway: the
+    # six morphology ops refused the channel count before the shape assertion
+    # fired, so the set matched while 40-odd ops were only proving they had the
+    # wrong image.
+    df = pl.DataFrame({"img": [make_image_png(height=100, width=200, channels=3)]})
 
     refusing: set[str] = set()
+    accepted: set[str] = set()
+    unexplained: dict[str, str] = {}
     for op in buffer_ops():
         pipe = build_case(op)
         try:
-            df.lazy().with_columns(
-                out=pl.col("img").cv.pipe(pipe).sink("blob")
-            ).collect()
-        except Exception as e:  # noqa: BLE001 - any refusal is read, then matched
+            run(df, "img", pipe, sink=_probe_sink(pipe))
+        except Exception as e:  # noqa: BLE001 - the message is what is under test
             if _SINGLE_CHANNEL_REFUSAL in str(e):
                 refusing.add(op)
+            else:
+                unexplained[op] = str(e).splitlines()[0][:120]
+        else:
+            accepted.add(op)
 
+    # A sweep that reads every failure through one substring is one broken
+    # harness away from finding nothing and passing: if the `.cv` namespace were
+    # unregistered, every op would raise `AttributeError`, none would match, and
+    # `refusing` would be empty. So the other two outcomes are asserted too.
+    assert not unexplained, (
+        f"these ops failed for a reason unrelated to channel count, so the "
+        f"probe cannot say whether they refuse three channels: {unexplained}"
+    )
+    assert len(accepted) >= 40, (
+        f"only {len(accepted)} of {len(buffer_ops())} ops executed at all — the "
+        f"probe is measuring a broken harness, not a precondition"
+    )
     assert refusing == set(SINGLE_CHANNEL_OPS), (
         f"ops refusing three channels but not in SINGLE_CHANNEL_OPS: "
         f"{sorted(refusing - set(SINGLE_CHANNEL_OPS))}; "
@@ -198,7 +235,7 @@ def test_the_single_channel_probe_can_see_a_refusal() -> None:
     vacuously if the substring stops appearing — so one known-refusing op is
     driven through the same path and asserted to raise, naming the precondition.
     """
-    df = pl.DataFrame({"img": [make_image_png(height=16, width=24, channels=3)]})
+    df = pl.DataFrame({"img": [make_image_png(height=100, width=200, channels=3)]})
     pipe = base_pipeline(BUFFER).erode(ksize=3)
     with pytest.raises(Exception, match=_SINGLE_CHANNEL_REFUSAL):
-        df.lazy().with_columns(out=pl.col("img").cv.pipe(pipe).sink("blob")).collect()
+        run(df, "img", pipe, sink=_probe_sink(pipe))
