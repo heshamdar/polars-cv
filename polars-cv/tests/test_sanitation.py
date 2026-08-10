@@ -28,6 +28,7 @@ deleted and re-added later.
 
 from __future__ import annotations
 
+import ast
 import io
 import re
 from pathlib import Path
@@ -37,6 +38,14 @@ import pytest
 
 import polars_cv
 from polars_cv import Pipeline
+from tests._discovery import (
+    package_modules,
+    requires_checkout,
+    rust_sources,
+    rust_src_dir,
+    suite_files,
+    suite_modules,
+)
 from tests._dtype_ratchet import dispatch_offenders
 from tests._schema_parity import assert_plan_equals_exec, leaf_dtype
 from tests.conftest import plugin_required
@@ -375,15 +384,7 @@ def test_registry_parity_all_rust_ops_are_reachable():
     )
 
 
-def _rust_src_dir():
-    """The crate ``src/`` dir in a source checkout, or None (installed wheel)."""
-    from pathlib import Path
-
-    # python/polars_cv/__init__.py -> ../../src
-    src = Path(polars_cv.__file__).resolve().parent.parent.parent / "src"
-    return src if (src / "lib.rs").exists() else None
-
-
+@requires_checkout
 def test_namespace_plugin_symbols_match_registrations():
     """The namespace plugin surface is connected in BOTH directions.
 
@@ -401,13 +402,9 @@ def test_namespace_plugin_symbols_match_registrations():
       reverse-parity test guards) fails here.
     """
     import re
-    from pathlib import Path
 
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
 
-    pkg = Path(polars_cv.__file__).parent
     called: set[str] = set()
     # Two spellings reach the same plugin: the direct `self._plugin("name", ...)`
     # and `_ArgBinder.call(self, "name", ...)`, which routes through `_plugin`
@@ -417,7 +414,7 @@ def test_namespace_plugin_symbols_match_registrations():
         r'_plugin\(\s*"([a-z_0-9]+)"',
         r'\.call\(\s*self,\s*"([a-z_0-9]+)"',
     )
-    for py in pkg.rglob("*.py"):
+    for py in package_modules():
         text = py.read_text()
         for pattern in patterns:
             called |= set(re.findall(pattern, text))
@@ -444,6 +441,7 @@ def test_namespace_plugin_symbols_match_registrations():
     )
 
 
+@requires_checkout
 def test_lib_module_registration_matches_required_hooks():
     """The introspection FFI registered in ``#[pymodule]`` equals the hooks list.
 
@@ -454,9 +452,7 @@ def test_lib_module_registration_matches_required_hooks():
     """
     import re
 
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
 
     text = (src / "lib.rs").read_text()
     registered = set(re.findall(r"wrap_pyfunction!\(\s*([a-z_0-9]+)\s*,", text))
@@ -503,6 +499,7 @@ def test_op_names_covers_all_emitted_ops():
     )
 
 
+@requires_checkout
 def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
     """``Pipeline.OP_NAMES`` must equal Rust's ``KNOWN_OPS``, checked from source.
 
@@ -518,9 +515,7 @@ def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
     is used here only because the stronger one is unavailable by construction;
     it asserts it parsed a plausible registry rather than matching nothing.
     """
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
 
     text = (src / "execute.rs").read_text()
     m = re.search(r"pub const KNOWN_OPS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
@@ -622,6 +617,7 @@ def test_binary_output_dtype_authority():
     assert binary_output_dtype("add", "u8", "auto") == "auto"
 
 
+@requires_checkout
 def test_op_schema_rules_are_required_not_defaulted():
     """The three structural schema rules are REQUIRED trait methods (no default
     body). An op that omits one is a compile error, so a new op cannot silently
@@ -631,9 +627,7 @@ def test_op_schema_rules_are_required_not_defaulted():
     """
     import re
 
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
     traits = src.parent.parent / "view-buffer" / "src" / "ops" / "traits.rs"
     if not traits.exists():
         pytest.skip("view-buffer sources not available")
@@ -981,6 +975,7 @@ def test_binary_ops_match_rust():
 # is no second declaration to drift from.
 
 
+@requires_checkout
 def test_source_formats_match_the_rust_vocabulary() -> None:
     """``SourceFormat`` must equal Rust's ``KNOWN_SOURCE_FORMATS``.
 
@@ -994,9 +989,7 @@ def test_source_formats_match_the_rust_vocabulary() -> None:
     plugin-free lane too — the drift is introduced by editing Python, which is
     exactly when the extension is stale.
     """
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
 
     text = (src / "graph" / "compiled.rs").read_text()
     m = re.search(r"const KNOWN_SOURCE_FORMATS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
@@ -1459,24 +1452,13 @@ def test_enum_validation_uniform() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _test_files() -> list:
-    from pathlib import Path
-
-    tests_dir = Path(__file__).parent
-    return [
-        p
-        for p in tests_dir.rglob("*.py")
-        if p.name != "conftest.py" and p.name != Path(__file__).name
-    ]
-
-
 def test_no_local_plugin_available_definitions() -> None:
     """Plugin availability is checked in exactly one place (conftest.py).
 
     Import ``plugin_required`` from ``tests.conftest`` instead of redefining
     ``_plugin_available`` per file."""
     offenders = [
-        str(p.name) for p in _test_files() if "def _plugin_available" in p.read_text()
+        str(p.name) for p in suite_modules() if "def _plugin_available" in p.read_text()
     ]
     assert not offenders, f"local _plugin_available definitions in: {offenders}"
 
@@ -1485,7 +1467,7 @@ def test_no_local_png_factories() -> None:
     """PNG construction fixtures live in conftest.py only (create_test_png /
     encode_png); test files must not define their own."""
     offenders = [
-        str(p.name) for p in _test_files() if "def create_test_png" in p.read_text()
+        str(p.name) for p in suite_modules() if "def create_test_png" in p.read_text()
     ]
     assert not offenders, f"local create_test_png definitions in: {offenders}"
 
@@ -1651,8 +1633,8 @@ def test_no_second_dtype_spelling_table() -> None:
     }
 
     offenders = []
-    for path in sorted(root.glob("**/*.rs")):
-        if path in allowed or "/target/" in str(path):
+    for path in rust_sources():
+        if path in allowed:
             continue
         offenders += dispatch_offenders(
             path.read_text(),
@@ -1754,3 +1736,71 @@ def test_verify_script_covers_every_ci_check() -> None:
         f"this test expects CI to run checks it no longer does: {stale}. "
         f"Update the list rather than leaving it asserting nothing."
     )
+
+
+# ---------------------------------------------------------------------------
+# Discovery: no guard may find its own files
+# ---------------------------------------------------------------------------
+
+#: Where a direct filesystem walk is legitimate, with the reason. Both entries
+#: are places where finding *nothing* is a meaningful answer rather than a
+#: broken scan, which is exactly the property `_discovery` refuses to allow.
+_DISCOVERY_EXEMPT: dict[str, str] = {
+    "_discovery.py": "the discovery module itself",
+    "conftest.py": (
+        "plugin detection: an empty result means the extension is not built, "
+        "which is the answer `plugin_required` needs rather than a failure"
+    ),
+    "test_streaming_ooc.py": (
+        "asserts a spill directory stays empty, so an empty walk is the "
+        "assertion rather than a broken scan"
+    ),
+}
+
+
+@requires_checkout
+def test_scans_go_through_discovery() -> None:
+    """File discovery happens in ``tests/_discovery.py`` and nowhere else.
+
+    A guard that finds its own files can find none of them, and then it passes
+    while checking nothing — the failure mode `tests/AGENTS.md` calls worse
+    than no guard, and one this suite had shipped twice: ``_test_files()`` and
+    ``_PACKAGE_MODULES`` were both a bare ``rglob`` whose empty result was
+    indistinguishable from a clean bill of health.
+
+    Routing every scan through :mod:`tests._discovery` makes that impossible by
+    construction rather than by remembering to assert non-emptiness at each
+    site. This test is what stops the next scan from being written the old way,
+    and it is deliberately a *mechanism* check (may you glob?) rather than a
+    list of the scans that exist.
+    """
+    offenders: list[str] = []
+    for module in suite_files():
+        if module.name in _DISCOVERY_EXEMPT:
+            continue
+        tree = ast.parse(module.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr in {"glob", "rglob"}:
+                offenders.append(f"{module.name}:{node.lineno}")
+
+    assert not offenders, (
+        "these sites walk the filesystem directly instead of calling "
+        f"tests._discovery: {offenders}. A scan that finds nothing passes "
+        "vacuously; _discovery raises instead. If an empty result is genuinely "
+        "the answer, add the file to _DISCOVERY_EXEMPT with the reason."
+    )
+
+
+@requires_checkout
+def test_discovery_exemptions_are_real_files() -> None:
+    """An exemption for a file that no longer exists is a stale exemption.
+
+    Without this the allowlist could quietly grow to cover renamed files,
+    re-opening the hole it documents closing.
+    """
+    names = {module.name for module in suite_files()}
+    stale = sorted(name for name in _DISCOVERY_EXEMPT if name not in names)
+    assert not stale, f"exemptions for files that do not exist: {stale}"
