@@ -41,7 +41,7 @@ import pytest
 from PIL import Image
 
 from polars_cv import Pipeline
-from polars_cv._types import SinkFormat
+from polars_cv._types import Domain, SinkFormat
 
 from .conftest import plugin_required
 
@@ -94,8 +94,12 @@ def test_sink_matrix_is_complete() -> None:
     failure mode of every hand-maintained table in this repo.
     """
     covered_domains = {domain for domain, _, _ in _PIPELINES.values()}
-    assert covered_domains == {"buffer", "contour", "scalar", "vector"}, (
-        f"pipeline domains not covered by the sink sweep: {covered_domains}"
+    # Derived from the domain vocabulary rather than written out: a literal set
+    # here would still pass on the day a fifth domain is added, which is the
+    # one moment this assertion exists for.
+    assert covered_domains == {m.value for m in Domain}, (
+        f"pipeline domains not covered by the sink sweep: "
+        f"{ {m.value for m in Domain} - covered_domains }"
     )
     # The format axis is generated from SinkFormat directly (see the
     # parametrize below), so this asserts the enum itself is non-trivial and

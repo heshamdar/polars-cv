@@ -356,7 +356,7 @@ impl CompiledGraph {
                         for (alias, spec) in &state.resolved_outputs {
                             let rows = results.get_mut(alias).unwrap();
                             rows.truncate(row_idx);
-                            rows.push(null_row_result_for_spec(spec));
+                            rows.push(null_row_result_for_spec(spec).map_err(|e| e.to_string())?);
                         }
                         if with_message {
                             error_messages.push(Some(msg));
@@ -408,7 +408,7 @@ impl CompiledGraph {
                     }
                 }
             } else {
-                let null_result = null_row_result_for_spec(spec);
+                let null_result = null_row_result_for_spec(spec).map_err(|e| e.to_string())?;
                 results.get_mut(alias).unwrap().push(null_result);
             }
         }

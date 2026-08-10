@@ -14,6 +14,7 @@ use super::encode::{
     contour_struct_dtype, contours_to_polars_value, histogram_buckets_to_polars_value,
     histogram_struct_dtype, TypedListRow,
 };
+use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, RowResult, TypedBufferData};
 
 /// Extract binary data from a BinaryChunked at a specific row.
@@ -659,19 +660,12 @@ fn list_array_inner_dtype(dtype: &str, sink: &str) -> PolarsResult<DataType> {
 ///
 /// Returns the appropriate dtype based on domain, sink format, and expected dtype.
 pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
-    // Encoding takes precedence over the (domain, format) pair: it selects a
-    // distinct Polars schema for outputs that share a domain (e.g. histogram
-    // buckets are a vector-domain output encoded as a struct list).
-    if spec.expected_encoding.as_deref() == Some("histogram_buckets") {
-        return Ok(DataType::List(Box::new(histogram_struct_dtype())));
-    }
-    let format = spec.sink.format.as_str();
-    let domain = spec.expected_domain.as_str();
-    match (domain, format) {
-        ("buffer", "numpy" | "torch") => Ok(crate::output::numpy_output_dtype()),
+    match SinkKind::resolve(spec)? {
+        SinkKind::HistogramBuckets => Ok(DataType::List(Box::new(histogram_struct_dtype()))),
+        SinkKind::NumpyStruct => Ok(crate::output::numpy_output_dtype()),
         // A VIEW blob is self-describing, so it carries no codec precondition.
-        ("buffer", "blob") => Ok(DataType::Binary),
-        ("buffer", "png" | "jpeg" | "webp" | "tiff") => {
+        SinkKind::Blob => Ok(DataType::Binary),
+        kind @ SinkKind::EncodedImage => {
             // The codec's dtype/rank/channel precondition is decidable now, from
             // the same OutputSpec that produced this dtype — so decide it now.
             // Leaving it to the encoder meant a query planned as `Binary` and
@@ -680,6 +674,9 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             // exists to prevent. `ImageCodec::check_support` is the one table
             // both halves read, and it treats an unknown as permission, so a
             // source whose dtype is still "auto" is not refused here.
+            let format = kind
+                .image_codec_format(spec)
+                .expect("EncodedImage carries a codec format");
             let codec = ImageCodec::from_sink_format(format)
                 .expect("this arm matches exactly the formats from_sink_format parses");
             let dtype = PlannedDType::parse(&spec.expected_dtype).unwrap_or(PlannedDType::Unknown);
@@ -701,7 +698,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
                 .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
             Ok(DataType::Binary)
         }
-        ("buffer", "list") => {
+        SinkKind::BufferList => {
             let inner = list_array_inner_dtype(&spec.expected_dtype, "list")?;
             let ndim = spec
                 .expected_shape
@@ -733,7 +730,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             }
             Ok(dtype)
         }
-        ("buffer", "array") => {
+        SinkKind::BufferArray => {
             let inner = list_array_inner_dtype(&spec.expected_dtype, "array")?;
             let shape = spec.sink.shape.as_ref().or(spec.expected_shape.as_ref());
             if let Some(shape) = shape {
@@ -750,8 +747,8 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
                 );
             }
         }
-        ("scalar", "native") => Ok(DataType::Float64),
-        ("vector", "native" | "list") => {
+        SinkKind::Scalar => Ok(DataType::Float64),
+        SinkKind::VectorList => {
             // Reject an unresolved "auto" element dtype the same way the
             // buffer/list and array arms do, instead of silently mapping it to
             // U8 — a plan/data divergence if a vector output ever reached the
@@ -776,7 +773,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
         // Fixed-size vector outputs (e.g. perceptual hashes) as Array.
         // This pair used to ride the silent Binary fallthrough: execution
         // produced an Array while lazy schema claimed Binary.
-        ("vector", "array") => {
+        SinkKind::VectorArray => {
             let inner = list_array_inner_dtype(&spec.expected_dtype, "array")?;
             let shape = spec.sink.shape.as_ref().or(spec.expected_shape.as_ref());
             if let Some(shape) = shape {
@@ -792,40 +789,24 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
                 );
             }
         }
-        ("contour", "native") => Ok(DataType::List(Box::new(contour_struct_dtype()))),
-        ("buffer", "native") => polars_bail!(ComputeError:
-            "'native' sink is not defined for buffer outputs; use an explicit \
-             format (numpy, png, list, array, blob, ...)"
-        ),
-        // Unknown pairs used to silently default to Binary, masking planner
-        // bugs (a typo'd format/domain produced a Binary column of garbage).
-        (domain, format) => polars_bail!(ComputeError:
-            "Unsupported output combination: domain '{}' with sink format '{}'",
-            domain, format
-        ),
+        SinkKind::Contours => Ok(DataType::List(Box::new(contour_struct_dtype()))),
     }
 }
 /// Create a null RowResult with the correct type based on OutputSpec.
 ///
 /// This ensures that null values are pushed with the appropriate type variant,
 /// allowing the series builder to use static type information.
-pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> RowResult {
-    if spec.expected_encoding.as_deref() == Some("histogram_buckets") {
-        return RowResult::HistogramBuckets(None);
-    }
-    let format = spec.sink.format.as_str();
-    let domain = spec.expected_domain.as_str();
-    match (domain, format) {
-        ("buffer", "numpy" | "torch") => RowResult::NumpyStruct(None),
-        ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") | (_, "binary") => {
-            RowResult::Binary(None)
-        }
-        ("buffer", "list") | ("vector", "native" | "list") => RowResult::TypedList(None),
-        ("buffer" | "vector", "array") => RowResult::TypedArray(None),
-        ("scalar", "native") => RowResult::Scalar(None),
-        ("contour", "native") => RowResult::Contours(None),
-        _ => RowResult::Binary(None),
-    }
+pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowResult> {
+    let kind = SinkKind::resolve(spec)?;
+    Ok(match kind {
+        SinkKind::HistogramBuckets => RowResult::HistogramBuckets(None),
+        SinkKind::NumpyStruct => RowResult::NumpyStruct(None),
+        SinkKind::EncodedImage | SinkKind::Blob => RowResult::Binary(None),
+        SinkKind::BufferList | SinkKind::VectorList => RowResult::TypedList(None),
+        SinkKind::BufferArray | SinkKind::VectorArray => RowResult::TypedArray(None),
+        SinkKind::Scalar => RowResult::Scalar(None),
+        SinkKind::Contours => RowResult::Contours(None),
+    })
 }
 /// Build a series from row results using the OutputSpec to determine the type.
 ///
@@ -837,10 +818,9 @@ pub(crate) fn build_series_from_spec(
     spec: &OutputSpec,
     data: Vec<RowResult>,
 ) -> PolarsResult<Series> {
-    let format = spec.sink.format.as_str();
-    let domain = spec.expected_domain.as_str();
     let dtype = &spec.expected_dtype;
-    if spec.expected_encoding.as_deref() == Some("histogram_buckets") {
+    let kind = SinkKind::resolve(spec)?;
+    if kind == SinkKind::HistogramBuckets {
         let values: PolarsResult<Vec<AnyValue<'static>>> = data
             .iter()
             .map(|r| match r {
@@ -853,8 +833,11 @@ pub(crate) fn build_series_from_spec(
         let histogram_dtype = DataType::List(Box::new(histogram_struct_dtype()));
         return Series::from_any_values_and_dtype(name, &values?, &histogram_dtype, true);
     }
-    match (domain, format) {
-        ("buffer", "numpy" | "torch") => {
+    match kind {
+        // Every arm below is keyed on the resolved kind, so a new one is a
+        // compile error here rather than a row that quietly becomes Binary.
+        SinkKind::HistogramBuckets => unreachable!("handled above"),
+        SinkKind::NumpyStruct => {
             // Move the buffers in so each is the sole Arc owner: that lets
             // `into_polars_buffer_strided` take the zero-copy *strided* branch
             // for non-contiguous (transposed/flipped/rotated) outputs. The
@@ -871,7 +854,7 @@ pub(crate) fn build_series_from_spec(
                 .collect();
             crate::output::build_numpy_series(name, buffers, spec.sink.out_dtype.as_deref())
         }
-        ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") | (_, "binary") => {
+        SinkKind::EncodedImage | SinkKind::Blob => {
             // Register each row's already-materialised bytes as a BinaryView
             // backing buffer instead of copying them into a builder — see
             // `crate::output::binary_view_series_from_rows`.
@@ -883,7 +866,7 @@ pub(crate) fn build_series_from_spec(
                 }),
             ))
         }
-        ("buffer", "list") => {
+        SinkKind::BufferList => {
             let rows: Vec<TypedListRow> = data
                 .into_iter()
                 .map(|r| match r {
@@ -899,7 +882,7 @@ pub(crate) fn build_series_from_spec(
                 spec.expected_ndim,
             )
         }
-        ("buffer", "array") => {
+        SinkKind::BufferArray => {
             let rows: Vec<TypedListRow> = data
                 .into_iter()
                 .map(|r| match r {
@@ -915,7 +898,7 @@ pub(crate) fn build_series_from_spec(
                 spec.expected_shape.as_ref(),
             )
         }
-        ("scalar", "native") => {
+        SinkKind::Scalar => {
             let scalar_data: Vec<Option<f64>> = data
                 .into_iter()
                 .map(|r| match r {
@@ -926,7 +909,7 @@ pub(crate) fn build_series_from_spec(
             let output_ca = Float64Chunked::from_iter_options(name, scalar_data.into_iter());
             Ok(output_ca.into_series())
         }
-        ("vector", "native" | "list") => {
+        SinkKind::VectorList => {
             let rows: Vec<TypedListRow> = data
                 .into_iter()
                 .map(|r| match r {
@@ -946,7 +929,7 @@ pub(crate) fn build_series_from_spec(
                 spec.expected_ndim,
             )
         }
-        ("vector", "array") => {
+        SinkKind::VectorArray => {
             let rows: Vec<TypedListRow> = data
                 .into_iter()
                 .map(|r| match r {
@@ -967,7 +950,7 @@ pub(crate) fn build_series_from_spec(
                 spec.expected_shape.as_ref(),
             )
         }
-        ("contour", "native") => {
+        SinkKind::Contours => {
             let values: PolarsResult<Vec<AnyValue<'static>>> = data
                 .iter()
                 .map(|r| match r {
@@ -979,13 +962,6 @@ pub(crate) fn build_series_from_spec(
             let contour_dtype = DataType::List(Box::new(contour_struct_dtype()));
             Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
         }
-        _ => Ok(crate::output::binary_view_series_from_rows(
-            name,
-            data.into_iter().map(|r| match r {
-                RowResult::Binary(b) => b,
-                _ => None,
-            }),
-        )),
     }
 }
 
