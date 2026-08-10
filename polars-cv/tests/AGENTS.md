@@ -84,6 +84,37 @@ Useful entry points when you need a pattern to copy:
 | `test_source_types.py` | Exercising each source format |
 | `test_sanitation.py` | Meta-tests that police the conventions below |
 | `test_contour_raster_crosscheck.py` | Differential testing: one quantity, two implementations |
+| `test_expression_op_params.py` | Table-driven sweep with a coverage ratchet |
+
+### Per-row (expression) parameters
+
+Nearly every `Pipeline` parameter accepts a `pl.Expr` resolved per row, and
+they are swept as one table rather than one test per op:
+
+- `_expr_param_cases.py` — the table. One `ExprCase` per
+  `method.parameter`, carrying a pipeline factory and the per-row values.
+- `_expr_param_runner.py` — the harness, shared with
+  `test_param_strictness.py` so the differential comparison exists once.
+- `test_expression_op_params.py` — the sweep and the ratchet.
+- `test_expression_workflows.py` — multi-stage workflows (measure the batch
+  with one pipeline, parameterise the next with an aggregate over it).
+
+Three claims are checked per case, and **none implies the others**:
+
+1. each row equals the pipeline built with that row's value as a *literal*
+   (an off-by-one in `row_idx` produces differing rows that still fail here);
+2. distinct values produce distinct outputs (the only check that can see a
+   parameter the kernel ignores — a comparison against the literal path
+   cannot, since it would be ignored there too);
+3. a row's result is the same alone as inside a batch (morsel boundaries,
+   broadcasting, the compiled-graph cache).
+
+`test_every_expression_parameter_has_a_case` reads the eligible parameters
+off `Pipeline`'s live signatures — an annotation admitting `pl.Expr` — so a
+new expression-valued parameter fails the ratchet until it is swept or
+exempted in `NOT_SWEPT` with a reason. Add cases to the table rather than
+writing one-off tests, and give a case `varies=False` only with a note
+saying why the parameter cannot change the output.
 
 ### Differential tests against the rasterizer
 

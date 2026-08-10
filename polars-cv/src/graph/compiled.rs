@@ -356,7 +356,7 @@ impl CompiledGraph {
                         for (alias, spec) in &state.resolved_outputs {
                             let rows = results.get_mut(alias).unwrap();
                             rows.truncate(row_idx);
-                            rows.push(null_row_result_for_spec(spec));
+                            rows.push(null_row_result_for_spec(spec).map_err(|e| e.to_string())?);
                         }
                         if with_message {
                             error_messages.push(Some(msg));
@@ -408,7 +408,7 @@ impl CompiledGraph {
                     }
                 }
             } else {
-                let null_result = null_row_result_for_spec(spec);
+                let null_result = null_row_result_for_spec(spec).map_err(|e| e.to_string())?;
                 results.get_mut(alias).unwrap().push(null_result);
             }
         }
@@ -1673,23 +1673,125 @@ mod tests {
         assert_eq!(decoded.as_slice::<f32>(), &[1.0, 2.0, 3.0]);
     }
 
-    /// Completeness guard + execution coverage: every `GraphStep` variant
-    /// executes end-to-end through `CompiledGraph::execute`. The exhaustive
-    /// match in `assert_step_covered` makes adding a variant a compile error
-    /// until it is acknowledged (and given a graph below).
-    fn assert_step_covered(step: &GraphStep) {
+    /// The variant a step belongs to.
+    ///
+    /// Exhaustive, so adding a `GraphStep` fails to compile here. That alone
+    /// only forced *this match* to grow: the per-variant graphs in
+    /// `every_graph_step_variant_executes` are hand-written, and
+    /// `assert_step_covered` was called exactly once — with a `Buffer` step —
+    /// so nothing checked that the other nine had a graph. The reachability
+    /// test below closes it against `KNOWN_OPS`, the same way
+    /// `every_graph_geometry_op_executes` does in `encode.rs`.
+    use std::collections::BTreeSet;
+
+    use crate::execute::KNOWN_OPS;
+
+    fn step_name(step: &GraphStep) -> &'static str {
         match step {
-            GraphStep::Buffer(_)
-            | GraphStep::Binary { .. }
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. }
-            | GraphStep::Geometry(_)
-            | GraphStep::Reduction(_)
-            | GraphStep::Histogram(_)
-            | GraphStep::PerceptualHash(_)
-            | GraphStep::ExtractShape
-            | GraphStep::LabelReduce { .. } => (),
+            GraphStep::Buffer(_) => "Buffer",
+            GraphStep::Binary { .. } => "Binary",
+            GraphStep::ApplyMask { .. } => "ApplyMask",
+            GraphStep::ChannelMerge { .. } => "ChannelMerge",
+            GraphStep::Geometry(_) => "Geometry",
+            GraphStep::Reduction(_) => "Reduction",
+            GraphStep::Histogram(_) => "Histogram",
+            GraphStep::PerceptualHash(_) => "PerceptualHash",
+            GraphStep::ExtractShape => "ExtractShape",
+            GraphStep::LabelReduce { .. } => "LabelReduce",
         }
+    }
+
+    /// The variants `step_name` acknowledges, read back from this file.
+    fn acknowledged_steps() -> Vec<String> {
+        let src = include_str!("compiled.rs");
+        let body = src
+            .split("fn step_name(step: &GraphStep) -> &'static str {")
+            .nth(1)
+            .expect("step_name's definition moved — this scan reads nothing");
+        let body = body
+            .split("\n    }")
+            .next()
+            .expect("step_name's body has no closing brace");
+        let names: Vec<String> = body
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("GraphStep::"))
+            .filter_map(|rest| rest.split([' ', '(']).next())
+            .map(str::to_string)
+            .collect();
+        assert!(
+            names.len() >= 10,
+            "parsed {} arms from step_name; the scan is out of date",
+            names.len()
+        );
+        names
+    }
+
+    fn assert_step_covered(step: &GraphStep) {
+        let _ = step_name(step);
+    }
+
+    /// Every `GraphStep` variant is reachable from some registered op.
+    ///
+    /// A variant no op produces is dead vocabulary that every match still has
+    /// to answer for; a variant that exists but is unreachable is also one the
+    /// execution graphs below cannot really be covering. Driven from
+    /// `KNOWN_OPS` rather than a probe list, so the axis is the op registry.
+    #[test]
+    fn every_graph_step_variant_is_reachable_from_a_known_op() {
+        fn probe_params(op: &str) -> Vec<(&'static str, ParamValue)> {
+            use serde_json::json;
+            fn lit(v: serde_json::Value) -> ParamValue {
+                ParamValue::Literal { value: v }
+            }
+            // `label_reduce` names its contour column rather than taking a
+            // value, so its probe is an `Expr` — the wire form graph
+            // compilation binds to an input slot.
+            let col = |name: &str| ParamValue::Expr {
+                col: Some(name.to_string()),
+            };
+            match op {
+                "add" | "subtract" | "multiply" | "divide" | "minimum" | "maximum" | "ratio" => {
+                    vec![("other_node", lit(json!("n0")))]
+                }
+                "apply_mask" => vec![("other_node", lit(json!("n0")))],
+                "channel_merge" => vec![("other_nodes", lit(json!(["n0"])))],
+                "label_reduce" => vec![("contours", col("c"))],
+                "histogram" => vec![
+                    ("bins", lit(json!(8))),
+                    ("closed", lit(json!("left"))),
+                    ("output", lit(json!("counts"))),
+                ],
+                "rasterize" => vec![("width", lit(json!(8))), ("height", lit(json!(8)))],
+                "reduce_percentile" => vec![("q", lit(json!(0.5)))],
+                "threshold" => vec![("value", lit(json!(128.0)))],
+                _ => vec![],
+            }
+        }
+
+        let mut reachable: BTreeSet<&'static str> = BTreeSet::new();
+        for &op_name in KNOWN_OPS {
+            let params: HashMap<String, ParamValue> = probe_params(op_name)
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            let spec = OpSpec {
+                op: op_name.to_string(),
+                params,
+            };
+            if let Ok(step) = resolve_op(&spec, 0, &ParamCtx::empty()) {
+                reachable.insert(step_name(&step));
+            }
+        }
+
+        let missing: Vec<String> = acknowledged_steps()
+            .into_iter()
+            .filter(|name| !reachable.contains(name.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these GraphStep variants are acknowledged but no KNOWN_OPS entry \
+             produces them: {missing:?}"
+        );
     }
 
     fn exec(graph: &str, names: &[String], inputs: &[Series]) -> Series {

@@ -21,6 +21,7 @@ import polars as pl
 if TYPE_CHECKING:
     import numpy as np
 
+from ._dtype_names import SINK_NUMPY_NAMES
 from ._types import (
     IMAGENET_MEAN,
     IMAGENET_STD,
@@ -207,37 +208,15 @@ def numpy_from_struct(
     else:
         offset = int(offset)
 
-    # Create numpy dtype — validate against allowlist to prevent arbitrary dtype strings
-    _ALLOWED_DTYPES = frozenset(
-        {
-            "uint8",
-            "u1",
-            "int8",
-            "i1",
-            "uint16",
-            "u2",
-            "int16",
-            "i2",
-            "uint32",
-            "u4",
-            "int32",
-            "i4",
-            "uint64",
-            "u8",
-            "int64",
-            "i8",
-            "float16",
-            "f2",
-            "float32",
-            "f4",
-            "float64",
-            "f8",
-            "bool",
-            "b1",
-        }
-    )
-    if dtype_str not in _ALLOWED_DTYPES:
-        msg = f"Unsupported dtype '{dtype_str}'. Allowed: {sorted(_ALLOWED_DTYPES)}"
+    # The sink writes `DType::numpy_name()` into the struct, so those ten names
+    # are exactly what can legitimately arrive. Generated from `dtype_table!`
+    # rather than listed here: the hand-written list this replaced admitted
+    # numpy's *character codes* too, which meant `"u8"` (numpy uint64) sat in
+    # the same set as this project's `"u8"` (uint8) — so a caller hand-building
+    # a struct with `dtype="u8"` got a uint64 reinterpretation of the bytes,
+    # silently, with the wrong shape.
+    if dtype_str not in SINK_NUMPY_NAMES:
+        msg = f"Unsupported dtype '{dtype_str}'. Allowed: {sorted(SINK_NUMPY_NAMES)}"
         raise ValueError(msg)
     dtype = np.dtype(dtype_str)
 

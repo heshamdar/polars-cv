@@ -33,7 +33,8 @@ from PIL import Image
 import polars_cv
 from polars_cv import Pipeline
 
-from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES
+from ._discovery import package_modules
+from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES, base_pipeline
 from ._schema_parity import assert_plan_equals_exec
 from .conftest import plugin_required
 
@@ -55,11 +56,6 @@ from .conftest import plugin_required
 #: it to get wrong. It is the one place where assigning ``_ops`` carries no
 #: obligation.
 _OPS_MUTATORS = frozenset({"_push_op", "_set_ops_slice", "_clone"})
-
-#: Every module in the package. The guard scans all of them: the first version
-#: read only ``pipeline.py``, and both real ``_ops`` mutations outside it (in
-#: ``_graph.py``'s CSE) sailed straight through.
-_PACKAGE_MODULES = sorted(Path(polars_cv.__file__).parent.rglob("*.py"))
 
 
 def _pipeline_ast() -> ast.ClassDef:
@@ -113,7 +109,10 @@ def test_op_append_is_structurally_exclusive() -> None:
     fold and the shape-hint update, because it never touches ``_ops`` at all.
     """
     offenders: list[str] = []
-    for module in _PACKAGE_MODULES:
+    # Discovery goes through `_discovery`, which refuses to return an empty
+    # set: this guard passing over zero modules is the failure mode it exists
+    # to prevent, not a pass.
+    for module in package_modules():
         tree = ast.parse(module.read_text())
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -260,16 +259,6 @@ _BUFFER, _CONTOUR = BUFFER, CONTOUR
 _OP_CASES = OP_CASES
 
 
-def _base(domain: str) -> Pipeline:
-    """A pipeline in *domain* with fully known, non-square shape hints."""
-    pipe = (
-        Pipeline().source("image_bytes").assert_shape(height=100, width=200, channels=3)
-    )
-    if domain == _CONTOUR:
-        return pipe.grayscale().threshold(128).extract_contours()
-    return pipe
-
-
 def _state(pipe: Pipeline) -> tuple:
     hints = pipe._shape_hints
     dims = tuple(
@@ -308,7 +297,7 @@ _EXTRA_CASES = EXTRA_CASES
 )
 def test_eager_and_lazy_agree_on_extra_branches(op, domain, kwargs) -> None:
     """Branch coverage for ops whose single parity case misses the interesting path."""
-    base = _base(domain)
+    base = base_pipeline(domain)
     eager = getattr(base, op)(**kwargs)
     lazy = getattr(pl.col("img").cv.pipe(base), op)(**kwargs)._pipeline
     assert _state(eager) == _state(lazy), (
@@ -330,7 +319,7 @@ def test_eager_and_lazy_agree_on_shape_state(op) -> None:
     with their eager spelling, ``pad`` and ``rotate`` among them.
     """
     domain, kwargs = _OP_CASES[op]
-    base = _base(domain)
+    base = base_pipeline(domain)
 
     eager = getattr(base, op)(**kwargs)
     lazy = getattr(pl.col("img").cv.pipe(base), op)(**kwargs)._pipeline

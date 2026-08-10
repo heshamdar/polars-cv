@@ -40,22 +40,75 @@ fn view_dto_probes() -> Vec<ViewDto> {
     ]
 }
 
-/// Completeness guard: adding a `ViewDto` variant fails to compile here until
-/// it is acknowledged — add a matching probe to `view_dto_probes()` too.
-fn assert_probed(dto: &ViewDto) {
+/// The variant a value belongs to.
+///
+/// Exhaustive, so adding a `ViewDto` variant fails to compile here. That alone
+/// only forced the *match* to grow, though — `view_dto_probes()` was a separate
+/// list, and adding an arm without a probe compiled and passed. The test below
+/// closes that by reading this function's own arms back out of the source and
+/// requiring the probes to cover every one.
+fn variant_name(dto: &ViewDto) -> &'static str {
     match dto {
-        ViewDto::View(_)
-        | ViewDto::Compute(_)
-        | ViewDto::Image(_)
-        | ViewDto::Color(_)
-        | ViewDto::Filter(_) => (),
+        ViewDto::View(_) => "View",
+        ViewDto::Compute(_) => "Compute",
+        ViewDto::Image(_) => "Image",
+        ViewDto::Color(_) => "Color",
+        ViewDto::Filter(_) => "Filter",
     }
+}
+
+/// The variant names `variant_name` acknowledges, parsed from this file.
+///
+/// Source-scanning is the weaker technique and is used here for exactly the
+/// part the type system cannot answer: Rust offers no way to enumerate an
+/// enum's variants without a derive or a second list, and a second list is what
+/// this is replacing. The parse asserts it found a plausible match rather than
+/// silently matching nothing — the failure mode a scan has to be protected
+/// from. Same shape as `resolve_op_arms_are_all_known_ops` in the plugin crate.
+fn acknowledged_variants() -> Vec<String> {
+    let src = include_str!("apply_op_coverage.rs");
+    let body = src
+        .split("fn variant_name(dto: &ViewDto) -> &'static str {")
+        .nth(1)
+        .expect("variant_name's definition moved — this scan reads nothing");
+    let body = body
+        .split("\n}")
+        .next()
+        .expect("variant_name's body has no closing brace");
+    let names: Vec<String> = body
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("ViewDto::"))
+        .filter_map(|rest| rest.split('(').next())
+        .map(str::to_string)
+        .collect();
+    assert!(
+        names.len() >= 5,
+        "parsed {} variant arms from variant_name; the scan is out of date",
+        names.len()
+    );
+    names
+}
+
+#[test]
+fn every_view_dto_variant_has_a_probe() {
+    let probed: std::collections::BTreeSet<&str> =
+        view_dto_probes().iter().map(variant_name).collect();
+    let acknowledged: std::collections::BTreeSet<String> =
+        acknowledged_variants().into_iter().collect();
+    let missing: Vec<&String> = acknowledged
+        .iter()
+        .filter(|name| !probed.contains(name.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these ViewDto variants are acknowledged but never probed: {missing:?}. \
+         Acknowledging a variant and executing it must be the same act."
+    );
 }
 
 #[test]
 fn apply_op_executes_every_view_dto_variant() {
     for dto in view_dto_probes() {
-        assert_probed(&dto);
         let name = dto.name();
 
         let source = ViewBuffer::from_vec_with_shape(vec![7u8; 4 * 4 * 3], vec![4, 4, 3]);

@@ -28,6 +28,7 @@ deleted and re-added later.
 
 from __future__ import annotations
 
+import ast
 import io
 import re
 from pathlib import Path
@@ -37,7 +38,16 @@ import pytest
 
 import polars_cv
 from polars_cv import Pipeline
+from tests._discovery import (
+    package_modules,
+    requires_checkout,
+    rust_sources,
+    rust_src_dir,
+    suite_files,
+    suite_modules,
+)
 from tests._dtype_ratchet import dispatch_offenders
+from tests._op_cases import build_case, comparable_ops
 from tests._schema_parity import assert_plan_equals_exec, leaf_dtype
 from tests.conftest import plugin_required
 
@@ -375,15 +385,7 @@ def test_registry_parity_all_rust_ops_are_reachable():
     )
 
 
-def _rust_src_dir():
-    """The crate ``src/`` dir in a source checkout, or None (installed wheel)."""
-    from pathlib import Path
-
-    # python/polars_cv/__init__.py -> ../../src
-    src = Path(polars_cv.__file__).resolve().parent.parent.parent / "src"
-    return src if (src / "lib.rs").exists() else None
-
-
+@requires_checkout
 def test_namespace_plugin_symbols_match_registrations():
     """The namespace plugin surface is connected in BOTH directions.
 
@@ -401,13 +403,9 @@ def test_namespace_plugin_symbols_match_registrations():
       reverse-parity test guards) fails here.
     """
     import re
-    from pathlib import Path
 
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
 
-    pkg = Path(polars_cv.__file__).parent
     called: set[str] = set()
     # Two spellings reach the same plugin: the direct `self._plugin("name", ...)`
     # and `_ArgBinder.call(self, "name", ...)`, which routes through `_plugin`
@@ -417,7 +415,7 @@ def test_namespace_plugin_symbols_match_registrations():
         r'_plugin\(\s*"([a-z_0-9]+)"',
         r'\.call\(\s*self,\s*"([a-z_0-9]+)"',
     )
-    for py in pkg.rglob("*.py"):
+    for py in package_modules():
         text = py.read_text()
         for pattern in patterns:
             called |= set(re.findall(pattern, text))
@@ -444,6 +442,7 @@ def test_namespace_plugin_symbols_match_registrations():
     )
 
 
+@requires_checkout
 def test_lib_module_registration_matches_required_hooks():
     """The introspection FFI registered in ``#[pymodule]`` equals the hooks list.
 
@@ -454,9 +453,7 @@ def test_lib_module_registration_matches_required_hooks():
     """
     import re
 
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
 
     text = (src / "lib.rs").read_text()
     registered = set(re.findall(r"wrap_pyfunction!\(\s*([a-z_0-9]+)\s*,", text))
@@ -503,6 +500,7 @@ def test_op_names_covers_all_emitted_ops():
     )
 
 
+@requires_checkout
 def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
     """``Pipeline.OP_NAMES`` must equal Rust's ``KNOWN_OPS``, checked from source.
 
@@ -518,9 +516,7 @@ def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
     is used here only because the stronger one is unavailable by construction;
     it asserts it parsed a plausible registry rather than matching nothing.
     """
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
 
     text = (src / "execute.rs").read_text()
     m = re.search(r"pub const KNOWN_OPS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
@@ -622,6 +618,7 @@ def test_binary_output_dtype_authority():
     assert binary_output_dtype("add", "u8", "auto") == "auto"
 
 
+@requires_checkout
 def test_op_schema_rules_are_required_not_defaulted():
     """The three structural schema rules are REQUIRED trait methods (no default
     body). An op that omits one is a compile error, so a new op cannot silently
@@ -631,9 +628,7 @@ def test_op_schema_rules_are_required_not_defaulted():
     """
     import re
 
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
     traits = src.parent.parent / "view-buffer" / "src" / "ops" / "traits.rs"
     if not traits.exists():
         pytest.skip("view-buffer sources not available")
@@ -662,53 +657,16 @@ def test_op_schema_rules_are_required_not_defaulted():
 # class of bug that made the old blur contract say u8 while execution produced
 # f32).
 
-# op name -> builder producing a Pipeline whose LAST op is the op under test,
-# using only literal params (so resolve_op needs no expression columns).
-_OP_BUILDERS = {
-    "resize": lambda: Pipeline().source("image_bytes").resize(height=4, width=4),
-    "grayscale": lambda: Pipeline().source("image_bytes").grayscale(),
-    "threshold": lambda: Pipeline().source("image_bytes").grayscale().threshold(128),
-    "blur": lambda: Pipeline().source("image_bytes").blur(sigma=1.0),
-    "scale": lambda: Pipeline().source("image_bytes").scale(2.0),
-    "clamp": lambda: Pipeline().source("image_bytes").clamp(0.0, 255.0),
-    "relu": lambda: Pipeline().source("image_bytes").relu(),
-    "invert": lambda: Pipeline().source("image_bytes").invert(),
-    "adjust_contrast": lambda: (
-        Pipeline().source("image_bytes").adjust_contrast(factor=1.2)
-    ),
-    "adjust_gamma": lambda: Pipeline().source("image_bytes").adjust_gamma(gamma=1.2),
-    "cvt_color": lambda: Pipeline().source("image_bytes").convert_color("rgb", "hsv"),
-    "convolve2d": lambda: (
-        Pipeline().source("image_bytes").convolve2d([0, 0, 0, 0, 1, 0, 0, 0, 0], 3)
-    ),
-    "erode": lambda: (
-        Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
-    ),
-    "dilate": lambda: (
-        Pipeline().source("image_bytes").grayscale().threshold(128).dilate(ksize=3)
-    ),
-    "morphology_gradient": lambda: (
-        Pipeline()
-        .source("image_bytes")
-        .grayscale()
-        .threshold(128)
-        .morphology_gradient(ksize=3)
-    ),
-    "canny": lambda: Pipeline().source("image_bytes").grayscale().canny(),
-    "equalize_histogram": lambda: (
-        Pipeline().source("image_bytes").grayscale().equalize_histogram()
-    ),
-    "channel_select": lambda: Pipeline().source("image_bytes").channel_select(index=0),
-    "channel_swap": lambda: (
-        Pipeline().source("image_bytes").channel_swap(order=[2, 1, 0])
-    ),
-    "flip": lambda: Pipeline().source("image_bytes").flip([0]),
-    "perceptual_hash": lambda: Pipeline().source("image_bytes").perceptual_hash(),
-}
+# Every op with a callable case, driven from `tests/_op_cases.py` — the table
+# `test_op_case_table_is_complete` pins to `_chainable_pipeline_ops()` in both
+# directions. This replaced a local op -> builder map that named 22 of the ~90
+# ops, so the other ~70 never had their domain or rank/channel rule checked
+# against the Rust contract at all: the failure mode of every hand-maintained
+# list in this repo, sitting inside the file that polices them.
 
 
 @plugin_required
-@pytest.mark.parametrize("op_name", sorted(_OP_BUILDERS))
+@pytest.mark.parametrize("op_name", comparable_ops())
 def test_planner_domain_is_sourced_from_rust(op_name):
     """The planner derives each op's output domain from the view-buffer
     contract (ViewDto::output_domain) rather than a Python domain table (A10).
@@ -723,7 +681,7 @@ def test_planner_domain_is_sourced_from_rust(op_name):
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not built")
 
-    pipe = _OP_BUILDERS[op_name]()
+    pipe = build_case(op_name)
     rust_domain = contract_fn(json.dumps(pipe._ops[-1].to_dict()))["output_domain"]
     planned_domain, _, _ = Pipeline._compute_output_domain_dtype_ndim(
         pipe._ops, initial_domain="buffer", initial_dtype="u8"
@@ -735,7 +693,7 @@ def test_planner_domain_is_sourced_from_rust(op_name):
 
 
 @plugin_required
-@pytest.mark.parametrize("op_name", sorted(_OP_BUILDERS))
+@pytest.mark.parametrize("op_name", comparable_ops())
 def test_contract_exposes_rank_and_channel_rules(op_name):
     """Every op's contract exposes a rank_rule and channel_rule in the known
     vocabulary — the single authority the Python planner reads instead of
@@ -746,7 +704,7 @@ def test_contract_exposes_rank_and_channel_rules(op_name):
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not built")
 
-    contract = contract_fn(json.dumps(_OP_BUILDERS[op_name]()._ops[-1].to_dict()))
+    contract = contract_fn(json.dumps(build_case(op_name)._ops[-1].to_dict()))
     rank, channel = contract["rank_rule"], contract["channel_rule"]
 
     assert rank in ("preserve", "reduce_one", "unknown") or (
@@ -862,6 +820,8 @@ _UNIFORM_PARITY_ENUMS = [
     "ExtractMode",
     "ApproxMethod",
     "InterpolationType",
+    "ScaleOrigin",
+    "Winding",
 ]
 
 # Checked, but not by the uniform test: their Python side needs special
@@ -975,12 +935,19 @@ def test_binary_ops_match_rust():
 # graph/compiled.rs, which the graph validator rejects unknown formats against
 # — so the two lists must be equal, and the test below pins them.
 #
-# Sink formats genuinely have no list: `encode_node_output` and
-# `output_dtype_for_spec` match on (domain, format) pairs and error on the
-# fall-through, so an unhandled sink is rejected rather than enumerated. There
-# is no second declaration to drift from.
+# Sink formats genuinely have no list: `SinkKind::resolve` (graph/sink_kind.rs)
+# is the one place a (domain, format) pair is interpreted, and it errors on the
+# fall-through, so an unhandled sink is rejected rather than enumerated. The
+# four halves of the sink contract match on the resolved *kind*, so they cannot
+# disagree about which pairs exist.
+#
+# This note used to say the pair was matched in two places that "error on the
+# fall-through, so there is no second declaration to drift from". Both halves
+# of that were false: there were four such matches, and two of them ended in
+# `_ => Binary` rather than an error.
 
 
+@requires_checkout
 def test_source_formats_match_the_rust_vocabulary() -> None:
     """``SourceFormat`` must equal Rust's ``KNOWN_SOURCE_FORMATS``.
 
@@ -994,9 +961,7 @@ def test_source_formats_match_the_rust_vocabulary() -> None:
     plugin-free lane too — the drift is introduced by editing Python, which is
     exactly when the extension is stale.
     """
-    src = _rust_src_dir()
-    if src is None:
-        pytest.skip("Rust sources not available (installed wheel)")
+    src = rust_src_dir()
 
     text = (src / "graph" / "compiled.rs").read_text()
     m = re.search(r"const KNOWN_SOURCE_FORMATS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
@@ -1459,24 +1424,13 @@ def test_enum_validation_uniform() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _test_files() -> list:
-    from pathlib import Path
-
-    tests_dir = Path(__file__).parent
-    return [
-        p
-        for p in tests_dir.rglob("*.py")
-        if p.name != "conftest.py" and p.name != Path(__file__).name
-    ]
-
-
 def test_no_local_plugin_available_definitions() -> None:
     """Plugin availability is checked in exactly one place (conftest.py).
 
     Import ``plugin_required`` from ``tests.conftest`` instead of redefining
     ``_plugin_available`` per file."""
     offenders = [
-        str(p.name) for p in _test_files() if "def _plugin_available" in p.read_text()
+        str(p.name) for p in suite_modules() if "def _plugin_available" in p.read_text()
     ]
     assert not offenders, f"local _plugin_available definitions in: {offenders}"
 
@@ -1485,7 +1439,7 @@ def test_no_local_png_factories() -> None:
     """PNG construction fixtures live in conftest.py only (create_test_png /
     encode_png); test files must not define their own."""
     offenders = [
-        str(p.name) for p in _test_files() if "def create_test_png" in p.read_text()
+        str(p.name) for p in suite_modules() if "def create_test_png" in p.read_text()
     ]
     assert not offenders, f"local create_test_png definitions in: {offenders}"
 
@@ -1495,39 +1449,75 @@ def test_no_local_png_factories() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
-    """Parse ``dtype_table!``'s rows out of the Rust source.
+def _load_script(name: str):
+    """Import a ``scripts/`` module by path.
 
-    Read from source rather than the FFI because the wire codes are not
-    surfaced across it — ``enum_variants`` carries names only. Source-scanning
-    is the weaker technique, so it is used for exactly the part the FFI cannot
-    answer, and the parse asserts it found a plausible table rather than
-    silently matching nothing.
+    The generators are not an importable package, and putting ``scripts/`` on
+    ``sys.path`` at module scope would reorder every import in this file. Same
+    approach ``test_lazy_stub_is_current`` already uses.
     """
-    src = (
-        Path(__file__).resolve().parents[2]
-        / "view-buffer"
-        / "src"
-        / "core"
-        / "dtype.rs"
-    ).read_text()
-    assert "dtype_table!(" in src, "dtype_table! invocation not found — parse is broken"
-    body = src.split("dtype_table!(", 1)[1]
-    end = re.search(r"^\s*\);", body, re.M)
-    assert end, "could not find the end of the dtype_table! invocation"
-    body = body[: end.start()]
-    rows = re.findall(
-        r'\(\s*(\w+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*\)', body
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@requires_checkout
+def test_dtype_names_module_is_current() -> None:
+    """``_dtype_names.py`` must match what ``gen_dtype_names.py`` produces.
+
+    Python cannot read `dtype_table!` at runtime — `numpy_name` does not cross
+    the FFI, and `numpy_from_struct` has to work with no compiled extension —
+    so the spellings are generated and checked in. Regenerate-and-diff is what
+    keeps that copy honest; without it the file is just a fourth hand-written
+    dtype table, which is what it replaced.
+    """
+    gen = _load_script("gen_dtype_names")
+    generated = gen.generate()
+    committed = Path(gen._OUT_PATH)
+    assert committed.exists(), (
+        "_dtype_names.py is missing; run python scripts/gen_dtype_names.py"
     )
-    # Cross-checked against an independent count of the invocation's rows, so a
-    # mis-parse that swallows the rest of the file fails, while legitimately
-    # adding an 11th dtype does not read as a parse bug.
-    row_lines = [ln for ln in body.splitlines() if ln.strip().startswith("(")]
-    assert len(rows) == len(row_lines), (
-        f"dtype_table! parse found {len(rows)} rows but the invocation has "
-        f"{len(row_lines)} lines starting a row — the scan is out of date"
+    assert committed.read_text() == generated, (
+        "_dtype_names.py is out of date. Run: python scripts/gen_dtype_names.py"
     )
-    return [(v, s, int(c), n) for v, s, c, n in rows]
+
+
+def test_the_numpy_allowlist_holds_no_character_codes() -> None:
+    """The names must be numpy's *spelled* dtypes, not its character codes.
+
+    This is the specific defect the generated module replaced: the hand-written
+    allowlist admitted ``"u8"``/``"i8"``/``"f2"``, where numpy reads ``"u8"`` as
+    ``uint64`` — the opposite of this project's ``u8``. A caller hand-building a
+    struct got a silent reinterpretation of the bytes. Pinned as its own
+    assertion because a regenerated file would happily carry them back if the
+    generator ever read the wrong column.
+    """
+    from polars_cv._dtype_names import NUMPY_NAMES
+    from polars_cv._types import DType
+
+    collisions = NUMPY_NAMES & {m.value for m in DType}
+    assert not collisions, (
+        f"these numpy names collide with engine dtype names: {sorted(collisions)}. "
+        f"numpy reads 'u8' as uint64 and this project reads it as uint8."
+    )
+    assert all(not name[-1].isdigit() or len(name) > 3 for name in NUMPY_NAMES), (
+        f"character-code-shaped entries in NUMPY_NAMES: {sorted(NUMPY_NAMES)}"
+    )
+
+
+def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
+    """``dtype_table!``'s rows, parsed by the generator that also reads them.
+
+    The parse lives in ``scripts/gen_dtype_names.py`` because that script has to
+    read the table anyway, and two parsers of one table is the shape these
+    guards exist to catch. Imported rather than re-implemented.
+    """
+    return _load_script("gen_dtype_names").dtype_table_rows()
 
 
 def test_display_wire_codes_match_the_rust_dtype_table() -> None:
@@ -1651,8 +1641,8 @@ def test_no_second_dtype_spelling_table() -> None:
     }
 
     offenders = []
-    for path in sorted(root.glob("**/*.rs")):
-        if path in allowed or "/target/" in str(path):
+    for path in rust_sources():
+        if path in allowed:
             continue
         offenders += dispatch_offenders(
             path.read_text(),
@@ -1754,3 +1744,71 @@ def test_verify_script_covers_every_ci_check() -> None:
         f"this test expects CI to run checks it no longer does: {stale}. "
         f"Update the list rather than leaving it asserting nothing."
     )
+
+
+# ---------------------------------------------------------------------------
+# Discovery: no guard may find its own files
+# ---------------------------------------------------------------------------
+
+#: Where a direct filesystem walk is legitimate, with the reason. Both entries
+#: are places where finding *nothing* is a meaningful answer rather than a
+#: broken scan, which is exactly the property `_discovery` refuses to allow.
+_DISCOVERY_EXEMPT: dict[str, str] = {
+    "_discovery.py": "the discovery module itself",
+    "conftest.py": (
+        "plugin detection: an empty result means the extension is not built, "
+        "which is the answer `plugin_required` needs rather than a failure"
+    ),
+    "test_streaming_ooc.py": (
+        "asserts a spill directory stays empty, so an empty walk is the "
+        "assertion rather than a broken scan"
+    ),
+}
+
+
+@requires_checkout
+def test_scans_go_through_discovery() -> None:
+    """File discovery happens in ``tests/_discovery.py`` and nowhere else.
+
+    A guard that finds its own files can find none of them, and then it passes
+    while checking nothing — the failure mode `tests/AGENTS.md` calls worse
+    than no guard, and one this suite had shipped twice: ``_test_files()`` and
+    ``_PACKAGE_MODULES`` were both a bare ``rglob`` whose empty result was
+    indistinguishable from a clean bill of health.
+
+    Routing every scan through :mod:`tests._discovery` makes that impossible by
+    construction rather than by remembering to assert non-emptiness at each
+    site. This test is what stops the next scan from being written the old way,
+    and it is deliberately a *mechanism* check (may you glob?) rather than a
+    list of the scans that exist.
+    """
+    offenders: list[str] = []
+    for module in suite_files():
+        if module.name in _DISCOVERY_EXEMPT:
+            continue
+        tree = ast.parse(module.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr in {"glob", "rglob"}:
+                offenders.append(f"{module.name}:{node.lineno}")
+
+    assert not offenders, (
+        "these sites walk the filesystem directly instead of calling "
+        f"tests._discovery: {offenders}. A scan that finds nothing passes "
+        "vacuously; _discovery raises instead. If an empty result is genuinely "
+        "the answer, add the file to _DISCOVERY_EXEMPT with the reason."
+    )
+
+
+@requires_checkout
+def test_discovery_exemptions_are_real_files() -> None:
+    """An exemption for a file that no longer exists is a stale exemption.
+
+    Without this the allowlist could quietly grow to cover renamed files,
+    re-opening the hole it documents closing.
+    """
+    names = {module.name for module in suite_files()}
+    stale = sorted(name for name in _DISCOVERY_EXEMPT if name not in names)
+    assert not stale, f"exemptions for files that do not exist: {stale}"

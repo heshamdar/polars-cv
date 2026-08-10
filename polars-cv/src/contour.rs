@@ -566,6 +566,17 @@ fn parse_named<T: Copy>(
     let Some(name) = value else {
         return Ok(default);
     };
+    require_named(table, param, name)
+}
+
+/// Resolve a string parameter that has no default, rejecting anything the
+/// table does not name.
+///
+/// Split from [`parse_named`] rather than given a sentinel default: a
+/// parameter the caller must supply has no correct value to fall back to, and
+/// the two silent `_ => <default>` arms this replaced are exactly what an
+/// invented fallback looks like once it ships.
+fn require_named<T: Copy>(table: &[(&str, T)], param: &str, name: &str) -> PolarsResult<T> {
     naming::lookup(table, name).ok_or_else(|| {
         polars_err!(
             ComputeError: "Unsupported {} '{}'. Expected one of: {}",
@@ -1422,13 +1433,17 @@ fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
     let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
-    // Parse origin parameter
-    let scale_origin = match kwargs.origin.as_deref() {
-        Some("origin") => view_buffer::geometry::ops::ScaleOrigin::Origin,
-        Some("bbox_center") => view_buffer::geometry::ops::ScaleOrigin::BBoxCenter,
-        Some("centroid") | None => view_buffer::geometry::ops::ScaleOrigin::Centroid,
-        _ => view_buffer::geometry::ops::ScaleOrigin::Centroid, // Default fallback
-    };
+    // Resolved against `ScaleOrigin::NAMED`, like every other string parameter
+    // here. The hand-written match this replaced ended in a silent default, so
+    // `origin="top_left"` scaled about the centroid and said nothing. The
+    // no-value default is `Origin` because that is what the Python signature
+    // declares; the two used to disagree.
+    let scale_origin = parse_named(
+        view_buffer::geometry::ops::ScaleOrigin::NAMED,
+        "origin",
+        kwargs.origin.as_deref(),
+        view_buffer::geometry::ops::ScaleOrigin::Origin,
+    )?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1557,11 +1572,18 @@ fn contour_to_absolute(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult
 /// Ensure contour has specified winding direction.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_ensure_winding(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let direction = match kwargs.direction.as_deref() {
-        Some("cw") | Some("clockwise") => Winding::Clockwise,
-        Some("ccw") | Some("counterclockwise") => Winding::CounterClockwise,
-        _ => Winding::CounterClockwise, // Default to CCW
-    };
+    // `direction` is required, so there is no default to fall back to. The
+    // match this replaced fell back to counter-clockwise for anything it did
+    // not recognise, which meant `ensure_winding("CW")` returned the *opposite*
+    // of what was asked for, silently.
+    let direction = require_named(
+        Winding::NAMED,
+        "winding direction",
+        kwargs
+            .direction
+            .as_deref()
+            .ok_or_else(|| polars_err!(ComputeError: "ensure_winding requires a 'direction'"))?,
+    )?;
 
     let series = &inputs[0];
     let len = series.len();

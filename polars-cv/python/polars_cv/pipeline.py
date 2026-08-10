@@ -42,6 +42,8 @@ from polars_cv._types import (
     SourceFormat,
     SourceSpec,
     StrOrExpr,
+    _reject_expr,
+    _validate_enum,
     is_supplied,
     normalize_cloud_options,
     reject_inapplicable_params,
@@ -188,24 +190,6 @@ def _op_contract_for(spec: "OpSpec") -> dict:
     return op_contract(json.dumps(spec.to_dict()))
 
 
-def _reject_expr(value: Any, what: str) -> None:
-    """Reject a Polars expression for a structural parameter.
-
-    Structural parameters fix the output shape, rank, or dtype at planning
-    time, so an expression there would desync the lazy schema from the produced
-    data. Without this guard the expression fails much later and opaquely —
-    inside ``bool()`` ("the truth value of an Expr is ambiguous") or at JSON
-    serialization — instead of naming the real problem. Mirrors the message
-    ``ParamValue.__post_init__`` raises for scalar structural params.
-    """
-    if isinstance(value, pl.Expr):
-        msg = (
-            f"{what} is structural (it fixes the output shape/rank/dtype at "
-            "planning time) and must be a literal, not a Polars expression."
-        )
-        raise TypeError(msg)
-
-
 def _literal_axes(axes: "Sequence[int]", label: str) -> "ParamValue":
     """Build an axis-list parameter, rejecting expressions element-wise.
 
@@ -216,23 +200,6 @@ def _literal_axes(axes: "Sequence[int]", label: str) -> "ParamValue":
     for axis in axes:
         _reject_expr(axis, f"'{label}'")
     return ParamValue(is_expr=False, value=list(axes))
-
-
-def _validate_enum(value: str, enum_cls: type, label: str):
-    """Validate a *literal* string against a user-facing enum.
-
-    The single validation shape for every literal enum-valued builder
-    parameter: ``Invalid <label> '<value>'. Valid: [...]``. Enums that may vary
-    per row go through :func:`_enum_param` instead, so reaching here with an
-    expression means the parameter is structural.
-    """
-    _reject_expr(value, f"'{label}'")
-    try:
-        return enum_cls(value)
-    except ValueError as e:
-        valid = [v.value for v in enum_cls]
-        msg = f"Invalid {label} '{value}'. Valid: {valid}"
-        raise ValueError(msg) from e
 
 
 def _enum_param(
