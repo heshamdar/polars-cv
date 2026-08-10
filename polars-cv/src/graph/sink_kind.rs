@@ -111,6 +111,8 @@ impl SinkKind {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::pipeline::SinkSpec;
 
@@ -161,56 +163,82 @@ mod tests {
         }
     }
 
+    /// The name of a kind.
+    ///
+    /// Exhaustive, so adding a `SinkKind` fails to compile here. On its own
+    /// that only forces *this match* to grow, which is the gap
+    /// `every_kind_is_produced_by_some_pair` closes: it reads these arms back
+    /// out of the source, so acknowledging a kind and proving it reachable are
+    /// the same act. A hand-written `[SinkKind; N]` array beside this match was
+    /// the first spelling, and a new variant escaped it silently.
+    fn kind_name(kind: SinkKind) -> &'static str {
+        match kind {
+            SinkKind::NumpyStruct => "NumpyStruct",
+            SinkKind::EncodedImage => "EncodedImage",
+            SinkKind::Blob => "Blob",
+            SinkKind::BufferList => "BufferList",
+            SinkKind::BufferArray => "BufferArray",
+            SinkKind::Scalar => "Scalar",
+            SinkKind::VectorList => "VectorList",
+            SinkKind::VectorArray => "VectorArray",
+            SinkKind::Contours => "Contours",
+            SinkKind::HistogramBuckets => "HistogramBuckets",
+        }
+    }
+
+    /// The kinds `kind_name` acknowledges, parsed from this file.
+    ///
+    /// Rust cannot enumerate an enum's variants without a derive or a second
+    /// list, and a second list is exactly what this replaces. The parse asserts
+    /// it found a plausible match rather than silently matching nothing — the
+    /// failure mode a source scan has to be protected from. Same shape as
+    /// `acknowledged_variants` in `view-buffer/tests/apply_op_coverage.rs`.
+    fn acknowledged_kinds() -> Vec<String> {
+        let src = include_str!("sink_kind.rs");
+        let body = src
+            .split("fn kind_name(kind: SinkKind) -> &'static str {")
+            .nth(1)
+            .expect("kind_name's definition moved — this scan reads nothing");
+        let body = body
+            .split("\n    }")
+            .next()
+            .expect("kind_name's body has no closing brace");
+        let names: Vec<String> = body
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("SinkKind::"))
+            .filter_map(|rest| rest.split(' ').next())
+            .map(str::to_string)
+            .collect();
+        assert!(
+            names.len() >= 10,
+            "parsed {} arms from kind_name; the scan is out of date",
+            names.len()
+        );
+        names
+    }
+
     /// Every kind is reachable from some pair.
     ///
     /// A kind no pair produces is dead vocabulary that still has to be answered
-    /// for in four matches. The acknowledgment match below is exhaustive, so a
-    /// new kind fails to compile until it is listed — and then this assertion
-    /// makes it prove it is constructible.
+    /// for in four matches. Driven from the acknowledgment match rather than a
+    /// sibling array, so a variant cannot be acknowledged without being shown
+    /// constructible.
     #[test]
     fn every_kind_is_produced_by_some_pair() {
-        fn acknowledge(kind: SinkKind) {
-            match kind {
-                SinkKind::NumpyStruct
-                | SinkKind::EncodedImage
-                | SinkKind::Blob
-                | SinkKind::BufferList
-                | SinkKind::BufferArray
-                | SinkKind::Scalar
-                | SinkKind::VectorList
-                | SinkKind::VectorArray
-                | SinkKind::Contours
-                | SinkKind::HistogramBuckets => {}
-            }
-        }
-        let all = [
-            SinkKind::NumpyStruct,
-            SinkKind::EncodedImage,
-            SinkKind::Blob,
-            SinkKind::BufferList,
-            SinkKind::BufferArray,
-            SinkKind::Scalar,
-            SinkKind::VectorList,
-            SinkKind::VectorArray,
-            SinkKind::Contours,
-            SinkKind::HistogramBuckets,
-        ];
-        for kind in all {
-            acknowledge(kind);
-        }
-
-        let mut produced: Vec<SinkKind> = PAIRS.iter().map(|&(_, _, k)| k).collect();
+        let mut produced: BTreeSet<&str> = PAIRS.iter().map(|&(_, _, k)| kind_name(k)).collect();
         let mut buckets = spec("vector", "list");
         buckets.expected_encoding = Some("histogram_buckets".to_string());
-        produced.push(SinkKind::resolve(&buckets).unwrap());
+        produced.insert(kind_name(SinkKind::resolve(&buckets).unwrap()));
 
-        for kind in all {
-            assert!(
-                produced.contains(&kind),
-                "{kind:?} is named by no (domain, format) pair — dead vocabulary \
-                 that four matches still have to answer for"
-            );
-        }
+        let missing: Vec<String> = acknowledged_kinds()
+            .into_iter()
+            .filter(|name| !produced.contains(name.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these SinkKinds are named by no (domain, format) pair — dead \
+             vocabulary that four matches still have to answer for: {missing:?}"
+        );
     }
 
     #[test]
