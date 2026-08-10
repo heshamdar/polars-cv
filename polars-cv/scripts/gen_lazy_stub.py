@@ -24,6 +24,16 @@ _PKG_ROOT = Path(__file__).resolve().parent.parent / "python"
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
+# ``scripts/`` is not a package, and the diff test loads this module by path
+# (``spec_from_file_location``), which does not put the script's directory on
+# ``sys.path`` the way running it as a script does. Sibling imports need it in
+# both cases.
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from _format import ruff_format  # noqa: E402
+
 from polars_cv.lazy import LazyPipelineExpr  # noqa: E402
 
 _STUB_PATH = _PKG_ROOT / "polars_cv" / "lazy.pyi"
@@ -111,28 +121,6 @@ def _render_member(name: str, member: object) -> str | None:
     return None
 
 
-def _ruff_format(text: str) -> str:
-    """Normalise the stub through ``ruff format`` so it matches CI's check.
-
-    Falls back to the raw text if ruff is unavailable (it is a dev dependency,
-    so this only matters outside the configured dev environment)."""
-    import shutil
-    import subprocess
-
-    ruff = shutil.which("ruff") or str(Path(sys.executable).parent / "ruff")
-    try:
-        proc = subprocess.run(
-            [ruff, "format", "--stdin-filename", "lazy.pyi", "-"],
-            input=text,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return text
-    return proc.stdout
-
-
 def generate_stub() -> str:
     lines = [_HEADER, "\nclass LazyPipelineExpr:\n"]
     body: list[str] = []
@@ -143,7 +131,7 @@ def generate_stub() -> str:
         if rendered is not None:
             body.append(rendered)
     lines.append("\n".join(body))
-    return _ruff_format("".join(lines))
+    return ruff_format("".join(lines), filename="lazy.pyi")
 
 
 def main() -> int:
