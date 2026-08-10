@@ -1485,39 +1485,75 @@ def test_no_local_png_factories() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
-    """Parse ``dtype_table!``'s rows out of the Rust source.
+def _load_script(name: str):
+    """Import a ``scripts/`` module by path.
 
-    Read from source rather than the FFI because the wire codes are not
-    surfaced across it — ``enum_variants`` carries names only. Source-scanning
-    is the weaker technique, so it is used for exactly the part the FFI cannot
-    answer, and the parse asserts it found a plausible table rather than
-    silently matching nothing.
+    The generators are not an importable package, and putting ``scripts/`` on
+    ``sys.path`` at module scope would reorder every import in this file. Same
+    approach ``test_lazy_stub_is_current`` already uses.
     """
-    src = (
-        Path(__file__).resolve().parents[2]
-        / "view-buffer"
-        / "src"
-        / "core"
-        / "dtype.rs"
-    ).read_text()
-    assert "dtype_table!(" in src, "dtype_table! invocation not found — parse is broken"
-    body = src.split("dtype_table!(", 1)[1]
-    end = re.search(r"^\s*\);", body, re.M)
-    assert end, "could not find the end of the dtype_table! invocation"
-    body = body[: end.start()]
-    rows = re.findall(
-        r'\(\s*(\w+)\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*\)', body
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@requires_checkout
+def test_dtype_names_module_is_current() -> None:
+    """``_dtype_names.py`` must match what ``gen_dtype_names.py`` produces.
+
+    Python cannot read `dtype_table!` at runtime — `numpy_name` does not cross
+    the FFI, and `numpy_from_struct` has to work with no compiled extension —
+    so the spellings are generated and checked in. Regenerate-and-diff is what
+    keeps that copy honest; without it the file is just a fourth hand-written
+    dtype table, which is what it replaced.
+    """
+    gen = _load_script("gen_dtype_names")
+    generated = gen.generate()
+    committed = Path(gen._OUT_PATH)
+    assert committed.exists(), (
+        "_dtype_names.py is missing; run python scripts/gen_dtype_names.py"
     )
-    # Cross-checked against an independent count of the invocation's rows, so a
-    # mis-parse that swallows the rest of the file fails, while legitimately
-    # adding an 11th dtype does not read as a parse bug.
-    row_lines = [ln for ln in body.splitlines() if ln.strip().startswith("(")]
-    assert len(rows) == len(row_lines), (
-        f"dtype_table! parse found {len(rows)} rows but the invocation has "
-        f"{len(row_lines)} lines starting a row — the scan is out of date"
+    assert committed.read_text() == generated, (
+        "_dtype_names.py is out of date. Run: python scripts/gen_dtype_names.py"
     )
-    return [(v, s, int(c), n) for v, s, c, n in rows]
+
+
+def test_the_numpy_allowlist_holds_no_character_codes() -> None:
+    """The names must be numpy's *spelled* dtypes, not its character codes.
+
+    This is the specific defect the generated module replaced: the hand-written
+    allowlist admitted ``"u8"``/``"i8"``/``"f2"``, where numpy reads ``"u8"`` as
+    ``uint64`` — the opposite of this project's ``u8``. A caller hand-building a
+    struct got a silent reinterpretation of the bytes. Pinned as its own
+    assertion because a regenerated file would happily carry them back if the
+    generator ever read the wrong column.
+    """
+    from polars_cv._dtype_names import NUMPY_NAMES
+    from polars_cv._types import DType
+
+    collisions = NUMPY_NAMES & {m.value for m in DType}
+    assert not collisions, (
+        f"these numpy names collide with engine dtype names: {sorted(collisions)}. "
+        f"numpy reads 'u8' as uint64 and this project reads it as uint8."
+    )
+    assert all(not name[-1].isdigit() or len(name) > 3 for name in NUMPY_NAMES), (
+        f"character-code-shaped entries in NUMPY_NAMES: {sorted(NUMPY_NAMES)}"
+    )
+
+
+def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
+    """``dtype_table!``'s rows, parsed by the generator that also reads them.
+
+    The parse lives in ``scripts/gen_dtype_names.py`` because that script has to
+    read the table anyway, and two parsers of one table is the shape these
+    guards exist to catch. Imported rather than re-implemented.
+    """
+    return _load_script("gen_dtype_names").dtype_table_rows()
 
 
 def test_display_wire_codes_match_the_rust_dtype_table() -> None:

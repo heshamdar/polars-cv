@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 
 from polars_cv import NUMPY_OUTPUT_SCHEMA, numpy_from_struct
+from polars_cv._dtype_names import NUMPY_NAMES
 
 if TYPE_CHECKING:
     pass
@@ -89,20 +90,37 @@ class TestNumpyFromStruct:
         assert result.shape == (2, 3, 4)
         np.testing.assert_array_equal(result, arr)
 
+    def test_a_numpy_character_code_is_rejected(self) -> None:
+        """``"u8"`` means uint64 to numpy and uint8 to this project.
+
+        The allowlist used to admit numpy's character codes alongside its
+        spelled names, so a caller hand-building a struct with ``dtype="u8"``
+        — the spelling `.cast("u8")` uses — got a **uint64** reinterpretation
+        of the bytes, silently, with a wrong shape or a `reshape` error far
+        from the cause. `numpy_from_struct` is exported from the package root
+        and takes a plain dict, so this was reachable without the plugin.
+        """
+        arr = np.array([1, 2, 3, 4, 5, 6, 7, 8], dtype=np.uint8)
+        struct = create_test_struct(arr.tobytes(), "u8", [8])
+        with pytest.raises(ValueError, match="Unsupported dtype 'u8'"):
+            numpy_from_struct(struct)
+
+    def test_the_rejection_lists_the_spelled_names(self) -> None:
+        struct = create_test_struct(b"\x00", "b1", [1])
+        with pytest.raises(ValueError, match="uint8"):
+            numpy_from_struct(struct)
+
     def test_all_dtypes(self) -> None:
-        """Test all supported dtypes."""
-        dtype_map = {
-            "uint8": np.uint8,
-            "int8": np.int8,
-            "uint16": np.uint16,
-            "int16": np.int16,
-            "uint32": np.uint32,
-            "int32": np.int32,
-            "uint64": np.uint64,
-            "int64": np.int64,
-            "float32": np.float32,
-            "float64": np.float64,
-        }
+        """Every name the sink can emit round-trips to the right numpy dtype.
+
+        The names come from ``NUMPY_NAMES`` — generated from ``dtype_table!`` —
+        rather than a local map, which was a fourth hand-written copy of the
+        same column and had no ``float16`` entry or completeness assertion.
+        """
+        dtype_map = {name: np.dtype(name).type for name in sorted(NUMPY_NAMES)}
+        assert len(dtype_map) == 10, (
+            f"expected the ten engine dtypes, got {sorted(dtype_map)}"
+        )
 
         for dtype_str, dtype in dtype_map.items():
             arr = np.array([1, 2], dtype=dtype)
