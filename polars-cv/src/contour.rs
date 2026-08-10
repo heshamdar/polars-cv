@@ -1997,3 +1997,110 @@ mod parse_contour_tests {
         assert!(err.contains("exterior/points"), "{err}");
     }
 }
+
+#[cfg(test)]
+mod named_param_tests {
+    //! The two string-parameter resolvers, tested here because nothing else
+    //! can reach them.
+    //!
+    //! `ensure_winding` and `scale(origin=)` used to parse by hand and end in
+    //! `_ => <default>`, so `ensure_winding("CW")` returned *counter*-clockwise
+    //! — the opposite of the request — and `scale(origin="top_left")` scaled
+    //! about the centroid. Both silently. They now read `NAMED`, like every
+    //! other string parameter in this file.
+    //!
+    //! Python validates these against `_types.Winding` / `_types.ScaleOrigin`
+    //! before the kwargs are built, which is a second wall and a better error
+    //! — and also means no Python test can exercise the code below. Without
+    //! these, a future edit could put a silent default back in Rust and the
+    //! whole suite would stay green.
+
+    use super::*;
+    use view_buffer::geometry::ops::ScaleOrigin;
+
+    #[test]
+    fn a_required_parameter_rejects_a_name_the_table_does_not_hold() {
+        let err = require_named(Winding::NAMED, "winding direction", "CW")
+            .expect_err("a miscased spelling must be rejected, not guessed")
+            .to_string();
+        assert!(err.contains("CW"), "the value must be named: {err}");
+        assert!(
+            err.contains("ccw") && err.contains("cw"),
+            "the accepted spellings must be listed: {err}"
+        );
+    }
+
+    #[test]
+    fn a_required_parameter_has_no_default_to_fall_back_to() {
+        // The distinction `require_named` exists for: `parse_named` answers
+        // "not supplied" with a default, and a parameter the caller must
+        // supply has no correct one.
+        assert_eq!(
+            parse_named(Winding::NAMED, "d", None, Winding::Clockwise).unwrap(),
+            Winding::Clockwise
+        );
+        assert!(require_named(Winding::NAMED, "d", "").is_err());
+    }
+
+    #[test]
+    fn the_long_winding_spellings_resolve_to_the_short_ones() {
+        // Aliases in `NAMED` rather than a second table: the plugin has always
+        // accepted these, and dropping them to tidy the list would have removed
+        // working behaviour.
+        for (name, expected) in [
+            ("ccw", Winding::CounterClockwise),
+            ("counterclockwise", Winding::CounterClockwise),
+            ("cw", Winding::Clockwise),
+            ("clockwise", Winding::Clockwise),
+        ] {
+            assert_eq!(
+                require_named(Winding::NAMED, "winding direction", name).unwrap(),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_scale_origin_resolves_and_an_unknown_one_does_not() {
+        for (name, expected) in [
+            ("centroid", ScaleOrigin::Centroid),
+            ("bbox_center", ScaleOrigin::BBoxCenter),
+            ("origin", ScaleOrigin::Origin),
+        ] {
+            assert_eq!(
+                parse_named(
+                    ScaleOrigin::NAMED,
+                    "origin",
+                    Some(name),
+                    ScaleOrigin::Origin
+                )
+                .unwrap(),
+                expected,
+                "{name}"
+            );
+        }
+        let err = parse_named(
+            ScaleOrigin::NAMED,
+            "origin",
+            Some("top_left"),
+            ScaleOrigin::Origin,
+        )
+        .expect_err("a plausible name from another library must be rejected")
+        .to_string();
+        assert!(
+            err.contains("top_left") && err.contains("bbox_center"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_absent_origin_takes_the_default_python_declares() {
+        // `Origin`, not `Centroid`: the Rust `None` arm and the Python
+        // signature used to disagree about this.
+        assert_eq!(
+            parse_named(ScaleOrigin::NAMED, "origin", None, ScaleOrigin::Origin).unwrap(),
+            ScaleOrigin::Origin
+        );
+    }
+}
