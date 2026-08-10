@@ -100,7 +100,10 @@ mechanisms and the guard that enforces each one.
   `.so` does not. After touching Rust, re-run `maturin develop` or you are
   testing old Rust against new Python — plugin tests self-skip rather than
   fail, so the window is silent. `polars_cv.build_info()` reports the three
-  versions that must agree.
+  versions that must agree. Build **debug** (`maturin develop`, no `--release`):
+  it is what CI and `verify.sh` use, the whole suite passes against it, and
+  `--release` costs several minutes re-optimising the polars stack for nothing
+  outside the benchmarks.
 - Never edit or weaken an existing test to make it pass without saying so
   explicitly and getting agreement. Updating a test because the behaviour it
   pins was *deliberately* removed is fine — and the removal gets its own guard.
@@ -158,9 +161,17 @@ All commands should be run from the `polars-cv/` subdirectory unless noted other
 
 ```bash
 uv sync --group dev              # Install Python dev dependencies
-maturin develop --release        # Compile Rust plugin and install into .venv
+maturin develop                  # Compile Rust plugin (debug) and install into .venv
 maturin build --release          # Build distributable wheels
 ```
+
+**Use the debug build for the develop/test loop.** `maturin develop` with no
+`--release` is what `scripts/verify.sh` and both CI workflows run, and it is
+several minutes faster per iteration — the release build re-optimises the whole
+polars stack. Every test in `tests/` passes against the debug extension; the
+only things that need `--release` are the benchmarks (see
+`benchmarks/regression/README.md`), where an unoptimised build measures nothing
+useful, and the wheels you distribute.
 
 This project installs **editable**: `.venv` carries a `.pth` pointing at
 `python/`, and `maturin develop` writes `_lib.abi3.so` into `python/polars_cv/`.

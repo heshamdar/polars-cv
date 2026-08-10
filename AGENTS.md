@@ -160,7 +160,7 @@ See root [`CONTRIBUTING.md`](CONTRIBUTING.md) for the release process and CI, an
 
 ```bash
 cd polars-cv
-maturin develop --release          # Build Rust plugin into .venv
+maturin develop                    # Build Rust plugin (debug) into .venv
 uv run pytest tests/               # Run tests
 uv run ruff check python/ tests/   # Lint Python
 cargo clippy --workspace           # Lint Rust

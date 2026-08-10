@@ -20,8 +20,12 @@ The **Rust plugin layer** bridging the Python API with `view-buffer`. Responsibl
 
 ```bash
 cd polars-cv
-maturin develop --release  # Builds cdylib and installs into .venv
+maturin develop            # Builds cdylib (debug) and installs into .venv
 ```
+
+Debug, not `--release`: it is what CI and `scripts/verify.sh` build, every test
+passes against it, and `--release` re-optimises the whole polars stack for
+several minutes. Reach for `--release` only when benchmarking.
 
 ## Key Files
 
