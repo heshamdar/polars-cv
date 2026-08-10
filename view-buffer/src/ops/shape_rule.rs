@@ -162,10 +162,12 @@ mod parity_tests {
 
     /// One probe instance per `ImageOpKind` variant.
     ///
-    /// The exhaustive match in `_assert_image_kind_probed` makes adding a
-    /// variant a compile error until it is acknowledged there — and the
-    /// comment on that match directs the author to add a probe here, so a
-    /// new kind cannot ship without parity coverage.
+    /// The exhaustive match in `image_kind_name` makes adding a variant a
+    /// compile error until it is acknowledged there, and
+    /// `every_image_kind_has_a_probe` reads that match back out of this file
+    /// and requires the probes to cover it. Acknowledging a kind and probing
+    /// it are one act; when they were two, an arm added without a probe
+    /// compiled and passed.
     fn image_kind_probes() -> Vec<ImageOpKind> {
         use FilterType::Nearest;
         vec![

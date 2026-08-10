@@ -263,6 +263,33 @@ self-concealing — dropping four arms failed and dropping five passed. Prefer a
 rule whose sensitivity does not fall off as the defect grows, and test the
 whole range rather than one example.
 
+### Discovery goes through `tests/_discovery.py`
+
+Almost every guard here is "find some files, then assert something about
+them", and that shape has one failure mode this suite has shipped twice: the
+find returns nothing, the assertion holds for free, and the guard reads as
+coverage forever. `_test_files()` and `_PACKAGE_MODULES` were both a bare
+`rglob` whose empty result was indistinguishable from a clean bill of health,
+and the second is what the whole `_push_op` append contract rests on.
+
+So **do not glob in a test module.** Call `rust_src_dir()`, `rust_sources()`,
+`package_modules()`, `suite_files()` or `suite_modules()` from
+`tests/_discovery.py`; each either returns a non-empty result or raises
+`EmptyDiscovery`, which reports as an ordinary failure. Need a set the module
+does not offer? Add an accessor there, routed through `discovered()`.
+
+`test_scans_go_through_discovery` enforces this by walking the suite's AST, so
+it is a mechanism rather than a reminder. If an empty answer is genuinely the
+assertion — `test_streaming_ooc.py` checks that a spill directory *stays*
+empty — add the file to `_DISCOVERY_EXEMPT` with the reason.
+
+The skip is keyed on an independent fact for the same reason: `in_checkout()`
+asks whether the version manifests are present, and only then does
+`rust_src_dir()` insist the crate sources exist. A fact used to excuse a
+missing scan must not be the fact the scan is looking for — the previous
+`_rust_src_dir()` answered a moved layout with `None`, and five guards read
+that as "installed wheel, nothing to check".
+
 ## Changing Behaviour
 
 If a change alters what a caller sees — a signature, whether something raises,
