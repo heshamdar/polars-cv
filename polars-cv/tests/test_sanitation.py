@@ -1520,25 +1520,45 @@ def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
     return _load_script("gen_dtype_names").dtype_table_rows()
 
 
+def test_engine_dtype_names_match_the_generated_table() -> None:
+    """``_types.DType`` must spell exactly what ``dtype_table!`` spells.
+
+    ``DType`` is in view-buffer's ``naming::REGISTRY``, so
+    ``test_every_rust_enum_is_parity_checked`` already compares it to the Rust
+    variants — but only through ``enum_variants``, which needs the compiled
+    extension. Editing Python is exactly when the extension is stale, so the
+    check that matters most runs in the plugin-free lane, against the generated
+    module. This is also what gives ``SHORT_NAMES`` a reader: a generated
+    constant nothing reads is a fourth dtype table with extra steps.
+    """
+    from polars_cv._dtype_names import SHORT_NAMES, WIRE_CODES
+    from polars_cv._types import DType
+
+    assert SHORT_NAMES == {member.value for member in DType}, (
+        "polars_cv._types.DType has drifted from dtype_table!: "
+        f"only in DType={sorted({m.value for m in DType} - SHORT_NAMES)}, "
+        f"only in dtype_table!={sorted(SHORT_NAMES - {m.value for m in DType})}"
+    )
+    # And the wire codes cover the same names, which is what makes WIRE_CODES
+    # usable as the authority `display.py` is pinned to below.
+    assert set(WIRE_CODES) == SHORT_NAMES
+
+
 def test_display_wire_codes_match_the_rust_dtype_table() -> None:
     """``display.py`` renders VIEW blobs without going through the plugin, so
-    it keeps its own wire-code map. Pin it to the Rust table it copies."""
+    it keeps its own wire-code map. Pin it to the Rust table it copies.
+
+    The numpy types are derived from the generated ``NUMPY_NAMES``. The
+    hand-written ``{"uint8": np.uint8, ...}`` that used to sit here was a fifth
+    copy of ``dtype_table!``'s numpy column, inside the file that polices
+    duplicate spellings.
+    """
     import numpy as np
 
     import polars_cv.display as display_mod
+    from polars_cv._dtype_names import NUMPY_NAMES
 
-    numpy_by_name = {
-        "uint8": np.uint8,
-        "int8": np.int8,
-        "uint16": np.uint16,
-        "int16": np.int16,
-        "uint32": np.uint32,
-        "int32": np.int32,
-        "uint64": np.uint64,
-        "int64": np.int64,
-        "float32": np.float32,
-        "float64": np.float64,
-    }
+    numpy_by_name = {name: getattr(np, name) for name in NUMPY_NAMES}
     expected = {
         code: numpy_by_name[numpy_name]
         for _variant, _short, code, numpy_name in _dtype_table_rows()

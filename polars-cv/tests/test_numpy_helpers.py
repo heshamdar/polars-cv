@@ -118,8 +118,12 @@ class TestNumpyFromStruct:
         same column and had no ``float16`` entry or completeness assertion.
         """
         dtype_map = {name: np.dtype(name).type for name in sorted(NUMPY_NAMES)}
-        assert len(dtype_map) == 10, (
-            f"expected the ten engine dtypes, got {sorted(dtype_map)}"
+        # A floor, not a count. The point is that the sweep is not empty — an
+        # exact `== 10` would read as a failure of *this test* the day an
+        # eleventh dtype is added to `dtype_table!`, when nothing is wrong.
+        assert len(dtype_map) >= 10, (
+            f"only {len(dtype_map)} names in NUMPY_NAMES — the generated table "
+            f"has lost rows: {sorted(dtype_map)}"
         )
 
         for dtype_str, dtype in dtype_map.items():

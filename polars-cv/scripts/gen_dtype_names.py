@@ -26,9 +26,17 @@ Usage::
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+# ``scripts/`` is not a package, and ``test_sanitation.py`` loads this module by
+# path, which does not put the script's directory on ``sys.path`` the way
+# running it as a script does. Sibling imports need it in both cases.
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from _format import ruff_format  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DTYPE_RS = _REPO_ROOT / "view-buffer" / "src" / "core" / "dtype.rs"
@@ -130,22 +138,7 @@ def generate() -> str:
     for short in short_names:
         lines.append(f"    {short!r}: {wire_codes[short]},\n")
     lines.append("}\n")
-    return _ruff_format("".join(lines))
-
-
-def _ruff_format(source: str) -> str:
-    """Format with the repo's formatter so the check-mode diff is stable."""
-    try:
-        done = subprocess.run(
-            ["uvx", "ruff", "format", "-"],
-            input=source,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return source
-    return done.stdout
+    return ruff_format("".join(lines), filename="_dtype_names.py")
 
 
 def main() -> int:
