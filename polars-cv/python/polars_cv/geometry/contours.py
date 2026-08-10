@@ -11,6 +11,13 @@ from typing import Literal
 import polars as pl
 
 from polars_cv._namespace import _ArgBinder, _GeomNullPolicy, _PluginNamespace
+from polars_cv._types import (
+    LabelReduction,
+    LabelRegionMode,
+    ScaleOrigin,
+    Winding,
+    _validate_enum,
+)
 
 
 @pl.api.register_expr_namespace("contour")
@@ -175,7 +182,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         return self._plugin("contour_flip")
 
-    def ensure_winding(self, direction: Literal["ccw", "cw"]) -> pl.Expr:
+    def ensure_winding(self, direction: Winding | str) -> pl.Expr:
         """
         Ensure contour has specified winding direction.
 
@@ -189,7 +196,10 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         Returns:
             Contour with guaranteed winding direction.
         """
-        return self._plugin("contour_ensure_winding", kwargs={"direction": direction})
+        return self._plugin(
+            "contour_ensure_winding",
+            kwargs={"direction": _validate_enum(direction, Winding, "direction").value},
+        )
 
     def translate(
         self,
@@ -216,7 +226,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         sx: float | pl.Expr,
         sy: float | pl.Expr,
         *,
-        origin: Literal["centroid", "bbox_center", "origin"] = "origin",
+        origin: ScaleOrigin | str = "origin",
     ) -> pl.Expr:
         """
         Scale contour relative to specified origin.
@@ -235,7 +245,11 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         binder = _ArgBinder()
         binder.add_param("sx", sx)
         binder.add_param("sy", sy)
-        return binder.call(self, "contour_scale", origin=origin)
+        return binder.call(
+            self,
+            "contour_scale",
+            origin=_validate_enum(origin, ScaleOrigin, "origin").value,
+        )
 
     def simplify(self, tolerance: float | pl.Expr) -> pl.Expr:
         """
@@ -323,8 +337,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         image: pl.Expr | None = None,
         *,
         heatmap: pl.Expr | None = None,
-        reduction: Literal["max", "mean", "sum"] | pl.Expr = "max",
-        region_mode: Literal["interior", "boundary", "bbox"] | pl.Expr = "interior",
+        reduction: LabelReduction | str | pl.Expr = "max",
+        region_mode: LabelRegionMode | str | pl.Expr = "interior",
     ) -> pl.Expr:
         """
         Score each contour from an image/array expression with configurable reduction.

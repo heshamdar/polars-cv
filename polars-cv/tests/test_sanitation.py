@@ -856,6 +856,8 @@ _UNIFORM_PARITY_ENUMS = [
     "ExtractMode",
     "ApproxMethod",
     "InterpolationType",
+    "ScaleOrigin",
+    "Winding",
 ]
 
 # Checked, but not by the uniform test: their Python side needs special
