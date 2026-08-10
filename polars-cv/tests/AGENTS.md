@@ -35,7 +35,10 @@ uv run pytest tests/reference/ -v                   # reference tests
 python scripts/test_multiple_python.py --all        # multi-Python (3.10-3.13)
 ```
 
-The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`. Build with `maturin develop --release`.
+The compiled plugin (`.so`/`.pyd`) must exist at `python/polars_cv/_lib.abi3.so`.
+Build it with `maturin develop` — **debug**, not `--release`. That is what CI and
+`scripts/verify.sh` build, the whole suite passes against it, and a release
+build costs several minutes per iteration for no test-visible difference.
 
 ### Markers and CI lanes
 
