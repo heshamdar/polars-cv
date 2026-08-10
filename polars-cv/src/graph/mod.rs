@@ -13,6 +13,8 @@ pub(crate) mod types;
 pub(crate) mod compiled;
 pub(crate) mod step;
 
+pub(crate) mod sink_kind;
+
 #[path = "decode.rs"]
 pub(crate) mod decode;
 

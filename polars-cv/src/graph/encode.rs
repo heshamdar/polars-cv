@@ -15,6 +15,7 @@ use view_buffer::{GeometryOp, Op, PlannedDType, ViewBuffer};
 use crate::contour::contour_to_anyvalue;
 
 use super::decode::dtype_str_to_polars;
+use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, OutputValue, TypedBufferData};
 
 /// Execute a geometry operation with typed domain dispatch.
@@ -638,13 +639,15 @@ fn typed_array_of(
     })
 }
 
-/// Encode a NodeOutput to an output value, keyed on the **planned** domain.
+/// Encode a NodeOutput to an output value, keyed on the resolved [`SinkKind`].
 ///
-/// `dtype_for_output` (graph/decode.rs) decides the Polars *dtype* from
-/// `(expected_domain, format)`; this decides the *value*. Both halves of one
-/// contract, so both read the same key — and the arms below mirror that
-/// function's arms one for one, deliberately, so a reader can check the
-/// correspondence.
+/// `dtype_for_output` (graph/decode.rs) decides the Polars *dtype*; this
+/// decides the *value*. Both halves of one contract, so both key on the same
+/// resolved kind. They used to key on the `(expected_domain, format)` string
+/// pair separately and "mirror each other one for one, deliberately, so a
+/// reader can check the correspondence" — a correspondence whose only guard
+/// was a reader, and which the two null/build halves in `decode.rs` did not
+/// keep at all.
 ///
 /// This used to match on the `NodeOutput` *variant* instead, which is a
 /// different fact: a domain can arrive in more than one representation. A
@@ -672,38 +675,35 @@ pub(crate) fn encode_node_output(
     let sink = &spec.sink;
     let format = sink.format.as_str();
     let domain = spec.expected_domain.as_str();
+    let kind = SinkKind::resolve(spec).map_err(|e| e.to_string())?;
 
-    // Encoding outranks the (domain, format) pair, exactly as it does in
-    // `dtype_for_output`: histogram buckets are a vector-domain output with
-    // their own struct schema.
-    if spec.expected_encoding.as_deref() == Some("histogram_buckets") {
-        let contig = require_buffer(output, domain, format)?.to_contiguous();
-        return Ok(OutputValue::HistogramBuckets(
-            contig.as_slice::<f64>().to_vec(),
-        ));
-    }
-
-    match (domain, format) {
-        ("buffer", "numpy" | "torch") => Ok(OutputValue::NumpyStruct(
+    match kind {
+        SinkKind::HistogramBuckets => {
+            let contig = require_buffer(output, domain, format)?.to_contiguous();
+            Ok(OutputValue::HistogramBuckets(
+                contig.as_slice::<f64>().to_vec(),
+            ))
+        }
+        SinkKind::NumpyStruct => Ok(OutputValue::NumpyStruct(
             require_buffer(output, domain, format)?.clone(),
         )),
-        ("buffer", "png" | "jpeg" | "webp" | "tiff" | "blob") => {
+        SinkKind::EncodedImage | SinkKind::Blob => {
             crate::execute::encode_sink(require_buffer(output, domain, format)?, sink)
                 .map(OutputValue::Binary)
                 .map_err(|e| format!("Encode error: {e}"))
         }
-        ("buffer", "list") => Ok(typed_list_of(require_buffer(output, domain, format)?)),
-        ("buffer", "array") => {
+        SinkKind::BufferList => Ok(typed_list_of(require_buffer(output, domain, format)?)),
+        SinkKind::BufferArray => {
             typed_array_of(require_buffer(output, domain, format)?, sink.shape.as_ref())
         }
         // A vector arrives either as a real `Vector` or as the 1-D buffer a
         // hash/histogram produces. Both are the same domain to the planner, so
         // both encode the same way here.
-        ("vector", "native" | "list") => match output {
+        SinkKind::VectorList => match output {
             NodeOutput::Vector(vals) => Ok(OutputValue::Vector(vals.clone())),
             _ => Ok(typed_list_of(require_buffer(output, domain, format)?)),
         },
-        ("vector", "array") => match output {
+        SinkKind::VectorArray => match output {
             NodeOutput::Vector(vals) => {
                 let values = vals.as_ref().clone();
                 let shape = sink.shape.clone().unwrap_or_else(|| vec![values.len()]);
@@ -722,31 +722,20 @@ pub(crate) fn encode_node_output(
             }
             _ => typed_array_of(require_buffer(output, domain, format)?, sink.shape.as_ref()),
         },
-        ("scalar", "native") => match output {
+        SinkKind::Scalar => match output {
             NodeOutput::Scalar(val) => Ok(OutputValue::Scalar(*val)),
             _ => Err(format!(
                 "the 'native' sink planned a scalar output, but execution produced {:?}.",
                 output.domain()
             )),
         },
-        ("contour", "native") => match output {
+        SinkKind::Contours => match output {
             NodeOutput::Contours(contours) => Ok(OutputValue::Contours(contours.clone())),
             _ => Err(format!(
                 "the 'native' sink planned a contour output, but execution produced {:?}.",
                 output.domain()
             )),
         },
-        // Mirrors `dtype_for_output`'s arm of the same name. Unreachable in
-        // practice — Polars resolves the schema before executing, so this pair
-        // is rejected there first — but kept so the two match arm for arm.
-        ("buffer", "native") => Err(
-            "'native' sink is not defined for buffer outputs; use an explicit \
-             format (numpy, png, list, array, blob, ...)"
-                .to_string(),
-        ),
-        _ => Err(format!(
-            "Unsupported output combination: domain '{domain}' with sink format '{format}'"
-        )),
     }
 }
 /// Convert contours to Polars AnyValue representation.

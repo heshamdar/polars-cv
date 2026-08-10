@@ -971,10 +971,16 @@ def test_binary_ops_match_rust():
 # graph/compiled.rs, which the graph validator rejects unknown formats against
 # — so the two lists must be equal, and the test below pins them.
 #
-# Sink formats genuinely have no list: `encode_node_output` and
-# `output_dtype_for_spec` match on (domain, format) pairs and error on the
-# fall-through, so an unhandled sink is rejected rather than enumerated. There
-# is no second declaration to drift from.
+# Sink formats genuinely have no list: `SinkKind::resolve` (graph/sink_kind.rs)
+# is the one place a (domain, format) pair is interpreted, and it errors on the
+# fall-through, so an unhandled sink is rejected rather than enumerated. The
+# four halves of the sink contract match on the resolved *kind*, so they cannot
+# disagree about which pairs exist.
+#
+# This note used to say the pair was matched in two places that "error on the
+# fall-through, so there is no second declaration to drift from". Both halves
+# of that were false: there were four such matches, and two of them ended in
+# `_ => Binary` rather than an error.
 
 
 @requires_checkout
