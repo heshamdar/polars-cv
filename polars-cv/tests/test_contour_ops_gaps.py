@@ -345,6 +345,56 @@ class TestEnsureWinding:
         assert result["winding"][0] == "ccw"
 
 
+@plugin_required
+class TestContourEnumParamsAreRejectedNotDefaulted:
+    """An unrecognised enum value must fail, not fall back to a default.
+
+    ``ensure_winding`` and ``scale(origin=)`` were the only two user-facing
+    string parameters in the plugin that did not read a ``NAMED`` table. Both
+    parsed by hand and ended in ``_ => <default>``, so a value the parser did
+    not know was answered with a plausible one: ``ensure_winding("CW")``
+    returned *counter*-clockwise — the opposite of the request — and
+    ``scale(origin="top_left")`` scaled about the centroid. Both silently.
+
+    The values here are the shapes a user actually produces: a capitalisation
+    that does not match, and a plausible name from another library.
+    """
+
+    def test_a_miscased_winding_is_rejected(self, ccw_square: dict) -> None:
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
+        with pytest.raises(ValueError, match="Invalid direction 'CW'"):
+            df.with_columns(x=pl.col("contour").contour.ensure_winding("CW"))
+
+    def test_the_long_winding_spellings_still_work(self, ccw_square: dict) -> None:
+        """The aliases the parser has always accepted are kept, not dropped.
+
+        They live in ``Winding::NAMED`` as aliases, so they are also surfaced
+        over ``enum_variants`` and mirrored in ``_types.Winding`` — the
+        previous annotation admitted only the short forms while the parser
+        took both.
+        """
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
+        result = df.with_columns(
+            ensured=pl.col("contour").contour.ensure_winding("clockwise"),
+        ).with_columns(winding=pl.col("ensured").contour.winding())
+        assert result["winding"][0] == "cw"
+
+    def test_an_unknown_scale_origin_is_rejected(self, ccw_square: dict) -> None:
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
+        with pytest.raises(ValueError, match="Invalid origin 'top_left'"):
+            df.with_columns(
+                x=pl.col("contour").contour.scale(sx=2.0, sy=2.0, origin="top_left")
+            )
+
+    def test_the_rejection_lists_what_is_accepted(self, ccw_square: dict) -> None:
+        """A rejection that does not say what is valid invites a second guess."""
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
+        with pytest.raises(ValueError, match="bbox_center"):
+            df.with_columns(
+                x=pl.col("contour").contour.scale(sx=2.0, sy=2.0, origin="middle")
+            )
+
+
 # ---------------------------------------------------------------------------
 # simplify edge cases
 # ---------------------------------------------------------------------------

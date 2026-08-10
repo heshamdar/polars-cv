@@ -108,6 +108,12 @@ pub enum ApproxMethod {
     Approx,
 }
 
+crate::naming::named_variants!(ScaleOrigin {
+    "centroid" => Centroid,
+    "bbox_center" => BBoxCenter,
+    "origin" => Origin,
+});
+
 crate::naming::named_variants!(ExtractMode {
     "external" => External,
     "tree" => Tree,

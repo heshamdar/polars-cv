@@ -56,6 +56,15 @@ pub enum Winding {
     Clockwise,
 }
 
+// The long spellings are aliases rather than a second table: the plugin has
+// always accepted them, and dropping them here to make the list tidier would
+// remove working behaviour. They ride in `NAMED`, so `enum_variants` surfaces
+// them and the Python mirror has to carry them too.
+crate::naming::named_variants!(Winding {
+    "ccw" | "counterclockwise" => CounterClockwise,
+    "cw" | "clockwise" => Clockwise,
+});
+
 impl Winding {
     /// Returns the opposite winding direction.
     pub fn flip(self) -> Self {

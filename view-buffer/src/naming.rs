@@ -20,15 +20,29 @@
 ///     "reflect" => Reflect,
 /// });
 /// ```
+///
+/// A variant may carry additional accepted spellings after the canonical one:
+///
+/// ```ignore
+/// named_variants!(Winding {
+///     "ccw" | "counterclockwise" => CounterClockwise,
+///     "cw" | "clockwise" => Clockwise,
+/// });
+/// ```
+///
+/// Aliases join `NAMED` — so they are accepted by the parser *and* surfaced
+/// over `enum_variants`, which is what keeps the Python mirror honest about
+/// them. They do not appear separately in the exhaustiveness guard, because
+/// each variant is still named exactly once there.
 macro_rules! named_variants {
-    ($ty:ident { $($name:literal => $variant:ident),+ $(,)? }) => {
+    ($ty:ident { $($name:literal $(| $alias:literal)* => $variant:ident),+ $(,)? }) => {
         impl $ty {
             /// Canonical Python-facing name of every variant.
             ///
             /// Single authority for parameter parsing and the `enum_variants`
             /// FFI — see `view_buffer::naming`.
             pub const NAMED: &'static [(&'static str, $ty)] = &[
-                $(($name, $ty::$variant)),+
+                $(($name, $ty::$variant) $(, ($alias, $ty::$variant))*),+
             ];
         }
 
@@ -87,6 +101,7 @@ macro_rules! registry {
 
 registry!(
     crate::core::dtype::DType,
+    crate::geometry::contour::Winding,
     crate::ops::Domain,
     crate::ops::color::ColorSpace,
     crate::ops::image::FilterType,
@@ -97,6 +112,7 @@ registry!(
     crate::ops::histogram::HistogramOutput,
     crate::ops::histogram::HistogramClosed,
     crate::ops::affine::InterpolationType,
+    crate::geometry::ops::ScaleOrigin,
     crate::geometry::ops::ExtractMode,
     crate::geometry::ops::ApproxMethod,
     crate::geometry::label::LabelReduction,

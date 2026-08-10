@@ -287,6 +287,34 @@ class LabelRegionMode(str, Enum):
     BBOX = "bbox"
 
 
+class ScaleOrigin(str, Enum):
+    """
+    Point a contour scale operation is measured from (``.contour.scale``).
+
+    Mirrors view-buffer's ``ScaleOrigin`` authority.
+    """
+
+    CENTROID = "centroid"
+    BBOX_CENTER = "bbox_center"
+    ORIGIN = "origin"
+
+
+class Winding(str, Enum):
+    """
+    Winding direction of a contour ring (``.contour.ensure_winding``).
+
+    Mirrors view-buffer's ``Winding`` authority, long spellings included: the
+    plugin has always accepted ``"clockwise"``/``"counterclockwise"`` alongside
+    the short forms, and the annotation that named only the short ones was the
+    reason nobody noticed the parser silently ignored everything else.
+    """
+
+    CCW = "ccw"
+    COUNTERCLOCKWISE = "counterclockwise"
+    CW = "cw"
+    CLOCKWISE = "clockwise"
+
+
 class Domain(str, Enum):
     """
     Data domain for typed pipeline nodes.
@@ -300,6 +328,46 @@ class Domain(str, Enum):
     SCALAR = "scalar"  # Single numeric value
     VECTOR = "vector"  # Fixed-length numeric array (incl. histogram buckets,
     # whose List(Struct) schema is selected by the sink encoding, not the domain)
+
+
+def _reject_expr(value: "Any", what: str) -> None:
+    """Reject a Polars expression for a structural parameter.
+
+    Structural parameters fix the output shape, rank, or dtype at planning
+    time, so an expression there would desync the lazy schema from the produced
+    data. Without this guard the expression fails much later and opaquely —
+    inside ``bool()`` ("the truth value of an Expr is ambiguous") or at JSON
+    serialization — instead of naming the real problem. Mirrors the message
+    ``ParamValue.__post_init__`` raises for scalar structural params.
+    """
+    if isinstance(value, pl.Expr):
+        msg = (
+            f"{what} is structural (it fixes the output shape/rank/dtype at "
+            "planning time) and must be a literal, not a Polars expression."
+        )
+        raise TypeError(msg)
+
+
+def _validate_enum(value: str, enum_cls: type, label: str):
+    """Validate a *literal* string against a user-facing enum.
+
+    The single validation shape for every literal enum-valued parameter:
+    ``Invalid <label> '<value>'. Valid: [...]``. Enums that may vary per row go
+    through ``pipeline._enum_param`` instead, so reaching here with an
+    expression means the parameter is structural.
+
+    Lives beside the enums rather than in ``pipeline.py`` because the geometry
+    accessors need the same check and importing it from the builder module
+    would have meant either a second copy or an import cycle. A second copy is
+    how ``.contour.scale(origin=)`` came to accept anything at all.
+    """
+    _reject_expr(value, f"'{label}'")
+    try:
+        return enum_cls(value)
+    except ValueError as e:
+        valid = [v.value for v in enum_cls]
+        msg = f"Invalid {label} '{value}'. Valid: {valid}"
+        raise ValueError(msg) from e
 
 
 @dataclass
