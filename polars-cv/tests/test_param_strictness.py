@@ -35,6 +35,7 @@ from polars_cv._types import (
     PadPosition,
     ParamValue,
 )
+from tests._expr_param_runner import assert_matches_per_row_literals
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -71,21 +72,27 @@ def _assert_matches_per_row_literals(
     dropped, but an off-by-one in `row_idx` would produce differing rows too.
     Comparing each row against the pipeline built with that row's literal value
     pins the parameter to the correct row.
+
+    The comparison itself lives in ``tests/_expr_param_runner.py``, which is
+    the same harness the whole-table sweep in ``test_expression_op_params.py``
+    runs on — the mechanism is shared rather than reimplemented here.
     """
     df = pl.DataFrame({"image": [image_bytes] * len(values), column: values})
-    dynamic = df.with_columns(
-        r=pl.col("image").cv.pipe(build(pl.col(column))).sink("numpy")
-    )["r"].to_list()
-
-    for i, value in enumerate(values):
-        one = pl.DataFrame({"image": [image_bytes]})
-        expected = one.with_columns(
-            r=pl.col("image").cv.pipe(build(value)).sink("numpy")
-        )["r"].to_list()[0]
-        assert dynamic[i] == expected, (
-            f"row {i} with {column}={value!r} does not match the literal pipeline"
-        )
-
+    dynamic = assert_matches_per_row_literals(
+        df,
+        input_column="image",
+        param_column=column,
+        build=build,
+        values=values,
+        # These pipelines leave the source dtype at "auto", which the typed
+        # `list` sink cannot plan; the numpy sink carries shape and dtype in
+        # the value itself and needs no plan-time dtype.
+        sink="numpy",
+    )
+    # Deliberately weaker than the sweep's `assert_values_vary`, which requires
+    # *every* row to differ: `convolve2d(border=)` is called here with
+    # "replicate" and "reflect", which coincide at a one-pixel pad, so all-
+    # distinct is not a property this value set has.
     assert len({str(v) for v in dynamic}) > 1, (
         "every row produced the same output; the parameter cannot have varied"
     )

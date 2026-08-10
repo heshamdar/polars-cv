@@ -132,10 +132,40 @@ def make_rect_png(height: int = 100, width: int = 200, channels: int = 3) -> byt
     return buf.getvalue()
 
 
+def make_ring_png(height: int = 100, width: int = 200, channels: int = 3) -> bytes:
+    """A black image with one white rectangle that has a rectangular hole.
+
+    ``make_rect_png``'s solid block cannot tell ``extract_contours(mode=)``
+    apart: with no enclosed background region, "external" and "all" find the
+    same single border. A ring has a second border to find, so the mode
+    genuinely changes the result.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        pytest.skip("PIL/Pillow required for this test")
+        return b""
+
+    arr = np.zeros((height, width, channels), dtype=np.uint8)
+    arr[height // 8 : 7 * height // 8, width // 8 : 7 * width // 8] = 255
+    arr[3 * height // 8 : 5 * height // 8, 3 * width // 8 : 5 * width // 8] = 0
+    if channels == 1:
+        arr = arr[:, :, 0]
+    buf = io.BytesIO()
+    Image.fromarray(arr, mode=_MODE_FOR_CHANNELS[channels]).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 @pytest.fixture
 def image_png() -> Callable[..., bytes]:
     """Fixture form of :func:`make_image_png`."""
     return make_image_png
+
+
+@pytest.fixture
+def ring_png() -> Callable[..., bytes]:
+    """Fixture form of :func:`make_ring_png`."""
+    return make_ring_png
 
 
 @pytest.fixture
