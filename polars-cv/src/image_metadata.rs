@@ -48,6 +48,16 @@ fn try_view_header(bytes: &[u8]) -> Option<ImageMeta> {
         shape.push(dim);
     }
 
+    // Deliberately *not* `ImageCodec::channels_from_shape`, which the sink
+    // contract's two halves share. That one answers "what may this be encoded
+    // as", so a rank outside 2/3 has no channel count and it says so with
+    // `None`, leaving the rank check to do the rejecting.
+    //
+    // This answers `.cv.width()`/`height()`/`channels()` for whatever buffer is
+    // in the column, including ranks no encoder accepts, and its callers need a
+    // number rather than a maybe. So it interprets every rank: a 1-D buffer is
+    // one row of pixels, a rank-4+ buffer is described by its leading three
+    // dimensions. Merging the two would force one of them to lie.
     let (height, width, channels) = match shape.len() {
         0 => (0, 0, 0),
         1 => (1, shape[0], 1),

@@ -8,7 +8,7 @@ use polars::prelude::*;
 use view_buffer::{
     geometry::rasterize::rasterize, AffineParams, BinaryOp, ComputeOp, DType, FilterType,
     GeometryOp, ImageAdapter, ImageCodec, ImageOp, ImageOpKind, InterpolationType, NormalizeMethod,
-    ViewBuffer, ViewDto, ViewOp,
+    PlannedDType, ViewBuffer, ViewDto, ViewOp,
 };
 
 use crate::graph::step::GraphStep;
@@ -17,31 +17,17 @@ use crate::pipeline::{OpSpec, SinkSpec, SourceSpec};
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::naming;
 
-/// The name Python queries [`BINARY_OPS`] under via `enum_variants`.
-///
-/// This family is the one enum-shaped vocabulary view-buffer's registry cannot
-/// hold, because the table below lives in this crate. Naming it here keeps the
-/// string next to what it names rather than loose in the FFI.
-pub(crate) const BINARY_OP_ENUM: &str = "BinaryOp";
-
 /// The Python-facing name of every two-buffer binary operation.
 ///
-/// Single authority consumed by `resolve_op` (one match arm for the whole
-/// family) and by `lib.rs::parse_binary_op` (the planner's two-input dtype
-/// query), so the two cannot drift.
-pub(crate) const BINARY_OPS: &[(&str, BinaryOp)] = &[
-    ("add", BinaryOp::Add),
-    ("subtract", BinaryOp::Subtract),
-    ("multiply", BinaryOp::Multiply),
-    ("divide", BinaryOp::Divide),
-    ("blend", BinaryOp::Blend),
-    ("ratio", BinaryOp::Ratio),
-    ("maximum", BinaryOp::Maximum),
-    ("minimum", BinaryOp::Minimum),
-    ("bitwise_and", BinaryOp::BitwiseAnd),
-    ("bitwise_or", BinaryOp::BitwiseOr),
-    ("bitwise_xor", BinaryOp::BitwiseXor),
-];
+/// An alias for `BinaryOp::NAMED`, which is where this table now lives —
+/// beside the enum, in view-buffer, under the same exhaustiveness guard as
+/// every other vocabulary. It used to be a hand-written list in this crate,
+/// which is what made `BinaryOp` the one enum the registry could not hold and
+/// the FFI had to special-case.
+///
+/// Kept as a name because `resolve_op` and `resolve_op_arms_are_all_known_ops`
+/// both read it and both read better for it.
+pub(crate) const BINARY_OPS: &[(&str, BinaryOp)] = BinaryOp::NAMED;
 
 /// Parse the optional `interpolation` parameter (shared by `rotate` and
 /// `warp_affine`; defaults to bilinear). Resolved per row: the choice of
@@ -267,14 +253,12 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>
     // (`dtype_for_output`). Reaching a failure here means the planner had less
     // information than we do now — a source whose dtype was still "auto", or a
     // shape only the data could settle — not that the two disagree.
-    let shape = buffer.shape();
-    let channels = match shape.len() {
-        3 => Some(shape[2]),
-        2 => Some(1),
-        _ => None,
-    };
     codec
-        .check_support(Some(buffer.dtype()), Some(shape.len()), channels)
+        .check_shape(
+            PlannedDType::Known(buffer.dtype()),
+            Some(buffer.shape()),
+            None,
+        )
         .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
 
     match codec {
