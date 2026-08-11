@@ -128,12 +128,36 @@ Consecutive compute operations (scalar element-wise: scale, relu, clamp, cast) a
 
 ### Op Trait
 
+`Op` (`src/ops/traits.rs`) declares twelve methods, **seven with no default**.
+The seven are what a new op cannot skip — it does not compile until it answers
+each one:
+
 ```rust
 pub trait Op {
+    fn name(&self) -> &'static str;
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize>;
-    fn memory_effect(&self) -> MemoryEffect; // ViewOnly, RequiresContiguous, or Allocating
+    fn infer_strides(&self, shape: &[usize], strides: &[isize]) -> Option<Vec<isize>>;
+
+    // The plan-time contract quartet: rank, channels, dtype, memory.
+    fn output_rank_rule(&self) -> OutputRankRule;
+    fn output_channel_rule(&self) -> OutputChannelRule;
+    fn output_dtype_rule(&self) -> OutputDTypeRule;
+    fn memory_effect(&self) -> MemoryEffect; // View, StridePreserving, RequiresContiguous
 }
 ```
+
+The remaining five carry defaults: `validate()`, `accepted_input_dtypes()`,
+`working_dtype()`, `resolve_output_dtype()` and `validate_output_dtype()`.
+
+The four rules marked as the quartet are the ones the Python planner reads over
+FFI, and **adding a default to any of them is a regression** — an op that
+declines to declare its dtype rule would silently inherit `PreserveInput` and
+publish a schema execution cannot produce. See the Canonical Paths table in the
+root `CLAUDE.md`.
+
+`DomainOp` is a *separate* trait (same file), not part of `Op`. It has four
+methods, three required — `input_domain()`, `output_domain()` and
+`execute_typed()`; `validate_input_domain()` defaults.
 
 ## Alpha Channel Support
 

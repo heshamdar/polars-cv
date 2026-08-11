@@ -144,9 +144,11 @@ pub fn build_numpy_series(
 ) -> PolarsResult<Series> {
     let len = rows.len();
 
-    // `out_dtype == "f16"` requests a half-precision downcast at the encode
-    // boundary (the engine has no native f16 dtype). Any other value is a bug —
-    // the Python sink guard only forwards "f16" — so treat it as native.
+    // A half-precision request downcasts at the encode boundary (the engine has
+    // no native f16 dtype). Both spellings are matched because the Python sink
+    // guard accepts both: `_validate_sink_params` in `lazy.py` admits
+    // `("f16", "float16")`. Any other value is a bug, so treat it as native
+    // rather than guessing a width.
     let as_f16 = matches!(out_dtype, Some("f16") | Some("float16"));
 
     // Convert each row to NumpyRowOutput

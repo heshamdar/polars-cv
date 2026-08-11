@@ -11,7 +11,7 @@ This directory contains a comprehensive benchmarking suite for comparing polars-
 
 ### What the benchmarks test:
 - Batch image decoding and preprocessing
-- Single operations (21 benchmarks: resize, grayscale, normalize, flip, crop, blur, threshold, rotate_90, rotate_45, invert, adjust_contrast, adjust_brightness, sharpen, pad, erode, dilate, histogram_equalize, canny, sobel_x)
+- Single operations (20 benchmarks: resize, grayscale, normalize, flip_horizontal, flip_vertical, crop_center, blur, threshold, rotate_90, rotate_45, invert, adjust_contrast, adjust_brightness, sharpen, pad, erode, dilate, histogram_equalize, canny, sobel_x). The authority is `get_single_op_benchmarks()` in `scenarios/single_ops.py`; `test_benchmark_list_is_current` pins this sentence to it.
 - Multi-operation pipelines (light, medium, heavy)
 - End-to-end file-to-memory workflows
 - Zero-copy ingestion performance
