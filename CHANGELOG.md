@@ -185,6 +185,25 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   them, so a rename on one side alone can no longer leave Python confidently
   sending a value the graph cannot parse.
 
+- **Four guards that only asserted an absence now also assert a presence.** A
+  test whose every assertion is "this string is not there" passes just as
+  happily when the thing it guards has been renamed, moved or deleted — it
+  stops distinguishing "the pattern is gone" from "the code is gone". Each was
+  watched failing after the positive half was made to fail:
+
+  - `test_enum_validation_uniform` now builds each parameter with a *real*
+    variant as well as a bogus one, and asserts that variant is one
+    `enum_variants` actually publishes. Writing it caught a hard-coded
+    `"dhash"` that `HashAlgorithm` does not have.
+  - `TestParamPolicyRatchet` asserts `execute.rs` still mentions `resolve_usize`
+    and `params::get` before ratcheting against two idioms that use them.
+    Renaming the resolver used to leave the scan green.
+  - `test_domain_vocabulary_declared_once` now checks that a wrong-domain op
+    still raises and that the reported domain is a `_types.Domain` member.
+    Deleting the domain check entirely used to pass every assertion.
+  - `test_anti_alias_is_gone_from_the_type_stub` requires the stub to declare
+    `rasterize` first — an empty `lazy.pyi` used to satisfy it.
+
 ## [0.19.0] — 2026-08-09
 
 ### Added

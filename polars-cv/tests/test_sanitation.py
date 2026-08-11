@@ -1393,42 +1393,77 @@ def test_histogram_schema_declared_once() -> None:
     assert '"u64"' not in source, "histogram counts dtype re-declared in Python"
 
 
-def test_enum_validation_uniform() -> None:
-    """Every enum-valued builder parameter fails with the uniform
-    ``Invalid <label> '<value>'. Valid: [...]`` error from _validate_enum."""
-    cases = [
-        (
-            lambda: (
-                Pipeline()
-                .source("blob", dtype="u8")
-                .resize(height=8, width=8, filter="bogus")
-            ),
-            "filter",
+#: ``(build, label, rust enum, a real variant)`` per enum-valued builder
+#: parameter. ``build`` takes the value so the same call can be exercised with
+#: a bogus one and a good one.
+_ENUM_VALIDATION_CASES = [
+    (
+        lambda v: (
+            Pipeline().source("blob", dtype="u8").resize(height=8, width=8, filter=v)
         ),
-        (
-            lambda: Pipeline().source("blob", dtype="u8").normalize(method="bogus"),
-            "normalize method",
-        ),
-        (
-            lambda: (
-                Pipeline().source("blob", dtype="u8").perceptual_hash(algorithm="bogus")
-            ),
-            "algorithm",
-        ),
-        (
-            lambda: (
-                Pipeline()
-                .source("blob", dtype="u8")
-                .grayscale()
-                .histogram(output="bogus")
-            ),
-            "histogram output mode",
-        ),
-        (lambda: Pipeline().source("blob", dtype="u8").cast("bogus"), "dtype"),
-    ]
-    for build, label in cases:
-        with pytest.raises(ValueError, match=rf"Invalid {label} 'bogus'"):
-            build()
+        "filter",
+        "FilterType",
+        "nearest",
+    ),
+    (
+        lambda v: Pipeline().source("blob", dtype="u8").normalize(method=v),
+        "normalize method",
+        "NormalizeMethod",
+        "minmax",
+    ),
+    (
+        lambda v: Pipeline().source("blob", dtype="u8").perceptual_hash(algorithm=v),
+        "algorithm",
+        "HashAlgorithm",
+        "average",
+    ),
+    (
+        lambda v: Pipeline().source("blob", dtype="u8").grayscale().histogram(output=v),
+        "histogram output mode",
+        "HistogramOutput",
+        "counts",
+    ),
+    (
+        lambda v: Pipeline().source("blob", dtype="u8").cast(v),
+        "dtype",
+        "DType",
+        "f32",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("build", "label", "enum_name", "good"),
+    _ENUM_VALIDATION_CASES,
+    ids=[c[1] for c in _ENUM_VALIDATION_CASES],
+)
+def test_enum_validation_uniform(build, label: str, enum_name: str, good: str) -> None:
+    """Each enum parameter rejects a bad value *and* accepts a real one.
+
+    The rejection half is the uniform ``Invalid <label> '<value>'. Valid: [...]``
+    error from ``_validate_enum``.
+
+    The acceptance half is what stops the rejection half being vacuous. On its
+    own, "'bogus' raises" passes just as well when the builder rejects
+    *everything* — an accidentally empty valid-set, a parameter renamed so the
+    keyword lands in ``**kwargs`` and dies for an unrelated reason, or a domain
+    check firing first. Each case therefore also builds with a real variant,
+    and asserts that variant is one the Rust enum actually publishes rather
+    than a name hard-coded here that both sides might have dropped.
+    """
+    with pytest.raises(ValueError, match=rf"Invalid {label} '__bogus__'"):
+        build("__bogus__")
+
+    build(good)  # must not raise
+
+    rust = _rust_enum_variants(enum_name)
+    if rust is None:
+        pytest.skip("_lib.enum_variants() not built")
+    assert good in rust, (
+        f"'{good}' is used here as a known-good {enum_name}, but Rust publishes "
+        f"{sorted(rust)}. The positive half of this test is checking a value "
+        f"the engine no longer has."
+    )
 
 
 #: Geometry-accessor enum parameters that are deliberately literal-only, with

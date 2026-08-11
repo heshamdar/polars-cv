@@ -261,6 +261,24 @@ class TestParamPolicyRatchet:
     def test_no_error_swallowing_in_resolve_op(self) -> None:
         execute_rs = Path(__file__).parent.parent / "src" / "execute.rs"
         src = execute_rs.read_text()
+
+        # The positive half. Both assertions below are "this string is absent",
+        # which is also true of a file that no longer mentions `resolve_usize`
+        # at all or no longer routes parameters through `params::get` -- a
+        # rename, a move, or a rewrite would leave this scan green while
+        # checking nothing. Confirm the idioms it is ratcheting *against* still
+        # have something to be ratcheted against.
+        assert "resolve_usize" in src, (
+            "execute.rs no longer mentions resolve_usize, so the two "
+            "assertions below hold vacuously. Either the resolver was renamed "
+            "(update this scan) or this file is no longer where parameters are "
+            "resolved (move it)."
+        )
+        assert "get::" in src, (
+            "execute.rs no longer calls params::get, which is the policy these "
+            "assertions exist to protect; this scan is guarding nothing."
+        )
+
         assert ".resolve_usize(row_idx, ctx).ok()" not in src, (
             "resolve_op swallows a parameter resolution error into None; "
             "use params::get::maybe_usize instead"
