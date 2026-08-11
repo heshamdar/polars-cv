@@ -671,30 +671,17 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             // Leaving it to the encoder meant a query planned as `Binary` and
             // then died part-way through `collect()`, which is precisely the
             // "planned one thing, executed another" failure the sink contract
-            // exists to prevent. `ImageCodec::check_support` is the one table
-            // both halves read, and it treats an unknown as permission, so a
-            // source whose dtype is still "auto" is not refused here.
+            // exists to prevent. `ImageCodec::check_shape` is the one entry
+            // point both halves read, and it treats an unknown as permission,
+            // so a source whose dtype is still "auto" is not refused here.
             let format = kind
                 .image_codec_format(spec)
                 .expect("EncodedImage carries a codec format");
             let codec = ImageCodec::from_sink_format(format)
                 .expect("this arm matches exactly the formats from_sink_format parses");
             let dtype = PlannedDType::parse(&spec.expected_dtype).unwrap_or(PlannedDType::Unknown);
-            let rank = spec
-                .expected_shape
-                .as_ref()
-                .map(|shape| shape.len())
-                .or(spec.expected_ndim);
-            let channels = spec
-                .expected_shape
-                .as_ref()
-                .and_then(|shape| match shape.len() {
-                    3 => Some(shape[2]),
-                    2 => Some(1),
-                    _ => None,
-                });
             codec
-                .check_planned(dtype, rank, channels)
+                .check_shape(dtype, spec.expected_shape.as_deref(), spec.expected_ndim)
                 .map_err(|msg| polars_err!(ComputeError: "{}", msg))?;
             Ok(DataType::Binary)
         }

@@ -136,6 +136,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   beside the `SOURCES_RESOLVED_FROM_COLUMN` the same function already read from
   there.
 
+- **The two halves of the image-sink contract derive "channels from rank" in one
+  place.** `execute.rs` (the encoder) and `graph/decode.rs` (the planner) each
+  carried the mapping `3 => Some(shape[2]), 2 => Some(1), _ => None`, character
+  for character, and each then passed the result into the same
+  `ImageCodec` check — two copies of one rule, on the two sides of the very
+  contract that exists so the plan and the execution agree.
+
+  Both now call `ImageCodec::check_shape`, which takes the *shape* and derives
+  the rank and channel count itself, so neither caller can derive them
+  differently. `image_metadata.rs` keeps its own, different mapping: it answers
+  `.cv.channels()` for buffers of any rank and its callers need a number rather
+  than a maybe, so it interprets ranks 0 and 1 that the codec check must reject.
+  A comment there now says so, rather than leaving it looking like a third copy.
+
 ## [0.19.0] — 2026-08-09
 
 ### Added

@@ -80,6 +80,51 @@ impl ImageCodec {
         )
     }
 
+    /// The channel count an image-shaped buffer of this `shape` carries.
+    ///
+    /// `[H, W, C]` carries `C`; `[H, W]` is single-channel; any other rank has
+    /// no channel count, which is *unknown* rather than zero — the rank check
+    /// is what rejects it, and reporting `Some(0)` here would misattribute
+    /// that to the channel range.
+    ///
+    /// Private on purpose. This mapping was written out twice, character for
+    /// character, at the two sites that call into this check — one on the
+    /// planning side and one on the executing side of the same contract — so
+    /// [`check_shape`](Self::check_shape) takes the shape and applies it here
+    /// rather than leaving each caller to derive it and pass it in.
+    fn channels_from_shape(shape: &[usize]) -> Option<usize> {
+        match shape.len() {
+            3 => Some(shape[2]),
+            2 => Some(1),
+            _ => None,
+        }
+    }
+
+    /// [`check_planned`](Self::check_planned) against a *shape*, deriving the
+    /// rank and channel count instead of trusting a caller to.
+    ///
+    /// This is the entry point for both halves of the sink contract: the
+    /// planner checks a shape it expects, and the encoder re-checks the shape
+    /// it actually got. Neither computes channels, so neither can compute them
+    /// differently.
+    ///
+    /// `shape` is what the caller knows of the buffer's dimensions, and
+    /// `rank_hint` covers the planner's case of knowing the rank without the
+    /// shape (an `expected_ndim` with no `expected_shape`). A known `shape`
+    /// wins, since its length *is* the rank.
+    pub fn check_shape(
+        self,
+        dtype: PlannedDType,
+        shape: Option<&[usize]>,
+        rank_hint: Option<usize>,
+    ) -> Result<(), String> {
+        self.check_planned(
+            dtype,
+            shape.map(<[usize]>::len).or(rank_hint),
+            shape.and_then(Self::channels_from_shape),
+        )
+    }
+
     /// [`check_support`](Self::check_support) for a dtype the planner has only
     /// partially resolved.
     ///
