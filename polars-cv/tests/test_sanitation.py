@@ -1419,6 +1419,79 @@ def test_enum_validation_uniform() -> None:
             build()
 
 
+#: Geometry-accessor enum parameters that are deliberately literal-only, with
+#: the reason. A parameter belongs here **only** if its value fixes the output
+#: shape, rank or dtype — the eligibility rule in root ``CLAUDE.md``. Empty
+#: today: none of the geometry enums is structural.
+_LITERAL_ONLY_GEOM_ENUMS: dict[str, str] = {}
+
+
+def test_non_structural_geometry_enums_accept_an_expression() -> None:
+    """A geometry enum that changes no output schema must be per-row capable.
+
+    The rule for per-row eligibility is not the parameter's *type*: it is
+    whether the value affects output shape, rank or dtype. None of the contour
+    namespace's enums does — a winding, a scale origin, a reduction and a
+    region mode all leave `List(Struct(CONTOUR_SCHEMA))` (or the reduction's
+    `List(Float64)`) exactly as it was.
+
+    Two of the four were literal-only anyway, and the rejection they raised
+    claimed the opposite: "'direction' is structural (it fixes the output
+    shape/rank/dtype at planning time)". It fixes none of them. Reading the
+    live signatures makes the rule enforced rather than remembered — a new
+    non-structural enum has to be plumbed through ``_ArgBinder`` or listed
+    above with a reason.
+    """
+    import inspect
+
+    from polars_cv._types import (
+        LabelReduction,
+        LabelRegionMode,
+        ScaleOrigin,
+        Winding,
+    )
+    from polars_cv.geometry.bbox import BBoxNamespace
+    from polars_cv.geometry.contours import ContourNamespace
+    from polars_cv.geometry.points import PointNamespace
+
+    enum_names = {
+        cls.__name__ for cls in (Winding, ScaleOrigin, LabelReduction, LabelRegionMode)
+    }
+    found: dict[str, str] = {}
+    for namespace in (ContourNamespace, PointNamespace, BBoxNamespace):
+        for name, method in inspect.getmembers(namespace, inspect.isfunction):
+            if name.startswith("_"):
+                continue
+            for param_name, param in inspect.signature(method).parameters.items():
+                annotation = str(param.annotation)
+                if any(enum in annotation for enum in enum_names):
+                    found[f"{namespace.__name__}.{name}.{param_name}"] = annotation
+
+    # Non-vacuity: an import rename or a signature-scan bug must fail here
+    # rather than silently checking an empty set.
+    assert len(found) >= 4, (
+        f"found {len(found)} enum-annotated geometry parameters — the signature "
+        f"scan is broken, not the annotations: {found}"
+    )
+    literal_only = {
+        key: annotation
+        for key, annotation in found.items()
+        if "Expr" not in annotation and key not in _LITERAL_ONLY_GEOM_ENUMS
+    }
+    assert not literal_only, (
+        f"these geometry enum parameters reject a Polars expression but change "
+        f"no output shape, rank or dtype, so they are eligible to be per-row: "
+        f"{literal_only}. Route them through `_ArgBinder`, or add them to "
+        f"_LITERAL_ONLY_GEOM_ENUMS with the structural reason."
+    )
+
+
+def test_the_literal_only_geometry_exemptions_carry_a_reason() -> None:
+    """An exemption is a decision about the eligibility rule, so it says why."""
+    blank = [k for k, why in _LITERAL_ONLY_GEOM_ENUMS.items() if not why.strip()]
+    assert not blank, f"exemptions without a reason: {blank}"
+
+
 # ---------------------------------------------------------------------------
 # Test-suite conformance: shared fixtures live in conftest.py only
 # ---------------------------------------------------------------------------

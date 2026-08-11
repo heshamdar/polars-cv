@@ -901,3 +901,102 @@ class TestIsConvex:
         df = pl.DataFrame({"contour": [l_shape]}, schema={"contour": CONTOUR_SCHEMA})
         result = df.with_columns(convex=pl.col("contour").contour.is_convex())
         assert result["convex"][0] is False
+
+
+@plugin_required
+class TestContourEnumParamsResolvePerRow:
+    """A non-structural enum takes an expression, like every other such value.
+
+    Per-row eligibility is decided by whether the value affects the output's
+    shape, rank or dtype — not by the parameter's type. A winding direction and
+    a scale origin affect none of them: the column stays
+    ``List(Struct(CONTOUR_SCHEMA))`` whichever is chosen. They were nonetheless
+    literal-only, and rejected an expression with a message asserting the
+    opposite ("'direction' is structural"), while ``label_reduce``'s two enums
+    in the same namespace were per-row already.
+
+    They now ride ``_ArgBinder`` like ``scale``'s own ``sx``/``sy``: the
+    expression is appended as a plugin input, named in ``input_slots``, and read
+    per row against the same ``NAMED`` table a literal is checked against.
+    """
+
+    def test_the_winding_direction_can_vary_by_row(self, ccw_square: dict) -> None:
+        df = pl.DataFrame(
+            {
+                "contour": [ccw_square] * 3,
+                # The third row uses a long alias, which rides in `NAMED` and so
+                # must resolve on the per-row path too.
+                "want": ["cw", "ccw", "clockwise"],
+            },
+            schema={"contour": CONTOUR_SCHEMA, "want": pl.String},
+        )
+        result = df.with_columns(
+            got=pl.col("contour")
+            .contour.ensure_winding(pl.col("want"))
+            .contour.winding()
+        )
+        assert result["got"].to_list() == ["cw", "ccw", "cw"]
+
+    def test_the_scale_origin_can_vary_by_row(self, ccw_square: dict) -> None:
+        """Each origin moves the centroid differently, so the row is observable.
+
+        A 100x100 square at the origin has its centroid at (50, 50). Doubling
+        about the coordinate origin puts it at (100, 100); doubling about the
+        centroid or the bbox centre — the same point for this shape — leaves it
+        where it was.
+        """
+        df = pl.DataFrame(
+            {
+                "contour": [ccw_square] * 3,
+                "org": ["origin", "centroid", "bbox_center"],
+            },
+            schema={"contour": CONTOUR_SCHEMA, "org": pl.String},
+        )
+        result = df.with_columns(
+            c=pl.col("contour")
+            .contour.scale(2.0, 2.0, origin=pl.col("org"))
+            .contour.centroid()
+        )
+        centroids = [
+            (round(p["x"], 6), round(p["y"], 6)) for p in result["c"].to_list()
+        ]
+        assert centroids == [(100.0, 100.0), (50.0, 50.0), (50.0, 50.0)]
+
+    def test_an_unknown_per_row_value_is_rejected_by_the_same_table(
+        self, ccw_square: dict
+    ) -> None:
+        """Moving validation to execution must not lose it.
+
+        A literal is checked in Python against the enum; an expression cannot
+        be, so Rust checks it per row against `NAMED` — the same authority,
+        naming the same accepted spellings.
+        """
+        df = pl.DataFrame({"contour": [ccw_square]}, schema={"contour": CONTOUR_SCHEMA})
+        with pytest.raises(Exception, match="Unsupported winding direction 'CW'"):
+            df.with_columns(x=pl.col("contour").contour.ensure_winding(pl.lit("CW")))
+        with pytest.raises(Exception, match="Unsupported origin 'top_left'"):
+            df.with_columns(
+                x=pl.col("contour").contour.scale(2.0, 2.0, origin=pl.lit("top_left"))
+            )
+
+    def test_a_null_in_the_parameter_column_follows_on_null(
+        self, ccw_square: dict
+    ) -> None:
+        """Routing through `_ArgBinder` also buys the shared null-param policy.
+
+        `ensure_winding` used to push its own null for a null *input* and had no
+        parameter column to have an opinion about. Both now go through
+        `contour_row`, so a null parameter reaches `ParamCol::on_null` like
+        every other per-row value — raising by default, nulling the row under
+        `on_null("null")`.
+        """
+        df = pl.DataFrame(
+            {"contour": [ccw_square] * 2, "want": ["cw", None]},
+            schema={"contour": CONTOUR_SCHEMA, "want": pl.String},
+        )
+        nulled = df.with_columns(
+            x=pl.col("contour").contour.on_null("null").ensure_winding(pl.col("want"))
+        )
+        assert nulled["x"][1] is None
+        with pytest.raises(Exception, match="null value at row 1"):
+            df.with_columns(x=pl.col("contour").contour.ensure_winding(pl.col("want")))

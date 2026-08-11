@@ -16,7 +16,7 @@ from polars_cv._types import (
     LabelRegionMode,
     ScaleOrigin,
     Winding,
-    _validate_enum,
+    _enum_or_expr,
 )
 
 
@@ -182,7 +182,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         return self._plugin("contour_flip")
 
-    def ensure_winding(self, direction: Winding | str) -> pl.Expr:
+    def ensure_winding(self, direction: Winding | str | pl.Expr) -> pl.Expr:
         """
         Ensure contour has specified winding direction.
 
@@ -191,15 +191,18 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         operations never require one.
 
         Args:
-            direction: Target winding direction.
+            direction: Target winding direction. Accepts a Polars expression for
+                a per-row choice — rewinding a ring reorders its vertices and
+                leaves the output schema untouched.
 
         Returns:
             Contour with guaranteed winding direction.
         """
-        return self._plugin(
-            "contour_ensure_winding",
-            kwargs={"direction": _validate_enum(direction, Winding, "direction").value},
+        binder = _ArgBinder()
+        binder.add_param(
+            "direction", _enum_or_expr(direction, Winding, "direction"), cast=str
         )
+        return binder.call(self, "contour_ensure_winding")
 
     def translate(
         self,
@@ -226,7 +229,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         sx: float | pl.Expr,
         sy: float | pl.Expr,
         *,
-        origin: ScaleOrigin | str = "origin",
+        origin: ScaleOrigin | str | pl.Expr = "origin",
     ) -> pl.Expr:
         """
         Scale contour relative to specified origin.
@@ -234,7 +237,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         Args:
             sx: X scale factor (literal or expression).
             sy: Y scale factor (literal or expression).
-            origin: Point to scale around:
+            origin: Point to scale around, as a literal or an expression:
                 - "centroid": Center of mass
                 - "bbox_center": Bounding box center
                 - "origin": Coordinate origin (0, 0)
@@ -245,11 +248,10 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         binder = _ArgBinder()
         binder.add_param("sx", sx)
         binder.add_param("sy", sy)
-        return binder.call(
-            self,
-            "contour_scale",
-            origin=_validate_enum(origin, ScaleOrigin, "origin").value,
+        binder.add_param(
+            "origin", _enum_or_expr(origin, ScaleOrigin, "origin"), cast=str
         )
+        return binder.call(self, "contour_scale")
 
     def simplify(self, tolerance: float | pl.Expr) -> pl.Expr:
         """

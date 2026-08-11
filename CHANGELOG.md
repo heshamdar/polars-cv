@@ -7,6 +7,30 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`.contour.ensure_winding(direction=)` and `.contour.scale(origin=)` accept a
+  Polars expression**, resolved per row like every other non-structural
+  parameter. Per-row eligibility is decided by whether a value affects the
+  output's shape, rank or dtype — not by its type — and neither of these does:
+  the column stays `List(Struct(CONTOUR_SCHEMA))` whichever winding or origin a
+  row picks. They were nonetheless literal-only while `label_reduce`'s
+  `reduction` and `region_mode`, two enums of the same kind in the same
+  namespace, were already per-row.
+
+  Worse, the rejection asserted the opposite of the truth — *"'direction' is
+  structural (it fixes the output shape/rank/dtype at planning time)"* — for a
+  parameter that fixes none of them. Both now ride `_ArgBinder`, like `scale`'s
+  own `sx`/`sy`: the expression is appended as a plugin input, named in
+  `input_slots`, and read per row against the same `NAMED` table a literal is
+  validated against, so moving the check to execution does not lose it. Routing
+  them through `contour_row` also brings both under the shared null-parameter
+  policy, so `on_null("null")` now applies to them.
+
+  `test_non_structural_geometry_enums_accept_an_expression` reads the geometry
+  namespaces' live signatures, so a new non-structural enum has to be plumbed
+  for per-row use or exempted with the structural reason.
+
 ### Fixed
 
 - **`.contour.ensure_winding()` and `.contour.scale(origin=)` reject a value
