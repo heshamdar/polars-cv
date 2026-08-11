@@ -206,3 +206,28 @@ def example_scripts() -> list[Path]:
         sorted(p for p in examples.glob("*.py") if p.name not in _NON_SCRIPT_EXAMPLES),
         "example scripts",
     )
+
+
+def doc_pages() -> list[Path]:
+    """Every Markdown page under ``polars-cv/docs/``."""
+    return discovered(
+        sorted((REPO_ROOT / "polars-cv" / "docs").rglob("*.md")), "documentation pages"
+    )
+
+
+def doc_page(relative: str) -> Path:
+    """One documentation page, by path relative to ``docs/``.
+
+    Raises rather than returning a missing path: a guard that reads a renamed
+    page should fail loudly, not silently check an empty string. Named pages do
+    not come from :func:`doc_pages` because the guards below are *about* a
+    specific page's content, and finding it absent is a failure rather than an
+    empty result.
+    """
+    path = REPO_ROOT / "polars-cv" / "docs" / relative
+    if not path.is_file():
+        raise EmptyDiscovery(
+            f"documentation page {relative!r} does not exist. If it was renamed, "
+            f"update the guard that reads it; if it was deleted, delete the guard."
+        )
+    return path
