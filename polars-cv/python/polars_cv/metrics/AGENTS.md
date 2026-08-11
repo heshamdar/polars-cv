@@ -174,4 +174,3 @@ metrics/
 
 - Bbox matching converts to contours internally. Correct but suboptimal for axis-aligned boxes.
 - Score + extract cannot be merged into one graph: `label_reduce` requires contours as an expression parameter, so they must exist as a column before the scoring pipeline runs.
-- `rasterize(anti_alias=)` is plumbed but view-buffer's rasterizer ignores the flag.
