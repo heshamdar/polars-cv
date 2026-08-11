@@ -102,4 +102,6 @@ nav:
     - Geometry: api/geometry.md
     - Metrics: api/metrics.md
     - Functions: api/functions.md
+  - Development:
+    - Panic Audit: panic-audit.md
   - Changelog: changelog.md
