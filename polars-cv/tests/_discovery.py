@@ -179,3 +179,30 @@ def suite_modules() -> list[Path]:
         [p for p in suite_files() if p.name not in SUITE_MODULE_EXCLUSIONS],
         "test modules",
     )
+
+
+#: Example scripts that are imported as helpers rather than run, with the
+#: reason. ``detection_data.py`` builds the synthetic dataset
+#: ``06_detection_metrics.py`` imports; it has no ``__main__`` block, so
+#: executing it does nothing and asserting it "ran" would assert nothing.
+_NON_SCRIPT_EXAMPLES: dict[str, str] = {
+    "detection_data.py": (
+        "a helper module imported by 06_detection_metrics.py, with no "
+        "__main__ block of its own"
+    ),
+}
+
+
+def example_scripts() -> list[Path]:
+    """Every runnable script in ``polars-cv/examples/``.
+
+    Nothing executed these for the whole life of the directory, so an example
+    could reference a renamed method and stay broken indefinitely. The runner
+    that fixes that needs the set to be non-empty to mean anything, which is
+    what routing it through here provides.
+    """
+    examples = REPO_ROOT / "polars-cv" / "examples"
+    return discovered(
+        sorted(p for p in examples.glob("*.py") if p.name not in _NON_SCRIPT_EXAMPLES),
+        "example scripts",
+    )
