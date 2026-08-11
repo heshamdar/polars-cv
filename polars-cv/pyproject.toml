@@ -38,6 +38,10 @@ dev = [
     "ruff>=0.9.0",
     "maturin>=1.7,<2.0",
     "pre-commit>=4.5.1",
+    # Twelve of the thirteen runnable examples plot their results, and
+    # `test_examples_run` executes all of them. Without this here the runner
+    # would skip almost everything it exists to check.
+    "matplotlib>=3.9.4",
 ]
 bench = [
     "opencv-python>=4.8",

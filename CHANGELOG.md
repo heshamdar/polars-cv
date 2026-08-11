@@ -223,6 +223,49 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   out-of-nav page at INFO, not WARNING — but a page nothing links to is not
   published in any useful sense.)
 
+- **The examples are executed, and two of them were broken.**
+  `polars-cv/examples/` held fourteen files that nothing ran: no test, no
+  workflow, and `ruff`'s `extend-exclude` skips the directory. They read as
+  documentation while being unverified for the life of the directory.
+  `test_examples_run` executes each as a subprocess and requires exit 0, marked
+  `slow` and discovered through `tests/_discovery.py` so an empty sweep fails
+  rather than passes.
+
+  Its first run found two independent bugs in `08_ml_integration.py`:
+
+  - `.assert_shape(channels=3, height=96, width=96)` was applied *after*
+    `.transpose([2, 0, 1])`. Those keywords describe an `[H, W, C]` buffer, so
+    asserting them on an already-transposed one made the planner publish
+    `[96, 96, 3]` for something that executes as `[3, 96, 96]` — the query died
+    at `collect()` with a plan/exec mismatch. The assertion moves before the
+    transpose, where it means what it says.
+  - The `array` sink was given no `shape=`, on the assumption that
+    `.assert_shape()` supplies one. It does not, and neither does `.resize()` —
+    only `.sink("array", shape=[...])` does, which the example now passes.
+
+  `matplotlib` joins the dev group: twelve of the thirteen runnable examples
+  plot, and without it the runner would have skipped almost everything it
+  exists to check.
+
+- **The documentation's vocabularies are checked against the code's.** Three
+  places in `docs/` restate something the code owns, all hand-maintained and
+  none compared to anything: `domains.md`'s table (now required to *equal*
+  `_types.Domain`), `sources.md`'s `auto`-resolution table (its formats must
+  exist in `SourceFormat`), and the methods called in the operations pages'
+  Python examples (each must resolve to a real `Pipeline` /
+  `LazyPipelineExpr` / namespace method).
+
+  The last one is not the table-diff it looks like it should be: those pages
+  name operations in prose headings, not tables, so a "rows ⊆ `OP_NAMES`" guard
+  would have matched nothing and read as green forever. It reads the code
+  blocks instead — what a reader actually copies. Its `_FOREIGN_METHODS`
+  exemption list is itself guarded, and immediately caught three of our own
+  methods wrongly exempted while it was being written.
+
+  The Markdown readers live in `tests/_doc_tables.py` with committed fixtures
+  in `tests/test_doc_table_fixtures.py`, which caught a lookbehind that
+  excluded `df.method(` — the ordinary shape of a call, i.e. most of every page.
+
 ## [0.19.0] — 2026-08-09
 
 ### Added

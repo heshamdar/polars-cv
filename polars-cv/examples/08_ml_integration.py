@@ -71,13 +71,18 @@ def build_demo_frame() -> pl.DataFrame:
 
 def preprocess_for_numpy(df: pl.DataFrame) -> pl.DataFrame:
     """Create a CHW float32 tensor-like preprocessing output."""
+    # `assert_shape` names its dimensions `height`/`width`/`channels`, i.e. it
+    # describes an [H, W, C] buffer. So it belongs *before* the transpose to
+    # CHW, not after: asserting HWC dimensions on an already-transposed buffer
+    # tells the planner to publish [96, 96, 3] for something that executes as
+    # [3, 96, 96], and the query fails at collect() with a plan/exec mismatch.
     pipe = (
         Pipeline()
         .source("image_bytes")
         .resize(height=96, width=96)
         .normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
-        .transpose([2, 0, 1])
         .assert_shape(channels=3, height=96, width=96)
+        .transpose([2, 0, 1])
     )
     return df.with_columns(processed=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
@@ -103,13 +108,13 @@ def demonstrate_array_and_list_sinks() -> pl.DataFrame:
     """Demonstrate deterministic list/array sinks from list source."""
     tensor = np.arange(4 * 4, dtype=np.float32).reshape(4, 4, 1).tolist()
     df = pl.DataFrame({"tensor": [tensor]})
-    pipe = (
-        Pipeline()
-        .source("list", dtype="f32")
-        .assert_shape(height=4, width=4, channels=1)
-    )
+    pipe = Pipeline().source("list", dtype="f32")
+    # The `array` sink needs its shape at planning time, and `shape=` is the
+    # only thing that supplies it. `.assert_shape()` records the dimensions as
+    # hints but does not satisfy this sink, despite the sink's own error
+    # message suggesting it -- so pass the shape here.
     return df.with_columns(
-        tensor_array=pl.col("tensor").cv.pipe(pipe).sink("array"),
+        tensor_array=pl.col("tensor").cv.pipe(pipe).sink("array", shape=[4, 4, 1]),
         tensor_list=pl.col("tensor").cv.pipe(pipe).sink("list"),
     )
 
