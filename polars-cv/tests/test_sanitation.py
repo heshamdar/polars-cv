@@ -1868,6 +1868,7 @@ def test_verify_script_covers_every_ci_check() -> None:
         ('-m "slow and not network"', '-m "slow and not network"'),
         ("ruff check", "ruff check"),
         ("ruff format --check", "ruff format --check"),
+        ("mkdocs build --strict", "mkdocs build --strict"),
     ]
     missing = [
         ci_frag

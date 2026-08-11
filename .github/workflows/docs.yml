@@ -53,8 +53,12 @@ jobs:
 
       - name: Build MkDocs site
         working-directory: ${{ steps.package_dir.outputs.dir }}
+        # `--strict` matches the `docs` job in ci.yml, so this workflow cannot
+        # deploy a site that CI would have rejected. `--clean` is redundant on
+        # a fresh checkout but harmless, and explicit about the directory being
+        # rebuilt from scratch.
         run: |
-          uv run mkdocs build --clean
+          uv run mkdocs build --clean --strict
 
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5

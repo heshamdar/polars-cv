@@ -204,6 +204,25 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   - `test_anti_alias_is_gone_from_the_type_stub` requires the stub to declare
     `rasterize` first — an empty `lazy.pyi` used to satisfy it.
 
+- **The documentation is built by CI.** `docs.yml` was `workflow_dispatch:`-only
+  and ran `mkdocs build --clean`, so nothing checked the docs on a push or a PR
+  and a warning did not fail the build. A broken link or a nav entry pointing at
+  a deleted page was found by whoever next deployed by hand, if at all.
+
+  A `docs` job in `ci.yml` now runs `mkdocs build --strict` on every push and
+  PR, the deploy workflow uses `--strict` too (so it cannot ship a site CI would
+  reject), and `scripts/verify.sh` runs the same command — which
+  `test_verify_script_covers_every_ci_check` now requires, so the three cannot
+  come apart. The job is in `ci.yml` deliberately: that test reads only that
+  file, so a check placed anywhere else is one it cannot see. Watched failing
+  against a nav entry naming a missing page.
+
+  `docs/panic-audit.md` joins the nav under a Development section. It was the
+  one page in `docs/` absent from `nav`, i.e. built but unreachable from the
+  site. (Not a `--strict` blocker, as it happens — mkdocs reports an
+  out-of-nav page at INFO, not WARNING — but a page nothing links to is not
+  published in any useful sense.)
+
 ## [0.19.0] — 2026-08-09
 
 ### Added

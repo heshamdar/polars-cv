@@ -135,6 +135,37 @@ jobs:
           uvx ruff check python tests benchmarks
           uvx ruff format --check python tests benchmarks
 
+  docs:
+    name: Docs build
+    # The docs had no CI at all: `docs.yml` is `workflow_dispatch:`-only, so a
+    # broken link or a nav entry pointing at a deleted page was only found by
+    # someone manually deploying. This builds on every push and PR, and with
+    # `--strict` so a warning fails rather than scrolling past.
+    #
+    # Deliberately in `ci.yml` rather than as a second trigger on `docs.yml`:
+    # `test_verify_script_covers_every_ci_check` reads this file to check that
+    # `scripts/verify.sh` runs everything CI does, so a check placed anywhere
+    # else is one it cannot see.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Build MkDocs site (strict)
+        run: |
+          if [ -d "polars-cv" ]; then cd polars-cv; fi
+          uv sync --group docs
+          uv run mkdocs build --strict
+
   slow-tests:
     name: Slow / OOC tests
     # Off the per-PR critical path: the slow-marked tests (e.g.

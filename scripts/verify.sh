@@ -75,6 +75,12 @@ fi
 run_check "ruff check"  uvx ruff check polars-cv/python polars-cv/tests polars-cv/benchmarks
 run_check "ruff format" uvx ruff format --check polars-cv/python polars-cv/tests polars-cv/benchmarks
 
+# The docs group is a separate dependency set, so sync it before building
+# rather than assuming the working tree already has mkdocs. `--strict` matches
+# the `docs` job in ci.yml: a warning fails the build instead of scrolling past.
+run_check "mkdocs build --strict" \
+    uv run --directory polars-cv --group docs mkdocs build --strict
+
 echo
 echo "Summary:"
 printf '%s\n' "${RESULTS[@]}"
