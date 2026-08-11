@@ -254,7 +254,7 @@ def _canonicalize_image_meta(
             ``gt_label`` are filled with defaults when absent.
 
     Returns:
-        LazyFrame with the required ``IMAGE_META_REQUIRED`` columns.
+        LazyFrame with the columns ``IMAGE_META_SCHEMA`` declares.
 
     Raises:
         ValueError: If ``image_id`` or ``n_gts`` is missing.

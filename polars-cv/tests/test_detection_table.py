@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 import polars as pl
 import pytest
 
+from polars_cv.metrics import BBoxMatcher, ContourMatcher, PreMatchedAdapter
+from polars_cv.metrics._matching._contour import _empty_detection_table
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -19,8 +22,11 @@ from polars_cv.metrics._types import (
     COL_SCORE,
     COL_WEIGHT,
     DEFAULT_CLASS,
+    DETECTION_SCHEMA,
+    IMAGE_META_SCHEMA,
     DetectionTable,
 )
+from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
     pass
@@ -186,3 +192,68 @@ class TestDetectionTableViews:
         assert len(ids) == 2
         assert strata is not None
         assert len(strata) == 2
+
+
+# ---------------------------------------------------------------------------
+# The declared schema is what the matchers produce
+# ---------------------------------------------------------------------------
+
+
+def _contour_inputs() -> pl.DataFrame:
+    """One heatmap + mask pair with a single obvious region."""
+    heat = np.zeros((32, 32), dtype=np.float64)
+    heat[5:15, 5:15] = 0.9
+    mask = np.zeros((32, 32), dtype=np.float64)
+    mask[5:15, 5:15] = 1.0
+    return pl.DataFrame({"pred": [heat.tolist()], "gt": [mask.tolist()]})
+
+
+def _bbox_inputs() -> pl.DataFrame:
+    box = {"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0}
+    return pl.DataFrame({"pred": [[box]], "gt": [[box]], "scores": [[0.9]]})
+
+
+def _by_contour_matcher() -> DetectionTable:
+    return ContourMatcher().match(_contour_inputs(), pred_col="pred", gt_col="gt")
+
+
+def _by_bbox_matcher() -> DetectionTable:
+    return BBoxMatcher().match(
+        _bbox_inputs(), pred_col="pred", gt_col="gt", score_col="scores"
+    )
+
+
+def _by_prematched_adapter() -> DetectionTable:
+    return PreMatchedAdapter().match(
+        pl.DataFrame({"score": [0.9, 0.2], "is_tp": [True, False]}),
+        image_meta=pl.DataFrame({COL_IMAGE_ID: ["0", "1"], COL_N_GTS: [1, 1]}),
+    )
+
+
+#: Every way a ``DetectionTable`` comes into existence. A new matcher belongs
+#: here — that is what gets its output schema checked at all.
+_PRODUCERS = {
+    "ContourMatcher": _by_contour_matcher,
+    "BBoxMatcher": _by_bbox_matcher,
+    "PreMatchedAdapter": _by_prematched_adapter,
+    "empty": _empty_detection_table,
+}
+
+
+@plugin_required
+@pytest.mark.parametrize("producer", sorted(_PRODUCERS))
+def test_matcher_schemas_match_the_declaration(producer: str) -> None:
+    """Every producer of a ``DetectionTable`` must emit the declared dtypes.
+
+    ``DETECTION_SCHEMA``/``IMAGE_META_SCHEMA`` used to be name-only sets, so the
+    dtypes existed in exactly one place: a hand-written literal inside
+    ``_empty_detection_table()``. Nothing connected that literal to what a
+    populated match returns, and the two are routinely concatenated — an
+    all-background image yields the empty table, a normal one does not.
+
+    Comparing as dicts is deliberate: column *order* is not part of the
+    contract, and ``PreMatchedAdapter`` legitimately emits ``gt_idx`` last.
+    """
+    table = _PRODUCERS[producer]()
+    assert dict(table.detections.collect_schema()) == DETECTION_SCHEMA
+    assert dict(table.image_metadata.collect_schema()) == IMAGE_META_SCHEMA

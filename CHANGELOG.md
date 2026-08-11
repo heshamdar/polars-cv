@@ -92,6 +92,29 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   is behaviour-observed rather than two Python constants compared to each other.
   It was watched failing against a deliberately reordered `contour_struct_dtype()`.
 
+- **A `DetectionTable`'s dtypes are declared, not invented at the empty path.**
+  `DETECTION_COLUMNS` and `IMAGE_META_REQUIRED` listed column *names* with no
+  dtypes, so the only place the dtypes existed was a hand-written literal inside
+  `_empty_detection_table()` — twelve `pl.` types that nothing connected to what
+  a populated match returns. The two frames meet: an all-background image yields
+  the empty table and a normal one does not, and a caller concatenating them
+  would have discovered a disagreement at the concat rather than at the schema.
+
+  They are now `DETECTION_SCHEMA` / `IMAGE_META_SCHEMA`, name→dtype maps that
+  `_empty_detection_table()` builds from directly.
+  `test_matcher_schemas_match_the_declaration` runs `ContourMatcher`,
+  `BBoxMatcher` and `PreMatchedAdapter` on real inputs and compares each
+  result's schema to the declaration, so the declaration records observed
+  behaviour rather than an intention; a new matcher is added to `_PRODUCERS`,
+  which is what gets its output checked at all. Watched failing by widening one
+  declared dtype — the three matchers rejected it while the empty path, which
+  builds from the declaration, could not.
+
+  `from_matched` still validates **names only**. It accepts caller-assembled
+  frames, and rejecting a `UInt64` `det_idx` that Polars compares happily
+  against a `UInt32` would break working pipelines for no benefit; what the
+  matchers produce and what a caller may supply are different claims.
+
 ## [0.19.0] — 2026-08-09
 
 ### Added
