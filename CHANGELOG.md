@@ -150,6 +150,41 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   than a maybe, so it interprets ranks 0 and 1 that the codec check must reject.
   A comment there now says so, rather than leaving it looking like a third copy.
 
+- **Three error/null policies stop being spelled by hand in Python, and
+  `enum_variants` loses its last hand-written arm.** `("raise", "null")` and
+  friends appeared at five Python sites covering *three* different policies —
+  `RowErrorPolicy` (3 values), `NullParamPolicy` (2) and the `file_path` /
+  `read_bytes` fetch policy (2). Over-listing a value errors loudly at the
+  boundary; under-listing one rejects a value the plugin would have accepted,
+  silently, forever.
+
+  The fetch policy was not even an enum: `parse_on_error` matched two string
+  literals and hand-wrote `(expected 'raise' or 'null')`. It is now
+  `FetchErrorPolicy`, and all three carry `named_variants!` tables mirrored by
+  `_types.RowErrorPolicy` / `NullParamPolicy` / `FetchErrorPolicy`, which the
+  five sites read.
+
+  Reaching them required lending the plugin crate the mechanism rather than
+  cloning its exception: `named_variants!` and `registry!` are exported, and
+  the plugin declares `PLUGIN_REGISTRY`, which `enum_variants`/`enum_names`
+  chain onto the engine's. Registering an enum is therefore the same act as
+  getting it checked — `test_every_rust_enum_is_parity_checked` reads
+  `enum_names()` and demands a Python mirror for each.
+
+  `BinaryOp` came along: its name table lived in the plugin crate purely by
+  habit, which is what made it the one enum needing a bespoke FFI arm and an
+  exemption from that test. `BINARY_OPS` is now `BinaryOp::NAMED` beside the
+  enum in view-buffer, registered like everything else — so a new `BinaryOp`
+  variant no longer compiles until it is named. The `BINARY_OP_ENUM` constant
+  and the `enum_variants` special case are deleted.
+
+  Two new Rust tests cover the one thing the parity test cannot see: these
+  policies have *two* mechanisms describing one vocabulary, serde's
+  `rename_all` reading the wire and `NAMED` publishing it.
+  `row_error_policy_names_match_serde` and its `NullParamPolicy` twin compare
+  them, so a rename on one side alone can no longer leave Python confidently
+  sending a value the graph cannot parse.
+
 ## [0.19.0] — 2026-08-09
 
 ### Added

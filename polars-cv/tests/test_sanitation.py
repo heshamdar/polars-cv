@@ -822,6 +822,12 @@ _UNIFORM_PARITY_ENUMS = [
     "InterpolationType",
     "ScaleOrigin",
     "Winding",
+    # Owned by the plugin crate rather than the engine (PLUGIN_REGISTRY), which
+    # `enum_variants` chains onto the engine's. Nothing about checking them
+    # differs — that is the point of chaining rather than special-casing.
+    "RowErrorPolicy",
+    "NullParamPolicy",
+    "FetchErrorPolicy",
 ]
 
 # Checked, but not by the uniform test: their Python side needs special
@@ -833,6 +839,12 @@ _NO_PYTHON_MIRROR = {
     # Binary ops are Python *methods* (`.add()`, `.blend()`), not an enum, so
     # there is no member set to diff. `test_binary_ops_match_rust` pins the
     # names against the Rust table instead.
+    #
+    # This is now the *only* reason it is here. It used to be exempt for a
+    # second reason as well — its name table lived in the plugin crate, so
+    # `enum_variants` answered for it through a hand-written arm rather than a
+    # registry. The table has moved beside the enum in view-buffer, so it is
+    # registered and name-checked like everything else.
     "BinaryOp",
 }
 

@@ -24,6 +24,7 @@ from polars_cv._types import (
     Domain,
     DType,
     ExtractMode,
+    FetchErrorPolicy,
     FilterType,
     FloatOrExpr,
     HashAlgorithm,
@@ -34,10 +35,12 @@ from polars_cv._types import (
     LabelReduction,
     LabelRegionMode,
     NormalizeMethod,
+    NullParamPolicy,
     OpSpec,
     PadMode,
     PadPosition,
     ParamValue,
+    RowErrorPolicy,
     ShapeHints,
     SourceFormat,
     SourceSpec,
@@ -501,7 +504,7 @@ class Pipeline:
         Example:
             >>> pipe = Pipeline().source("image_bytes").resize(height=224, width=224).on_error("null")
         """
-        valid = ("raise", "null", "null_with_message")
+        valid = tuple(p.value for p in RowErrorPolicy)
         if policy not in valid:
             msg = f"on_error must be one of {valid}, got '{policy}'"
             raise ValueError(msg)
@@ -552,7 +555,7 @@ class Pipeline:
             ...     .on_null_param("null")
             ... )
         """
-        valid = ("raise", "null")
+        valid = tuple(p.value for p in NullParamPolicy)
         if policy not in valid:
             msg = f"on_null_param must be one of {valid}, got '{policy}'"
             raise ValueError(msg)
@@ -1240,8 +1243,9 @@ class Pipeline:
             applies=SOURCE_PARAM_APPLIES,
         )
 
-        if on_error not in ("raise", "null"):
-            msg = f"on_error must be 'raise' or 'null', got '{on_error}'"
+        fetch_policies = tuple(p.value for p in FetchErrorPolicy)
+        if on_error not in fetch_policies:
+            msg = f"on_error must be one of {fetch_policies}, got '{on_error}'"
             raise ValueError(msg)
 
         if decode_max_size is not None and (

@@ -39,6 +39,13 @@ pub enum NullParamPolicy {
     Null,
 }
 
+// As with `RowErrorPolicy`, these must agree with the `rename_all` above;
+// `null_param_policy_names_match_serde` checks that they do.
+view_buffer::naming::named_variants!(NullParamPolicy {
+    "raise" => Raise,
+    "null" => Null,
+});
+
 /// A parameter value that can be either a literal or an expression reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -1068,6 +1075,25 @@ pub mod get {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `NAMED` spelling must round-trip through serde, and vice versa.
+    ///
+    /// The twin of `row_error_policy_names_match_serde` in `graph::types`, for
+    /// the same reason: serde's `rename_all` reads the wire while `NAMED` tells
+    /// Python what to write, and nothing else compares the two. A rename on one
+    /// side would leave Python sending a value the graph cannot parse.
+    ///
+    /// A second copy of a *test* over a different type, not a second copy of a
+    /// fact — the registry cannot express "deserialize this" generically,
+    /// because it stores name functions rather than the types themselves.
+    #[test]
+    fn null_param_policy_names_match_serde() {
+        for (name, expected) in NullParamPolicy::NAMED {
+            let parsed: NullParamPolicy = serde_json::from_str(&format!("\"{name}\""))
+                .unwrap_or_else(|e| panic!("serde rejects the NAMED spelling {name:?}: {e}"));
+            assert_eq!(parsed, *expected, "{name} parses to the wrong variant");
+        }
+    }
 
     #[test]
     fn test_literal_i64() {

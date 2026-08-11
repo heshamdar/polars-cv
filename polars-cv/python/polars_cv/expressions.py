@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._namespace import _PluginNamespace
-from polars_cv._types import normalize_cloud_options
+from polars_cv._types import FetchErrorPolicy, normalize_cloud_options
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -124,10 +124,11 @@ class CvNamespace(_PluginNamespace):
         Returns:
             Binary expression with each path's raw file contents.
         """
-        if on_error not in ("raise", "null"):
+        valid = tuple(p.value for p in FetchErrorPolicy)
+        if on_error not in valid:
             msg = (
                 f"Unknown on_error value {on_error!r} for read_bytes() "
-                f"(expected 'raise' or 'null')"
+                f"(expected one of {valid})"
             )
             raise ValueError(msg)
 

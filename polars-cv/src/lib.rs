@@ -12,6 +12,7 @@ mod fetch;
 mod geom_params;
 mod graph;
 mod image_metadata;
+mod naming;
 mod output;
 mod params;
 mod pipeline;
@@ -22,8 +23,6 @@ use polars::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
-
-use crate::execute::BINARY_OP_ENUM;
 
 /// Python module entry point for maturin.
 /// The module name `_lib` must match pyproject.toml's `module-name = "polars_cv._lib"`.
@@ -417,10 +416,11 @@ fn op_schema(
 
 /// Map a Python-facing binary op name to its view-buffer `BinaryOp`.
 ///
-/// Reads `execute::BINARY_OPS` — the same table `resolve_op` dispatches on —
-/// so the planner's two-input dtype query and the executor cannot drift.
+/// Reads `BinaryOp::NAMED` — the same table `resolve_op` dispatches on and the
+/// registry surfaces — so the planner's two-input dtype query, the executor and
+/// Python cannot drift.
 fn parse_binary_op(name: &str) -> PyResult<view_buffer::BinaryOp> {
-    view_buffer::naming::lookup(crate::execute::BINARY_OPS, name).ok_or_else(|| {
+    view_buffer::naming::lookup(view_buffer::BinaryOp::NAMED, name).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!("unknown binary op {name:?}"))
     })
 }
@@ -476,23 +476,23 @@ fn out_dtype_override(op_json: &str) -> PyResult<Option<view_buffer::DType>> {
 /// `SourceFormat`/`SinkFormat` are their single definition. view-buffer's
 /// shadowing copies were deleted with its unreachable composition layer, so
 /// there is no longer a format vocabulary to reconcile.
+///
+/// Two registries are consulted, not one: most vocabularies are the engine's,
+/// but a few describe things the engine has no concept of (how a graph handles
+/// a failing row, what a null parameter means, how a path read reports an
+/// unreadable file) and live in [`crate::naming::PLUGIN_REGISTRY`]. Both are
+/// read the same way, and there is no hand-written arm for either — the arm
+/// `BinaryOp` used to need is gone, its table having moved next to the enum.
 #[pyfunction]
 fn enum_variants(name: &str) -> PyResult<Vec<String>> {
-    let variants: Vec<&str> = match view_buffer::naming::registered_variants(name) {
-        Some(v) => v,
-        // `BinaryOp` is the one queryable vocabulary view-buffer does not own:
-        // `BINARY_OPS` lives in this crate, so it cannot be in the engine's
-        // registry. Everything else comes from there.
-        None if name == BINARY_OP_ENUM => {
-            crate::execute::BINARY_OPS.iter().map(|(n, _)| *n).collect()
-        }
-        None => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+    let variants: Vec<&str> = view_buffer::naming::registered_variants(name)
+        .or_else(|| crate::naming::registered_variants(name))
+        .ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
                 "no canonical Rust enum named {name}; known: {:?}",
                 enum_names()
-            )))
-        }
-    };
+            ))
+        })?;
     Ok(variants.into_iter().map(str::to_string).collect())
 }
 
@@ -506,7 +506,7 @@ fn enum_variants(name: &str) -> PyResult<Vec<String>> {
 fn enum_names() -> Vec<String> {
     view_buffer::naming::registered_names()
         .into_iter()
-        .chain(std::iter::once(BINARY_OP_ENUM))
+        .chain(crate::naming::registered_names())
         .map(str::to_string)
         .collect()
 }

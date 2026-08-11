@@ -16,11 +16,17 @@ from typing import Any, Callable
 import polars as pl
 from polars.plugins import register_plugin_function
 
+from polars_cv._types import NullParamPolicy
+
 # The compiled extension lives alongside this module in the ``polars_cv``
 # package directory. Every namespace resolves to this same path.
 _LIB_PATH = Path(__file__).parent
 
-_NULL_PARAM_POLICIES = ("raise", "null")
+#: Accepted ``on_null(...)`` values, read from the Rust enum's Python mirror
+#: rather than spelled here. ``NullParamPolicy`` is registered in
+#: ``PLUGIN_REGISTRY``, so ``test_every_rust_enum_is_parity_checked`` holds the
+#: mirror to what ``enum_variants("NullParamPolicy")`` reports.
+_NULL_PARAM_POLICIES = tuple(p.value for p in NullParamPolicy)
 
 
 class _PluginNamespace:
