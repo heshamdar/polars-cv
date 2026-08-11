@@ -74,6 +74,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   regenerate-and-diff. Character codes are rejected; the numpy/torch sink has
   never emitted them.
 
+- **The contour struct layout is declared once, and checked against what the
+  engine emits.** It had four spellings: `contour_struct_dtype()` in
+  `src/graph/encode.rs` (the only one execution reads), the public
+  `CONTOUR_SCHEMA`, a private copy in `metrics/_matching/_contour.py` that did
+  not import the public one, and a fourth in `tests/test_contour_source.py`
+  shadowing the import beside it. The three copies are gone.
+
+  Nothing had been checking any of them. The two Python copies agreed with each
+  other, which is not the property that matters — a field renamed or reordered
+  in Rust would have left both still agreeing and both wrong, and the metrics
+  matcher casts a real sink output to its copy, so the divergence would have
+  surfaced as a cast error inside a detection pipeline rather than at the schema.
+
+  `test_contour_schema_is_what_rust_emits` runs an extraction through the plugin
+  and compares `CONTOUR_SET_SCHEMA` to the dtype Polars actually returned, so it
+  is behaviour-observed rather than two Python constants compared to each other.
+  It was watched failing against a deliberately reordered `contour_struct_dtype()`.
+
 ## [0.19.0] — 2026-08-09
 
 ### Added
