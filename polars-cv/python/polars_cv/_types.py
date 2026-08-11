@@ -370,6 +370,28 @@ def _validate_enum(value: str, enum_cls: type, label: str):
         raise ValueError(msg) from e
 
 
+def _enum_or_expr(value: "Any", enum_cls: type, label: str) -> "Any":
+    """Validate a literal enum value, or pass an expression through untouched.
+
+    The geometry accessors' counterpart to ``pipeline._enum_param``: a literal
+    is checked here and fails at build time naming the accepted spellings; an
+    expression cannot be checked until the row exists, so it is handed to
+    ``_ArgBinder``, which appends it as a per-row plugin input. Rust then reads
+    it through the same ``NAMED`` table and rejects an unknown value with the
+    same "Expected one of [...]" error.
+
+    **Only for enums with no effect on output shape, rank or dtype.** That is
+    the eligibility rule for any per-row parameter (root ``CLAUDE.md``), and it
+    is what makes the plan-time schema safe to publish before the value is
+    known. A structural enum — ``cast(dtype=)``, ``normalize(method=)``,
+    ``histogram(output=)`` — must stay on :func:`_validate_enum`, which rejects
+    expressions outright.
+    """
+    if isinstance(value, pl.Expr):
+        return value
+    return _validate_enum(value, enum_cls, label).value
+
+
 @dataclass
 class ParamValue:
     """

@@ -14,7 +14,9 @@ use std::cmp::Ordering;
 use view_buffer::geometry::{
     contour::{BoundingBox, Contour, Point, Winding},
     label::{score_contours_on_buffer, LabelReduction, LabelRegionMode},
-    measures, pairwise, predicates, transforms,
+    measures,
+    ops::ScaleOrigin,
+    pairwise, predicates, transforms,
 };
 use view_buffer::{naming, ViewBuffer};
 
@@ -1433,18 +1435,6 @@ fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<S
 fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
     let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
-    // Resolved against `ScaleOrigin::NAMED`, like every other string parameter
-    // here. The hand-written match this replaced ended in a silent default, so
-    // `origin="top_left"` scaled about the centroid and said nothing. The
-    // no-value default is `Origin` because that is what the Python signature
-    // declares; the two used to disagree.
-    let scale_origin = parse_named(
-        view_buffer::geometry::ops::ScaleOrigin::NAMED,
-        "origin",
-        kwargs.origin.as_deref(),
-        view_buffer::geometry::ops::ScaleOrigin::Origin,
-    )?;
-
     let series = &inputs[0];
     let len = series.len();
     let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
@@ -1454,6 +1444,20 @@ fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Serie
         contour_row(&params, value.is_null(), &mut results, || {
             let sx = params.f64("sx", kwargs.sx, 1.0, i)?;
             let sy = params.f64("sy", kwargs.sy, 1.0, i)?;
+            // Per-row capable, like `sx`/`sy` beside it: which point the scale
+            // is measured from does not change the output's shape, rank or
+            // dtype, so it meets the eligibility rule for a per-row parameter.
+            // Resolved against `ScaleOrigin::NAMED` — the hand-written match
+            // this replaced ended in a silent default, so `origin="top_left"`
+            // scaled about the centroid and said nothing. The no-value default
+            // is `Origin` because that is what the Python signature declares;
+            // the two used to disagree.
+            let scale_origin = parse_named(
+                ScaleOrigin::NAMED,
+                "origin",
+                params.str_opt("origin", kwargs.origin.as_deref(), i)?,
+                ScaleOrigin::Origin,
+            )?;
             let contour = parse_contour(&value)?;
             Ok(transforms::scale(&contour, sx, sy, scale_origin))
         })?;
@@ -1572,18 +1576,7 @@ fn contour_to_absolute(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult
 /// Ensure contour has specified winding direction.
 #[polars_expr(output_type_func=contour_transform_output_type)]
 fn contour_ensure_winding(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    // `direction` is required, so there is no default to fall back to. The
-    // match this replaced fell back to counter-clockwise for anything it did
-    // not recognise, which meant `ensure_winding("CW")` returned the *opposite*
-    // of what was asked for, silently.
-    let direction = require_named(
-        Winding::NAMED,
-        "winding direction",
-        kwargs
-            .direction
-            .as_deref()
-            .ok_or_else(|| polars_err!(ComputeError: "ensure_winding requires a 'direction'"))?,
-    )?;
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
 
     let series = &inputs[0];
     let len = series.len();
@@ -1591,13 +1584,26 @@ fn contour_ensure_winding(inputs: &[Series], kwargs: ContourKwargs) -> PolarsRes
 
     for i in 0..len {
         let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
+        contour_row(&params, value.is_null(), &mut results, || {
+            // Per-row capable: the winding a ring is rewound to changes the
+            // vertex order, not the output's shape, rank or dtype.
+            //
+            // `direction` is required, so there is no default to fall back to.
+            // The match this replaced fell back to counter-clockwise for
+            // anything it did not recognise, which meant `ensure_winding("CW")`
+            // returned the *opposite* of what was asked for, silently.
+            let direction = require_named(
+                Winding::NAMED,
+                "winding direction",
+                params
+                    .str_opt("direction", kwargs.direction.as_deref(), i)?
+                    .ok_or_else(
+                        || polars_err!(ComputeError: "ensure_winding requires a 'direction'"),
+                    )?,
+            )?;
             let contour = parse_contour(&value)?;
-            let ensured = transforms::ensure_winding(&contour, direction);
-            results.push(Some(ensured));
-        }
+            Ok(transforms::ensure_winding(&contour, direction))
+        })?;
     }
 
     build_contour_series(series.name().clone(), results, series.dtype())
@@ -2016,7 +2022,6 @@ mod named_param_tests {
     //! whole suite would stay green.
 
     use super::*;
-    use view_buffer::geometry::ops::ScaleOrigin;
 
     #[test]
     fn a_required_parameter_rejects_a_name_the_table_does_not_hold() {
