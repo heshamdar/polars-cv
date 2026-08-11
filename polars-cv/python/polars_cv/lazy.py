@@ -23,6 +23,31 @@ def _generate_node_id() -> str:
     return f"node_{uuid.uuid4().hex[:8]}"
 
 
+#: Statistic name -> the ``Pipeline`` reduction that computes it.
+#:
+#: One authority for both halves of the job: the accepted names are this
+#: mapping's keys, and the dispatch reads its values. ``statistics()`` and
+#: ``statistics_lazy()`` used to carry a ``valid_stats`` set *and* a five-arm
+#: ``if/elif`` chain each — four copies of one list — and both chains ended in
+#: ``else: continue``, so a name the validator accepted but the chain did not
+#: know would have been silently dropped from the output rather than raising.
+#:
+#: ``test_stat_reducers_are_all_pipeline_methods`` rejects a value that is not
+#: a real reduction, which is what stops this becoming a list of names nothing
+#: resolves.
+_STAT_REDUCERS: "dict[str, str]" = {
+    "mean": "reduce_mean",
+    "std": "reduce_std",
+    "min": "reduce_min",
+    "max": "reduce_max",
+    "sum": "reduce_sum",
+}
+
+#: What ``include=None`` means. ``sum`` is deliberately outside it: it scales
+#: with element count rather than describing a distribution, so it is opt-in.
+_DEFAULT_STATS: "tuple[str, ...]" = ("mean", "std", "min", "max")
+
+
 def _require_concrete_sink_dtype(
     pipeline: Any, fmt: str, alias: str | None = None
 ) -> None:
@@ -39,12 +64,15 @@ def _require_concrete_sink_dtype(
     Binary/blob sinks and the numpy/torch struct sinks never need a static
     element dtype, so they are not checked here.
     """
-    if fmt not in ("list", "array"):
+    from polars_cv._types import (
+        SINKS_WITH_TYPED_ELEMENTS,
+        SOURCES_RESOLVED_FROM_COLUMN,
+    )
+
+    if fmt not in SINKS_WITH_TYPED_ELEMENTS:
         return
     if pipeline._output_dtype != "auto":
         return
-
-    from polars_cv._types import SOURCES_RESOLVED_FROM_COLUMN
 
     # These sources resolve their leaf dtype from the Polars column at
     # plan-time-with-input (Rust `resolved_output_specs`). "auto" may resolve to
@@ -854,52 +882,9 @@ class LazyPipelineExpr:
             >>> stats_expr = img.statistics(include=["min", "max"])
             ```
         """
-        from polars_cv.pipeline import Pipeline
-
-        # Default statistics to compute
-        if include is None:
-            include = ["mean", "std", "min", "max"]
-
-        # Validate include list
-        valid_stats = {"mean", "std", "min", "max", "sum"}
-        for stat in include:
-            if stat not in valid_stats:
-                msg = (
-                    f"Unknown statistic '{stat}'. Valid options: {sorted(valid_stats)}"
-                )
-                raise ValueError(msg)
-
-        # Create reduction pipelines for each requested statistic
-        stat_nodes: list[LazyPipelineExpr] = []
-        sink_spec: dict[str, str] = {}
-
-        for stat in include:
-            if stat == "mean":
-                node = self.pipe(Pipeline().reduce_mean()).alias("mean")
-            elif stat == "std":
-                node = self.pipe(Pipeline().reduce_std()).alias("std")
-            elif stat == "min":
-                node = self.pipe(Pipeline().reduce_min()).alias("min")
-            elif stat == "max":
-                node = self.pipe(Pipeline().reduce_max()).alias("max")
-            elif stat == "sum":
-                node = self.pipe(Pipeline().reduce_sum()).alias("sum")
-            else:
-                continue
-
-            stat_nodes.append(node)
-            sink_spec[stat] = "native"
-
-        if not stat_nodes:
-            raise ValueError("At least one statistic must be included")
-
-        # Merge all stat nodes and sink as multi-output struct
-        if len(stat_nodes) == 1:
-            merged = stat_nodes[0]
-        else:
-            merged = stat_nodes[0].merge_pipe(*stat_nodes[1:])
-
-        return merged.sink(sink_spec)
+        names, stat_nodes = self._stat_nodes(include)
+        merged = self._merge_stat_nodes(stat_nodes)
+        return merged.sink({name: "native" for name in names})
 
     def statistics_lazy(
         self,
@@ -948,51 +933,61 @@ class LazyPipelineExpr:
             ... })
             ```
         """
+        _, stat_nodes = self._stat_nodes(include, prefix="stat_")
+        return self._merge_stat_nodes(stat_nodes)
+
+    # --- Internal Helpers ---
+
+    def _stat_nodes(
+        self, include: "list[str] | None", prefix: str = ""
+    ) -> "tuple[list[str], list[LazyPipelineExpr]]":
+        """Build one aliased reduction node per requested statistic.
+
+        Shared by :meth:`statistics` and :meth:`statistics_lazy`, which differ
+        only in the alias prefix and in whether they sink the result. They used
+        to carry a copy each of the accepted-name set and of the five-arm
+        dispatch, both ending ``else: continue`` — so a name that passed
+        validation but missed the chain vanished from the output silently.
+        Reading :data:`_STAT_REDUCERS` for both halves makes that unrepresentable.
+
+        Args:
+            include: Statistic names, or ``None`` for :data:`_DEFAULT_STATS`.
+            prefix: Prepended to each output alias.
+
+        Returns:
+            The output aliases and their nodes, in ``include`` order.
+
+        Raises:
+            ValueError: If a name is not a known statistic, or none were asked
+                for.
+        """
         from polars_cv.pipeline import Pipeline
 
-        # Default statistics to compute
         if include is None:
-            include = ["mean", "std", "min", "max"]
+            include = list(_DEFAULT_STATS)
 
-        # Validate include list
-        valid_stats = {"mean", "std", "min", "max", "sum"}
         for stat in include:
-            if stat not in valid_stats:
+            if stat not in _STAT_REDUCERS:
                 msg = (
-                    f"Unknown statistic '{stat}'. Valid options: {sorted(valid_stats)}"
+                    f"Unknown statistic '{stat}'. "
+                    f"Valid options: {sorted(_STAT_REDUCERS)}"
                 )
                 raise ValueError(msg)
 
-        # Create reduction pipelines for each requested statistic
-        stat_nodes: list[LazyPipelineExpr] = []
-
-        for stat in include:
-            alias_name = f"stat_{stat}"
-            if stat == "mean":
-                node = self.pipe(Pipeline().reduce_mean()).alias(alias_name)
-            elif stat == "std":
-                node = self.pipe(Pipeline().reduce_std()).alias(alias_name)
-            elif stat == "min":
-                node = self.pipe(Pipeline().reduce_min()).alias(alias_name)
-            elif stat == "max":
-                node = self.pipe(Pipeline().reduce_max()).alias(alias_name)
-            elif stat == "sum":
-                node = self.pipe(Pipeline().reduce_sum()).alias(alias_name)
-            else:
-                continue
-
-            stat_nodes.append(node)
-
-        if not stat_nodes:
+        if not include:
             raise ValueError("At least one statistic must be included")
 
-        # Merge all stat nodes
-        if len(stat_nodes) == 1:
-            return stat_nodes[0]
-        else:
-            return stat_nodes[0].merge_pipe(*stat_nodes[1:])
+        names = [f"{prefix}{stat}" for stat in include]
+        nodes = [
+            self.pipe(getattr(Pipeline(), _STAT_REDUCERS[stat])()).alias(name)
+            for stat, name in zip(include, names)
+        ]
+        return names, nodes
 
-    # --- Internal Helpers ---
+    @staticmethod
+    def _merge_stat_nodes(nodes: "list[LazyPipelineExpr]") -> "LazyPipelineExpr":
+        """Fold the stat nodes into one multi-output expression."""
+        return nodes[0] if len(nodes) == 1 else nodes[0].merge_pipe(*nodes[1:])
 
     def _continuation(self) -> "Pipeline":
         """A sourceless Pipeline seeded with this expression's planner state.

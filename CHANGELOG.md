@@ -115,6 +115,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   against a `UInt32` would break working pipelines for no benefit; what the
   matchers produce and what a caller may supply are different claims.
 
+- **`statistics()` and `statistics_lazy()` read one table instead of four.**
+  Each carried a `valid_stats` set *and* a five-arm `if/elif` dispatch — the
+  same list of statistics written out four times — and both dispatches ended in
+  `else: continue`. So the two halves could disagree in the direction that says
+  nothing: a name the validator accepted but the chain did not know was dropped
+  from the output silently, producing a struct with a missing field rather than
+  an error.
+
+  Both now build their nodes through `_stat_nodes()`, which reads
+  `_STAT_REDUCERS` for the accepted names *and* the dispatch, so the two cannot
+  come apart. The methods differ only in the alias prefix and in whether they
+  sink, which is what they always differed in.
+  `test_stat_reducers_are_all_pipeline_methods` rejects an entry naming a
+  method that does not exist or one that is not a reduction — watched failing
+  for both.
+
+  `_require_concrete_sink_dtype` also stops spelling its own `("list",
+  "array")`. That vocabulary is now `SINKS_WITH_TYPED_ELEMENTS` in `_types`,
+  beside the `SOURCES_RESOLVED_FROM_COLUMN` the same function already read from
+  there.
+
 ## [0.19.0] — 2026-08-09
 
 ### Added

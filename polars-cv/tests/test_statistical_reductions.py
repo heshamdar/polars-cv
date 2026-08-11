@@ -415,3 +415,44 @@ class TestMultipleRows:
 
         # All pixels in each image are the same, so mean = pixel value
         assert result["mean"].to_list() == [100.0, 200.0, 50.0]
+
+
+# ---------------------------------------------------------------------------
+# _STAT_REDUCERS: the single authority behind both statistics() methods
+# ---------------------------------------------------------------------------
+
+
+def test_stat_reducers_are_all_pipeline_methods() -> None:
+    """Every name in ``_STAT_REDUCERS`` must resolve to a real reduction.
+
+    The mapping replaced four hand-maintained copies of one list: a
+    ``valid_stats`` set and a five-arm ``if/elif`` dispatch inside each of
+    ``statistics()`` and ``statistics_lazy()``. Both dispatches ended in
+    ``else: continue``, so the failure mode was silent — a statistic the
+    validator accepted and the chain did not know was dropped from the output
+    with no error.
+
+    Collapsing them means the dispatch can no longer disagree with the
+    validation, but it introduces a new way to be wrong: a value naming a
+    method that does not exist, or one that is not a reduction at all. That
+    would now fail at call time, for whoever asked for that statistic. This
+    checks both properties up front instead.
+    """
+    from polars_cv.lazy import _DEFAULT_STATS, _STAT_REDUCERS
+    from polars_cv.pipeline import Pipeline
+
+    assert _STAT_REDUCERS, "the reducer table is empty; nothing below checks anything"
+
+    for stat, method in _STAT_REDUCERS.items():
+        assert callable(getattr(Pipeline, method, None)), (
+            f"_STAT_REDUCERS['{stat}'] names '{method}', which is not a "
+            f"Pipeline method."
+        )
+        produced = getattr(Pipeline().source("image_bytes").grayscale(), method)()
+        assert produced._current_domain == "scalar", (
+            f"'{method}' leaves the pipeline in domain "
+            f"'{produced._current_domain}', so '{stat}' is not a statistic."
+        )
+
+    unknown = set(_DEFAULT_STATS) - set(_STAT_REDUCERS)
+    assert not unknown, f"_DEFAULT_STATS names statistics with no reducer: {unknown}"
