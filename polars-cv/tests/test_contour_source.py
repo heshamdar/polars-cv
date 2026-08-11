@@ -20,13 +20,11 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
-from polars_cv.geometry import CONTOUR_SCHEMA
+from polars_cv.geometry import CONTOUR_SCHEMA, CONTOUR_SET_SCHEMA
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-CONTOUR_SET_SCHEMA = pl.List(CONTOUR_SCHEMA)
 
 
 def create_square_contour(x: float, y: float, size: float) -> dict:
@@ -88,6 +86,46 @@ def _rasterize(column: pl.Series, **source_kwargs) -> np.ndarray:
     return numpy_from_struct(
         frame.select(m=pl.col("c").cv.pipe(pipe).sink("numpy"))["m"][0]
     )
+
+
+@plugin_required
+def test_contour_schema_is_what_rust_emits(encode_png: "Callable") -> None:
+    """``CONTOUR_SET_SCHEMA`` must equal the dtype a real extraction produces.
+
+    The contour struct layout used to be written out three times: Rust's
+    ``contour_struct_dtype()`` (``src/graph/encode.rs``, the only one execution
+    reads), the public ``CONTOUR_SCHEMA``, and a private copy inside
+    ``metrics/_matching/_contour.py`` that did not import the public one. The
+    two Python copies were kept honest by nothing at all — a field renamed or
+    reordered in Rust would have left both still agreeing with each other.
+
+    So this compares the Python mirror against **observed behaviour** rather
+    than against another Python constant: it runs an extraction through the
+    plugin and reads the dtype Polars actually got back. Reorder a field in
+    ``contour_struct_dtype()`` and this fails; edit one Python copy to match a
+    hand-written literal and it still fails.
+    """
+    image = np.zeros((64, 64, 3), dtype=np.uint8)
+    image[10:30, 10:30] = 255
+
+    pipe = (
+        Pipeline()
+        .source("image_bytes")
+        .grayscale()
+        .threshold(128)
+        .extract_contours(mode="external", method="simple")
+    )
+    frame = pl.DataFrame({"img": [encode_png(image)]})
+    produced = frame.select(c=pl.col("img").cv.pipe(pipe).sink("native"))["c"]
+
+    assert produced.dtype == CONTOUR_SET_SCHEMA, (
+        f"extract_contours().sink('native') produced {produced.dtype}, but "
+        f"polars_cv.geometry.CONTOUR_SET_SCHEMA declares {CONTOUR_SET_SCHEMA}. "
+        f"The authority is contour_struct_dtype() in src/graph/encode.rs."
+    )
+    # A vacuous pass is possible if nothing was extracted and the dtype came
+    # back from an empty list, so pin that the run had something to describe.
+    assert len(produced[0]) == 1
 
 
 class TestContourSourceExplicitDims:

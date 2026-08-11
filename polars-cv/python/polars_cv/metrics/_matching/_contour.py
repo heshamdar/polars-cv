@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from ...geometry.schemas import CONTOUR_SET_SCHEMA
 from ...pipeline import Pipeline
 from .._types import (
     COL_CLASS_ID,
@@ -28,21 +29,6 @@ from .._types import (
 
 if TYPE_CHECKING:
     pass
-
-# ---------------------------------------------------------------------------
-# Contour schemas (used only for casting extracted contours)
-# ---------------------------------------------------------------------------
-
-_POINT_STRUCT = pl.Struct([pl.Field("x", pl.Float64), pl.Field("y", pl.Float64)])
-_EXTRACTED_CONTOUR_SCHEMA = pl.Struct(
-    [
-        pl.Field("exterior", pl.List(_POINT_STRUCT)),
-        pl.Field("holes", pl.List(pl.List(_POINT_STRUCT))),
-        pl.Field("is_closed", pl.Boolean),
-    ]
-)
-_EXTRACTED_CONTOUR_SET_SCHEMA = pl.List(_EXTRACTED_CONTOUR_SCHEMA)
-
 
 # ---------------------------------------------------------------------------
 # Source format detection
@@ -265,7 +251,7 @@ def _extract_with_fused_resize(
         .unnest("_fused_out")
         .with_columns(
             _pred_contours=pl.col("extracted_contours").cast(
-                _EXTRACTED_CONTOUR_SET_SCHEMA
+                CONTOUR_SET_SCHEMA
             ),
             _pred_heatmap_aligned=pl.col("resized_heatmap"),
         )
@@ -307,7 +293,7 @@ def _extract_contours_from_col(
         pl.col(source_col)
         .cv.pipe(extract_pipe)
         .sink("native")
-        .cast(_EXTRACTED_CONTOUR_SET_SCHEMA)
+        .cast(CONTOUR_SET_SCHEMA)
         .alias(output_col)
     )
 
