@@ -87,6 +87,40 @@ pub enum RowErrorPolicy {
     NullWithMessage,
 }
 
+// These names must match what `#[serde(rename_all = "snake_case")]` above
+// produces, because serde is what parses the wire value while this table is
+// what Python is told to send. They are checked against each other by
+// `row_error_policy_names_match_serde` below — the deserializer stays the one
+// that reads the graph JSON, and this becomes the one that publishes the
+// vocabulary.
+view_buffer::naming::named_variants!(RowErrorPolicy {
+    "raise" => Raise,
+    "null" => Null,
+    "null_with_message" => NullWithMessage,
+});
+
+#[cfg(test)]
+mod row_error_policy_tests {
+    use super::RowErrorPolicy;
+
+    /// Every `NAMED` spelling must round-trip through serde, and vice versa.
+    ///
+    /// Two mechanisms describe one vocabulary here: serde's `rename_all` reads
+    /// the wire, and `NAMED` tells Python what to write. A rename on either
+    /// side alone would leave Python confidently sending a value the graph
+    /// cannot parse, and neither `deny_unknown_fields` nor the parity test
+    /// would notice — the parity test compares Python to `NAMED`, not `NAMED`
+    /// to serde.
+    #[test]
+    fn row_error_policy_names_match_serde() {
+        for (name, expected) in RowErrorPolicy::NAMED {
+            let parsed: RowErrorPolicy = serde_json::from_str(&format!("\"{name}\""))
+                .unwrap_or_else(|e| panic!("serde rejects the NAMED spelling {name:?}: {e}"));
+            assert_eq!(parsed, *expected, "{name} parses to the wrong variant");
+        }
+    }
+}
+
 /// Unified pipeline graph specification.
 ///
 /// This struct handles all cases:

@@ -82,6 +82,30 @@ pub enum BinaryOp {
     BitwiseXor,
 }
 
+// The Python-facing name of every two-buffer operation.
+//
+// This table used to be `BINARY_OPS` in the polars-cv crate, which made
+// `BinaryOp` the one enum-shaped vocabulary the registry could not hold — and
+// so the one that needed a hand-written arm in `enum_variants`, exempted by
+// name from the parity test. Nothing required it to live there: the enum is
+// this crate's, and the names describe engine semantics, not plugin ones.
+//
+// Declaring it here puts it under the same exhaustiveness guard as every other
+// vocabulary: a new `BinaryOp` variant now fails to compile until it is named.
+crate::naming::named_variants!(BinaryOp {
+    "add" => Add,
+    "subtract" => Subtract,
+    "multiply" => Multiply,
+    "blend" => Blend,
+    "divide" => Divide,
+    "ratio" => Ratio,
+    "maximum" => Maximum,
+    "minimum" => Minimum,
+    "bitwise_and" => BitwiseAnd,
+    "bitwise_or" => BitwiseOr,
+    "bitwise_xor" => BitwiseXor,
+});
+
 impl BinaryOp {
     /// Execute the binary operation on two buffers.
     ///

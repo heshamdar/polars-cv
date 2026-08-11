@@ -64,6 +64,44 @@ class SinkFormat(str, Enum):
     #                   - Vector → List[Float64]
 
 
+class RowErrorPolicy(str, Enum):
+    """What a failing row does to a graph query.
+
+    Mirrors ``RowErrorPolicy`` in ``src/graph/types.rs``. Applies to errors
+    raised while producing a row — source decode, op execution, output encode.
+    """
+
+    RAISE = "raise"  # Propagate the first error, failing the whole expression
+    NULL = "null"  # A failing row yields null; other rows proceed
+    NULL_WITH_MESSAGE = "null_with_message"  # As NULL, plus an `_error` field
+
+
+class NullParamPolicy(str, Enum):
+    """What a null in a per-row expression parameter means.
+
+    Mirrors ``NullParamPolicy`` in ``src/params.rs``. Deliberately separate from
+    :class:`RowErrorPolicy`: under ``NULL`` a null parameter is not an error, so
+    it records no ``_error`` message and does not weaken reporting for genuine
+    decode/encode/operation failures.
+    """
+
+    RAISE = "raise"  # A null parameter fails the expression
+    NULL = "null"  # The affected node produces no output for that row
+
+
+class FetchErrorPolicy(str, Enum):
+    """What an unreadable path does to the query.
+
+    Mirrors ``FetchErrorPolicy`` in ``src/fetch.rs``. Settled at fetch time,
+    before any graph node runs, which is why it is not :class:`RowErrorPolicy`:
+    ``.cv.read_bytes()`` has no graph at all, and ``source("file_path")``
+    resolves its bytes before the graph starts.
+    """
+
+    RAISE = "raise"  # An unreadable path fails the whole query
+    NULL = "null"  # An unreadable path yields null for that row only
+
+
 class DType(str, Enum):
     """Supported data types."""
 

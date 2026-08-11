@@ -315,18 +315,50 @@ pub fn row_bytes<'a>(
         .map_err(|e| format!("Failed to read local file '{path}': {e}"))
 }
 
+/// What an unreadable path does to the query.
+///
+/// Distinct from the graph's [`RowErrorPolicy`](crate::graph::RowErrorPolicy):
+/// this one is settled at *fetch* time, before any graph node runs, and it is
+/// the only policy the `read_bytes` expression has — that path has no graph at
+/// all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FetchErrorPolicy {
+    /// An unreadable path fails the whole query (the default).
+    #[default]
+    Raise,
+    /// An unreadable path yields null for that row only.
+    Null,
+}
+
+view_buffer::naming::named_variants!(FetchErrorPolicy {
+    "raise" => Raise,
+    "null" => Null,
+});
+
+impl FetchErrorPolicy {
+    /// Whether a failure nulls the row rather than failing the query.
+    pub fn nulls_the_row(self) -> bool {
+        self == FetchErrorPolicy::Null
+    }
+}
+
 /// Parse an `on_error` setting into "nulls the row on failure".
 ///
 /// Shared by the `file_path` source and the `read_file_bytes` expression so the
 /// accepted values and the rejection message cannot drift between them.
 /// `context` names what is being configured, e.g. `node 'src'`.
+///
+/// Reads [`FetchErrorPolicy::NAMED`] rather than matching on string literals,
+/// so the values accepted here are exactly the ones `enum_variants` surfaces to
+/// Python — the expected-values half of the message included. Spelling them by
+/// hand is how the two Python call sites came to carry their own copies of the
+/// list.
 pub fn parse_on_error(value: &str, context: &str) -> PolarsResult<bool> {
-    match value {
-        "raise" => Ok(false),
-        "null" => Ok(true),
-        other => Err(polars_err!(ComputeError:
-            "Unknown on_error value '{}' for {} (expected 'raise' or 'null')",
-            other, context
+    match view_buffer::naming::lookup(FetchErrorPolicy::NAMED, value) {
+        Some(policy) => Ok(policy.nulls_the_row()),
+        None => Err(polars_err!(ComputeError:
+            "Unknown on_error value '{}' for {} (expected one of {:?})",
+            value, context, view_buffer::naming::names(FetchErrorPolicy::NAMED)
         )),
     }
 }

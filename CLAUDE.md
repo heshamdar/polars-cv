@@ -350,7 +350,8 @@ authority — do not open a side channel.
 | An op's H/W effect | view-buffer `infer_shape`, read via `op_infer_shape` | No inferable shape ⇒ hints invalidated, never carried forward |
 | Which ops exist | Rust `KNOWN_OPS` ↔ Python `OP_NAMES` | `known_ops_all_resolve`, `resolve_op_arms_are_all_known_ops`, `test_op_names_matches_rust_known_ops_without_the_plugin` (works with no `.so`); guard arms in `resolve_op` must be listed in `KNOWN_GUARD_ARMS` |
 | Every spelling of a dtype (short / VIEW wire code / numpy) | `dtype_table!` in `view-buffer/src/core/dtype.rs` | `dtype_single_authority.rs` + `test_no_second_dtype_spelling_table` (a partial dispatch is reported) |
-| Enum variant names crossing the FFI | `named_variants!` + `naming::REGISTRY` | `every_named_enum_is_registered` (a `NAMED` table not in the registry fails), `registered_enums_have_unique_names`, `test_every_rust_enum_is_parity_checked` (iterates `enum_names()`, both directions) |
+| Enum variant names crossing the FFI | `named_variants!` + `naming::REGISTRY` (engine) chained with `naming::PLUGIN_REGISTRY` (plugin-owned enums: `RowErrorPolicy`, `NullParamPolicy`, `FetchErrorPolicy`) | `every_named_enum_is_registered` (a `NAMED` table not in the registry fails), `registered_enums_have_unique_names`, `plugin_enums_have_unique_names`, `plugin_enums_do_not_shadow_engine_enums`, `test_every_rust_enum_is_parity_checked` (iterates `enum_names()`, both directions) |
+| A policy enum's *wire* spelling vs its published one | serde `rename_all` reads the wire, `NAMED` publishes it | `row_error_policy_names_match_serde`, `null_param_policy_names_match_serde` — nothing else compares the two, and a rename on one side alone lets Python send a value the graph cannot parse |
 | Source format vocabulary | Python `SourceFormat` ↔ Rust `KNOWN_SOURCE_FORMATS` | `test_source_formats_match_the_rust_vocabulary` (runs without the plugin); the graph validator rejects an unlisted format |
 | Which formats a `source()` / `.sink()` parameter applies to | `SOURCE_PARAM_APPLIES` / `SINK_PARAM_APPLIES` in `_types.py`, read by `reject_inapplicable_params` | `test_param_applicability.py`: the source table's keys must equal `source()`'s keywords and the sink table's must equal `SinkSpec`'s wire fields; the check must read `locals()`; swept parameter × format grids; and the `quality` claim is checked against the encoders. Rust `SinkSpec` is `deny_unknown_fields` |
 | `LazyPipelineExpr`'s method surface | generated from `Pipeline` at import | `test_lazy_pipeline_method_parity`, `test_lazy_stub_is_current` |
@@ -360,11 +361,19 @@ authority — do not open a side channel.
 | Which files a source-scanning guard reads | `tests/_discovery.py` — every accessor raises rather than returning empty | `test_scans_go_through_discovery` (AST walk: a direct `glob`/`rglob` in `tests/` fails unless the file is in `_DISCOVERY_EXEMPT` with a reason), `test_discovery_fixtures.py` |
 | Dtype spellings on the Python side | `python/polars_cv/_dtype_names.py`, generated from `dtype_table!` by `scripts/gen_dtype_names.py` | `test_dtype_names_module_is_current` (regenerate-and-diff), `test_engine_dtype_names_match_the_generated_table` pins `_types.DType` to it without the plugin |
 
-Two deliberate exceptions, both documented at the site: `OpSpec` is *not*
-`deny_unknown_fields` (its params ride on `#[serde(flatten)]`, which serde
-documents as incompatible), and `BinaryOp` is not in the engine registry
-(`BINARY_OPS` lives in the plugin crate, which view-buffer cannot reference).
-Neither is a precedent.
+One deliberate exception, documented at the site: `OpSpec` is *not*
+`deny_unknown_fields`, because its params ride on `#[serde(flatten)]`, which
+serde documents as incompatible. It is not a precedent.
+
+`BinaryOp` used to be a second exception — its name table sat in the plugin
+crate, so it needed a hand-written arm in `enum_variants` and a by-name
+exemption from the parity test. The table moved next to the enum in
+view-buffer, and the exception went with it. An enum that genuinely belongs to
+the plugin now declares itself with the same exported `named_variants!` and
+lands in `PLUGIN_REGISTRY`, which the FFI chains onto the engine's. **Do not
+add an arm to `enum_variants`**: registering is what surfaces an enum to Python
+*and* what makes the parity test demand a mirror for it, and an arm gets you
+the first without the second.
 
 ### Test Structure
 

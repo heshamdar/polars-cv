@@ -34,6 +34,15 @@
 /// over `enum_variants`, which is what keeps the Python mirror honest about
 /// them. They do not appear separately in the exhaustiveness guard, because
 /// each variant is still named exactly once there.
+///
+/// Exported from the crate so the **plugin** crate can declare its own
+/// vocabularies through the same mechanism. Some enums genuinely belong there
+/// and cannot move here — `RowErrorPolicy` describes graph execution and
+/// `NullParamPolicy` describes per-row parameter resolution, neither of which
+/// this crate has a concept of — and the alternative to lending them the macro
+/// was a hand-written arm in `enum_variants` per enum, which is exactly the
+/// second list this module exists to abolish.
+#[macro_export]
 macro_rules! named_variants {
     ($ty:ident { $($name:literal $(| $alias:literal)* => $variant:ident),+ $(,)? }) => {
         impl $ty {
@@ -58,7 +67,10 @@ macro_rules! named_variants {
     };
 }
 
-pub(crate) use named_variants;
+// `#[macro_export]` places the macro at the crate root; re-exporting it here
+// keeps `crate::naming::named_variants!(...)` working for this crate's own
+// call sites, so the two crates spell the invocation the same way.
+pub use crate::named_variants;
 
 /// An enum with a canonical `NAMED` table, implemented by `named_variants!`.
 ///
@@ -84,24 +96,38 @@ pub trait NamedEnum {
 /// `LabelReduction` and `LabelRegionMode`, and Python's parity tests named
 /// neither, so a divergence in either would have shipped unnoticed.
 ///
-/// Do not add a hand-written arm to `enum_variants` for a new enum. The one
-/// entry that is not here — `BinaryOp` — is absent because its table lives in
-/// the plugin crate and this crate cannot reference it, not as a precedent.
+/// Do not add a hand-written arm to `enum_variants` for a new enum. There is no
+/// longer any enum outside a registry: `BinaryOp` used to be the exception —
+/// its name table sat in the plugin crate, so it needed a bespoke arm and an
+/// exemption from the parity test — and the table has moved next to the enum,
+/// here. An enum that genuinely belongs to the plugin (`RowErrorPolicy` and
+/// friends) declares itself with the exported [`named_variants!`] and lands in
+/// that crate's own `registry!`, which the FFI chains onto this one.
+///
+/// Exported alongside `named_variants!` for that purpose. The generated const
+/// is named by the caller, so the two registries can coexist without one
+/// shadowing the other.
+#[macro_export]
 macro_rules! registry {
-    ($($ty:path),+ $(,)?) => {
+    ($name:ident: $($ty:path),+ $(,)?) => {
         /// Every enum surfaced across the FFI: `(name, variant names)`.
-        pub const REGISTRY: &[(&str, fn() -> Vec<&'static str>)] = &[
+        pub const $name: &[(&str, fn() -> Vec<&'static str>)] = &[
             $((
-                <$ty as NamedEnum>::ENUM_NAME,
-                <$ty as NamedEnum>::variant_names as fn() -> Vec<&'static str>,
+                <$ty as $crate::naming::NamedEnum>::ENUM_NAME,
+                <$ty as $crate::naming::NamedEnum>::variant_names
+                    as fn() -> Vec<&'static str>,
             )),+
         ];
     };
 }
 
+pub use crate::registry;
+
 registry!(
+    REGISTRY:
     crate::core::dtype::DType,
     crate::geometry::contour::Winding,
+    crate::ops::binary::BinaryOp,
     crate::ops::Domain,
     crate::ops::color::ColorSpace,
     crate::ops::image::FilterType,
