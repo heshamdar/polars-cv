@@ -375,7 +375,7 @@ def _curve_from_detections(
             },
         )
 
-    # `weight` is in IMAGE_META_REQUIRED and `from_matched` validates it, so
+    # `weight` is in IMAGE_META_SCHEMA and `from_matched` validates it, so
     # every metadata frame reaching here is weighted — an all-1.0 weight column
     # reduces the formulas below to the plain counts exactly. There is no
     # unweighted branch to fall into, and adding one back would be a second

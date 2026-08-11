@@ -22,6 +22,8 @@ from .._types import (
     COL_SCORE,
     COL_WEIGHT,
     DEFAULT_CLASS,
+    DETECTION_SCHEMA,
+    IMAGE_META_SCHEMA,
     DetectionTable,
     ensure_columns_exist,
     to_lazy,
@@ -250,9 +252,7 @@ def _extract_with_fused_resize(
         lf.with_columns(_fused_out=multi_out)
         .unnest("_fused_out")
         .with_columns(
-            _pred_contours=pl.col("extracted_contours").cast(
-                CONTOUR_SET_SCHEMA
-            ),
+            _pred_contours=pl.col("extracted_contours").cast(CONTOUR_SET_SCHEMA),
             _pred_heatmap_aligned=pl.col("resized_heatmap"),
         )
         .drop("resized_heatmap", "extracted_contours")
@@ -711,25 +711,13 @@ class ContourMatcher:
 
 
 def _empty_detection_table() -> DetectionTable:
-    """Return an empty ``DetectionTable`` for edge cases."""
-    det_df = pl.DataFrame(
-        schema={
-            COL_IMAGE_ID: pl.String,
-            COL_CLASS_ID: pl.String,
-            COL_SCORE: pl.Float64,
-            COL_IS_TP: pl.Boolean,
-            COL_GT_IDX: pl.UInt32,
-            COL_IOU: pl.Float64,
-            COL_DET_IDX: pl.UInt32,
-        }
+    """Return an empty ``DetectionTable`` for edge cases.
+
+    Both frames are built from the declared schemas rather than a second
+    hand-written dtype list, so an empty result and a populated one cannot
+    disagree about what a detection table looks like.
+    """
+    return DetectionTable.from_matched(
+        pl.DataFrame(schema=DETECTION_SCHEMA),
+        pl.DataFrame(schema=IMAGE_META_SCHEMA),
     )
-    meta_df = pl.DataFrame(
-        schema={
-            COL_IMAGE_ID: pl.String,
-            COL_CLASS_ID: pl.String,
-            COL_N_GTS: pl.Int64,
-            COL_WEIGHT: pl.Float64,
-            COL_GT_LABEL: pl.Boolean,
-        }
-    )
-    return DetectionTable.from_matched(det_df, meta_df)

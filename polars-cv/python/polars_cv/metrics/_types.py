@@ -30,32 +30,52 @@ COL_GROUP_ID = "group_id"
 
 DEFAULT_CLASS = "__all__"
 
-DETECTION_COLUMNS: set[str] = {
-    COL_IMAGE_ID,
-    COL_CLASS_ID,
-    COL_SCORE,
-    COL_IS_TP,
-    COL_GT_IDX,
-    COL_IOU,
-    COL_DET_IDX,
+#: The detection frame every matcher produces: names **and** dtypes.
+#:
+#: The dtypes used to live only inside ``_empty_detection_table()``, which
+#: hand-wrote them because this table declared names alone. Nothing tied that
+#: hand-written set to what a populated match returns, so the empty and
+#: non-empty paths could disagree — and a caller concatenating the two would
+#: have found out at the concat, not here.
+#:
+#: ``test_matcher_schemas_match_the_declaration`` pins this against real matcher
+#: output, so this is a record of observed behaviour rather than an intention.
+DETECTION_SCHEMA: dict[str, pl.DataType] = {
+    COL_IMAGE_ID: pl.String,
+    COL_CLASS_ID: pl.String,
+    COL_SCORE: pl.Float64,
+    COL_IS_TP: pl.Boolean,
+    COL_GT_IDX: pl.UInt32,
+    COL_IOU: pl.Float64,
+    COL_DET_IDX: pl.UInt32,
 }
 
-IMAGE_META_REQUIRED: set[str] = {
-    COL_IMAGE_ID,
-    COL_CLASS_ID,
-    COL_N_GTS,
-    COL_WEIGHT,
-    COL_GT_LABEL,
+#: The per-image metadata frame every matcher produces. ``group_id`` is absent
+#: on purpose: it is added by :meth:`DetectionTable.with_group` and by the
+#: matchers' optional ``group_col``, so it is not part of the required shape.
+IMAGE_META_SCHEMA: dict[str, pl.DataType] = {
+    COL_IMAGE_ID: pl.String,
+    COL_CLASS_ID: pl.String,
+    COL_N_GTS: pl.Int64,
+    COL_WEIGHT: pl.Float64,
+    COL_GT_LABEL: pl.Boolean,
 }
 
 
 def _validate_schema(
     schema: pl.Schema,
-    required: set[str],
+    required: dict[str, pl.DataType],
     label: str,
 ) -> None:
-    """Raise ``ValueError`` if *required* columns are missing from *schema*."""
-    missing = required - set(schema.names())
+    """Raise ``ValueError`` if *required*'s columns are missing from *schema*.
+
+    Only the names are checked. ``from_matched`` accepts frames a caller
+    assembled, and rejecting a ``UInt64`` ``det_idx`` that Polars will happily
+    compare against a ``UInt32`` would turn a working pipeline into an error
+    for no benefit. The dtypes in *required* say what the matchers *produce*,
+    which is a different claim and is guarded as one.
+    """
+    missing = set(required) - set(schema.names())
     if missing:
         raise ValueError(
             f"{label} is missing required columns: {sorted(missing)}. "
@@ -128,10 +148,8 @@ class DetectionTable:
         det_lf = to_lazy(detections)
         meta_lf = to_lazy(image_meta)
 
-        _validate_schema(det_lf.collect_schema(), DETECTION_COLUMNS, "detections")
-        _validate_schema(
-            meta_lf.collect_schema(), IMAGE_META_REQUIRED, "image_metadata"
-        )
+        _validate_schema(det_lf.collect_schema(), DETECTION_SCHEMA, "detections")
+        _validate_schema(meta_lf.collect_schema(), IMAGE_META_SCHEMA, "image_metadata")
 
         return cls(
             _detections=det_lf,
