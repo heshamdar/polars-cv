@@ -35,6 +35,12 @@ from polars_cv._types import (
 
 from .conftest import plugin_required
 
+#: Every test here is a structural guard: it checks the *shape* of the
+#: codebase rather than the behaviour of a pipeline, so it needs no compiled
+#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
+#: runs; see `tests/AGENTS.md`.
+pytestmark = pytest.mark.structural
+
 
 def _pipeline_ast() -> ast.ClassDef:
     source = Path(polars_cv.pipeline.__file__).read_text()

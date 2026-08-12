@@ -31,3 +31,30 @@ repos:
         language: system
         files: \.rs$
         pass_filenames: false
+
+      # The structural guards: single-authority ratchets, registry parity,
+      # removed-surface pins, doc vocabularies. They read the source tree
+      # rather than exercising pipelines, so the whole lane is ~650 tests in
+      # about five seconds -- which is what makes it affordable here rather
+      # than only in CI.
+      #
+      # Around fifty of them are `@plugin_required`, because some structural
+      # facts are only observable through the extension (the enum-parity sweep
+      # reads `enum_variants` over the FFI). Those self-skip when the `.so` is
+      # absent, so the hook works on a fresh checkout and simply checks less.
+      #
+      # `files:` deliberately spans Python, Rust, Markdown and the workflow
+      # files: a guard comparing a doc table to a Rust enum is broken by an
+      # edit to either end, so scoping this to one language would let half the
+      # breakages through.
+      - id: structural-checks
+        name: structural guards
+        description: Run the codebase-shape guards (pytest -m structural)
+        # `--no-sync` matters here: without it `uv run` re-syncs the project,
+        # which rebuilds the Rust extension -- minutes, on every commit. These
+        # guards read the source tree and never touch the extension, so the
+        # existing venv is exactly what they need.
+        entry: uv run --no-sync --directory polars-cv pytest tests/ -q -m "structural and not slow"
+        language: system
+        files: \.(py|rs|md|toml|ya?ml)$
+        pass_filenames: false

@@ -20,6 +20,12 @@ from ._doc_tables import (
     table_with_header,
 )
 
+#: Every test here is a structural guard: it checks the *shape* of the
+#: codebase rather than the behaviour of a pipeline, so it needs no compiled
+#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
+#: runs; see `tests/AGENTS.md`.
+pytestmark = pytest.mark.structural
+
 # ---------------------------------------------------------------------------
 # pipe_tables
 # ---------------------------------------------------------------------------

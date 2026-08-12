@@ -34,9 +34,13 @@ if TYPE_CHECKING:
 #: than being dropped from the sweep.
 _EXTRA_ARGS: dict[str, list[str]] = {}
 
+#: Running thirteen subprocesses that decode images and render plots is a lane
+#: of its own, not a pre-commit check — so this module answers "slow" to
+#: ``test_every_source_scanning_module_declares_its_lane``.
+pytestmark = pytest.mark.slow
+
 
 @plugin_required
-@pytest.mark.slow
 @pytest.mark.parametrize(
     "script",
     example_scripts(),

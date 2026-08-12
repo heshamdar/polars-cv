@@ -135,6 +135,24 @@ jobs:
           uvx ruff check python tests benchmarks
           uvx ruff format --check python tests benchmarks
 
+      # The structural guards run here rather than waiting on the build matrix,
+      # so a broken ratchet reports while the test job is still compiling.
+      #
+      # `--no-install-project` is what makes that worth doing: installing the
+      # project builds the Rust extension through the PEP 517 backend, which
+      # maturin runs at `--profile release` -- minutes, to run a lane that
+      # reads source files. The dependencies are enough, and `PYTHONPATH=python`
+      # makes `polars_cv` importable from source without any of it.
+      #
+      # The ~50 `@plugin_required` guards in the lane self-skip here because
+      # there is no `.so`. That is not a coverage gap: the `test` job runs the
+      # whole fast lane, structural tests included, against a real build.
+      - name: Structural guards
+        run: |
+          if [ -d "polars-cv" ]; then cd polars-cv; fi
+          uv sync --group dev --no-install-project
+          PYTHONPATH=python uv run --no-sync pytest tests/ -q -m "structural and not slow"
+
   docs:
     name: Docs build
     # The docs had no CI at all: `docs.yml` is `workflow_dispatch:`-only, so a
