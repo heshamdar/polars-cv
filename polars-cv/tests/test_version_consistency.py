@@ -22,6 +22,12 @@ import polars_cv
 from tests._discovery import CHECKOUT_MARKERS, requires_checkout
 from tests.conftest import plugin_required
 
+#: Every test here is a structural guard: it checks the *shape* of the
+#: codebase rather than the behaviour of a pipeline, so it needs no compiled
+#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
+#: runs; see `tests/AGENTS.md`.
+pytestmark = pytest.mark.structural
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Every file that records the version, and the TOML path to it within that file.

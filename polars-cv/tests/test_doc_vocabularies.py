@@ -28,6 +28,12 @@ from polars_cv.lazy import LazyPipelineExpr
 from ._discovery import doc_page
 from ._doc_tables import cell_code, fenced_python_method_calls, table_with_header
 
+#: Every test here is a structural guard: it checks the *shape* of the
+#: codebase rather than the behaviour of a pipeline, so it needs no compiled
+#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
+#: runs; see `tests/AGENTS.md`.
+pytestmark = pytest.mark.structural
+
 
 def test_domains_page_lists_exactly_the_domain_vocabulary() -> None:
     """``domains.md``'s table must equal ``_types.Domain``.

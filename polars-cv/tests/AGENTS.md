@@ -29,6 +29,7 @@ The individual lanes:
 
 ```bash
 cd polars-cv
+uv run pytest tests/ -m "structural and not slow"   # the pre-commit lane; ~5s, no build needed
 uv run pytest tests/ -m "not network and not slow"  # what CI runs on every push
 uv run pytest tests/                                # everything; plugin tests self-skip if unbuilt
 uv run pytest tests/reference/ -v                   # reference tests
@@ -42,17 +43,53 @@ build costs several minutes per iteration for no test-visible difference.
 
 ### Markers and CI lanes
 
-Two markers are declared in `pyproject.toml` (`[tool.pytest.ini_options]`), and
+Three markers are declared in `pyproject.toml` (`[tool.pytest.ini_options]`), and
 **CI never runs the bare `pytest tests/` you probably run locally**:
 
 | Marker | Meaning | Where it runs |
 |--------|---------|---------------|
 | `network` | Needs network access | Never in CI |
 | `slow` | Long-running | `slow-tests` job only — weekly schedule or manual dispatch, `-m "slow and not network"` (`.github/workflows/ci.yml`) |
+| `structural` | Checks codebase *shape*, not runtime behaviour | The pre-commit hook, a dedicated `lint`-job step, and its own `verify.sh` line — as well as the fast lane, which it is a subset of |
 
 The per-push lane is `-m "not network and not slow"`. Mark a new test `network`
 if it fetches anything and `slow` if it is not sub-second — an unmarked slow test
 lands in the lane that gates every merge.
+
+#### The `structural` lane
+
+`-m "structural and not slow"` is ~650 tests in about five seconds. They read
+the source tree, the registries and the docs rather than exercising a pipeline,
+which is what makes them affordable in a pre-commit hook — a hook that had to
+`maturin develop` first would not be.
+
+About fifty of them *are* `@plugin_required`, because some structural facts are
+only observable through the extension: the enum-parity sweep reads
+`enum_variants` over the FFI, and `test_param_applicability` sweeps real
+`source()`/`sink()` calls. Those self-skip when the `.so` is absent, so the hook
+works on a fresh checkout — it simply checks less until the extension is built.
+That is the intended trade, not an oversight.
+
+Applied per module, not per test — a module is either a guard suite or it is not:
+
+```python
+pytestmark = pytest.mark.structural
+```
+
+Two guards keep the lane honest, both in `test_sanitation.py`:
+
+- `test_every_source_scanning_module_declares_its_lane` — any module importing
+  `_discovery` (the mandated way to find files to scan) must declare
+  `structural` or `slow`. The set is *derived*, so a new source-scanning guard
+  cannot join without choosing. Its limit: a guard reading one named file has no
+  reason to import `_discovery` and is marked by hand.
+- `test_the_structural_lane_is_not_empty` — a renamed marker or a dropped
+  `pyproject.toml` declaration would make the hook select nothing and pass in
+  milliseconds, reading as a working guard forever.
+
+Keep the lane fast. A guard that decodes images, runs subprocesses or builds
+anything belongs in `slow` — `test_examples.py` is the worked example, and it
+answers `slow` to the lane-declaration guard for exactly that reason.
 
 ## How the Suite Is Organised
 

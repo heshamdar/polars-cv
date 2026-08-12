@@ -266,6 +266,48 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   in `tests/test_doc_table_fixtures.py`, which caught a lookbehind that
   excluded `df.method(` — the ordinary shape of a call, i.e. most of every page.
 
+- **The structural guards run before a commit, not just in CI.** They check the
+  shape of the codebase — registry parity, single-authority ratchets,
+  removed-surface pins, the doc vocabularies — and read the source tree rather
+  than exercising a pipeline, so the whole lane is ~650 tests in about five
+  seconds. That is affordable in a pre-commit hook; the full suite is not.
+
+  `-m structural` is declared in `pyproject.toml` and applied per module. A
+  `structural-checks` hook joins `.pre-commit-config.yaml` (which previously
+  stopped after `cargo clippy`), the `lint` job runs the lane without waiting
+  on the build matrix, and `scripts/verify.sh` runs it as its own check so a
+  failure says "the hook would have caught this" rather than arriving buried in
+  the full suite's output. The hook passes `--no-sync`: without it `uv run`
+  re-syncs the project and rebuilds the Rust extension on every commit.
+
+  Two guards keep the lane from becoming decorative.
+  `test_every_source_scanning_module_declares_its_lane` derives its set —
+  anything importing `_discovery`, the mandated way to find files to scan, must
+  declare `structural` or `slow` — so a new source-scanning guard cannot join
+  without choosing. `test_the_structural_lane_is_not_empty` catches a renamed
+  marker or a dropped declaration, which would otherwise make the hook select
+  nothing and pass in milliseconds.
+
+- **A check added to CI can no longer be missing from `verify.sh` unnoticed.**
+  `test_verify_script_covers_every_ci_check` pinned a hand-written list in both
+  directions, but a check added to CI and never added to that list was simply
+  invisible: the local run kept reporting PASS while CI failed.
+
+  `test_no_ci_check_is_missing_from_the_verify_script` reads every command in
+  `ci.yml`'s `run:` blocks and requires each to be **classified** — either a
+  check `verify.sh` must also run, or setup. An unclassified command fails, so
+  a new checker cannot pass unnoticed. It proved itself immediately: adding the
+  structural lane to CI made it fail until the command was classified.
+
+- **`scripts/verify.sh` no longer rebuilds the extension in release mode.** The
+  `mkdocs` check added above was written without `--no-sync`, so `uv run` synced
+  the project on every verification — and syncing builds the plugin through the
+  PEP 517 backend, which maturin runs at `--profile release`. That is a
+  multi-minute re-optimisation of the whole polars stack, on every run, for a
+  documentation build that never loads the extension. With `--no-sync` (what
+  every other lane in the script already passes) the check takes about six
+  seconds.
+
 ## [0.19.0] — 2026-08-09
 
 ### Added

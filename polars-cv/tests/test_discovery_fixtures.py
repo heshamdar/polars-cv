@@ -30,6 +30,12 @@ from tests._discovery import (
     suite_modules,
 )
 
+#: Every test here is a structural guard: it checks the *shape* of the
+#: codebase rather than the behaviour of a pipeline, so it needs no compiled
+#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
+#: runs; see `tests/AGENTS.md`.
+pytestmark = pytest.mark.structural
+
 
 class TestDiscoveredRefusesNothing:
     """The known-bad and known-good inputs to :func:`discovered`."""

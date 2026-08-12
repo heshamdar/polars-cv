@@ -38,6 +38,12 @@ from polars_cv._types import (
 from tests._expr_param_runner import assert_matches_per_row_literals
 from tests.conftest import plugin_required
 
+#: Every test here is a structural guard: it checks the *shape* of the
+#: codebase rather than the behaviour of a pipeline, so it needs no compiled
+#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
+#: runs; see `tests/AGENTS.md`.
+pytestmark = pytest.mark.structural
+
 if TYPE_CHECKING:
     from typing import Callable
 

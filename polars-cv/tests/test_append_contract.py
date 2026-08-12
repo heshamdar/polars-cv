@@ -39,6 +39,12 @@ from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES, base_pipeline
 from ._schema_parity import assert_plan_equals_exec
 from .conftest import plugin_required
 
+#: Every test here is a structural guard: it checks the *shape* of the
+#: codebase rather than the behaviour of a pipeline, so it needs no compiled
+#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
+#: runs; see `tests/AGENTS.md`.
+pytestmark = pytest.mark.structural
+
 # ---------------------------------------------------------------------------
 # 1. Only _push_op may mutate _ops
 # ---------------------------------------------------------------------------
