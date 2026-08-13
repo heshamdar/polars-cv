@@ -86,4 +86,85 @@ mod tests {
              `enum_variants` would answer with the engine's: {clashes:?}"
         );
     }
+
+    /// Every `named_variants!` enum in **this** crate, found by scanning `src/`.
+    ///
+    /// The twin of view-buffer's `declared_enums`, and it exists because that
+    /// one cannot see this crate: it walks `CARGO_MANIFEST_DIR/src`, which is
+    /// view-buffer's. Exporting the macro gave this crate the ability to
+    /// declare vocabularies without giving it the check that makes declaring
+    /// one the same act as being checked — so a `named_variants!` table here
+    /// that nobody added to `registry!` was invisible to `enum_variants`, to
+    /// `enum_names()`, and therefore to `test_every_rust_enum_is_parity_checked`.
+    fn declared_enums() -> std::collections::BTreeSet<String> {
+        fn walk(dir: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
+            for entry in std::fs::read_dir(dir).expect("src/ is readable") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let source = std::fs::read_to_string(&path).expect("readable .rs file");
+                    for line in source.lines() {
+                        let trimmed = line.trim_start();
+                        if trimmed.starts_with("//") || trimmed.starts_with("macro_rules!") {
+                            continue;
+                        }
+                        let Some(rest) = line.split_once("named_variants!(") else {
+                            continue;
+                        };
+                        let ty: String = rest
+                            .1
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !ty.is_empty() {
+                            out.insert(ty);
+                        }
+                    }
+                }
+            }
+        }
+        let mut found = std::collections::BTreeSet::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        found
+    }
+
+    /// A `NAMED` table in this crate that is not registered must fail here.
+    ///
+    /// Watched failing: a `ReviewProbePolicy` added to `fetch.rs` and left out
+    /// of `registry!` passed all 128 tests before this existed.
+    #[test]
+    fn every_plugin_named_enum_is_registered() {
+        let declared = declared_enums();
+        assert!(
+            !declared.is_empty(),
+            "the scan found no `named_variants!` invocations in polars-cv/src, \
+             which means it is broken rather than that there are none — this \
+             crate declares RowErrorPolicy, NullParamPolicy and FetchErrorPolicy"
+        );
+
+        let registered: std::collections::BTreeSet<String> =
+            PLUGIN_REGISTRY.iter().map(|(n, _)| n.to_string()).collect();
+
+        let unregistered: Vec<_> = declared.difference(&registered).cloned().collect();
+        assert!(
+            unregistered.is_empty(),
+            "these enums declare a named_variants! table in polars-cv/src but \
+             are not in PLUGIN_REGISTRY: {unregistered:?}. Add each to the \
+             registry! invocation in src/naming.rs — that is what surfaces it \
+             over `enum_variants` *and* what makes the Python parity test \
+             demand a mirror for it."
+        );
+
+        let missing: Vec<_> = registered.difference(&declared).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "these names are in PLUGIN_REGISTRY but no named_variants! \
+             invocation was found for them: {missing:?}. Either the enum moved \
+             (update the registry) or the scan above has rotted."
+        );
+    }
 }

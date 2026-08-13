@@ -104,9 +104,10 @@ def _validate_sink_params(fmt: str, kwargs: "dict[str, Any]") -> None:
     unparseable format is left to the encoder's own error: the parameters are
     not silently accepted, the query simply fails on the format instead.
 
-    Only ``dtype`` has a value constraint. ``"f16"`` alone is accepted: the
-    engine has no native f16 dtype, so f16 is produced purely as an encode-time
-    downcast at the sink boundary (halving the output-tensor bytes / H2D
+    Only ``dtype`` has a value constraint: half precision alone is accepted,
+    spelled either ``"f16"`` or ``"float16"``. The engine has no native f16
+    dtype, so f16 is produced purely as an encode-time downcast at the sink
+    boundary (halving the output-tensor bytes / H2D
     transfer). Every other output dtype is expressible with a pipeline
     ``.cast()``, which runs through the real cast op so the planned and produced
     dtypes stay identical — the sink dtype deliberately does *not* duplicate
@@ -315,7 +316,8 @@ class LazyPipelineExpr:
                     sink; ``dtype="f16"`` for the numpy/torch sink to downcast
                     the output tensor to half precision at the encode boundary
                     (halving the tensor bytes and H2D transfer). ``dtype`` only
-                    accepts ``"f16"`` — cast inside the pipeline for other
+                    accepts half precision, as ``"f16"`` or ``"float16"`` —
+                    cast inside the pipeline for other
                     dtypes. A keyword that does not apply to the chosen format
                     is rejected rather than ignored, as is one that is not a
                     sink parameter at all.
@@ -963,8 +965,12 @@ class LazyPipelineExpr:
         """
         from polars_cv.pipeline import Pipeline
 
-        if include is None:
-            include = list(_DEFAULT_STATS)
+        # Materialised before anything reads it. The validation loop below and
+        # the node comprehension further down each iterate `include`, so a
+        # one-shot iterable (a generator, `iter([...])`) was exhausted by the
+        # first pass and produced zero nodes — surfacing as `IndexError` from
+        # `_merge_stat_nodes` rather than the "at least one statistic" message.
+        include = list(_DEFAULT_STATS) if include is None else list(include)
 
         for stat in include:
             if stat not in _STAT_REDUCERS:

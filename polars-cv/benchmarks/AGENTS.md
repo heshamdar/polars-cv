@@ -101,7 +101,7 @@ uv run --no-sync python -m benchmarks.run_benchmarks --counts 100,500 --sizes 25
 ### Adapter Pattern
 
 Each framework implements `BaseFrameworkAdapter` (in `frameworks/base.py`) which provides a consistent interface for:
-- Single operations (21 benchmarks covering spatial, intensity, morphological, and edge detection operations)
+- Single operations (20 benchmarks covering spatial, intensity, morphological, and edge detection operations)
 - Pipeline execution (chained operations)
 - End-to-end workflows (decode → process → encode)
 

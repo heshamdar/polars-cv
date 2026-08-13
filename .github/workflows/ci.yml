@@ -95,6 +95,19 @@ jobs:
           # Build with all features enabled (cloud support is now default)
           maturin develop
 
+          echo "=== Running Structural Guards ==="
+          # The lane the pre-commit hook runs, given its own exit code so a
+          # broken ratchet is distinguishable from a behavioural failure in the
+          # much larger lane below. It is a subset of that lane, so this costs
+          # about five seconds and duplicates no coverage.
+          #
+          # It runs *here*, after `maturin develop`, and not in the lint job:
+          # 427 of these 651 tests are `@plugin_required`, and without the
+          # extension they do not politely skip -- sixteen fail outright and
+          # `test_schema_parity_chains.py` aborts collection, because its
+          # `parametrize` reads `enum_variants` from `_lib` at import time.
+          pytest tests/ -q -m "structural and not slow"
+
           echo "=== Running Python Tests ==="
           # Exclude network-marked tests: they hit external services (httpbin.org)
           # and flake when those are down (e.g. HTTP 503), which with -x aborts the
@@ -134,24 +147,6 @@ jobs:
           if [ -d "polars-cv" ]; then cd polars-cv; fi
           uvx ruff check python tests benchmarks
           uvx ruff format --check python tests benchmarks
-
-      # The structural guards run here rather than waiting on the build matrix,
-      # so a broken ratchet reports while the test job is still compiling.
-      #
-      # `--no-install-project` is what makes that worth doing: installing the
-      # project builds the Rust extension through the PEP 517 backend, which
-      # maturin runs at `--profile release` -- minutes, to run a lane that
-      # reads source files. The dependencies are enough, and `PYTHONPATH=python`
-      # makes `polars_cv` importable from source without any of it.
-      #
-      # The ~50 `@plugin_required` guards in the lane self-skip here because
-      # there is no `.so`. That is not a coverage gap: the `test` job runs the
-      # whole fast lane, structural tests included, against a real build.
-      - name: Structural guards
-        run: |
-          if [ -d "polars-cv" ]; then cd polars-cv; fi
-          uv sync --group dev --no-install-project
-          PYTHONPATH=python uv run --no-sync pytest tests/ -q -m "structural and not slow"
 
   docs:
     name: Docs build

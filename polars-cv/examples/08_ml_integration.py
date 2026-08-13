@@ -109,10 +109,10 @@ def demonstrate_array_and_list_sinks() -> pl.DataFrame:
     tensor = np.arange(4 * 4, dtype=np.float32).reshape(4, 4, 1).tolist()
     df = pl.DataFrame({"tensor": [tensor]})
     pipe = Pipeline().source("list", dtype="f32")
-    # The `array` sink needs its shape at planning time, and `shape=` is the
-    # only thing that supplies it. `.assert_shape()` records the dimensions as
-    # hints but does not satisfy this sink, despite the sink's own error
-    # message suggesting it -- so pass the shape here.
+    # The `array` sink needs its shape at planning time. For an image source
+    # `.assert_shape()` supplies it, but not for a `list` source: the plan-time
+    # rank stays unresolved, so the hints never become an `expected_shape` and
+    # the sink refuses. Pass the shape here instead.
     return df.with_columns(
         tensor_array=pl.col("tensor").cv.pipe(pipe).sink("array", shape=[4, 4, 1]),
         tensor_list=pl.col("tensor").cv.pipe(pipe).sink("list"),

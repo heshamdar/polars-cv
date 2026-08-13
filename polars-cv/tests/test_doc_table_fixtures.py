@@ -20,10 +20,12 @@ from ._doc_tables import (
     table_with_header,
 )
 
-#: Every test here is a structural guard: it checks the *shape* of the
-#: codebase rather than the behaviour of a pipeline, so it needs no compiled
-#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
-#: runs; see `tests/AGENTS.md`.
+#: Every test here is a structural guard: it checks the *shape* of the codebase
+#: -- registries, authorities, removed surfaces, documented vocabularies --
+#: rather than the numerical behaviour of a pipeline. `-m structural` is the
+#: lane pre-commit runs; see `tests/AGENTS.md`. Note that the lane as a whole
+#: does need the compiled extension: many structural facts are only observable
+#: through the FFI, and those tests fail rather than skip without it.
 pytestmark = pytest.mark.structural
 
 # ---------------------------------------------------------------------------
@@ -184,3 +186,59 @@ def test_chained_calls_are_all_found() -> None:
 def test_a_page_with_no_python_yields_nothing() -> None:
     """The empty answer the guards must treat as failure, not success."""
     assert fenced_python_method_calls("# Prose only\n") == set()
+
+
+# ---------------------------------------------------------------------------
+# Fence forms mkdocs enables that the first version of the reader missed
+# ---------------------------------------------------------------------------
+
+_ADMONITION = """\
+!!! note "Inside an admonition"
+
+    ```python
+    pl.col("x").cv.pipe(pipe).indented_call()
+    ```
+"""
+
+_ANNOTATED = """\
+```python title="preprocess.py" hl_lines="2"
+pipe = Pipeline().annotated_call()
+```
+"""
+
+_TABBED = """\
+=== "Eager"
+
+    ```py
+    df.tabbed_call()
+    ```
+"""
+
+
+def test_indented_fences_are_read() -> None:
+    """A fence inside an admonition, tab or list item still contains examples.
+
+    `mkdocs.yml` enables `admonition`, `pymdownx.details` and
+    `pymdownx.tabbed`, all of which indent their content. An anchored `^```
+    ` matched none of them, so those examples went unchecked while the guard
+    reported the page clean.
+    """
+    assert "indented_call" in fenced_python_method_calls(_ADMONITION)
+    assert "tabbed_call" in fenced_python_method_calls(_TABBED)
+
+
+def test_annotated_fences_are_read() -> None:
+    """`pymdownx.highlight` allows `title=`/`hl_lines=` after the language."""
+    assert "annotated_call" in fenced_python_method_calls(_ANNOTATED)
+
+
+def test_a_non_python_annotated_fence_is_still_ignored() -> None:
+    """Widening the opener must not start reading shell or text blocks."""
+    text = '```bash title="setup.sh"\nsome_command --flag\n```\n'
+    assert fenced_python_method_calls(text) == set()
+    assert fenced_python_method_calls("```text\n.not_python()\n```\n") == set()
+
+
+def test_a_language_prefix_is_not_a_python_fence() -> None:
+    """```pythonish must not be read as ```python."""
+    assert fenced_python_method_calls("```pythonish\n.nope()\n```\n") == set()

@@ -13,6 +13,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from polars_cv import Pipeline
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -456,3 +457,56 @@ def test_stat_reducers_are_all_pipeline_methods() -> None:
 
     unknown = set(_DEFAULT_STATS) - set(_STAT_REDUCERS)
     assert not unknown, f"_DEFAULT_STATS names statistics with no reducer: {unknown}"
+
+
+@plugin_required
+def test_each_statistic_computes_its_own_reduction(encode_png: "Callable") -> None:
+    """Each name in ``_STAT_REDUCERS`` must compute *that* statistic.
+
+    ``test_stat_reducers_are_all_pipeline_methods`` checks the table's shape —
+    every value resolves to a real reduction that lands in the scalar domain.
+    It cannot tell one reduction from another, so the plausible copy/paste
+    error in the refactor that replaced the explicit five-arm dispatch,
+    ``"mean": "reduce_max"``, passes it and the whole suite besides.
+
+    The reason it passes the suite is that most fixtures paint a constant
+    image, where mean, min and max are all the same number. This uses a
+    gradient chosen so every statistic has a different value, which is the only
+    thing that can distinguish them.
+    """
+    from polars_cv.lazy import _STAT_REDUCERS
+
+    # 0..255 across a 16x16 grey image: mean 127.5, min 0, max 255, and a
+    # standard deviation near 73.9 — five values no two of which coincide.
+    ramp = np.tile(np.arange(256, dtype=np.uint8).reshape(16, 16), (1, 1))
+    df = pl.DataFrame({"image": [encode_png(ramp)]})
+    expected = {
+        "mean": float(ramp.mean()),
+        "min": float(ramp.min()),
+        "max": float(ramp.max()),
+        "sum": float(ramp.sum()),
+        "std": float(ramp.std()),
+    }
+    assert set(expected) == set(_STAT_REDUCERS), (
+        f"this test knows {sorted(expected)} but _STAT_REDUCERS declares "
+        f"{sorted(_STAT_REDUCERS)}; a new statistic needs its expected value here"
+    )
+    assert len(set(expected.values())) == len(expected), (
+        "two statistics coincide on this image, so it cannot tell them apart"
+    )
+
+    gray = Pipeline().source("image_bytes").grayscale()
+    out = df.with_columns(
+        stats=pl.col("image").cv.pipe(gray).statistics(include=sorted(expected))
+    )
+    produced = out["stats"].to_list()[0]
+
+    for stat, want in expected.items():
+        # 1% rather than something tighter: `std` may use a different ddof than
+        # numpy's, a ~0.2% difference on 256 samples. The values being told
+        # apart here differ by whole orders of magnitude, so the tolerance has
+        # room to be generous without weakening the test.
+        assert produced[stat] == pytest.approx(want, rel=1e-2), (
+            f"'{stat}' produced {produced[stat]}, expected {want} — "
+            f"_STAT_REDUCERS['{stat}'] is computing a different reduction"
+        )

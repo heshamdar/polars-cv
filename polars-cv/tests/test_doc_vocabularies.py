@@ -12,12 +12,15 @@ whether the methods in the copy-pasteable examples exist.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import re
 
 import polars as pl
 import pytest
 
-from polars_cv import Pipeline
+import polars_cv
+from polars_cv import Pipeline, metrics
 from polars_cv._types import Domain, SourceFormat
 from polars_cv.expressions import CvNamespace
 from polars_cv.geometry.bbox import BBoxNamespace
@@ -25,13 +28,15 @@ from polars_cv.geometry.contours import ContourNamespace
 from polars_cv.geometry.points import PointNamespace
 from polars_cv.lazy import LazyPipelineExpr
 
-from ._discovery import doc_page
+from ._discovery import doc_page, doc_pages, repo_file
 from ._doc_tables import cell_code, fenced_python_method_calls, table_with_header
 
-#: Every test here is a structural guard: it checks the *shape* of the
-#: codebase rather than the behaviour of a pipeline, so it needs no compiled
-#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
-#: runs; see `tests/AGENTS.md`.
+#: Every test here is a structural guard: it checks the *shape* of the codebase
+#: -- registries, authorities, removed surfaces, documented vocabularies --
+#: rather than the numerical behaviour of a pipeline. `-m structural` is the
+#: lane pre-commit runs; see `tests/AGENTS.md`. Note that the lane as a whole
+#: does need the compiled extension: many structural facts are only observable
+#: through the FFI, and those tests fail rather than skip without it.
 pytestmark = pytest.mark.structural
 
 
@@ -85,47 +90,22 @@ def test_auto_source_table_names_real_source_formats() -> None:
     )
 
 
-#: Method names in the docs' Python blocks that are not ours. Each is a Polars
-#: or builtin call appearing in an example, so resolving it against `Pipeline`
-#: would fail for a reason that says nothing about our documentation.
-_FOREIGN_METHODS = frozenset(
-    {
-        # Polars expression / frame API used to set an example up.
-        "col",
-        "lit",
-        "when",
-        "then",
-        "otherwise",
-        "fill_null",
-        "select",
-        "filter",
-        "with_columns",
-        "head",
-        "collect",
-        "explode",
-        "struct",
-        "field",
-        "DataFrame",
-        "LazyFrame",
-        "read_parquet",
-        "scan_parquet",
-        # Builtins and stdlib.
-        "append",
-        "format",
-        "join",
-        "keys",
-        "values",
-        "items",
-        "get",
-        "min",
-        "max",
-        "sum",
-        "abs",
-        "round",
-        "astype",
-        "tolist",
-    }
-)
+#: Names called in a doc example that belong to neither us nor Polars, with the
+#: reason each is allowed. **Empty, and that is the point.**
+#:
+#: This began as a 34-name set, which was an escape hatch rather than a
+#: contract: a stale method name is by definition not one of ours, so anything
+#: a reviewer added here would silence exactly the staleness the sweep exists
+#: to report. Once ``_resolves`` learned about the metrics API and
+#: ``_POLARS_SURFACES`` learned about module-level ``pl.col``/``pl.DataFrame``,
+#: every one of the 34 turned out to be either resolvable or absent from the
+#: documentation entirely — so the hatch closed on its own.
+#:
+#: Keep it that way. An entry needs a reason, and
+#: ``test_foreign_methods_are_all_actually_foreign`` rejects one that is ours
+#: or that no page actually calls, so a dead exemption cannot accumulate here
+#: waiting to hide something.
+_FOREIGN_METHODS: "dict[str, str]" = {}
 
 #: Every class a documented method may belong to: the builder, its lazy twin,
 #: and the four expression namespaces (`.cv`, `.point`, `.contour`, `.bbox`).
@@ -142,21 +122,32 @@ _OUR_SURFACES = (
     BBoxNamespace,
 )
 
+#: Public classes the metrics package exposes — `DetectionTable`, the matchers,
+#: and the result objects whose methods the metrics page calls (`auc`,
+#: `sensitivity_at_fp`, `summary_table`, …). Read from the module rather than
+#: listed, so a renamed result class cannot leave its methods unresolvable.
+_METRICS_SURFACES = tuple(v for v in vars(metrics).values() if inspect.isclass(v))
+
+#: Polars objects a documented call may legitimately belong to. `pl` itself
+#: matters most: `pl.col(...)` and `pl.DataFrame(...)` are module-level, and
+#: checking only `pl.Expr`/`pl.DataFrame` left `col` unresolvable on nearly
+#: every page — which is why the sweep once covered five hand-picked pages
+#: instead of all of them.
+_POLARS_SURFACES = (pl, pl.Expr, pl.DataFrame, pl.LazyFrame, pl.Series)
+
 
 def _resolves(name: str) -> bool:
-    return any(callable(getattr(cls, name, None)) for cls in _OUR_SURFACES)
+    """True when *name* is a method of ours."""
+    if any(callable(getattr(cls, name, None)) for cls in _OUR_SURFACES):
+        return True
+    if any(callable(getattr(cls, name, None)) for cls in _METRICS_SURFACES):
+        return True
+    return callable(getattr(polars_cv, name, None)) or callable(
+        getattr(metrics, name, None)
+    )
 
 
-@pytest.mark.parametrize(
-    "page",
-    [
-        "user-guide/operations/image-ops.md",
-        "user-guide/operations/geometry.md",
-        "user-guide/operations/reductions.md",
-        "user-guide/operations/hashing.md",
-        "user-guide/concepts/pipelines.md",
-    ],
-)
+@pytest.mark.parametrize("page", [p.name for p in doc_pages()], ids=lambda n: n)
 def test_documented_methods_exist(page: str) -> None:
     """Every method called in a page's Python examples must resolve.
 
@@ -170,40 +161,53 @@ def test_documented_methods_exist(page: str) -> None:
     why each name is resolved against the real classes and anything left over
     must be an acknowledged foreign name rather than assumed to be fine.
     """
-    text = doc_page(page).read_text()
-    called = fenced_python_method_calls(text)
-    assert called, (
-        f"{page} has no method calls in any ```python block. Either the page "
-        f"lost its examples or the fence syntax changed; this guard is "
-        f"checking nothing."
-    )
+    path = next(p for p in doc_pages() if p.name == page)
+    called = fenced_python_method_calls(path.read_text())
+    if not called:
+        pytest.skip(f"{page} has no ```python examples to check")
 
     unresolved = {
         name
         for name in called
         if not _resolves(name)
         and name not in _FOREIGN_METHODS
-        and not hasattr(pl.Expr, name)
-        and not hasattr(pl.DataFrame, name)
+        and not any(hasattr(obj, name) for obj in _POLARS_SURFACES)
     }
     assert not unresolved, (
         f"{page} calls {sorted(unresolved)}, which is not a method of "
-        f"Pipeline, LazyPipelineExpr, CvNamespace, or the Polars API. Either "
-        f"the documentation is stale or the name belongs in _FOREIGN_METHODS."
+        f"Pipeline, LazyPipelineExpr, the expression namespaces, the metrics "
+        f"API, or Polars. Either the documentation is stale or the name "
+        f"belongs in _FOREIGN_METHODS."
     )
 
 
 def test_foreign_methods_are_all_actually_foreign() -> None:
-    """Nothing in ``_FOREIGN_METHODS`` may be one of ours.
+    """``_FOREIGN_METHODS`` may hold neither our own names nor dead ones.
 
-    The exemption list is the way this guard gets weakened: adding our own
-    method to it would silence a real staleness report. A name is only foreign
-    if we do not define it.
+    The exemption list is how this guard gets weakened, so it is itself
+    guarded in both directions:
+
+    * **Ours.** Exempting one of our own methods silences a real staleness
+      report. This is not hypothetical — `alias`, `cast` and `reshape` were all
+      wrongly exempted when the list was first written, and `collect` joined
+      them once the metrics API entered the resolution.
+    * **Dead.** An entry no page calls is an exemption sitting ready to hide
+      something later. Every entry must earn its place from a real call site.
     """
-    ours = {name for name in _FOREIGN_METHODS if _resolves(name)}
+    called: set[str] = set()
+    for page in doc_pages():
+        called |= fenced_python_method_calls(page.read_text())
+
+    ours = sorted(name for name in _FOREIGN_METHODS if _resolves(name))
     assert not ours, (
-        f"these are exempted as foreign but are methods of ours: {sorted(ours)}. "
+        f"these are exempted as foreign but are methods of ours: {ours}. "
         f"Remove them from _FOREIGN_METHODS — the guard is meant to check them."
+    )
+
+    dead = sorted(name for name in _FOREIGN_METHODS if name not in called)
+    assert not dead, (
+        f"these exemptions match no call in any doc page: {dead}. Remove them; "
+        f"a dead exemption is one that will silently cover a future mistake."
     )
 
 
@@ -245,4 +249,76 @@ def test_our_surfaces_are_populated() -> None:
     assert len(set(_OUR_SURFACES)) == len(_OUR_SURFACES), (
         "_OUR_SURFACES lists the same class twice, so one surface is not being "
         "resolved against at all."
+    )
+
+
+# ---------------------------------------------------------------------------
+# benchmarks/AGENTS.md: the single-op list
+# ---------------------------------------------------------------------------
+
+
+def _declared_benchmark_names() -> list[str]:
+    """The ``name=`` of every config ``get_single_op_benchmarks()`` returns.
+
+    Read by parsing the source rather than importing it: ``benchmarks`` pulls
+    in every framework adapter (OpenCV, torch, torchvision) through its
+    ``frameworks`` package, and none of that is installed for the structural
+    lane. Parsing keeps this guard dependency-free and fast.
+    """
+    tree = ast.parse(
+        repo_file("polars-cv/benchmarks/scenarios/single_ops.py").read_text()
+    )
+    fn = next(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "get_single_op_benchmarks"
+        ),
+        None,
+    )
+    assert fn is not None, (
+        "get_single_op_benchmarks() is gone from scenarios/single_ops.py; this "
+        "guard reads it as the authority for the benchmark list."
+    )
+    return [
+        kw.value.value
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
+        if kw.arg == "name" and isinstance(kw.value, ast.Constant)
+    ]
+
+
+def test_benchmark_list_is_current() -> None:
+    """``benchmarks/AGENTS.md`` must name the benchmarks that actually exist.
+
+    That sentence has been wrong twice: it said "21 benchmarks" while listing
+    19, and the names had drifted (``flip`` for what are really
+    ``flip_horizontal`` and ``flip_vertical``, ``crop`` for ``crop_center``).
+    It was corrected by hand, and the correction *claimed* this test pinned it
+    — while this test did not exist. So the sentence went straight back to
+    being unpinned prose asserting it could not go stale.
+
+    The count and every name are checked, because both were wrong before.
+    """
+    names = _declared_benchmark_names()
+    assert names, (
+        "no `name=` arguments were found in get_single_op_benchmarks(); the "
+        "parse has rotted and this guard is checking nothing."
+    )
+
+    text = repo_file("polars-cv/benchmarks/AGENTS.md").read_text()
+
+    counts = set(re.findall(r"(\d+)\s+benchmarks", text))
+    assert counts == {str(len(names))}, (
+        f"benchmarks/AGENTS.md claims {sorted(counts)} benchmarks; "
+        f"get_single_op_benchmarks() returns {len(names)}."
+    )
+
+    listed = re.search(r"benchmarks:\s*([^)]*)\)", text)
+    assert listed, "the sentence listing the benchmark names is gone from AGENTS.md"
+    documented = [n.strip() for n in listed.group(1).split(",")]
+    assert documented == names, (
+        f"benchmarks/AGENTS.md lists {documented}, but "
+        f"get_single_op_benchmarks() returns {names}."
     )
