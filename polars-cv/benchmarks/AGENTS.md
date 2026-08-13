@@ -15,11 +15,20 @@ This directory contains a comprehensive benchmarking suite for comparing polars-
 - Multi-operation pipelines (light, medium, heavy)
 - End-to-end file-to-memory workflows
 - Zero-copy ingestion performance
+- The remote (`file_path`) fetch stage, against a loopback HTTP server —
+  `scenarios/remote_source.py`. Every other scenario is handed bytes that are
+  already in memory, so without this the `fetch.rs` / `cloud.rs` path that every
+  `s3://`, `gs://`, `az://` and `http://` source goes through is unmeasured.
 
 ### What they do NOT test:
 - Random augmentation (not supported by polars-cv)
 - Training data loading with per-epoch variation
 - GPU-based augmentation pipelines
+- Real S3/GCS/Azure endpoints. Those need credentials and a bucket, so they
+  cannot be a committed benchmark. `remote_source.py` measures the structure
+  they share — one client built and one GET issued per file, batched by
+  `fetch::prefetch` — with the wide-area latency removed, and can inject a
+  synthetic latency (`--latency-ms`) when the point is to model the link.
 
 ## Directory Structure
 
@@ -41,7 +50,8 @@ benchmarks/
 │   ├── single_ops.py               # Individual operation benchmarks
 │   ├── pipelines.py                # Multi-op pipeline benchmarks
 │   ├── e2e_workflow.py             # End-to-end file-to-memory
-│   └── zero_copy_ingestion.py      # Zero-copy path benchmarks
+│   ├── zero_copy_ingestion.py      # Zero-copy path benchmarks
+│   └── remote_source.py            # Remote/cloud fetch path (loopback HTTP)
 ├── utils/                          # Shared utilities
 │   ├── data_gen.py                 # Synthetic test data generation
 │   ├── memory.py                   # Memory measurement
@@ -126,3 +136,11 @@ Defined in `conftest.py`. Controls image counts, sizes, warmup/iterations, and o
 1. Create `scenarios/my_scenario.py`
 2. Define benchmark functions that accept adapters and config
 3. Register in `run_benchmarks.py`
+4. To make it selectable from the regression suite, add its name to
+   `regression/config.py`'s `ALL_SCENARIOS` **and** a branch in
+   `regression/run_suite.py`'s `_run_once`. Return
+   `benchmarks.frameworks.BenchmarkResult` — a scenario with its own result type
+   must convert at that branch (see `zero_copy_ingestion.to_suite_results`).
+   `_run_once` rejects anything else, because appending a foreign record used to
+   fail several frames later in `_aggregate_best`, naming a missing field rather
+   than the scenario that produced it.
