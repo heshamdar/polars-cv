@@ -96,6 +96,10 @@ thiserror = "1.0"
 object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 url = { version = "2" }
+# The fan-out in `read_files_concurrent`. `buffer_unordered` rather than a
+# thread pool: the reads are IO-bound futures on a shared runtime, and the
+# process-wide semaphore is what bounds them.
+futures = "0.3"
 
 # HTTP support for URL sources (http://, https://)
 # Uses async client within tokio runtime (same as cloud storage)

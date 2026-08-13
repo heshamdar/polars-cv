@@ -63,11 +63,6 @@ if TYPE_CHECKING:
 #: makes the batching behaviour observable.
 DEFAULT_LATENCY_MS = 0.0
 
-#: Matches `fetch::DEFAULT_CONCURRENCY`. Not imported — it is a Rust constant
-#: with no FFI accessor — so it is only used to *report* the expected number of
-#: waves, never to drive the client.
-PLUGIN_CONCURRENCY = 16
-
 
 @dataclass
 class ServeStats:
@@ -404,7 +399,10 @@ def main(argv: list[str] | None = None) -> int:
         f"({stats.requests_per_connection:.2f} requests/connection; "
         f"1.00 means no reuse, inf means every request rode a pooled connection)"
     )
-    print(f"plugin fetch concurrency is {PLUGIN_CONCURRENCY} files per wave")
+    print(
+        "fetch concurrency is polars' process-wide budget "
+        "(POLARS_CONCURRENCY_BUDGET, default max(rayon threads, 10))"
+    )
     return 0
 
 

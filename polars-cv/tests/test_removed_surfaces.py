@@ -310,3 +310,40 @@ def test_out_dtype_does_not_reach_the_op_params(op: str) -> None:
     assert "out_dtype" not in built._ops[0].params, (
         f"{op} must not serialize out_dtype: no resolve_op arm reads it"
     )
+
+
+def test_the_benchmark_does_not_restate_a_deleted_concurrency_constant() -> None:
+    """The remote benchmark must not mirror a fetch-concurrency constant.
+
+    ``fetch::DEFAULT_CONCURRENCY`` was a per-*plugin-call* cap of 16, and
+    ``benchmarks/scenarios/remote_source.py`` carried a ``PLUGIN_CONCURRENCY``
+    copy of it so its report could say "16 files per wave". Both are gone: the
+    bound is polars' process-wide ``POLARS_CONCURRENCY_BUDGET`` semaphore, taken
+    one permit per request, because a per-call cap could not bound anything under
+    the streaming engine — the engine invokes the plugin once per morsel across
+    threads, so the real in-flight count was (morsels x 16).
+
+    A hand-copied mirror of a deleted Rust constant reads as documentation while
+    being wrong, which is worse than silence. Re-adding one here would also
+    re-suggest that the number is per call.
+    """
+    from benchmarks.scenarios import remote_source
+
+    # Positive half first: without it, an import failure or a rename would
+    # satisfy the absence check below while proving nothing.
+    assert hasattr(remote_source, "run_remote_source"), (
+        "remote_source.run_remote_source is gone; this guard reads that module "
+        "as the thing it is guarding and is now checking nothing"
+    )
+
+    assert not hasattr(remote_source, "PLUGIN_CONCURRENCY"), (
+        "PLUGIN_CONCURRENCY is back in remote_source.py. Fetch concurrency is "
+        "polars' POLARS_CONCURRENCY_BUDGET, not a per-call constant, and it has "
+        "no FFI accessor to mirror faithfully."
+    )
+
+    source = Path(remote_source.__file__).read_text()
+    assert "files per wave" not in source, (
+        "the 'N files per wave' claim is back; the fan-out is bounded by a "
+        "global semaphore, not by fixed-size waves"
+    )

@@ -1067,7 +1067,6 @@ impl CompiledGraph {
                 crate::fetch::prefetch(
                     ca,
                     self.cloud_options.get(node_id),
-                    crate::fetch::DEFAULT_CONCURRENCY,
                     &self.path_policy(node_id),
                 ),
             );

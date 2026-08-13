@@ -7,6 +7,78 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **The remote source stopped opening one connection per file.** `read_http`
+  built a `reqwest::Client` — which *is* the connection pool — inside the
+  per-file read, and `read_s3` / `read_gcs` / `read_azure` each built a fresh
+  object store per file. The 0.20.0 benchmark counted the result exactly: 1.00
+  requests per connection, so every image paid a TCP handshake and, off
+  loopback, a TLS handshake. Under the streaming engine it paid them again on
+  every morsel, because nothing scoped to a plugin call can outlive one.
+
+  The three cloud schemes now go through `polars-io`'s `build_object_store`,
+  which keeps a process-wide store cache; `http(s)://` keeps its own pooled
+  client, because polars deliberately does not cache HTTP stores (that suits a
+  few large Parquet files, not many small images). Measured over three
+  successive plugin calls on 64 URLs: 16 connections for the first call — one
+  per concurrent worker rather than one per file — and none at all for the
+  calls after it.
+
+  Delegating rather than reimplementing is also what makes caching a
+  *credentialed* store safe, which is the question 0.20.0 measured but declined
+  to answer. polars keys the cache on the bucket **and** the credentials, and
+  `exec_with_rebuild_retry_on_err` rebuilds the store with cached credentials
+  cleared and retries once on any object-store error, swapping the new store in
+  through the `Arc` the cache holds.
+
+- **Fetch concurrency is a global budget, not a per-call constant.** It was 16
+  per plugin invocation, and the streaming engine invokes the plugin once per
+  morsel across threads — so the real number of in-flight requests was (morsels
+  in flight × 16), bounded by nothing and settable by no one. Every request now
+  takes one permit from polars' own semaphore, so our fetches and polars' own
+  scans share one bound: `POLARS_CONCURRENCY_BUDGET`, defaulting to
+  `max(thread count, 10)`.
+
+  The chunked fan-out went with it. It spawned 16 scoped OS threads and joined
+  *all* of them before starting the next chunk, so the slowest file in a wave
+  stalled the wave; `buffer_unordered` starts the next file as soon as any one
+  finishes. `fetch::DEFAULT_CONCURRENCY` and the `max_concurrency` parameter are
+  deleted — a per-call knob beside a global budget would be a second authority
+  for one number.
+
+### Fixed
+
+- **`gcs_bearer_token` on an `s3://` path now errors instead of being ignored.**
+  S3 signs with SigV4 and cannot use an OAuth bearer token; the value was
+  accepted and silently discarded, which is the bug `token_command` was already
+  rejected for one field over.
+
+- **S3 object keys are no longer double percent-encoded.** `read_s3` passed
+  `url.path()` — already encoded — to `Path::from`, which encodes again, so
+  `s3://bucket/a b.png` requested the key `a%2520b.png`. Reads now use the raw
+  prefix, which also makes polars-cv agree with `pl.scan_parquet` on the same
+  URL.
+
+- **A misspelled storage option is still rejected.** polars'
+  `parse_untyped_config` silently drops keys it does not recognise ("Silently
+  ignores custom upstream storage_options"), so delegating naively would have
+  turned `unknown GCS storage option 'x'` into a request that quietly did the
+  wrong thing. Keys are validated against each backend's own vocabulary before
+  the options are handed over, lower-cased exactly as polars does so the
+  accepted set is neither wider nor narrower than what polars would act on.
+
+### Notes
+
+- Ambient AWS configuration is now honoured: `build_aws` reads `~/.aws/config`
+  and `~/.aws/credentials` for a region and keys when the options do not supply
+  them, and issues one `HEAD` per bucket to discover an unset region. Neither
+  happened before, so a machine with an unrelated AWS profile may sign a request
+  that previously went unsigned — pass `anonymous=True` for a public bucket.
+- Store-build and read errors now carry polars' context.
+- `polars` gains the `aws`/`gcp`/`azure` features, which pull in polars-io's
+  `cloud` stack (and transitively `file_cache`, `serde_json`, `rand`).
+
 ## [0.20.0] — 2026-08-13
 
 ### Added
