@@ -20,6 +20,11 @@ use view_buffer::geometry::{
 };
 use view_buffer::{naming, ViewBuffer};
 
+// `contour_accessor!` is `#[macro_export]`ed, so it lives at the crate root
+// regardless of module order; importing it by name avoids depending on
+// `geom_arity` being declared before `contour` in lib.rs.
+use crate::contour_accessor;
+use crate::geom_arity::{elementwise_field, pack_row, row_contours, Arity};
 use crate::geom_params::{check_range, GeomParams, InputSlots};
 use crate::params::NullParamPolicy;
 
@@ -126,47 +131,6 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
             Field::new(PlSmallStr::from_static("is_closed"), DataType::Boolean),
         ],
     )))
-}
-
-/// Run one row of a contour operation and record its result.
-///
-/// Two different things make a row null: a null input contour
-/// (`input_is_null`), and — under `on_null="null"` — a null per-row parameter.
-/// Routing both through [`GeomParams::row`] here keeps the second from being
-/// re-implemented in every operation below.
-fn contour_row<T>(
-    params: &GeomParams,
-    input_is_null: bool,
-    results: &mut Vec<Option<T>>,
-    compute: impl FnOnce() -> PolarsResult<T>,
-) -> PolarsResult<()> {
-    let value = if input_is_null {
-        None
-    } else {
-        params.row(compute)?
-    };
-    results.push(value);
-    Ok(())
-}
-
-/// Build a contour Series from a vector of Contours.
-///
-/// This is used by contour transform operations that need to return
-/// a properly typed Series.
-pub fn build_contour_series(
-    name: PlSmallStr,
-    contours: Vec<Option<Contour>>,
-    input_dtype: &DataType,
-) -> PolarsResult<Series> {
-    let any_values: Vec<AnyValue> = contours
-        .into_iter()
-        .map(|opt_c| match opt_c {
-            Some(c) => contour_to_anyvalue(&c),
-            None => AnyValue::Null,
-        })
-        .collect();
-
-    Series::from_any_values_and_dtype(name, &any_values, input_dtype, true)
 }
 
 // ============================================================================
@@ -333,16 +297,21 @@ pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
 
 /// Parse geometry that may be a single contour or a whole set of them.
 ///
-/// The contour source's entry point, so a mask can be rasterized from either
-/// shape a geometry column takes: `extract_contours().sink("native")` emits
-/// `List[Contour]`, while a hand-written contour column is one `Struct` per row.
-/// Both arrive here and leave as a set; the rasterizer paints their union.
+/// The repack that lets one code path serve both shapes a geometry column takes:
+/// `extract_contours().sink("native")` emits `List[Contour]`, while a
+/// hand-written contour column is one `Struct` per row. Both arrive here and
+/// leave as a set. Used by the contour *source* (whose rasterizer paints their
+/// union) and by the set-level accessors (`pairwise_iou`, `match_detections`,
+/// `label_reduce`), which therefore accept a single contour as a one-element
+/// set — the mirror of the `.contour` accessors accepting a set.
 ///
-/// The two list forms are told apart by the element dtype, not by trying one and
-/// falling back: a `List` whose elements are point structs (an `x` and a `y`
-/// field) is one contour's ring, anything else in a `List` is a set of contours.
-/// A fallback would have to guess, and guessing wrong on a contour set is what
-/// used to surface as `Point struct missing 'x' field`.
+/// The two list forms are told apart by the element dtype — via
+/// [`Arity::of`](crate::geom_arity::Arity::of), the same reading the accessors'
+/// declared output types use — not by trying one and falling back: a `List`
+/// whose elements are point structs is one contour's ring, anything else in a
+/// `List` is a set of contours. A fallback would have to guess, and guessing
+/// wrong on a contour set is what used to surface as
+/// `Point struct missing 'x' field`.
 ///
 /// Accepted forms:
 /// - `List[Contour]` — a contour set (elements are parsed by [`parse_contour`])
@@ -351,21 +320,23 @@ pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
 pub(crate) fn parse_contour_set(value: &AnyValue) -> PolarsResult<Vec<Contour>> {
     match value {
         AnyValue::Null => Ok(Vec::new()),
-        AnyValue::List(series) if !is_point_dtype(series.dtype()) => parse_contour_list(value),
+        AnyValue::List(series) if !crate::geom_arity::is_point_dtype(series.dtype()) => {
+            parse_contour_list(value)
+        }
         _ => Ok(vec![parse_contour(value)?]),
     }
 }
 
-/// Does this dtype describe a point (`{x, y}`) rather than a contour?
+/// The field names a point struct may spell its coordinates with, in order.
 ///
-/// Reads the same field names [`extract_points_from_series`] reads, so the
-/// dispatch above cannot admit something the parser then rejects.
-fn is_point_dtype(dtype: &DataType) -> bool {
-    let DataType::Struct(fields) = dtype else {
-        return false;
-    };
-    let named = |wanted: [&str; 2]| fields.iter().any(|f| wanted.contains(&f.name().as_str()));
-    named(["x", "X"]) && named(["y", "Y"])
+/// **The single authority for "is this a point?".** Read by
+/// [`extract_points_from_series`], which parses them, and by
+/// [`is_point_dtype`](crate::geom_arity::is_point_dtype), which decides from the
+/// dtype whether a `List` is one contour's ring or a set of contours. The two
+/// used to spell the names separately, so a dtype test could admit a struct the
+/// parser then rejected.
+pub(crate) fn point_dtype_fields() -> [[&'static str; 2]; 2] {
+    [["x", "X"], ["y", "Y"]]
 }
 
 /// Parse a list of contours from an AnyValue list expression.
@@ -819,231 +790,113 @@ fn score_order(scores: &[f64]) -> Vec<usize> {
 // Contour Plugin Functions - Measures
 // ============================================================================
 
-/// Compute contour area.
-#[polars_expr(output_type=Float64)]
-fn contour_area(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
-
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        contour_row(&params, value.is_null(), &mut results, || {
-            let signed = params.bool("signed", kwargs.signed, i)?;
-            let contour = parse_contour(&value)?;
-            Ok(measures::area(&contour, signed))
-        })?;
-    }
-
-    Ok(Float64Chunked::from_iter_options(series.name().clone(), results.into_iter()).into_series())
-}
-
-/// Compute contour perimeter.
-#[polars_expr(output_type=Float64)]
-fn contour_perimeter(inputs: &[Series]) -> PolarsResult<Series> {
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
-            let contour = parse_contour(&value)?;
-            let perimeter = measures::perimeter(&contour);
-            results.push(Some(perimeter));
-        }
-    }
-
-    Ok(Float64Chunked::from_iter_options(series.name().clone(), results.into_iter()).into_series())
-}
-
-/// Compute winding direction.
-#[polars_expr(output_type=String)]
-fn contour_winding(inputs: &[Series]) -> PolarsResult<Series> {
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results: Vec<Option<&str>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
-            let contour = parse_contour(&value)?;
-            let winding = measures::contour_winding(&contour);
-            results.push(Some(match winding {
-                Winding::CounterClockwise => "ccw",
-                Winding::Clockwise => "cw",
-            }));
-        }
-    }
-
-    Ok(StringChunked::from_iter_options(series.name().clone(), results.into_iter()).into_series())
-}
-
-/// Compute contour centroid - returns a Struct with x and y fields.
-fn contour_centroid_output_type(_input_fields: &[Field]) -> PolarsResult<Field> {
-    let fields = vec![
+/// The `{x, y}` struct dtype a point-valued result publishes.
+fn point_struct_dtype() -> DataType {
+    DataType::Struct(vec![
         Field::new(PlSmallStr::from_static("x"), DataType::Float64),
         Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-    ];
-    Ok(Field::new(
-        PlSmallStr::from_static("centroid"),
-        DataType::Struct(fields),
-    ))
+    ])
 }
 
-#[polars_expr(output_type_func=contour_centroid_output_type)]
-fn contour_centroid(inputs: &[Series]) -> PolarsResult<Series> {
-    let series = &inputs[0];
-    let len = series.len();
-    let mut x_results: Vec<Option<f64>> = Vec::with_capacity(len);
-    let mut y_results: Vec<Option<f64>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        if value.is_null() {
-            x_results.push(None);
-            y_results.push(None);
-        } else {
-            let contour = parse_contour(&value)?;
-            let center = measures::centroid(&contour);
-            x_results.push(Some(center.x));
-            y_results.push(Some(center.y));
-        }
-    }
-
-    // Build struct column
-    let x_col =
-        Float64Chunked::from_iter_options(PlSmallStr::from_static("x"), x_results.into_iter())
-            .into_series();
-    let y_col =
-        Float64Chunked::from_iter_options(PlSmallStr::from_static("y"), y_results.into_iter())
-            .into_series();
-
-    StructChunked::from_series(
-        PlSmallStr::from_static("centroid"),
-        len,
-        [x_col, y_col].iter(),
-    )
-    .map(|ca| ca.into_series())
+/// One point as a struct value matching [`point_struct_dtype`].
+fn point_anyvalue(x: f64, y: f64) -> AnyValue<'static> {
+    AnyValue::StructOwned(Box::new((
+        vec![AnyValue::Float64(x), AnyValue::Float64(y)],
+        vec![
+            Field::new(PlSmallStr::from_static("x"), DataType::Float64),
+            Field::new(PlSmallStr::from_static("y"), DataType::Float64),
+        ],
+    )))
 }
 
-/// Compute contour bounding box - returns a Struct with x, y, width, height fields.
-fn contour_bbox_output_type(_input_fields: &[Field]) -> PolarsResult<Field> {
-    let fields = vec![
+/// The `{x, y, width, height}` struct dtype a bbox-valued result publishes.
+fn bbox_struct_dtype() -> DataType {
+    DataType::Struct(bbox_struct_fields())
+}
+
+fn bbox_struct_fields() -> Vec<Field> {
+    vec![
         Field::new(PlSmallStr::from_static("x"), DataType::Float64),
         Field::new(PlSmallStr::from_static("y"), DataType::Float64),
         Field::new(PlSmallStr::from_static("width"), DataType::Float64),
         Field::new(PlSmallStr::from_static("height"), DataType::Float64),
-    ];
-    Ok(Field::new(
-        PlSmallStr::from_static("bbox"),
-        DataType::Struct(fields),
+    ]
+}
+
+/// One bbox as a struct value matching [`bbox_struct_dtype`], or null.
+fn bbox_anyvalue(bbox: Option<BoundingBox>) -> AnyValue<'static> {
+    let Some(bbox) = bbox else {
+        return AnyValue::Null;
+    };
+    AnyValue::StructOwned(Box::new((
+        vec![
+            AnyValue::Float64(bbox.x),
+            AnyValue::Float64(bbox.y),
+            AnyValue::Float64(bbox.width),
+            AnyValue::Float64(bbox.height),
+        ],
+        bbox_struct_fields(),
+    )))
+}
+
+contour_accessor! {
+    /// Compute contour area.
+    map_params fn contour_area / contour_area_output_type -> |_input| DataType::Float64;
+    |contour, params, kwargs, row| {
+        let signed = params.bool("signed", kwargs.signed, row)?;
+        Ok(AnyValue::Float64(measures::area(contour, signed)))
+    }
+}
+
+contour_accessor! {
+    /// Compute contour perimeter.
+    map fn contour_perimeter / contour_perimeter_output_type -> |_input| DataType::Float64;
+    |contour| Ok(AnyValue::Float64(measures::perimeter(contour)))
+}
+
+contour_accessor! {
+    /// Compute winding direction.
+    map fn contour_winding / contour_winding_output_type -> |_input| DataType::String;
+    |contour| Ok(AnyValue::StringOwned(
+        match measures::contour_winding(contour) {
+            Winding::CounterClockwise => "ccw",
+            Winding::Clockwise => "cw",
+        }
+        .into(),
     ))
 }
 
-#[polars_expr(output_type_func=contour_bbox_output_type)]
-fn contour_bbox(inputs: &[Series]) -> PolarsResult<Series> {
-    let series = &inputs[0];
-    let len = series.len();
-    let mut x_results: Vec<Option<f64>> = Vec::with_capacity(len);
-    let mut y_results: Vec<Option<f64>> = Vec::with_capacity(len);
-    let mut w_results: Vec<Option<f64>> = Vec::with_capacity(len);
-    let mut h_results: Vec<Option<f64>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        if value.is_null() {
-            x_results.push(None);
-            y_results.push(None);
-            w_results.push(None);
-            h_results.push(None);
-        } else {
-            let contour = parse_contour(&value)?;
-            if let Some(bbox) = measures::bounding_box(&contour) {
-                x_results.push(Some(bbox.x));
-                y_results.push(Some(bbox.y));
-                w_results.push(Some(bbox.width));
-                h_results.push(Some(bbox.height));
-            } else {
-                x_results.push(None);
-                y_results.push(None);
-                w_results.push(None);
-                h_results.push(None);
-            }
-        }
+contour_accessor! {
+    /// Compute contour centroid — a `{x, y}` struct per contour.
+    map fn contour_centroid / contour_centroid_output_type -> |_input| point_struct_dtype();
+    |contour| {
+        let center = measures::centroid(contour);
+        Ok(point_anyvalue(center.x, center.y))
     }
+}
 
-    // Build struct column
-    let x_col =
-        Float64Chunked::from_iter_options(PlSmallStr::from_static("x"), x_results.into_iter())
-            .into_series();
-    let y_col =
-        Float64Chunked::from_iter_options(PlSmallStr::from_static("y"), y_results.into_iter())
-            .into_series();
-    let w_col =
-        Float64Chunked::from_iter_options(PlSmallStr::from_static("width"), w_results.into_iter())
-            .into_series();
-    let h_col =
-        Float64Chunked::from_iter_options(PlSmallStr::from_static("height"), h_results.into_iter())
-            .into_series();
-
-    StructChunked::from_series(
-        PlSmallStr::from_static("bbox"),
-        len,
-        [x_col, y_col, w_col, h_col].iter(),
-    )
-    .map(|ca| ca.into_series())
+contour_accessor! {
+    /// Compute contour bounding box — an `{x, y, width, height}` struct per contour.
+    map fn contour_bbox / contour_bbox_output_type -> |_input| bbox_struct_dtype();
+    |contour| Ok(bbox_anyvalue(measures::bounding_box(contour)))
 }
 
 // ============================================================================
 // Contour Plugin Functions - Predicates
 // ============================================================================
 
-/// Check if contour is convex.
-#[polars_expr(output_type=Boolean)]
-fn contour_is_convex(inputs: &[Series]) -> PolarsResult<Series> {
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
-            let contour = parse_contour(&value)?;
-            let is_convex = predicates::contour_is_convex(&contour);
-            results.push(Some(is_convex));
-        }
-    }
-
-    Ok(BooleanChunked::from_iter_options(series.name().clone(), results.into_iter()).into_series())
+contour_accessor! {
+    /// Check if contour is convex.
+    map fn contour_is_convex / contour_is_convex_output_type -> |_input| DataType::Boolean;
+    |contour| Ok(AnyValue::Boolean(predicates::contour_is_convex(contour)))
 }
 
-/// Check if contour contains a specific point.
-#[polars_expr(output_type=Boolean)]
-fn contour_contains_point(inputs: &[Series]) -> PolarsResult<Series> {
-    let contour_series = &inputs[0];
-    let point_series = &inputs[1];
-    let len = contour_series.len();
-    let mut results: Vec<Option<bool>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let contour_value = contour_series.get(i)?;
-        let point_value = point_series.get(i)?;
-
-        if contour_value.is_null() || point_value.is_null() {
-            results.push(None);
-        } else {
-            let contour = parse_contour(&contour_value)?;
+/// Read one `{x, y}` struct value.
+fn parse_point_value(point_value: &AnyValue) -> PolarsResult<(f64, f64)> {
+    {
+        {
             // Parse point from struct
-            let (x, y) = match &point_value {
+            let (x, y) = match point_value {
                 AnyValue::StructOwned(boxed) => {
                     let (values, _) = boxed.as_ref();
                     let x = values
@@ -1076,14 +929,55 @@ fn contour_contains_point(inputs: &[Series]) -> PolarsResult<Series> {
                     return Err(polars_err!(ComputeError: "Expected Struct for point"));
                 }
             };
-            let contains = predicates::contains_point(&contour, x, y);
-            results.push(Some(contains));
+            Ok((x, y))
         }
     }
+}
 
-    Ok(
-        BooleanChunked::from_iter_options(contour_series.name().clone(), results.into_iter())
-            .into_series(),
+/// Declared type of `contour_contains_point`: one bool per contour.
+fn contour_contains_point_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    elementwise_field(input_fields, "contour_contains_point", DataType::Boolean)
+}
+
+/// Check if contour contains a specific point.
+///
+/// The one accessor with its own row loop. Its second operand is a *point*, not
+/// a contour, so neither the `map` arm (one operand) nor the `zip` arm (two
+/// contour operands, broadcast) describes it: the arity comes from the contour
+/// column alone, while a null point nulls the whole row the way `zip_contours`
+/// does rather than each element.
+///
+/// It still reads the arity through [`Arity::of`] and wraps through
+/// [`elementwise_field`] / [`pack_row`], so the *decision* and the *wrapping*
+/// stay single-authority — only the loop is local.
+#[polars_expr(output_type_func=contour_contains_point_output_type)]
+fn contour_contains_point(inputs: &[Series]) -> PolarsResult<Series> {
+    let contour_series = &inputs[0];
+    let point_series = &inputs[1];
+    let arity = Arity::of(contour_series.dtype());
+    let len = contour_series.len();
+    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        let contour_value = contour_series.get(i)?;
+        let point_value = point_series.get(i)?;
+        if contour_value.is_null() || point_value.is_null() {
+            rows.push(AnyValue::Null);
+            continue;
+        }
+        let (x, y) = parse_point_value(&point_value)?;
+        let results = row_contours(&contour_value, arity)?
+            .iter()
+            .map(|contour| AnyValue::Boolean(predicates::contains_point(contour, x, y)))
+            .collect();
+        rows.push(pack_row(results, arity, &DataType::Boolean)?);
+    }
+
+    Series::from_any_values_and_dtype(
+        contour_series.name().clone(),
+        &rows,
+        &arity.wrap(DataType::Boolean),
+        true,
     )
 }
 
@@ -1107,8 +1001,8 @@ fn contour_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
             continue;
         }
 
-        let preds = parse_contour_list(&preds_value)?;
-        let gts = parse_contour_list(&gts_value)?;
+        let preds = parse_contour_set(&preds_value)?;
+        let gts = parse_contour_set(&gts_value)?;
         let matrix = pairwise::iou_matrix(&preds, &gts);
         rows.push(matrix_anyvalue(&matrix)?);
     }
@@ -1182,8 +1076,8 @@ fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsR
             continue;
         };
 
-        let preds = parse_contour_list(&preds_value)?;
-        let gts = parse_contour_list(&gts_value)?;
+        let preds = parse_contour_set(&preds_value)?;
+        let gts = parse_contour_set(&gts_value)?;
 
         let pred_order = if let Some(scores_col) = score_series {
             let score_value = scores_col.get(i)?;
@@ -1294,7 +1188,7 @@ fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResul
             continue;
         };
 
-        let contours = parse_contour_list(&contours_value)?;
+        let contours = parse_contour_set(&contours_value)?;
         let heatmap = parse_heatmap(&heatmap_value)?;
         let scores = score_contours_on_buffer(&heatmap, &contours, reduction, region_mode)
             .map_err(|err| polars_err!(ComputeError: "{}", err))?;
@@ -1308,305 +1202,138 @@ fn contour_label_reduce(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResul
     Series::from_any_values_and_dtype(contour_series.name().clone(), &rows, &dtype, true)
 }
 
-/// Compute IoU between two contours.
-#[polars_expr(output_type=Float64)]
-fn contour_iou(inputs: &[Series]) -> PolarsResult<Series> {
-    let series_a = &inputs[0];
-    let series_b = &inputs[1];
-    let len = series_a.len();
-    let mut results = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value_a = series_a.get(i)?;
-        let value_b = series_b.get(i)?;
-
-        if value_a.is_null() || value_b.is_null() {
-            results.push(None);
-        } else {
-            let contour_a = parse_contour(&value_a)?;
-            let contour_b = parse_contour(&value_b)?;
-            let iou_val = pairwise::iou(&contour_a, &contour_b);
-            results.push(Some(iou_val));
-        }
-    }
-
-    Ok(
-        Float64Chunked::from_iter_options(series_a.name().clone(), results.into_iter())
-            .into_series(),
-    )
+contour_accessor! {
+    /// Compute IoU between two contours, broadcasting a set against a single.
+    zip fn contour_iou / contour_iou_output_type -> DataType::Float64;
+    |a, b| Ok(AnyValue::Float64(pairwise::iou(a, b)))
 }
 
-/// Compute Dice coefficient between two contours.
-#[polars_expr(output_type=Float64)]
-fn contour_dice(inputs: &[Series]) -> PolarsResult<Series> {
-    let series_a = &inputs[0];
-    let series_b = &inputs[1];
-    let len = series_a.len();
-    let mut results = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value_a = series_a.get(i)?;
-        let value_b = series_b.get(i)?;
-
-        if value_a.is_null() || value_b.is_null() {
-            results.push(None);
-        } else {
-            let contour_a = parse_contour(&value_a)?;
-            let contour_b = parse_contour(&value_b)?;
-            let dice_val = pairwise::dice(&contour_a, &contour_b);
-            results.push(Some(dice_val));
-        }
-    }
-
-    Ok(
-        Float64Chunked::from_iter_options(series_a.name().clone(), results.into_iter())
-            .into_series(),
-    )
+contour_accessor! {
+    /// Compute Dice coefficient between two contours.
+    zip fn contour_dice / contour_dice_output_type -> DataType::Float64;
+    |a, b| Ok(AnyValue::Float64(pairwise::dice(a, b)))
 }
 
-/// Compute Hausdorff distance between two contours.
-#[polars_expr(output_type=Float64)]
-fn contour_hausdorff(inputs: &[Series]) -> PolarsResult<Series> {
-    let series_a = &inputs[0];
-    let series_b = &inputs[1];
-    let len = series_a.len();
-    let mut results = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value_a = series_a.get(i)?;
-        let value_b = series_b.get(i)?;
-
-        if value_a.is_null() || value_b.is_null() {
-            results.push(None);
-        } else {
-            let contour_a = parse_contour(&value_a)?;
-            let contour_b = parse_contour(&value_b)?;
-            let hausdorff = pairwise::hausdorff_distance(&contour_a, &contour_b);
-            results.push(Some(hausdorff));
-        }
-    }
-
-    Ok(
-        Float64Chunked::from_iter_options(series_a.name().clone(), results.into_iter())
-            .into_series(),
-    )
+contour_accessor! {
+    /// Compute Hausdorff distance between two contours.
+    zip fn contour_hausdorff / contour_hausdorff_output_type -> DataType::Float64;
+    |a, b| Ok(AnyValue::Float64(pairwise::hausdorff_distance(a, b)))
 }
 
 // ============================================================================
 // Contour Plugin Functions - Transforms
 // ============================================================================
 
-/// Output type function for contour transform operations (preserves input type).
-fn contour_transform_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
-    if let Some(field) = input_fields.first() {
-        Ok(field.clone())
-    } else {
-        Ok(Field::new(
-            PlSmallStr::from_static("output"),
-            DataType::Unknown(UnknownKind::Any),
-        ))
+// A transform's element type is "a contour of whatever shape came in", which
+// `Arity::elem_dtype` answers for both arities from one reading. The old
+// `contour_transform_output_type` returned the input field verbatim — correct
+// for the declaration, but its body then handed the *outer* dtype to
+// `build_contour_series`, so a set could never have been built.
+
+contour_accessor! {
+    /// Translate contour by offset.
+    map_params fn contour_translate / contour_translate_output_type
+        -> |input| Arity::elem_dtype(input);
+    |contour, params, kwargs, row| {
+        let dx = params.f64("dx", kwargs.dx, 0.0, row)?;
+        let dy = params.f64("dy", kwargs.dy, 0.0, row)?;
+        Ok(contour_to_anyvalue(&transforms::translate(contour, dx, dy)))
     }
 }
 
-/// Translate contour by offset.
-#[polars_expr(output_type_func=contour_transform_output_type)]
-fn contour_translate(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
-
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        contour_row(&params, value.is_null(), &mut results, || {
-            let dx = params.f64("dx", kwargs.dx, 0.0, i)?;
-            let dy = params.f64("dy", kwargs.dy, 0.0, i)?;
-            let contour = parse_contour(&value)?;
-            Ok(transforms::translate(&contour, dx, dy))
-        })?;
+contour_accessor! {
+    /// Scale contour.
+    map_params fn contour_scale / contour_scale_output_type
+        -> |input| Arity::elem_dtype(input);
+    |contour, params, kwargs, row| {
+        let sx = params.f64("sx", kwargs.sx, 1.0, row)?;
+        let sy = params.f64("sy", kwargs.sy, 1.0, row)?;
+        // Per-row capable, like `sx`/`sy` beside it: which point the scale
+        // is measured from does not change the output's shape, rank or
+        // dtype, so it meets the eligibility rule for a per-row parameter.
+        // Resolved against `ScaleOrigin::NAMED` — the hand-written match
+        // this replaced ended in a silent default, so `origin="top_left"`
+        // scaled about the centroid and said nothing. The no-value default
+        // is `Origin` because that is what the Python signature declares;
+        // the two used to disagree.
+        let scale_origin = parse_named(
+            ScaleOrigin::NAMED,
+            "origin",
+            params.str_opt("origin", kwargs.origin.as_deref(), row)?,
+            ScaleOrigin::Origin,
+        )?;
+        Ok(contour_to_anyvalue(&transforms::scale(contour, sx, sy, scale_origin)))
     }
-
-    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
-/// Scale contour.
-#[polars_expr(output_type_func=contour_transform_output_type)]
-fn contour_scale(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
-
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        contour_row(&params, value.is_null(), &mut results, || {
-            let sx = params.f64("sx", kwargs.sx, 1.0, i)?;
-            let sy = params.f64("sy", kwargs.sy, 1.0, i)?;
-            // Per-row capable, like `sx`/`sy` beside it: which point the scale
-            // is measured from does not change the output's shape, rank or
-            // dtype, so it meets the eligibility rule for a per-row parameter.
-            // Resolved against `ScaleOrigin::NAMED` — the hand-written match
-            // this replaced ended in a silent default, so `origin="top_left"`
-            // scaled about the centroid and said nothing. The no-value default
-            // is `Origin` because that is what the Python signature declares;
-            // the two used to disagree.
-            let scale_origin = parse_named(
-                ScaleOrigin::NAMED,
-                "origin",
-                params.str_opt("origin", kwargs.origin.as_deref(), i)?,
-                ScaleOrigin::Origin,
-            )?;
-            let contour = parse_contour(&value)?;
-            Ok(transforms::scale(&contour, sx, sy, scale_origin))
-        })?;
+contour_accessor! {
+    /// Simplify contour.
+    map_params fn contour_simplify / contour_simplify_output_type
+        -> |input| Arity::elem_dtype(input);
+    |contour, params, kwargs, row| {
+        let tolerance = params.f64("tolerance", kwargs.tolerance, 1.0, row)?;
+        Ok(contour_to_anyvalue(&transforms::simplify(contour, tolerance)))
     }
-
-    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
-/// Simplify contour.
-#[polars_expr(output_type_func=contour_transform_output_type)]
-fn contour_simplify(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
-
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        contour_row(&params, value.is_null(), &mut results, || {
-            let tolerance = params.f64("tolerance", kwargs.tolerance, 1.0, i)?;
-            let contour = parse_contour(&value)?;
-            Ok(transforms::simplify(&contour, tolerance))
-        })?;
-    }
-
-    build_contour_series(series.name().clone(), results, series.dtype())
+contour_accessor! {
+    /// Flip contour (reverse winding).
+    map fn contour_flip / contour_flip_output_type -> |input| Arity::elem_dtype(input);
+    |contour| Ok(contour_to_anyvalue(&transforms::flip(contour)))
 }
 
-/// Flip contour (reverse winding).
-#[polars_expr(output_type_func=contour_transform_output_type)]
-fn contour_flip(inputs: &[Series]) -> PolarsResult<Series> {
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
-            let contour = parse_contour(&value)?;
-            let flipped = transforms::flip(&contour);
-            results.push(Some(flipped));
-        }
-    }
-
-    build_contour_series(series.name().clone(), results, series.dtype())
+contour_accessor! {
+    /// Compute convex hull.
+    map fn contour_convex_hull / contour_convex_hull_output_type
+        -> |input| Arity::elem_dtype(input);
+    |contour| Ok(contour_to_anyvalue(&transforms::convex_hull(contour)))
 }
 
-/// Compute convex hull.
-#[polars_expr(output_type_func=contour_transform_output_type)]
-fn contour_convex_hull(inputs: &[Series]) -> PolarsResult<Series> {
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        if value.is_null() {
-            results.push(None);
-        } else {
-            let contour = parse_contour(&value)?;
-            let hull = transforms::convex_hull(&contour);
-            results.push(Some(hull));
-        }
+contour_accessor! {
+    /// Normalize contour coordinates to [0, 1] range.
+    map_params fn contour_normalize / contour_normalize_output_type
+        -> |input| Arity::elem_dtype(input);
+    |contour, params, kwargs, row| {
+        let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, row)?;
+        let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, row)?;
+        Ok(contour_to_anyvalue(&transforms::normalize(contour, ref_width, ref_height)))
     }
-
-    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
-/// Normalize contour coordinates to [0, 1] range.
-#[polars_expr(output_type_func=contour_transform_output_type)]
-fn contour_normalize(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
-
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        contour_row(&params, value.is_null(), &mut results, || {
-            let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, i)?;
-            let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, i)?;
-            let contour = parse_contour(&value)?;
-            Ok(transforms::normalize(&contour, ref_width, ref_height))
-        })?;
+contour_accessor! {
+    /// Convert normalized coordinates to absolute pixel coordinates.
+    map_params fn contour_to_absolute / contour_to_absolute_output_type
+        -> |input| Arity::elem_dtype(input);
+    |contour, params, kwargs, row| {
+        let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, row)?;
+        let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, row)?;
+        Ok(contour_to_anyvalue(&transforms::to_absolute(contour, ref_width, ref_height)))
     }
-
-    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
-/// Convert normalized coordinates to absolute pixel coordinates.
-#[polars_expr(output_type_func=contour_transform_output_type)]
-fn contour_to_absolute(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
-
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        contour_row(&params, value.is_null(), &mut results, || {
-            let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, i)?;
-            let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, i)?;
-            let contour = parse_contour(&value)?;
-            Ok(transforms::to_absolute(&contour, ref_width, ref_height))
-        })?;
+contour_accessor! {
+    /// Ensure contour has specified winding direction.
+    map_params fn contour_ensure_winding / contour_ensure_winding_output_type
+        -> |input| Arity::elem_dtype(input);
+    |contour, params, kwargs, row| {
+        // Per-row capable: the winding a ring is rewound to changes the
+        // vertex order, not the output's shape, rank or dtype.
+        //
+        // `direction` is required, so there is no default to fall back to.
+        // The match this replaced fell back to counter-clockwise for
+        // anything it did not recognise, which meant `ensure_winding("CW")`
+        // returned the *opposite* of what was asked for, silently.
+        let direction = require_named(
+            Winding::NAMED,
+            "winding direction",
+            params
+                .str_opt("direction", kwargs.direction.as_deref(), row)?
+                .ok_or_else(
+                    || polars_err!(ComputeError: "ensure_winding requires a 'direction'"),
+                )?,
+        )?;
+        Ok(contour_to_anyvalue(&transforms::ensure_winding(contour, direction)))
     }
-
-    build_contour_series(series.name().clone(), results, series.dtype())
-}
-
-/// Ensure contour has specified winding direction.
-#[polars_expr(output_type_func=contour_transform_output_type)]
-fn contour_ensure_winding(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
-
-    let series = &inputs[0];
-    let len = series.len();
-    let mut results: Vec<Option<Contour>> = Vec::with_capacity(len);
-
-    for i in 0..len {
-        let value = series.get(i)?;
-        contour_row(&params, value.is_null(), &mut results, || {
-            // Per-row capable: the winding a ring is rewound to changes the
-            // vertex order, not the output's shape, rank or dtype.
-            //
-            // `direction` is required, so there is no default to fall back to.
-            // The match this replaced fell back to counter-clockwise for
-            // anything it did not recognise, which meant `ensure_winding("CW")`
-            // returned the *opposite* of what was asked for, silently.
-            let direction = require_named(
-                Winding::NAMED,
-                "winding direction",
-                params
-                    .str_opt("direction", kwargs.direction.as_deref(), i)?
-                    .ok_or_else(
-                        || polars_err!(ComputeError: "ensure_winding requires a 'direction'"),
-                    )?,
-            )?;
-            let contour = parse_contour(&value)?;
-            Ok(transforms::ensure_winding(&contour, direction))
-        })?;
-    }
-
-    build_contour_series(series.name().clone(), results, series.dtype())
 }
 
 // ============================================================================

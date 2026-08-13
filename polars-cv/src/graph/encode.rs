@@ -434,9 +434,17 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
     // shape it could not name, so a planned query always supplies one here.
     let shape = sink_shape.clone().or_else(|| expected_shape.cloned());
     let Some(shape) = shape else {
-        return Err(
-            polars_err!(ComputeError: "Cannot determine shape for array sink. Provide shape via .sink(shape=[...]) or use .resize()/.assert_shape()."),
-        );
+        // Not user-facing advice: `dtype_for_output` reads the same two fields
+        // and refuses first, so reaching here means the schema half and the
+        // encode half disagreed about the same `OutputSpec`. Restating the
+        // "how to supply a shape" guidance here made this a second copy of it,
+        // which would drift — and would tell the user to fix something they
+        // cannot, because a query that got this far already passed the check.
+        return Err(polars_err!(ComputeError:
+            "internal: the array sink reached encoding with no shape, which \
+             dtype_for_output refuses. The schema and encode halves of the sink \
+             contract disagree about this output."
+        ));
     };
     // Fast path: every row present with exactly the target element count —
     // concatenate the flat values once and reshape into the nested Array.

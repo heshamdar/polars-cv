@@ -727,10 +727,21 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
                 }
                 Ok(dtype)
             } else {
+                // Names what each remedy actually supplies. The advice this
+                // replaces was circular for the source that reaches it most: a
+                // list/array column's shape is not knowable until execution, so
+                // it lands here — and was told to call `.assert_shape()`, which
+                // published nothing without a rank, and `.resize()`, which never
+                // supplies the channel count.
                 polars_bail!(ComputeError:
-                    "array sink requires a known shape at planning time. \
-                     Provide shape via .sink(shape=[...]) or use .resize()/.assert_shape() \
-                     so the planner can determine output dimensions."
+                    "an 'array' sink needs the full output shape at planning time, and \
+                     this pipeline's is not known. Three ways to supply it:\n  \
+                     .sink('array', shape=[8, 8, 3])   — always works; the shape belongs \
+                     to the sink\n  \
+                     .assert_shape(dims=[8, 8, 3])     — when you know it and the source \
+                     does not (a list/array column's shape is only settled during \
+                     execution)\n  \
+                     .resize(height=8, width=8)        — supplies height and width only"
                 );
             }
         }

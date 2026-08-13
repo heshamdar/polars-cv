@@ -9,6 +9,41 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Every `.contour` accessor now takes a set of contours, not just one.** A
+  column may be a `CONTOUR_SCHEMA` struct per row or the `CONTOUR_SET_SCHEMA`
+  list of them that `extract_contours()` produces; the result is wrapped to
+  match, so `area()` returns `Float64` for the first and `List(Float64)` for the
+  second, one entry per contour. Fifteen of the eighteen accessors called
+  `parse_contour` directly and rejected a set outright, which meant the
+  namespace could not read the column its own pipeline produced.
+
+  Two-operand accessors (`iou`, `dice`, `hausdorff_distance`) **broadcast**: a
+  set on one side and a single contour on the other yields one result per
+  contour, whichever side the set is on. A set on *both* sides raises rather
+  than guessing — it could mean the N×M matrix (`pairwise_iou`) or an
+  index-wise pairing (`.explode()` one side), and those are different answers.
+  The set-level accessors (`pairwise_iou`, `match_detections`, `label_reduce`)
+  run the rule backwards through the same `parse_contour_set` repack, so a lone
+  contour is read as a set of one.
+
+  The arity is **one value, read from the column dtype**, and it drives both
+  halves of every accessor: `src/geom_arity.rs` wraps the declared element type
+  for `output_type_func` and the produced results with the same `Arity::wrap`,
+  and `contour_accessor!` emits both from a single `-> <elem>` declaration. That
+  matters because the two halves are otherwise unconnected — declaring
+  `Float64` while building `List(Float64)` is exactly the plan/exec divergence
+  `test_schema_parity_namespaces` exists to catch, and per-accessor list
+  handling would have been fifteen chances to introduce it. The case table there
+  is now swept in *both* arities, so an accessor that skips the macro fails
+  rather than shipping a schema its data contradicts.
+
+- **`Pipeline.assert_shape(dims=[...])`** — the positional spelling, and the one
+  that pins the output **rank** alongside the per-dimension sizes. This is what
+  makes an assertion reach the published schema for a `list`/`array` source,
+  whose rank is not knowable until execution: the `height=`/`width=`/`channels=`
+  form set the hints, but `expected_shape` only publishes at rank 3, so the
+  assertion changed nothing and the `array` sink went on refusing the query.
+
 - **`.contour.ensure_winding(direction=)` and `.contour.scale(origin=)` accept a
   Polars expression**, resolved per row like every other non-structural
   parameter. Per-row eligibility is decided by whether a value affects the
@@ -32,6 +67,38 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   for per-row use or exempted with the structural reason.
 
 ### Fixed
+
+- **`assert_shape` rejects a contradiction where it is written, instead of
+  blaming the plugin at `collect()`.** `resize(224, 224).assert_shape(height=999)`
+  was accepted, published as the output schema, and reported much later by
+  `validate_output_schema` as *"the planner's shape contract disagrees with the
+  Rust implementation"* — the plugin taking the blame for a value the caller had
+  typed three lines earlier. An assertion that contradicts a dimension the
+  planner already knows now raises at the call, naming both values and the op
+  that established the known one. When a divergence *does* survive to execution,
+  the message distinguishes the two cases: an output whose shape was asserted
+  says so and points at the assertion, while an inferred one keeps the
+  contract-bug wording, which is correct there. The two are told apart by a
+  `shape_asserted` flag on the output spec, tracked per dimension and cleared
+  whenever the schema fold recomputes it — the `rasterize(shape=<node>)` canvas
+  is deliberately *not* counted, since it comes from another node's inferred
+  hints.
+
+  The `height`/`width`/`channels` keywords are also rejected once the rank is
+  known to be anything but 3. The hints are positional — they are dimensions 0,
+  1 and 2 — so after a `transpose([2, 0, 1])` dimension 0 is the channel axis
+  and calling it `height` is a lie. `dims=` is the honest spelling there.
+
+- **The `array` sink's error names remedies that exist.** It advised
+  `.resize()` / `.assert_shape()`, and the source that reaches it most often is
+  a `list`/`array` column — whose shape genuinely is not knowable until
+  execution, and which therefore got the same advice back after following it.
+  `.resize()` supplies height and width but never the channel count. The message
+  now names the missing dimensions and what each of the three remedies actually
+  supplies, and is written once per side rather than at four sites. The
+  unreachable copy in `encode.rs` became an internal-invariant error rather than
+  a fourth restatement of user advice, since `dtype_for_output` reads the same
+  two fields and refuses first.
 
 - **`.contour.ensure_winding()` and `.contour.scale(origin=)` reject a value
   they do not recognise instead of guessing one.** These were the only two

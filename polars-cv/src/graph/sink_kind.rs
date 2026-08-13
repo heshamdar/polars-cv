@@ -128,6 +128,7 @@ mod tests {
             expected_domain: domain.to_string(),
             expected_dtype: "u8".to_string(),
             expected_shape: None,
+            shape_asserted: false,
             expected_ndim: None,
             expected_encoding: None,
         }

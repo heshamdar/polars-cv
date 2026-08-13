@@ -571,7 +571,18 @@ class TestContourNullHandling:
         assert result["area"][1] is None
 
     def test_centroid_with_null(self, square_contour: dict) -> None:
-        """Centroid should return null fields for null input."""
+        """Centroid returns a null *row* for null input, like every accessor.
+
+        This changed deliberately. `centroid` built its output as two parallel
+        f64 columns wrapped in a struct, so a null contour produced a non-null
+        struct whose fields were null — while `test_area_with_null` directly
+        above asserts a null row for the same input. The two accessors
+        disagreed about what a null contour means.
+
+        Routing every accessor through `map_contours` settles it one way: null
+        in, null out. It is also the only answer that survives the set arity,
+        where a null row must be a null list rather than a list of null structs.
+        """
         df = pl.DataFrame(
             {"contour": [square_contour, None]}, schema={"contour": CONTOUR_SCHEMA}
         )
@@ -579,9 +590,7 @@ class TestContourNullHandling:
         # Non-null contour should have valid centroid
         assert result["centroid"][0]["x"] is not None
         assert result["centroid"][0]["y"] is not None
-        # Null contour returns struct with null fields
-        assert result["centroid"][1]["x"] is None
-        assert result["centroid"][1]["y"] is None
+        assert result["centroid"][1] is None
 
 
 @plugin_required

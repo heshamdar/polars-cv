@@ -132,3 +132,65 @@ API reference.
 ## Schema export policy
 
 - `ANNOTATED_POINT_SCHEMA` and `MATCH_RESULT_SCHEMA` are deliberately geometry-only exports (`polars_cv.geometry.ANNOTATED_POINT_SCHEMA`): they describe internal match-result structures, unlike the six user-facing geometry schemas re-exported at the package top level. Import them from `polars_cv.geometry` when needed.
+
+## Arity: one contour or a set of them
+
+A `.contour` column carries either a `CONTOUR_SCHEMA` struct per row or the
+`CONTOUR_SET_SCHEMA` list of them that `extract_contours()` produces, and
+**every accessor takes both**. The rule:
+
+| input | result |
+|-------|--------|
+| `CONTOUR_SCHEMA` | the element type (`Float64`, `POINT_SCHEMA`, a contour, …) |
+| `List(CONTOUR_SCHEMA)` | `List(<element type>)`, one entry per contour, in input order |
+
+Two-operand accessors (`iou`, `dice`, `hausdorff_distance`) **broadcast**: a set
+on one side and a single contour on the other gives one result per contour,
+whichever side the set is on. A set on *both* sides **raises** — it could mean
+the N×M matrix (`pairwise_iou`) or an index-wise pairing (`.explode()` one
+side), and guessing between two different answers is the fallback behaviour this
+codebase removes. The set-level accessors (`pairwise_iou`, `match_detections`,
+`label_reduce`) run the same rule backwards: a lone contour is read as a set of
+one, via `parse_contour_set`.
+
+### Why it is a mechanism and not a per-accessor `if`
+
+Each accessor has two halves that must agree — the `output_type_func` (the dtype
+published at plan time) and the body (the Series produced) — and nothing in
+`#[polars_expr]` forces them to. Fifteen hand-written `output_type=Float64`
+attributes would have been fifteen chances to declare `Float64` and build
+`List(Float64)`.
+
+So the arity is **one value, read from the column dtype** (never from a row —
+`output_type_func` only sees `Field`s, so a row-level decision is one the
+declaration could not have made), and `src/geom_arity.rs` drives both halves
+from it:
+
+- `Arity::of` reads it, using `point_dtype_fields()` — the same field names the
+  point parser reads, so the dispatch cannot admit a struct the parser rejects.
+- `elementwise_field` / `binary_field` wrap the element type for the declaration.
+- `map_contours` / `map_contours_with_params` / `zip_contours` wrap the results
+  with the same `Arity::wrap`, and are the only decode path the accessors use.
+- `contour_accessor!` emits both halves from a single `-> <elem>` declaration.
+
+`map_contours_with_params` also owns the null-parameter policy: it wraps each
+*row* in `GeomParams::row`, so `on_null("null")` nulls the row rather than each
+contour. That is the job `contour_row` used to do, moved so it cannot be
+forgotten.
+
+`contour_contains_point` is the one accessor with its own loop: its second
+operand is a point, so neither the `map` arm (one operand) nor the `zip` arm
+(two contour operands) describes it. It still reads `Arity::of` and wraps
+through `elementwise_field`/`pack_row`, so only the loop is local.
+
+### Adding an accessor
+
+Use a `contour_accessor!` arm — `map`, `map_params` or `zip`. Do not write a
+bare `#[polars_expr(output_type=...)]` for a contour accessor: the case table in
+`tests/test_schema_parity_namespaces.py` is completeness-asserted against the
+namespace's real methods *and* swept in both arities, so an accessor that skips
+the macro fails `test_contour_accessors_over_a_contour_set` rather than shipping
+a schema its data contradicts.
+
+`.point` has the identical single-only limitation over `POINT_SET_SCHEMA`;
+`geom_arity.rs` is written to fit it, but wiring it up is not done.

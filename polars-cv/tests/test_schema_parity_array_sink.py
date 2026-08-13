@@ -140,7 +140,7 @@ def test_non_rank3_refuses_without_a_shape_but_is_exact_with_one(case: str) -> N
         f"{case}: expected_shape is gated on rank 3, so this should refuse; "
         f"it planned {bare.planned!r} instead"
     )
-    assert "shape is required" in (bare.reason or "")
+    assert "needs the full output shape" in (bare.reason or "")
 
     series = assert_plan_equals_exec(
         df, pl.col("img").cv.pipe(pipe).sink("array", shape=expected)
@@ -331,6 +331,6 @@ def test_multi_output_array_branch_honours_an_explicit_shape() -> None:
     # Record the asymmetry rather than assert it is correct: if the multi
     # branch starts honouring shape= too, this flips and should be updated
     # deliberately.
-    assert multi.ok or "deterministic shape" in (multi.reason or ""), (
+    assert multi.ok or "needs the full output shape" in (multi.reason or ""), (
         f"unexpected multi-output array failure: {multi.reason}"
     )

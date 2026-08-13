@@ -47,6 +47,7 @@ _HEADER = """\
 #
 #     python scripts/gen_lazy_stub.py
 
+from collections.abc import Sequence
 from typing import Any
 
 import polars as pl

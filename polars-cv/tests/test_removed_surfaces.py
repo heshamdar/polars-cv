@@ -149,6 +149,40 @@ def test_graph_node_rejects_unknown_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
+# assert_shape(batch=...): recorded, never read, never sent
+# ---------------------------------------------------------------------------
+
+
+def test_assert_shape_has_no_batch_parameter() -> None:
+    """``assert_shape(batch=...)`` must raise, not be silently recorded.
+
+    It reached ``ShapeHints.batch`` and stopped there. Nothing read it: not
+    ``has_all_dims``, not ``expected_shape``, not ``_current_input_dims``, and
+    not Rust — the node-level ``shape_hints`` wire field it was serialized into
+    had already lost its last reader, and then the field itself. So a caller who
+    declared a batch dimension got exactly the same plan as one who did not,
+    while ``ShapeHints.to_dict`` went on emitting it.
+
+    The hints are positional and track three dimensions; a fourth had no
+    position to occupy. ``assert_shape(dims=[...])`` is the spelling for a shape
+    the H/W/C names do not describe, and it rejects a rank the planner cannot
+    track rather than accepting it and dropping the extra dimensions.
+    """
+    with pytest.raises(TypeError, match="batch"):
+        Pipeline().source("image_bytes").assert_shape(batch=4)
+
+    from polars_cv._types import ShapeHints
+
+    assert not hasattr(ShapeHints(), "batch"), (
+        "ShapeHints.batch is back; it was removed because nothing read it"
+    )
+    assert not hasattr(ShapeHints, "to_dict"), (
+        "ShapeHints.to_dict is back; it serialized the node-level `shape_hints` "
+        "wire field, which no longer exists"
+    )
+
+
+# ---------------------------------------------------------------------------
 # source("contour", dtype=...): an assertion the decode never read
 # ---------------------------------------------------------------------------
 

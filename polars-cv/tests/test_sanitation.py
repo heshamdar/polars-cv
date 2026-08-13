@@ -430,13 +430,33 @@ def test_namespace_plugin_symbols_match_registrations():
     assert called, "no plugin calls found — scan is broken"
 
     registered: set[str] = set()
+    # Two ways a namespace function is declared, and the scan must see both or
+    # it silently stops covering whichever it cannot read — the failure mode
+    # this file exists to prevent. `contour_accessor!` moved the `.contour`
+    # accessors from the first spelling to the second, and a scanner that only
+    # knew the first would have reported seventeen "missing" symbols that are
+    # in fact registered.
+    declarations = (
+        # `#[polars_expr(...)]` immediately preceding `pub fn <name>` / `fn <name>`.
+        r"#\[polars_expr[^\]]*\]\s*(?:pub\s+)?fn\s+([a-z_0-9]+)",
+        # `contour_accessor! { ... <arm> fn <name> / <out_ty> ... }`, which
+        # expands to exactly that pair. The arm names are matched explicitly so
+        # a new arm has to be added here rather than quietly going unscanned.
+        r"(?:^|\n)\s*(?:map|map_params|zip)\s+fn\s+([a-z_0-9]+)\s*/",
+    )
     for rs in ("contour.rs", "point.rs", "image_metadata.rs", "read_bytes.rs"):
         text = (src / rs).read_text()
-        # `#[polars_expr(...)]` immediately precedes `pub fn <name>` / `fn <name>`.
-        registered |= set(
-            re.findall(r"#\[polars_expr[^\]]*\]\s*(?:pub\s+)?fn\s+([a-z_0-9]+)", text)
-        )
+        for pattern in declarations:
+            registered |= set(re.findall(pattern, text))
     assert registered, "no #[polars_expr] fns found — scan is broken"
+    # Each spelling must actually match something. A regex that quietly matches
+    # nothing reads as green forever, so the scan asserts both halves are live
+    # rather than trusting their union.
+    for pattern in declarations:
+        assert any(
+            re.findall(pattern, (src / rs).read_text())
+            for rs in ("contour.rs", "point.rs", "image_metadata.rs", "read_bytes.rs")
+        ), f"declaration pattern matched nothing, so it covers nothing: {pattern}"
 
     missing = sorted(called - registered)
     assert not missing, (

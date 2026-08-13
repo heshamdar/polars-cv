@@ -244,6 +244,127 @@ def test_contour_accessors(name: str) -> None:
     assert_plan_equals_exec(_contour_df(), CONTOUR_CASES[name]())
 
 
+#: Accessors whose set-arity spelling is not "the same case over a set column",
+#: with the reason. Everything else is swept in both arities.
+SET_ARITY_EXEMPT = {
+    # Already set-level: `aset`/`bset` *is* their single-arity case. The reverse
+    # repack — a lone contour read as a set of one — is covered by
+    # `test_set_level_accessors_take_a_lone_contour`.
+    "pairwise_iou": "already takes sets on both sides",
+    "match_detections": "already takes sets on both sides",
+    # Two contour operands, so the shared frame would make *both* sides sets,
+    # which is refused by construction. Swept as set x single below instead.
+    "iou": "two contour operands; swept as set x single below",
+    "dice": "two contour operands; swept as set x single below",
+    "hausdorff_distance": "two contour operands; swept as set x single below",
+}
+
+#: The broadcast accessors, and the operand order each is swept in.
+BROADCAST_CASES: dict[str, object] = {
+    "iou": lambda left, right: left.contour.iou(right),
+    "dice": lambda left, right: left.contour.dice(right),
+    "hausdorff_distance": lambda left, right: left.contour.hausdorff_distance(right),
+}
+
+
+def _contour_set_df() -> pl.DataFrame:
+    """`_contour_df` with the contour columns holding *sets*, same names.
+
+    Rebinding the columns rather than rewriting the case lambdas is what lets
+    the single-arity table be swept unchanged: the expression under test is
+    literally the same one, pointed at a `List(CONTOUR_SCHEMA)` column. A second
+    hand-written table would be free to drift from the first.
+    """
+    return pl.DataFrame(
+        {
+            "a": [None, [_square(0, 0, 10), _square(4, 4, 4)], [_square(2, 2, 6)]],
+            "b": [[_square(1, 1, 8)], None, [_square(0, 0, 10)]],
+            "pb": [{"x": 5.0, "y": 6.0}, None, {"x": 7.0, "y": 8.0}],
+            "aset": [None, [_square(0, 0, 10), _square(4, 4, 4)], [_square(1, 1, 3)]],
+            "bset": [[_square(0, 0, 8)], None, [_square(1, 1, 3), _square(5, 5, 2)]],
+        },
+        schema={
+            "a": CONTOUR_SET_SCHEMA,
+            "b": CONTOUR_SET_SCHEMA,
+            "pb": POINT_SCHEMA,
+            "aset": CONTOUR_SET_SCHEMA,
+            "bset": CONTOUR_SET_SCHEMA,
+        },
+    )
+
+
+def test_set_arity_exemptions_name_real_accessors() -> None:
+    """An exemption for an accessor that no longer exists is a stale claim."""
+    stale = set(SET_ARITY_EXEMPT) - set(CONTOUR_CASES)
+    assert not stale, f"set-arity exemptions for absent cases: {sorted(stale)}"
+    assert set(BROADCAST_CASES) <= set(CONTOUR_CASES)
+
+
+@plugin_required
+@pytest.mark.parametrize("name", sorted(set(CONTOUR_CASES) - set(SET_ARITY_EXEMPT)))
+def test_contour_accessors_over_a_contour_set(name: str) -> None:
+    """Every accessor must declare, and produce, `List(elem)` for a set column.
+
+    This is the guard for the arity mechanism. The accessors used to declare a
+    *constant* output type and parse a single contour, so a set column failed at
+    execution — and had any one of them been made list-aware by hand, nothing
+    would have checked that its declared type moved with it. Sweeping the whole
+    case table in both arities means an accessor that skips `contour_accessor!`
+    fails here rather than shipping a schema its data contradicts.
+    """
+    series = assert_plan_equals_exec(_contour_set_df(), CONTOUR_CASES[name]())
+    assert isinstance(series.dtype, pl.List), (
+        f"{name} over a contour-set column planned {series.dtype}, which is not "
+        f"a list — one result per contour is the contract"
+    )
+
+
+@plugin_required
+@pytest.mark.parametrize("name", sorted(BROADCAST_CASES))
+def test_broadcast_accessors_set_against_single(name: str) -> None:
+    """A set on either side broadcasts to one result per contour in the set."""
+    build = BROADCAST_CASES[name]
+    df = _contour_df()
+    for expr in (
+        build(pl.col("aset"), pl.col("b")),
+        build(pl.col("a"), pl.col("bset")),
+    ):
+        series = assert_plan_equals_exec(df, expr)
+        assert isinstance(series.dtype, pl.List), (
+            f"{name} broadcast against a set planned {series.dtype}"
+        )
+
+
+@plugin_required
+@pytest.mark.parametrize("name", sorted(BROADCAST_CASES))
+def test_broadcast_refuses_a_set_on_both_sides(name: str) -> None:
+    """Set x set has two meanings and no default, so it must not be guessed.
+
+    An N x M matrix (`pairwise_iou`) and an index-wise pairing are different
+    answers. Picking one silently is the failure mode this repository removes
+    fallbacks for, so the refusal is part of the contract.
+    """
+    build = BROADCAST_CASES[name]
+    with pytest.raises(Exception, match="both"):
+        _contour_df().lazy().select(out=build(pl.col("aset"), pl.col("bset"))).collect()
+
+
+@plugin_required
+def test_set_level_accessors_take_a_lone_contour() -> None:
+    """`pairwise_iou`/`match_detections` read a single contour as a set of one.
+
+    The mirror of every other accessor taking a set: one repack, used in both
+    directions, so a column does not have to be reshaped to reach an accessor.
+    """
+    df = _contour_df()
+    for expr in (
+        pl.col("a").contour.pairwise_iou(pl.col("bset")),
+        pl.col("aset").contour.pairwise_iou(pl.col("b")),
+        pl.col("a").contour.match_detections(pl.col("bset"), threshold=0.5),
+    ):
+        assert_plan_equals_exec(df, expr)
+
+
 @plugin_required
 @pytest.mark.parametrize("name", sorted(POINT_CASES))
 def test_point_accessors(name: str) -> None:

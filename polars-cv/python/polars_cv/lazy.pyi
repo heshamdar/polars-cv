@@ -6,6 +6,7 @@
 #
 #     python scripts/gen_lazy_stub.py
 
+from collections.abc import Sequence
 from typing import Any
 
 import polars as pl
@@ -92,10 +93,10 @@ class LazyPipelineExpr:
     def assert_shape(
         self,
         *,
+        dims: "Sequence[int | None] | None" = ...,
         height: IntOrExpr | None = ...,
         width: IntOrExpr | None = ...,
         channels: IntOrExpr | None = ...,
-        batch: IntOrExpr | None = ...,
     ) -> LazyPipelineExpr: ...
     def blur(self, sigma: FloatOrExpr) -> LazyPipelineExpr: ...
     def bounding_box(self) -> LazyPipelineExpr: ...

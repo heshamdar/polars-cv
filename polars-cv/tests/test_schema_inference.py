@@ -141,7 +141,7 @@ class TestArraySinkValidation:
         """Array sink without deterministic shape should raise ValueError at lazy sink."""
         pipe = Pipeline().source("list")
         expr = pl.col("data").cv.pipe(pipe)
-        with pytest.raises(ValueError, match="shape is required"):
+        with pytest.raises(ValueError, match="needs the full output shape"):
             expr.sink("array")
 
     def test_array_sink_with_explicit_shape(self):

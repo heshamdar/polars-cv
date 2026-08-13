@@ -400,7 +400,10 @@ class TestAssertShapeExpressions:
             .source("image_bytes", dtype="u8")
             .assert_shape(height=pl.col("h"), width=16, channels=3)
         )
-        with pytest.raises(ValueError, match="shape is required"):
+        # The message names the dimension it could not resolve. Updated with
+        # the message itself: the old advice told a list source to call
+        # `.assert_shape()` after it already had.
+        with pytest.raises(ValueError, match="needs the full output shape"):
             pl.col("image").cv.pipe(pipe).sink("array")
 
 
