@@ -40,9 +40,33 @@ polars = { version = "0.54", default-features = false, features = [
     # "strings" feature unconditionally imports polars_time::prelude::StringMethods
     # without enabling polars-time itself (upstream feature-graph gap).
     "dtype-datetime",
+    # Cloud transport is *delegated* to polars-io rather than reimplemented here.
+    # These unlock `polars::io::cloud`: `build_object_store` and its process-wide
+    # store cache, `PolarsObjectStore` (credential-expiry rebuild-and-retry), the
+    # credential-provider machinery, and `pl_async`'s global concurrency budget.
+    # Every one of those is process-wide there and was per-file here, which is
+    # why this plugin opened a fresh connection for every image it read.
+    #
+    # `polars-io` was already in the build graph (the `object` and `dtype-*`
+    # features pull it in, and `polars` re-exports it as `polars::io`), but
+    # `cloud/mod.rs` gates the useful half behind `feature = "cloud"`.
+    # aws/gcp/azure each imply `cloud` + `async`.
+    #
+    # `http` is deliberately NOT enabled: polars does not cache HTTP object
+    # stores (only Aws/Gcp/Azure take a cache key), and we read many small files
+    # rather than a few large ones, so `http(s)://` keeps its own pooled client
+    # in `cloud.rs`.
+    "aws",
+    "gcp",
+    "azure",
 ] }
 polars-arrow = { version = "0.54" }
 polars-buffer = { version = "0.54" }
+# `PlRefPath` / `CloudScheme` — the path types `build_object_store` and
+# `CloudOptions::from_untyped_config` take. Declared directly rather than reached
+# through `polars::polars_utils`, which is `#[doc(hidden)]`; the lockfile pins
+# both to the same version regardless.
+polars-utils = { version = "0.54" }
 pyo3 = { version = "0.28" }
 pyo3-polars = { version = "0.27", features = ["derive", "lazy"] }
 
@@ -75,6 +99,12 @@ url = { version = "2" }
 
 # HTTP support for URL sources (http://, https://)
 # Uses async client within tokio runtime (same as cloud storage)
+#
+# `rustls-tls` is load-bearing for more than our own `http(s)://` reads:
+# polars-io declares reqwest with `default-features = false, features = ["json"]`
+# and no TLS backend at all, so feature unification means *this* line is what
+# gives object_store's S3/GCS/Azure clients HTTPS. Dropping it would leave every
+# cloud read failing at runtime with a missing-TLS-backend error.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 jpeg-decoder = "0.3"
 

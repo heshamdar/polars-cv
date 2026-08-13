@@ -12,12 +12,28 @@
 //! 2. Environment variables (AWS_ACCESS_KEY_ID, GOOGLE_APPLICATION_CREDENTIALS, etc.)
 //! 3. Instance metadata / IAM roles
 //!
+//! # Who builds the store
+//!
+//! For `s3://`, `gs://` and `az://` this module builds **nothing**: it
+//! translates our options ([`polars_options`]) and hands them to
+//! `polars-io`'s [`build_object_store`], which owns a process-wide store cache,
+//! credential-expiry refresh and rebuild-on-error retry. That is not a detail —
+//! this crate previously built a store per *file*, so every image paid a fresh
+//! DNS lookup, TLS handshake and connection pool, and under the streaming engine
+//! it paid them again on every morsel.
+//!
+//! `http(s)://` is the exception, and deliberately: polars does not cache HTTP
+//! stores (only Aws/Gcp/Azure take a cache key), which suits reading a few large
+//! Parquet files and not many small images. That path keeps its own pooled
+//! [`http_client`].
+//!
 //! `CloudOptions.config` is a generic pass-through map keyed by
 //! `object_store`'s own configuration keys (e.g. `aws_region`,
 //! `google_service_account`, `google_application_credentials`,
-//! `azure_storage_account_name`). Each entry is forwarded verbatim to the
-//! backend builder via `with_config`, so any option the underlying
-//! `object_store` backend understands is available without bespoke plumbing.
+//! `azure_storage_account_name`). Entries are validated against the backend's
+//! own key vocabulary and then handed to polars — validated *by us* because
+//! polars silently drops keys it does not recognise, which would turn a
+//! misspelled option into a request that quietly does the wrong thing.
 //!
 //! Two keys are reserved and handled explicitly rather than passed through:
 //! - `anonymous` → skip request signing for public buckets (S3, GCS, Azure).
@@ -27,15 +43,16 @@
 //!   `external_account_authorized_user` Application Default Credentials): mint
 //!   a token out of band and hand it over directly.
 
-use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
-use object_store::azure::{AzureConfigKey, AzureCredential, MicrosoftAzureBuilder};
-use object_store::gcp::{GcpCredential, GoogleCloudStorageBuilder, GoogleConfigKey};
+use object_store::aws::AmazonS3ConfigKey;
+use object_store::azure::AzureConfigKey;
+use object_store::gcp::GoogleConfigKey;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStoreExt, StaticCredentialProvider};
+use object_store::ObjectStoreExt;
+use polars::io::cloud::{build_object_store, CloudOptions as PlCloudOptions, CloudType};
+use polars_utils::pl_path::{CloudScheme, PlRefPath};
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::Arc;
 use thiserror::Error;
 use tokio::runtime::Runtime;
 use url::Url;
@@ -132,6 +149,128 @@ impl CloudOptions {
     }
 }
 
+/// Reject a storage option no backend for this scheme recognises.
+///
+/// This exists because **polars does not do it**. `parse_untyped_config` is a
+/// `filter_map` over `from_str(..).ok()` — its own comment reads *"Silently
+/// ignores custom upstream storage_options"* — so a misspelled key reaches the
+/// builder as nothing at all. A user who writes `aws_regionn="us-east-1"` would
+/// get an unsigned or differently-signed request and no indication why.
+///
+/// polars can afford that: `storage_options` there is a shared bag that may
+/// carry keys meant for a different layer. Ours is a checked surface and has
+/// been since `reject_inapplicable_params`, so the key check has to be ours
+/// too. Validating *before* handing the map over keeps the error at the caller's
+/// spelling rather than at a request that quietly did the wrong thing.
+///
+/// Keys are lower-cased first because `parse_untyped_config` does, so this
+/// accepts exactly what polars would then act on — no wider, no narrower.
+fn validate_config_keys(
+    cloud_type: &CloudType,
+    config: &HashMap<String, String>,
+) -> Result<(), CloudError> {
+    for key in config.keys() {
+        let lowered = key.to_ascii_lowercase();
+        let (known, backend) = match cloud_type {
+            CloudType::Aws => (AmazonS3ConfigKey::from_str(&lowered).is_ok(), "S3"),
+            CloudType::Gcp => (GoogleConfigKey::from_str(&lowered).is_ok(), "GCS"),
+            CloudType::Azure => (AzureConfigKey::from_str(&lowered).is_ok(), "Azure"),
+            // `http(s)://` and local paths take no backend configuration at all.
+            // Options are accepted and inert there, which is long-standing
+            // behaviour: a column may mix schemes, so one set of credentials has
+            // to be passable for the subset that needs them.
+            _ => (true, ""),
+        };
+        if !known {
+            return Err(CloudError::StoreError(format!(
+                "unknown {backend} storage option '{key}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Translate our wire options into the ones `polars-io` builds a store from.
+///
+/// The single place a [`PlCloudOptions`] is constructed. The reserved keys, the
+/// strict key check and the credential choice are one act — split them and the
+/// next caller gets a store built from a map nothing validated.
+///
+/// The scheme→backend mapping is read from polars' own
+/// [`CloudType::from_cloud_scheme`] rather than re-enumerated here; `s3a`,
+/// `abfss` and `azure` are all spellings this crate would otherwise have to
+/// remember.
+fn polars_options(
+    scheme: CloudScheme,
+    options: Option<&CloudOptions>,
+) -> Result<PlCloudOptions, CloudError> {
+    let cloud_type = CloudType::from_cloud_scheme(scheme);
+    let mut config: HashMap<String, String> = options.map(|o| o.config.clone()).unwrap_or_default();
+
+    if let Some(opts) = options {
+        // S3 authenticates with SigV4, not an OAuth bearer token, so neither
+        // bearer input can drive it. Reject rather than silently ignore a
+        // credential the caller believes is in effect — `bearer_token` *was*
+        // silently ignored here before, which is the same bug one field over.
+        if matches!(cloud_type, CloudType::Aws) {
+            if opts.token_command.is_some() {
+                return Err(CloudError::StoreError(
+                    "token_command produces an OAuth bearer token, which S3 does not \
+                     use; supply AWS credentials via aws_access_key_id / \
+                     aws_secret_access_key / aws_session_token or storage_options"
+                        .to_string(),
+                ));
+            }
+            if opts.bearer_token.is_some() {
+                return Err(CloudError::StoreError(
+                    "gcs_bearer_token is an OAuth bearer token, which S3 does not use; \
+                     supply AWS credentials via aws_access_key_id / \
+                     aws_secret_access_key / aws_session_token or storage_options"
+                        .to_string(),
+                ));
+            }
+        }
+
+        validate_config_keys(&cloud_type, &config)?;
+
+        // `anonymous` is our spelling of what every backend calls
+        // `skip_signature`. polars has no `anonymous` concept, but the config
+        // key exists for all three and is exactly what our builders used to set
+        // through `with_skip_signature`.
+        if opts.anonymous == Some(true) {
+            let key = match cloud_type {
+                CloudType::Aws => Some("aws_skip_signature"),
+                CloudType::Gcp => Some("google_skip_signature"),
+                CloudType::Azure => Some("azure_skip_signature"),
+                _ => None,
+            };
+            if let Some(key) = key {
+                config.insert(key.to_string(), "true".to_string());
+            }
+        }
+    }
+
+    // Sorted, because the map is a `HashMap` and polars' object-store cache key
+    // is a *serialization* of the config rather than a hash of an unordered
+    // set. Two identical option sets iterated in different orders would key two
+    // separate cache entries, and the symptom would be a silent loss of
+    // connection reuse rather than an error.
+    let mut pairs: Vec<(&String, &String)> = config.iter().collect();
+    pairs.sort_unstable_by(|a, b| a.0.cmp(b.0));
+
+    let built = PlCloudOptions::from_untyped_config(Some(scheme), pairs)
+        .map_err(|e| CloudError::StoreError(e.to_string()))?;
+
+    // The bespoke credentials `object_store` cannot load itself: a supplied
+    // bearer token, a token command, or a federated ADC delegated to `gcloud`.
+    // `None` leaves the credential chain to `object_store`, which is what makes
+    // an ordinary service-account setup keep working untouched.
+    match crate::cloud_auth::credential_provider(&cloud_type, options)? {
+        Some(provider) => Ok(built.with_credential_provider(Some(provider))),
+        None => Ok(built),
+    }
+}
+
 /// Read a file from a path (local, cloud, or HTTP URL).
 ///
 /// # Arguments
@@ -145,16 +284,68 @@ pub fn read_file(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, 
     if let Ok(url) = Url::parse(path) {
         match url.scheme() {
             "file" => read_local_file(url.path()),
-            "s3" => read_s3(&url, options),
-            "gs" => read_gcs(&url, options),
-            "az" | "abfs" | "abfss" => read_azure(&url, options),
             "http" | "https" => read_http(path),
+            "s3" | "s3a" | "gs" | "gcs" | "az" | "azure" | "abfs" | "abfss" | "adl" => {
+                read_object(path, options)
+            }
             scheme => Err(CloudError::UnsupportedScheme(scheme.to_string())),
         }
     } else {
         // Not a valid URL, treat as local path
         read_local_file(path)
     }
+}
+
+/// Read one object from S3, GCS or Azure through `polars-io`'s cached store.
+///
+/// The whole reason this delegates rather than building its own client: the
+/// store comes from `polars-io`'s process-wide `OBJECT_STORE_CACHE`, so the
+/// second and every later read of a bucket is a map lookup rather than a fresh
+/// DNS lookup, TLS handshake and connection pool. Under the streaming engine the
+/// plugin is invoked once per morsel, so a per-call store is rebuilt on every
+/// morsel however wide the batch is — which is what this crate did, and what the
+/// benchmark measured as one connection per file.
+///
+/// `exec_with_rebuild_retry_on_err` is what makes caching a *credentialed* store
+/// safe: on any `object_store` error it rebuilds the store with cached
+/// credentials cleared and retries once, swapping the new store in place through
+/// the `Arc` the cache holds — so a refresh reaches every reader without the
+/// cache having to be invalidated.
+///
+/// Whole-object `get` rather than `head` + `get_range`: we read many small
+/// files, so sizing first would double the request count for no benefit. It also
+/// avoids nesting concurrency-budget acquisitions — `PolarsObjectStore::head`
+/// and `get_range` take permits internally, and holding one while asking for
+/// another is a deadlock at any budget smaller than twice the in-flight count.
+fn read_object(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
+    let url = PlRefPath::new(path);
+    let scheme = url
+        .scheme()
+        .ok_or_else(|| CloudError::UrlParse(format!("no scheme in remote path '{path}'")))?;
+    let pl_options = polars_options(scheme, options)?;
+    let runtime = get_runtime()?;
+
+    runtime.block_on(async {
+        let (location, store) = build_object_store(url, Some(&pl_options), false)
+            .await
+            .map_err(|e| CloudError::StoreError(e.to_string()))?;
+        // `location.prefix` is the raw key after the authority. Parsed rather
+        // than `Path::from`: `from` percent-encodes, and this string has already
+        // been through the URL, so encoding it again turned `a b.png` into
+        // `a%2520b.png` on the old S3 path.
+        let key = ObjectPath::parse(&location.prefix).map_err(|e| {
+            CloudError::UrlParse(format!("bad object key '{}': {e}", location.prefix))
+        })?;
+
+        store
+            .exec_with_rebuild_retry_on_err(|store| {
+                let key = &key;
+                async move { store.get(key).await?.bytes().await }
+            })
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| CloudError::ReadError(e.to_string()))
+    })
 }
 
 /// Read a file from the local filesystem.
@@ -196,204 +387,6 @@ pub(crate) fn get_runtime() -> Result<&'static Runtime, CloudError> {
     let rt = Runtime::new().map_err(|e| CloudError::RuntimeError(e.to_string()))?;
     // Race is fine - OnceLock guarantees only one wins, others drop theirs
     Ok(RUNTIME.get_or_init(|| rt))
-}
-
-/// Read a file from Amazon S3.
-fn read_s3(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
-    let bucket = url
-        .host_str()
-        .ok_or_else(|| CloudError::UrlParse("Missing bucket name in S3 URL".to_string()))?;
-    let key = url.path().trim_start_matches('/');
-
-    let runtime = get_runtime()?;
-
-    // Build S3 client with credentials
-    let mut builder = AmazonS3Builder::new().with_bucket_name(bucket);
-
-    if let Some(opts) = options {
-        // S3 authenticates with SigV4 (access key / secret / session token), not
-        // an OAuth bearer token, so a `token_command` cannot drive it. Reject it
-        // rather than silently ignore a credential the user thinks is in effect;
-        // AWS temporary/federated credentials come in via the standard env vars
-        // or `aws_*` / `storage_options` config keys instead.
-        if opts.token_command.is_some() {
-            return Err(CloudError::StoreError(
-                "token_command produces an OAuth bearer token, which S3 does not \
-                 use; supply AWS credentials via aws_access_key_id / \
-                 aws_secret_access_key / aws_session_token or storage_options"
-                    .to_string(),
-            ));
-        }
-        for (k, v) in &opts.config {
-            let key = AmazonS3ConfigKey::from_str(k).map_err(|e| {
-                CloudError::StoreError(format!("unknown S3 storage option '{k}': {e}"))
-            })?;
-            builder = builder.with_config(key, v);
-        }
-        if opts.anonymous == Some(true) {
-            builder = builder.with_skip_signature(true);
-        }
-    }
-
-    // Try with default credentials from environment
-    let store = builder
-        .build()
-        .map_err(|e| CloudError::StoreError(e.to_string()))?;
-
-    let path = ObjectPath::from(key);
-    runtime.block_on(async {
-        let result = store.get(&path).await;
-        match result {
-            Ok(get_result) => get_result
-                .bytes()
-                .await
-                .map(|b| b.to_vec())
-                .map_err(|e| CloudError::ReadError(e.to_string())),
-            Err(e) => Err(CloudError::ReadError(e.to_string())),
-        }
-    })
-}
-
-/// Construct a GCS store from a bucket and options.
-///
-/// Split out of [`read_gcs`] so the credential-resolution path can be tested
-/// without a network `get`. Note that `object_store`'s builder only reads and
-/// parses Application Default Credentials (the well-known gcloud file or a
-/// `google_application_credentials` path) when *no* explicit credential provider
-/// has been installed — so a supplied `bearer_token` must short-circuit the ADC
-/// parse rather than fail alongside it. object_store 0.13+ enforces this
-/// ordering; 0.12 did not (see the dependency note in Cargo.toml).
-fn build_gcs_store(
-    bucket: &str,
-    options: Option<&CloudOptions>,
-) -> Result<object_store::gcp::GoogleCloudStorage, CloudError> {
-    let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(bucket);
-    let mut explicit_credential = false;
-    let mut anonymous = false;
-
-    if let Some(opts) = options {
-        for (k, v) in &opts.config {
-            let key = GoogleConfigKey::from_str(k).map_err(|e| {
-                CloudError::StoreError(format!("unknown GCS storage option '{k}': {e}"))
-            })?;
-            builder = builder.with_config(key, v);
-        }
-        // A pre-obtained OAuth token bypasses object_store's credential loader,
-        // which cannot parse federated `external_account_authorized_user` ADC.
-        if let Some(token) = &opts.bearer_token {
-            let provider = StaticCredentialProvider::new(GcpCredential {
-                bearer: token.clone(),
-            });
-            builder = builder.with_credentials(Arc::new(provider));
-            explicit_credential = true;
-        }
-        if opts.anonymous == Some(true) {
-            builder = builder.with_skip_signature(true);
-            anonymous = true;
-        }
-    }
-
-    // Federated / brokered credentials (Workload Identity Federation, etc.) are
-    // credential types object_store cannot load itself. When the caller hasn't
-    // supplied an explicit credential and isn't going anonymous, obtain a bearer
-    // token out of band — from a configured `token_command`, or by delegating a
-    // detected federated ADC to `gcloud` — and install it as a static
-    // credential. Non-federated ambient credentials yield None here and are left
-    // to object_store's own credential chain.
-    if !explicit_credential && !anonymous {
-        let token = match crate::cloud_auth::token_from_command(options)? {
-            Some(t) => Some(t),
-            None => crate::cloud_auth::gcs_federated_token(options)?,
-        };
-        if let Some(token) = token {
-            let provider = StaticCredentialProvider::new(GcpCredential { bearer: token });
-            builder = builder.with_credentials(Arc::new(provider));
-        }
-    }
-
-    builder
-        .build()
-        .map_err(|e| CloudError::StoreError(e.to_string()))
-}
-
-/// Read a file from Google Cloud Storage.
-fn read_gcs(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
-    let bucket = url
-        .host_str()
-        .ok_or_else(|| CloudError::UrlParse("Missing bucket name in GCS URL".to_string()))?;
-    let key = url.path().trim_start_matches('/');
-
-    let runtime = get_runtime()?;
-
-    let store = build_gcs_store(bucket, options)?;
-
-    let path = ObjectPath::from(key);
-    runtime.block_on(async {
-        let result = store.get(&path).await;
-        match result {
-            Ok(get_result) => get_result
-                .bytes()
-                .await
-                .map(|b| b.to_vec())
-                .map_err(|e| CloudError::ReadError(e.to_string())),
-            Err(e) => Err(CloudError::ReadError(e.to_string())),
-        }
-    })
-}
-
-/// Read a file from Azure Blob Storage.
-fn read_azure(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
-    // Azure URLs: az://container/path or abfs://container@account.dfs.core.windows.net/path
-    let container = url
-        .host_str()
-        .ok_or_else(|| CloudError::UrlParse("Missing container name in Azure URL".to_string()))?;
-    let key = url.path().trim_start_matches('/');
-
-    let runtime = get_runtime()?;
-
-    // Build Azure client
-    let mut builder = MicrosoftAzureBuilder::new().with_container_name(container);
-    let mut anonymous = false;
-
-    if let Some(opts) = options {
-        for (k, v) in &opts.config {
-            let key = AzureConfigKey::from_str(k).map_err(|e| {
-                CloudError::StoreError(format!("unknown Azure storage option '{k}': {e}"))
-            })?;
-            builder = builder.with_config(key, v);
-        }
-        if opts.anonymous == Some(true) {
-            builder = builder.with_skip_signature(true);
-            anonymous = true;
-        }
-    }
-
-    // Azure Blob accepts an Azure AD OAuth bearer token, so a configured
-    // `token_command` (e.g. a broker or `az account get-access-token`) applies
-    // here just as it does for GCS. Skipped when going anonymous.
-    if !anonymous {
-        if let Some(token) = crate::cloud_auth::token_from_command(options)? {
-            let provider = StaticCredentialProvider::new(AzureCredential::BearerToken(token));
-            builder = builder.with_credentials(Arc::new(provider));
-        }
-    }
-
-    let store = builder
-        .build()
-        .map_err(|e| CloudError::StoreError(e.to_string()))?;
-
-    let path = ObjectPath::from(key);
-    runtime.block_on(async {
-        let result = store.get(&path).await;
-        match result {
-            Ok(get_result) => get_result
-                .bytes()
-                .await
-                .map(|b| b.to_vec())
-                .map_err(|e| CloudError::ReadError(e.to_string())),
-            Err(e) => Err(CloudError::ReadError(e.to_string())),
-        }
-    })
 }
 
 /// The process-wide HTTP client, and therefore the process-wide connection pool.
@@ -610,6 +603,119 @@ mod tests {
             .collect()
     }
 
+    // -- polars_options: the one translation into polars-io's CloudOptions ----
+
+    /// A key no backend knows must be refused, not dropped.
+    ///
+    /// This is the guard for the one thing delegation would otherwise lose.
+    /// polars' `parse_untyped_config` is a `filter_map` over `from_str(..).ok()`
+    /// ("Silently ignores custom upstream storage_options"), so handing it an
+    /// unvalidated map turns a misspelled option into a request that quietly
+    /// does the wrong thing. Watched failing by removing the
+    /// `validate_config_keys` call from `polars_options`: `from_untyped_config`
+    /// returns `Ok` and this test reports "expected an error for an unknown key".
+    #[test]
+    fn unknown_storage_option_is_refused_for_every_backend() {
+        for (scheme, backend) in [
+            (CloudScheme::S3, "S3"),
+            (CloudScheme::Gs, "GCS"),
+            (CloudScheme::Az, "Azure"),
+        ] {
+            let opts = CloudOptions::from_map(&map(&[("not_a_real_key", "x")]));
+            let err = polars_options(scheme, Some(&opts))
+                .expect_err("expected an error for an unknown key");
+            assert!(
+                matches!(err, CloudError::StoreError(_)),
+                "expected StoreError, got {err:?}"
+            );
+            let message = err.to_string();
+            assert!(
+                message.contains("not_a_real_key") && message.contains(backend),
+                "message should name the key and the backend, got {message:?}"
+            );
+        }
+    }
+
+    /// A key the backend *does* know must survive the same path.
+    ///
+    /// Without this the test above is satisfied by a validator that rejects
+    /// everything, which would be green and useless.
+    #[test]
+    fn a_known_storage_option_passes_validation() {
+        let opts = CloudOptions::from_map(&map(&[("aws_region", "us-east-1")]));
+        polars_options(CloudScheme::S3, Some(&opts)).expect("aws_region is a real S3 config key");
+    }
+
+    /// Keys are matched case-insensitively, because polars lower-cases before
+    /// its own lookup — so accepting a narrower set here would reject options
+    /// polars would have honoured.
+    #[test]
+    fn storage_option_keys_are_case_insensitive() {
+        let opts = CloudOptions::from_map(&map(&[("AWS_REGION", "us-east-1")]));
+        polars_options(CloudScheme::S3, Some(&opts)).expect("keys are lower-cased first");
+    }
+
+    /// `anonymous` is our spelling of `skip_signature`, and it has to reach the
+    /// built options or a public-bucket read starts getting signed.
+    #[test]
+    fn anonymous_becomes_skip_signature() {
+        for scheme in [CloudScheme::S3, CloudScheme::Gs, CloudScheme::Az] {
+            let anon = CloudOptions::from_map(&map(&[("anonymous", "true")]));
+            let signed = CloudOptions::from_map(&map(&[]));
+            assert_ne!(
+                polars_options(scheme, Some(&anon)).unwrap(),
+                polars_options(scheme, Some(&signed)).unwrap(),
+                "anonymous must change the built options for {scheme:?}"
+            );
+        }
+    }
+
+    /// Bearer credentials are an OAuth concept; S3 signs with SigV4. Both
+    /// inputs must be refused rather than accepted and ignored.
+    #[test]
+    fn s3_refuses_both_bearer_inputs() {
+        for key in ["token_command", "bearer_token"] {
+            let opts = CloudOptions::from_map(&map(&[(key, "whatever")]));
+            let err = polars_options(CloudScheme::S3, Some(&opts))
+                .expect_err("S3 must refuse an OAuth bearer credential");
+            assert!(
+                err.to_string().contains("S3 does not use"),
+                "message should say why S3 cannot use it, got {err}"
+            );
+        }
+
+        // The same inputs are accepted on the schemes that *do* use a bearer
+        // token, so the rejection is about S3 and not about the key existing.
+        for key in ["token_command", "bearer_token"] {
+            let opts = CloudOptions::from_map(&map(&[(key, "whatever")]));
+            polars_options(CloudScheme::Gs, Some(&opts))
+                .unwrap_or_else(|e| panic!("GCS should accept {key}, got {e}"));
+        }
+    }
+
+    /// The same option map must always produce the same options, whatever order
+    /// the `HashMap` iterates in. polars keys its object-store cache on a
+    /// *serialization* of the config, so an order-dependent translation would
+    /// silently split one cache entry into many — losing exactly the connection
+    /// reuse this delegation exists to gain, with no error anywhere.
+    #[test]
+    fn translation_is_order_independent() {
+        let pairs: &[(&str, &str)] = &[
+            ("aws_region", "us-east-1"),
+            ("aws_access_key_id", "AKIA"),
+            ("aws_secret_access_key", "secret"),
+            ("aws_endpoint", "https://minio.local:9000"),
+        ];
+        let forward = CloudOptions::from_map(&map(pairs));
+        let reversed: Vec<(&str, &str)> = pairs.iter().rev().copied().collect();
+        let backward = CloudOptions::from_map(&map(&reversed));
+
+        assert_eq!(
+            polars_options(CloudScheme::S3, Some(&forward)).unwrap(),
+            polars_options(CloudScheme::S3, Some(&backward)).unwrap(),
+        );
+    }
+
     #[test]
     fn test_from_map_passthrough() {
         // Native object_store keys flow straight into `config`.
@@ -680,9 +786,15 @@ mod tests {
     fn test_unknown_gcs_option_errors() {
         // An unrecognized key should fail loudly at build time rather than be
         // silently dropped.
+        //
+        // Driven through the user-facing `read_file` rather than a helper: the
+        // point is that the *query* fails, and polars' own `parse_untyped_config`
+        // would silently drop this key, so what is pinned here is our check
+        // sitting in front of it. No store is built and no network is touched —
+        // validation happens first — which is also what keeps this hermetic in a
+        // shared test process.
         let opts = CloudOptions::from_map(&map(&[("not_a_real_key", "x")]));
-        let url = Url::parse("gs://bucket/obj.png").unwrap();
-        let err = read_gcs(&url, Some(&opts)).unwrap_err();
+        let err = read_file("gs://bucket/obj.png", Some(&opts)).unwrap_err();
         assert!(
             matches!(err, CloudError::StoreError(_)),
             "expected StoreError, got {err:?}"
@@ -696,8 +808,7 @@ mod tests {
         // must reject it (before any network I/O) rather than silently ignore a
         // credential the user believes is in effect.
         let opts = CloudOptions::from_map(&map(&[("token_command", "printf tok")]));
-        let url = Url::parse("s3://bucket/obj.png").unwrap();
-        let err = read_s3(&url, Some(&opts)).unwrap_err();
+        let err = read_file("s3://bucket/obj.png", Some(&opts)).unwrap_err();
         assert!(
             matches!(err, CloudError::StoreError(_)),
             "expected StoreError, got {err:?}"
@@ -732,10 +843,22 @@ mod tests {
         ]));
 
         // With the bearer token installed, building must succeed despite the
-        // unparseable ADC file. Under object_store 0.12 this returned Err.
-        // (An explicit bearer also short-circuits our own federated auto-mint,
-        // so this stays hermetic — no token exchange is attempted.)
-        let built = build_gcs_store("bucket", Some(&opts));
+        // unparseable ADC file. (An explicit bearer also short-circuits our own
+        // federated auto-mint, so this stays hermetic — no token exchange is
+        // attempted, and no request is made.)
+        //
+        // The *reason* the property holds moved with the delegation and this
+        // now pins the new one: it is no longer our builder's ordering but
+        // polars' `build_gcp`, which uses `GoogleCloudStorageBuilder::new()`
+        // rather than `from_env()` whenever a credential provider is installed,
+        // so the poisoned ADC is never read. The user-visible fact is identical.
+        let options = polars_options(CloudScheme::Gs, Some(&opts))
+            .expect("translating options must not read the ADC");
+        let built = get_runtime().unwrap().block_on(build_object_store(
+            PlRefPath::new("gs://bucket/obj.png"),
+            Some(&options),
+            false,
+        ));
         assert!(
             built.is_ok(),
             "bearer_token should bypass unparseable ADC, got {built:?}"
