@@ -713,21 +713,13 @@ impl ImageAdapter {
         // the `to_dynamic_image` consumers (8- or 16-bit), so it is the right
         // gate for the shared conversion; JPEG and WebP narrow it further at
         // their own entry points.
-        {
-            let shape = buffer.shape();
-            let channels = match shape.len() {
-                3 => Some(shape[2]),
-                2 => Some(1),
-                _ => None,
-            };
-            ImageCodec::Png
-                .check_support(Some(dtype), Some(shape.len()), channels)
-                .map_err(|msg| {
-                    image::ImageError::Parameter(image::error::ParameterError::from_kind(
-                        image::error::ParameterErrorKind::Generic(msg),
-                    ))
-                })?;
-        }
+        ImageCodec::Png
+            .check_shape(PlannedDType::Known(dtype), Some(buffer.shape()), None)
+            .map_err(|msg| {
+                image::ImageError::Parameter(image::error::ParameterError::from_kind(
+                    image::error::ParameterErrorKind::Generic(msg),
+                ))
+            })?;
 
         let shape = buffer.shape();
         let channels = if shape.len() == 3 {

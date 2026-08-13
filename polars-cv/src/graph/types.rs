@@ -103,7 +103,7 @@ view_buffer::naming::named_variants!(RowErrorPolicy {
 mod row_error_policy_tests {
     use super::RowErrorPolicy;
 
-    /// Every `NAMED` spelling must round-trip through serde, and vice versa.
+    /// Every `NAMED` spelling must parse through serde to the variant it names.
     ///
     /// Two mechanisms describe one vocabulary here: serde's `rename_all` reads
     /// the wire, and `NAMED` tells Python what to write. A rename on either

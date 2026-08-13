@@ -1076,12 +1076,18 @@ pub mod get {
 mod tests {
     use super::*;
 
-    /// Every `NAMED` spelling must round-trip through serde, and vice versa.
+    /// Every `NAMED` spelling must parse through serde to the variant it names.
     ///
     /// The twin of `row_error_policy_names_match_serde` in `graph::types`, for
     /// the same reason: serde's `rename_all` reads the wire while `NAMED` tells
     /// Python what to write, and nothing else compares the two. A rename on one
     /// side would leave Python sending a value the graph cannot parse.
+    ///
+    /// Only this direction is checked. The reverse — that serde accepts
+    /// *nothing* `NAMED` does not publish — would need to enumerate serde's
+    /// accepted spellings, which it does not expose; a `#[serde(alias)]`
+    /// added to a variant would therefore pass unpublished to Python. Say so
+    /// rather than claim a round trip this does not make.
     ///
     /// A second copy of a *test* over a different type, not a second copy of a
     /// fact — the registry cannot express "deserialize this" generically,

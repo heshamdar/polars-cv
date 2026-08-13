@@ -27,7 +27,22 @@ import re
 
 #: A fenced block opening with ```python (or ```py), captured to its closing
 #: fence. Non-greedy so consecutive blocks do not merge into one.
-_PYTHON_FENCE = re.compile(r"^```(?:python|py)\s*$(.*?)^```\s*$", re.M | re.S)
+#:
+#: Two things the anchored version missed, both on extensions `mkdocs.yml`
+#: already enables:
+#:
+#: * **Indented fences.** A block inside an `!!! note` admonition, a
+#:   `pymdownx.tabbed` tab, or a list item is indented, and `^```` did not
+#:   match it — so its examples were never checked.
+#: * **Annotated fences.** `pymdownx.highlight` accepts ```` ```python
+#:   title="…" ```` and `hl_lines=`, and `\s*$` rejected anything after the
+#:   language.
+#:
+#: The closing fence is matched at any indentation for the same reason. Both
+#: forms are fixtured in `test_doc_table_fixtures.py`.
+_PYTHON_FENCE = re.compile(
+    r"^[ \t]*```(?:python|py)\b[^\n]*$(.*?)^[ \t]*```[ \t]*$", re.M | re.S
+)
 
 #: A `code span` occupying a whole table cell, e.g. "`buffer`".
 _CELL_CODE = re.compile(r"^`([^`]+)`$")

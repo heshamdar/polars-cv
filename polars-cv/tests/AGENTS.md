@@ -50,7 +50,7 @@ Three markers are declared in `pyproject.toml` (`[tool.pytest.ini_options]`), an
 |--------|---------|---------------|
 | `network` | Needs network access | Never in CI |
 | `slow` | Long-running | `slow-tests` job only — weekly schedule or manual dispatch, `-m "slow and not network"` (`.github/workflows/ci.yml`) |
-| `structural` | Checks codebase *shape*, not runtime behaviour | The pre-commit hook, a dedicated `lint`-job step, and its own `verify.sh` line — as well as the fast lane, which it is a subset of |
+| `structural` | Checks codebase *shape*, not runtime behaviour | The pre-commit hook, its own step in the `test` job (after `maturin develop`), and its own `verify.sh` line — as well as the fast lane, which it is a subset of |
 
 The per-push lane is `-m "not network and not slow"`. Mark a new test `network`
 if it fetches anything and `slow` if it is not sub-second — an unmarked slow test
@@ -58,17 +58,25 @@ lands in the lane that gates every merge.
 
 #### The `structural` lane
 
-`-m "structural and not slow"` is ~650 tests in about five seconds. They read
-the source tree, the registries and the docs rather than exercising a pipeline,
-which is what makes them affordable in a pre-commit hook — a hook that had to
-`maturin develop` first would not be.
+`-m "structural and not slow"` is ~650 tests in about five seconds. They check
+the *shape* of the codebase — registries, single-authority ratchets, removed
+surfaces, documented vocabularies — rather than the numerical behaviour of a
+pipeline, and five seconds is what makes them affordable in a pre-commit hook.
 
-About fifty of them *are* `@plugin_required`, because some structural facts are
-only observable through the extension: the enum-parity sweep reads
-`enum_variants` over the FFI, and `test_param_applicability` sweeps real
-`source()`/`sink()` calls. Those self-skip when the `.so` is absent, so the hook
-works on a fresh checkout — it simply checks less until the extension is built.
-That is the intended trade, not an oversight.
+**The lane needs the compiled extension.** 427 of the 651 are
+`@plugin_required`, because a great many structural facts are only observable
+through the FFI: the enum-parity sweep reads `enum_variants`, and
+`test_param_applicability` sweeps real `source()`/`sink()` calls. Without a
+`.so` they do not politely skip — sixteen fail outright, and
+`test_schema_parity_chains.py` aborts *collection*, because its `parametrize`
+reads `_lib` at import time, which takes the whole run down before any
+`-m` filtering happens.
+
+So the hook and `scripts/verify.sh` both assume a built working tree, and the
+CI step runs in the `test` job after `maturin develop` rather than in `lint`.
+An earlier version of this ran in `lint` with `--no-install-project` on the
+belief that these tests self-skip; it went red on the first push. If you are
+tempted to move it somewhere cheaper, that is the reason not to.
 
 Applied per module, not per test — a module is either a guard suite or it is not:
 

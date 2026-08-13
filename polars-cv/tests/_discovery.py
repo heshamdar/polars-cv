@@ -193,6 +193,17 @@ _NON_SCRIPT_EXAMPLES: dict[str, str] = {
 }
 
 
+def example_files() -> list[Path]:
+    """Every ``.py`` in ``polars-cv/examples/``, runnable or not.
+
+    The unfiltered set, so a guard can ask whether the filtering in
+    :func:`example_scripts` has quietly dropped something.
+    """
+    return discovered(
+        sorted((REPO_ROOT / "polars-cv" / "examples").glob("*.py")), "example files"
+    )
+
+
 def example_scripts() -> list[Path]:
     """Every runnable script in ``polars-cv/examples/``.
 
@@ -229,5 +240,21 @@ def doc_page(relative: str) -> Path:
         raise EmptyDiscovery(
             f"documentation page {relative!r} does not exist. If it was renamed, "
             f"update the guard that reads it; if it was deleted, delete the guard."
+        )
+    return path
+
+
+def repo_file(relative: str) -> Path:
+    """One file, by path relative to the repository root.
+
+    Raises rather than returning a missing path, for the same reason
+    :func:`doc_page` does: a guard reading a renamed file should fail loudly
+    rather than quietly check an empty string.
+    """
+    path = REPO_ROOT / relative
+    if not path.is_file():
+        raise EmptyDiscovery(
+            f"{relative!r} does not exist. If it was renamed, update the guard "
+            f"that reads it; if it was deleted, delete the guard."
         )
     return path

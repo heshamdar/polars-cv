@@ -75,11 +75,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   never emitted them.
 
 - **The contour struct layout is declared once, and checked against what the
-  engine emits.** It had four spellings: `contour_struct_dtype()` in
+  engine emits.** Three places spelled it out: `contour_struct_dtype()` in
   `src/graph/encode.rs` (the only one execution reads), the public
-  `CONTOUR_SCHEMA`, a private copy in `metrics/_matching/_contour.py` that did
-  not import the public one, and a fourth in `tests/test_contour_source.py`
-  shadowing the import beside it. The three copies are gone.
+  `CONTOUR_SCHEMA`, and a private copy in `metrics/_matching/_contour.py` that
+  did not import the public one. A fourth site, `tests/test_contour_source.py`,
+  shadowed `CONTOUR_SET_SCHEMA` with a local alias of the constant it had just
+  imported. The private copy and the shadow are gone; `CONTOUR_SCHEMA` remains,
+  as the public mirror.
 
   Nothing had been checking any of them. The two Python copies agreed with each
   other, which is not the property that matters — a field renamed or reordered
@@ -136,12 +138,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   beside the `SOURCES_RESOLVED_FROM_COLUMN` the same function already read from
   there.
 
-- **The two halves of the image-sink contract derive "channels from rank" in one
-  place.** `execute.rs` (the encoder) and `graph/decode.rs` (the planner) each
-  carried the mapping `3 => Some(shape[2]), 2 => Some(1), _ => None`, character
-  for character, and each then passed the result into the same
-  `ImageCodec` check — two copies of one rule, on the two sides of the very
-  contract that exists so the plan and the execution agree.
+- **"Channels from rank" is derived in one place.** The mapping
+  `3 => Some(shape[2]), 2 => Some(1), _ => None` appeared character-for-character
+  at three sites, each feeding the same `ImageCodec` check: `execute.rs` (the
+  encoder), `graph/decode.rs` (the planner), and `to_dynamic_image` in
+  view-buffer's `interop/image.rs` — whose own comment said "a second copy here
+  is how the two would come to disagree" while being exactly that.
 
   Both now call `ImageCodec::check_shape`, which takes the *shape* and derives
   the rank and channel count itself, so neither caller can derive them
@@ -243,9 +245,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
     `.assert_shape()` supplies one. It does not, and neither does `.resize()` —
     only `.sink("array", shape=[...])` does, which the example now passes.
 
-  `matplotlib` joins the dev group: twelve of the thirteen runnable examples
-  plot, and without it the runner would have skipped almost everything it
-  exists to check.
+  `matplotlib` joins the dev group: ten of the thirteen runnable examples plot,
+  and without it those ten would not skip but fail, since the runner asserts
+  exit 0.
 
 - **The documentation's vocabularies are checked against the code's.** Three
   places in `docs/` restate something the code owns, all hand-maintained and
@@ -307,6 +309,74 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   documentation build that never loads the extension. With `--no-sync` (what
   every other lane in the script already passes) the check takes about six
   seconds.
+
+- **Review pass: five guards that could pass while checking nothing, and six
+  false statements.** An independent review of the entries above found that the
+  weakest part of the work was the part meant to be strongest.
+
+  Guards that could be evaded, each now watched failing against the exact
+  evasion:
+
+  - `test_no_ci_check_is_missing_from_the_verify_script` read only the
+    `run: |` block form, so `cargo test -p view-buffer` — a check `ci.yml` has
+    run all along — was invisible to it. It also classified a whole line by its
+    first token, so `cd polars-cv && deno lint` filed under `cd`, and exempted
+    every `uv run python scripts/check_*.py` as setup. It now reads both `run:`
+    forms, splits on `&&`/`;`/`||`, and has no blanket script exemption.
+  - The same guard compared `verify.sh` as one string, so a *comment* naming a
+    deleted check satisfied it. It now reads only `run_check` lines.
+  - `_module_marks` walked the whole AST, so a `pytestmark` nested in a class
+    counted as a module declaration: moving one cut the lane from 651 tests to
+    547 while both lane guards reported it healthy.
+  - The lane's "derived" set was a substring match on `"_discovery import"`,
+    which `from tests import _discovery as _d` defeated. It is parsed now.
+  - `test_the_structural_lane_is_not_empty` compared a count against a
+    threshold with a margin of one. It names the load-bearing modules instead.
+  - Nothing read `.pre-commit-config.yaml` at all, though the hook is the
+    premise for the marker on ten modules. `test_the_precommit_hook_runs_the_structural_lane` does.
+
+  And the exemption lists, which are how a guard gets quietly narrowed:
+  `_FOREIGN_METHODS` is now **empty** — once the resolution learned about the
+  metrics API and module-level `pl.col`, all 34 entries turned out to be
+  resolvable or absent from the docs — and `_NON_SCRIPT_EXAMPLES` is guarded
+  against exempting anything with a `__main__` block.
+
+- **`test_benchmark_list_is_current` now exists.** `benchmarks/AGENTS.md` cited
+  it as pinning the benchmark list. It had never been written — a guard's name
+  in prose, which is the failure this whole effort is against. It exists, it
+  reads `get_single_op_benchmarks()`, and it was watched failing on all three
+  ways that sentence has been wrong: a wrong count, a drifted name, and a
+  benchmark added to the code.
+
+- **A plugin-crate `named_variants!` table left out of `PLUGIN_REGISTRY` now
+  fails.** Exporting the macro gave the plugin the ability to declare
+  vocabularies without giving it `every_named_enum_is_registered`, which scans
+  view-buffer only. An unregistered enum was invisible to `enum_variants`, to
+  `enum_names()` and so to the parity test — 128 tests passed with one sitting
+  there. `every_plugin_named_enum_is_registered` is the missing half.
+
+- **`_STAT_REDUCERS` is pinned by value, not just by shape.** The existing
+  guard checked that each entry resolves to a reduction; it could not tell one
+  reduction from another, so `"mean": "reduce_max"` — the plausible copy/paste
+  error in the refactor that *removed* the explicit dispatch — passed the whole
+  suite, because the fixtures paint constant images where mean equals max.
+  `test_each_statistic_computes_its_own_reduction` uses a gradient on which all
+  five differ.
+
+- **The documented-method sweep covers every page.** It read five hand-picked
+  pages of twenty-one, because `pl.col` and `pl.DataFrame` are module-level and
+  the resolution only knew `pl.Expr`/`pl.DataFrame`, making `col` unresolvable
+  almost everywhere. The fence reader also missed indented fences (admonitions,
+  tabs, list items) and annotated ones (`title=`, `hl_lines=`) — both forms
+  `mkdocs.yml` enables — so examples inside them were never checked. Fixtured.
+
+### Fixed
+
+- **`statistics(include=<generator>)` raised `IndexError` instead of a
+  message.** `_stat_nodes` iterated `include` twice, so a one-shot iterable was
+  exhausted by the validation pass and produced no nodes. Off the declared
+  `list[str] | None`, but a raw `IndexError` from a private helper is not an
+  answer. It is materialised once now.
 
 ## [0.19.0] — 2026-08-09
 

@@ -24,10 +24,12 @@ from polars_cv import Pipeline
 
 from .conftest import plugin_required
 
-#: Every test here is a structural guard: it checks the *shape* of the
-#: codebase rather than the behaviour of a pipeline, so it needs no compiled
-#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
-#: runs; see `tests/AGENTS.md`.
+#: Every test here is a structural guard: it checks the *shape* of the codebase
+#: -- registries, authorities, removed surfaces, documented vocabularies --
+#: rather than the numerical behaviour of a pipeline. `-m structural` is the
+#: lane pre-commit runs; see `tests/AGENTS.md`. Note that the lane as a whole
+#: does need the compiled extension: many structural facts are only observable
+#: through the FFI, and those tests fail rather than skip without it.
 pytestmark = pytest.mark.structural
 
 # ---------------------------------------------------------------------------

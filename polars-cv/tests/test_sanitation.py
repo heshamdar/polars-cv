@@ -51,10 +51,12 @@ from tests._op_cases import build_case, comparable_ops
 from tests._schema_parity import assert_plan_equals_exec, leaf_dtype
 from tests.conftest import plugin_required
 
-#: Every test here is a structural guard: it checks the *shape* of the
-#: codebase rather than the behaviour of a pipeline, so it needs no compiled
-#: extension and runs in milliseconds. `-m structural` is the lane pre-commit
-#: runs; see `tests/AGENTS.md`.
+#: Every test here is a structural guard: it checks the *shape* of the codebase
+#: -- registries, authorities, removed surfaces, documented vocabularies --
+#: rather than the numerical behaviour of a pipeline. `-m structural` is the
+#: lane pre-commit runs; see `tests/AGENTS.md`. Note that the lane as a whole
+#: does need the compiled extension: many structural facts are only observable
+#: through the FFI, and those tests fail rather than skip without it.
 pytestmark = pytest.mark.structural
 
 # ---------------------------------------------------------------------------
@@ -1924,7 +1926,11 @@ _CI_COMMAND_CLASSIFICATION: "dict[str, str | None]" = {
     "uv sync": None,
     "uv venv": None,
     "uv pip": None,
-    "uv run python": None,
+    "source": None,
+    # Deliberately NOT here: `uv run python`. Exempting it classified every
+    # `uv run python scripts/check_*.py` as setup, so a whole family of
+    # checkers could join CI unnoticed. A Python script that gates the build
+    # is a check, and belongs above with the token verify.sh must contain.
 }
 
 
@@ -1942,37 +1948,108 @@ def _matches_command(key_words: "list[str]", tokens: "list[str]") -> bool:
     return all(word in remaining for word in key_words[1:])
 
 
-def _ci_run_commands(ci_yaml: str) -> list[str]:
-    """Every command line inside a ``run: |`` block of *ci_yaml*.
+def _normalise_command(line: str) -> str:
+    """Strip leading ``VAR=value`` assignments from one shell command.
 
-    Read textually rather than by parsing the YAML: the `run:` bodies are plain
-    shell, and what matters is which executables they invoke.
+    ``PYTHONPATH=python uv run …`` is a ``uv run`` invocation; classifying it
+    by the variable name would make every env-prefixed command look like a
+    tool nobody has heard of.
     """
-    commands: list[str] = []
+    while re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+\S", line):
+        line = line.split(None, 1)[1]
+    return line.strip()
+
+
+def _ci_run_commands(ci_yaml: str) -> list[str]:
+    """Every command CI runs, from both ``run:`` forms.
+
+    Read textually rather than by parsing the YAML: the ``run:`` bodies are
+    plain shell, and what matters is which executables they invoke.
+
+    Three things this has to get right, each of which it once got wrong and
+    each of which hid a real check:
+
+    * **Both spellings of ``run:``.** The block form ``run: |`` and the
+      single-line form ``run: cargo test -p view-buffer``. Reading only the
+      block form left ``cargo test -p view-buffer`` — a check `ci.yml` has run
+      all along — invisible to the guard that claims nothing can hide.
+    * **Chained commands.** ``cd polars-cv && deno lint`` is two commands, and
+      classifying the line by its first token files the whole thing under
+      ``cd``, which is shell noise. Every ``&&``/``;``/``||`` segment is
+      classified on its own, so a checker cannot be smuggled in behind a
+      ``cd``.
+    * **Continuations.** A command split over lines with a trailing ``\\`` is
+      one command; joining them keeps the tool name and its flags together.
+    """
+    lines: list[str] = []
     in_run = False
     run_indent = 0
+
     for raw in ci_yaml.splitlines():
-        if re.match(r"^\s*run:\s*\|", raw):
+        block = re.match(r"^(\s*)run:\s*\|", raw)
+        if block:
             in_run = True
-            run_indent = len(raw) - len(raw.lstrip())
+            run_indent = len(block.group(1))
             continue
-        if not in_run:
+        single = re.match(r"^\s*run:\s*(?!\|)(\S.*)$", raw)
+        if single:
+            in_run = False
+            lines.append(single.group(1).strip())
             continue
-        if not raw.strip():
+        if not in_run or not raw.strip():
             continue
         if len(raw) - len(raw.lstrip()) <= run_indent:
             in_run = False
             continue
-        line = raw.strip()
-        # Strip leading `VAR=value` assignments: `PYTHONPATH=python uv run …`
-        # is a `uv run` invocation, and classifying it by the variable name
-        # would make every env-prefixed command look like a new tool.
-        while re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+\S", line):
-            line = line.split(None, 1)[1]
-        if line.split()[0] in _CI_SHELL_NOISE:
+        lines.append(raw.strip())
+
+    # Re-join backslash continuations before splitting on operators.
+    joined: list[str] = []
+    for line in lines:
+        if joined and joined[-1].endswith("\\"):
+            joined[-1] = joined[-1][:-1].rstrip() + " " + line
+        else:
+            joined.append(line)
+
+    commands: list[str] = []
+    for line in joined:
+        # Drop comments before splitting on operators. A comment reading
+        # "Only the slow-marked tests; still skip network ones." otherwise
+        # yields "still skip network ones." as a command nobody can classify.
+        line = re.sub(r"(^|\s)#.*$", "", line).strip()
+        if not line:
             continue
-        commands.append(line)
+        for segment in re.split(r"&&|\|\||;", line):
+            command = _normalise_command(segment)
+            if not command:
+                continue
+            if command.split()[0] in _CI_SHELL_NOISE:
+                continue
+            commands.append(command)
     return commands
+
+
+def _verify_script_checks(script: str) -> str:
+    """Only the lines of ``verify.sh`` that actually invoke a check.
+
+    A whole-file substring search is satisfied by a *comment* naming the check
+    — so commenting out a `run_check` line, while leaving any mention of it,
+    was undetectable. Checks are declared one way, `run_check "<label>" <cmd>`,
+    so read those lines and nothing else.
+    """
+    kept: list[str] = []
+    continuation = False
+    for raw in script.splitlines():
+        line = raw.strip()
+        if line.startswith("#"):
+            continuation = False
+            continue
+        if line.startswith("run_check") or continuation:
+            kept.append(line)
+            continuation = line.endswith("\\")
+            continue
+        continuation = False
+    return "\n".join(kept)
 
 
 def test_no_ci_check_is_missing_from_the_verify_script() -> None:
@@ -1991,7 +2068,7 @@ def test_no_ci_check_is_missing_from_the_verify_script() -> None:
     """
     root = Path(__file__).resolve().parents[2]
     ci = (root / ".github" / "workflows" / "ci.yml").read_text()
-    script = (root / "scripts" / "verify.sh").read_text()
+    script = _verify_script_checks((root / "scripts" / "verify.sh").read_text())
 
     commands = _ci_run_commands(ci)
     assert commands, (
@@ -2102,9 +2179,16 @@ def test_discovery_exemptions_are_real_files() -> None:
 
 
 def _module_marks(source: str) -> set[str]:
-    """Mark names a module applies to itself via a top-level ``pytestmark``."""
+    """Mark names a module applies to itself via a **module-level** ``pytestmark``.
+
+    Only ``tree.body`` is inspected, not ``ast.walk``. A ``pytestmark`` nested
+    in a class body binds as a class attribute, which pytest applies to that
+    class alone — walking the whole tree counted it as a module declaration,
+    so moving one into a class silently cut the lane from 651 tests to 547
+    while this and the lane-size guard both reported it healthy.
+    """
     marks: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.parse(source).body:
         if not isinstance(node, ast.Assign):
             continue
         if not any(
@@ -2115,6 +2199,27 @@ def _module_marks(source: str) -> set[str]:
             if isinstance(sub, ast.Attribute):
                 marks.add(sub.attr)
     return marks
+
+
+def _imports_discovery(source: str) -> bool:
+    """True when a module imports ``tests._discovery`` in any form.
+
+    Parsed rather than substring-matched. The substring ``"_discovery import"``
+    caught only ``from ._discovery import …``; the equally ordinary
+    ``from tests import _discovery as _d`` sailed past it, which made the
+    "derived, so a new guard cannot join without choosing" claim untrue of a
+    form the suite already permits.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            if "_discovery" in (node.module or ""):
+                return True
+            if any(alias.name == "_discovery" for alias in node.names):
+                return True
+        elif isinstance(node, ast.Import):
+            if any("_discovery" in alias.name for alias in node.names):
+                return True
+    return False
 
 
 def test_every_source_scanning_module_declares_its_lane() -> None:
@@ -2137,7 +2242,7 @@ def test_every_source_scanning_module_declares_its_lane() -> None:
     offenders = []
     for module in suite_modules():
         source = module.read_text()
-        if "_discovery import" not in source:
+        if not _imports_discovery(source):
             continue
         marks = _module_marks(source)
         if not ({"structural", "slow"} & marks):
@@ -2150,25 +2255,72 @@ def test_every_source_scanning_module_declares_its_lane() -> None:
     )
 
 
-def test_the_structural_lane_is_not_empty() -> None:
-    """``-m structural`` must select a substantial set of guards.
+#: Guard modules that must always be in the pre-commit lane.
+#:
+#: A bare count was too weak to be worth having: the threshold sat at 8 against
+#: an actual 9, so dropping the marker from a hand-marked module left the lane
+#: 104 tests smaller and this test still green. Naming the load-bearing modules
+#: makes that specific loss fail. It is not the *whole* lane — a new guard
+#: module is covered by the derived check above when it scans files, and needs
+#: no entry here.
+_CORE_STRUCTURAL_MODULES = frozenset(
+    {
+        "test_append_contract.py",
+        "test_removed_surfaces.py",
+        "test_param_applicability.py",
+        "test_param_strictness.py",
+        "test_doc_vocabularies.py",
+        "test_version_consistency.py",
+    }
+)
 
-    The lane is the pre-commit hook's entire contents. If the marker were
-    renamed, or the declaration dropped from ``pyproject.toml``, the hook would
-    select nothing and pass in milliseconds — reading as a working guard
-    forever. Count the modules that claim the marker rather than trusting that
-    a selection happened.
+
+def test_the_structural_lane_is_not_empty() -> None:
+    """``-m structural`` must select the guards the pre-commit hook exists for.
+
+    The lane is the hook's entire contents, so anything that quietly empties it
+    — a renamed marker, a dropped ``pyproject.toml`` declaration, a
+    ``pytestmark`` that moved into a class — leaves the hook passing in
+    milliseconds while checking nothing.
     """
-    marked = [
+    marked = {
         m.name for m in suite_modules() if "structural" in _module_marks(m.read_text())
-    ]
-    assert len(marked) >= 8, (
-        f"only {len(marked)} modules carry the structural marker ({marked}); "
-        f"the pre-commit lane is meant to cover the guard suite."
+    }
+    missing = sorted(_CORE_STRUCTURAL_MODULES - marked)
+    assert not missing, (
+        f"these guard modules are no longer in the structural lane: {missing}. "
+        f"The pre-commit hook runs `-m structural`, so they are not enforced "
+        f"before a commit any more."
     )
 
     markers = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
     assert "structural:" in markers, (
         "the `structural` marker is not declared in pyproject.toml, so "
         "`-m structural` warns and the hook's selection is unenforced."
+    )
+
+
+def test_the_precommit_hook_runs_the_structural_lane() -> None:
+    """The hook every guard above assumes must actually exist, and select it.
+
+    ``test_the_structural_lane_is_not_empty`` justifies itself by "the lane is
+    the pre-commit hook's entire contents" — but nothing read the hook. Its
+    entry could be edited or deleted and no test would notice, which would make
+    that justification, and the marker on ten modules, describe nothing.
+    """
+    config = (
+        Path(__file__).resolve().parents[1] / ".pre-commit-config.yaml"
+    ).read_text()
+    assert "structural-checks" in config, (
+        "the structural-checks hook is gone from .pre-commit-config.yaml; the "
+        "`structural` marker no longer feeds anything that runs before a commit."
+    )
+    assert '-m "structural and not slow"' in config, (
+        'the structural-checks hook no longer selects `-m "structural and not '
+        'slow"`, so the lane it runs is not the lane these guards describe.'
+    )
+    assert "--no-sync" in config, (
+        "the structural-checks hook lost `--no-sync`, so every commit will "
+        "re-sync the project and rebuild the Rust extension at --profile "
+        "release — minutes per commit."
     )
