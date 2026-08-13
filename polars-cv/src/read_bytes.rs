@@ -68,7 +68,7 @@ fn read_file_bytes(inputs: &[Series], kwargs: ReadBytesKwargs) -> PolarsResult<S
         .as_deref()
         .map(fetch::PathPolicy::new)
         .unwrap_or_default();
-    let batch = fetch::prefetch(ca, options.as_ref(), fetch::DEFAULT_CONCURRENCY, &policy);
+    let batch = fetch::prefetch(ca, options.as_ref(), &policy);
 
     let mut builder = BinaryChunkedBuilder::new(name, ca.len());
     for path in ca.iter() {

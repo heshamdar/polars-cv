@@ -209,6 +209,22 @@ Remote requests are **signed by default**. To read from a public bucket without
 credentials, opt into anonymous access explicitly with
 `CloudOptions(anonymous=True)` (honored for S3, GCS, and Azure).
 
+!!! note "Stores are built by polars, and shared"
+
+    `s3://`, `gs://` and `az://` reads go through polars' own object-store
+    layer, so connections, credentials and retries behave exactly as they do for
+    `pl.scan_parquet("s3://…")`. Stores are cached per bucket **and credential**
+    for the life of the process, which is what lets a connection outlive the
+    morsel that opened it; supplying a new credential for the same bucket builds
+    a new store rather than reusing the old one.
+
+    Two consequences worth knowing. Ambient AWS configuration is honoured:
+    `~/.aws/config` and `~/.aws/credentials` are consulted for a region and keys
+    when the options do not supply them, so a machine with an unrelated AWS
+    profile may sign a request that used to go unsigned — pass
+    `anonymous=True` for a public bucket. And when no region is set, one
+    `HEAD` per bucket is issued to discover it (cached thereafter).
+
 ### Passing arbitrary backend options
 
 `CloudOptions` exposes named fields for the common credentials, but any option
@@ -300,6 +316,13 @@ fetch independently.
 Fetching is per plugin call — one morsel under the streaming engine. Within a
 call, distinct remote paths are fetched concurrently up front (exactly as the
 `file_path` source already does) and local files are read per row.
+
+How many are in flight is **not** per call: every remote request takes one
+permit from the same process-wide budget polars uses for its own scans, so the
+total is bounded however many morsels are running. Set it with
+`POLARS_CONCURRENCY_BUDGET` (default: the larger of the thread count and 10).
+One knob covers both — raising it for a remote scan raises it for image fetching
+too.
 
 Under `.collect(engine="streaming")` a bytes column is therefore
 morsel-bounded: if you filter on it and drop it, only a morsel's worth is

@@ -2754,6 +2754,7 @@ dependencies = [
 name = "polars-cv"
 version = "0.20.0"
 dependencies = [
+ "futures",
  "half",
  "image",
  "jpeg-decoder",

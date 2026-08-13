@@ -43,12 +43,14 @@
 //!   `external_account_authorized_user` Application Default Credentials): mint
 //!   a token out of band and hand it over directly.
 
+use futures::StreamExt;
 use object_store::aws::AmazonS3ConfigKey;
 use object_store::azure::AzureConfigKey;
 use object_store::gcp::GoogleConfigKey;
 use object_store::path::Path as ObjectPath;
 use object_store::ObjectStoreExt;
 use polars::io::cloud::{build_object_store, CloudOptions as PlCloudOptions, CloudType};
+use polars::io::pl_async::with_concurrency_budget;
 use polars_utils::pl_path::{CloudScheme, PlRefPath};
 use std::collections::HashMap;
 use std::path::Path;
@@ -284,15 +286,32 @@ pub fn read_file(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, 
     if let Ok(url) = Url::parse(path) {
         match url.scheme() {
             "file" => read_local_file(url.path()),
-            "http" | "https" => read_http(path),
-            "s3" | "s3a" | "gs" | "gcs" | "az" | "azure" | "abfs" | "abfss" | "adl" => {
-                read_object(path, options)
+            "http" | "https" | "s3" | "s3a" | "gs" | "gcs" | "az" | "azure" | "abfs" | "abfss"
+            | "adl" => {
+                let runtime = get_runtime()?;
+                // One permit, exactly as the batched path takes: a single read
+                // and a read inside a batch cost the process the same thing.
+                runtime.block_on(with_concurrency_budget(1, || read_remote(path, options)))
             }
             scheme => Err(CloudError::UnsupportedScheme(scheme.to_string())),
         }
     } else {
         // Not a valid URL, treat as local path
         read_local_file(path)
+    }
+}
+
+/// Read one remote file, whichever scheme names it.
+///
+/// The single async remote read. Both entry points funnel through it — the
+/// one-off [`read_file`] and the batched [`read_files_concurrent`] — so a change
+/// to auth, retries or error text lands for both, and neither can acquire a
+/// concurrency permit the other does not.
+async fn read_remote(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
+    if path.starts_with("http://") || path.starts_with("https://") {
+        read_http(path).await
+    } else {
+        read_object(path, options).await
     }
 }
 
@@ -317,15 +336,14 @@ pub fn read_file(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, 
 /// avoids nesting concurrency-budget acquisitions — `PolarsObjectStore::head`
 /// and `get_range` take permits internally, and holding one while asking for
 /// another is a deadlock at any budget smaller than twice the in-flight count.
-fn read_object(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
+async fn read_object(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, CloudError> {
     let url = PlRefPath::new(path);
     let scheme = url
         .scheme()
         .ok_or_else(|| CloudError::UrlParse(format!("no scheme in remote path '{path}'")))?;
     let pl_options = polars_options(scheme, options)?;
-    let runtime = get_runtime()?;
 
-    runtime.block_on(async {
+    {
         let (location, store) = build_object_store(url, Some(&pl_options), false)
             .await
             .map_err(|e| CloudError::StoreError(e.to_string()))?;
@@ -345,7 +363,7 @@ fn read_object(path: &str, options: Option<&CloudOptions>) -> Result<Vec<u8>, Cl
             .await
             .map(|bytes| bytes.to_vec())
             .map_err(|e| CloudError::ReadError(e.to_string()))
-    })
+    }
 }
 
 /// Read a file from the local filesystem.
@@ -439,11 +457,10 @@ fn http_client() -> &'static reqwest::Client {
 /// ```ignore
 /// let bytes = read_http("https://example.com/image.png")?;
 /// ```
-fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
-    let runtime = get_runtime()?;
+async fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
     let url_string = url.to_string();
 
-    runtime.block_on(async {
+    {
         let client = http_client();
         let response = client
             .get(&url_string)
@@ -463,51 +480,77 @@ fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
             .await
             .map(|b| b.to_vec())
             .map_err(|e| CloudError::ReadError(format!("Failed to read response body: {e}")))
-    })
+    }
 }
 
-/// Fetch many files concurrently with bounded parallelism.
+/// Fetch many files concurrently, bounded by the process-wide budget.
 ///
-/// Each path is fetched with the same logic (and credentials) as
-/// [`read_file`]; results are keyed by path, errors carried per path as
-/// strings. Graph execution uses this to prefetch a batch's remote sources
-/// before the row loop, converting per-row network latency into per-batch
-/// latency.
+/// Each path is fetched with the same logic (and credentials) as [`read_file`];
+/// results are keyed by path, errors carried per path as strings. Graph
+/// execution uses this to prefetch a batch's remote sources before the row loop,
+/// converting per-row network latency into per-batch latency.
 ///
-/// Implementation: bounded scoped OS threads, each performing one blocking
-/// [`read_file`] (which itself parks on the shared tokio runtime). This keeps
-/// per-file behavior — auth, retries, error text — byte-identical to the
-/// sequential path.
+/// Two things changed here when the stores moved to `polars-io`, and both matter
+/// under the streaming engine rather than in a single eager call.
+///
+/// **The bound is global, not per call.** It used to be a constant 16 *per
+/// invocation*, and the streaming engine invokes the plugin once per morsel
+/// concurrently across threads — so the real number of in-flight requests was
+/// (morsels in flight x 16), unbounded by anything the user could see or set.
+/// Every request now takes one permit from polars' own semaphore, so the whole
+/// process — our fetches and polars' own scans together — stays inside
+/// `POLARS_CONCURRENCY_BUDGET` (default: `max(rayon threads, 10)`).
+///
+/// **There is no barrier.** The old shape spawned a chunk of 16 scoped OS
+/// threads and joined *all* of them before starting the next chunk, so the
+/// slowest file in each wave stalled the wave. `buffer_unordered` starts the
+/// next file the moment any one finishes; results are keyed by path, so
+/// completion order carries no information.
+///
+/// The local `buffer_unordered` width is the batch size rather than a second
+/// constant: a future that has not acquired a permit is parked on the semaphore,
+/// costing a wait-list entry, and re-deriving the budget here would make this a
+/// second authority for the one number the change exists to centralise.
 pub fn read_files_concurrent(
     paths: &[String],
     options: Option<&CloudOptions>,
-    max_concurrency: usize,
 ) -> HashMap<String, Result<Vec<u8>, String>> {
-    let mut results: HashMap<String, Result<Vec<u8>, String>> = HashMap::with_capacity(paths.len());
     // Fetch each distinct path once, even when many rows repeat it.
-    let unique: Vec<&String> = {
+    let unique: Vec<&str> = {
         let mut seen = std::collections::HashSet::new();
-        paths.iter().filter(|p| seen.insert(p.as_str())).collect()
+        paths
+            .iter()
+            .map(String::as_str)
+            .filter(|p| seen.insert(*p))
+            .collect()
     };
-    for chunk in unique.chunks(max_concurrency.max(1)) {
-        let fetched: Vec<(String, Result<Vec<u8>, String>)> = std::thread::scope(|s| {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|path| {
-                    s.spawn(move || {
-                        let result = read_file(path, options).map_err(|e| e.to_string());
-                        ((*path).clone(), result)
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().expect("prefetch thread panicked"))
-                .collect()
-        });
-        results.extend(fetched);
+    if unique.is_empty() {
+        return HashMap::new();
     }
-    results
+
+    let width = unique.len();
+    let runtime = match get_runtime() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            let message = e.to_string();
+            return unique
+                .into_iter()
+                .map(|p| (p.to_string(), Err(message.clone())))
+                .collect();
+        }
+    };
+
+    runtime.block_on(async move {
+        futures::stream::iter(unique.into_iter().map(|path| async move {
+            let result = with_concurrency_budget(1, || read_remote(path, options))
+                .await
+                .map_err(|e| e.to_string());
+            (path.to_string(), result)
+        }))
+        .buffer_unordered(width)
+        .collect::<HashMap<String, Result<Vec<u8>, String>>>()
+        .await
+    })
 }
 
 /// Check if a path is a remote URL (cloud storage or HTTP).
@@ -873,7 +916,9 @@ mod tests {
     #[ignore]
     fn test_read_http_url() {
         // Use httpbin.org which returns known content
-        let result = read_http("https://httpbin.org/bytes/100");
+        let result = get_runtime()
+            .unwrap()
+            .block_on(read_http("https://httpbin.org/bytes/100"));
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 100);
     }

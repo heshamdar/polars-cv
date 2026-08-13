@@ -44,12 +44,6 @@ use polars::prelude::*;
 
 use crate::cloud::{self, CloudOptions};
 
-/// Maximum concurrent remote fetches within one plugin call.
-///
-/// Shared by both consumers deliberately: a knob on one and not the other would
-/// let their behavior drift. If this ever needs tuning, expose it on both.
-pub const DEFAULT_CONCURRENCY: usize = 16;
-
 /// Make `path` absolute and resolve `.` / `..` textually.
 ///
 /// Used when a path cannot be canonicalized (it does not exist yet). Purely
@@ -259,7 +253,6 @@ impl FetchedBatch {
 pub fn prefetch(
     ca: &StringChunked,
     options: Option<&CloudOptions>,
-    max_concurrency: usize,
     policy: &PathPolicy,
 ) -> FetchedBatch {
     let remote: Vec<String> = ca
@@ -274,7 +267,7 @@ pub fn prefetch(
     FetchedBatch {
         // `read_files_concurrent` dedups internally, so repeated paths across
         // rows are fetched once.
-        remote: cloud::read_files_concurrent(&remote, options, max_concurrency),
+        remote: cloud::read_files_concurrent(&remote, options),
     }
 }
 
@@ -460,7 +453,7 @@ mod tests {
             "paths".into(),
             [Some("s3://blocked/a.png")].into_iter(),
         );
-        let batch = prefetch(&ca, None, DEFAULT_CONCURRENCY, &policy(&["s3://allowed/"]));
+        let batch = prefetch(&ca, None, &policy(&["s3://allowed/"]));
         assert!(batch.remote.is_empty());
     }
 
@@ -495,16 +488,11 @@ mod tests {
             "paths".into(),
             [Some("/tmp/a.png"), None, Some("relative/b.png")].into_iter(),
         );
-        let batch = prefetch(&ca, None, DEFAULT_CONCURRENCY, &PathPolicy::default());
+        let batch = prefetch(&ca, None, &PathPolicy::default());
         assert!(batch.remote.is_empty());
-        assert!(prefetch(
-            &empty_string_ca(),
-            None,
-            DEFAULT_CONCURRENCY,
-            &PathPolicy::default()
-        )
-        .remote
-        .is_empty());
+        assert!(prefetch(&empty_string_ca(), None, &PathPolicy::default())
+            .remote
+            .is_empty());
     }
 
     #[test]
