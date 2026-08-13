@@ -47,6 +47,30 @@ python -m benchmarks.regression.run_suite --out candidate.json \
     --scenarios single_ops,pipelines,e2e
 ```
 
+### The `remote` scenario
+
+`--scenarios remote` measures the `file_path` **fetch** stage — the one every
+`s3://`, `gs://`, `az://` and `http://` source goes through, and the one no
+other scenario touches, since they are all handed bytes that are already in
+memory. It serves a generated corpus over loopback HTTP, so it needs no
+credentials and no network.
+
+It reports three timings whose *differences* isolate a stage
+(`remote_local_paths` as control, `remote_http_paths`, and
+`remote_http_read_bytes` for fetch without decode) plus one thing that is not a
+timing: **requests per connection**, counted by the server. A ratio of 1.00
+means the client opens a fresh connection for every file — on loopback that
+costs about half a millisecond, but on a real endpoint it is a TCP *and* TLS
+handshake per file.
+
+Run it standalone for the full report, including the connection count, which
+the suite's results JSON has nowhere to put:
+
+```bash
+python -m benchmarks.scenarios.remote_source --count 300
+python -m benchmarks.scenarios.remote_source --count 300 --latency-ms 20  # model a WAN link
+```
+
 ## Workflow
 
 Use a **release build** for both runs, on the **same machine**, with the
@@ -86,7 +110,7 @@ python -m benchmarks.regression.compare a.json b.json   # expect all NEUTRAL, ex
 
 ## Options
 
-`run_suite`: `--out` (required), `--scenarios single_ops,pipelines,e2e[,zero_copy]`,
+`run_suite`: `--out` (required), `--scenarios single_ops,pipelines,e2e[,zero_copy][,remote]`,
 `--counts`, `--sizes`, `--threads`, `--repeats`, `--warmup`, `--iterations`,
 `--quiet`.
 
