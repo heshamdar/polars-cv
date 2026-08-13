@@ -105,12 +105,50 @@ def _run_once(
         )
     if "zero_copy" in cfg.scenarios:
         # zero_copy has its own hardcoded matrix and no adapter arg; its results
-        # are polars-cv only, which is exactly what we want.
+        # are polars-cv only, which is exactly what we want. They are also its
+        # own record type, so they are converted here rather than appended raw —
+        # appending them raw is what made this scenario die in `_aggregate_best`
+        # every time it was selected.
         from benchmarks.scenarios.zero_copy_ingestion import (
             run_benchmarks as run_zero_copy,
         )
+        from benchmarks.scenarios.zero_copy_ingestion import to_suite_results
 
-        results += run_zero_copy()
+        results += to_suite_results(run_zero_copy())
+    if "remote" in cfg.scenarios:
+        # The remote fetch path (`file_path` over http/s3/gs/az). Also its own
+        # matrix: it serves a corpus over loopback HTTP, so it has no adapter
+        # arg and no external dependency. Opt-in, like zero_copy.
+        from benchmarks.scenarios.remote_source import (
+            run_benchmarks as run_remote_source,
+        )
+
+        results += run_remote_source(
+            cfg.image_counts,
+            cfg.image_sizes,
+            warmup_iterations=cfg.warmup_iterations,
+            # The remote path is dominated by fetch, not by the ops, so it needs
+            # far fewer repetitions than a compute scenario to settle — and each
+            # one costs a full round of connections.
+            benchmark_iterations=max(3, cfg.benchmark_iterations // 3),
+            verbose=verbose,
+        )
+
+    # Every scenario must hand back the suite's own record. A scenario with its
+    # own result type that skips the conversion above would otherwise fail in
+    # `_aggregate_best` with an AttributeError naming a field, several frames
+    # from the scenario that produced it — which is exactly how the `zero_copy`
+    # breakage read for as long as it existed.
+    from benchmarks.frameworks import BenchmarkResult as _SuiteResult
+
+    foreign = {type(r).__name__ for r in results if not isinstance(r, _SuiteResult)}
+    if foreign:
+        msg = (
+            f"scenario(s) returned {sorted(foreign)} rather than "
+            f"benchmarks.frameworks.BenchmarkResult; convert at the call site "
+            f"in _run_once (see zero_copy_ingestion.to_suite_results)"
+        )
+        raise TypeError(msg)
     return results
 
 
