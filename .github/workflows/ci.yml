@@ -44,10 +44,34 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Installed *before* the Rust cache is restored, because the cache key
+      # below depends on which Python this resolves to.
+      - name: Install Python
+        id: setup_python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          # Keyed on the *exact* interpreter, not the "3.13" we asked for.
+          #
+          # `cargo test` below builds polars-cv without the pyo3-extension
+          # feature, so its test binary links libpython, and pyo3's build script
+          # bakes the interpreter's libdir into the cached artifacts as an
+          # absolute path. When the hosted image bumps its Python patch version,
+          # that path stops existing while the rest of the cache still looks
+          # fresh to cargo — so the build script never re-runs and the link fails
+          # with `unable to find library -lpython3.13`, searching a
+          # `.../Python/3.13.14/x64/lib` that is no longer there. The cache is
+          # only valid for the Python it was built against; the key now says so.
+          #
+          # `steps.setup_python.outputs.python-version` is the resolved version
+          # (e.g. 3.13.15), which is the whole point — `matrix.python-version` is
+          # "3.13" and would not change on the bump that breaks this.
+          key: py-${{ steps.setup_python.outputs.python-version }}
 
       - name: Test view-buffer (all features)
         # The main "Build and Test" step runs from the polars-cv crate dir, so it
@@ -56,11 +80,6 @@ jobs:
         # exercised. Run them explicitly. Scoped to -p view-buffer so polars-cv's
         # pyo3-extension feature (which unlinks libpython) is not activated.
         run: cargo test -p view-buffer --all-features
-
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -192,15 +211,21 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Same ordering and the same cache key as the `test` job, for the same
+      # reason — see the comment there. This job only builds through `maturin
+      # develop`, which does not link libpython, so it has not been seen to
+      # fail; it caches Python-dependent build-script output all the same.
+      - name: Install Python
+        id: setup_python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+          key: py-${{ steps.setup_python.outputs.python-version }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
