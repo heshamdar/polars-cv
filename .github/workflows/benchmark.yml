@@ -25,6 +25,15 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Same clearing of `.cargo/config.toml`'s per-x86_64 `target-cpu=x86-64-v3`
+  # that ci.yml and publish.yml do — and here it decides *what is measured*, not
+  # just what is portable. Without it this workflow benchmarks a binary with
+  # AVX2/BMI2/FMA baked in, while published wheels are built with the flags
+  # cleared; the numbers would describe a build no user installs. Clearing it
+  # also keeps runs comparable across runners of differing vintage.
+  # RUSTFLAGS (not CARGO_BUILD_RUSTFLAGS): an empty CARGO_BUILD_RUSTFLAGS is
+  # treated as unset and falls back to the config file.
+  RUSTFLAGS: ""
 
 jobs:
   benchmark:
