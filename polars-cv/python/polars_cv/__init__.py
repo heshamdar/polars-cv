@@ -77,7 +77,7 @@ def build_info() -> dict[str, str | None]:
     compiled extension is not. After a ``git pull`` that touches Rust,
     ``_lib.abi3.so`` keeps its build-time version until ``maturin develop`` is
     re-run, and new Python then runs against old Rust. When these three values
-    disagree, re-run ``maturin develop --release``.
+    disagree, re-run ``maturin develop``.
 
     Returns:
         Dict with:

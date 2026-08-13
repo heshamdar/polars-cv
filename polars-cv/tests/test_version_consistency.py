@@ -105,13 +105,13 @@ def test_compiled_plugin_is_not_stale() -> None:
     A mismatch means `_lib.abi3.so` predates the checkout. The Python sources being
     imported are the working tree's either way (the install is editable), so the
     suite would go on exercising old Rust against new Python and the failures would
-    point anywhere but here. Rebuild with `maturin develop --release`.
+    point anywhere but here. Rebuild with `maturin develop`.
     """
     info = polars_cv.build_info()
     assert info["plugin_version"] == info["version"], (
         f"compiled plugin is {info['plugin_version']!r} but the Python source is "
         f"{info['version']!r} — the installed package is stale, "
-        "re-run `maturin develop --release`"
+        "re-run `maturin develop`"
     )
 
 
@@ -124,7 +124,7 @@ def test_installed_distribution_is_not_stale() -> None:
 
     assert info["dist_version"] == info["version"], (
         f"installed distribution is {info['dist_version']!r} but the imported "
-        f"source is {info['version']!r} — re-run `maturin develop --release`"
+        f"source is {info['version']!r} — re-run `maturin develop`"
     )
 
 

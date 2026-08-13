@@ -15,14 +15,21 @@ df.with_columns(
 )
 ```
 
-This covers `normalize`, `to_absolute`, `translate`, `scale`, `simplify`,
-`area(signed=)` and `match_detections(threshold=)` on `.contour`; `normalize`,
-`to_absolute`, `translate`, `scale`, `rotate(angle=)` and `interpolate(t=)` on
-`.point`; and `match_detections(threshold=)` on `.bbox`.
+Eligibility is decided by **effect, not type**: a parameter may be per-row when
+its value changes no output shape, rank or dtype. That admits the enums and
+flags as well as the numbers — `ensure_winding(direction=)` and
+`scale(origin=)` reorder or move a ring's vertices and leave
+`List(Struct(CONTOUR_SCHEMA))` exactly as it was, so both take an expression
+too.
 
-Structural parameters stay literal-only, as they do elsewhere: `scale`'s
-`origin`, `ensure_winding`'s `direction` and `match_detections`' `strategy`
-select behaviour rather than carrying a value.
+On `.contour`: `normalize`, `to_absolute`, `translate`, `scale` (`sx`, `sy` and
+`origin`), `simplify`, `ensure_winding(direction=)`, `area(signed=)`,
+`label_reduce(reduction=, region_mode=)` and `match_detections(threshold=)`.
+On `.point`: `normalize`, `to_absolute`, `translate`, `scale`, `rotate(angle=)`
+and `interpolate(t=)`. On `.bbox`: `match_detections(threshold=)`.
+
+`match_detections`' `strategy` is literal-only — it has one accepted value,
+`"greedy"`, so there is nothing to vary.
 
 An aggregation broadcasts, matching Polars' own semantics — `pl.col("w").max()`
 produces one value applied to every row.
@@ -64,6 +71,30 @@ winding-independent, so `flip()` and `ensure_winding()` change what
 ## Contours
 
 The `.contour` namespace operates on polygon columns.
+
+### One contour or a whole set
+
+Every `.contour` accessor reads **either arity**: a `CONTOUR_SCHEMA` struct per
+row, or the `CONTOUR_SET_SCHEMA` list of them that `extract_contours()`
+produces. The result is wrapped to match the input, so the same call answers for
+both:
+
+```python
+one = pl.col("contour").contour.area()   # Struct column  -> Float64
+many = pl.col("contours").contour.area() # List(Struct)    -> List(Float64), one per contour
+```
+
+That is what lets the namespace read the column its own pipeline produced —
+`extract_contours()` sinks a set, and every accessor takes one.
+
+Two-operand accessors (`iou`, `dice`, `hausdorff_distance`) **broadcast**: a set
+on one side and a single contour on the other gives one result per contour,
+whichever side the set is on. A set on *both* sides raises rather than guessing,
+because it could mean the N×M matrix (`pairwise_iou`) or an index-wise pairing
+(`.explode()` one side), and those are different answers.
+
+The set-level accessors (`pairwise_iou`, `match_detections`, `label_reduce`) run
+the rule backwards: a lone contour is read as a set of one.
 
 ### Measurements
 
