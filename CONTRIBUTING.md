@@ -112,12 +112,16 @@ Create two environments in your repository (Settings → Environments):
 2. Roll the `CHANGELOG.md` `[Unreleased]` section into a dated entry for the new
    version, and leave a fresh empty `[Unreleased]` heading above it
 3. Commit and push to main
-4. Create a GitHub release with a version tag (e.g., `v0.1.0`)
+4. Create a GitHub release with a version tag matching the bumped version,
+   prefixed with `v` (e.g. `v0.1.0`). `.github/workflows/publish.yml` checks the
+   tag against `polars-cv/pyproject.toml` and refuses to build if they disagree,
+   so a release tagged ahead of (or behind) the manifests fails loudly instead
+   of publishing the wrong version.
 5. GitHub Actions automatically:
-   - Builds wheels for all platforms
-   - Publishes to TestPyPI
-   - Tests installation from TestPyPI
-   - Publishes to PyPI
+   - Verifies the tag matches the declared version
+   - Builds `abi3` wheels for linux-x86_64, linux-aarch64 and macOS-arm64, plus
+     an sdist, and rejects any wheel that is not `abi3`
+   - Publishes to PyPI via trusted publishing
 
 ### Manual Publishing (Alternative)
 

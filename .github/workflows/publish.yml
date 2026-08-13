@@ -14,8 +14,65 @@ env:
   RUSTFLAGS: ""
 
 jobs:
+  # What gets published is decided by the manifests, not by the tag — maturin
+  # reads `polars-cv/pyproject.toml`, and the tag is only a label on a commit.
+  # So a release tagged `v0.20.0` cut before the version bump landed would build
+  # and upload `polars_cv-0.19.0` under a 0.20.0 release, or fail at the very
+  # end with PyPI's "file already exists". Nothing checked the two against each
+  # other. This does, before any wheel is built.
+  #
+  # `polars-cv/pyproject.toml` is read as the one version source. The other
+  # three (both Cargo.toml files and `polars_cv.__version__`) are pinned to it
+  # by `test_version_consistency.py`, which `ci.yml` runs on every push to main
+  # — restating that comparison here would be a second authority for the same
+  # fact, and the manifests are already checked by the time a release is cut.
+  check-version:
+    name: Tag matches the declared version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.declared.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the declared version
+        id: declared
+        shell: bash
+        run: |
+          version="$(python -c '
+          import pathlib, tomllib
+          manifest = pathlib.Path("polars-cv/pyproject.toml").read_bytes()
+          print(tomllib.loads(manifest.decode())["project"]["version"])
+          ')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "polars-cv/pyproject.toml declares $version"
+
+      - name: Compare against the release tag
+        # Only a `release` event carries a tag. A manual `workflow_dispatch`
+        # publishes whatever the checked-out ref declares, which is the point of
+        # having the escape hatch — it is reported rather than silently skipped.
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.declared.outputs.version }}
+        run: |
+          if [[ "$TAG" != "v$VERSION" && "$TAG" != "$VERSION" ]]; then
+            echo "::error::release tag '$TAG' does not match the declared version '$VERSION'."
+            echo "Bump the version in all six places (see CONTRIBUTING.md) and re-tag,"
+            echo "or delete and recreate the release with tag 'v$VERSION'."
+            exit 1
+          fi
+          echo "tag '$TAG' matches declared version '$VERSION'."
+
+      - name: Report an unverified manual run
+        if: github.event_name != 'release'
+        run: |
+          echo "::warning::workflow_dispatch run — publishing version \
+          ${{ steps.declared.outputs.version }} from ${{ github.ref }} with no tag to check it against."
+
   build-wheels:
     name: Build wheels (${{ matrix.target }})
+    needs: [check-version]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -99,6 +156,7 @@ jobs:
 
   build-sdist:
     name: Build source distribution
+    needs: [check-version]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
