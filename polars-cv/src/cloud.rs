@@ -396,6 +396,41 @@ fn read_azure(url: &Url, options: Option<&CloudOptions>) -> Result<Vec<u8>, Clou
     })
 }
 
+/// The process-wide HTTP client, and therefore the process-wide connection pool.
+///
+/// A `reqwest::Client` *is* the pool: it owns the idle connections, the DNS
+/// resolver and the TLS session cache, and cloning it is an `Arc` bump. Building
+/// one per file — which is what this module used to do, inside [`read_http`] —
+/// meant every file paid a fresh TCP handshake, and off loopback a fresh TLS
+/// handshake too. The benchmark server counted it exactly: one connection per
+/// request, no reuse at all.
+///
+/// Shared for the same reason [`get_runtime`] is, and note where the sharing
+/// has to happen: the streaming engine calls the plugin once per morsel, so a
+/// client scoped to a call is rebuilt on every morsel however wide the batch is.
+///
+/// Deliberately *not* delegated to polars. `polars-io` builds an object-store
+/// for `http://` but does not cache it (`object_store_setup.rs`: only Aws/Gcp/
+/// Azure take a cache key), which is a reasonable trade for reading a few large
+/// Parquet files and the wrong one for reading many small images.
+fn http_client() -> &'static reqwest::Client {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(concat!("polars-cv/", env!("CARGO_PKG_VERSION")))
+            // Bound only the *connect* phase. A read timeout would have to bound
+            // the whole body, and this client fetches images of unknown size
+            // over links of unknown speed.
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .build()
+            // `build()` fails only on a bad TLS backend configuration, which is
+            // fixed at compile time by the `rustls-tls` feature — not something
+            // a caller's input can reach.
+            .expect("failed to build the shared HTTP client")
+    })
+}
+
 /// Read a file from an HTTP or HTTPS URL.
 ///
 /// Uses async reqwest within a tokio runtime to avoid blocking issues
@@ -416,7 +451,7 @@ fn read_http(url: &str) -> Result<Vec<u8>, CloudError> {
     let url_string = url.to_string();
 
     runtime.block_on(async {
-        let client = reqwest::Client::new();
+        let client = http_client();
         let response = client
             .get(&url_string)
             .send()
