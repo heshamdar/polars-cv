@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       scenarios:
-        description: "Comma-separated scenarios (single_ops,pipelines,e2e,zero_copy)"
+        description: "Comma-separated scenarios (single_ops,pipelines,e2e,zero_copy,remote)"
         default: "pipelines"
         type: string
       counts:
