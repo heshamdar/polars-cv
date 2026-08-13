@@ -9,6 +9,7 @@ mod contour;
 mod engine_warning;
 mod execute;
 mod fetch;
+mod geom_arity;
 mod geom_params;
 mod graph;
 mod image_metadata;

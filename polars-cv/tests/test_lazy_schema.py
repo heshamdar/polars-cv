@@ -137,7 +137,9 @@ def test_lazy_schema_array_sink_requires_shape():
 
     df = pl.DataFrame({"img_path": ["https://example.com/img.png"]})
 
-    with pytest.raises(ValueError, match="shape is required for 'array' sink format"):
+    # Matches the rewritten message: the old text advised `.resize()` /
+    # `.assert_shape()`, which could not supply a list source's shape.
+    with pytest.raises(ValueError, match="needs the full output shape"):
         df.lazy().select(pl.col("img_path").cv.pipe(pipe).sink("array"))
 
 

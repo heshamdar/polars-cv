@@ -32,6 +32,16 @@ pub struct OutputSpec {
     /// Expected output shape for list/array sinks.
     #[serde(default)]
     pub expected_shape: Option<Vec<usize>>,
+    /// Did any dimension of `expected_shape` come from a user `assert_shape`?
+    ///
+    /// Decides who [`validate_output_schema`](super::compiled) reports a
+    /// plan/exec divergence against. An inferred shape that execution
+    /// contradicts is a contract bug — a rule lying about its transform. An
+    /// *asserted* one is a claim about the caller's data, and reporting it as
+    /// "the planner's shape contract disagrees with the Rust implementation"
+    /// sent people to read plugin source over their own typo.
+    #[serde(default)]
+    pub shape_asserted: bool,
     /// Expected number of dimensions for list sinks.
     #[serde(default)]
     pub expected_ndim: Option<usize>,

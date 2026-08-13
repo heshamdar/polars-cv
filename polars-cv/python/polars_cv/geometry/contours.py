@@ -25,8 +25,28 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
     """
     Namespace for geometric operations on contour columns.
 
+    **One contour per row or a set of them — every accessor takes both.** A
+    column may be a ``CONTOUR_SCHEMA`` struct per row, or the
+    ``CONTOUR_SET_SCHEMA`` list of them that ``extract_contours()`` produces.
+    The two are told apart by the column's dtype, and the result is wrapped to
+    match: an accessor returning ``Float64`` for a single contour returns
+    ``List(Float64)`` for a set, one entry per contour, in input order.
+
+    Two-operand accessors (:meth:`iou`, :meth:`dice`,
+    :meth:`hausdorff_distance`) **broadcast**: a set on one side and a single
+    contour on the other gives one result per contour in the set, whichever
+    side the set is on. A set on *both* sides is rejected rather than guessed —
+    it could mean the N×M matrix (:meth:`pairwise_iou`) or an index-wise
+    pairing (``.explode()`` one side), and the two mean different things.
+
+    The set-level accessors (:meth:`pairwise_iou`, :meth:`match_detections`,
+    :meth:`label_reduce`) work the other way round for the same reason: a lone
+    contour is read as a set of one.
+
     Numeric parameters accept either a literal or a Polars expression; an
-    expression is resolved per row at execution time.
+    expression is resolved per row at execution time. A per-row parameter
+    applies to every contour in that row's set — parameters vary by row, not by
+    contour.
 
     Example:
         >>> df.with_columns(
@@ -36,6 +56,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         ...         pl.col("img_w"), pl.col("img_h")
         ...     ),
         ... )
+        >>> # A set column: one area per contour, per row.
+        >>> df.with_columns(areas=pl.col("contours").contour.area())
     """
 
     # --- Coordinate Operations ---
@@ -53,7 +75,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             height: Reference height for normalization (literal or expression).
 
         Returns:
-            Contour with coordinates in [0,1] range.
+            Contour with coordinates in [0,1] range, or a list of them for a
+            contour-set column.
         """
         binder = _ArgBinder()
         binder.add_param("ref_width", width)
@@ -73,7 +96,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             height: Reference height for scaling (literal or expression).
 
         Returns:
-            Contour with pixel coordinates.
+            Contour with pixel coordinates, or a list of them for a
+            contour-set column.
         """
         binder = _ArgBinder()
         binder.add_param("ref_width", width)
@@ -87,7 +111,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         Compute the exterior ring's winding direction from point order.
 
         Returns:
-            String 'ccw' for counter-clockwise, 'cw' for clockwise.
+            String 'ccw' for counter-clockwise, 'cw' for clockwise — a list of
+            them for a contour-set column.
 
         Note:
             Winding is computed using the Shoelace formula:
@@ -113,7 +138,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
                    for per-row selection.
 
         Returns:
-            Float64 area value.
+            Float64 area value, or `List(Float64)` for a contour-set column.
         """
         binder = _ArgBinder()
         binder.add_param("signed", signed, cast=bool)
@@ -124,7 +149,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         Compute contour perimeter (sum of edge lengths).
 
         Returns:
-            Float64 perimeter value.
+            Float64 perimeter value, or `List(Float64)` for a contour-set column.
         """
         return self._plugin("contour_perimeter")
 
@@ -136,7 +161,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         the hole rings — so overlapping or nested holes are not subtracted twice.
 
         Returns:
-            Point struct with x, y coordinates.
+            Point struct with x, y coordinates, or a list of them for a
+            contour-set column.
         """
         return self._plugin("contour_centroid")
 
@@ -145,7 +171,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         Compute axis-aligned bounding box.
 
         Returns:
-            BBox struct with x, y, width, height.
+            BBox struct with x, y, width, height, or a list of them for a
+            contour-set column.
         """
         return self._plugin("contour_bbox")
 
@@ -154,7 +181,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         Compute convex hull of the contour.
 
         Returns:
-            New contour representing the convex hull.
+            New contour representing the convex hull, or a list of them for a
+            contour-set column.
         """
         return self._plugin("contour_convex_hull")
 
@@ -163,7 +191,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         Check if contour is convex.
 
         Returns:
-            Boolean indicating convexity.
+            Boolean indicating convexity, or `List(Boolean)` for a contour-set
+            column.
         """
         return self._plugin("contour_is_convex")
 
@@ -178,7 +207,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         because no operation reads winding.
 
         Returns:
-            Contour with reversed point order.
+            Contour with reversed point order, or a list of them for a
+            contour-set column.
         """
         return self._plugin("contour_flip")
 
@@ -196,7 +226,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
                 leaves the output schema untouched.
 
         Returns:
-            Contour with guaranteed winding direction.
+            Contour with guaranteed winding direction, or a list of them for a
+            contour-set column.
         """
         binder = _ArgBinder()
         binder.add_param(
@@ -217,7 +248,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             dy: Y offset (literal or expression).
 
         Returns:
-            Translated contour.
+            Translated contour, or a list of them for a contour-set column.
         """
         binder = _ArgBinder()
         binder.add_param("dx", dx)
@@ -243,7 +274,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
                 - "origin": Coordinate origin (0, 0)
 
         Returns:
-            Scaled contour.
+            Scaled contour, or a list of them for a contour-set column.
         """
         binder = _ArgBinder()
         binder.add_param("sx", sx)
@@ -262,7 +293,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
                 Accepts a Polars expression for per-row values.
 
         Returns:
-            Simplified contour.
+            Simplified contour, or a list of them for a contour-set column.
         """
         binder = _ArgBinder()
         binder.add_param("tolerance", tolerance)
@@ -283,7 +314,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             other: Another contour column to compare with.
 
         Returns:
-            Float64 IoU value in [0, 1].
+            Float64 IoU value in [0, 1] — `List(Float64)` when either side is a
+            contour set (see the class docstring on broadcasting).
         """
         return self._plugin("contour_iou", args=[other])
 
@@ -390,7 +422,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             other: Another contour column to compare with.
 
         Returns:
-            Float64 Dice coefficient in [0, 1].
+            Float64 Dice coefficient in [0, 1] — `List(Float64)` when either
+            side is a contour set.
         """
         return self._plugin("contour_dice", args=[other])
 
@@ -408,7 +441,8 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             other: Another contour column to compare with.
 
         Returns:
-            Float64 Hausdorff distance.
+            Float64 Hausdorff distance — `List(Float64)` when either side is a
+            contour set.
         """
         return self._plugin("contour_hausdorff", args=[other])
 
@@ -420,6 +454,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             point: Point column to test.
 
         Returns:
-            Boolean indicating if point is inside contour.
+            Boolean indicating if point is inside contour — `List(Boolean)`, one
+            per contour, for a contour-set column.
         """
         return self._plugin("contour_contains_point", args=[point])

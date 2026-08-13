@@ -1594,11 +1594,23 @@ fn validate_output_schema(
         }
         if let Some(expected_shape) = spec.expected_shape.as_ref() {
             if actual_shape != expected_shape.as_slice() {
-                return Err(format!(
-                    "Output '{alias}': planned shape {expected_shape:?} but execution \
-                     produced {actual_shape:?}. The planner's shape contract disagrees \
-                     with the Rust implementation."
-                ));
+                // Whose claim was it? An inferred shape that execution
+                // contradicts is a contract bug; an asserted one is the
+                // caller's, and saying otherwise sends them to the wrong file.
+                return Err(if spec.shape_asserted {
+                    format!(
+                        "Output '{alias}': assert_shape() declared {expected_shape:?} \
+                         but execution produced {actual_shape:?}. An assertion states \
+                         what the data is; it does not change it. Correct the \
+                         assertion, or drop it and let the planner infer the shape."
+                    )
+                } else {
+                    format!(
+                        "Output '{alias}': planned shape {expected_shape:?} but execution \
+                         produced {actual_shape:?}. The planner's shape contract disagrees \
+                         with the Rust implementation."
+                    )
+                });
             }
         }
     }

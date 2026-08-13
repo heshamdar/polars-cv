@@ -90,6 +90,18 @@ class GraphNode:
             return [hints.height.value, hints.width.value, hints.channels.value]
         return None
 
+    @property
+    def shape_asserted(self) -> bool:
+        """Did any dimension of :attr:`expected_shape` come from ``assert_shape``?
+
+        Decides *who* a plan/exec divergence is reported against. A shape the
+        ops' contracts inferred and execution then contradicted is a contract
+        bug, and ``validate_output_schema`` says so. A shape the user asserted
+        is a claim about their data, and blaming "the Rust implementation" for
+        it — which is what happened — sends them to the wrong file.
+        """
+        return bool(self.pipeline._asserted_dims)
+
 
 @dataclass
 class GraphOutput:
@@ -392,9 +404,7 @@ class PipelineGraph:
         # op position carries over unshifted (affine fusion reads the
         # entering-hints snapshots).
         shared_pipeline._hint_snapshots = dict(template_node.pipeline._hint_snapshots)
-        shared_pipeline._assertions = {
-            i: dict(a) for i, a in template_node.pipeline._assertions.items()
-        }
+        shared_pipeline._assertions = copy.deepcopy(template_node.pipeline._assertions)
         shared_pipeline._set_ops_slice(prefix_ops, shift=0)
 
         # Compute the correct domain and dtype for the prefix operations.
@@ -618,6 +628,7 @@ class PipelineGraph:
                     "expected_domain": node.domain if node else "buffer",
                     "expected_dtype": node.output_dtype if node else "u8",
                     "expected_shape": node.expected_shape if node else None,
+                    "shape_asserted": node.shape_asserted if node else False,
                     "expected_ndim": node.expected_ndim if node else None,
                     "expected_encoding": node.output_encoding if node else None,
                 }
@@ -635,6 +646,7 @@ class PipelineGraph:
                 "expected_domain": node.domain if node else "buffer",
                 "expected_dtype": node.output_dtype if node else "u8",
                 "expected_shape": node.expected_shape if node else None,
+                "shape_asserted": node.shape_asserted if node else False,
                 "expected_ndim": node.expected_ndim if node else None,
                 "expected_encoding": node.output_encoding if node else None,
             }

@@ -32,7 +32,8 @@ from PIL import Image
 
 import polars_cv
 from polars_cv import Pipeline
-from polars_cv._types import Domain
+from polars_cv._graph import GraphNode
+from polars_cv._types import HINT_DIMS, Domain
 
 from ._discovery import package_modules
 from ._op_cases import BUFFER, CONTOUR, EXTRA_CASES, OP_CASES, base_pipeline
@@ -287,8 +288,8 @@ _OP_CASES = OP_CASES
 def _state(pipe: Pipeline) -> tuple:
     hints = pipe._shape_hints
     dims = tuple(
-        None if p is None or p.is_expr else p.value
-        for p in (hints.height, hints.width, hints.channels, hints.batch)
+        None if (p := hints.get(dim)) is None or p.is_expr else p.value
+        for dim in HINT_DIMS
     )
     return (dims, pipe._expected_ndim, pipe._output_dtype, pipe._current_domain)
 
@@ -385,6 +386,74 @@ def test_assert_shape_survives_a_continuation() -> None:
         pl.col("img").cv.pipe(Pipeline().assert_shape(channels=3).grayscale())._pipeline
     )
     assert mid._shape_hints.channels.value == 1
+
+
+def test_a_contradicting_assertion_is_rejected_where_it_is_written() -> None:
+    """``assert_shape`` states a fact; it may not overrule a known one.
+
+    A contradiction used to be accepted here, published as ``expected_shape``,
+    and reported at ``collect()`` by ``validate_output_schema`` as *"the
+    planner's shape contract disagrees with the Rust implementation"* — the
+    plugin taking the blame for a value the caller typed three lines earlier.
+    Both spellings are checked: the lazy continuation replays assertions through
+    the same ``_apply_assertions_at``, so a check that only ran in the eager
+    builder would leave half the surface open.
+    """
+    base = Pipeline().source("image_bytes", dtype="u8")
+    with pytest.raises(ValueError, match="contradicts the height 224"):
+        base.resize(height=224, width=224).assert_shape(height=999)
+    with pytest.raises(ValueError, match="contradicts the channels 1"):
+        base.grayscale().assert_shape(channels=3)
+    with pytest.raises(ValueError, match="contradicts the height 224"):
+        pl.col("img").cv.pipe(base).resize(height=224, width=224).assert_shape(
+            height=999
+        )
+
+    # An assertion the planner cannot check is the supported case: a list
+    # source's shape is genuinely unknown until execution.
+    Pipeline().source("list", dtype="f32").assert_shape(dims=[8, 8, 3])
+
+
+def test_an_assertion_may_not_name_a_dimension_the_rank_lacks() -> None:
+    """The hints are positional, so the H/W/C names only fit a rank-3 buffer."""
+    flat = Pipeline().source("raw", dtype="u8")  # rank 1
+    assert flat._expected_ndim == 1
+    with pytest.raises(ValueError, match="does not have"):
+        flat.assert_shape(channels=3)
+    # `dims=` is the spelling that does fit, and it pins the rank with it.
+    lifted = flat.assert_shape(dims=[64])
+    assert lifted._expected_ndim == 1
+
+
+def test_dims_pins_the_rank_a_list_source_could_not_supply() -> None:
+    """``dims=`` is what makes ``.assert_shape()`` reach an ``array`` sink.
+
+    A list/array source leaves the rank unknown, and ``expected_shape`` only
+    publishes at rank 3 — so the H/W/C spelling set the hints and changed
+    nothing, and the sink's advice to "use .assert_shape()" was circular.
+    """
+    pipe = Pipeline().source("list", dtype="f32").assert_shape(dims=[8, 8, 3])
+    assert pipe._expected_ndim == 3
+    node = GraphNode(node_id="n", pipeline=pipe, column=None)
+    assert node.expected_shape == [8, 8, 3]
+    assert node.shape_asserted is True
+
+    # An inferred shape is not attributed to the caller.
+    inferred = Pipeline().source("image_bytes", dtype="u8").resize(height=8, width=8)
+    assert (
+        GraphNode(node_id="n", pipeline=inferred, column=None).shape_asserted is False
+    )
+
+
+def test_dims_rejects_what_it_cannot_track() -> None:
+    with pytest.raises(ValueError, match="both"):
+        Pipeline().source("list").assert_shape(dims=[8, 8, 3], height=8)
+    with pytest.raises(ValueError, match="needs a declaration"):
+        Pipeline().source("list").assert_shape()
+    with pytest.raises(ValueError, match="up to 3 dimensions"):
+        Pipeline().source("list").assert_shape(dims=[2, 8, 8, 3])
+    with pytest.raises(ValueError, match="positive int"):
+        Pipeline().source("list").assert_shape(dims=[8, 0, 3])
 
 
 # ---------------------------------------------------------------------------

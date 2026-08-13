@@ -222,7 +222,7 @@ CASES: list[ExprCase] = [
         column=CONTOURS,
     ),
     # --- assert_shape ------------------------------------------------------
-    # These four state a fact about the buffer rather than changing it, so a
+    # These three state a fact about the buffer rather than changing it, so a
     # correct assertion is invisible in the output by construction. What they
     # must do instead — reject the row whose buffer disagrees — is pinned by
     # `TestAssertShapeExpressions` in test_expression_op_params.py.
@@ -247,14 +247,6 @@ CASES: list[ExprCase] = [
         "channels",
         lambda v: rgb().assert_shape(channels=v),
         (3, 3),
-        varies=False,
-        note="an assertion that holds leaves the buffer untouched",
-    ),
-    ExprCase(
-        "assert_shape",
-        "batch",
-        lambda v: rgb().assert_shape(batch=v),
-        (1, 1),
         varies=False,
         note="an assertion that holds leaves the buffer untouched",
     ),

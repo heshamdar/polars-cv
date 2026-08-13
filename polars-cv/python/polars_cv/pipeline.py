@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._types import (
+    HINT_DIMS,
     SOURCE_PARAM_APPLIES,
     ApproxMethod,
     BoolOrExpr,
@@ -41,6 +42,7 @@ from polars_cv._types import (
     PadPosition,
     ParamValue,
     RowErrorPolicy,
+    ShapeAssertion,
     ShapeHints,
     SourceFormat,
     SourceSpec,
@@ -203,6 +205,47 @@ def _literal_axes(axes: "Sequence[int]", label: str) -> "ParamValue":
     for axis in axes:
         _reject_expr(axis, f"'{label}'")
     return ParamValue(is_expr=False, value=list(axes))
+
+
+def _asserted_rank(dims: "Sequence[int | None]") -> int:
+    """Validate an ``assert_shape(dims=...)`` list and return the rank it pins.
+
+    Entries are literal ``int``\\ s or ``None`` (dimension left unknown). An
+    expression is refused rather than tracked: ``dims=`` publishes the output
+    schema, and a per-row size is not a plan-time fact — ``height=`` remains
+    available for a per-row dimension, where it correctly publishes nothing.
+
+    Rank is capped at ``len(HINT_DIMS)`` because that is how many dimensions
+    :class:`ShapeHints` tracks. Accepting a longer list would silently file
+    dimension 0 under ``height`` and drop everything past dimension 2, which is
+    a mis-assignment rather than a missing feature — so it is refused here.
+    """
+    if not isinstance(dims, (list, tuple)):
+        msg = f"assert_shape(dims=...) must be a list of ints, got {dims!r}"
+        raise ValueError(msg)
+    dims = list(dims)
+    if not dims:
+        msg = "assert_shape(dims=[]) declares a rank-0 output, which no sink produces."
+        raise ValueError(msg)
+    if len(dims) > len(HINT_DIMS):
+        msg = (
+            f"assert_shape(dims=...) supports up to {len(HINT_DIMS)} dimensions "
+            f"({', '.join(HINT_DIMS)}), got {len(dims)}. Higher-rank shapes are "
+            f"not tracked by the planner; pass the shape to the sink instead "
+            f"(.sink('array', shape=[...]))."
+        )
+        raise ValueError(msg)
+    for axis, size in enumerate(dims):
+        if size is None:
+            continue
+        _reject_expr(size, f"'dims[{axis}]'")
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            msg = (
+                f"assert_shape(dims=...) entry {axis} must be a positive int "
+                f"or None, got {size!r}"
+            )
+            raise ValueError(msg)
+    return len(dims)
 
 
 def _enum_param(
@@ -394,7 +437,13 @@ class Pipeline:
         # op position the assertion was written at. Distinguishes a user
         # assertion (authoritative, must survive a continuation replay) from a
         # hint an operation computed (recomputed by the replay).
-        self._assertions: dict[int, dict[str, ParamValue]] = {}
+        self._assertions: dict[int, ShapeAssertion] = {}
+        # Which hints currently hold a value the *user* asserted rather than
+        # one the ops' contracts inferred. Recomputed with the hints: cleared
+        # by the schema fold, re-filled by `_apply_assertions_at`. Published as
+        # `shape_asserted` so a plan/exec divergence is attributed to whoever
+        # actually made the claim.
+        self._asserted_dims: set[str] = set()
         # Per-row error policy for the executed graph ("raise" by default).
         self._on_error: str = "raise"
         # What a null in a per-row expression parameter means ("raise" by
@@ -464,7 +513,8 @@ class Pipeline:
         new._initial_output_dtype = self._initial_output_dtype
         new._initial_expected_ndim = self._initial_expected_ndim
         new._hint_snapshots = dict(self._hint_snapshots)
-        new._assertions = {i: dict(a) for i, a in self._assertions.items()}
+        new._assertions = copy.deepcopy(self._assertions)
+        new._asserted_dims = set(self._asserted_dims)
         new._expected_ndim = self._expected_ndim
         new._on_error = self._on_error
         new._on_null_param = self._on_null_param
@@ -681,14 +731,92 @@ class Pipeline:
         self._apply_assertions_at(len(self._ops))
 
     def _apply_assertions_at(self, position: int) -> None:
-        """Overlay any ``assert_shape`` recorded at op ``position``.
+        """Check and overlay any shape declaration recorded at op ``position``.
 
         A user assertion outranks whatever the ops inferred, but only from the
         point it was written — which is why it is replayed positionally rather
         than applied once at the end.
+
+        **The single place a declaration is validated as well as applied.**
+        ``assert_shape`` records into ``_assertions`` and calls this rather than
+        assigning the hints itself, so the eager spelling and the lazy
+        continuation's replay run the same checks. A declaration used to be
+        applied unconditionally, which is how ``resize(224, 224)
+        .assert_shape(height=999)`` reached execution: the contradiction was
+        accepted here, published as ``expected_shape``, and only surfaced from
+        ``validate_output_schema`` at ``collect()`` — as a *plugin* contract
+        bug, for what the user had written three lines earlier.
         """
-        for dim, param in self._assertions.get(position, {}).items():
+        assertion = self._assertions.get(position)
+        if assertion is None:
+            return
+        if assertion.ndim is not None:
+            self._require_ndim_is_consistent(assertion)
+            self._expected_ndim = assertion.ndim
+        for dim, param in assertion.dims.items():
+            # A `None` entry declares the dimension *unknown* — the `shape_ref`
+            # source's answer when the referenced node's own hint is per-row.
+            # There is nothing to contradict, and nothing to attribute.
+            if param is None:
+                setattr(self._shape_hints, dim, None)
+                self._asserted_dims.discard(dim)
+                continue
+            self._require_dim_is_assertable(dim, param)
             setattr(self._shape_hints, dim, param)
+            if assertion.source == "assert_shape":
+                self._asserted_dims.add(dim)
+
+    def _require_ndim_is_consistent(self, assertion: "ShapeAssertion") -> None:
+        """Reject a rank declaration that contradicts the tracked rank."""
+        current = self._expected_ndim
+        if current is None or current == assertion.ndim:
+            return
+        msg = (
+            f"assert_shape(dims=...) declares a rank-{assertion.ndim} output, "
+            f"but this pipeline is already known to produce rank "
+            f"{current}. Drop the assertion, or correct its length."
+        )
+        raise ValueError(msg)
+
+    def _require_dim_is_assertable(self, dim: str, param: "ParamValue") -> None:
+        """Reject a declaration the pipeline's own state contradicts.
+
+        Two ways a declaration is not merely redundant but wrong:
+
+        - the dimension does not exist at the tracked rank — the same invariant
+          :meth:`_drop_hints_below_rank` enforces against the ops, applied to
+          the user;
+        - the dimension is already known concretely and the declaration
+          disagrees. One of the two is wrong and the planner cannot tell which,
+          so it refuses rather than picking.
+
+        Declaring a dimension the planner does *not* know is the supported case
+        and passes silently — it is the whole point of ``assert_shape`` on a
+        list/array source, whose shape is not knowable until execution.
+        """
+        ndim = self._expected_ndim
+        axis = HINT_DIMS.index(dim)
+        if ndim is not None and axis >= ndim:
+            msg = (
+                f"assert_shape({dim}=...) names dimension {axis}, which a "
+                f"rank-{ndim} output does not have. The shape hints are "
+                f"positional — {', '.join(HINT_DIMS)} are dimensions "
+                f"0, 1 and 2 — so use assert_shape(dims=[...]) for anything "
+                f"that is not an [H, W, C] image."
+            )
+            raise ValueError(msg)
+        known = self._shape_hints.get(dim)
+        if known is None or known.is_expr or param.is_expr:
+            return
+        if int(known.value) == int(param.value):
+            return
+        where = f"the {self._ops[-1].op}() before it" if self._ops else "the source"
+        msg = (
+            f"assert_shape({dim}={param.value}) contradicts the {dim} "
+            f"{known.value} that {where} already establishes. An assertion "
+            f"cannot change what the data is — remove it, or fix the value."
+        )
+        raise ValueError(msg)
 
     def _set_ops_slice(self, ops: "list[OpSpec]", *, shift: int) -> None:
         """Replace the whole op list, re-keying everything keyed by op index.
@@ -716,7 +844,7 @@ class Pipeline:
             if shift <= i < shift + len(ops)
         }
         self._assertions = {
-            i - shift: dict(a)
+            i - shift: copy.deepcopy(a)
             for i, a in self._assertions.items()
             if shift <= i <= shift + len(ops)
         }
@@ -847,6 +975,10 @@ class Pipeline:
         (:meth:`_seed_from_contour_rasterize`), so the source and the
         ``rasterize`` op cannot publish different shapes for the same mask.
         """
+        # Every hint below is about to be recomputed from the op's contracts,
+        # so nothing survives as "the user asserted this". `_apply_assertions_at`
+        # runs immediately after and re-marks whatever it re-declares.
+        self._asserted_dims.clear()
         self._update_hw_from_infer_shape(
             spec, self._input_dims_for(contract, input_ndim)
         )
@@ -1476,43 +1608,101 @@ class Pipeline:
     def assert_shape(
         self,
         *,
+        dims: "Sequence[int | None] | None" = None,
         height: IntOrExpr | None = None,
         width: IntOrExpr | None = None,
         channels: IntOrExpr | None = None,
-        batch: IntOrExpr | None = None,
     ) -> "Pipeline":
         """
-        Provide shape hints for the pipeline.
+        Declare a shape the planner cannot work out for itself.
 
-        Expressions are resolved per-row at execution time.
-        Literal values help the planner optimize.
+        Use this when the source does not reveal its shape at plan time — a
+        ``list``/``array`` column's rank and sizes are only known once the data
+        arrives, so a fixed-shape ``.sink("array")`` has nothing to publish
+        without a declaration. For a source the planner *can* read (image bytes,
+        a file path), the shape is already inferred and an assertion is at best
+        redundant.
+
+        **An assertion states a fact; it does not change one.** A declaration
+        that contradicts what the pipeline already knows — or that names a
+        dimension the output rank does not have — is rejected here, at the line
+        that wrote it. Previously it was accepted, published as the output
+        schema, and reported at ``collect()`` as a plugin contract bug.
+
+        Two spellings:
+
+        - ``dims=[8, 8, 3]`` — positional and complete. Entry *i* is the size
+          of dimension *i*; ``None`` leaves one unknown. This also pins the
+          output **rank** to ``len(dims)``, which is what lets a list/array
+          source reach an ``array`` sink. Entries are literal ``int``\\ s: a
+          rank and its per-dimension sizes are plan-time schema facts, so
+          unlike most parameters they cannot be per-row expressions.
+        - ``height=``/``width=``/``channels=`` — the ``[H, W, C]`` spelling of
+          dimensions 0, 1 and 2, for the common image case. The hints are
+          **positional**, so these names only describe an ``[H, W, C]`` buffer:
+          after a ``transpose([2, 0, 1])`` dimension 0 is the channel axis, and
+          calling it ``height`` would be a lie. They are therefore rejected once
+          the rank is known to be anything but 3 — use ``dims=`` there.
+          Expressions are accepted and resolved per row, but a per-row size is
+          not a plan-time fact, so it publishes no shape.
 
         Args:
-            height: Image height (literal or expression).
-            width: Image width (literal or expression).
-            channels: Number of channels (literal or expression).
-            batch: Batch size (literal or expression).
+            dims: Full positional shape. Mutually exclusive with the
+                ``height``/``width``/``channels`` keywords.
+            height: Size of dimension 0 (literal or expression).
+            width: Size of dimension 1 (literal or expression).
+            channels: Size of dimension 2 (literal or expression).
 
         Returns:
-            Self for chaining.
+            A new pipeline carrying the declaration.
+
+        Raises:
+            ValueError: If the declaration contradicts a known dimension or
+                rank, names a dimension the rank does not have, or mixes
+                ``dims=`` with the per-dimension keywords.
+
+        Example:
+            ```python
+            # A list column's shape is not knowable at plan time; declare it.
+            pipe = Pipeline().source("list", dtype="f32").assert_shape(dims=[8, 8, 3])
+            df.with_columns(pl.col("arr").cv.pipe(pipe).sink("array"))
+            ```
         """
+        named = {"height": height, "width": width, "channels": channels}
+        given = {dim: value for dim, value in named.items() if value is not None}
+        if dims is not None and given:
+            msg = (
+                f"assert_shape() takes either dims=[...] or the per-dimension "
+                f"keywords {sorted(given)}, not both — dims= already gives "
+                f"every dimension a position."
+            )
+            raise ValueError(msg)
+        if dims is None and not given:
+            msg = "assert_shape() needs a declaration: dims=[...] or height=/width=/channels=."
+            raise ValueError(msg)
+
         new = self._clone()
         # Recorded against the current op position so a continuation can replay
         # the assertion at the point the user wrote it. Without the position an
         # assertion could not be told apart from a hint an op computed, and
         # replaying it at the end would override later ops that legitimately
         # change the shape (assert channels=3, then grayscale → 1).
-        asserted = new._assertions.setdefault(len(new._ops), {})
-        for dim, value in (
-            ("height", height),
-            ("width", width),
-            ("channels", channels),
-            ("batch", batch),
-        ):
-            if value is not None:
-                param = new._track_expr(value)
-                setattr(new._shape_hints, dim, param)
-                asserted[dim] = param
+        assertion = new._assertions.setdefault(len(new._ops), ShapeAssertion())
+        if dims is not None:
+            assertion.ndim = _asserted_rank(dims)
+            for axis, size in enumerate(dims):
+                if size is None:
+                    continue
+                if axis < len(HINT_DIMS):
+                    assertion.dims[HINT_DIMS[axis]] = ParamValue(
+                        is_expr=False, value=size
+                    )
+        else:
+            for dim, value in given.items():
+                assertion.dims[dim] = new._track_expr(value)
+        # Applied (and checked) through the one path the lazy replay also uses,
+        # rather than assigning the hints here — see `_apply_assertions_at`.
+        new._apply_assertions_at(len(new._ops))
         return new
 
     # --- View Operations (zero-copy where possible) ---
@@ -3259,10 +3449,16 @@ class Pipeline:
                 # this survives a continuation like a user `assert_shape`.
                 # Recorded one position *past* this op, so it is applied after
                 # the op's own (unknown) inferred shape rather than before.
-                asserted = p._assertions.setdefault(len(p._ops) + 1, {})
+                #
+                # Tagged `shape_ref`, not `assert_shape`: the canvas comes from
+                # another node's *inferred* hints, so if execution disagrees
+                # that is a contract bug and keeps the contract-bug wording.
+                asserted = p._assertions.setdefault(
+                    len(p._ops) + 1, ShapeAssertion(source="shape_ref")
+                )
                 for dim, concrete in Pipeline._shape_ref_dims(shape).items():
                     setattr(p._shape_hints, dim, concrete)
-                    asserted[dim] = concrete
+                    asserted.dims[dim] = concrete
             return params
 
         # H/W come from `GeometryOp::Rasterize::infer_shape` for the explicit
@@ -3901,7 +4097,7 @@ class Pipeline:
         # The op slice carries its position-keyed side tables with it, so
         # affine fusion in the sub-pipeline still sees per-position shapes.
         sub._hint_snapshots = dict(self._hint_snapshots)
-        sub._assertions = {i: dict(a) for i, a in self._assertions.items()}
+        sub._assertions = copy.deepcopy(self._assertions)
         sub._set_ops_slice(self._ops[start_op:end_op], shift=start_op)
 
         # Compute the correct domain and dtype for this subset of operations.

@@ -48,6 +48,45 @@ _STAT_REDUCERS: "dict[str, str]" = {
 _DEFAULT_STATS: "tuple[str, ...]" = ("mean", "std", "min", "max")
 
 
+def _array_sink_needs_shape(pipeline: Any, alias: str | None = None) -> str:
+    """The message for an ``array`` sink whose shape the planner cannot name.
+
+    Written once and used by both the single-output and the multi-output check,
+    and deliberately naming *what each remedy actually supplies*. The advice it
+    replaces was circular for the case that hits it most: it told the user to
+    call ``.assert_shape()`` or ``.resize()``, and a list/array source — whose
+    shape genuinely is not knowable until execution, and which is therefore the
+    source that lands here — got the same message back after doing so.
+    ``.resize()`` fixes H and W but never the channel count, and
+    ``.assert_shape()`` only reaches the schema now that ``dims=`` pins the rank
+    alongside the sizes.
+    """
+    from polars_cv._types import HINT_DIMS
+
+    hints = pipeline._shape_hints
+    missing = [dim for dim in HINT_DIMS if not _is_known(hints.get(dim))]
+    if pipeline._expected_ndim != 3 and not missing:
+        unknown = "the output rank"
+    else:
+        unknown = ", ".join(missing) if missing else "the output rank"
+    where = f" (alias '{alias}')" if alias else ""
+    return (
+        f"an 'array' sink{where} needs the full output shape at planning time, "
+        f"and this pipeline's is not known: {unknown}. Three ways to supply it:\n"
+        f"  .sink('array', shape=[8, 8, 3])   — always works; the shape belongs "
+        f"to the sink\n"
+        f"  .assert_shape(dims=[8, 8, 3])     — when you know it and the source "
+        f"does not (a list/array column's shape is only settled during "
+        f"execution)\n"
+        f"  .resize(height=8, width=8)        — supplies height and width only"
+    )
+
+
+def _is_known(hint: Any) -> bool:
+    """Is a shape hint a plan-time integer (rather than absent or per-row)?"""
+    return hint is not None and not hint.is_expr
+
+
 def _require_concrete_sink_dtype(
     pipeline: Any, fmt: str, alias: str | None = None
 ) -> None:
@@ -266,9 +305,7 @@ class LazyPipelineExpr:
             new_pipeline._expected_ndim = upstream_ndim
             new_pipeline._initial_output_dtype = upstream_dtype
             new_pipeline._initial_expected_ndim = upstream_ndim
-            new_pipeline._assertions = {
-                i: dict(a) for i, a in pipeline._assertions.items()
-            }
+            new_pipeline._assertions = _copy.deepcopy(pipeline._assertions)
             # An assert_shape() written before the first op has no preceding
             # append to apply it; every later position is applied by the
             # `_push_op` that lands on it, so the replay is just the append
@@ -376,8 +413,7 @@ class LazyPipelineExpr:
                     # but we can check if the node has deterministic shape
                     node = self._find_node_by_alias(alias, all_nodes)
                     if node and not node._pipeline._shape_hints.has_all_dims():
-                        msg = f"Multi-output 'array' sink for alias '{alias}' requires deterministic shape. Use .resize() or .assert_shape() on that branch."
-                        raise ValueError(msg)
+                        raise ValueError(_array_sink_needs_shape(node._pipeline, alias))
             graph.set_multi_output(format, **kwargs)
         else:
             # Single output mode
@@ -389,8 +425,7 @@ class LazyPipelineExpr:
 
             if format == "array" and "shape" not in kwargs:
                 if not self._pipeline._shape_hints.has_all_dims():
-                    msg = "shape is required for 'array' sink format when output shape is not deterministic. Provide 'shape' in .sink() or use .resize() earlier."
-                    raise ValueError(msg)
+                    raise ValueError(_array_sink_needs_shape(self._pipeline))
 
             # Validate list sink ndim — allow None when Rust can resolve
             # it from the Polars column type (list/array sources).
