@@ -80,7 +80,18 @@ class ServeStats:
 
     @property
     def requests_per_connection(self) -> float:
-        return self.requests / self.connections if self.connections else 0.0
+        """Requests served per connection accepted **in this window**.
+
+        Infinite when requests were served over zero *newly accepted*
+        connections — that is the strongest possible reuse result, not a
+        failure, and it is reachable here because the counters are reset
+        between phases while the client's pool is not. Returning 0.0 for that
+        case (as this did) printed perfect reuse as `0.00`, which reads exactly
+        like the no-reuse number it is the opposite of.
+        """
+        if self.connections:
+            return self.requests / self.connections
+        return float("inf") if self.requests else 0.0
 
 
 class _CountingServer(http.server.ThreadingHTTPServer):
@@ -391,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"connections={stats.connections} requests={stats.requests} "
         f"({stats.requests_per_connection:.2f} requests/connection; "
-        f"1.00 means no connection reuse)"
+        f"1.00 means no reuse, inf means every request rode a pooled connection)"
     )
     print(f"plugin fetch concurrency is {PLUGIN_CONCURRENCY} files per wave")
     return 0
