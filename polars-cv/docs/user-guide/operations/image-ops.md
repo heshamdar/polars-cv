@@ -473,7 +473,28 @@ for the two-pass curation pattern.
 
 ## Shape Assertion
 
-Provide shape hints for the pipeline planner. Useful for asserting known dimensions when the source has unknown shape.
+Declare a shape the planner cannot work out for itself. This is for sources
+that do not reveal their shape at plan time — a `list`/`array` column's rank and
+sizes are only known once the data arrives. For a source the planner can read
+(image bytes, a file path) the shape is already inferred, and an assertion is at
+best redundant.
+
+There are two spellings.
+
+`dims=` is positional and complete: entry *i* is the size of dimension *i*, and
+`None` leaves one unknown. It also pins the output **rank**, which is what lets
+a `list`/`array` source reach a fixed-shape `array` sink:
+
+```python
+pipe = Pipeline().source("list", dtype="f32").assert_shape(dims=[8, 8, 3])
+df.with_columns(pl.col("arr").cv.pipe(pipe).sink("array"))
+
+# None leaves a dimension unknown while still pinning the rank
+Pipeline().source("list", dtype="u8").assert_shape(dims=[None, None, 3])
+```
+
+`height=`/`width=`/`channels=` is the `[H, W, C]` spelling of dimensions 0, 1
+and 2, for the common image case:
 
 ```python
 # Assert the decoded image has 4 channels (RGBA)
@@ -482,6 +503,30 @@ Pipeline().source("image_bytes").assert_shape(channels=4)
 # Assert full shape
 Pipeline().source("image_bytes").assert_shape(height=512, width=512, channels=3)
 ```
+
+Those names describe an `[H, W, C]` buffer, and the hints are positional — so
+after a `transpose([2, 0, 1])` dimension 0 is the channel axis and calling it
+`height` would be a lie. They are rejected once the rank is known to be anything
+but 3; use `dims=` there. Put the assertion *before* a transpose, where the
+names mean what they say.
+
+**An assertion states a fact; it does not change one.** A declaration that
+contradicts something the pipeline already knows is rejected at the line that
+wrote it, naming both values and the operation that established the known one:
+
+```python
+Pipeline().source("image_bytes").resize(height=224, width=224).assert_shape(height=999)
+# ValueError — resize already fixed dimension 0 at 224
+```
+
+Note what an assertion does *not* supply. `.assert_shape()` and `.resize()`
+declare or set dimensions of the buffer; neither gives `.sink("array")` its
+output shape, which comes from `.sink("array", shape=[...])`.
+
+`dims=` entries are literal `int`s — a rank and its per-dimension sizes are
+plan-time schema facts. The `height`/`width`/`channels` keywords do accept
+expressions and resolve them per row, but a per-row size is not a plan-time
+fact, so it publishes no shape.
 
 ## Dynamic Parameters
 
