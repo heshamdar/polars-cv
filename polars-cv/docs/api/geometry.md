@@ -58,8 +58,10 @@ contour = contour_from_points([
 
 ## Per-Row Parameters and Nulls
 
-Numeric parameters on all three namespaces accept a `pl.Expr` as well as a
-literal, resolved per row. A null in such a column raises by default;
+Parameters on all three namespaces accept a `pl.Expr` as well as a literal,
+resolved per row — numbers, and the enums and flags too, since eligibility is
+decided by whether a value changes the output shape, rank or dtype rather than
+by its type. A null in such a column raises by default;
 `on_null("null")` — shared by `.contour`, `.point` and `.bbox` — yields null for
 the affected rows instead:
 

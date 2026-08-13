@@ -66,6 +66,30 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   namespaces' live signatures, so a new non-structural enum has to be plumbed
   for per-row use or exempted with the structural reason.
 
+- **The remote source has a benchmark.** Every scenario in the suite was handed
+  bytes that were already in memory, so the `fetch.rs` / `cloud.rs` stage — the
+  one every `s3://`, `gs://`, `az://` and `http://` path goes through — had no
+  coverage at all. `benchmarks/scenarios/remote_source.py` measures it against a
+  loopback HTTP server, selectable from the regression suite as
+  `--scenarios remote`.
+
+  Loopback rather than a real bucket because the transports differ in *signing*,
+  not in structure: each lands in `cloud::read_file`, which builds a client and
+  issues one GET per file, and each is batched by the same `fetch::prefetch`. A
+  wide-area measurement is dominated by the link and hides what the plugin
+  costs; a `--latency-ms` knob injects a synthetic delay for when modelling the
+  link *is* the point. Real S3/GCS numbers need credentials and a bucket, so
+  they cannot be a committed benchmark.
+
+  It reports three timings over one corpus whose differences isolate a stage,
+  and one thing that is not a timing: **requests per connection**, counted by
+  the server. On this code that ratio is 1.00 — a fresh connection for every
+  file, because `read_http` constructs a `reqwest::Client` inside the per-file
+  read and the three cloud backends each build a store per file. On loopback
+  that costs about 0.5 ms/file; against a real endpoint it is a TCP *and* TLS
+  handshake per file. Measured and reported rather than fixed: caching a
+  credentialed store is a correctness question before it is a performance one.
+
 ### Fixed
 
 - **`assert_shape` rejects a contradiction where it is written, instead of
@@ -437,13 +461,61 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   tabs, list items) and annotated ones (`title=`, `hl_lines=`) — both forms
   `mkdocs.yml` enables — so examples inside them were never checked. Fixtured.
 
-### Fixed
-
 - **`statistics(include=<generator>)` raised `IndexError` instead of a
   message.** `_stat_nodes` iterated `include` twice, so a one-shot iterable was
   exhausted by the validation pass and produced no nodes. Off the declared
   `list[str] | None`, but a raw `IndexError` from a private helper is not an
   answer. It is materialised once now.
+
+- **The `zero_copy` benchmark scenario could never run.** It is offered in
+  `ALL_SCENARIOS` and named in `benchmark.yml`'s input description, but
+  selecting it died in `_aggregate_best` with `'BenchmarkResult' object has no
+  attribute 'framework'`. The scenario returned its own `BenchmarkResult` — a
+  different record that happened to shadow
+  `benchmarks.frameworks.BenchmarkResult` — and `_run_once` appended those to a
+  list of these without converting. Nothing ever exercised it.
+
+  The local record is `IngestionResult` now, so two records meaning different
+  things read differently, and `to_suite_results` is the one conversion between
+  them. `_run_once` rejects any result that is not the suite's own record, so a
+  scenario that skips the conversion fails at the boundary naming the scenario
+  rather than several frames later naming a missing field.
+
+- **The benchmark workflow measured a binary nobody installs.** `ci.yml` and
+  `publish.yml` both clear `RUSTFLAGS` so `.cargo/config.toml`'s
+  `target-cpu=x86-64-v3` is not baked in; `benchmark.yml` did not. It was
+  therefore timing an AVX2/BMI2/FMA build while published wheels are built
+  without those, so its numbers described a configuration no user runs. Cleared,
+  with the same comment the other two carry.
+
+- **A release tag is checked against the version being published.** maturin
+  reads the version from `polars-cv/pyproject.toml`; a tag is only a label on a
+  commit, and nothing compared the two. A release tagged `v0.20.0` cut before
+  the bump landed would have uploaded `polars_cv-0.19.0` under it, or built
+  every wheel and then failed at the upload with PyPI's "file already exists". A
+  `check-version` job runs first, and both build jobs need it.
+
+  It reads one manifest rather than re-comparing all four: the other three are
+  pinned to `pyproject.toml` by `test_version_consistency.py`, which `ci.yml`
+  runs on every push to main, so restating that comparison in the workflow would
+  be a second authority for one fact. A `workflow_dispatch` run has no tag to
+  check against, so it warns rather than skipping silently.
+
+- **Documentation that described code as it is not.** `geometry.md` still called
+  `scale`'s `origin` and `ensure_winding`'s `direction` literal-only "structural
+  parameters" after both became per-row expressions, and omitted
+  `label_reduce`'s two enums from the list of expression-capable parameters. It
+  said nothing about every `.contour` accessor now reading a contour *set*.
+  `image-ops.md` documented only the `height`/`width`/`channels` spelling of
+  `assert_shape`, not `dims=` — the one that pins the rank, and so the only one
+  that gets a `list`/`array` source to a fixed-shape `array` sink.
+  `CONTRIBUTING.md`'s release steps claimed GitHub Actions publishes to TestPyPI
+  and tests the install from there; `publish.yml` has never done either.
+
+  Four remaining recommendations of `maturin develop --release` for the develop
+  loop — in `build_info()`'s docstring and three `test_version_consistency.py`
+  messages — now say `maturin develop`, finishing what the earlier docs pass
+  started. The benchmark docs keep `--release`, which they need.
 
 ## [0.19.0] — 2026-08-09
 
