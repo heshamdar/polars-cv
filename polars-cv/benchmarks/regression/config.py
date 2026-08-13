@@ -15,10 +15,21 @@ from dataclasses import dataclass, field
 # only ever run these two adapters — never the external frameworks.
 POLARS_CV_ADAPTERS: list[str] = ["polars-cv-eager", "polars-cv-streaming"]
 
-# All scenarios the suite knows how to run. "zero_copy" is opt-in (it has its
-# own hardcoded matrix and is slower); the others share the
+# All scenarios the suite knows how to run. "zero_copy" and "remote" are opt-in
+# (each has its own matrix and its own result shape); the others share the
 # (counts, sizes, warmup, iterations) signature.
-ALL_SCENARIOS: tuple[str, ...] = ("single_ops", "pipelines", "e2e", "zero_copy")
+#
+# "remote" measures the `file_path` fetch path — the stage every `s3://`,
+# `gs://`, `az://` and `http://` source goes through — against a loopback HTTP
+# server. Nothing else in the suite touches it: every other scenario is handed
+# bytes that are already in memory.
+ALL_SCENARIOS: tuple[str, ...] = (
+    "single_ops",
+    "pipelines",
+    "e2e",
+    "zero_copy",
+    "remote",
+)
 # Default to pipelines only: they exercise the full decode -> multi-op -> encode
 # hot path across light/medium/heavy/imagenet/medical configs, run in ~3.5
 # min/run, and were measured all-NEUTRAL on a same-binary self-check at the

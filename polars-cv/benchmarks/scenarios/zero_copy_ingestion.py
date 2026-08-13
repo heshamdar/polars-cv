@@ -31,15 +31,27 @@ from PIL import Image
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:
-    pass
+    from benchmarks.frameworks import BenchmarkResult
 
 
 @dataclass
-class BenchmarkResult:
-    """Result of a benchmark run."""
+class IngestionResult:
+    """One measurement from this module's own, row-oriented matrix.
+
+    Deliberately *not* named ``BenchmarkResult``. It used to be, shadowing
+    ``benchmarks.frameworks.BenchmarkResult`` — a different record with
+    different fields — and `benchmarks.regression.run_suite` appended these to a
+    list of those without converting. Selecting the ``zero_copy`` scenario
+    therefore died in aggregation with ``'BenchmarkResult' object has no
+    attribute 'framework'``. Two records that mean different things now read
+    differently; :func:`to_suite_results` is the one conversion between them.
+    """
 
     name: str
     rows: int
+    #: (width, height) of the images measured; carried so the conversion below
+    #: does not have to invent one for the suite's result key.
+    size: tuple[int, int]
     total_time_ms: float
     per_row_us: float
     throughput_rows_per_sec: float
@@ -86,7 +98,7 @@ def create_list_data(n_rows: int, shape: tuple[int, int] = (64, 64)) -> pl.DataF
 
 def benchmark_image_bytes_source(
     n_rows: int = 100, size: tuple[int, int] = (256, 256)
-) -> BenchmarkResult:
+) -> IngestionResult:
     """Benchmark image_bytes source (requires PNG decoding)."""
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
@@ -106,7 +118,8 @@ def benchmark_image_bytes_source(
     per_row_us = (elapsed * 1_000_000) / n_rows
     throughput = n_rows / elapsed
 
-    return BenchmarkResult(
+    return IngestionResult(
+        size=size,
         name="image_bytes",
         rows=n_rows,
         total_time_ms=elapsed_ms,
@@ -117,7 +130,7 @@ def benchmark_image_bytes_source(
 
 def benchmark_blob_source(
     n_rows: int = 100, size: tuple[int, int] = (256, 256)
-) -> BenchmarkResult:
+) -> IngestionResult:
     """Benchmark blob source (zero-copy path)."""
     blobs = create_blob_data(n_rows, size)
     df = pl.DataFrame({"blob": blobs})
@@ -137,7 +150,8 @@ def benchmark_blob_source(
     per_row_us = (elapsed * 1_000_000) / n_rows
     throughput = n_rows / elapsed
 
-    return BenchmarkResult(
+    return IngestionResult(
+        size=size,
         name="blob",
         rows=n_rows,
         total_time_ms=elapsed_ms,
@@ -148,7 +162,7 @@ def benchmark_blob_source(
 
 def benchmark_list_source_explicit_dtype(
     n_rows: int = 100, size: tuple[int, int] = (64, 64)
-) -> BenchmarkResult:
+) -> IngestionResult:
     """Benchmark list source with explicit dtype."""
     df = create_list_data(n_rows, size)
 
@@ -167,7 +181,8 @@ def benchmark_list_source_explicit_dtype(
     per_row_us = (elapsed * 1_000_000) / n_rows
     throughput = n_rows / elapsed
 
-    return BenchmarkResult(
+    return IngestionResult(
+        size=size,
         name="list_explicit_dtype",
         rows=n_rows,
         total_time_ms=elapsed_ms,
@@ -178,7 +193,7 @@ def benchmark_list_source_explicit_dtype(
 
 def benchmark_list_source_auto_dtype(
     n_rows: int = 100, size: tuple[int, int] = (64, 64)
-) -> BenchmarkResult:
+) -> IngestionResult:
     """Benchmark list source with auto dtype inference."""
     df = create_list_data(n_rows, size)
 
@@ -198,7 +213,8 @@ def benchmark_list_source_auto_dtype(
     per_row_us = (elapsed * 1_000_000) / n_rows
     throughput = n_rows / elapsed
 
-    return BenchmarkResult(
+    return IngestionResult(
+        size=size,
         name="list_auto_dtype",
         rows=n_rows,
         total_time_ms=elapsed_ms,
@@ -209,7 +225,7 @@ def benchmark_list_source_auto_dtype(
 
 def benchmark_numpy_output(
     n_rows: int = 100, size: tuple[int, int] = (256, 256)
-) -> BenchmarkResult:
+) -> IngestionResult:
     """Benchmark numpy sink output (zero-copy struct format)."""
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
@@ -230,7 +246,8 @@ def benchmark_numpy_output(
     per_row_us = (elapsed * 1_000_000) / n_rows
     throughput = n_rows / elapsed
 
-    return BenchmarkResult(
+    return IngestionResult(
+        size=size,
         name="numpy_output",
         rows=n_rows,
         total_time_ms=elapsed_ms,
@@ -241,7 +258,7 @@ def benchmark_numpy_output(
 
 def benchmark_png_output(
     n_rows: int = 100, size: tuple[int, int] = (256, 256)
-) -> BenchmarkResult:
+) -> IngestionResult:
     """Benchmark PNG sink output (requires encoding/compression)."""
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
@@ -261,7 +278,8 @@ def benchmark_png_output(
     per_row_us = (elapsed * 1_000_000) / n_rows
     throughput = n_rows / elapsed
 
-    return BenchmarkResult(
+    return IngestionResult(
+        size=size,
         name="png_output",
         rows=n_rows,
         total_time_ms=elapsed_ms,
@@ -272,7 +290,7 @@ def benchmark_png_output(
 
 def benchmark_blob_output(
     n_rows: int = 100, size: tuple[int, int] = (256, 256)
-) -> BenchmarkResult:
+) -> IngestionResult:
     """Benchmark blob sink output (VIEW protocol)."""
     images = create_test_images(n_rows, size)
     df = pl.DataFrame({"img": images})
@@ -292,7 +310,8 @@ def benchmark_blob_output(
     per_row_us = (elapsed * 1_000_000) / n_rows
     throughput = n_rows / elapsed
 
-    return BenchmarkResult(
+    return IngestionResult(
+        size=size,
         name="blob_output",
         rows=n_rows,
         total_time_ms=elapsed_ms,
@@ -301,7 +320,7 @@ def benchmark_blob_output(
     )
 
 
-def run_ingestion_benchmarks() -> list[BenchmarkResult]:
+def run_ingestion_benchmarks() -> list[IngestionResult]:
     """Run all ingestion benchmarks."""
     print("=" * 60)
     print("Zero-Copy Ingestion Benchmarks")
@@ -325,7 +344,7 @@ def run_ingestion_benchmarks() -> list[BenchmarkResult]:
     return results
 
 
-def run_output_benchmarks() -> list[BenchmarkResult]:
+def run_output_benchmarks() -> list[IngestionResult]:
     """Run all output benchmarks."""
     print("\n" + "=" * 60)
     print("Zero-Copy Output Benchmarks")
@@ -345,14 +364,45 @@ def run_output_benchmarks() -> list[BenchmarkResult]:
     return results
 
 
-def run_benchmarks() -> list[BenchmarkResult]:
+def run_benchmarks() -> list[IngestionResult]:
     """Run all benchmarks."""
     ingestion_results = run_ingestion_benchmarks()
     output_results = run_output_benchmarks()
     return ingestion_results + output_results
 
 
-def print_results(results: list[BenchmarkResult]) -> None:
+def to_suite_results(results: list[IngestionResult]) -> "list[BenchmarkResult]":
+    """Convert to the record the regression suite aggregates on.
+
+    The suite keys results on ``(framework, operation, image_size,
+    image_count, gpu_mode)`` and gates on throughput, none of which an
+    :class:`IngestionResult` carries under those names. Both engines are
+    polars-cv here, and these benchmarks all run eager, so ``framework`` is
+    fixed rather than measured.
+
+    ``peak_memory_mb`` is 0.0 because this module does not measure memory.
+    That compares as NEUTRAL (``compare._pct`` maps 0 → 0 to 0%), and memory is
+    advisory rather than gated, so a missing measurement cannot manufacture a
+    regression — but it is a hole in the results, not a zero reading.
+    """
+    from benchmarks.frameworks import BenchmarkResult
+
+    return [
+        BenchmarkResult(
+            framework="polars-cv-eager",
+            operation=f"zero_copy_{r.name}",
+            image_count=r.rows,
+            image_size=r.size,
+            total_time_seconds=r.total_time_ms / 1000.0,
+            throughput_images_per_second=r.throughput_rows_per_sec,
+            latency_ms_per_image=r.per_row_us / 1000.0,
+            peak_memory_mb=0.0,
+        )
+        for r in results
+    ]
+
+
+def print_results(results: list[IngestionResult]) -> None:
     """Print benchmark results in a formatted table."""
     print("\n" + "=" * 60)
     print("Results Summary")
