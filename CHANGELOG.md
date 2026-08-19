@@ -7,7 +7,116 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Pipeline.to_graph()` silently discarded `on_error` and `on_null_param`.**
+  Three functions built a `Pipeline` field by field — `_clone`,
+  `_create_sub_pipeline`, and CSE's `_create_shared_node` — and the second
+  carried 11 of the 14 fields. `PipelineGraph._to_dict` reads the per-row
+  policies off the *node* pipeline, and `to_graph()` makes its sub-pipeline the
+  graph's only node, so a public
+  `Pipeline().source(...).on_error("null").to_graph(col)` executed under
+  `"raise"`. CSE escaped it by accident: the hoist unions over all nodes and the
+  originals kept their policy.
+
+  All three now inherit the whole state through one `_copy_state_from`, driven
+  by a `_STATE_COPIERS` table, and override only what they mean to change — so a
+  new field is carried by default rather than by remembering three call sites.
+  `test_pipeline_state_copy_is_complete` fails if the table and `__init__`
+  disagree in either direction.
+
+- **A vector-domain reduction was accepted at plan time and rejected at
+  execution.** `GraphStep::input_domains` declares that binary ops and
+  reductions take `[Buffer, Vector]`, and the Python planner validates against
+  it — but execution re-derived the precondition by hand at ten sites, each with
+  a hardcoded `"<Step> requires Buffer"` string, and `NodeOutput::as_buffer()`
+  returns `None` for a vector. So `extract_shape().reduce_sum()` planned clean
+  and failed the row. The ten sites are now one `step_buffer_operand` that reads
+  the declared contract, materializing a 1-D buffer for a vector the step admits
+  — the equivalence the planner's own docstring already claimed. A domain the
+  contract does *not* admit is still refused.
+
+- **An unmappable dtype string is no longer typed `UInt8`.**
+  `dtype_str_to_polars` ended in `_ => DataType::UInt8`, guarded only by a
+  source-scanning ratchet, with a comment conceding that any unmatched string
+  was silently typed. It now parses through `DType::from_short_name` and returns
+  `PolarsResult`, and the Polars spelling is an exhaustive match on `DType`, so
+  an eleventh dtype fails to compile rather than defaulting.
+
+- **`deny_unknown_fields` now covers the nested wire-format structs.** serde's
+  attribute does not descend, so closing `GraphNode` left `SourceSpec`,
+  `OutputSpec`, `UnifiedGraph` and `GraphKwargs` accepting anything. That
+  mattered most on `SourceSpec`, which carries `allowed_roots`: a misspelled key
+  deserialized to `None`, i.e. no path sandbox, silently.
+
+
+- **`gcs_bearer_token` on an `s3://` path now errors instead of being ignored.**
+  S3 signs with SigV4 and cannot use an OAuth bearer token; the value was
+  accepted and silently discarded, which is the bug `token_command` was already
+  rejected for one field over.
+
+- **S3 object keys are no longer double percent-encoded.** `read_s3` passed
+  `url.path()` — already encoded — to `Path::from`, which encodes again, so
+  `s3://bucket/a b.png` requested the key `a%2520b.png`. Reads now use the raw
+  prefix, which also makes polars-cv agree with `pl.scan_parquet` on the same
+  URL.
+
+- **A misspelled storage option is still rejected.** polars'
+  `parse_untyped_config` silently drops keys it does not recognise ("Silently
+  ignores custom upstream storage_options"), so delegating naively would have
+  turned `unknown GCS storage option 'x'` into a request that quietly did the
+  wrong thing. Keys are validated against each backend's own vocabulary before
+  the options are handed over, lower-cased exactly as polars does so the
+  accepted set is neither wider nor narrower than what polars would act on.
+
 ### Changed
+
+- **The rotation matrix has one implementation again.** Affine fusion
+  transliterated `AffineParams::from_rotation` into Python line for line, so a
+  `rotate()` got its matrix from Rust when it stood alone and from Python when a
+  neighbouring op made it fusible. The two had already drifted — Python
+  normalised `angle % 360` where Rust did not, and rounded the expand bounding
+  box half-to-even against Rust's half-away-from-zero — and nothing compared
+  them: the test that appeared to cross-check compared Python against a third
+  copy of the same arithmetic in `test_affine_builder.py`. The planner now reads
+  the matrix through a new `rotate_affine_params` FFI, the test helper reads the
+  same authority, and `test_removed_surfaces.py` rejects trigonometry
+  reappearing in the fusion helper.
+
+- **`GraphStep::input_domains` is exhaustive.** It was the one contract method
+  with a `_ =>` catch-all, so a new multi-domain variant would silently have
+  been given a single domain — in the method `CLAUDE.md` names as the authority
+  for accepted input domains.
+
+- **Staleness of the compiled extension is detectable within a release cycle.**
+  `test_compiled_plugin_is_not_stale` compared release *versions*, and both
+  sides read the same `Cargo.toml` literal, so they agreed throughout the entire
+  window in which Rust gets edited without a rebuild — it could only fire across
+  a version bump. A new `build.rs` bakes a content hash of both crates' sources
+  into the extension, `build_info()` recomputes it from the working tree, and
+  `test_compiled_plugin_matches_the_rust_sources` compares them. This matters
+  because 53% of the suite is gated on a `.so` merely existing, of any age: a
+  stale one does not skip those tests, it runs them against old Rust.
+
+- **`.pre-commit-config.yaml` moved to the repo root**, where `pre-commit`
+  actually resolves it. It sat in `polars-cv/`, so the hook was never loaded —
+  while `tests/AGENTS.md`, the `pyproject.toml` marker description and ten
+  module docstrings all justified themselves with "the pre-commit hook enforces
+  this". The config's own contents gave it away: `cargo fmt --all` and
+  `uv run --directory polars-cv` are both written for the root.
+
+- **Guards that read as coverage and enforced less.** `test_no_local_png_factories`
+  documented two fixture names and grepped for one; the unchecked half had
+  drifted into eleven copies, each having dropped conftest's Pillow-missing
+  skip. Three sweeps in `test_schema_parity_chains.py` discarded their
+  `plan_or_reject` results, and a fourth asserted only things its own types
+  guarantee. `test_verify_script_covers_every_ci_check` searched the raw
+  `verify.sh` including comments, so commenting out the structural lane passed
+  both it and its sibling. The `Matcher` protocol was pinned by
+  `isinstance`, which checks attribute presence and never signatures. Two
+  guard-fixture modules were in the structural lane but pinned by neither lane
+  mechanism.
+
 
 - **The remote source stopped opening one connection per file.** `read_http`
   built a `reqwest::Client` — which *is* the connection pool — inside the
@@ -47,26 +156,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   deleted — a per-call knob beside a global budget would be a second authority
   for one number.
 
-### Fixed
+### Removed
 
-- **`gcs_bearer_token` on an `s3://` path now errors instead of being ignored.**
-  S3 signs with SigV4 and cannot use an OAuth bearer token; the value was
-  accepted and silently discarded, which is the bug `token_command` was already
-  rejected for one field over.
-
-- **S3 object keys are no longer double percent-encoded.** `read_s3` passed
-  `url.path()` — already encoded — to `Path::from`, which encodes again, so
-  `s3://bucket/a b.png` requested the key `a%2520b.png`. Reads now use the raw
-  prefix, which also makes polars-cv agree with `pl.scan_parquet` on the same
-  URL.
-
-- **A misspelled storage option is still rejected.** polars'
-  `parse_untyped_config` silently drops keys it does not recognise ("Silently
-  ignores custom upstream storage_options"), so delegating naively would have
-  turned `unknown GCS storage option 'x'` into a request that quietly did the
-  wrong thing. Keys are validated against each backend's own vocabulary before
-  the options are handed over, lower-cased exactly as polars does so the
-  accepted set is neither wider nor narrower than what polars would act on.
+- **`match_detections(strategy=)` on `.contour` and `.bbox`.** Typed
+  `Literal["greedy"]`, rode the wire as `ContourKwargs.strategy`, and selected
+  nothing — the greedy policy is unconditional in the shared `match_from_matrix`.
+  The contour entry point checked the value and discarded it; the bbox one did
+  not check at all, so `strategy="hungarian"` was accepted, ignored, and matched
+  greedily. Guarded by `test_removed_surfaces.py`.
 
 ### Notes
 

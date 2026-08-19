@@ -14,6 +14,7 @@ Example:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -69,9 +70,46 @@ from .pipeline import Pipeline
 __version__ = "0.20.0"
 
 
+def _source_hash_from_tree() -> str | None:
+    """Recompute the extension's source hash from the working tree.
+
+    Mirrors ``polars-cv/build.rs`` exactly — same inputs, same order, same
+    FNV-1a — so the value can be compared against ``_lib.__source_hash__`` to
+    tell whether the compiled extension was built from the sources now on disk.
+
+    Returns ``None`` when the Rust sources are not present (an installed wheel
+    rather than a checkout), where staleness is not a question that arises.
+    """
+    root = Path(__file__).resolve().parents[3]
+    if not (root / "polars-cv" / "Cargo.toml").is_file():
+        return None
+
+    contents: dict[str, bytes] = {}
+
+    def _push(path: Path, key: str) -> None:
+        try:
+            contents[key] = path.read_bytes()
+        except OSError:
+            pass
+
+    for crate in ("polars-cv", "view-buffer"):
+        crate_root = root / crate
+        for rs in sorted((crate_root / "src").rglob("*.rs")):
+            _push(rs, f"{crate}/{rs.relative_to(crate_root).as_posix()}")
+        _push(crate_root / "Cargo.toml", f"{crate}/Cargo.toml")
+    _push(root / "Cargo.lock", "Cargo.lock")
+
+    digest = 0xCBF29CE484222325  # FNV-1a offset basis
+    for key in sorted(contents):
+        for byte in key.encode() + contents[key]:
+            digest ^= byte
+            digest = (digest * 0x00000100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{digest:016x}"
+
+
 def build_info() -> dict[str, str | None]:
     """
-    Report the versions of the three things that can disagree.
+    Report the versions of the things that can disagree.
 
     The install is editable, so edits to the Python sources are live — but the
     compiled extension is not. After a ``git pull`` that touches Rust,
@@ -86,6 +124,14 @@ def build_info() -> dict[str, str | None]:
               from ``Cargo.toml`` at build time. ``None`` if the plugin is not built.
             - ``dist_version``: the installed distribution metadata version.
               ``None`` if the package is not installed (e.g. run from a checkout).
+            - ``plugin_source_hash``: the hash of the Rust sources the extension
+              was *built* from. ``None`` if the plugin is not built.
+            - ``source_hash``: the same hash recomputed from the working tree.
+              ``None`` outside a source checkout.
+
+    The two hashes are what actually detect staleness. The versions cannot:
+    they are the release version, identical until the next bump, so they agree
+    throughout the entire window in which Rust is edited without rebuilding.
 
     Example:
         ```python
@@ -102,8 +148,10 @@ def build_info() -> dict[str, str | None]:
         from . import _lib
 
         plugin_version = getattr(_lib, "__version__", None)
+        plugin_source_hash = getattr(_lib, "__source_hash__", None)
     except ImportError:
         plugin_version = None
+        plugin_source_hash = None
 
     try:
         dist_version = _dist_version("polars-cv")
@@ -114,6 +162,8 @@ def build_info() -> dict[str, str | None]:
         "version": __version__,
         "plugin_version": plugin_version,
         "dist_version": dist_version,
+        "plugin_source_hash": plugin_source_hash,
+        "source_hash": _source_hash_from_tree(),
     }
 
 

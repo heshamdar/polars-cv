@@ -6,26 +6,12 @@ diagnostic features: IoU, region proportion, masked pixel statistics,
 percentiles, and annotation counts.
 """
 
-from io import BytesIO
-
 import numpy as np
 import polars as pl
 import pytest
-from PIL import Image
 
 from polars_cv.geometry.schemas import CONTOUR_SCHEMA
 from polars_cv.pipeline import Pipeline
-
-
-def encode_png(arr: np.ndarray) -> bytes:
-    """Encode numpy array as PNG bytes."""
-    if arr.ndim == 2:
-        img = Image.fromarray(arr, mode="L")
-    else:
-        img = Image.fromarray(arr)
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
 
 
 def make_contour(points: list[tuple[float, float]]) -> dict:
@@ -37,7 +23,7 @@ def make_contour(points: list[tuple[float, float]]) -> dict:
 
 
 @pytest.fixture
-def synthetic_data():
+def synthetic_data(encode_png):
     """
     Synthetic cancer detection scenario:
     - 100x100 grayscale image
@@ -218,7 +204,7 @@ class TestMaskedPixelStatistics:
 class TestPercentileReduction:
     """Test the reduce_percentile primitive directly."""
 
-    def test_percentile_matches_numpy(self):
+    def test_percentile_matches_numpy(self, encode_png):
         """Percentile values should match numpy.percentile."""
         data = np.arange(1, 101, dtype=np.uint8).reshape(10, 10)
         png = encode_png(data)
@@ -233,7 +219,7 @@ class TestPercentileReduction:
                 f"q={q}: got {result['val'][0]}, expected {expected}"
             )
 
-    def test_percentile_0_equals_min(self):
+    def test_percentile_0_equals_min(self, encode_png):
         """P0 should equal reduce_min."""
         data = np.array([[5, 10, 15], [20, 25, 30]], dtype=np.uint8)
         png = encode_png(data)
@@ -246,7 +232,7 @@ class TestPercentileReduction:
         )
         assert result["p0"][0] == result["min_val"][0]
 
-    def test_percentile_100_equals_max(self):
+    def test_percentile_100_equals_max(self, encode_png):
         """P100 should equal reduce_max."""
         data = np.array([[5, 10, 15], [20, 25, 30]], dtype=np.uint8)
         png = encode_png(data)
@@ -298,7 +284,7 @@ class TestAnnotationCounts:
 class TestGlobalPixelStatistics:
     """Test global pixel statistics (not masked)."""
 
-    def test_multi_stat_extraction(self):
+    def test_multi_stat_extraction(self, encode_png):
         """Extract multiple statistics from a single image in one query."""
         data = np.arange(0, 100, dtype=np.uint8).reshape(10, 10)
         png = encode_png(data)

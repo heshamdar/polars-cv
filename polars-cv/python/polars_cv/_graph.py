@@ -7,7 +7,6 @@ pipeline operations and handles serialization for the Rust backend.
 
 from __future__ import annotations
 
-import copy
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -387,24 +386,19 @@ class PipelineGraph:
 
         shared_id = f"_cse_{uuid.uuid4().hex[:8]}"
 
-        # Create a new pipeline with just the prefix operations
+        # Create a new pipeline with just the prefix operations. It inherits
+        # the template's whole state through the one copy mechanism, then
+        # overrides the ops; see `_STATE_COPIERS` in `pipeline.py`.
+        #
+        # The per-row policies come along, which is a no-op for the graph
+        # spec today: `_to_dict` hoists the *set* of non-default policies
+        # across all nodes, and the template node keeps its own. Copying them
+        # is what keeps that true if the hoist ever reads one node.
         shared_pipeline = Pipeline()
-        shared_pipeline._source = template_node.pipeline._source
-        shared_pipeline._shape_hints = copy.deepcopy(
-            template_node.pipeline._shape_hints
-        )
-        shared_pipeline._expr_refs = template_node.pipeline._expr_refs.copy()
-        shared_pipeline._initial_output_dtype = (
-            template_node.pipeline._initial_output_dtype
-        )
-        shared_pipeline._initial_expected_ndim = (
-            template_node.pipeline._initial_expected_ndim
-        )
+        shared_pipeline._copy_state_from(template_node.pipeline)
         # The prefix ops keep their original indices, so everything keyed by
         # op position carries over unshifted (affine fusion reads the
         # entering-hints snapshots).
-        shared_pipeline._hint_snapshots = dict(template_node.pipeline._hint_snapshots)
-        shared_pipeline._assertions = copy.deepcopy(template_node.pipeline._assertions)
         shared_pipeline._set_ops_slice(prefix_ops, shift=0)
 
         # Compute the correct domain and dtype for the prefix operations.

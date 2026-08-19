@@ -52,37 +52,6 @@ def square_image() -> np.ndarray:
     return rng.integers(0, 256, (100, 100, 3), dtype=np.uint8)
 
 
-@pytest.fixture
-def encode_png() -> Callable[[np.ndarray], bytes]:
-    """
-    Encode a numpy array as PNG bytes.
-
-    Returns:
-        A callable that encodes a numpy array as PNG bytes.
-    """
-
-    def _encode(arr: np.ndarray) -> bytes:
-        """
-        Encode numpy array as PNG bytes.
-
-        Args:
-            arr: NumPy array with shape (H, W, 3) or (H, W) and dtype uint8.
-
-        Returns:
-            PNG bytes.
-        """
-        from io import BytesIO
-
-        from PIL import Image
-
-        img = Image.fromarray(arr)
-        buf = BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
-
-    return _encode
-
-
 # --- Reference Tests (NumPy/PIL baseline) ---
 
 

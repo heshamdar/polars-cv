@@ -10,7 +10,6 @@ Verifies that:
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
@@ -27,30 +26,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def encode_png() -> Callable[[np.ndarray], bytes]:
-    """Encode a numpy array as PNG bytes."""
-
-    def _encode(arr: np.ndarray) -> bytes:
-        """
-        Encode numpy array as PNG bytes.
-
-        Args:
-            arr: NumPy array with shape (H, W, 3) or (H, W) and dtype uint8.
-
-        Returns:
-            PNG bytes.
-        """
-        from PIL import Image
-
-        img = Image.fromarray(arr)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
-
-    return _encode
 
 
 @pytest.fixture

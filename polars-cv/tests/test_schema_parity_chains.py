@@ -24,6 +24,7 @@ import pytest
 
 from polars_cv import Pipeline
 from tests._schema_parity import (
+    assert_not_vacuous,
     assert_plan_equals_exec,
     encodable_by_image_codec,
     frame,
@@ -168,10 +169,21 @@ def test_array_sink_refuses_after_a_hint_invalidating_step(name: str) -> None:
     result = plan_or_reject(df, lambda: pl.col("img").cv.pipe(pipe).sink("array"))
     if result.ok:
         # Accepting is fine *if* the shape really was knowable and correct —
-        # plan_or_reject already proved plan == exec in that case.
-        assert result.planned is not None
+        # plan_or_reject already proved plan == exec in that case — but it must
+        # be a genuinely sized Array, not a shapeless stand-in.
+        assert isinstance(result.planned, pl.Array), (
+            f"{name}: the array sink planned {result.planned!r}, which is not "
+            "a fixed-size Array"
+        )
     else:
-        assert result.reason is not None
+        # The refusal must be *about the shape*. Asserting only that some
+        # reason exists is a tautology — both rejection constructors always
+        # set one — so a sink keyword rename, or any unrelated build error,
+        # would have kept this test green while testing nothing.
+        assert "shape" in (result.reason or "").lower(), (
+            f"{name}: the array sink was refused, but not for an unknown "
+            f"shape. Reason: {result.reason!r}"
+        )
 
 
 @plugin_required
@@ -180,8 +192,13 @@ def test_hint_invalidating_steps_still_plan_their_dtype(name: str) -> None:
     """The shape may be unknown; the dtype and domain must not be."""
     pipe = _HINT_INVALIDATING[name](_base())
     df = _df("null_first")
-    for sink in ("list", "native"):
-        plan_or_reject(df, lambda s=sink: pl.col("img").cv.pipe(pipe).sink(s))
+    results = {
+        sink: plan_or_reject(df, lambda s=sink: pl.col("img").cv.pipe(pipe).sink(s))
+        for sink in ("list", "native")
+    }
+    # The results were previously discarded, so a change that made every cell
+    # reject would have left this green having asserted nothing.
+    assert_not_vacuous(results, f"{name}: dtype-planning sweep")
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +229,13 @@ def test_binary_ops_plan_what_they_execute(op: str) -> None:
     right = pl.col("img").cv.pipe(_base())
 
     combined = getattr(left, op)(right)
-    for sink in ("list", "numpy", "blob"):
-        plan_or_reject(df, lambda s=sink: combined.sink(s))
+    results = {
+        sink: plan_or_reject(df, lambda s=sink: combined.sink(s))
+        for sink in ("list", "numpy", "blob")
+    }
+    # As above: discarding these made the whole binary-op family vacuous the
+    # moment any shared build step started raising.
+    assert_not_vacuous(results, f"{op}: binary-op sink sweep")
 
 
 # ---------------------------------------------------------------------------
@@ -351,13 +373,90 @@ def test_fused_and_unfused_affine_runs_agree() -> None:
 
     ``_to_spec_dict`` collapses a run of affine ops using ``_hint_snapshots``,
     so the executed graph is not the graph the schema was computed from.
+
+    This checks *schema* agreement across a fusible and a non-fusible chain;
+    :func:`test_fusion_does_not_change_the_pixels` checks the values.
     """
     df = _df("null_first")
-    fusable = _base().rotate(angle=30.0).resize(height=11, width=9)
-    interrupted = _base().rotate(angle=30.0).grayscale().resize(height=11, width=9)
+    # Two adjacent static rotates: `_fuse_affine_ops` declines a run of one, so
+    # this must be a genuine run of two. The previous spelling was
+    # `rotate(30.0).resize(...)` — `resize` is not affine-fusible, so the
+    # variable named `fusable` was a run of one and this test, named for
+    # fusion, never fused anything.
+    fusable = _base().rotate(angle=30.0).rotate(angle=15.0)
+    interrupted = _base().rotate(angle=30.0).grayscale().rotate(angle=15.0)
 
     for pipe in (fusable, interrupted):
         assert_plan_equals_exec(df, pl.col("img").cv.pipe(pipe).sink("list"))
+
+
+@plugin_required
+def test_fusion_is_actually_reached_by_the_pipeline_under_test() -> None:
+    """The fusion sweep must exercise fusion.
+
+    ``_fuse_affine_ops`` keeps a run of one unchanged, so a chain whose affine
+    ops are separated by anything else is silently never fused. Pin that the
+    fixture used above really does collapse, or the value comparison below
+    proves nothing.
+    """
+    fused_ops = [
+        op["op"] for op in _base().rotate(30.0).rotate(15.0)._to_spec_dict()["ops"]
+    ]
+    assert fused_ops.count("warp_affine") == 1, (
+        f"two adjacent static rotates did not fuse into one warp_affine: {fused_ops}"
+    )
+    assert "rotate" not in fused_ops, f"a rotate survived fusion: {fused_ops}"
+
+    split_ops = [
+        op["op"]
+        for op in _base().rotate(30.0).grayscale().rotate(15.0)._to_spec_dict()["ops"]
+    ]
+    assert split_ops.count("rotate") == 2, (
+        f"a fusion-breaking op between two rotates should leave both as "
+        f"runtime rotates: {split_ops}"
+    )
+
+
+@plugin_required
+def test_a_fused_rotate_matches_the_engines_own_rotate() -> None:
+    """The matrix fusion bakes in must be the one the engine would have used.
+
+    Note what this does *not* compare. Fusing two rotations is deliberately not
+    pixel-equal to running them separately — that is the whole point of fusion,
+    one interpolation pass instead of two resampling already-resampled data. So
+    "fused == unfused" is the wrong property in general.
+
+    The property that *was* unguarded is narrower: for a given ``rotate``, the
+    matrix the planner bakes in must equal the one
+    ``AffineParams::from_rotation`` produces, because which of the two computes
+    it depends only on whether a neighbouring op happened to be fusible. Python
+    used to transliterate that function, and the two had already drifted on
+    angle normalisation and on rounding; nothing compared them, and the test
+    that appeared to compared Python against a third copy of itself.
+
+    Composing the rotate with an **identity** warp isolates exactly that: both
+    sides are one interpolation pass with the same output size, so any
+    difference is the matrix.
+    """
+    df = _df()
+    identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    plain = _base().grayscale().rotate(angle=30.0)
+    fused = _base().grayscale().rotate(angle=30.0).warp_affine(identity, (H, W))
+
+    spec_ops = [op["op"] for op in fused._to_spec_dict()["ops"]]
+    assert spec_ops.count("warp_affine") == 1 and "rotate" not in spec_ops, (
+        f"the fixture did not fuse, so this compares nothing: {spec_ops}"
+    )
+
+    got = df.select(
+        plain=pl.col("img").cv.pipe(plain).sink("list"),
+        fused=pl.col("img").cv.pipe(fused).sink("list"),
+    )
+    assert got["plain"].to_list() == got["fused"].to_list(), (
+        "a rotate fused into an identity warp produced different pixels from "
+        "the same rotate executed by the engine — the matrix the planner baked "
+        "in is not the one AffineParams::from_rotation defines"
+    )
 
 
 @plugin_required

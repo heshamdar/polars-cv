@@ -587,6 +587,9 @@ _REQUIRED_LIB_HOOKS = (
     "known_ops",
     "enum_variants",
     "enum_names",
+    # The rotation-matrix authority, read by the planner's affine fusion so it
+    # does not recompute what `AffineParams::from_rotation` already defines.
+    "rotate_affine_params",
 )
 
 
@@ -1583,13 +1586,44 @@ def test_no_local_plugin_available_definitions() -> None:
     assert not offenders, f"local _plugin_available definitions in: {offenders}"
 
 
+#: The PNG-construction fixtures `conftest.py` owns. A test module that
+#: redefines one shadows the shared fixture, which is how eleven modules came
+#: to carry a copy of `encode_png` that had dropped conftest's
+#: `except ImportError: pytest.skip("PIL/Pillow required")` arm -- so without
+#: Pillow they errored where the suite means to skip.
+_CONFTEST_PNG_FACTORIES = ("create_test_png", "encode_png")
+
+
 def test_no_local_png_factories() -> None:
-    """PNG construction fixtures live in conftest.py only (create_test_png /
-    encode_png); test files must not define their own."""
-    offenders = [
-        str(p.name) for p in suite_modules() if "def create_test_png" in p.read_text()
-    ]
-    assert not offenders, f"local create_test_png definitions in: {offenders}"
+    """PNG construction fixtures live in conftest.py only; test files must not
+    define their own.
+
+    Checks **every** name in `_CONFTEST_PNG_FACTORIES`. It used to grep for
+    `create_test_png` alone while its own docstring named two, and the
+    unchecked half had drifted into eleven copies -- a guard that reads as
+    coverage and enforces half of it.
+    """
+    conftest = Path(__file__).parent / "conftest.py"
+    conftest_src = conftest.read_text()
+    for name in _CONFTEST_PNG_FACTORIES:
+        assert f"def {name}" in conftest_src, (
+            f"probe is broken: conftest.py no longer defines {name!r}; "
+            "update _CONFTEST_PNG_FACTORIES rather than leaving it scanning "
+            "for a name that cannot be found."
+        )
+
+    offenders: dict[str, list[str]] = {}
+    for module in suite_modules():
+        source = module.read_text()
+        for name in _CONFTEST_PNG_FACTORIES:
+            if f"def {name}" in source:
+                offenders.setdefault(name, []).append(str(module.name))
+
+    assert not offenders, (
+        f"these modules redefine a conftest PNG factory: {offenders}. "
+        "Use the shared fixture -- a local copy shadows it, and the copies "
+        "have already dropped its Pillow-missing skip."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1881,7 +1915,17 @@ def test_verify_script_covers_every_ci_check() -> None:
     """
     root = Path(__file__).resolve().parents[2]
     ci = (root / ".github" / "workflows" / "ci.yml").read_text()
-    script = (root / "scripts" / "verify.sh").read_text()
+    # Read only the lines that *invoke* a check, never the raw file: a whole-
+    # file search is satisfied by a comment naming the check, so commenting out
+    # a `run_check` line while leaving any mention of it was undetectable. Its
+    # sibling `test_no_ci_check_is_missing_from_the_verify_script` was fixed
+    # this way and this one was not, which left one live hole -- commenting out
+    # the structural lane passed *both* guards.
+    script = _verify_script_checks((root / "scripts" / "verify.sh").read_text())
+    assert script.strip(), (
+        "no run_check lines found in verify.sh -- the scan is broken, and "
+        "would otherwise report every check as missing (or, if inverted, none)"
+    )
 
     # (substring identifying the check in CI, substring identifying it in the
     # script). Matched loosely on purpose: flags legitimately differ (CI adds
@@ -2281,8 +2325,9 @@ def test_every_source_scanning_module_declares_its_lane() -> None:
 #: an actual 9, so dropping the marker from a hand-marked module left the lane
 #: 104 tests smaller and this test still green. Naming the load-bearing modules
 #: makes that specific loss fail. It is not the *whole* lane — a new guard
-#: module is covered by the derived check above when it scans files, and needs
-#: no entry here.
+#: module is covered by the derived check above when it scans files. A module
+#: that declares the marker but scans no files is covered by *neither*, so it
+#: belongs here explicitly; two did, and were unpinned.
 _CORE_STRUCTURAL_MODULES = frozenset(
     {
         "test_append_contract.py",
@@ -2291,6 +2336,15 @@ _CORE_STRUCTURAL_MODULES = frozenset(
         "test_param_strictness.py",
         "test_doc_vocabularies.py",
         "test_version_consistency.py",
+        # The guards' guards. These carry the committed known-bad/known-good
+        # fixtures that prove `_dtype_ratchet.dispatch_offenders` and
+        # `_doc_tables` still detect what they claim to, so a ratchet that
+        # silently stopped matching would be caught here and nowhere else.
+        # They fell through *both* lane mechanisms: not named here, and not
+        # covered by the derived check either, because that one keys on a
+        # module scanning files via `_discovery` and these two scan fixtures.
+        "test_dtype_ratchet_fixtures.py",
+        "test_doc_table_fixtures.py",
     }
 )
 
@@ -2328,9 +2382,22 @@ def test_the_precommit_hook_runs_the_structural_lane() -> None:
     entry could be edited or deleted and no test would notice, which would make
     that justification, and the marker on ten modules, describe nothing.
     """
-    config = (
-        Path(__file__).resolve().parents[1] / ".pre-commit-config.yaml"
-    ).read_text()
+    # `parents[2]`, the git root, is where `pre-commit` actually looks: it
+    # resolves the config relative to the repository top level, and installs
+    # its hook into that repo's `.git/hooks`. The file used to live one level
+    # down in `polars-cv/`, so the hook this test validated was not the one
+    # `pre-commit` would load -- and every "the pre-commit hook enforces this"
+    # justification in `tests/AGENTS.md` and ten module docstrings rested on
+    # it. The config's own contents give the game away: `cargo fmt --all` and
+    # `uv run --directory polars-cv` are both written for the root.
+    repo_root = Path(__file__).resolve().parents[2]
+    config_path = repo_root / ".pre-commit-config.yaml"
+    assert config_path.is_file(), (
+        f"no .pre-commit-config.yaml at the git root ({repo_root}). "
+        "pre-commit resolves its config from there, so a config anywhere else "
+        "is never loaded and the structural lane does not run before a commit."
+    )
+    config = config_path.read_text()
     assert "structural-checks" in config, (
         "the structural-checks hook is gone from .pre-commit-config.yaml; the "
         "`structural` marker no longer feeds anything that runs before a commit."

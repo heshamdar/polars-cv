@@ -597,37 +597,55 @@ fn series_to_bytes(series: &Series, target_dtype: &view_buffer::DType) -> Result
         view_buffer::DType::F64 => convert_series!(casted, f64, f64),
     }
 }
-/// Convert a dtype string to Polars DataType.
+/// The Polars spelling of an engine dtype.
 ///
-/// This is used for static type inference at planning time.
-/// Note: Requires dtype-i8/dtype-u8/dtype-i16/dtype-u16 features in polars.
-pub fn dtype_str_to_polars(dtype: &str) -> DataType {
-    match dtype {
-        "u8" => DataType::UInt8,
-        "i8" => DataType::Int8,
-        "u16" => DataType::UInt16,
-        "i16" => DataType::Int16,
-        "u32" => DataType::UInt32,
-        "i32" => DataType::Int32,
-        "u64" => DataType::UInt64,
-        "i64" => DataType::Int64,
-        "f32" => DataType::Float32,
-        "f64" => DataType::Float64,
-        // Reachable only for the unresolved sentinels ("auto",
-        // "auto_float"), and only where the value is unused. They mean the
-        // dtype was not pinned down at planning time;
-        // `list_array_inner_dtype` bails on it during schema resolution, which
-        // Polars runs before execution, so the typed list/array builders in
-        // `encode.rs` — the callers that *would* be misled, since they use this
-        // to type the output Series — never see it. The remaining callers
-        // (binary/struct sinks) ignore the value.
-        //
-        // Any *other* unmatched string would be silently typed UInt8 here,
-        // which is why `test_no_second_dtype_spelling_table` requires every
-        // dtype dispatch to name exactly the ten `dtype_table!` declares: the
-        // only way to reach this arm with a real dtype is for a table to drift.
-        _ => DataType::UInt8,
+/// This is the fourth spelling of a dtype (short name / VIEW wire code / numpy
+/// name / Polars `DataType`). The first three are generated from
+/// `dtype_table!`; this one cannot be, because `view-buffer` does not depend on
+/// `polars` and keeping the engine Polars-agnostic is deliberate.
+///
+/// So it gets the next-best guard instead: the match is **exhaustive over
+/// `DType`**, which means an eleventh dtype added to `dtype_table!` fails to
+/// compile here rather than being silently typed. That replaced a
+/// `_ => DataType::UInt8` catch-all whose own comment conceded "any other
+/// unmatched string would be silently typed UInt8 here", guarded only by a
+/// source-scanning ratchet — the weakest of the three guard kinds.
+pub fn polars_dtype_for(dt: view_buffer::DType) -> DataType {
+    match dt {
+        view_buffer::DType::U8 => DataType::UInt8,
+        view_buffer::DType::I8 => DataType::Int8,
+        view_buffer::DType::U16 => DataType::UInt16,
+        view_buffer::DType::I16 => DataType::Int16,
+        view_buffer::DType::U32 => DataType::UInt32,
+        view_buffer::DType::I32 => DataType::Int32,
+        view_buffer::DType::U64 => DataType::UInt64,
+        view_buffer::DType::I64 => DataType::Int64,
+        view_buffer::DType::F32 => DataType::Float32,
+        view_buffer::DType::F64 => DataType::Float64,
     }
+}
+
+/// Convert a dtype string to a Polars `DataType`.
+///
+/// Used for static type inference at planning time. The name is parsed through
+/// `DType::from_short_name` — the `dtype_table!` authority — so an unresolved
+/// sentinel (`"auto"`, `"auto_float"`) or a genuine typo is an **error**, not a
+/// `u8` column that execution will contradict.
+///
+/// Note: requires the dtype-i8/dtype-u8/dtype-i16/dtype-u16 polars features for
+/// the narrow integer Series types.
+pub fn dtype_str_to_polars(dtype: &str) -> PolarsResult<DataType> {
+    view_buffer::DType::from_short_name(dtype)
+        .map(polars_dtype_for)
+        .ok_or_else(|| {
+            polars_err!(ComputeError:
+                "cannot map dtype '{dtype}' to a Polars type. Expected one of \
+                 the engine's concrete dtypes; '{dtype}' is either an \
+                 unresolved planning sentinel (\"auto\"/\"auto_float\") that \
+                 should have been resolved before this point, or not a dtype \
+                 at all."
+            )
+        })
 }
 
 /// Resolve the inner element dtype for a typed list/array sink.
@@ -654,7 +672,7 @@ fn list_array_inner_dtype(dtype: &str, sink: &str) -> PolarsResult<DataType> {
              .cast(...) before the sink."
         );
     }
-    Ok(dtype_str_to_polars(dtype))
+    dtype_str_to_polars(dtype)
 }
 /// Get the Polars DataType for a given output specification.
 ///

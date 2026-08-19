@@ -347,3 +347,100 @@ def test_the_benchmark_does_not_restate_a_deleted_concurrency_constant() -> None
         "the 'N files per wave' claim is back; the fan-out is bounded by a "
         "global semaphore, not by fixed-size waves"
     )
+
+
+# ---------------------------------------------------------------------------
+# match_detections(strategy=): validated against one legal value, then dropped
+# ---------------------------------------------------------------------------
+
+
+def test_match_detections_has_no_strategy_parameter() -> None:
+    """Neither ``.contour.match_detections`` nor ``.bbox.match_detections``
+    may accept ``strategy``.
+
+    It was typed ``Literal["greedy"] = "greedy"`` on both namespaces, rode the
+    wire as ``ContourKwargs.strategy``, and was never read to select anything —
+    the greedy policy is unconditional, in the ``match_from_matrix`` both
+    matchers share. The contour entry point checked the value was ``"greedy"``
+    and threw it away; the bbox entry point did not check at all, so
+    ``.bbox.match_detections(strategy="hungarian")`` was accepted, ignored, and
+    matched greedily.
+
+    That is the shape `CLAUDE.md` bans outright — a parameter accepted and
+    ignored is not free, and the graph path already rejects it mechanically via
+    ``OpParams::unread()``. A caller that passes it now gets a TypeError.
+    """
+    from polars_cv.geometry.bbox import BBoxNamespace
+    from polars_cv.geometry.contours import ContourNamespace
+
+    for namespace in (ContourNamespace, BBoxNamespace):
+        params = inspect.signature(namespace.match_detections).parameters
+        assert "strategy" not in params, (
+            f"{namespace.__name__}.match_detections accepts 'strategy' again; "
+            "it selects nothing -- the greedy policy lives in match_from_matrix."
+        )
+
+
+def test_the_contour_kwargs_wire_field_is_gone() -> None:
+    """``strategy`` must not come back as a Rust kwargs field either.
+
+    Removing it from the Python signature alone would leave the wire field
+    accepting a value from any other caller, which is how an unread field goes
+    on being emitted for releases (see the ``shape_hints`` guard above).
+    """
+    contour_rs = (
+        Path(__file__).resolve().parents[1] / "src" / "contour.rs"
+    ).read_text()
+    assert "pub struct ContourKwargs" in contour_rs, (
+        "probe is broken: ContourKwargs not found in src/contour.rs"
+    )
+    assert "pub strategy" not in contour_rs, (
+        "ContourKwargs declares 'strategy' again -- nothing reads it."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The rotation matrix: transliterated into Python, compared against a copy of
+# itself
+# ---------------------------------------------------------------------------
+
+
+def test_the_planner_does_not_recompute_the_rotation_matrix() -> None:
+    """``pipeline.py`` must read the rotate matrix from Rust, never derive it.
+
+    ``AffineParams::from_rotation`` is the authority, and it is what an
+    *unfused* rotate executes through. The planner's affine fusion used to
+    transliterate it line for line — same variable names, same matrix layout —
+    so which implementation produced a user's rotation depended on whether a
+    neighbouring op happened to be affine-fusible. The two had already drifted
+    (Python normalised ``angle % 360``, Rust did not; Python's ``round`` is
+    half-to-even, Rust's is half-away-from-zero), and nothing compared them:
+    the test that looked like a cross-check compared Python against a *third*
+    copy of the same arithmetic living in ``test_affine_builder.py``.
+
+    A pixel-level test cannot replace this. It pins the values for the angles
+    it happens to sweep, whereas the property is that there is only one
+    implementation to disagree with.
+    """
+    source = (Path(polars_cv.__file__).resolve().parent / "pipeline.py").read_text()
+
+    fusion_start = source.index("def _try_convert_rotate_to_affine")
+    fusion_end = source.index("def _to_spec_dict")
+    fusion = source[fusion_start:fusion_end]
+    assert "rotate_affine_params" in fusion, (
+        "affine fusion no longer calls rotate_affine_params -- if it derives "
+        "the matrix itself again, a fused rotate and an unfused one can "
+        "silently disagree."
+    )
+
+    # The trig that builds a rotation matrix. `_rotation_matrix` (used by
+    # `rotate_and_scale`) legitimately keeps its own, because it must accept
+    # `pl.Expr` operands the engine cannot evaluate at plan time -- so scope
+    # this to the fusion helper rather than the whole module.
+    for token in ("math.cos", "math.sin", "math.radians"):
+        assert token not in fusion, (
+            f"affine fusion computes {token} again. The rotation matrix has "
+            f"one authority (AffineParams::from_rotation, via the "
+            f"rotate_affine_params FFI); a second one is what this guard exists "
+            f"to reject."
+        )

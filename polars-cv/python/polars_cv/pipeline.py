@@ -272,6 +272,53 @@ def _enum_param(
     return ParamValue(is_expr=False, value=_validate_enum(value, enum_cls, label).value)
 
 
+def _same(value: "Any") -> "Any":
+    """Carry a field across a copy by reference (immutable or deliberately shared)."""
+    return value
+
+
+#: Every field of a :class:`Pipeline`'s state, and how a copy of it is made.
+#:
+#: This is the single authority for "what *is* a Pipeline's state", and
+#: :meth:`Pipeline._copy_state_from` is the only reader. Every constructor of a
+#: derived pipeline — ``_clone``, ``_create_sub_pipeline``, and CSE's
+#: ``_create_shared_node`` in ``_graph.py`` — copies the whole state through it
+#: and *then* overrides the few fields it means to change, so a new field is
+#: carried by default instead of by remembering three call sites.
+#:
+#: It replaced three hand-written field-by-field copies that had already
+#: drifted: ``_create_sub_pipeline`` copied 11 of the 14 fields, so the public
+#: ``Pipeline.on_error(...).to_graph(...)`` silently executed under ``"raise"``
+#: — ``PipelineGraph._to_dict`` reads the policy off the *node* pipeline, and
+#: the sub-pipeline it built had the default. Prefer a mechanism callers cannot
+#: step around to a convention each caller must re-enact.
+#:
+#: A field added to ``__init__`` and not here fails
+#: ``test_pipeline_state_copy_is_complete``.
+_STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
+    # Specs and tracked scalars: immutable, shared by reference.
+    "_source": _same,
+    "_current_domain": _same,
+    "_output_dtype": _same,
+    "_expected_ndim": _same,
+    "_initial_output_dtype": _same,
+    "_initial_expected_ndim": _same,
+    "_on_error": _same,
+    "_on_null_param": _same,
+    # Containers: copied so the clone cannot mutate its origin.
+    "_ops": list,
+    "_expr_refs": list,
+    "_asserted_dims": set,
+    "_hint_snapshots": dict,
+    # `pl.Expr` / `LazyPipelineExpr` elements are shared deliberately — they are
+    # graph identities, and deep-copying one would break node reference.
+    "_shape_refs": list,
+    # Mutable value objects the planner writes through: deep-copied.
+    "_shape_hints": copy.deepcopy,
+    "_assertions": copy.deepcopy,
+}
+
+
 class Pipeline:
     """
     Modular pipeline builder for image and array operations.
@@ -501,24 +548,22 @@ class Pipeline:
                 self._expr_refs.append(value)
         return param
 
+    def _copy_state_from(self, other: "Pipeline") -> None:
+        """Copy *other*'s entire state onto this pipeline.
+
+        The one way a derived pipeline inherits state, driven by
+        :data:`_STATE_COPIERS`. Callers that mean to change a field override it
+        *after* this returns, so anything they do not mention survives — the
+        opposite of building a pipeline up field by field, which is how
+        ``_create_sub_pipeline`` came to drop ``on_error`` / ``on_null_param``.
+        """
+        for name, copier in _STATE_COPIERS.items():
+            setattr(self, name, copier(getattr(other, name)))
+
     def _clone(self) -> "Pipeline":
         """Create a shallow clone of this pipeline for chaining."""
         new = Pipeline()
-        new._source = self._source
-        new._shape_hints = copy.deepcopy(self._shape_hints)
-        new._ops = self._ops.copy()
-        new._expr_refs = self._expr_refs.copy()
-        new._current_domain = self._current_domain
-        new._output_dtype = self._output_dtype
-        new._initial_output_dtype = self._initial_output_dtype
-        new._initial_expected_ndim = self._initial_expected_ndim
-        new._hint_snapshots = dict(self._hint_snapshots)
-        new._assertions = copy.deepcopy(self._assertions)
-        new._asserted_dims = set(self._asserted_dims)
-        new._expected_ndim = self._expected_ndim
-        new._on_error = self._on_error
-        new._on_null_param = self._on_null_param
-        new._shape_refs = self._shape_refs.copy()
+        new._copy_state_from(self)
         return new
 
     def on_error(self, policy: str) -> "Pipeline":
@@ -4081,23 +4126,20 @@ class Pipeline:
         Returns:
             New Pipeline with the specified operations.
         """
+        # Inherit the whole state, then override only what this slice changes.
+        # The per-row policies (`_on_error`, `_on_null_param`) ride along that
+        # way: `PipelineGraph._to_dict` reads them off the node pipeline, and
+        # `to_graph()` makes this sub-pipeline the graph's *only* node, so a
+        # dropped policy here silently reverted the user's `on_error("null")`.
         sub = Pipeline()
+        sub._copy_state_from(self)
 
         if source_format is not None:
             # Non-root node: source is blob (receives from upstream)
             sub._source = SourceSpec(format=SourceFormat(source_format))
-        else:
-            # Root node: use original source
-            sub._source = self._source
 
-        sub._shape_hints = copy.deepcopy(self._shape_hints)
-        sub._expr_refs = self._expr_refs.copy()
-        sub._initial_output_dtype = self._initial_output_dtype
-        sub._initial_expected_ndim = self._initial_expected_ndim
         # The op slice carries its position-keyed side tables with it, so
         # affine fusion in the sub-pipeline still sees per-position shapes.
-        sub._hint_snapshots = dict(self._hint_snapshots)
-        sub._assertions = copy.deepcopy(self._assertions)
         sub._set_ops_slice(self._ops[start_op:end_op], shift=start_op)
 
         # Compute the correct domain and dtype for this subset of operations.
@@ -4272,21 +4314,20 @@ class Pipeline:
             return None
 
         ih, iw = int(h_pv.value), int(w_pv.value)
-        rad = math.radians(norm)
-        cos_a = math.cos(rad)
-        sin_a = math.sin(rad)
-        cx, cy = iw / 2.0, ih / 2.0
+        # Read the matrix from the engine rather than recomputing it. This is
+        # the same `AffineParams::from_rotation` an *unfused* rotate executes
+        # through, so a rotate produces identical geometry whether or not a
+        # neighbouring op happened to make it fusible. Python used to
+        # transliterate that function line for line, and the two had already
+        # drifted: the angle was normalised here (`angle % 360`) and not there,
+        # and the expand bounding box was rounded half-to-even here against
+        # half-away-from-zero there.
+        #
+        # `angle`, not `norm`: the engine takes the raw angle, and passing it
+        # what it would have received unfused is the whole point.
+        from polars_cv._lib import rotate_affine_params
 
-        if expand:
-            new_w = round(iw * abs(cos_a) + ih * abs(sin_a))
-            new_h = round(ih * abs(cos_a) + iw * abs(sin_a))
-        else:
-            new_w, new_h = iw, ih
-
-        new_cx, new_cy = new_w / 2.0, new_h / 2.0
-        tx = -cx * cos_a - cy * (-sin_a) + new_cx
-        ty = -cx * sin_a - cy * cos_a + new_cy
-        matrix = [cos_a, -sin_a, tx, sin_a, cos_a, ty]
+        matrix, new_h, new_w = rotate_affine_params(angle, ih, iw, expand)
 
         interpolation = op.params.get("interpolation")
         border_value = op.params.get("border_value")

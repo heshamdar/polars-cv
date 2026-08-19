@@ -51,16 +51,26 @@ several minutes. Reach for `--release` only when benchmarking.
 | `point.rs` | Point geometry plugin functions |
 | `geom_params.rs` | `GeomParams` — per-row parameter resolution for those namespace functions, reading expression params off the extra inputs named in the graph-free `input_slots` map |
 
-**The graph wire format is closed at the node.** `GraphNode` carries
-`#[serde(deny_unknown_fields)]`, so anything Python sends must be declared on
-the Rust struct — including `domain`/`output_dtype`, which only the Python
+**The graph wire format is closed, struct by struct.** `GraphNode`,
+`UnifiedGraph`, `OutputSpec`, `SourceSpec`, `SinkSpec` and `GraphKwargs` each
+carry `#[serde(deny_unknown_fields)]`, so anything Python sends must be declared
+on the Rust struct — including `domain`/`output_dtype`, which only the Python
 visualizer consumes. It was permissive before, which is how node-level
 `shape_hints` went on being serialized long after the last reader was removed,
 costing a distinct compiled-graph cache entry for pipelines that execute
-identically (`graph_json` is the cache key). `OpSpec` cannot be closed the same
-way: its parameters ride on `#[serde(flatten)]`, which serde documents as
-incompatible with `deny_unknown_fields`. Op names are guarded by the
-registry-parity tests and `resolve_op`'s catch-all instead.
+identically (`graph_json` is the cache key).
+
+**Each of them needs its own attribute**: serde's `deny_unknown_fields` does not
+descend into nested types. Closing `GraphNode` alone left everything it holds
+wide open, which mattered most for `SourceSpec` — it carries `allowed_roots`, so
+a misspelled key deserialized to `None`, i.e. no path sandbox, silently. Adding
+a struct to the wire format means adding the attribute to it too; the node's
+being closed says nothing about its children.
+
+`OpSpec` cannot be closed the same way: its parameters ride on
+`#[serde(flatten)]`, which serde documents as incompatible with
+`deny_unknown_fields`. Op names are guarded by the registry-parity tests and
+`resolve_op`'s catch-all instead.
 
 
 ## Core Architecture

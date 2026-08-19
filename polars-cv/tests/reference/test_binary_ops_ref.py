@@ -262,22 +262,6 @@ class TestBinaryOpsPolarsCV:
     This is the expected behavior - we're testing that polars-cv matches NumPy.
     """
 
-    @pytest.fixture
-    def encode_png(self) -> Callable[[np.ndarray], bytes]:
-        """Encode a numpy array as PNG bytes."""
-
-        def _encode(arr: np.ndarray) -> bytes:
-            from io import BytesIO
-
-            from PIL import Image
-
-            img = Image.fromarray(arr)
-            buf = BytesIO()
-            img.save(buf, format="PNG")
-            return buf.getvalue()
-
-        return _encode
-
     def test_add_matches_reference(
         self,
         sample_images: tuple[np.ndarray, np.ndarray],

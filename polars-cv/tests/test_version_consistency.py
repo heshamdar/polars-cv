@@ -88,7 +88,16 @@ def test_crates_are_versioned_together() -> None:
 def test_build_info_reports_every_channel() -> None:
     """`build_info()` surfaces all three versions, not just the one it can't get wrong."""
     info = polars_cv.build_info()
-    assert set(info) == {"version", "plugin_version", "dist_version"}
+    assert set(info) == {
+        "version",
+        "plugin_version",
+        "dist_version",
+        # The pair that can actually detect staleness within a release cycle;
+        # the versions above cannot. See
+        # `test_compiled_plugin_matches_the_rust_sources`.
+        "plugin_source_hash",
+        "source_hash",
+    }
     # `version` is read straight off the module, so asserting it matches
     # `__version__` proves nothing. The other two are what can disagree.
     assert info["plugin_version"] is not None or info["dist_version"] is not None, (
@@ -112,6 +121,41 @@ def test_compiled_plugin_is_not_stale() -> None:
         f"compiled plugin is {info['plugin_version']!r} but the Python source is "
         f"{info['version']!r} — the installed package is stale, "
         "re-run `maturin develop`"
+    )
+
+
+@requires_checkout
+@plugin_required
+def test_compiled_plugin_matches_the_rust_sources() -> None:
+    """The extension was built from the Rust now on disk.
+
+    This is the check that actually detects staleness.
+    ``test_compiled_plugin_is_not_stale`` above compares release *versions*,
+    and both sides read the same ``Cargo.toml`` literal — so they agree
+    throughout a release cycle, which is exactly the window in which Rust gets
+    edited without a rebuild. It can only ever fire across a version bump.
+
+    ``build.rs`` bakes a hash of both crates' sources into the extension and
+    ``build_info()`` recomputes it from the working tree, so any edit to a
+    ``.rs`` file, a crate manifest, or the lockfile makes them differ until
+    ``maturin develop`` is re-run. That matters because 53% of the suite is
+    gated on a ``.so`` merely existing, of any age — a stale one does not skip
+    those tests, it runs them against old Rust and reports pass.
+    """
+    info = polars_cv.build_info()
+    assert info["source_hash"] is not None, (
+        "the working tree's Rust sources could not be hashed, so this guard "
+        "checked nothing -- `_source_hash_from_tree` found no crate manifest"
+    )
+    assert info["plugin_source_hash"] is not None, (
+        "the compiled extension carries no __source_hash__; it predates "
+        "build.rs. Re-run `maturin develop`."
+    )
+    assert info["plugin_source_hash"] == info["source_hash"], (
+        f"the compiled extension was built from different Rust sources than "
+        f"the ones in this checkout (built {info['plugin_source_hash']}, "
+        f"working tree {info['source_hash']}) — re-run `maturin develop`, or "
+        f"the suite will exercise the old extension and report pass."
     )
 
 

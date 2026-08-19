@@ -346,7 +346,7 @@ fn build_typed_nested_list_series_from_rows_with_dtype(
     dtype_str: &str,
     shape: &[usize],
 ) -> PolarsResult<Series> {
-    let inner_dtype = dtype_str_to_polars(dtype_str);
+    let inner_dtype = dtype_str_to_polars(dtype_str)?;
     let mut dtype = inner_dtype.clone();
     for _dim in shape.iter().rev() {
         dtype = DataType::List(Box::new(dtype));
@@ -454,7 +454,7 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
     if let Some(series) = try_build_array_series_flat(name.clone(), rows, dtype_str, &shape)? {
         return Ok(series);
     }
-    let inner_dtype = dtype_str_to_polars(dtype_str);
+    let inner_dtype = dtype_str_to_polars(dtype_str)?;
     let mut dtype = inner_dtype.clone();
     for &dim in shape.iter().rev() {
         dtype = DataType::Array(Box::new(dtype), dim);

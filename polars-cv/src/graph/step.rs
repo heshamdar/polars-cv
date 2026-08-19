@@ -64,12 +64,26 @@ impl GraphStep {
     /// until the planner started to. Widening those two to `Domain::Any`
     /// instead would have been wrong in the other direction — it would stop
     /// rejecting `extract_contours().reduce_sum()`, which the suite pins.
+    ///
+    /// Exhaustive on purpose. This was the one contract method on `GraphStep`
+    /// with a `_ =>` catch-all, so a new multi-domain variant would silently
+    /// have been given a single domain — in the method `CLAUDE.md` names as
+    /// *the* authority for accepted input domains, and which the Python
+    /// planner validates against. The other five contract methods make a new
+    /// variant a compile error; this one now does too.
     pub fn input_domains(&self) -> Vec<Domain> {
         match self {
             GraphStep::Binary { .. } | GraphStep::Reduction(_) => {
                 vec![Domain::Buffer, Domain::Vector]
             }
-            _ => vec![self.input_domain()],
+            GraphStep::Buffer(_)
+            | GraphStep::Geometry(_)
+            | GraphStep::ApplyMask { .. }
+            | GraphStep::ChannelMerge { .. }
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_)
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => vec![self.input_domain()],
         }
     }
 

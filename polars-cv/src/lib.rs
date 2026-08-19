@@ -35,6 +35,11 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // extension stays at its last `maturin develop`; `polars_cv.build_info()`
     // compares the two.
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // A content hash of both crates' sources, from `build.rs`. The version
+    // above cannot detect staleness *within* a release cycle -- it is the same
+    // literal until the next bump, which is the whole window the check exists
+    // for. This moves whenever the built artifact could differ.
+    m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
     m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(op_schema, m)?)?;
@@ -43,6 +48,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
+    m.add_function(wrap_pyfunction!(rotate_affine_params, m)?)?;
     Ok(())
 }
 
@@ -517,6 +523,44 @@ fn enum_names() -> Vec<String> {
 /// This is the registry surfaced from [`crate::execute::KNOWN_OPS`] so Python
 /// can assert that every op a `Pipeline` emits is executable (B1) without
 /// hand-syncing a second list.
+/// The affine parameters a `rotate` executes as, for a known input shape.
+///
+/// Returns `(matrix, output_height, output_width)` straight out of
+/// `AffineParams::from_rotation` — **the** rotation-matrix authority, and the
+/// one an unfused `rotate` actually runs through (`ComputeOp::RotateAffine`).
+///
+/// It exists so the Python planner's affine fusion can *read* that matrix
+/// instead of recomputing it. It used to transliterate `from_rotation` line for
+/// line, which meant a `rotate()` produced its matrix from Rust when it stood
+/// alone and from Python when a neighbouring op made it fusible — two
+/// implementations of one formula, differing already in angle normalisation
+/// (`angle % 360` in Python, raw in Rust) and in rounding (Python's `round` is
+/// half-to-even, Rust's is half-away-from-zero). Nothing compared them; the
+/// test that looked like it did compared Python against a third copy of itself.
+#[pyfunction]
+fn rotate_affine_params(
+    angle_deg: f32,
+    input_height: u32,
+    input_width: u32,
+    expand: bool,
+) -> PyResult<(Vec<f64>, u32, u32)> {
+    let params = view_buffer::ops::affine::AffineParams::from_rotation(
+        angle_deg,
+        input_height,
+        input_width,
+        expand,
+        // Neither affects the matrix or the output size; the caller keeps the
+        // op's own values for these and only wants the geometry.
+        view_buffer::ops::affine::InterpolationType::Bilinear,
+        0.0,
+    );
+    Ok((
+        params.matrix.to_vec(),
+        params.output_height,
+        params.output_width,
+    ))
+}
+
 #[pyfunction]
 fn known_ops() -> Vec<String> {
     crate::execute::KNOWN_OPS
@@ -563,7 +607,11 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
 // ============================================================================
 
 /// Kwargs for the graph-based pipeline function.
+///
+/// Closed: a kwarg Python emits and Rust does not declare is a drift bug, and
+/// this is the outermost struct of the plugin boundary.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GraphKwargs {
     /// JSON-serialized pipeline graph specification.
     pub graph_json: String,

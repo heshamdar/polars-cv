@@ -7,7 +7,6 @@ various scale factors, and edge cases.
 
 from __future__ import annotations
 
-import io
 from typing import Callable
 
 import numpy as np
@@ -16,19 +15,6 @@ import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
 from tests.conftest import plugin_required
-
-
-@pytest.fixture
-def encode_png() -> Callable[[np.ndarray], bytes]:
-    def _encode(arr: np.ndarray) -> bytes:
-        from PIL import Image
-
-        img = Image.fromarray(arr)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
-
-    return _encode
 
 
 @pytest.fixture
