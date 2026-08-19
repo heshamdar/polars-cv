@@ -5,8 +5,6 @@ Provides the ``.bbox`` accessor for operations on ``List[BBOX_SCHEMA]`` columns.
 
 from __future__ import annotations
 
-from typing import Literal
-
 import polars as pl
 
 from polars_cv._namespace import _ArgBinder, _GeomNullPolicy, _PluginNamespace
@@ -45,7 +43,6 @@ class BBoxNamespace(_GeomNullPolicy, _PluginNamespace):
         *,
         threshold: float | pl.Expr = 0.5,
         scores: pl.Expr | None = None,
-        strategy: Literal["greedy"] = "greedy",
     ) -> pl.Expr:
         """Greedy one-to-one detection matching via IoU on bounding boxes.
 
@@ -59,7 +56,6 @@ class BBoxNamespace(_GeomNullPolicy, _PluginNamespace):
             scores: Optional per-prediction confidence scores
                 (``List[Float64]``). When provided, predictions are processed
                 in descending score order.
-            strategy: Matching strategy (only ``"greedy"`` is supported).
 
         Returns:
             A struct matching ``polars_cv.geometry.MATCH_RESULT_SCHEMA``.
@@ -75,4 +71,4 @@ class BBoxNamespace(_GeomNullPolicy, _PluginNamespace):
         binder.add_data("other", other)
         binder.add_data("scores", scores)
         binder.add_param("threshold", threshold)
-        return binder.call(self, "bbox_match_detections", strategy=strategy)
+        return binder.call(self, "bbox_match_detections")

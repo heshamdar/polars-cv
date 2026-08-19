@@ -13,7 +13,15 @@ use std::collections::HashMap;
 use crate::params::ParamValue;
 
 /// Source format specification.
+///
+/// `deny_unknown_fields` closes this end of the wire format, as `GraphNode`
+/// and `SinkSpec` do for theirs. It is needed *per struct*: serde's attribute
+/// does not descend into nested types, so closing `GraphNode` left everything
+/// it holds — this included — accepting anything Python sent. That mattered
+/// most here, because `allowed_roots` is the path sandbox: a misspelled key
+/// deserialized to `None`, i.e. no sandbox at all, silently.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceSpec {
     /// The format of the input data.
     pub format: String,

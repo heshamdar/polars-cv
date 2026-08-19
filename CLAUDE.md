@@ -210,9 +210,16 @@ cargo fmt --all -- --check       # Rust format check
 cargo clippy --all-targets --all-features -- -D warnings  # Rust lint
 ```
 
-A [pre-commit](https://pre-commit.com/) config (`.pre-commit-config.yaml`) wires
-these up; `pre-commit>=4.5.1` is in the dev group. Install hooks with
-`uv run pre-commit install`.
+A [pre-commit](https://pre-commit.com/) config wires these up;
+`pre-commit>=4.5.1` is in the dev group. The config lives at the **repo root**
+(`.pre-commit-config.yaml`), which is where pre-commit resolves it from — it sat
+in `polars-cv/` for a while, where pre-commit never loaded it, so the structural
+lane the hook exists to run was silently not running. Install the hooks from the
+repo root:
+
+```bash
+cd "$(git rev-parse --show-toplevel)" && uv run --directory polars-cv pre-commit install
+```
 
 ### Docs
 
@@ -346,7 +353,7 @@ authority — do not open a side channel.
 |------|------------------|---------------------|
 | Appending an op to a `Pipeline` (domain check + `op_schema` fold + shape hints) | `Pipeline._push_op()` | `test_op_append_is_structurally_exclusive` — AST walk failing if anything but `_push_op`/`_set_ops_slice`/`_clone` touches `_ops` |
 | An op's rank / channel / dtype / memory contract | `Op` trait methods, **no defaults** | Compile error: a new op that omits one does not build |
-| An op's accepted input domains | `op_contract(...)["input_domains"]` (Rust `GraphStep::input_domains`) | `test_domain_vocabulary_declared_once` — `Pipeline` may not carry `DOMAIN_*` constants or a `_validate_domain` |
+| An op's accepted input domains | `op_contract(...)["input_domains"]` (Rust `GraphStep::input_domains`, exhaustive — no catch-all arm) | `test_domain_vocabulary_declared_once` — `Pipeline` may not carry `DOMAIN_*` constants or a `_validate_domain`; execution reads the same contract via `step_buffer_operand` rather than restating it per arm |
 | An op's H/W effect | view-buffer `infer_shape`, read via `op_infer_shape` | No inferable shape ⇒ hints invalidated, never carried forward |
 | Which ops exist | Rust `KNOWN_OPS` ↔ Python `OP_NAMES` | `known_ops_all_resolve`, `resolve_op_arms_are_all_known_ops`, `test_op_names_matches_rust_known_ops_without_the_plugin` (works with no `.so`); guard arms in `resolve_op` must be listed in `KNOWN_GUARD_ARMS` |
 | Every spelling of a dtype (short / VIEW wire code / numpy) | `dtype_table!` in `view-buffer/src/core/dtype.rs` | `dtype_single_authority.rs` + `test_no_second_dtype_spelling_table` (a partial dispatch is reported) |
@@ -359,6 +366,9 @@ authority — do not open a side channel.
 | Null parameter handling | `NullParamPolicy` on `ParamCtx`, via `ParamCol::on_null` | Reviewed by hand: never add per-op or per-parameter null keywords |
 | What a `(domain, sink format)` pair produces | `SinkKind::resolve` in `src/graph/sink_kind.rs` | Compile error: the four halves of the sink contract (`dtype_for_output`, `encode_node_output`, `null_row_result_for_spec`, `build_series_from_spec`) match on the enum, so a new kind is non-exhaustive in all four at once; `every_kind_is_produced_by_some_pair` rejects a kind no pair names |
 | Which files a source-scanning guard reads | `tests/_discovery.py` — every accessor raises rather than returning empty | `test_scans_go_through_discovery` (AST walk: a direct `glob`/`rglob` in `tests/` fails unless the file is in `_DISCOVERY_EXEMPT` with a reason), `test_discovery_fixtures.py` |
+| The rotate → affine matrix | `AffineParams::from_rotation` (view-buffer), read via the `rotate_affine_params` FFI | `test_the_planner_does_not_recompute_the_rotation_matrix` — rejects trigonometry in the fusion helper; `test_affine_builder.py`'s reference reads the same FFI rather than reimplementing it |
+| A `Pipeline`'s state, when copied | `_STATE_COPIERS` + `Pipeline._copy_state_from` — `_clone`, `_create_sub_pipeline` and CSE all inherit everything, then override | `test_pipeline_state_copy_is_complete` (table ↔ `__init__`, both directions) and `test_every_pipeline_field_survives_a_copy` |
+| Whether the compiled extension matches the sources | `POLARS_CV_SOURCE_HASH` from `build.rs`, recomputed by `build_info()` | `test_compiled_plugin_matches_the_rust_sources` — the version comparison cannot fire within a release cycle |
 | Dtype spellings on the Python side | `python/polars_cv/_dtype_names.py`, generated from `dtype_table!` by `scripts/gen_dtype_names.py` | `test_dtype_names_module_is_current` (regenerate-and-diff), `test_engine_dtype_names_match_the_generated_table` pins `_types.DType` to it without the plugin |
 
 One deliberate exception, documented at the site: `OpSpec` is *not*

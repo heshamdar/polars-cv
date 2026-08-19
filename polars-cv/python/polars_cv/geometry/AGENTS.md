@@ -68,14 +68,14 @@ Registered on `pl.Expr` for columns matching `CONTOUR_SCHEMA`. Each method calls
 
 Set-level detection helpers also live here and operate on `CONTOUR_SET_SCHEMA`:
 - `pairwise_iou(other)` -> `List[List[Float64]]`
-- `match_detections(other, threshold, scores, strategy)` -> `MATCH_RESULT_SCHEMA`
+- `match_detections(other, threshold, scores)` -> `MATCH_RESULT_SCHEMA`
 - `label_reduce(heatmap, reduction, region_mode)` -> `List[Float64]`
 
 ### `.bbox` (BBoxNamespace)
 
 Registered on `pl.Expr` for columns containing `List[BBOX_SCHEMA]`. Methods:
 - `pairwise_iou(other)` -> `List[List[Float64]]`
-- `match_detections(other, threshold, scores, strategy)` -> `MATCH_RESULT_SCHEMA`
+- `match_detections(other, threshold, scores)` -> `MATCH_RESULT_SCHEMA`
 
 These delegate to Rust functions `bbox_pairwise_iou` and `bbox_match_detections`
 which internally convert bounding boxes to rectangular contours and reuse the
@@ -109,14 +109,18 @@ via `params.slot("scores")`.
 
 Numeric parameters here are per-row capable; parameters that *select behaviour*
 rather than carry a value stay literal kwargs (`scale`'s `origin`,
-`ensure_winding`'s `direction`, `match_detections`' `strategy`).
+`ensure_winding`'s `direction`).
 
 Validation that can no longer happen once per batch moves into the row loop and
 names the offending row — see the `threshold` range check in
 `contour_match_detections` and the zero-dimension guard in `point_normalize`.
 
-**Keep signatures honest.** These namespaces have no generated stub and no
-parity test, so a hand-written annotation can drift from behaviour unnoticed —
+**Keep signatures honest.** These namespaces have no generated stub, and
+their *annotations* have no parity test — the schema they publish does
+(`tests/test_schema_parity_namespaces.py`, swept in both arities and
+completeness-asserted against the real method list, as the section below
+describes). So a hand-written annotation can still drift from behaviour
+unnoticed —
 which is exactly how four `.contour` methods came to advertise `int | pl.Expr`
 while unconditionally raising `TypeError` on it. `mkdocs.yml` sets
 `show_signature_annotations: true`, so a wrong annotation is published in the

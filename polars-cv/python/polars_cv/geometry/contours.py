@@ -6,8 +6,6 @@ This module provides the `.contour` accessor for operations on contour columns.
 
 from __future__ import annotations
 
-from typing import Literal
-
 import polars as pl
 
 from polars_cv._namespace import _ArgBinder, _GeomNullPolicy, _PluginNamespace
@@ -337,7 +335,6 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         *,
         threshold: float | pl.Expr = 0.5,
         scores: pl.Expr | None = None,
-        strategy: Literal["greedy"] = "greedy",
     ) -> pl.Expr:
         """
         Match prediction contour set against ground truth contour set.
@@ -347,7 +344,6 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             threshold: IoU threshold for positive matches. Accepts a Polars
                 expression for a per-row threshold.
             scores: Optional per-prediction confidence score list used for ordering.
-            strategy: Matching strategy. Currently only ``"greedy"`` is supported.
 
         Returns:
             A struct matching ``polars_cv.geometry.MATCH_RESULT_SCHEMA`` —
@@ -364,7 +360,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         binder.add_data("other", other)
         binder.add_data("scores", scores)
         binder.add_param("threshold", threshold)
-        return binder.call(self, "contour_match_detections", strategy=strategy)
+        return binder.call(self, "contour_match_detections")
 
     def label_reduce(
         self,

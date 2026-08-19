@@ -141,6 +141,82 @@ def test_op_append_is_structurally_exclusive() -> None:
     )
 
 
+def test_pipeline_state_copy_is_complete() -> None:
+    """``_STATE_COPIERS`` must name every field ``Pipeline.__init__`` creates.
+
+    A derived pipeline — ``_clone``, ``_create_sub_pipeline``, CSE's
+    ``_create_shared_node`` — inherits its state through
+    ``Pipeline._copy_state_from``, which reads only this table. A field the
+    table omits is silently reset to its ``__init__`` default in every one of
+    them, which is not a degradation the caller can see.
+
+    That is not hypothetical: the three copies used to be written out by hand,
+    ``_create_sub_pipeline`` carried 11 of the 14 fields, and because
+    ``to_graph()`` makes its sub-pipeline the graph's only node, a public
+    ``Pipeline().source(...).on_error("null").to_graph(col)`` executed under
+    ``"raise"``. Guard the table rather than the three call sites: the call
+    sites are what kept being forgotten.
+    """
+    from polars_cv.pipeline import _STATE_COPIERS
+
+    declared = set(_STATE_COPIERS)
+    actual = set(vars(Pipeline()))
+
+    assert actual, "Pipeline() has no instance attributes -- the probe is broken"
+    assert declared == actual, (
+        f"_STATE_COPIERS is out of step with Pipeline.__init__.\n"
+        f"  missing from the table (silently dropped by every copy): "
+        f"{sorted(actual - declared)}\n"
+        f"  named but no longer a field (stale entry): {sorted(declared - actual)}"
+    )
+
+
+def test_every_pipeline_field_survives_a_copy() -> None:
+    """The table is honoured: a mutated field reaches the copy.
+
+    ``test_pipeline_state_copy_is_complete`` checks the *names*; this checks
+    that ``_copy_state_from`` actually transfers a value for each, so an entry
+    whose copier silently drops data (or a field re-assigned after the copy)
+    fails here rather than in a user's graph.
+    """
+    from polars_cv.pipeline import _STATE_COPIERS
+
+    source = Pipeline()
+    # A value distinguishable from every `__init__` default, per field type.
+    sentinels = {
+        "_source": object(),
+        "_current_domain": "contour",
+        "_output_dtype": "f64",
+        "_expected_ndim": 7,
+        "_initial_output_dtype": "i16",
+        "_initial_expected_ndim": 5,
+        "_on_error": "null",
+        "_on_null_param": "null",
+        "_ops": ["sentinel-op"],
+        "_expr_refs": ["sentinel-expr"],
+        "_asserted_dims": {"height"},
+        "_hint_snapshots": {3: ("h", "w")},
+        "_shape_refs": ["sentinel-ref"],
+        "_shape_hints": None,
+        "_assertions": {2: None},
+    }
+    assert set(sentinels) == set(_STATE_COPIERS), (
+        "this test's sentinel table drifted from _STATE_COPIERS: "
+        f"{sorted(set(sentinels) ^ set(_STATE_COPIERS))}"
+    )
+    for name, value in sentinels.items():
+        setattr(source, name, value)
+
+    copied = Pipeline()
+    copied._copy_state_from(source)
+
+    for name, value in sentinels.items():
+        assert getattr(copied, name) == value, (
+            f"_copy_state_from lost {name}: expected {value!r}, "
+            f"got {getattr(copied, name)!r}"
+        )
+
+
 def test_push_op_updates_dtype_and_hints_unconditionally() -> None:
     """``_push_op`` must apply *both* halves of the plan-time effect.
 

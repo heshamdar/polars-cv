@@ -367,26 +367,24 @@ class TestAffineFusion:
 def _expected_rotate_affine(
     angle_deg: float, ih: int, iw: int, *, expand: bool = False
 ) -> tuple[list[float], int, int]:
-    """Reference rotate->warp_affine conversion for a known input shape.
+    """The rotate->warp_affine conversion, read from the engine.
 
-    Mirrors the documented conversion: rotation about the input center,
-    translated to the output center, with the output size either kept or
-    expanded to the rotated bounding box.
+    Deliberately **not** a reimplementation. This used to be a
+    character-for-character copy of ``_try_convert_rotate_to_affine``'s own
+    arithmetic, which made every assertion below a tautology: Python compared
+    against Python, and neither was ever compared against
+    ``AffineParams::from_rotation`` — the function an *unfused* rotate actually
+    executes through, and the one the two silently disagreed with on angle
+    normalisation and on rounding.
+
+    Asking the engine is what makes these tests able to fail: if the planner
+    stops reading the authority, or the authority changes, the matrices differ
+    here.
     """
-    import math
+    from polars_cv._lib import rotate_affine_params
 
-    rad = math.radians(angle_deg % 360)
-    cos_a, sin_a = math.cos(rad), math.sin(rad)
-    cx, cy = iw / 2.0, ih / 2.0
-    if expand:
-        new_w = round(iw * abs(cos_a) + ih * abs(sin_a))
-        new_h = round(ih * abs(cos_a) + iw * abs(sin_a))
-    else:
-        new_w, new_h = iw, ih
-    new_cx, new_cy = new_w / 2.0, new_h / 2.0
-    tx = -cx * cos_a - cy * (-sin_a) + new_cx
-    ty = -cx * sin_a - cy * cos_a + new_cy
-    return [cos_a, -sin_a, tx, sin_a, cos_a, ty], new_h, new_w
+    matrix, new_h, new_w = rotate_affine_params(angle_deg, ih, iw, expand)
+    return list(matrix), new_h, new_w
 
 
 def _compose(first: list[float], second: list[float]) -> list[float]:

@@ -173,9 +173,6 @@ pub struct ContourKwargs {
     /// IoU threshold for detection matching.
     #[serde(default)]
     pub threshold: Option<f64>,
-    /// Matching strategy name.
-    #[serde(default)]
-    pub strategy: Option<String>,
     /// Reduction method for label scoring.
     #[serde(default)]
     pub reduction: Option<String>,
@@ -1024,15 +1021,6 @@ fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsR
         .ok_or_else(|| polars_err!(ComputeError: "missing required input 'other'"))?;
     let score_series = params.slot("scores").map(|idx| &inputs[idx]);
     let len = pred_series.len();
-
-    if let Some(strategy) = kwargs.strategy.as_deref() {
-        if strategy != "greedy" {
-            return Err(polars_err!(
-                ComputeError: "Unsupported strategy '{}'. Expected: greedy",
-                strategy
-            ));
-        }
-    }
 
     let match_dtype = DataType::Struct(vec![
         Field::new(

@@ -17,7 +17,6 @@ Sections:
 
 from __future__ import annotations
 
-import io
 import math
 from typing import Callable
 
@@ -31,21 +30,6 @@ from tests.conftest import plugin_required
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def encode_png() -> Callable[[np.ndarray], bytes]:
-    """Encode a numpy array as PNG bytes."""
-
-    def _encode(arr: np.ndarray) -> bytes:
-        from PIL import Image
-
-        img = Image.fromarray(arr)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
-
-    return _encode
 
 
 def _make_solid(

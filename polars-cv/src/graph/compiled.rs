@@ -26,7 +26,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use view_buffer::geometry::label::score_contours_on_buffer;
-use view_buffer::ops::NodeOutput;
+use view_buffer::ops::{Domain, NodeOutput};
 use view_buffer::{PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
@@ -437,6 +437,47 @@ impl CompiledGraph {
         }
     }
 
+    /// The buffer a step consumes, honouring the step's *declared* input domains.
+    ///
+    /// **Read the contract; never restate it.** `GraphStep::input_domains` is the
+    /// single authority `CLAUDE.md` names for what a step accepts, and the Python
+    /// planner validates against it through `op_contract`. Execution used to
+    /// re-derive the same fact by hand at ten sites — `current_output.as_buffer()`
+    /// with a hardcoded `"<Step> requires Buffer"` string each time — and the two
+    /// had already diverged: `Binary` and `Reduction` declare
+    /// `[Buffer, Vector]`, so the planner accepted
+    /// `extract_shape().reduce_sum()` and execution then failed the row with
+    /// "Reduction requires Buffer, got Vector".
+    ///
+    /// A vector *is* a 1-D buffer here — that is exactly the equivalence
+    /// `_require_input_domain`'s docstring already claims ("a perceptual hash is a
+    /// 1-D buffer encoded as a vector"), and the reason `perceptual_hash` and the
+    /// histogram vector modes ride as `Buffer` at runtime while planning as
+    /// `vector`. So when a step admits `Vector`, materialize one rather than
+    /// refusing it.
+    fn step_buffer_operand(
+        output: &NodeOutput,
+        step: &GraphStep,
+        what: &str,
+    ) -> Result<Arc<ViewBuffer>, String> {
+        let domain = output.domain();
+        let accepted = step.input_domains();
+        match output {
+            NodeOutput::Buffer(buf) => Ok(Arc::clone(buf)),
+            NodeOutput::Vector(vals) if accepted.contains(&Domain::Vector) => {
+                Ok(Arc::new(ViewBuffer::from_vec(vals.as_ref().clone())))
+            }
+            _ => Err(format!(
+                "{what} accepts {} input but received {domain:?}",
+                accepted
+                    .iter()
+                    .map(|d| format!("{d:?}"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            )),
+        }
+    }
+
     /// Run every node of the graph for one row, leaving each node's output in
     /// `node_outputs` (no output encoding).
     fn run_row_nodes<'g>(
@@ -752,6 +793,9 @@ impl CompiledGraph {
                                 else {
                                     continue 'nodes;
                                 };
+                                // Not a step input: this reads *another node's*
+                                // output purely for its dimensions, so it wants a
+                                // buffer regardless of what the current step accepts.
                                 let shape_buf = shape_output.as_buffer().ok_or_else(|| {
                                     format!(
                                         "Rasterize shape reference '{shape_node}' must be a Buffer, got {:?}",
@@ -799,68 +843,61 @@ impl CompiledGraph {
                             GraphStep::Binary { op, other } => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "Binary op requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
+                                let current_buf = Self::step_buffer_operand(
+                                    &current_output,
+                                    graph_step.as_ref(),
+                                    "Binary op",
+                                )?;
                                 let Some(other_output) =
                                     self.operand(node_outputs, other, "Binary op")?
                                 else {
                                     continue 'nodes;
                                 };
-                                let other_buf = other_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "Binary op other operand must be Buffer, got {:?}",
-                                        other_output.domain()
-                                    )
-                                })?;
-                                let result = op.execute(current_buf, other_buf);
+                                let other_buf = Self::step_buffer_operand(
+                                    other_output,
+                                    graph_step.as_ref(),
+                                    "Binary op other operand",
+                                )?;
+                                let result = op.execute(&current_buf, &other_buf);
                                 current_output = NodeOutput::from_buffer(result);
                             }
                             GraphStep::ApplyMask { mask, invert } => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ApplyMask requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
+                                let current_buf = Self::step_buffer_operand(
+                                    &current_output,
+                                    graph_step.as_ref(),
+                                    "ApplyMask",
+                                )?;
                                 let Some(mask_output) =
                                     self.operand(node_outputs, mask, "ApplyMask")?
                                 else {
                                     continue 'nodes;
                                 };
-                                let mask_buf = mask_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ApplyMask mask must be Buffer, got {:?}",
-                                        mask_output.domain()
-                                    )
-                                })?;
+                                let mask_buf = Self::step_buffer_operand(
+                                    mask_output,
+                                    graph_step.as_ref(),
+                                    "ApplyMask mask",
+                                )?;
                                 let result =
-                                    view_buffer::apply_mask(current_buf, mask_buf, *invert);
+                                    view_buffer::apply_mask(&current_buf, &mask_buf, *invert);
                                 current_output = NodeOutput::from_buffer(result);
                             }
                             GraphStep::Reduction(reduction_op) => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "Reduction requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let result = reduction_op.execute(current_buf);
+                                let current_buf = Self::step_buffer_operand(
+                                    &current_output,
+                                    graph_step.as_ref(),
+                                    "Reduction",
+                                )?;
+                                let result = reduction_op.execute(&current_buf);
                                 // The op's declared output domain (the same
                                 // authority the planner reads) decides scalar
                                 // vs buffer — not the result's shape, which is
                                 // also [1] for an axis reduction of a 1-D
                                 // buffer (a buffer-domain output).
-                                current_output = if reduction_op.output_domain()
-                                    == view_buffer::ops::Domain::Scalar
-                                {
+                                current_output = if reduction_op.output_domain() == Domain::Scalar {
                                     let v = result.scalar_f64().ok_or_else(|| {
                                         format!(
                                             "Scalar reduction produced non-scalar shape {:?}",
@@ -875,24 +912,22 @@ impl CompiledGraph {
                             GraphStep::Histogram(histogram_op) => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "Histogram requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let result = histogram_op.execute(current_buf);
+                                let current_buf = Self::step_buffer_operand(
+                                    &current_output,
+                                    graph_step.as_ref(),
+                                    "Histogram",
+                                )?;
+                                let result = histogram_op.execute(&current_buf);
                                 current_output = NodeOutput::from_buffer(result);
                             }
                             GraphStep::PerceptualHash(phash_op) => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "PerceptualHash requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
+                                let current_buf = Self::step_buffer_operand(
+                                    &current_output,
+                                    graph_step.as_ref(),
+                                    "PerceptualHash",
+                                )?;
                                 // `apply_perceptual_hash` converts to u8 image
                                 // format before hashing and returns a 1-D u8
                                 // buffer. Like the histogram vector modes, the
@@ -900,7 +935,7 @@ impl CompiledGraph {
                                 // planned `vector` domain (OutputSpec) selects
                                 // the List encoding at sink time.
                                 let result = view_buffer::execution::runner::apply_perceptual_hash(
-                                    (**current_buf).clone(),
+                                    (*current_buf).clone(),
                                     phash_op.clone(),
                                 );
                                 current_output = NodeOutput::from_buffer(result);
@@ -909,12 +944,11 @@ impl CompiledGraph {
                                 // Extract shape from buffer and return as vector
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ExtractShape requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
+                                let current_buf = Self::step_buffer_operand(
+                                    &current_output,
+                                    graph_step.as_ref(),
+                                    "ExtractShape",
+                                )?;
                                 let shape = current_buf.shape();
                                 // Return shape as f64 vector [height, width, channels]
                                 let shape_vec: Vec<f64> = shape.iter().map(|&d| d as f64).collect();
@@ -927,12 +961,11 @@ impl CompiledGraph {
                             } => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "LabelReduce requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
+                                let current_buf = Self::step_buffer_operand(
+                                    &current_output,
+                                    graph_step.as_ref(),
+                                    "LabelReduce",
+                                )?;
                                 let slot =
                                     self.name_to_slot.get(contours_col).ok_or_else(|| {
                                         format!(
@@ -953,7 +986,7 @@ impl CompiledGraph {
                                     format!("LabelReduce contour parsing failed: {e}")
                                 })?;
                                 let scores = score_contours_on_buffer(
-                                    current_buf,
+                                    &current_buf,
                                     &contours,
                                     *reduction,
                                     *region_mode,
@@ -963,13 +996,12 @@ impl CompiledGraph {
                             GraphStep::ChannelMerge { others } => {
                                 current_output =
                                     flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                                let current_buf = current_output.as_buffer().ok_or_else(|| {
-                                    format!(
-                                        "ChannelMerge requires Buffer, got {:?}",
-                                        current_output.domain()
-                                    )
-                                })?;
-                                let mut all_bufs: Vec<&ViewBuffer> = vec![current_buf];
+                                let current_buf = Self::step_buffer_operand(
+                                    &current_output,
+                                    graph_step.as_ref(),
+                                    "ChannelMerge",
+                                )?;
+                                let mut all_bufs: Vec<&ViewBuffer> = vec![&current_buf];
                                 for other_id in others {
                                     let Some(other_output) =
                                         self.operand(node_outputs, other_id, "ChannelMerge")?

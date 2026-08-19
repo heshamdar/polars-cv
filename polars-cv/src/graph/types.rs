@@ -17,7 +17,11 @@ use crate::pipeline::{SinkSpec, SourceSpec};
 use super::encode::{default_domain, default_dtype};
 
 /// Output specification for a single output in the graph.
+///
+/// Closed like `GraphNode`: `deny_unknown_fields` does not descend, so this
+/// sibling of the node needed its own.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputSpec {
     /// The node ID to output.
     pub node: String,
@@ -136,7 +140,12 @@ mod row_error_policy_tests {
 /// This struct handles all cases:
 /// - Single output: `outputs` contains only "_output" key, returns Binary
 /// - Multi output: `outputs` contains multiple keys, returns Struct
+///
+/// Closed with `deny_unknown_fields` for the same reason `GraphNode` is: a
+/// misspelled top-level key (`on_eror`) otherwise took the policy default
+/// with nothing said.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UnifiedGraph {
     /// Graph wire-format version. Version 0 (absent) and 1 are identical;
     /// the field exists so future format changes can be detected instead of
