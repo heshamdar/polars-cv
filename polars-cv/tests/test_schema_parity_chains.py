@@ -470,3 +470,80 @@ def test_image_codec_carve_out_is_still_narrow() -> None:
     assert encodable_by_image_codec(_base().grayscale())
     assert not encodable_by_image_codec(_base().cast("f32"))
     assert not encodable_by_image_codec(_base().reduce_sum())
+
+
+# ---------------------------------------------------------------------------
+# Runtime vectors reaching a step that declares it accepts them
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+@pytest.mark.parametrize("reducer", ["reduce_sum", "reduce_max", "reduce_min"])
+def test_a_runtime_vector_reduces(reducer: str) -> None:
+    """`extract_shape()` produces a runtime `NodeOutput::Vector`; a reduction
+    over it must plan and execute the same scalar.
+
+    `GraphStep::input_domains` declares `[Buffer, Vector]` for reductions and
+    the planner validates against it, but execution re-derived the check by
+    hand and `NodeOutput::as_buffer()` is `None` for a vector — so this planned
+    clean and failed the row with "Reduction requires Buffer, got Vector".
+
+    Nothing in the suite chained a vector into anything: every `extract_shape`
+    and `label_reduce` test sent the vector straight to a sink, so the fix
+    could be reverted wholesale and the suite would stay green.
+    """
+    pipe = getattr(_base().extract_shape(), reducer)()
+    assert_plan_equals_exec(_df(), pl.col("img").cv.pipe(pipe).sink("native"))
+
+
+@plugin_required
+def test_a_runtime_vector_reduces_to_the_right_value() -> None:
+    """Plan/exec parity is not enough — check the arithmetic reaches the op."""
+    pipe = _base().extract_shape().reduce_sum()
+    got = _df().select(r=pl.col("img").cv.pipe(pipe).sink("native"))["r"].to_list()
+    assert got == [float(H + W + 3)] * _df().height, (
+        f"expected the shape triple to sum to {H + W + 3}, got {got}"
+    )
+
+
+@plugin_required
+@pytest.mark.parametrize("sink", ["list", "native"])
+def test_a_runtime_vector_is_refused_by_a_binary_op(sink: str) -> None:
+    """A binary op must refuse a runtime vector rather than broadcast it.
+
+    `Binary` declares it accepts `vector`, and it must — `perceptual_hash`
+    plans as `vector`. But phash *executes* as a Buffer, so the only operands
+    that arrive as a runtime `Vector` are `extract_shape` / `label_reduce`, and
+    for those the coercion is unsound: the planner publishes the **left**
+    operand's rank while execution would broadcast against the other operand.
+    Coercing anyway made `extract_shape().add(image)` plan rank 1 and execute
+    rank 3 — `sink("list")` silently flattening twelve values into a
+    three-element plan, `sink("array", shape=[3])` dying at execution.
+
+    Refusing keeps the failure loud. There is no rank to publish at plan time,
+    so there is nothing better to do here.
+    """
+    df = _df()
+    left = pl.col("img").cv.pipe(_base().extract_shape())
+    right = pl.col("img").cv.pipe(_base())
+
+    lf = df.lazy().with_columns(out=left.add(right).sink(sink))
+    with pytest.raises(Exception) as excinfo:
+        lf.collect()
+    assert "vector" in str(excinfo.value).lower(), (
+        f"the refusal should say why a vector cannot be read here; got {excinfo.value}"
+    )
+
+
+@plugin_required
+def test_perceptual_hash_still_reaches_a_binary_op() -> None:
+    """The case `Binary`'s `[Buffer, Vector]` declaration exists for.
+
+    A perceptual hash plans as `vector` and executes as a Buffer, so it must
+    keep flowing into a binary op — narrowing the *runtime* coercion must not
+    narrow this.
+    """
+    df = _df()
+    a = pl.col("img").cv.pipe(_base().perceptual_hash(hash_size=64))
+    b = pl.col("img").cv.pipe(_base().perceptual_hash(hash_size=64))
+    assert_plan_equals_exec(df, a.bitwise_xor(b).sink("list"))

@@ -518,11 +518,6 @@ fn enum_names() -> Vec<String> {
         .collect()
 }
 
-/// Return the names of every operation the executor can resolve.
-///
-/// This is the registry surfaced from [`crate::execute::KNOWN_OPS`] so Python
-/// can assert that every op a `Pipeline` emits is executable (B1) without
-/// hand-syncing a second list.
 /// The affine parameters a `rotate` executes as, for a known input shape.
 ///
 /// Returns `(matrix, output_height, output_width)` straight out of
@@ -561,6 +556,11 @@ fn rotate_affine_params(
     ))
 }
 
+/// Return the names of every operation the executor can resolve.
+///
+/// This is the registry surfaced from [`crate::execute::KNOWN_OPS`] so Python
+/// can assert that every op a `Pipeline` emits is executable (B1) without
+/// hand-syncing a second list.
 #[pyfunction]
 fn known_ops() -> Vec<String> {
     crate::execute::KNOWN_OPS

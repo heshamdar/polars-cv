@@ -216,6 +216,22 @@ def test_every_pipeline_field_survives_a_copy() -> None:
             f"got {getattr(copied, name)!r}"
         )
 
+    # Equality alone cannot see the bug the table exists to prevent. A copier
+    # that aliases instead of copying passes every check above and then lets a
+    # clone mutate its origin -- which is what `_clone` returning a *new*
+    # Pipeline is for. Containers must be distinct objects.
+    aliased = sorted(
+        name
+        for name in _STATE_COPIERS
+        if isinstance(getattr(source, name), (list, dict, set))
+        and getattr(copied, name) is getattr(source, name)
+    )
+    assert not aliased, (
+        f"these fields are shared with the origin rather than copied: "
+        f"{aliased}. Mutating the clone would mutate the pipeline it came "
+        f"from; `Pipeline` is immutable by contract."
+    )
+
 
 def test_push_op_updates_dtype_and_hints_unconditionally() -> None:
     """``_push_op`` must apply *both* halves of the plan-time effect.
