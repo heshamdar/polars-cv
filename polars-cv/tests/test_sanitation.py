@@ -47,6 +47,7 @@ from tests._discovery import (
     suite_modules,
 )
 from tests._dtype_ratchet import dispatch_offenders
+from tests._kwargs_scan import all_deserialized_structs, open_structs
 from tests._op_cases import build_case, comparable_ops
 from tests._schema_parity import assert_plan_equals_exec, leaf_dtype
 from tests.conftest import plugin_required
@@ -590,6 +591,9 @@ _REQUIRED_LIB_HOOKS = (
     # The rotation-matrix authority, read by the planner's affine fusion so it
     # does not recompute what `AffineParams::from_rotation` already defines.
     "rotate_affine_params",
+    # The `{x, y}` point struct authority, read by the geometry parity test so
+    # Python's POINT_SCHEMA cannot drift from `geom_schema::point_fields`.
+    "point_schema",
 )
 
 
@@ -2038,12 +2042,15 @@ def _ci_run_commands(ci_yaml: str) -> list[str]:
     run_indent = 0
 
     for raw in ci_yaml.splitlines():
-        block = re.match(r"^(\s*)run:\s*\|", raw)
+        # The `- run:` form is legal YAML and just as capable of hiding a
+        # check, so both spellings are read even though the workflows here
+        # only use the own-line one today.
+        block = re.match(r"^(\s*)(?:-\s+)?run:\s*\|", raw)
         if block:
             in_run = True
             run_indent = len(block.group(1))
             continue
-        single = re.match(r"^\s*run:\s*(?!\|)(\S.*)$", raw)
+        single = re.match(r"^\s*(?:-\s+)?run:\s*(?!\|)(\S.*)$", raw)
         if single:
             in_run = False
             lines.append(single.group(1).strip())
@@ -2399,3 +2406,200 @@ def test_the_precommit_hook_runs_the_structural_lane() -> None:
         "re-sync the project and rebuild the Rust extension at --profile "
         "release — minutes per commit."
     )
+
+
+# ---------------------------------------------------------------------------
+# Plugin-boundary structs stay closed
+# ---------------------------------------------------------------------------
+
+# What the scan sees today. The floor exists so that a regex which stops
+# matching fails loudly instead of reporting "nothing open" forever — the
+# failure mode `CLAUDE.md` calls out and this repo has shipped more than once.
+# Counting *every* deserialized struct rather than the open ones is deliberate:
+# an open-struct floor would fall to zero exactly when the code became correct.
+_DESERIALIZED_STRUCT_FLOOR = 11
+
+
+def test_every_deserialized_plugin_struct_rejects_unknown_fields() -> None:
+    """A struct crossing the plugin boundary must refuse a field it does not declare.
+
+    Without ``#[serde(deny_unknown_fields)]`` a kwarg Python emits and Rust no
+    longer reads is dropped in silence. That is how ``sink("jpeg",
+    qualtiy=50)`` encoded at the default quality with nothing said, and how
+    ``match_detections(strategy=)`` rode the wire unread for releases.
+
+    This is a source scan — the weakest guard kind `CLAUDE.md` ranks — because
+    neither stronger kind can express the property: serde cannot *require* the
+    attribute at compile time, and a runtime probe only covers structs someone
+    listed. Its compensating virtue is catching a struct nobody remembered, so
+    it is paired with ``test_plugin_kwargs_reject_unknown_fields`` (which
+    proves the attribute actually rejects, at the real entry point) and with
+    ``tests/test_kwargs_scan_fixtures.py`` (which pins the matching itself).
+    """
+    open_by_file: dict[str, list[str]] = {}
+    seen = 0
+    for path in rust_sources():
+        if "polars-cv/src" not in path.as_posix():
+            continue
+        text = path.read_text()
+        seen += len(all_deserialized_structs(text))
+        if found := open_structs(text, path.name):
+            open_by_file[path.name] = found
+
+    assert seen >= _DESERIALIZED_STRUCT_FLOOR, (
+        f"the scan matched only {seen} deserialized structs, below the floor of "
+        f"{_DESERIALIZED_STRUCT_FLOOR}. Either the regex in tests/_kwargs_scan.py "
+        f"stopped matching (in which case this guard was about to pass "
+        f"vacuously), or structs were genuinely removed and the floor needs "
+        f"lowering deliberately."
+    )
+    assert not open_by_file, (
+        f"these deserialized structs accept undeclared fields, so a kwarg Rust "
+        f"stops reading is discarded in silence: {open_by_file}. Add "
+        f"#[serde(deny_unknown_fields)], or add the name to "
+        f"tests._kwargs_scan.OPEN_STRUCT_EXEMPT with the reason it cannot "
+        f"carry the attribute."
+    )
+
+
+@plugin_required
+class TestPluginKwargsRejectUnknownFields:
+    """The attribute the scan above checks for must actually reject.
+
+    ``test_every_deserialized_plugin_struct_rejects_unknown_fields`` reads
+    source text, so it cannot tell a real ``deny_unknown_fields`` from the
+    string appearing in a comment. These probes drive the genuine entry point —
+    ``register_plugin_function`` with a kwarg Rust does not declare — and
+    require the query to fail. `CLAUDE.md`: verify at the user-facing entry
+    point, not the helper.
+
+    The scan and these probes cover different halves and neither subsumes the
+    other: the scan catches a struct nobody remembered to close, these catch an
+    attribute that is present but not doing what it claims.
+    """
+
+    # `function name -> a minimal valid kwargs dict for it`. Each probe adds one
+    # undeclared key on top, so a rejection can only come from the attribute.
+    _ENTRY_POINTS = {
+        "read_file_bytes": {"on_error": "raise"},
+        "contour_area": {},
+        "point_scale": {},
+    }
+
+    @staticmethod
+    def _call(function_name: str, kwargs: dict[str, object]) -> None:
+        from polars.plugins import register_plugin_function
+
+        lib_path = Path(polars_cv.__file__).parent
+        df = pl.DataFrame({"x": ["ignored"]})
+        df.select(
+            register_plugin_function(
+                plugin_path=lib_path,
+                function_name=function_name,
+                args=[pl.col("x")],
+                kwargs=kwargs,
+                is_elementwise=True,
+            )
+        )
+
+    @pytest.mark.parametrize("function_name", sorted(_ENTRY_POINTS))
+    def test_an_undeclared_kwarg_is_rejected(self, function_name: str) -> None:
+        base = dict(self._ENTRY_POINTS[function_name])
+        with pytest.raises(Exception) as excinfo:
+            self._call(function_name, {**base, "definitely_not_a_real_kwarg": 1})
+        # The rejection must be serde's, not an incidental failure on the
+        # otherwise-valid base kwargs — otherwise this passes for the wrong
+        # reason and would keep passing with the attribute removed.
+        assert "definitely_not_a_real_kwarg" in str(excinfo.value), (
+            f"{function_name} failed, but not because of the undeclared kwarg: "
+            f"{excinfo.value}"
+        )
+
+
+@plugin_required
+class TestPointSchemaHasOneDeclaration:
+    """The `{x, y}` point struct is declared once in Rust and mirrored once in Python.
+
+    It used to be spelled out eight times — four inline constructions in
+    `contour.rs::contour_to_anyvalue`, `contour.rs::point_struct_dtype`,
+    `contour.rs::point_anyvalue`, `point.rs::point_output_type` and
+    `geometry/schemas.py::POINT_SCHEMA` — with nothing relating them. Dtypes,
+    op names and enum variants all have a named authority and a bidirectional
+    parity guard; this surface had neither.
+
+    Rust now reads `geom_schema::point_fields`. Python still declares
+    `POINT_SCHEMA` itself, so `polars_cv.geometry` imports with no compiled
+    extension present, and this test is what stops the two drifting — the
+    `point_schema` FFI is decoration without it.
+    """
+
+    def test_point_schema_matches_the_rust_declaration(self) -> None:
+        """Both directions, so neither side can add or drop a field alone."""
+        from polars_cv._lib import point_schema
+
+        from polars_cv.geometry.schemas import POINT_SCHEMA
+
+        rust_names = list(point_schema())
+        python_names = [field.name for field in POINT_SCHEMA.fields]
+
+        assert python_names == rust_names, (
+            f"POINT_SCHEMA and geom_schema::point_fields disagree: Python has "
+            f"{python_names}, Rust has {rust_names}. The Rust declaration in "
+            f"polars-cv/src/geom_schema.rs is the authority — change it there "
+            f"and mirror it here."
+        )
+
+    def test_the_point_fields_are_all_float64(self) -> None:
+        """Names alone would let a dtype change pass unnoticed.
+
+        The FFI publishes names, not dtypes, so a `Float64` -> `Float32` change
+        on either side would slip past the name comparison above. Rust's own
+        `a_point_value_matches_the_published_dtype` covers its half; this pins
+        Python's.
+        """
+        from polars_cv.geometry.schemas import POINT_SCHEMA
+
+        dtypes = {field.name: field.dtype for field in POINT_SCHEMA.fields}
+        assert all(dtype == pl.Float64 for dtype in dtypes.values()), (
+            f"point fields must be Float64 to match geom_schema::point_fields, "
+            f"got {dtypes}"
+        )
+
+    def test_the_point_struct_is_constructed_in_exactly_one_place(self) -> None:
+        """A *new* second Rust declaration must fail, not merely diverge later.
+
+        The parity test above compares Python to Rust, so it cannot see a
+        second Rust spelling that happens to agree today. This scan can, and it
+        is what keeps the consolidation from quietly unwinding — the eight
+        original sites all agreed when they were written, too.
+        """
+        # An `{x, y}` point is an adjacent x/y Float64 pair that is the *whole*
+        # field list. A bbox starts `x, y, width, height`, so the third field
+        # is what tells the two apart -- matching on `"x"` alone reports
+        # bboxes too, and reports nothing useful.
+        pair = re.compile(
+            r'from_static\("x"\),\s*DataType::Float64\s*\),\s*'
+            r'Field::new\(\s*PlSmallStr::from_static\("y"\),\s*DataType::Float64\s*\),'
+            r"(?P<after>\s*(?:\]|Field::new))",
+            re.S,
+        )
+        declarations = []
+        for path in rust_sources():
+            if "polars-cv/src" not in path.as_posix():
+                continue
+            text = path.read_text()
+            for match in pair.finditer(text):
+                if "Field::new" in match.group("after"):
+                    continue  # a wider struct (bbox) that merely begins x, y
+                line = text[: match.start()].count("\n") + 1
+                declarations.append(f"{path.name}:{line}")
+
+        assert declarations, (
+            "no {x, y} point struct construction found in the plugin sources -- "
+            "the probe is broken and would report 'one declaration' forever"
+        )
+        assert len(declarations) == 1, (
+            f"the point struct is built in more than one place: {declarations}. "
+            f"polars-cv/src/geom_schema.rs is the authority -- call "
+            f"point_fields()/point_struct_dtype() instead of respelling it."
+        )

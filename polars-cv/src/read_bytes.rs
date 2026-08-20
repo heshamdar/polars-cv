@@ -21,7 +21,12 @@ use crate::cloud::CloudOptions;
 use crate::fetch;
 
 /// Static kwargs for [`read_file_bytes`].
+///
+/// Closed for the same reason as [`GraphKwargs`]: this is a plugin-boundary
+/// struct, so a kwarg Python emits and Rust does not declare is drift, not a
+/// value to discard in silence.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReadBytesKwargs {
     /// Cloud credentials, keyed as `CloudOptions::from_map` expects. Same map
     /// the `file_path` source spec carries.
