@@ -61,3 +61,21 @@ WIRE_CODES: dict[str, int] = {
     "f32": 7,
     "f64": 8,
 }
+
+#: VIEW binary protocol code -> numpy name. The reverse of
+#: :data:`WIRE_CODES` composed with the numpy spelling, emitted as one
+#: table because reading a VIEW blob needs exactly that hop and nothing
+#: else. `display.py` used to hand-write it, which made a third Python
+#: copy of `dtype_table!` guarded only by a regex over its own source.
+NUMPY_BY_WIRE_CODE: dict[int, str] = {
+    1: "uint8",
+    2: "int8",
+    3: "uint16",
+    4: "int16",
+    5: "uint32",
+    6: "int32",
+    7: "float32",
+    8: "float64",
+    9: "uint64",
+    10: "int64",
+}

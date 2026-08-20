@@ -56,7 +56,7 @@ pub use phash::{HashAlgorithm, PerceptualHashOp};
 pub use reduction::ReductionOp;
 pub use scalar::{FusedKernel, ScalarOp};
 pub use shape_rule::{OutputChannelRule, OutputRankRule};
-pub use traits::{DomainOp, MemoryEffect, Op};
+pub use traits::{MemoryEffect, Op};
 pub use validation::ValidationError;
 pub use view::ViewOp;
 

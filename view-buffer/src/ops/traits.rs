@@ -3,7 +3,6 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::validation::ValidationError;
-use crate::ops::{Domain, NodeOutput};
 
 /// What an operation needs from its input's memory layout.
 ///
@@ -161,64 +160,4 @@ pub trait Op {
         }
         Ok(())
     }
-}
-
-// ============================================================
-// Domain-Aware Operation Trait
-// ============================================================
-
-/// Trait for operations with domain type information.
-///
-/// This extends the basic Op trait with domain-aware execution,
-/// enabling typed pipelines that cross between different data domains
-/// (buffer, contour, scalar, vector).
-///
-/// # Example
-///
-/// ```ignore
-/// // ExtractContours: Buffer → Contour
-/// impl DomainOp for ExtractContoursOp {
-///     fn input_domain(&self) -> Domain { Domain::Buffer }
-///     fn output_domain(&self) -> Domain { Domain::Contour }
-///
-///     fn execute_typed(&self, input: NodeOutput) -> Result<NodeOutput, String> {
-///         let buffer = input.as_buffer()
-///             .ok_or("Expected Buffer input")?;
-///         let contours = extract_contours(buffer, ...);
-///         Ok(NodeOutput::from_contours(contours))
-///     }
-/// }
-/// ```
-pub trait DomainOp {
-    /// What domain this operation expects as input.
-    fn input_domain(&self) -> Domain;
-
-    /// What domain this operation produces.
-    fn output_domain(&self) -> Domain;
-
-    /// Validate that the input domain is compatible.
-    ///
-    /// Returns an error with a helpful message if incompatible.
-    fn validate_input_domain(&self, input: Domain) -> Result<(), String> {
-        let expected = self.input_domain();
-        if expected.accepts(input) {
-            Ok(())
-        } else {
-            Err(format!(
-                "{} expects {} input but received {}. Add a domain-converting operation.",
-                std::any::type_name::<Self>()
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or("operation"),
-                expected.name(),
-                input.name()
-            ))
-        }
-    }
-
-    /// Execute with typed input/output.
-    ///
-    /// Implementations should first validate the input domain,
-    /// then perform the operation and return the correctly-typed output.
-    fn execute_typed(&self, input: NodeOutput) -> Result<NodeOutput, String>;
 }
