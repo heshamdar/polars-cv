@@ -338,6 +338,31 @@ missing scan must not be the fact the scan is looking for — the previous
 `_rust_src_dir()` answered a moved layout with `None`, and five guards read
 that as "installed wheel, nothing to check".
 
+## Recording a Defect You Are Not Fixing
+
+`test_known_gaps.py` holds one `xfail(strict=True)` test per **verified but
+unfixed** defect. Each asserts the behaviour the codebase should have, so it
+fails today, and its docstring says what "fixed" looks like.
+
+`strict=True` is the mechanism: when someone lands the fix the test XPASSes and
+the suite goes **red**, which is the signal to delete the marker and let the
+test join the suite proper. A backlog kept in prose goes stale in both
+directions — items get fixed without anyone noticing, and items get described
+in terms that stopped matching the code. This one cannot.
+
+Rules:
+
+- The defect must be **confirmed**, against running code or against source. An
+  `xfail` for a suspicion is worse than no test: it reads as knowledge.
+- Watch it fail *for the reason it claims*, with `--runxfail`. Three of the
+  first nine were failing on a broken path or an over-broad regex rather than
+  on the defect, which is the "reads as coverage" failure mode in its purest
+  form — the test was red, so nothing looked wrong.
+- Never put a flaky or environment-dependent test here. `xfail` means "known
+  broken", never "sometimes fails".
+- Adding an entry is not an alternative to fixing something. It is for defects
+  whose fix is a design change wanting its own commit.
+
 ## Changing Behaviour
 
 If a change alters what a caller sees — a signature, whether something raises,
