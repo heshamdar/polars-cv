@@ -268,7 +268,11 @@ current instead.
    take the policy as a *required* argument, so a new caller cannot reach a
    path by omitting it.
 
-**Open, in rough priority order.**
+**Open, in rough priority order.** The items below, and the wider set the
+structural review recorded, are pinned executably in
+`polars-cv/tests/test_known_gaps.py` — one `xfail(strict=True)` each, so a fix
+turns the suite red rather than passing unnoticed. Prefer adding an entry there
+to extending this prose list.
 
 - **`shear` and `rotate_and_scale` require `output_size` / `center`.** Both
   raise rather than auto-computing from the input shape. They fail loudly, so
