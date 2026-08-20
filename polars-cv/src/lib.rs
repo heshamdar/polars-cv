@@ -11,6 +11,7 @@ mod execute;
 mod fetch;
 mod geom_arity;
 mod geom_params;
+mod geom_schema;
 mod graph;
 mod image_metadata;
 mod naming;
@@ -48,6 +49,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
     m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
+    m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(rotate_affine_params, m)?)?;
     Ok(())
 }
@@ -515,6 +517,26 @@ fn enum_names() -> Vec<String> {
         .into_iter()
         .chain(crate::naming::registered_names())
         .map(str::to_string)
+        .collect()
+}
+
+/// The field names of the `{x, y}` point struct the geometry surfaces publish.
+///
+/// Surfaced the way [`enum_variants`] surfaces the naming registry: a runtime
+/// accessor plus a Python parity test, rather than a generated module. That
+/// keeps `polars_cv.geometry` importable with no compiled extension present,
+/// which a generated file would also do but at the cost of a generator and a
+/// regenerate-and-diff guard for two field names.
+///
+/// Read by `test_point_schema_matches_the_rust_declaration`, which holds
+/// `geometry.schemas.POINT_SCHEMA` to this in both directions. Without that
+/// test this accessor is decoration — Python would still carry its own
+/// spelling and the two could drift apart unnoticed.
+#[pyfunction]
+fn point_schema() -> Vec<String> {
+    crate::geom_schema::POINT_FIELD_NAMES
+        .iter()
+        .map(|s| (*s).to_string())
         .collect()
 }
 

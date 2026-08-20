@@ -86,6 +86,35 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Every deserialized plugin-boundary struct is closed.** `ContourKwargs`,
+  `PointKwargs` and `ReadBytesKwargs` lacked `#[serde(deny_unknown_fields)]`, so
+  a kwarg Python emits and Rust no longer reads was dropped in silence — how
+  `sink("jpeg", qualtiy=50)` encoded at the default quality with nothing said.
+  Guarded in two halves that do not subsume each other: a source scan
+  (`tests/_kwargs_scan.py`, with a floor so it cannot pass by matching nothing,
+  and committed fixtures) catches a struct nobody closed; runtime probes
+  through `register_plugin_function` catch an attribute present but not
+  rejecting. `cloud_auth.rs::Probe` is exempt — a deliberate partial parse of a
+  Google ADC file, and not a boundary struct. Exemptions are keyed
+  `file.rs::Name` so a generic name cannot blanket-exempt a future struct.
+
+- **The `{x, y}` point struct has one declaration.** It was spelled out eight
+  times across `contour.rs`, `point.rs` and `geometry/schemas.py` with nothing
+  relating them. Rust now reads `geom_schema::point_fields`; Python keeps its
+  own `POINT_SCHEMA` (so `polars_cv.geometry` still imports with no compiled
+  extension) held to Rust by a bidirectional parity test over a new
+  `point_schema` FFI — the way `enum_variants` surfaces the naming registry. A
+  bbox deliberately does *not* chain off these fields: it begins `x, y` by
+  coincidence of meaning, and chaining would drag a point rename into the bbox
+  wire format.
+
+- **The CI/verify.sh parity guard reads the `- run:` form too.** It only
+  matched `run:` on its own line, so a check added as `- run: some-check` would
+  have been invisible to a guard whose entire claim is that a check cannot hide.
+  No workflow here uses that form today; the point is that one could. Its
+  regexes now have committed fixtures (`tests/test_verify_script_fixtures.py`)
+  covering each branch that exists because a real check once hid.
+
 - **`ViewExpr::apply_op` reads each image op's declared dtype rule.** The
   `Canny` and `HistogramEqualize` arms hardcoded `DType::U8` and
   `strides: None` — a second copy of a rule `image.rs` already states as

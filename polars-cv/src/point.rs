@@ -19,7 +19,12 @@ use crate::params::NullParamPolicy;
 // ============================================================================
 
 /// Kwargs for point operations with optional parameters.
+///
+/// Closed for the same reason as [`GraphKwargs`]: this is a plugin-boundary
+/// struct, so a kwarg Python emits and Rust does not declare is drift, not a
+/// value to discard in silence.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PointKwargs {
     /// Reference width for coordinate operations.
     #[serde(default)]
@@ -168,13 +173,9 @@ fn point_row(
 
 /// Output type for point transform operations (returns Point struct).
 fn point_output_type(_input_fields: &[Field]) -> PolarsResult<Field> {
-    let fields = vec![
-        Field::new(PlSmallStr::from_static("x"), DataType::Float64),
-        Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-    ];
     Ok(Field::new(
         PlSmallStr::from_static("point"),
-        DataType::Struct(fields),
+        crate::geom_schema::point_struct_dtype(),
     ))
 }
 

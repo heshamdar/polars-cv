@@ -5,6 +5,8 @@
 //! transforms (translate, scale, simplify), and pairwise comparisons (IoU, Dice).
 
 use polars::prelude::*;
+
+use crate::geom_schema::{point_anyvalue, point_struct_dtype};
 use polars_arrow::array::{ListArray, PrimitiveArray, StructArray as ArrowStructArray};
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
@@ -45,15 +47,7 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
     let exterior_points: Vec<AnyValue> = contour
         .exterior
         .iter()
-        .map(|p| {
-            AnyValue::StructOwned(Box::new((
-                vec![AnyValue::Float64(p.x), AnyValue::Float64(p.y)],
-                vec![
-                    Field::new(PlSmallStr::from_static("x"), DataType::Float64),
-                    Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-                ],
-            )))
-        })
+        .map(|p| point_anyvalue(p.x, p.y))
         .collect();
 
     // Build holes as list of list of structs
@@ -61,23 +55,10 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
         .holes
         .iter()
         .map(|hole| {
-            let hole_points: Vec<AnyValue> = hole
-                .iter()
-                .map(|p| {
-                    AnyValue::StructOwned(Box::new((
-                        vec![AnyValue::Float64(p.x), AnyValue::Float64(p.y)],
-                        vec![
-                            Field::new(PlSmallStr::from_static("x"), DataType::Float64),
-                            Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-                        ],
-                    )))
-                })
-                .collect();
+            let hole_points: Vec<AnyValue> =
+                hole.iter().map(|p| point_anyvalue(p.x, p.y)).collect();
             // Create a Series from hole points for the inner list
-            let point_schema = DataType::Struct(vec![
-                Field::new(PlSmallStr::from_static("x"), DataType::Float64),
-                Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-            ]);
+            let point_schema = point_struct_dtype();
             let hole_series = Series::from_any_values_and_dtype(
                 PlSmallStr::from_static("hole"),
                 &hole_points,
@@ -90,10 +71,7 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
         .collect();
 
     // Build the exterior series
-    let point_schema = DataType::Struct(vec![
-        Field::new(PlSmallStr::from_static("x"), DataType::Float64),
-        Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-    ]);
+    let point_schema = point_struct_dtype();
     let exterior_series = Series::from_any_values_and_dtype(
         PlSmallStr::from_static("exterior"),
         &exterior_points,
@@ -138,7 +116,12 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
 // ============================================================================
 
 /// Kwargs for contour operations with optional parameters.
+///
+/// Closed for the same reason as [`GraphKwargs`]: this is a plugin-boundary
+/// struct, so a kwarg Python emits and Rust does not declare is drift, not a
+/// value to discard in silence.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContourKwargs {
     /// Whether to compute signed area (for area operation).
     #[serde(default)]
@@ -786,25 +769,6 @@ fn score_order(scores: &[f64]) -> Vec<usize> {
 // ============================================================================
 // Contour Plugin Functions - Measures
 // ============================================================================
-
-/// The `{x, y}` struct dtype a point-valued result publishes.
-fn point_struct_dtype() -> DataType {
-    DataType::Struct(vec![
-        Field::new(PlSmallStr::from_static("x"), DataType::Float64),
-        Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-    ])
-}
-
-/// One point as a struct value matching [`point_struct_dtype`].
-fn point_anyvalue(x: f64, y: f64) -> AnyValue<'static> {
-    AnyValue::StructOwned(Box::new((
-        vec![AnyValue::Float64(x), AnyValue::Float64(y)],
-        vec![
-            Field::new(PlSmallStr::from_static("x"), DataType::Float64),
-            Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-        ],
-    )))
-}
 
 /// The `{x, y, width, height}` struct dtype a bbox-valued result publishes.
 fn bbox_struct_dtype() -> DataType {
@@ -1633,10 +1597,11 @@ mod parse_contour_tests {
 
     /// The dtype `extract_contours().sink("native")` emits, element-wise.
     fn contour_dtype() -> DataType {
-        let point = DataType::Struct(vec![
-            Field::new(PlSmallStr::from_static("x"), DataType::Float64),
-            Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-        ]);
+        // Reads the authority rather than restating it. The independent
+        // cross-check on this schema is Python's `POINT_SCHEMA`, held to Rust
+        // by `test_point_schema_matches_the_rust_declaration`; a second Rust
+        // spelling here would only add a place for a rename to miss.
+        let point = crate::geom_schema::point_struct_dtype();
         DataType::Struct(vec![
             Field::new(
                 PlSmallStr::from_static("exterior"),
