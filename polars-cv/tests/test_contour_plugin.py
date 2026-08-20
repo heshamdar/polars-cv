@@ -620,3 +620,58 @@ class TestContourMultipleOperations:
         assert len(result) == 3
         assert result["area"].null_count() == 0
         assert result["perimeter"].null_count() == 0
+
+
+# ---------------------------------------------------------------------------
+# `scale` means the same thing on both surfaces when asked explicitly
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+@pytest.mark.parametrize("origin", ["origin", "centroid", "bbox_center"])
+def test_graph_and_namespace_scale_agree_for_an_explicit_origin(origin: str) -> None:
+    """`Pipeline.scale_contour(origin=)` must match `.contour.scale(origin=)`.
+
+    The graph path used to hardcode `ScaleOrigin::Centroid` with no parameter
+    at all, so the two same-named surfaces could not even be compared: the
+    namespace defaulted to `"origin"` and the pipeline was permanently
+    centroid-relative. Now that both take the parameter, every variant must
+    mean the same thing on both.
+    """
+    from polars_cv import Pipeline
+    from polars_cv.geometry import CONTOUR_SCHEMA
+
+    square = {
+        "exterior": [
+            {"x": 2.0, "y": 2.0},
+            {"x": 4.0, "y": 2.0},
+            {"x": 4.0, "y": 4.0},
+            {"x": 2.0, "y": 4.0},
+        ],
+        "holes": [],
+    }
+    df = pl.DataFrame({"c": [square]}, schema={"c": CONTOUR_SCHEMA})
+
+    namespace = df.select(r=pl.col("c").contour.scale(2.0, 2.0, origin=origin))[
+        "r"
+    ].to_list()[0]
+    namespace_pts = sorted((p["x"], p["y"]) for p in namespace["exterior"])
+
+    pipe = (
+        Pipeline()
+        .source("contour", width=16, height=16)
+        .extract_contours()
+        .scale_contour(sx=2.0, sy=2.0, origin=origin)
+    )
+    graph = df.select(r=pl.col("c").cv.pipe(pipe).sink("native"))["r"].to_list()[0]
+    graph_pts = sorted((p["x"], p["y"]) for p in graph[0]["exterior"])
+
+    # The graph path rasterizes and re-extracts, so vertices land on pixel
+    # boundaries rather than exactly on the analytic corners; compare the
+    # bounding extent, which the origin choice moves by whole units.
+    assert (
+        min(p[0] for p in graph_pts),
+        min(p[1] for p in graph_pts),
+    ) == pytest.approx(
+        (min(p[0] for p in namespace_pts), min(p[1] for p in namespace_pts)), abs=1.5
+    ), f"origin={origin!r}: graph {graph_pts} vs namespace {namespace_pts}"

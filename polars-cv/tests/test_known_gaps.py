@@ -25,7 +25,6 @@ broken", never "sometimes fails".
 
 from __future__ import annotations
 
-import inspect
 import re
 
 import polars as pl
@@ -106,22 +105,22 @@ def test_every_plugin_kwargs_struct_rejects_unknown_fields() -> None:
 
 @plugin_required
 @_gap(
-    "Pipeline.scale_contour hardcodes ScaleOrigin::Centroid and exposes no "
-    "origin=; .contour.scale defaults to origin='origin'"
+    "the two surfaces still default differently: scale_contour defaults to "
+    "centroid (its historic behaviour), .contour.scale to origin"
 )
-def test_the_two_contour_scale_surfaces_agree() -> None:
-    """`Pipeline.scale_contour` and `.contour.scale` should mean the same thing.
+def test_the_two_contour_scale_surfaces_agree_by_default() -> None:
+    """`Pipeline.scale_contour` and `.contour.scale` should default alike.
 
-    Eight op names exist on both the graph path and the `.contour` namespace.
-    `scale` has already drifted: `execute.rs` hardcodes
-    `ScaleOrigin::Centroid` with no parameter, while `contours.py` exposes
-    `origin=` defaulting to `"origin"`. A 2x2 square at (2,2)-(4,4) scaled by 2
-    lands at (4,4)-(8,8) through the namespace and (1,1)-(5,5) through the
-    pipeline — same name, different geometry, no warning.
+    Both now *expose* `origin=`, so a caller can always be explicit — that half
+    is fixed and pinned by `test_affine_builder`-style tests in
+    `test_contour_plugin.py`. What remains is the default: `scale_contour`
+    keeps `"centroid"` (its behaviour since it shipped) while `.contour.scale`
+    keeps `"origin"` (its own). A square at (2,2)-(4,4) scaled by 2 still lands
+    at (1,1)-(5,5) one way and (4,4)-(8,8) the other.
 
-    Fixed by: deciding which is authoritative and making the other read it, or
-    renaming one so the collision is visible. Whichever way, the loser should
-    fail rather than diverge.
+    Aligning them moves output for whichever surface loses, so it is a
+    deliberate API decision rather than a correction — recorded here until that
+    decision is taken.
     """
     from polars_cv.geometry import CONTOUR_SCHEMA
 
@@ -138,65 +137,14 @@ def test_the_two_contour_scale_surfaces_agree() -> None:
 
     namespace = df.select(r=pl.col("c").contour.scale(2.0, 2.0))["r"].to_list()[0]
     namespace_pts = sorted((p["x"], p["y"]) for p in namespace["exterior"])
-
     centroid = df.select(r=pl.col("c").contour.scale(2.0, 2.0, origin="centroid"))[
         "r"
     ].to_list()[0]
     centroid_pts = sorted((p["x"], p["y"]) for p in centroid["exterior"])
 
     assert namespace_pts == centroid_pts, (
-        f"the namespace default ({namespace_pts}) differs from what the graph "
-        f"path's hardcoded centroid origin produces ({centroid_pts}); the same "
-        f"op name means two things"
-    )
-
-
-@requires_checkout
-@_gap("Pipeline.scale_contour still takes no origin= parameter")
-def test_pipeline_scale_contour_exposes_the_origin_it_uses() -> None:
-    """The graph path should let a caller choose the origin it silently picks.
-
-    Fixed by: threading `origin` through `scale_contour` -> `OpSpec` ->
-    `resolve_op`, so the parameter that already exists in the engine
-    (`ScaleOrigin`) is reachable from both surfaces.
-    """
-    from polars_cv import Pipeline
-
-    assert "origin" in inspect.signature(Pipeline.scale_contour).parameters
-
-
-# ---------------------------------------------------------------------------
-# Facts restated outside their authority
-# ---------------------------------------------------------------------------
-
-
-@requires_checkout
-@_gap(
-    "metrics/_matching/_contour.py still maps a column dtype to a source "
-    "format itself instead of asking Rust"
-)
-def test_metrics_does_not_reimplement_the_auto_source_dispatch() -> None:
-    """ "Which source does this column want" has an authority; metrics ignores it.
-
-    `resolve_auto_format` (graph/compiled.rs) is what `source("auto")` — the
-    default — uses, and it distinguishes a VIEW blob from image bytes by magic
-    number. `_detect_source_info` maps `pl.Binary` to `"blob"` unconditionally,
-    so the two already disagree for an image column.
-
-    Fixed by: a `source_schema`-style FFI the planner and metrics both read, or
-    by metrics calling `source("auto")` and letting Rust decide.
-    """
-    matching = next(p for p in package_modules() if p.name == "_contour.py")
-    source = matching.read_text()
-    assert "_detect_source_info" in source, (
-        f"probe is broken: _detect_source_info not found in {matching}"
-    )
-    named = sorted(set(re.findall(r'format="(\w+)"', source)))
-    assert not named, (
-        f"metrics names concrete source formats {named}; the column->format "
-        f"decision belongs to resolve_auto_format, which distinguishes a VIEW "
-        f"blob from image bytes by magic number where this maps all Binary to "
-        f"'blob'"
+        f"the namespace default ({namespace_pts}) differs from the graph "
+        f"path's default ({centroid_pts}); the same op name means two things"
     )
 
 

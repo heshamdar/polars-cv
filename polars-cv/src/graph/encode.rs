@@ -863,7 +863,11 @@ mod tests {
                 "contour_bounding_box" => vec![],
                 "contour_convex_hull" => vec![],
                 "contour_translate" => vec![("dx", json!(1.0)), ("dy", json!(2.0))],
-                "contour_scale" => vec![("sx", json!(2.0)), ("sy", json!(2.0))],
+                "contour_scale" => vec![
+                    ("sx", json!(2.0)),
+                    ("sy", json!(2.0)),
+                    ("origin", json!("centroid")),
+                ],
                 "contour_simplify" => vec![("tolerance", json!(0.5))],
                 "extract_contours" => vec![],
                 "rasterize" => vec![("width", json!(8)), ("height", json!(8))],

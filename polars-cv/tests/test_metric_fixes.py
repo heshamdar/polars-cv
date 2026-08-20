@@ -714,53 +714,49 @@ class TestContourMatcherDefaults:
 
 
 class TestSourceFormatDetection:
-    """Verify _detect_source_info correctly identifies column formats."""
+    """`_detect_source_info` reads the leaf dtype; Rust picks the format.
 
-    def test_binary_detected_as_blob(self) -> None:
-        """Binary column maps to blob source format."""
-        schema = {"col": pl.Binary}
-        info = _detect_source_info(schema, "col")
-        assert info.format == "blob"
+    These tests used to pin a format string per Polars dtype. That mapping was
+    a second implementation of `resolve_auto_format`, and it had already
+    diverged: it sent every `Binary` column to `"blob"`, so a `ContourMatcher`
+    over a PNG mask failed with "Invalid blob magic bytes" while the same
+    column read fine through `source("auto")`. Metrics now follows the Rust
+    side; what it still contributes is the one fact the Polars schema settles
+    and Rust cannot infer at plan time — a nested column's element dtype.
+    """
+
+    def test_binary_carries_no_source_kwargs(self) -> None:
+        """Binary needs nothing from Polars — `auto` reads its magic bytes."""
+        info = _detect_source_info({"col": pl.Binary}, "col")
         assert info.kwargs == {}
 
-    def test_nested_list_float64_detected(self) -> None:
-        """List[List[Float64]] maps to list source with dtype f64."""
-        schema = {"col": pl.List(pl.List(pl.Float64))}
-        info = _detect_source_info(schema, "col")
-        assert info.format == "list"
-        assert info.kwargs == {"dtype": "f64"}
+    @pytest.mark.parametrize(
+        ("dtype", "expected"),
+        [
+            (pl.List(pl.List(pl.Float64)), "f64"),
+            (pl.List(pl.List(pl.Float32)), "f32"),
+            (pl.List(pl.List(pl.UInt8)), "u8"),
+            (pl.Array(pl.Float32, 3), "f32"),
+        ],
+        ids=["list-f64", "list-f32", "list-u8", "array-f32"],
+    )
+    def test_nested_columns_carry_their_leaf_dtype(
+        self, dtype: pl.DataType, expected: str
+    ) -> None:
+        """A typed source needs the element dtype before any data moves."""
+        info = _detect_source_info({"col": dtype}, "col")
+        assert info.kwargs == {"dtype": expected}
 
-    def test_nested_list_float32_detected(self) -> None:
-        """List[List[Float32]] maps to list source with dtype f32."""
-        schema = {"col": pl.List(pl.List(pl.Float32))}
-        info = _detect_source_info(schema, "col")
-        assert info.format == "list"
-        assert info.kwargs == {"dtype": "f32"}
+    def test_a_leaf_with_no_buffer_meaning_is_refused(self) -> None:
+        """The leaf check stays in Python: it is a *Polars* type that is wrong."""
+        with pytest.raises(ValueError, match="no meaningful buffer"):
+            _detect_source_info({"col": pl.List(pl.List(pl.String))}, "col")
 
-    def test_nested_list_uint8_detected(self) -> None:
-        """List[List[UInt8]] maps to list source with dtype u8."""
-        schema = {"col": pl.List(pl.List(pl.UInt8))}
-        info = _detect_source_info(schema, "col")
-        assert info.format == "list"
-        assert info.kwargs == {"dtype": "u8"}
-
-    def test_array_detected(self) -> None:
-        """Array column maps to array source format."""
-        schema = {"col": pl.Array(pl.Float32, 3)}
-        info = _detect_source_info(schema, "col")
-        assert info.format == "array"
-        assert info.kwargs == {"dtype": "f32"}
-
-    def test_unsupported_dtype_raises(self) -> None:
-        """Non-image dtype raises ValueError."""
-        schema = {"col": pl.String}
-        with pytest.raises(ValueError, match="unsupported dtype"):
-            _detect_source_info(schema, "col")
-
-
-# ---------------------------------------------------------------------------
-# VOC 11-point AP: unreachable recall thresholds must count as zero
-# ---------------------------------------------------------------------------
+    def test_the_source_it_builds_is_auto(self) -> None:
+        """The format is never named here -- naming it is the defect."""
+        source = _detect_source_info({"col": pl.Binary}, "col").build_source()
+        assert source._source is not None
+        assert source._source.format.value == "auto"
 
 
 class TestElevenPointApDenominator:

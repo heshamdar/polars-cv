@@ -16,6 +16,7 @@ Usage::
 from __future__ import annotations
 
 import inspect
+import re
 import sys
 from pathlib import Path
 
@@ -53,13 +54,7 @@ from typing import Any
 import polars as pl
 
 from polars_cv._graph import PipelineGraph
-from polars_cv._types import (
-    BoolOrExpr,
-    FloatOrExpr,
-    HashAlgorithm,
-    IntOrExpr,
-    StrOrExpr,
-)
+from polars_cv._types import ({types_import})
 from polars_cv.pipeline import Pipeline
 
 PIPELINE_ONLY_METHODS: frozenset[str]
@@ -67,6 +62,47 @@ PIPELINE_ONLY_METHODS: frozenset[str]
 def _chainable_pipeline_ops() -> list[str]: ...
 def _generate_node_id() -> str: ...
 """
+
+
+def _types_referenced(body: str) -> list[str]:
+    """Every `polars_cv._types` name the rendered stub actually mentions.
+
+    Derived, not hand-listed. The import block used to be a literal, so adding
+    a `Pipeline` parameter annotated with any type it did not happen to name
+    produced a stub referencing an undefined symbol -- and
+    `test_lazy_stub_is_current` could not catch it, being a
+    regenerate-and-diff with the same defect on both sides. `scale_contour`'s
+    `origin: ScaleOrigin | str | pl.Expr` is the case that proved it.
+    """
+    import ast
+
+    import polars_cv._types as types_module
+
+    # Names `_types` *defines*, read from its source -- not `dir()`, which also
+    # answers with everything it imports (`pl`, `Any`, ...) and would emit an
+    # import block that re-exports them from the wrong module.
+    tree = ast.parse(Path(types_module.__file__).read_text())
+    defined: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            defined.add(node.name)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defined.add(node.target.id)
+        elif isinstance(node, ast.Assign):
+            defined.update(
+                t.id for t in node.targets if isinstance(t, ast.Name)
+            )
+
+    referenced = sorted(
+        name
+        for name in defined
+        if not name.startswith("_") and re.search(rf"\b{re.escape(name)}\b", body)
+    )
+    assert referenced, (
+        "no polars_cv._types names found in the rendered stub -- the scan is "
+        "broken and would emit an empty import block"
+    )
+    return referenced
 
 
 def _render_annotation(annotation: object) -> str:
@@ -123,7 +159,6 @@ def _render_member(name: str, member: object) -> str | None:
 
 
 def generate_stub() -> str:
-    lines = [_HEADER, "\nclass LazyPipelineExpr:\n"]
     body: list[str] = []
     for name, member in vars(LazyPipelineExpr).items():
         if name.startswith("__") and name not in ("__init__", "__repr__", "__str__"):
@@ -131,8 +166,17 @@ def generate_stub() -> str:
         rendered = _render_member(name, member)
         if rendered is not None:
             body.append(rendered)
-    lines.append("\n".join(body))
-    return ruff_format("".join(lines), filename="lazy.pyi")
+    rendered_body = "\n".join(body)
+
+    # The import block is derived from what the body references, so a new
+    # annotation cannot leave the stub naming an undefined symbol.
+    header = _HEADER.format(
+        types_import="\n    " + ",\n    ".join(_types_referenced(rendered_body)) + ",\n"
+    )
+    return ruff_format(
+        "".join([header, "\nclass LazyPipelineExpr:\n", rendered_body]),
+        filename="lazy.pyi",
+    )
 
 
 def main() -> int:

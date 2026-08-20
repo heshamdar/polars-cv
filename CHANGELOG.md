@@ -9,6 +9,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`ContourMatcher` could not read an image-bytes mask column.**
+  `metrics/_matching/_contour.py` decided the source format itself and mapped
+  every `Binary` column to `"blob"`, so a PNG mask failed with "Invalid blob
+  magic bytes" — while the same column read fine through `source("auto")`,
+  which checks the VIEW magic bytes and falls back to `image_bytes`. Metrics
+  now uses `source("auto")` and contributes only the one fact the Polars schema
+  settles that Rust cannot infer at plan time: a nested column's leaf dtype.
+  The `_gt_h`/`_gt_w` derivation likewise branches on the Polars dtype (which
+  decides whether a cheaper native path exists) rather than on a format string.
+
+  A `String` mask column now routes to `file_path` through `auto` instead of
+  raising in Python, so a column of paths to mask files works where it
+  previously did not.
+
 - **`Pipeline.to_graph()` silently discarded `on_error` and `on_null_param`.**
   Three functions built a `Pipeline` field by field — `_clone`,
   `_create_sub_pipeline`, and CSE's `_create_shared_node` — and the second
@@ -71,6 +85,28 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   accepted set is neither wider nor narrower than what polars would act on.
 
 ### Changed
+
+- **`Pipeline.scale_contour` takes `origin=`.** It hardcoded
+  `ScaleOrigin::Centroid` and exposed no way to choose, while the same-named
+  `.contour.scale` accessor exposed `origin=` defaulting to `"origin"` — so a
+  square scaled by 2 landed at (1,1)-(5,5) through the pipeline and (4,4)-(8,8)
+  through the namespace. Both surfaces now take the parameter and agree for
+  every explicit value.
+
+  The defaults still differ: `scale_contour` keeps `"centroid"` and
+  `.contour.scale` keeps `"origin"`, because each is what that surface has
+  always done and changing either would silently move existing output.
+  Aligning them is a separate, deliberate decision; it is pinned in
+  `tests/test_known_gaps.py` until it is taken.
+
+- **The generated type stub derives its imports.** `gen_lazy_stub.py` carried a
+  hardcoded `polars_cv._types` import list, so a `Pipeline` parameter annotated
+  with any type it did not happen to name produced a stub referencing an
+  undefined symbol — and `test_lazy_stub_is_current`, being a
+  regenerate-and-diff, had the same defect on both sides and could not see it.
+  `scale_contour(origin=)` is the annotation that proved it. The block is now
+  derived from what the rendered stub references, read from `_types`' own
+  definitions.
 
 - **The rotation matrix has one implementation again.** Affine fusion
   transliterated `AffineParams::from_rotation` into Python line for line, so a

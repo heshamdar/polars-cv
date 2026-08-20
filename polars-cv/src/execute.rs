@@ -882,11 +882,23 @@ fn resolve_op_inner(
         "contour_scale" => {
             let sx = get_param(params, "sx")?.resolve_f64(row_idx, ctx)?;
             let sy = get_param(params, "sy")?.resolve_f64(row_idx, ctx)?;
-            Ok(GraphStep::Geometry(GeometryOp::Scale {
-                sx,
-                sy,
-                origin: view_buffer::geometry::ops::ScaleOrigin::Centroid,
-            }))
+            // Read from `ScaleOrigin::NAMED`, the same authority the
+            // `.contour.scale` accessor parses against. This arm used to
+            // hardcode `Centroid` with no parameter at all, so the two
+            // same-named surfaces could not be made to agree: the namespace
+            // defaulted to `Origin` and this one was permanently centroid.
+            // The default stays `Centroid` — that is what this op has always
+            // done, and changing it would silently move existing output.
+            let origin = get::req_enum(
+                params,
+                "origin",
+                view_buffer::geometry::ops::ScaleOrigin::NAMED,
+                &[],
+                view_buffer::geometry::ops::ScaleOrigin::Centroid,
+                row_idx,
+                ctx,
+            )?;
+            Ok(GraphStep::Geometry(GeometryOp::Scale { sx, sy, origin }))
         }
         "contour_simplify" => {
             let tolerance = get_param(params, "tolerance")?.resolve_f64(row_idx, ctx)?;
