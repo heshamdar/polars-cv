@@ -11,7 +11,6 @@ import pytest
 
 from polars_cv import Pipeline
 from polars_cv.metrics import (
-    BBoxMatcher,
     ContourMatcher,
     DetectionTable,
     PreMatchedAdapter,
@@ -142,6 +141,30 @@ class TestPreMatchedAdapter:
 # ---------------------------------------------------------------------------
 
 
+def _matcher_implementations() -> list[type]:
+    """Every concrete `Matcher` the package exports.
+
+    Derived from `_matching.__all__` rather than listed here: a hand-written
+    list is correct until the day a fourth matcher lands without an entry, and
+    then the conformance sweep below silently stops covering it. `Matcher`
+    itself is excluded — it is the protocol, not an implementation.
+    """
+    from polars_cv.metrics import _matching
+
+    found = [
+        obj
+        for name in _matching.__all__
+        if name != "Matcher"
+        and isinstance(obj := getattr(_matching, name), type)
+        and hasattr(obj, "match")
+    ]
+    assert len(found) >= 3, (
+        f"only {len(found)} matcher(s) derived from _matching.__all__ -- the "
+        f"derivation is broken and the sweep below would cover almost nothing"
+    )
+    return found
+
+
 def _keyword_params(func: object) -> dict[str, inspect.Parameter]:
     """The keyword-acceptable parameters of ``func``, excluding ``self``."""
     params = inspect.signature(func).parameters  # type: ignore[arg-type]
@@ -154,9 +177,7 @@ def _keyword_params(func: object) -> dict[str, inspect.Parameter]:
     }
 
 
-@pytest.mark.parametrize(
-    "impl", [PreMatchedAdapter, BBoxMatcher, ContourMatcher], ids=lambda c: c.__name__
-)
+@pytest.mark.parametrize("impl", _matcher_implementations(), ids=lambda c: c.__name__)
 def test_matchers_accept_every_protocol_parameter(impl: type) -> None:
     """Each matcher must accept the whole ``Matcher.match`` keyword surface.
 
@@ -183,9 +204,7 @@ def test_matchers_accept_every_protocol_parameter(impl: type) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "impl", [PreMatchedAdapter, BBoxMatcher, ContourMatcher], ids=lambda c: c.__name__
-)
+@pytest.mark.parametrize("impl", _matcher_implementations(), ids=lambda c: c.__name__)
 def test_matchers_require_nothing_the_protocol_omits(impl: type) -> None:
     """A matcher may add parameters, but every addition needs a default.
 

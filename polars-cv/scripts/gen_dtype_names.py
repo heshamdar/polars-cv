@@ -137,6 +137,17 @@ def generate() -> str:
     lines.append("WIRE_CODES: dict[str, int] = {\n")
     for short in short_names:
         lines.append(f"    {short!r}: {wire_codes[short]},\n")
+    lines.append("}\n\n")
+    lines.append(
+        "#: VIEW binary protocol code -> numpy name. The reverse of\n"
+        "#: :data:`WIRE_CODES` composed with the numpy spelling, emitted as one\n"
+        "#: table because reading a VIEW blob needs exactly that hop and nothing\n"
+        "#: else. `display.py` used to hand-write it, which made a third Python\n"
+        "#: copy of `dtype_table!` guarded only by a regex over its own source.\n"
+    )
+    lines.append("NUMPY_BY_WIRE_CODE: dict[int, str] = {\n")
+    for _, _, code, numpy in sorted(rows, key=lambda row: row[2]):
+        lines.append(f"    {code}: {numpy!r},\n")
     lines.append("}\n")
     return ruff_format("".join(lines), filename="_dtype_names.py")
 

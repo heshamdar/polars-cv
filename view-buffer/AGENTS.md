@@ -155,10 +155,6 @@ declines to declare its dtype rule would silently inherit `PreserveInput` and
 publish a schema execution cannot produce. See the Canonical Paths table in the
 root `CLAUDE.md`.
 
-`DomainOp` is a *separate* trait (same file), not part of `Op`. It has four
-methods, three required — `input_domain()`, `output_domain()` and
-`execute_typed()`; `validate_input_domain()` defaults.
-
 ## Alpha Channel Support
 
 Alpha channels are **always preserved** during image decoding. `from_dynamic_image()` produces:

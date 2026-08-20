@@ -23,6 +23,7 @@ import pytest
 import polars_cv
 from polars_cv import Pipeline
 
+from ._discovery import requires_checkout, rust_sources
 from .conftest import plugin_required
 
 #: Every test here is a structural guard: it checks the *shape* of the codebase
@@ -455,3 +456,33 @@ def test_the_planner_does_not_recompute_the_rotation_matrix() -> None:
         f"rotate_affine_params FFI); a second one is what this guard exists "
         f"to reject."
     )
+
+
+# ---------------------------------------------------------------------------
+# DomainOp: a public trait nothing implemented, documented as if it were live
+# ---------------------------------------------------------------------------
+
+
+@requires_checkout
+def test_domain_op_is_gone() -> None:
+    """`DomainOp` must not come back.
+
+    It was declared in `ops/traits.rs`, re-exported from `ops/mod.rs`, and
+    described in `view-buffer/AGENTS.md` as a live part of the op contract —
+    with a doc example implementing it for `ExtractContoursOp`, a type that
+    does not exist. Nothing in either crate implemented it. Domain dispatch
+    actually lives on `GraphStep` in the plugin, which is where
+    `view-buffer/AGENTS.md` says graph-level concerns belong.
+
+    It was also the only reason `ops/traits.rs` imported `NodeOutput` — a graph
+    concept reaching into the engine's trait module — so deleting it closed
+    that too. A trait nothing implements is not free: it reads as coverage, and
+    every future `Domain` change has to be reconciled against it.
+    """
+    for path in rust_sources():
+        text = path.read_text()
+        assert "trait DomainOp" not in text, (
+            f"{path.name} declares DomainOp again; domain dispatch belongs to "
+            f"GraphStep in the plugin"
+        )
+        assert "DomainOp" not in text, f"{path.name} still references DomainOp"

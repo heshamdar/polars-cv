@@ -86,6 +86,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`ViewExpr::apply_op` reads each image op's declared dtype rule.** The
+  `Canny` and `HistogramEqualize` arms hardcoded `DType::U8` and
+  `strides: None` — a second copy of a rule `image.rs` already states as
+  `OutputDTypeRule::Fixed(DType::U8)`, in the module the planner reads the
+  first copy from over the FFI. The dtype-preserving group beside them
+  restated `PreserveInput` the same way. All three collapse into one arm that
+  resolves shape, strides and dtype the way the `Filter` and `Compute`
+  neighbours already did. Still exhaustive, so a new `ImageOpKind` has to say
+  where it belongs. A new `expr.rs` unit test asserts the property for every
+  image op rather than for the two names.
+
+- **`display.py` reads the generated dtype table.** It carried a third Python
+  copy of the VIEW wire codes, guarded by a regex over its own source — the
+  weakest guard kind, and one a reformat defeats. `gen_dtype_names.py` now
+  emits `NUMPY_BY_WIRE_CODE` from `dtype_table!`, and the regex guard went with
+  the duplicate it existed for.
+
+- **The matcher conformance sweep is derived** from
+  `metrics._matching.__all__` with a floor assertion, rather than naming its
+  three subjects literally.
+
 - **`Pipeline.scale_contour` takes `origin=`.** It hardcoded
   `ScaleOrigin::Centroid` and exposed no way to choose, while the same-named
   `.contour.scale` accessor exposed `origin=` defaulting to `"origin"` — so a
@@ -194,6 +215,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   for one number.
 
 ### Removed
+
+- **`DomainOp` (view-buffer).** A public trait with zero implementors, a doc
+  example implementing it for a type that does not exist, and an entry in
+  `view-buffer/AGENTS.md` describing it as a live part of the op contract.
+  Domain dispatch actually lives on `GraphStep` in the plugin. It was also the
+  only reason `ops/traits.rs` imported `NodeOutput` — a graph concept reaching
+  into the engine's trait module — so deleting it closed that too. Pinned by
+  `test_removed_surfaces.py`.
 
 - **`match_detections(strategy=)` on `.contour` and `.bbox`.** Typed
   `Literal["greedy"]`, rode the wire as `ContourKwargs.strategy`, and selected

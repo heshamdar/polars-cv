@@ -31,10 +31,8 @@ import polars as pl
 import pytest
 
 from ._discovery import (
-    package_modules,
     requires_checkout,
     rust_sources,
-    suite_files,
 )
 from .conftest import plugin_required
 
@@ -149,27 +147,6 @@ def test_the_two_contour_scale_surfaces_agree_by_default() -> None:
 
 
 @requires_checkout
-@_gap("display.py still carries its own {wire code -> numpy dtype} table")
-def test_display_reads_the_generated_dtype_table() -> None:
-    """`display.py` should compose `_dtype_names`, not restate it.
-
-    `_dtype_names.py` is generated from `dtype_table!` and guarded by a
-    regenerate-and-diff. `display.py` hand-writes a third mapping of the same
-    fact, guarded only by a regex over its own source — which `CLAUDE.md` ranks
-    last of the three guard kinds, and which a reformat silently defeats.
-
-    Fixed by: building the map from `_dtype_names.WIRE_CODES` and
-    `NUMPY_NAMES`, and deleting the source-scanning guard with it.
-    """
-    display = next(p for p in package_modules() if p.name == "display.py")
-    text = display.read_text()
-    assert "_dtype_names" in text, "display.py does not read the generated dtype table"
-    assert not re.search(r"dtype_map\s*=\s*\{", text), (
-        "display.py still declares its own dtype_map literal"
-    )
-
-
-@requires_checkout
 @_gap(
     "the {x, y} point struct is declared in contour.rs, point.rs and "
     "geometry/schemas.py with nothing relating them"
@@ -220,83 +197,6 @@ def test_the_point_struct_schema_has_one_declaration() -> None:
 # ---------------------------------------------------------------------------
 
 
-@requires_checkout
-@_gap(
-    "ViewExpr::apply_op still hardcodes DType::U8 for Canny and "
-    "HistogramEqualize instead of reading their declared dtype rule"
-)
-def test_viewexpr_reads_the_declared_output_dtype() -> None:
-    """`Op::output_dtype_rule` is the authority; `apply_op` overrides it twice.
-
-    `image.rs` already declares `OutputDTypeRule::Fixed(DType::U8)` for both
-    ops, and every other arm of the same match resolves through
-    `resolve_output_dtype`. Change Canny to `Fixed(U16)` and the planner
-    publishes u16 while `ViewExpr` keeps tracking u8 — a second copy in the
-    module the FFI reads the first copy from.
-
-    Fixed by: routing both arms through `resolve_output_dtype` /
-    `calc_strides` like their neighbours.
-    """
-    expr_rs = next(p for p in rust_sources() if p.name == "expr.rs").read_text()
-    assert "apply_op" in expr_rs, "probe is broken: apply_op not found in expr.rs"
-    assert "dtype: DType::U8" not in expr_rs, (
-        "expr.rs hardcodes an output dtype rather than resolving the op's rule"
-    )
-
-
-@requires_checkout
-@_gap("DomainOp has no implementors and is still exported and documented")
-def test_domain_op_is_either_implemented_or_deleted() -> None:
-    """A public trait nothing implements reads as coverage.
-
-    `ops/traits.rs` declares `DomainOp` with a doc example naming a type that
-    does not exist; nothing in either crate implements it; `ops/mod.rs`
-    re-exports it and `view-buffer/AGENTS.md` describes it as live. It is also
-    the only reason `traits.rs` imports `NodeOutput` — a graph concept in the
-    crate whose own docs say graph concerns live in the plugin's `GraphStep`.
-
-    Fixed by: deleting it (and its `AGENTS.md` entry), with a
-    `test_removed_surfaces.py` pin so it is not "restored".
-    """
-    implementors = 0
-    for path in rust_sources():
-        for line in path.read_text().splitlines():
-            stripped = line.strip()
-            if stripped.startswith("///") or stripped.startswith("//"):
-                continue
-            if re.search(r"\bimpl\b.*\bDomainOp\b.*\bfor\b", stripped):
-                implementors += 1
-
-    declared = any("trait DomainOp" in p.read_text() for p in rust_sources())
-    assert not declared or implementors > 0, (
-        "DomainOp is declared and exported but has zero implementors"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Guards that are still hand-maintained lists
 # ---------------------------------------------------------------------------
-
-
-@requires_checkout
-@_gap("test_matchers.py still parametrizes a literal matcher list")
-def test_the_matcher_conformance_sweep_is_derived() -> None:
-    """A fourth matcher should join the conformance sweep by existing.
-
-    `test_matchers.py` names `[PreMatchedAdapter, BBoxMatcher, ContourMatcher]`
-    literally. That is the full set today, so the sweep is correct — and it
-    stays green the day a fourth one is added without an entry, which is the
-    failure mode `CLAUDE.md` describes as "a ratchet enumerating what you must
-    also remember".
-
-    Fixed by: deriving the set from `polars_cv.metrics._matching`'s public
-    exports, with a floor assertion so an empty derivation fails.
-    """
-    module = next((p for p in suite_files() if p.name == "test_matchers.py"), None)
-    assert module is not None, (
-        "probe is broken: tests/test_matchers.py not found via _discovery"
-    )
-    suite = module.read_text()
-    assert "[PreMatchedAdapter, BBoxMatcher, ContourMatcher]" not in suite, (
-        "the conformance sweep enumerates its subjects by hand"
-    )

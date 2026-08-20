@@ -1726,36 +1726,24 @@ def test_engine_dtype_names_match_the_generated_table() -> None:
     assert set(WIRE_CODES) == SHORT_NAMES
 
 
-def test_display_wire_codes_match_the_rust_dtype_table() -> None:
-    """``display.py`` renders VIEW blobs without going through the plugin, so
-    it keeps its own wire-code map. Pin it to the Rust table it copies.
+def test_display_reads_the_generated_wire_code_table() -> None:
+    """``display.py`` must not carry its own copy of the wire codes.
 
-    The numpy types are derived from the generated ``NUMPY_NAMES``. The
-    hand-written ``{"uint8": np.uint8, ...}`` that used to sit here was a fifth
-    copy of ``dtype_table!``'s numpy column, inside the file that polices
-    duplicate spellings.
+    It used to, guarded by a regex over its own source -- the weakest of the
+    three guard kinds `CLAUDE.md` ranks, and one a reformat silently defeats.
+    It now imports ``NUMPY_BY_WIRE_CODE``, which `gen_dtype_names.py` emits
+    from ``dtype_table!`` under a regenerate-and-diff, so this only has to
+    check that it still reads the table rather than re-deriving it.
     """
-    import numpy as np
-
     import polars_cv.display as display_mod
-    from polars_cv._dtype_names import NUMPY_NAMES
-
-    numpy_by_name = {name: getattr(np, name) for name in NUMPY_NAMES}
-    expected = {
-        code: numpy_by_name[numpy_name]
-        for _variant, _short, code, numpy_name in _dtype_table_rows()
-    }
 
     source = Path(display_mod.__file__).read_text()
-    body = source.split("dtype_map = {", 1)[1].split("}", 1)[0]
-    actual = {
-        int(code): getattr(np, name)
-        for code, name in re.findall(r"(\d+):\s*np\.(\w+)", body)
-    }
-
-    assert actual == expected, (
-        "display.py's VIEW wire-code map has drifted from dtype_table! in "
-        f"view-buffer/src/core/dtype.rs: {actual} != {expected}"
+    assert "NUMPY_BY_WIRE_CODE" in source, (
+        "display.py no longer reads the generated wire-code table"
+    )
+    assert not re.search(r"dtype_map\s*=\s*\{", source), (
+        "display.py declares a local wire-code map again; dtype_table! is the "
+        "authority and _dtype_names.py is how Python reads it"
     )
 
 

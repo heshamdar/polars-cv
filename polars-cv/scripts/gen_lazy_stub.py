@@ -89,9 +89,7 @@ def _types_referenced(body: str) -> list[str]:
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             defined.add(node.target.id)
         elif isinstance(node, ast.Assign):
-            defined.update(
-                t.id for t in node.targets if isinstance(t, ast.Name)
-            )
+            defined.update(t.id for t in node.targets if isinstance(t, ast.Name))
 
     referenced = sorted(
         name

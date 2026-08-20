@@ -120,25 +120,30 @@ impl ViewExpr {
                 } => self.resize(width, height, filter),
                 ImageOpKind::Blur { sigma } => self.blur(sigma),
                 ImageOpKind::Grayscale => self.grayscale(),
-                ImageOpKind::Canny { .. } => Arc::new(Self {
-                    shape: img.infer_shape(&[&self.shape]),
-                    strides: None,
-                    dtype: DType::U8,
-                    node: ExprNode::Image(img, self.clone()),
-                }),
-                ImageOpKind::HistogramEqualize => Arc::new(Self {
-                    shape: img.infer_shape(&[&self.shape]),
-                    strides: None,
-                    dtype: DType::U8,
-                    node: ExprNode::Image(img, self.clone()),
-                }),
-                ImageOpKind::Erode { .. }
+                // Listed rather than `_ =>`: exhaustive, so a new ImageOpKind
+                // has to say whether it belongs here or needs its own path,
+                // instead of inheriting this one silently.
+                //
+                // Every op below resolves the way its `Filter`
+                // and `Compute` neighbours do: shape from `infer_shape`,
+                // strides from `calc_strides` (which honours the op's declared
+                // `MemoryEffect`), dtype from the op's own
+                // `OutputDTypeRule`.
+                //
+                // Canny and HistogramEqualize used to be separate arms that
+                // hardcoded `DType::U8` and `strides: None` — a second copy of
+                // a rule `image.rs` already declares as
+                // `OutputDTypeRule::Fixed(DType::U8)`, sitting in the module
+                // the planner reads the first copy from through the FFI.
+                // Change either op's declared rule and the planner would have
+                // published one dtype while `ViewExpr` tracked another. The
+                // dtype-preserving group beside them restated `PreserveInput`
+                // the same way.
+                ImageOpKind::Canny { .. }
+                | ImageOpKind::HistogramEqualize
+                | ImageOpKind::Erode { .. }
                 | ImageOpKind::Dilate { .. }
                 | ImageOpKind::MorphGradient { .. }
-                // Deferred resizes, padding, letterbox and channel reorder:
-                // dtype-preserving allocating ops whose output shape comes
-                // from infer_shape (backed by ImageOpKind::output_hw, the
-                // same authority the runner executes with).
                 | ImageOpKind::ResizeScale { .. }
                 | ImageOpKind::ResizeToHeight { .. }
                 | ImageOpKind::ResizeToWidth { .. }
@@ -150,10 +155,11 @@ impl ViewExpr {
                 | ImageOpKind::ChannelSwap { .. } => {
                     let new_shape = img.infer_shape(&[&self.shape]);
                     let new_strides = self.calc_strides(&img, &new_shape);
+                    let new_dtype = img.resolve_output_dtype(self.dtype, None);
                     Arc::new(Self {
                         shape: new_shape,
                         strides: new_strides,
-                        dtype: self.dtype,
+                        dtype: new_dtype,
                         node: ExprNode::Image(img, self.clone()),
                     })
                 }
@@ -916,4 +922,60 @@ fn try_fuse(
         ops,
         out_dtype: planned_out_dtype,
     }))
+}
+
+#[cfg(test)]
+mod dtype_contract_tests {
+    use super::*;
+    use crate::ops::image::{ImageOp, ImageOpKind};
+
+    /// Every image op's tracked dtype must be the one its contract declares.
+    ///
+    /// `apply_op` used to hardcode `DType::U8` for `Canny` and
+    /// `HistogramEqualize` — a second copy of a rule `image.rs` already states
+    /// as `OutputDTypeRule::Fixed(DType::U8)`, in the module the Python
+    /// planner reads the first copy from over the FFI. Change either declared
+    /// rule and the planner would publish one dtype while `ViewExpr` tracked
+    /// another, which is the plan/exec divergence class this crate's contracts
+    /// exist to prevent.
+    ///
+    /// Asserting the *property* rather than the two names means a new image op
+    /// that reintroduces a hardcoded dtype fails here.
+    #[test]
+    fn image_ops_track_the_dtype_their_contract_declares() {
+        let kinds = [
+            ImageOpKind::Canny {
+                low_threshold: 50.0,
+                high_threshold: 150.0,
+            },
+            ImageOpKind::HistogramEqualize,
+            ImageOpKind::Erode {
+                ksize: 3,
+                iterations: 1,
+            },
+            ImageOpKind::Dilate {
+                ksize: 3,
+                iterations: 1,
+            },
+            ImageOpKind::ChannelSwap {
+                order: vec![2, 1, 0],
+            },
+        ];
+
+        for dtype in [DType::U8, DType::U16, DType::F32] {
+            let base = ViewBuffer::from_vec_with_shape(vec![0u8; 8 * 8 * 3], vec![8, 8, 3]);
+            let source = ViewExpr::new_source(base.cast(dtype));
+            for kind in &kinds {
+                let op = ImageOp { kind: kind.clone() };
+                let expected = op.resolve_output_dtype(dtype, None);
+                let applied = source.clone().apply_op(ViewDto::Image(op));
+                assert_eq!(
+                    applied.dtype, expected,
+                    "{kind:?} on {dtype:?}: ViewExpr tracks {:?} but the op's \
+                     OutputDTypeRule resolves to {expected:?}",
+                    applied.dtype
+                );
+            }
+        }
+    }
 }
