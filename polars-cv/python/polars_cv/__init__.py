@@ -97,7 +97,13 @@ def _source_hash_from_tree() -> str | None:
         for rs in sorted((crate_root / "src").rglob("*.rs")):
             _push(rs, f"{crate}/{rs.relative_to(crate_root).as_posix()}")
         _push(crate_root / "Cargo.toml", f"{crate}/Cargo.toml")
-    _push(root / "Cargo.lock", "Cargo.lock")
+    # Must match `build.rs`'s input set exactly, or the guard fires on a
+    # correctly-built extension and gets deleted for crying wolf. The workspace
+    # manifest and the toolchain pin change the artifact without touching a
+    # `.rs` file; `build.rs` decides what the hash covers at all.
+    for name in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml"):
+        _push(root / name, name)
+    _push(root / "polars-cv" / "build.rs", "polars-cv/build.rs")
 
     digest = 0xCBF29CE484222325  # FNV-1a offset basis
     for key in sorted(contents):

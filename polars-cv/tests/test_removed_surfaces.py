@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from pathlib import Path
 
 import polars as pl
@@ -437,10 +438,20 @@ def test_the_planner_does_not_recompute_the_rotation_matrix() -> None:
     # `rotate_and_scale`) legitimately keeps its own, because it must accept
     # `pl.Expr` operands the engine cannot evaluate at plan time -- so scope
     # this to the fusion helper rather than the whole module.
-    for token in ("math.cos", "math.sin", "math.radians"):
-        assert token not in fusion, (
-            f"affine fusion computes {token} again. The rotation matrix has "
-            f"one authority (AffineParams::from_rotation, via the "
-            f"rotate_affine_params FFI); a second one is what this guard exists "
-            f"to reject."
-        )
+    #
+    # Matched on the bare names as well as the `math.` attribute form: a
+    # `from math import cos, sin` inside the helper reintroduces exactly the
+    # second implementation this rejects, and an attribute-only scan reads
+    # green through it.
+    tokens = ("cos", "sin", "radians", "atan2", "hypot")
+    offenders = sorted(
+        token
+        for token in tokens
+        if re.search(rf"(?<![\w.]){token}\s*\(", fusion) or f"math.{token}" in fusion
+    )
+    assert not offenders, (
+        f"affine fusion computes {offenders} again. The rotation matrix has "
+        f"one authority (AffineParams::from_rotation, via the "
+        f"rotate_affine_params FFI); a second one is what this guard exists "
+        f"to reject."
+    )

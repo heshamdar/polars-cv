@@ -26,7 +26,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   disagree in either direction.
 
 - **A vector-domain reduction was accepted at plan time and rejected at
-  execution.** `GraphStep::input_domains` declares that binary ops and
+  execution.** *(see also the two notes below on what this deliberately does
+  not extend to, and on fused rotate sizes.)* `GraphStep::input_domains` declares that binary ops and
   reductions take `[Buffer, Vector]`, and the Python planner validates against
   it — but execution re-derived the precondition by hand at ten sites, each with
   a hardcoded `"<Step> requires Buffer"` string, and `NodeOutput::as_buffer()`
@@ -166,6 +167,32 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   greedily. Guarded by `test_removed_surfaces.py`.
 
 ### Notes
+
+- **Binary ops still refuse a runtime vector, and that is deliberate.** The
+  reduction fix above coerces a runtime `NodeOutput::Vector` to a 1-D buffer,
+  but only for steps whose published output shape derives from that operand
+  alone. `Binary` declares it accepts `vector` — it must, because
+  `perceptual_hash` plans as one — yet a phash *executes* as a buffer, so the
+  only operands that ever arrive as a runtime vector are `extract_shape` and
+  `label_reduce`. Coercing those would broadcast against the other operand
+  while the planner had already published the *left* operand's rank:
+  `extract_shape().add(image)` would plan rank 1 and execute rank 3. It raises
+  instead, naming the reason.
+
+- **`rotate(expand=True)` output dimensions can differ by one pixel from
+  0.20.0** for a small fraction of inputs (~1 in 5000 over a 200k-case sweep),
+  now that the fused path reads the engine's matrix rather than recomputing it.
+  The cause is precision, not convention: `AffineParams::from_rotation` takes
+  `angle_deg: f32` where the Python transliteration used f64. The new value is
+  the one an unfused rotate has always produced, so this makes the two paths
+  agree rather than changing what a rotate means.
+
+- **`to_graph()` now emits `shape_asserted: true`** where it emitted `false`,
+  because the sub-pipeline it builds inherits `_asserted_dims` along with the
+  rest of the state. It only selects which of two error strings
+  `validate_output_schema` prints, and the new value is the correct one — it is
+  what `.cv.pipe()` already emitted — but `graph_json` is the compiled-graph
+  cache key, so affected pipelines mint a new cache entry once.
 
 - Ambient AWS configuration is now honoured: `build_aws` reads `~/.aws/config`
   and `~/.aws/credentials` for a region and keys when the options do not supply

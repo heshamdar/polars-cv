@@ -437,6 +437,44 @@ impl CompiledGraph {
         }
     }
 
+    /// Whether a runtime `NodeOutput::Vector` may be read as a 1-D buffer here.
+    ///
+    /// The planner's `vector` *domain* and the runtime `Vector` *representation*
+    /// are not the same set, and conflating them is a live hazard.
+    /// `perceptual_hash` and the histogram vector modes plan as `vector` but
+    /// execute as `Buffer`, so the only steps that ever receive a runtime
+    /// `Vector` are those fed by `ExtractShape` or `LabelReduce`.
+    ///
+    /// Coercing one is sound only where the step's published output shape
+    /// derives from *this* operand alone.
+    ///
+    /// - `Reduction` qualifies: rank and domain fold from its single input, so
+    ///   `extract_shape().reduce_sum()` plans and executes the same scalar.
+    /// - `Binary` does **not**. The planner publishes the *left* operand's rank
+    ///   while execution broadcasts against the other operand, so coercing a
+    ///   left-hand vector against a rank-3 image would execute at rank 3 after
+    ///   the plan promised rank 1 — `sink("list")` silently flattening twelve
+    ///   values into a three-element plan, and `sink("array", shape=[3])`
+    ///   failing at execution. Refusing keeps the failure loud; there is no
+    ///   coherent broadcast to publish at plan time.
+    ///
+    /// Exhaustive, so a new variant has to answer this question rather than
+    /// inherit an answer.
+    fn vector_reads_as_buffer(step: &GraphStep) -> bool {
+        match step {
+            GraphStep::Reduction(_) => true,
+            GraphStep::Binary { .. }
+            | GraphStep::Buffer(_)
+            | GraphStep::Geometry(_)
+            | GraphStep::ApplyMask { .. }
+            | GraphStep::ChannelMerge { .. }
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_)
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => false,
+        }
+    }
+
     /// The buffer a step consumes, honouring the step's *declared* input domains.
     ///
     /// **Read the contract; never restate it.** `GraphStep::input_domains` is the
@@ -444,17 +482,14 @@ impl CompiledGraph {
     /// planner validates against it through `op_contract`. Execution used to
     /// re-derive the same fact by hand at ten sites — `current_output.as_buffer()`
     /// with a hardcoded `"<Step> requires Buffer"` string each time — and the two
-    /// had already diverged: `Binary` and `Reduction` declare
-    /// `[Buffer, Vector]`, so the planner accepted
-    /// `extract_shape().reduce_sum()` and execution then failed the row with
-    /// "Reduction requires Buffer, got Vector".
+    /// had already diverged: `Reduction` declares `[Buffer, Vector]`, so the
+    /// planner accepted `extract_shape().reduce_sum()` and execution then failed
+    /// the row with "Reduction requires Buffer, got Vector".
     ///
-    /// A vector *is* a 1-D buffer here — that is exactly the equivalence
-    /// `_require_input_domain`'s docstring already claims ("a perceptual hash is a
-    /// 1-D buffer encoded as a vector"), and the reason `perceptual_hash` and the
-    /// histogram vector modes ride as `Buffer` at runtime while planning as
-    /// `vector`. So when a step admits `Vector`, materialize one rather than
-    /// refusing it.
+    /// Reading the declared domains is what decides *rejection*;
+    /// `vector_reads_as_buffer` decides the narrower question of whether a
+    /// runtime vector can stand in for a buffer, which the domain vocabulary
+    /// alone cannot answer.
     fn step_buffer_operand(
         output: &NodeOutput,
         step: &GraphStep,
@@ -464,9 +499,14 @@ impl CompiledGraph {
         let accepted = step.input_domains();
         match output {
             NodeOutput::Buffer(buf) => Ok(Arc::clone(buf)),
-            NodeOutput::Vector(vals) if accepted.contains(&Domain::Vector) => {
+            NodeOutput::Vector(vals) if Self::vector_reads_as_buffer(step) => {
                 Ok(Arc::new(ViewBuffer::from_vec(vals.as_ref().clone())))
             }
+            NodeOutput::Vector(_) if accepted.contains(&Domain::Vector) => Err(format!(
+                "{what} declares it accepts a vector, but cannot read one whose \
+                 rank the plan did not fix: its output shape depends on another \
+                 operand. Reduce or rasterize the vector first."
+            )),
             _ => Err(format!(
                 "{what} accepts {} input but received {domain:?}",
                 accepted
@@ -1001,18 +1041,28 @@ impl CompiledGraph {
                                     graph_step.as_ref(),
                                     "ChannelMerge",
                                 )?;
-                                let mut all_bufs: Vec<&ViewBuffer> = vec![&current_buf];
+                                // Owned first: `step_buffer_operand` hands back an
+                                // `Arc`, which must outlive the borrow the merge
+                                // call takes.
+                                let mut owned: Vec<Arc<ViewBuffer>> = vec![current_buf];
                                 for other_id in others {
                                     let Some(other_output) =
                                         self.operand(node_outputs, other_id, "ChannelMerge")?
                                     else {
                                         continue 'nodes;
                                     };
-                                    let other_buf = other_output.as_buffer().ok_or_else(|| {
-                                        format!("ChannelMerge: node '{other_id}' is not a Buffer")
-                                    })?;
-                                    all_bufs.push(other_buf);
+                                    // Same contract read as the current operand
+                                    // above -- ChannelMerge declares `[Buffer]`, so
+                                    // this refuses a vector, but it refuses it by
+                                    // reading the contract rather than restating it.
+                                    owned.push(Self::step_buffer_operand(
+                                        other_output,
+                                        graph_step.as_ref(),
+                                        &format!("ChannelMerge operand '{other_id}'"),
+                                    )?);
                                 }
+                                let all_bufs: Vec<&ViewBuffer> =
+                                    owned.iter().map(|b| b.as_ref()).collect();
                                 let result = view_buffer::apply_channel_merge(&all_bufs);
                                 current_output = NodeOutput::from_buffer(result);
                             }

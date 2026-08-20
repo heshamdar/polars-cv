@@ -31,10 +31,32 @@ fn main() {
             &mut contents,
         );
     }
-    push_file(&workspace.join("Cargo.lock"), "Cargo.lock", &mut contents);
+    // The workspace manifest carries `[profile.release]`, and the toolchain
+    // file pins the compiler -- both change the artifact without touching any
+    // `.rs` file, so both belong in the hash. `build.rs` itself decides what
+    // the hash covers at all.
+    for name in ["Cargo.lock", "Cargo.toml", "rust-toolchain.toml"] {
+        push_file(&workspace.join(name), name, &mut contents);
+    }
+    push_file(
+        &manifest.join("build.rs"),
+        "polars-cv/build.rs",
+        &mut contents,
+    );
 
     // Re-run whenever any input changes, rather than only when Cargo would
     // otherwise rebuild — a stale hash is exactly the failure being guarded.
+    //
+    // The `src` *directories* are watched as well as the files: watching only
+    // files means adding a `.rs` that nothing already-watched references does
+    // not rerun this script, so the baked hash goes stale while the recomputed
+    // one moves — a mismatch `maturin develop` could not clear.
+    for crate_dir in ["polars-cv", "view-buffer"] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace.join(crate_dir).join("src").display()
+        );
+    }
     for key in contents.keys() {
         println!("cargo:rerun-if-changed={}", workspace.join(key).display());
     }
@@ -60,7 +82,13 @@ fn collect_rust_sources(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        // `symlink_metadata`, not `is_dir()`: the latter follows symlinks while
+        // Python's `rglob` does not, so a symlinked directory under `src/`
+        // would make the two hashes disagree permanently.
+        let is_real_dir = std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_dir())
+            .unwrap_or(false);
+        if is_real_dir {
             collect_rust_sources(&path, crate_root, crate_name, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
             let rel = path
