@@ -63,14 +63,20 @@ _POLARS_TO_CV_DTYPE: dict[pl.DataType, str] = {
 
 @dataclass
 class _SourceInfo:
-    """Auto-detected source format and kwargs for a column."""
+    """The source a mask column needs, as far as *Polars* can say.
 
-    format: str
+    Metrics does not choose the source **format** — `source("auto")` does, and
+    the decision is Rust's (`resolve_auto_format`), taken from the column dtype
+    and, for Binary, from the VIEW magic bytes. This carries only the one thing
+    the Polars schema settles that the format cannot: the element dtype of a
+    nested `List`/`Array`, which the planner needs before any data moves.
+    """
+
     kwargs: dict[str, Any]
 
     def build_source(self) -> Pipeline:
-        """Create a ``Pipeline().source(...)`` with this format."""
-        return Pipeline().source(self.format, **self.kwargs)
+        """Create a ``Pipeline().source("auto", ...)`` for this column."""
+        return Pipeline().source("auto", **self.kwargs)
 
 
 def _leaf_dtype(dtype: pl.DataType) -> pl.DataType:
@@ -108,41 +114,46 @@ def _polars_dtype_to_cv(dtype: pl.DataType, col: str) -> str:
 
 
 def _detect_source_info(schema: dict[str, pl.DataType], col: str) -> _SourceInfo:
-    """Detect the pipeline source format from a column's Polars dtype.
+    """Read the one source detail the Polars schema settles: the leaf dtype.
 
     This is a **planning-time** operation — it inspects the Polars schema
     (available via ``collect_schema()``) and does not touch data.
+
+    It deliberately does **not** choose a source format. That decision belongs
+    to `resolve_auto_format` in Rust, which `source("auto")` — the default —
+    already makes, and which is strictly better informed: for a `Binary` column
+    it inspects the VIEW magic bytes and routes a PNG/JPEG to `image_bytes`
+    rather than the blob decoder. This function used to map every `Binary`
+    column to `"blob"`, so a `ContourMatcher` over an image-bytes mask failed
+    with "Invalid blob magic bytes" while the same column read fine through
+    `source("auto")`.
 
     Args:
         schema: Polars schema mapping column names to dtypes.
         col: Column name to inspect.
 
     Returns:
-        ``_SourceInfo`` with format string and kwargs.
+        ``_SourceInfo`` carrying the source kwargs, which is the element dtype
+        for a nested column and nothing at all otherwise.
 
     Raises:
-        ValueError: If the column type is not supported as a pipeline source.
+        ValueError: If a nested column's leaf type has no buffer meaning.
     """
     dtype = schema[col]
 
-    if dtype == pl.Binary:
-        return _SourceInfo(format="blob", kwargs={})
-
-    if isinstance(dtype, pl.List):
+    # Nested columns are the only case where Polars knows something Rust cannot
+    # infer at plan time: the leaf element dtype, which a typed source needs
+    # before any data moves. `_polars_dtype_to_cv` raises for leaves with no
+    # buffer meaning (String, Duration), which stays a Polars-side check
+    # because it is a Polars type that is wrong.
+    if isinstance(dtype, (pl.List, pl.Array)):
         leaf = _leaf_dtype(dtype)
-        cv_dtype = _polars_dtype_to_cv(leaf, col)
-        return _SourceInfo(format="list", kwargs={"dtype": cv_dtype})
+        return _SourceInfo(kwargs={"dtype": _polars_dtype_to_cv(leaf, col)})
 
-    if isinstance(dtype, pl.Array):
-        leaf = _leaf_dtype(dtype)
-        cv_dtype = _polars_dtype_to_cv(leaf, col)
-        return _SourceInfo(format="array", kwargs={"dtype": cv_dtype})
-
-    raise ValueError(
-        f"Column '{col}' has unsupported dtype {dtype} for ContourMatcher. "
-        f"Expected Binary (blob), List[List[...]] (nested list), or "
-        f"Array[...] (fixed-size array)."
-    )
+    # Everything else — Binary above all — goes to `auto` unqualified. An
+    # unroutable dtype is rejected there, by the same code that rejects it for
+    # every other caller, rather than by a second list maintained here.
+    return _SourceInfo(kwargs={})
 
 
 def _add_gt_shape_columns(
@@ -153,49 +164,50 @@ def _add_gt_shape_columns(
     """Add ``_gt_h`` and ``_gt_w`` columns from the GT mask column.
 
     These are used as the dynamic resize target when ``auto_resize``
-    is enabled.  The extraction strategy depends on the source format:
+    is enabled. The strategy is chosen from the **Polars dtype**, which is what
+    decides whether a cheaper native path exists — not from a source format,
+    which is Rust's decision to make:
 
-    - **list**: native ``.list.len()`` expressions.
-    - **blob**: ``Pipeline().source("blob").extract_shape()`` via Rust.
-    - **array**: literal values from the Polars type metadata.
+    - **List**: native ``.list.len()`` expressions.
+    - **Array**: literal values from the Polars type metadata.
+    - **anything else** (`Binary`, whether a VIEW blob or image bytes):
+      ``extract_shape()`` through the pipeline, which works for every source
+      ``auto`` can resolve.
 
     Args:
         lf: Input lazy frame.
         gt_col: Ground-truth mask column name.
-        gt_source: Detected source format for the GT column.
+        gt_source: Source spec for the GT column (its leaf dtype, if nested).
 
     Returns:
         LazyFrame with ``_gt_h`` and ``_gt_w`` columns added.
     """
-    if gt_source.format == "list":
+    dtype = dict(lf.collect_schema())[gt_col]
+
+    if isinstance(dtype, pl.List):
         return lf.with_columns(
             _gt_h=pl.col(gt_col).list.len().cast(pl.Int64),
             _gt_w=pl.col(gt_col).list.first().list.len().cast(pl.Int64),
         )
 
-    if gt_source.format == "blob":
-        shape_pipe = gt_source.build_source().extract_shape()
-        return (
-            lf.with_columns(_gt_shape=pl.col(gt_col).cv.pipe(shape_pipe).sink("native"))
-            .with_columns(
-                _gt_h=pl.col("_gt_shape").list.get(0).cast(pl.Int64),
-                _gt_w=pl.col("_gt_shape").list.get(1).cast(pl.Int64),
-            )
-            .drop("_gt_shape")
-        )
-
-    if gt_source.format == "array":
-        schema_dict = dict(lf.collect_schema())
-        dtype = schema_dict[gt_col]
-        h = dtype.size if isinstance(dtype, pl.Array) else 1
-        inner = dtype.inner if isinstance(dtype, pl.Array) else None
+    if isinstance(dtype, pl.Array):
+        h = dtype.size
+        inner = dtype.inner
         w = inner.size if isinstance(inner, pl.Array) else 1
         return lf.with_columns(
             _gt_h=pl.lit(h, dtype=pl.Int64),
             _gt_w=pl.lit(w, dtype=pl.Int64),
         )
 
-    raise ValueError(f"Unsupported GT source format: {gt_source.format}")
+    shape_pipe = gt_source.build_source().extract_shape()
+    return (
+        lf.with_columns(_gt_shape=pl.col(gt_col).cv.pipe(shape_pipe).sink("native"))
+        .with_columns(
+            _gt_h=pl.col("_gt_shape").list.get(0).cast(pl.Int64),
+            _gt_w=pl.col("_gt_shape").list.get(1).cast(pl.Int64),
+        )
+        .drop("_gt_shape")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +584,10 @@ class ContourMatcher:
                 source_info=pred_source,
             )
             aligned_pred_col = "_pred_heatmap_aligned"
-            aligned_source = _SourceInfo(format="blob", kwargs={})
+            # `_pred_heatmap_aligned` is a VIEW blob this pipeline just
+            # emitted, so `auto` recognises it by magic bytes — no need to name
+            # the format, and naming it would be the second authority again.
+            aligned_source = _SourceInfo(kwargs={})
         else:
             # Trust the user: shapes are assumed to match.
             prepared = _extract_contours_from_col(

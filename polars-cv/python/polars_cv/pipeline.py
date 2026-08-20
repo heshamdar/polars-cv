@@ -42,6 +42,7 @@ from polars_cv._types import (
     PadPosition,
     ParamValue,
     RowErrorPolicy,
+    ScaleOrigin,
     ShapeAssertion,
     ShapeHints,
     SourceFormat,
@@ -3985,27 +3986,42 @@ class Pipeline:
         *,
         sx: FloatOrExpr,
         sy: FloatOrExpr,
+        origin: "ScaleOrigin | str | pl.Expr" = ScaleOrigin.CENTROID,
     ) -> "Pipeline":
         """
-        Scale the contour relative to its centroid.
+        Scale the contour about *origin*.
 
         Domain: contour → contour
 
         Args:
             sx: X scale factor.
             sy: Y scale factor.
+            origin: Point to scale about — ``"centroid"`` (the default),
+                ``"bbox_center"`` or ``"origin"``. Accepts an expression for a
+                per-row choice: which point the scale is measured from changes
+                no output shape, rank or dtype, so it meets the eligibility
+                rule for a per-row parameter.
 
         Returns:
             Self for chaining.
 
         Raises:
             ValueError: If current domain is not contour.
+
+        Note:
+            The default is ``"centroid"``, which is what this method has always
+            done — it previously hardcoded it with no way to choose. The
+            ``.contour.scale`` accessor defaults to ``"origin"`` instead; pass
+            *origin* explicitly if you need the two to agree.
         """
         return self._append_op(
             "contour_scale",
             lambda p: {
                 "sx": p._track_expr(sx),
                 "sy": p._track_expr(sy),
+                "origin": _enum_param(
+                    origin, ScaleOrigin, "scale_contour origin", p._track_expr
+                ),
             },
         )
 

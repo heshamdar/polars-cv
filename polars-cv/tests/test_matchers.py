@@ -5,9 +5,11 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING
 
+import numpy as np
 import polars as pl
 import pytest
 
+from polars_cv import Pipeline
 from polars_cv.metrics import (
     BBoxMatcher,
     ContourMatcher,
@@ -16,7 +18,13 @@ from polars_cv.metrics import (
     precision_recall_curve,
 )
 from polars_cv.metrics._matching._protocol import Matcher
-from polars_cv.metrics._types import COL_CLASS_ID, COL_IMAGE_ID, COL_N_GTS
+from polars_cv.metrics._types import (
+    COL_CLASS_ID,
+    COL_IMAGE_ID,
+    COL_IS_TP,
+    COL_N_GTS,
+)
+from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
     pass
@@ -194,3 +202,50 @@ def test_matchers_require_nothing_the_protocol_omits(impl: type) -> None:
         f"{impl.__name__}.match requires {extra_required}, which Matcher.match "
         f"does not declare, so a protocol-typed caller cannot supply them."
     )
+
+
+# ---------------------------------------------------------------------------
+# Source-format detection belongs to Rust, not to metrics
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+def test_contour_matcher_reads_an_image_bytes_mask(encode_png) -> None:
+    """A PNG mask column must work, as `source("auto")` already makes it.
+
+    `_detect_source_info` mapped every `pl.Binary` column to `"blob"`, but
+    `resolve_auto_format` — the authority `source("auto")` uses — checks the
+    VIEW magic bytes and falls back to `image_bytes`. So an image-bytes mask
+    reached the blob decoder and the query failed, while the same column read
+    fine through the documented default source.
+    """
+    mask = np.zeros((16, 16), dtype=np.uint8)
+    mask[4:12, 4:12] = 255
+    png = encode_png(mask)
+
+    frame = pl.DataFrame({"pred": [png], "gt": [png]})
+    table = ContourMatcher().match(frame, pred_col="pred", gt_col="gt")
+    detections = table.detections.collect(engine="streaming")
+
+    assert detections.height == 1, (
+        f"a PNG mask matched against itself should give one detection, got "
+        f"{detections.height}"
+    )
+    assert detections[COL_IS_TP][0], "a mask matched against itself is a TP"
+
+
+@plugin_required
+def test_contour_matcher_still_reads_a_view_blob() -> None:
+    """The blob path must keep working — `auto` distinguishes the two by magic."""
+    mask = np.zeros((16, 16), dtype=np.uint8)
+    mask[4:12, 4:12] = 255
+    blob = (
+        pl.DataFrame({"m": [mask.tolist()]}, schema={"m": pl.List(pl.List(pl.UInt8))})
+        .select(
+            b=pl.col("m").cv.pipe(Pipeline().source("list", dtype="u8")).sink("blob")
+        )["b"]
+        .to_list()
+    )
+    frame = pl.DataFrame({"pred": blob, "gt": blob})
+    table = ContourMatcher().match(frame, pred_col="pred", gt_col="gt")
+    assert table.detections.collect(engine="streaming").height == 1

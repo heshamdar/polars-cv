@@ -17,6 +17,7 @@ from polars_cv._types import (
     FloatOrExpr,
     HashAlgorithm,
     IntOrExpr,
+    ScaleOrigin,
     StrOrExpr,
 )
 from polars_cv.pipeline import Pipeline
@@ -277,7 +278,11 @@ class LazyPipelineExpr:
         preserve_dtype: bool = ...,
     ) -> LazyPipelineExpr: ...
     def scale_contour(
-        self, *, sx: FloatOrExpr, sy: FloatOrExpr
+        self,
+        *,
+        sx: FloatOrExpr,
+        sy: FloatOrExpr,
+        origin: "ScaleOrigin | str | pl.Expr" = ...,
     ) -> LazyPipelineExpr: ...
     def sharpen(self, *, strength: FloatOrExpr = ...) -> LazyPipelineExpr: ...
     def shear(

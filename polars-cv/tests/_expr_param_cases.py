@@ -749,6 +749,19 @@ CASES: list[ExprCase] = [
         (0.5, 1.0, 2.0),
         column=RECT,
     ),
+    # `bbox_center` is deliberately absent: it coincides with `centroid` for
+    # any centrally-symmetric shape, and every contour fixture here is one, so
+    # including it would fail `assert_values_vary` on a mathematical identity
+    # rather than on a plumbing fault. All three variants are swept against the
+    # `.contour.scale` accessor in
+    # `test_contour_plugin.py::test_graph_and_namespace_scale_agree_for_an_explicit_origin`.
+    ExprCase(
+        "scale_contour",
+        "origin",
+        lambda v: contour().scale_contour(sx=2.0, sy=2.0, origin=v),
+        ("centroid", "origin"),
+        column=RECT,
+    ),
     ExprCase(
         "simplify",
         "tolerance",
