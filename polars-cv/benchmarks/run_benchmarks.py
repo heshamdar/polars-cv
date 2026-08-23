@@ -60,8 +60,8 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Comma-separated list of frameworks to benchmark "
             "(default: all available). Options: daft, daft-udf, opencv, "
-            "pillow, polars-cv-eager, polars-cv-streaming, "
-            "torchvision-cpu, torchvision-mps"
+            "pillow, pixeltable, pixeltable-udf, polars-cv-eager, "
+            "polars-cv-streaming, torchvision-cpu, torchvision-mps"
         ),
     )
 

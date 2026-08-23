@@ -11,6 +11,11 @@ from .base import BaseFrameworkAdapter, BenchmarkResult, OperationParams, Operat
 from .daft_adapter import DaftAdapter, DaftNativeAdapter, DaftUDFAdapter
 from .opencv_adapter import OpenCVAdapter
 from .pillow_adapter import PillowAdapter
+from .pixeltable_adapter import (
+    PixeltableAdapter,
+    PixeltableNativeAdapter,
+    PixeltableUDFAdapter,
+)
 from .polars_cv_adapter import (
     PolarsCVAdapter,
     PolarsCVEagerAdapter,
@@ -33,6 +38,9 @@ __all__ = [
     "OperationParams",
     "OperationType",
     "PillowAdapter",
+    "PixeltableAdapter",
+    "PixeltableNativeAdapter",
+    "PixeltableUDFAdapter",
     "PolarsCVAdapter",
     "PolarsCVEagerAdapter",
     "PolarsCVStreamingAdapter",
@@ -61,6 +69,8 @@ def get_adapter(name: str) -> BaseFrameworkAdapter:
         "daft-udf": DaftUDFAdapter,
         "opencv": OpenCVAdapter,
         "pillow": PillowAdapter,
+        "pixeltable": PixeltableNativeAdapter,
+        "pixeltable-udf": PixeltableUDFAdapter,
         "polars-cv-eager": PolarsCVEagerAdapter,
         "polars-cv-streaming": PolarsCVStreamingAdapter,
         "torchvision-cpu": TorchvisionCPUAdapter,
@@ -90,6 +100,8 @@ def get_available_adapters() -> list[BaseFrameworkAdapter]:
         DaftUDFAdapter(),
         OpenCVAdapter(),
         PillowAdapter(),
+        PixeltableNativeAdapter(),
+        PixeltableUDFAdapter(),
         TorchvisionCPUAdapter(),
         TorchvisionMPSAdapter(),
     ]

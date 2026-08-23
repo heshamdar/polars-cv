@@ -60,6 +60,12 @@ bench = [
     # and `@daft.udf` was superseded by `@daft.func.batch`, so the adapter
     # needs >=0.7.
     "daft>=0.7",
+    # Pixeltable is the other cross-framework comparison target
+    # (benchmarks/frameworks/pixeltable_adapter.py). It ships an embedded
+    # Postgres and stores data under ~/.pixeltable, so unlike the other bench
+    # deps it leaves state on disk. >=0.7 for the `pxt.Array[pxt.Float]` type
+    # the adapter needs to carry float results.
+    "pixeltable>=0.7",
 ]
 docs = [
     "mkdocs-material>=9.0",

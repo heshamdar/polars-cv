@@ -1,0 +1,14 @@
+200 x 256^2 PNGs, resize to 224^2
+
+                                  pixeltable       polars-cv
+------------------------------------------------------------
+ad-hoc recompute                    375.8/s       3792.6/s
+materialize (one-time)              246.2/s       1198.6/s
+cached read                        1662.6/s       4204.0/s
+decode only                         637.1/s               —
+
+pixeltable: materializing pays for itself after 2.0 reads (cached read is 4.42x the recompute rate)
+polars-cv: materializing pays for itself after 32.3 reads (cached read is 1.11x the recompute rate)
+
+pixeltable incremental append: 20 rows added to a 200-row table with a computed column took 0.095s (210.0 rows/s) — only the new rows are computed.
+  recomputing the whole 220-row column would cost ~0.89s, so the append is ~9.4x cheaper.

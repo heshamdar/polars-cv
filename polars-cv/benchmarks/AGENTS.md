@@ -44,6 +44,8 @@ benchmarks/
 │   ├── base.py                     # AbstractFrameworkAdapter
 │   ├── polars_cv_adapter.py        # polars-cv (eager + streaming)
 │   ├── daft_adapter.py             # Daft (native-only + batch-UDF variants)
+│   ├── pixeltable_adapter.py       # Pixeltable (native-only + UDF variants)
+│   ├── _pixeltable_udfs.py         # Pixeltable UDFs (must live in a module)
 │   ├── opencv_adapter.py           # OpenCV adapter
 │   ├── pillow_adapter.py           # PIL/Pillow adapter
 │   └── torchvision_adapter.py      # torchvision (CPU + MPS)
@@ -66,13 +68,16 @@ benchmarks/
 └── reports/                        # Dated benchmark runs + analysis writeups
     ├── 2026-06-12-streaming-analysis/  # main vs OpenCV/Pillow/torchvision,
     │                                   # streaming-engine deep dive, raw JSON
-    └── 2026-08-23-daft-comparison/     # Daft vs polars-cv: throughput, op
-                                        # coverage, setup, flexibility; plus
+    └── 2026-08-23-engine-comparison/   # polars-cv vs Daft vs Pixeltable:
+                                        # throughput, op coverage, setup,
+                                        # flexibility; plus four probes —
                                         # capability_probe.py (what each engine
                                         # can express), parallelism_probe.py
-                                        # (core utilization / partition sweep)
-                                        # and udf_path_probe.py (UDF boundary
-                                        # cost, chained vs fused)
+                                        # (core utilization / partition sweep),
+                                        # udf_path_probe.py (UDF boundary cost,
+                                        # chained vs fused) and
+                                        # incremental_probe.py (Pixeltable's
+                                        # computed-column caching)
 ```
 
 ## Frameworks Compared
@@ -83,12 +88,14 @@ benchmarks/
 | `polars-cv-streaming` | polars-cv with `.collect(engine="streaming")` |
 | `daft` | Daft using **only** its own image expressions |
 | `daft-udf` | Daft with `@daft.func.batch` UDFs filling the gaps |
+| `pixeltable` | Pixeltable using **only** its own (PIL-backed) expressions |
+| `pixeltable-udf` | Pixeltable with `@pxt.udf` filling the gaps |
 | `opencv` | NumPy + OpenCV (industry standard baseline) |
 | `pillow` | PIL/Pillow |
 | `torchvision-cpu` | torchvision on CPU |
 | `torchvision-mps` | torchvision on Apple Metal GPU |
 
-### Why Daft has two adapters
+### Why Daft and Pixeltable each have two adapters
 
 Daft's native vision surface covers three of the twenty single-op benchmarks
 (resize, grayscale, crop) and none of the five pipelines, so a single adapter
@@ -107,9 +114,27 @@ that way**: a hand-written kernel inside a Daft UDF would be a second
 implementation of an op this repo already has, and the ratio would stop meaning
 anything.
 
-`NATIVE_OPS` in `daft_adapter.py` is the list of ops Daft can express itself.
-Widening it without a real native expression behind it is the one way these
-benchmarks can lie.
+`NATIVE_OPS` in each adapter is the list of ops that engine can express
+itself. Widening one without a real native expression behind it is the one way
+these benchmarks can lie.
+
+The same split applies to `pixeltable`/`pixeltable-udf`. Two things are
+specific to Pixeltable and easy to get wrong:
+
+- **It is a stateful store, not a query engine.** It has no in-memory
+  pre-decoded column, so `prepare_decoded_images` cannot pre-*decode* the way
+  every other adapter does and its single-op numbers include a decode the
+  others exclude. Read `e2e` for the like-for-like comparison, and see
+  `reports/2026-08-23-engine-comparison/` §5.
+- **It persists every table it is given.** The adapter rotates between two
+  fixed table names so a full run leaves two copies of the image set in the
+  media store rather than hundreds of gigabytes' worth. Do not "fix" that by
+  giving each call a fresh name.
+
+Its UDFs live in `_pixeltable_udfs.py` because Pixeltable *requires* a named
+module — it rejects a UDF defined in a script's global namespace or built
+inside a method, and raises `AlreadyExistsError` on a second registration of
+the same qualified name.
 
 ## Running Benchmarks
 

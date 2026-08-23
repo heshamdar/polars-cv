@@ -33,6 +33,8 @@ class BenchmarkConfig:
             "polars-cv-streaming",
             "daft",
             "daft-udf",
+            "pixeltable",
+            "pixeltable-udf",
             "opencv",
             "pillow",
             "torchvision-cpu",

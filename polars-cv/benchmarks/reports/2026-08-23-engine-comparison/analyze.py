@@ -27,6 +27,8 @@ FRAMEWORKS: list[str] = [
     "polars-cv-streaming",
     "daft",
     "daft-udf",
+    "pixeltable",
+    "pixeltable-udf",
     "opencv",
     "pillow",
 ]
@@ -36,6 +38,8 @@ SHORT = {
     "polars-cv-streaming": "pcv-stream",
     "daft": "daft",
     "daft-udf": "daft-udf",
+    "pixeltable": "pxt",
+    "pixeltable-udf": "pxt-udf",
     "opencv": "opencv",
     "pillow": "pillow",
 }
@@ -141,35 +145,41 @@ def ratio_table(records: list[dict[str, Any]]) -> str:
     """
     table = index(records)
     lines = [
-        "### Head-to-head on Daft's native operations",
+        "### Head-to-head on natively-expressible operations",
         "",
-        "Throughput ratios on the three single ops Daft implements with its own",
-        "expressions — the only cells where both engines run their own kernels on",
-        "comparable work.",
+        "Throughput ratios on the ops each engine implements with its own",
+        "expressions — the cells where both sides run comparable work. Daft covers",
+        "three of the twenty; Pixeltable covers nine.",
         "",
-        "| op | size | pcv-eager ÷ daft | pcv-stream ÷ daft | daft ÷ opencv |",
+        "| op | size | pcv-stream ÷ daft | pcv-stream ÷ pxt | pcv-eager ÷ pxt |",
         "|---|---:|---:|---:|---:|",
     ]
     collected: dict[str, list[float]] = defaultdict(list)
-    for op in NATIVE_OVERLAP:
-        for size in sorted({k[1] for k in table}):
-            cell = table.get((op, size))
-            if not cell or "daft" not in cell:
+    for op, size in sorted(table, key=lambda k: (k[1], k[0])):
+        cell = table[(op, size)]
+        if "daft" not in cell and "pixeltable" not in cell:
+            continue
+        stream = cell.get("polars-cv-streaming")
+        eager = cell.get("polars-cv-eager")
+        cells = []
+        for numerator, key, bucket in (
+            (stream, "daft", "stream_daft"),
+            (stream, "pixeltable", "stream_pxt"),
+            (eager, "pixeltable", "eager_pxt"),
+        ):
+            value = cell.get(key)
+            if not value or not numerator:
+                cells.append("—")
                 continue
-            daft = cell["daft"]
-            eager = cell.get("polars-cv-eager", math.nan) / daft
-            stream = cell.get("polars-cv-streaming", math.nan) / daft
-            ocv = daft / cell.get("opencv", math.nan)
-            collected["eager"].append(eager)
-            collected["stream"].append(stream)
-            collected["ocv"].append(ocv)
-            lines.append(
-                f"| {op} | {size} | {eager:.2f}x | {stream:.2f}x | {ocv:.2f}x |"
-            )
+            ratio = numerator / value
+            collected[bucket].append(ratio)
+            cells.append(f"{ratio:.2f}x")
+        lines.append(f"| {op} | {size} | " + " | ".join(cells) + " |")
+
     lines.append(
-        f"| **geomean** | | **{geomean(collected['eager']):.2f}x** | "
-        f"**{geomean(collected['stream']):.2f}x** | "
-        f"**{geomean(collected['ocv']):.2f}x** |"
+        f"| **geomean** | | **{geomean(collected['stream_daft']):.2f}x** | "
+        f"**{geomean(collected['stream_pxt']):.2f}x** | "
+        f"**{geomean(collected['eager_pxt']):.2f}x** |"
     )
     return "\n".join(lines) + "\n"
 
@@ -196,26 +206,28 @@ def udf_overhead_table(records: list[dict[str, Any]]) -> str:
         "Python loop. Below 1.00x, the dataframe engine is losing on ops it has to",
         "hand back to Python.",
         "",
-        "| op | size | daft-udf ÷ opencv | pcv-stream ÷ opencv |",
-        "|---|---:|---:|---:|",
+        "| op | size | daft-udf ÷ opencv | pxt-udf ÷ opencv | pcv-stream ÷ opencv |",
+        "|---|---:|---:|---:|---:|",
     ]
-    udf_ratios: list[float] = []
-    pcv_ratios: list[float] = []
+    ratios: dict[str, list[float]] = defaultdict(list)
     for op, size in sorted(table, key=lambda k: (k[1], k[0])):
         cell = table[(op, size)]
-        if "daft-udf" not in cell or "opencv" not in cell:
+        if "opencv" not in cell:
             continue
-        udf = cell["daft-udf"] / cell["opencv"]
-        udf_ratios.append(udf)
-        pcv_text = "—"
-        if "polars-cv-streaming" in cell:
-            pcv = cell["polars-cv-streaming"] / cell["opencv"]
-            pcv_ratios.append(pcv)
-            pcv_text = f"{pcv:.2f}x"
-        lines.append(f"| {op} | {size} | {udf:.2f}x | {pcv_text} |")
+        cells = []
+        for key in ("daft-udf", "pixeltable-udf", "polars-cv-streaming"):
+            value = cell.get(key)
+            if not value:
+                cells.append("—")
+                continue
+            ratio = value / cell["opencv"]
+            ratios[key].append(ratio)
+            cells.append(f"{ratio:.2f}x")
+        lines.append(f"| {op} | {size} | " + " | ".join(cells) + " |")
     lines.append(
-        f"| **geomean** | | **{geomean(udf_ratios):.2f}x** | "
-        f"**{geomean(pcv_ratios):.2f}x** |"
+        f"| **geomean** | | **{geomean(ratios['daft-udf']):.2f}x** | "
+        f"**{geomean(ratios['pixeltable-udf']):.2f}x** | "
+        f"**{geomean(ratios['polars-cv-streaming']):.2f}x** |"
     )
     return "\n".join(lines) + "\n"
 
