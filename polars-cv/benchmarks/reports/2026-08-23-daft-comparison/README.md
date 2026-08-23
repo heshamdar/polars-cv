@@ -8,8 +8,8 @@
 Raw results are in `single_ops.json`, `pipelines.json` and `e2e.json`; the
 tables they produce are in `tables.md` (`analyze.py`). The API claims come from
 `capability_probe.py` (output in `capability_probe.txt`) and the fairness
-checks from `parallelism_probe.py` (`parallelism_probe.txt`). Both probes are
-committed so a future Daft release can be re-checked rather than re-argued.
+checks from `parallelism_probe.py` and `udf_path_probe.py` (`.txt` files
+alongside). The probes are committed so a future Daft release can be re-checked rather than re-argued.
 
 ---
 
@@ -44,10 +44,13 @@ Where both engines *can* run the same work, polars-cv is faster:
 |---|---|
 | polars-cv streaming ÷ Daft, on Daft's three native ops | **3.06x** |
 | polars-cv eager (1 core) ÷ Daft (3 cores), same three ops | 1.01x |
-| polars-cv streaming ÷ Daft-with-UDFs, on the 5 pipelines | **6.71x** |
+| polars-cv streaming ÷ Daft-with-UDFs, single ops | **3.9x** |
+| polars-cv streaming ÷ Daft-with-UDFs, on the 5 pipelines | 6.71x chained, **~3.6x fused** |
 | polars-cv streaming ÷ Daft-with-UDFs, end-to-end | **3.03x** |
 
-And this is not a thread-count artifact — see §3.
+This is not a thread-count artifact (§3), and it is not an artifact of writing
+the UDFs badly either — §4 measures the fused best case and the raw cost of the
+UDF boundary itself.
 
 The honest summary for someone choosing between them: **if your work is images
 and you want it fast, polars-cv is several times quicker and can express
@@ -206,11 +209,97 @@ Daft cannot express any of these natively, so the column is `daft-udf`.
 
 The end-to-end ratios are smaller because PNG decode dominates and both engines
 decode in Rust. The pipeline ratios are larger because that is where per-op UDF
-overhead compounds: each of the 2–6 operations pays its own marshalling cost.
+overhead compounds: each of the 2–6 operations pays its own marshalling cost —
+and §4 shows how much of that a user can win back by hand-fusing.
 
 ---
 
-## 4. Ease of setup
+## 4. Is Daft's UDF path optimal?
+
+The fair objection to everything above is that Daft never set out to implement
+every image operation natively. Its position is that a UDF *is* the supported
+way to run one, executed efficiently — so the question is not "how many native
+ops does it have" but "how good is the UDF path". Measured directly
+(`udf_path_probe.py`, output in `udf_path_probe.txt`).
+
+### The UDF boundary costs ~120 µs per image
+
+A batch UDF that does nothing at all, on 100 × 256² RGB images:
+
+| identity UDF | img/s | µs/img | cores |
+|---|---:|---:|---:|
+| `return series` (no materialization) | 19,999 | **50.0** | 0.80 |
+| `series.to_pylist()`, return the list | 5,964 | **167.7** | 0.89 |
+| `series.to_arrow()` first | 4,328 | 231.1 | 0.95 |
+
+This splits the cost cleanly. **Dispatch is cheap** — 50 µs/image to enter and
+leave a UDF that hands the Series straight back. Daft's UDF machinery is a real
+vectorized batch interface, not per-row Python calls, and that deserves credit.
+
+**Touching the pixels is what costs.** The moment the UDF materializes the
+column into NumPy objects and Daft rebuilds a column from what comes back, the
+price is ~168 µs/image — about **120 µs of pure marshalling** on top of
+dispatch, before a single OpenCV instruction runs. `to_arrow()` does not help;
+it is slower.
+
+For scale: polars-cv streaming runs the **entire six-operation heavy pipeline**
+at 5,421 img/s — 184 µs/image. Daft's cost to hand one image into Python and
+take it back is roughly the cost of polars-cv doing all six operations.
+
+### Fusing helps, and the natural way to write it does not
+
+Chaining image UDFs the way you chain expressions makes every operation pay
+that boundary again. Hand-fusing them into one UDF pays it once:
+
+| heavy pipeline, 6 ops | img/s | cores |
+|---|---:|---:|
+| Daft, one UDF per op (what an expression chain gives you) | 754 | 1.27 |
+| **Daft, single fused UDF** | **1,491** | 2.16 |
+| opencv, plain Python loop | 3,248 | 3.67 |
+| polars-cv-eager | 1,418 | 1.01 |
+| polars-cv-streaming | 5,421 | 3.69 |
+
+**Fusing is worth 1.98x**, and the main tables above use the chained shape — so
+those pipeline ratios (6.71x geomean) overstate the gap for a user who knows to
+hand-fuse. Corrected to the fused best case the heavy pipeline is **3.6x**, and
+fused Daft reaches **parity with single-threaded polars-cv-eager** (1.05x).
+
+But note what fusing costs in ergonomics: it means abandoning composition.
+`resize(...).blur(...).threshold(...)` as three chained UDFs is half the speed
+of one opaque `do_everything(...)`. Daft gives you no kernel fusion across UDF
+boundaries, so the user has to do it by hand and loses the expression model to
+get it. polars-cv fuses kernels for you and keeps the chain.
+
+### The single-op numbers are unaffected
+
+Worth being explicit, because it is the crux: the **0.40x geomean against a
+plain OpenCV loop is measured on single operations**, where there is exactly one
+UDF and *no chaining penalty whatsoever*. That number is already the fused best
+case. Fusing cannot improve it.
+
+### Verdict on the UDF path
+
+**Well-designed, genuinely batched, and still not competitive for image
+payloads.** Three things stack up against it:
+
+1. The boundary costs ~120 µs/image in marshalling that polars-cv never pays,
+   because it never leaves Rust.
+2. It parallelizes poorly here — 0.8–2.2 cores against polars-cv streaming's
+   3.7 — so the engine does not buy back what the boundary costs.
+3. Composition is penalized: the idiomatic chained form is 2x off Daft's own
+   best case.
+
+The design is defensible for what Daft is optimizing: a UDF that calls a GPU
+model or an LLM does real work measured in milliseconds, and 168 µs of
+marshalling disappears into the noise. **The economics only break down when the
+UDF is cheap relative to the payload — which is exactly what image kernels
+are.** That is the honest reason a general multimodal engine and a dedicated
+vision engine land where they do, and it is not a criticism of Daft's
+implementation so much as of using a UDF for a 50 µs blur.
+
+---
+
+## 5. Ease of setup
 
 **For an end user this is a tie, which is the opposite of what the "Rust plugin
 vs pip package" framing suggests.** Both ship prebuilt abi3 wheels; timed clean
@@ -251,7 +340,7 @@ compute an image column in about five lines.
 
 ---
 
-## 5. Robustness
+## 6. Robustness
 
 Two Daft 0.7.24 defects surfaced while building the adapter, both reproducible
 in `capability_probe.py`, and both **crash the process rather than raising**:
@@ -284,7 +373,7 @@ rather than degrade, and nothing in this exercise produced a panic from it.
 
 ---
 
-## 6. Flexibility
+## 7. Flexibility
 
 This is the one axis where Daft clearly wins, and it is worth being precise
 about *which* flexibility.
@@ -350,12 +439,12 @@ df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 ```
 
 The asymmetry appears at op two: in Daft, the moment you need a blur you are
-writing a UDF, declaring its return dtype by hand, and (per §5) discovering
+writing a UDF, declaring its return dtype by hand, and (per §6) discovering
 which dtypes survive readback.
 
 ---
 
-## 7. When to choose which
+## 8. When to choose which
 
 **Choose Daft when** the workload is multimodal beyond images (video, audio,
 text, embeddings), when it must run distributed on Ray or Kubernetes, when you
@@ -363,9 +452,15 @@ need Iceberg / Delta / Hugging Face connectors, when LLM and embedding
 functions belong in the same query, or when you need Windows.
 
 **Choose polars-cv when** the workload is image processing, when you need more
-than resize/crop/grayscale, when throughput matters (3–8x here on comparable
-work), when parameters vary per row, or when you need contours, geometry or
-detection metrics.
+than resize/crop/grayscale, when throughput matters (3–4x here against Daft's
+best UDF shape, more against the shape users actually write), when parameters
+vary per row, or when you need contours, geometry or detection metrics.
+
+**The dividing line is how much work each UDF does.** Daft's UDF boundary costs
+~120 µs per 256² image (§4). If your per-row work is a GPU model, an embedding
+or an LLM call — milliseconds — that is free and Daft's design is exactly
+right. If it is a blur or a threshold — tens of microseconds — the boundary
+costs more than the operation, and no amount of tuning fixes that.
 
 **Use both** for the obvious split: Daft for ingest and multimodal fan-out,
 polars-cv for the vision transforms. They share Arrow, so handing a column
@@ -379,7 +474,7 @@ standing between it and the rest.
 
 ---
 
-## 8. How to reproduce
+## 9. How to reproduce
 
 ```bash
 cd polars-cv
@@ -396,6 +491,7 @@ done
 PYTHONPATH=. uv run --no-sync python $R/analyze.py > $R/tables.md
 PYTHONPATH=. uv run --no-sync python $R/capability_probe.py
 PYTHONPATH=. uv run --no-sync python $R/parallelism_probe.py
+PYTHONPATH=. uv run --no-sync python $R/udf_path_probe.py
 ```
 
 ### Fairness notes
@@ -411,6 +507,14 @@ PYTHONPATH=. uv run --no-sync python $R/parallelism_probe.py
   `grayscale` differs by the BT.709/BT.601 convention documented in §2.
 - The `daft` (native-only) adapter raises rather than silently falling back, so
   a missing number in the tables is a missing capability, not a failed run.
+- `daft-udf` chains one UDF per operation, which is what an expression chain
+  gives a user. That is Daft's *natural* shape, not its *best* shape: §4
+  measures the hand-fused alternative and it is 1.98x faster on the heavy
+  pipeline, so the multi-op ratios in §3 should be read against the fused
+  figures there. Single-op ratios are unaffected — one op is one UDF either way.
+- Throughput varies ~15% run to run on this box (the heavy pipeline measured
+  4,670 / 4,692 / 5,421 img/s for polars-cv-streaming across three runs), so
+  ratios below ~1.2x should not be read as meaningful.
 - `e2e_workflow.py`'s dispatch used to route on `"polars" in adapter.name`,
   which would have driven Daft through the per-image path — one DataFrame per
   image per operation. That is now a declared `columnar` flag on the adapter,

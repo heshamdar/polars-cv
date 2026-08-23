@@ -1,0 +1,21 @@
+cores: 4   daft: 0.7.24
+100 x 256^2 RGB, 10 timed iterations
+
+1. Cost of a UDF round trip with no image work at all
+------------------------------------------------------------------------
+   identity UDF, return Series as-is    19998.7 img/s (   50.0 us/img, 0.80 cores)
+   identity UDF, to_pylist()             5963.7 img/s (  167.7 us/img, 0.89 cores)
+   identity UDF, to_arrow()              4327.5 img/s (  231.1 us/img, 0.95 cores)
+
+2. Heavy pipeline (6 ops): resize -> flip_h -> grayscale -> blur -> normalize -> threshold
+------------------------------------------------------------------------
+   daft, one UDF per op (chained)         753.9 img/s  (1.27 cores)
+   daft, single fused UDF                1491.1 img/s  (2.16 cores)
+   opencv, plain Python loop             3247.6 img/s  (3.67 cores)
+   polars-cv-eager                       1418.2 img/s  (1.01 cores)
+   polars-cv-streaming                   5420.7 img/s  (3.69 cores)
+
+   fusing 6 UDFs into 1: 1.98x
+   best Daft UDF shape vs opencv, plain Python loop 0.46x
+   best Daft UDF shape vs polars-cv-eager        1.05x
+   best Daft UDF shape vs polars-cv-streaming    0.28x

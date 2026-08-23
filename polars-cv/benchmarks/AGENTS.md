@@ -69,8 +69,10 @@ benchmarks/
     └── 2026-08-23-daft-comparison/     # Daft vs polars-cv: throughput, op
                                         # coverage, setup, flexibility; plus
                                         # capability_probe.py (what each engine
-                                        # can express) and parallelism_probe.py
+                                        # can express), parallelism_probe.py
                                         # (core utilization / partition sweep)
+                                        # and udf_path_probe.py (UDF boundary
+                                        # cost, chained vs fused)
 ```
 
 ## Frameworks Compared

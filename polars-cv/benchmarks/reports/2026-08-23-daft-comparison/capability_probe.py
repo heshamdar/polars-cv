@@ -14,7 +14,7 @@ Each probe is a small, self-contained fact:
 - ``type_system``      — what Daft's image/tensor columns support.
 
 Several Daft probes crash the Rust worker rather than raising (see
-`README.md` §5), so anything that can abort the interpreter runs in a
+`README.md` §6), so anything that can abort the interpreter runs in a
 subprocess and is reported by exit status. Run it with::
 
     uv run --no-sync python -m benchmarks.reports.2026-08-23-daft-comparison.capability_probe
