@@ -54,6 +54,12 @@ bench = [
     "matplotlib>=3.9.4",
     "jupyterlab",
     "datasets>=2.0",
+    # Daft is the cross-framework comparison target for the multimodal-engine
+    # benchmarks (benchmarks/frameworks/daft_adapter.py). Its native image
+    # expressions moved off the `.image` namespace onto `Expression` in 0.7,
+    # and `@daft.udf` was superseded by `@daft.func.batch`, so the adapter
+    # needs >=0.7.
+    "daft>=0.7",
 ]
 docs = [
     "mkdocs-material>=9.0",

@@ -1,0 +1,63 @@
+==============================================================================
+VERSIONS
+==============================================================================
+  daft       0.7.24
+  polars-cv  0.20.0
+  polars     1.42.0
+  numpy      2.4.0
+
+==============================================================================
+OPERATION SURFACE
+==============================================================================
+  polars-cv Pipeline ops   : 71
+  Daft image expressions   : 17
+  Daft functions (all)     : 344
+
+  Daft image ops: as_image, convert_image, crop, decode, decode_image, decode_image_file, encode, encode_image, image_attribute, image_channel, image_file_metadata, image_hash, image_height, image_mode, image_to_tensor, image_width, resize
+
+  polars-cv ops with a native Daft equivalent: 5
+    cast, crop, grayscale, perceptual_hash, resize
+  polars-cv ops with no native Daft equivalent: 66
+    add, adjust_contrast, adjust_gamma, apply_mask, bitwise_and,
+    bitwise_or, bitwise_xor, blend, blur, canny, channel_merge,
+    channel_select, channel_swap, clamp, contour_area,
+    contour_bounding_box, contour_centroid, contour_convex_hull,
+    contour_perimeter, contour_scale, contour_simplify, contour_translate,
+    convolve2d, cvt_color, dilate, divide, equalize_histogram, erode,
+    extract_contours, extract_shape, flip, histogram, invert,
+    label_reduce, letterbox, maximum, minimum, morphology_gradient,
+    multiply, normalize, pad, pad_to_size, rasterize, ratio,
+    reduce_argmax, reduce_argmin, reduce_max, reduce_mean, reduce_min,
+    reduce_percentile, reduce_popcount, reduce_std, reduce_sum, relu,
+    reshape, resize_max, resize_min, resize_scale, resize_to_height,
+    resize_to_width, rotate, scale, subtract, threshold, transpose,
+    warp_affine
+
+==============================================================================
+GRAYSCALE CONVENTION
+==============================================================================
+  Daft convert_image('L')  R=0.2118  G=0.7137  B=0.0706
+  polars-cv grayscale()    R=0.3020  G=0.5843  B=0.1137
+  ITU-R BT.601 (OpenCV/PIL) R=0.2990  G=0.5870  B=0.1140
+  ITU-R BT.709             R=0.2126  G=0.7152  B=0.0722
+
+==============================================================================
+PER-ROW OPERATION PARAMETERS
+==============================================================================
+  Daft       resize(w, h) from columns              REJECTED (DaftCoreException)
+  Daft       crop(bbox) from a column               OK [(20, 20, 3), (10, 10, 3)]
+  polars-cv  resize(height=, width=) from columns   OK [(32, 48, 3), (16, 24, 3)]
+  polars-cv  crop(height=, width=) from columns     OK [(32, 48, 3), (16, 24, 3)]
+  polars-cv  resize(filter=) from a column          OK [(32, 32, 3), (32, 32, 3)]
+
+==============================================================================
+DAFT TYPE SYSTEM EDGES
+==============================================================================
+  arithmetic on an Image column                REJECTED:   1: DaftError::TypeError Cannot multiply types: Image[RGB], Int64
+  arithmetic on a Tensor column                REJECTED:   1: DaftError::TypeError Cannot multiply types: Tensor[UInt8], Int64
+  cast a fixed-shape tensor's dtype            REJECTED: Cannot cast List[UInt8; 12] to Tensor[Float32; [2, 2, 3]]: mismatched child type
+  image_to_tensor() then cast to float32       CRASHED — process died (exit 1): daft.exceptions.DaftCoreException: task 27 panicked with message "StructArray::new received an array with dtype: List[UInt8] but expected child field: data#List
+  UDF returning float32 under image('RGB32F')  CRASHED — process died (exit 1): pyo3_runtime.PanicException: called `Result::unwrap()` on an `Err` value: ValueError("Attempting to downcast Float32 to \"daft_core::array::DataArray<daft_core:
+  UDF returning float32 under tensor(float32)  OK
+
+==============================================================================

@@ -43,6 +43,7 @@ benchmarks/
 ├── frameworks/                     # Framework adapters
 │   ├── base.py                     # AbstractFrameworkAdapter
 │   ├── polars_cv_adapter.py        # polars-cv (eager + streaming)
+│   ├── daft_adapter.py             # Daft (native-only + batch-UDF variants)
 │   ├── opencv_adapter.py           # OpenCV adapter
 │   ├── pillow_adapter.py           # PIL/Pillow adapter
 │   └── torchvision_adapter.py      # torchvision (CPU + MPS)
@@ -63,8 +64,13 @@ benchmarks/
 │   ├── config.py                   # Regression thresholds + config
 │   └── README.md                   # Regression framework docs
 └── reports/                        # Dated benchmark runs + analysis writeups
-    └── 2026-06-12-streaming-analysis/  # main vs OpenCV/Pillow/torchvision,
-                                        # streaming-engine deep dive, raw JSON
+    ├── 2026-06-12-streaming-analysis/  # main vs OpenCV/Pillow/torchvision,
+    │                                   # streaming-engine deep dive, raw JSON
+    └── 2026-08-23-daft-comparison/     # Daft vs polars-cv: throughput, op
+                                        # coverage, setup, flexibility; plus
+                                        # capability_probe.py (what each engine
+                                        # can express) and parallelism_probe.py
+                                        # (core utilization / partition sweep)
 ```
 
 ## Frameworks Compared
@@ -73,10 +79,35 @@ benchmarks/
 |-----------|-------------|
 | `polars-cv-eager` | polars-cv with standard `.collect()` |
 | `polars-cv-streaming` | polars-cv with `.collect(engine="streaming")` |
+| `daft` | Daft using **only** its own image expressions |
+| `daft-udf` | Daft with `@daft.func.batch` UDFs filling the gaps |
 | `opencv` | NumPy + OpenCV (industry standard baseline) |
 | `pillow` | PIL/Pillow |
 | `torchvision-cpu` | torchvision on CPU |
 | `torchvision-mps` | torchvision on Apple Metal GPU |
+
+### Why Daft has two adapters
+
+Daft's native vision surface covers three of the twenty single-op benchmarks
+(resize, grayscale, crop) and none of the five pipelines, so a single adapter
+would have to either report gaps everywhere or quietly substitute Python and
+call the result "Daft".
+
+`daft` does the first: any op with no native Daft expression raises
+`NotImplementedError`, so a missing cell in the results table is a missing
+capability rather than a failed run. That is the engine-vs-engine measurement.
+
+`daft-udf` does what a Daft user actually has to do — native expressions where
+they exist, a batch UDF where they do not. Its UDF bodies call `OpenCVAdapter`
+rather than reimplementing blur/canny/sobel a second time, so `daft-udf` vs
+`opencv` isolates Daft's UDF overhead over byte-identical kernels. **Keep it
+that way**: a hand-written kernel inside a Daft UDF would be a second
+implementation of an op this repo already has, and the ratio would stop meaning
+anything.
+
+`NATIVE_OPS` in `daft_adapter.py` is the list of ops Daft can express itself.
+Widening it without a real native expression behind it is the one way these
+benchmarks can lie.
 
 ## Running Benchmarks
 

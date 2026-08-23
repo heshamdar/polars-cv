@@ -31,6 +31,7 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
     """
 
     supports_gpu: bool = False
+    columnar: bool = True
 
     def __init__(self, streaming: bool = False) -> None:
         """

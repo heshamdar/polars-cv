@@ -113,11 +113,18 @@ class BaseFrameworkAdapter(ABC):
         name: Human-readable name of the framework.
         supports_gpu: Whether this framework supports GPU acceleration.
         gpu_device: The GPU device identifier (e.g., "mps", "cuda:0").
+        columnar: Whether this framework processes a whole column per call
+            rather than one image per call. Scenarios that offer both a
+            per-image and a batch path (see `run_e2e_workflow_columnar`) route
+            on this flag: driving a dataframe engine through the per-image path
+            builds one DataFrame per image per operation and measures framework
+            construction overhead rather than image processing.
     """
 
     name: str
     supports_gpu: bool = False
     gpu_device: str | None = None
+    columnar: bool = False
 
     @abstractmethod
     def is_available(self) -> bool:

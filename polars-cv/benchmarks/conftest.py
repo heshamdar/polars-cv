@@ -31,6 +31,8 @@ class BenchmarkConfig:
         default_factory=lambda: [
             "polars-cv-eager",
             "polars-cv-streaming",
+            "daft",
+            "daft-udf",
             "opencv",
             "pillow",
             "torchvision-cpu",

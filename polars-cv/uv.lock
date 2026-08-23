@@ -728,6 +728,25 @@ wheels = [
 ]
 
 [[package]]
+name = "daft"
+version = "0.7.24"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "fsspec" },
+    { name = "packaging" },
+    { name = "pyarrow" },
+    { name = "tqdm" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/73/80a3c8311a5d4e56a4e3b6f1d0b875373437c29944e59ba90bed2617984a/daft-0.7.24-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:d5f03d04211f185763cc23aedebd6a7476d8377e8032b5cafb1e4d8924933b23", size = 55690416, upload-time = "2026-08-15T00:28:43.993Z" },
+    { url = "https://files.pythonhosted.org/packages/99/f2/64f4f495f3f96bbd59d1330162864b54e91ea0b9ec135bd2cfc73b04f92c/daft-0.7.24-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:87e425dc402b5660f64fce6ad0c6b666737a9f381862c555358bb5fa2a043529", size = 51583689, upload-time = "2026-08-15T00:28:47.884Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/57/b8539bf40be805f6fbf540f5d50bf131be4a7cc5f779819f753678cdd926/daft-0.7.24-cp310-abi3-manylinux_2_24_aarch64.whl", hash = "sha256:8f968f31d3568ef4ada5cac6b4349d47d493d793002c7c72f64f5bd840e2d20b", size = 54092497, upload-time = "2026-08-15T00:28:51.167Z" },
+    { url = "https://files.pythonhosted.org/packages/75/0b/a4e2c9e48054da34b619d0a04e0b23d2b22ce88ba51d1cb8db40872c455a/daft-0.7.24-cp310-abi3-manylinux_2_24_x86_64.whl", hash = "sha256:4fa090e263247aec1975d7bf1be46ca494d29df2638803880a3a901a79e6887d", size = 56315893, upload-time = "2026-08-15T00:28:54.518Z" },
+    { url = "https://files.pythonhosted.org/packages/59/e7/80753a416ada1c0e45b721d0715199203f617db70fb4d813564a7ef13ce2/daft-0.7.24-cp310-abi3-win_amd64.whl", hash = "sha256:339f4c5e5bfce11e3c750c900668d843b85cb65fcee1d9e952d78d9867cb811e", size = 55013342, upload-time = "2026-08-15T00:28:57.913Z" },
+]
+
+[[package]]
 name = "datasets"
 version = "4.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2976,6 +2995,7 @@ dependencies = [
 
 [package.dev-dependencies]
 bench = [
+    { name = "daft" },
     { name = "datasets" },
     { name = "jupyterlab" },
     { name = "matplotlib" },
@@ -3020,6 +3040,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 bench = [
+    { name = "daft", specifier = ">=0.7" },
     { name = "datasets", specifier = ">=2.0" },
     { name = "jupyterlab" },
     { name = "matplotlib", specifier = ">=3.9.4" },

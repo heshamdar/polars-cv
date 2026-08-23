@@ -8,6 +8,7 @@ across different frameworks (polars-cv, OpenCV, PIL, torchvision).
 from __future__ import annotations
 
 from .base import BaseFrameworkAdapter, BenchmarkResult, OperationParams, OperationType
+from .daft_adapter import DaftAdapter, DaftNativeAdapter, DaftUDFAdapter
 from .opencv_adapter import OpenCVAdapter
 from .pillow_adapter import PillowAdapter
 from .polars_cv_adapter import (
@@ -25,6 +26,9 @@ from .torchvision_adapter import (
 __all__ = [
     "BaseFrameworkAdapter",
     "BenchmarkResult",
+    "DaftAdapter",
+    "DaftNativeAdapter",
+    "DaftUDFAdapter",
     "OpenCVAdapter",
     "OperationParams",
     "OperationType",
@@ -53,6 +57,8 @@ def get_adapter(name: str) -> BaseFrameworkAdapter:
         ValueError: If adapter name is not recognized.
     """
     adapters: dict[str, type[BaseFrameworkAdapter]] = {
+        "daft": DaftNativeAdapter,
+        "daft-udf": DaftUDFAdapter,
         "opencv": OpenCVAdapter,
         "pillow": PillowAdapter,
         "polars-cv-eager": PolarsCVEagerAdapter,
@@ -80,6 +86,8 @@ def get_available_adapters() -> list[BaseFrameworkAdapter]:
     all_adapters = [
         PolarsCVEagerAdapter(),
         PolarsCVStreamingAdapter(),
+        DaftNativeAdapter(),
+        DaftUDFAdapter(),
         OpenCVAdapter(),
         PillowAdapter(),
         TorchvisionCPUAdapter(),

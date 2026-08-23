@@ -154,21 +154,23 @@ def run_e2e_workflow_standard(
     )
 
 
-def run_e2e_workflow_polars(
-    adapter: Any,  # PolarsCVAdapter
+def run_e2e_workflow_columnar(
+    adapter: Any,  # An adapter with columnar = True
     workflow: E2EWorkflowConfig,
     file_paths: list[Path],
     warmup_iterations: int = 3,
     benchmark_iterations: int = 10,
 ) -> BenchmarkResult:
     """
-    Run an end-to-end workflow benchmark using Polars file loading.
+    Run an end-to-end workflow benchmark through an adapter's batch path.
 
-    This uses Polars' native file reading capabilities for the polars-cv
-    adapter, which may provide different performance characteristics.
+    Dataframe engines process a whole column per call, so they get the bytes as
+    one batch. Routing them through `run_e2e_workflow_standard` instead would
+    build a fresh DataFrame per image per operation and measure query
+    construction, not image processing.
 
     Args:
-        adapter: polars-cv adapter.
+        adapter: Framework adapter with `columnar = True`.
         workflow: Workflow configuration.
         file_paths: List of image file paths.
         warmup_iterations: Number of warmup runs.
@@ -424,9 +426,9 @@ def run_all_e2e_workflows(
                                         f"img/s (warm)",
                                         flush=True,
                                     )
-                            elif "polars" in adapter.name.lower():
-                                # polars-cv adapter
-                                result = run_e2e_workflow_polars(
+                            elif adapter.columnar:
+                                # Dataframe engine: hand it the whole batch.
+                                result = run_e2e_workflow_columnar(
                                     adapter,
                                     workflow,
                                     file_paths,

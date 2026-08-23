@@ -1,0 +1,33 @@
+cores: 4   daft: 0.7.24
+100 x 256^2 RGB images, 10 timed iterations
+
+PARTITION SWEEP
+----------------------------------------------------------------------
+  resize 224 (Daft native expression)
+/home/user/polars-cv/polars-cv/.venv/lib/python3.11/site-packages/daft/dataframe/dataframe.py:3832: UserWarning: DataFrame.into_partitions not supported on the NativeRunner. This will be a no-op. Please use the RayRunner via `daft.set_runner_ray()` instead if you need to repartition.
+  warnings.warn(
+     1 partition(s):   2419.0 img/s (1.00x vs 1)
+     2 partition(s):   2489.2 img/s (1.03x vs 1)
+     4 partition(s):   2265.1 img/s (0.94x vs 1)
+     8 partition(s):   2477.1 img/s (1.02x vs 1)
+
+  blur sigma=2 (Daft batch UDF)
+     1 partition(s):   2171.2 img/s (1.00x vs 1)
+     2 partition(s):   2165.1 img/s (1.00x vs 1)
+     4 partition(s):   2111.5 img/s (0.97x vs 1)
+     8 partition(s):   2322.5 img/s (1.07x vs 1)
+
+CORE UTILIZATION
+----------------------------------------------------------------------
+  framework             operation          img/s   cores used
+  polars-cv-eager       resize            3818.4         0.99
+  polars-cv-eager       blur              1049.7         1.01
+  polars-cv-streaming   resize           14929.5         3.28
+  polars-cv-streaming   blur              3507.2         3.33
+  daft                  resize            2369.4         3.03
+  daft                  blur                 n/a             
+  daft-udf              resize            2413.6         3.07
+  daft-udf              blur              2280.8         2.35
+  opencv                resize            1792.6         1.02
+  opencv                blur              4638.0         3.90
+
