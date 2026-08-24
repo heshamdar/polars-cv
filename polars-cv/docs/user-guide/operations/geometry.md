@@ -28,9 +28,6 @@ On `.contour`: `normalize`, `to_absolute`, `translate`, `scale` (`sx`, `sy` and
 On `.point`: `normalize`, `to_absolute`, `translate`, `scale`, `rotate(angle=)`
 and `interpolate(t=)`. On `.bbox`: `match_detections(threshold=)`.
 
-`match_detections`' `strategy` is literal-only — it has one accepted value,
-`"greedy"`, so there is nothing to vary.
-
 An aggregation broadcasts, matching Polars' own semantics — `pl.col("w").max()`
 produces one value applied to every row.
 
@@ -117,6 +114,11 @@ df.with_columns(
     hull=pl.col("contour").contour.convex_hull(),
 )
 ```
+
+`scale` takes `origin=` — `"origin"` (the default), `"centroid"` or
+`"bbox_center"`. `Pipeline.scale_contour` takes the same parameter but defaults
+to `"centroid"`, which is what each surface has always done; pass `origin`
+explicitly if the two must agree.
 
 ### Rasterization
 

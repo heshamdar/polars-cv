@@ -265,8 +265,8 @@ delegation), or pass `gcs_bearer_token` to supply one yourself.
 option works for **Azure** Blob Storage (e.g.
 `az account get-access-token --resource https://storage.azure.com/ --query accessToken -o tsv`).
 It does **not** apply to S3, which authenticates with SigV4 rather than a bearer
-token — supplying it with an `s3://` source raises; use the `aws_*` fields or
-`storage_options` for AWS credentials instead.
+token — supplying it, or `gcs_bearer_token`, with an `s3://` source raises; use
+the `aws_*` fields or `storage_options` for AWS credentials instead.
 
 ## Reading Bytes Without Decoding
 

@@ -71,6 +71,10 @@ table = matcher.match(data, pred_col="heatmap", gt_col="gt_mask")
 result = froc_curve(table)
 ```
 
+Both columns go through `source("auto")`, so a mask may be a nested
+`List`/`Array` of numbers or booleans, encoded image bytes (PNG/JPEG or a VIEW
+blob), or a `String` column of paths to read.
+
 ### BBoxMatcher
 
 For bounding-box detection inputs:

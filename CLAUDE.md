@@ -99,8 +99,9 @@ mechanisms and the guard that enforces each one.
 - The install is editable: Python edits take effect immediately, the compiled
   `.so` does not. After touching Rust, re-run `maturin develop` or you are
   testing old Rust against new Python — plugin tests self-skip rather than
-  fail, so the window is silent. `polars_cv.build_info()` reports the three
-  versions that must agree. Build **debug** (`maturin develop`, no `--release`):
+  fail, so the window is silent. `polars_cv.build_info()` reports the versions
+  that must agree and the source hash that detects a stale `.so` within a
+  release cycle. Build **debug** (`maturin develop`, no `--release`):
   it is what CI and `verify.sh` use, the whole suite passes against it, and
   `--release` costs several minutes re-optimising the polars stack for nothing
   outside the benchmarks.
@@ -179,8 +180,9 @@ So Python edits take effect immediately, but **the compiled extension does not**
 after pulling commits that touch Rust, the `.so` stays at its build-time version
 until you re-run `maturin develop`, and you are testing old Rust against new
 Python. `polars_cv.build_info()` reports the three versions that must agree
-(`__version__`, the compiled plugin, the installed distribution), and
-`tests/test_version_consistency.py` fails when they do not.
+(`__version__`, the compiled plugin, the installed distribution) plus the Rust
+source hash the extension was built from against the working tree's, and
+`tests/test_version_consistency.py` fails when either disagrees.
 
 ### Test
 
