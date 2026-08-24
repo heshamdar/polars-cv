@@ -528,7 +528,7 @@ impl ImageAdapter {
                 // tiff crate has no GrayA encoder; expand to RGBA for encoding
                 let src = contiguous.as_slice::<u8>();
                 let mut rgba = Vec::with_capacity(src.len() * 2);
-                for pixel in src.chunks_exact(2) {
+                for pixel in src.as_chunks::<2>().0 {
                     rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
                 }
                 encoder
@@ -554,7 +554,7 @@ impl ImageAdapter {
                 // tiff crate has no GrayA encoder; expand to RGBA for encoding
                 let src = contiguous.as_slice::<u16>();
                 let mut rgba = Vec::with_capacity(src.len() * 2);
-                for pixel in src.chunks_exact(2) {
+                for pixel in src.as_chunks::<2>().0 {
                     rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
                 }
                 encoder
