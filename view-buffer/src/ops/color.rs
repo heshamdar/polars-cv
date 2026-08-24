@@ -348,7 +348,7 @@ fn from_rgb_f32(rgb: &ViewBuffer, to: ColorSpace) -> ViewBuffer {
             let (h, w) = (shape[0], shape[1]);
             let src = rgb.as_slice::<f32>();
             let mut out = Vec::with_capacity(h * w);
-            for pix in src.chunks_exact(3) {
+            for pix in src.as_chunks::<3>().0 {
                 out.push(0.299 * pix[0] + 0.587 * pix[1] + 0.114 * pix[2]);
             }
             ViewBuffer::from_vec_with_shape(out, vec![h, w, 1])
@@ -369,7 +369,7 @@ fn rgb_to_gray(buf: &ViewBuffer) -> ViewBuffer {
         DType::U8 => {
             let src = contig.as_slice::<u8>();
             let mut out = Vec::with_capacity(h * w);
-            for pix in src.chunks_exact(3) {
+            for pix in src.as_chunks::<3>().0 {
                 let r = pix[0] as u32;
                 let g = pix[1] as u32;
                 let b = pix[2] as u32;
@@ -381,7 +381,7 @@ fn rgb_to_gray(buf: &ViewBuffer) -> ViewBuffer {
             let f32_buf = contig.cast(DType::F32);
             let src = f32_buf.as_slice::<f32>();
             let mut out = Vec::with_capacity(h * w);
-            for pix in src.chunks_exact(3) {
+            for pix in src.as_chunks::<3>().0 {
                 out.push(0.299 * pix[0] + 0.587 * pix[1] + 0.114 * pix[2]);
             }
             let gray = ViewBuffer::from_vec_with_shape(out, vec![h, w, 1]);

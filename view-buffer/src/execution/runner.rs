@@ -1012,7 +1012,7 @@ fn grayscale_u8(buf: ViewBuffer) -> ViewBuffer {
         let data = unsafe { std::slice::from_raw_parts(buf.as_ptr::<u8>(), h * w * 2) };
         let mut gray_data: Vec<u8> = Vec::with_capacity(h * w);
 
-        for pixel in data.chunks_exact(2) {
+        for pixel in data.as_chunks::<2>().0 {
             gray_data.push(pixel[0]);
         }
 
