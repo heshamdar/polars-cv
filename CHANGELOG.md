@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-08-24
+
 ### Fixed
 
 - **`ContourMatcher` could not read an image-bytes mask column.**
@@ -2188,6 +2190,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.21.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.21.0
 [0.20.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.20.0
 [0.19.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.19.0
 [0.18.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.18.0
