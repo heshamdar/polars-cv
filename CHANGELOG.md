@@ -245,6 +245,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   deleted — a per-call knob beside a global budget would be a second authority
   for one number.
 
+- Six `chunks_exact(N)` loops became `as_chunks::<N>()`, which
+  `clippy::chunks_exact_to_as_chunks` requires on stable 1.98. No behaviour
+  change; `slice::as_chunks` is stable well below the crate's 1.96 floor.
+
 ### Removed
 
 - **`DomainOp` (view-buffer).** A public trait with zero implementors, a doc
