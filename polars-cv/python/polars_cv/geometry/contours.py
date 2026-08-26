@@ -329,39 +329,6 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         return self._plugin("contour_pairwise_iou", args=[other])
 
-    def match_detections(
-        self,
-        other: pl.Expr,
-        *,
-        threshold: float | pl.Expr = 0.5,
-        scores: pl.Expr | None = None,
-    ) -> pl.Expr:
-        """
-        Match prediction contour set against ground truth contour set.
-
-        Args:
-            other: Ground-truth contour-set expression (`List[Contour]`).
-            threshold: IoU threshold for positive matches. Accepts a Polars
-                expression for a per-row threshold.
-            scores: Optional per-prediction confidence score list used for ordering.
-
-        Returns:
-            A struct matching ``polars_cv.geometry.MATCH_RESULT_SCHEMA`` —
-            per-prediction match indices, IoUs, and TP/FP/FN counts.
-
-        Note:
-            ``n_fn`` (and the other count fields) are computed **per row**
-            (typically one image). Summing ``n_fn`` over a frame that omits
-            images with ground truth and no detections undercounts false
-            negatives. Keep one row per image in the evaluation population
-            (e.g. a full outer join against the image list) before aggregating.
-        """
-        binder = _ArgBinder()
-        binder.add_data("other", other)
-        binder.add_data("scores", scores)
-        binder.add_param("threshold", threshold)
-        return binder.call(self, "contour_match_detections")
-
     def label_reduce(
         self,
         image: pl.Expr | None = None,

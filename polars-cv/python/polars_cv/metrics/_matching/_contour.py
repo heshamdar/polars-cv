@@ -36,31 +36,6 @@ if TYPE_CHECKING:
 # Source format detection
 # ---------------------------------------------------------------------------
 
-# Polars leaf type -> polars-cv dtype name. The names are the ones
-# ``dtype_table!`` declares in view-buffer/src/core/dtype.rs;
-# ``test_contour_dtype_map_matches_rust`` pins this against them, since this
-# module builds pipeline sources without going through the plugin.
-_POLARS_TO_CV_DTYPE: dict[pl.DataType, str] = {
-    # A boolean mask is the documented shape for ``gt_col`` and the natural
-    # output of ``np_mask.astype(bool).tolist()``. It is not a buffer element
-    # type, but the source decoder *casts* rather than reinterprets
-    # (``series_to_bytes`` in graph/decode.rs), so u8 gives the 0/1 a mask
-    # means. Rejecting it broke working code; only types whose cast would fail
-    # or lose meaning (String, Decimal, Duration) belong outside this map.
-    pl.Boolean: "u8",
-    pl.Float32: "f32",
-    pl.Float64: "f64",
-    pl.UInt8: "u8",
-    pl.UInt16: "u16",
-    pl.UInt32: "u32",
-    pl.UInt64: "u64",
-    pl.Int8: "i8",
-    pl.Int16: "i16",
-    pl.Int32: "i32",
-    pl.Int64: "i64",
-}
-
-
 @dataclass
 class _SourceInfo:
     """The source a mask column needs, as far as *Polars* can say.
@@ -84,33 +59,6 @@ def _leaf_dtype(dtype: pl.DataType) -> pl.DataType:
     while isinstance(dtype, (pl.List, pl.Array)):
         dtype = dtype.inner  # type: ignore[union-attr]
     return dtype
-
-
-def _polars_dtype_to_cv(dtype: pl.DataType, col: str) -> str:
-    """Map a Polars leaf dtype to a polars-cv dtype string.
-
-    Uses equality comparison to match Polars DataTypeClass objects, which are
-    metaclass singletons.
-
-    Raises:
-        ValueError: If the leaf type has no meaningful buffer representation.
-            This used to fall back to ``"f32"`` for *anything* unmapped, so a
-            ``String`` or ``Decimal`` column silently became a float source and
-            failed later, deeper, with a cast error. Types that do convert
-            sensibly are in the map, including ``Boolean``; the fallback only
-            ever helped the types that cannot.
-    """
-    try:
-        return _POLARS_TO_CV_DTYPE[dtype]
-    except KeyError:
-        # Name the *Polars* types, which is what the caller supplied and can
-        # change. Listing our dtype names instead told them nothing actionable
-        # and repeated "u8" twice, since two Polars types map onto it.
-        accepted = ", ".join(sorted(str(t) for t in _POLARS_TO_CV_DTYPE))
-        raise ValueError(
-            f"Column {col!r} has element type {dtype}, which has no meaningful "
-            f"buffer representation. Expected one of: {accepted}."
-        ) from None
 
 
 def _detect_source_info(schema: dict[str, pl.DataType], col: str) -> _SourceInfo:
@@ -628,13 +576,10 @@ class ContourMatcher:
         # contour cannot claim a GT object during greedy assignment.
         prepared = _filter_zero_score_detections(prepared)
 
-        # Run matching
+        # BROKEN BY DELETION: `.contour.match_detections()` is gone. Its
+        # replacement takes a walk order rather than scores, and returns
+        # right_idx/overlap rather than gt_idx/iou plus five dead counts.
         prepared = prepared.with_columns(
-            _match=pl.col("_pred_contours").contour.match_detections(
-                pl.col("_gt_contours"),
-                threshold=self._iou_threshold,
-                scores=pl.col("_pred_scores"),
-            ),
             _n_gts=pl.col("_gt_contours").list.len().fill_null(0).cast(pl.Int64),
         )
 

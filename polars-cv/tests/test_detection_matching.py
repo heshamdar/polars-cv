@@ -10,7 +10,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
-from polars_cv.geometry import CONTOUR_SET_SCHEMA, MATCH_RESULT_SCHEMA
+from polars_cv.geometry import CONTOUR_SET_SCHEMA
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -77,79 +77,6 @@ class TestPairwiseIoUPrimitive:
             iou_matrix=pl.col("preds").contour.pairwise_iou(pl.col("gts"))
         )
         assert len(out["iou_matrix"][0]) == 0
-
-
-@plugin_required
-class TestMatchDetectionsPrimitive:
-    """Tests for `contour.match_detections`."""
-
-    def test_match_detections_count_invariants(self) -> None:
-        """The output counts satisfy TP/FP/FN invariants."""
-        df = pl.DataFrame(
-            {
-                "preds": [[_square(0.0, 0.0, 10.0), _square(20.0, 20.0, 10.0)]],
-                "gts": [[_square(0.0, 0.0, 10.0)]],
-                "scores": [[0.9, 0.1]],
-            },
-            schema={
-                "preds": CONTOUR_SET_SCHEMA,
-                "gts": CONTOUR_SET_SCHEMA,
-                "scores": pl.List(pl.Float64),
-            },
-        )
-
-        out = df.with_columns(
-            match=pl.col("preds").contour.match_detections(
-                pl.col("gts"), threshold=0.5, scores=pl.col("scores")
-            )
-        )
-        assert out["match"].dtype == MATCH_RESULT_SCHEMA
-        match = out["match"][0]
-
-        assert match["n_preds"] == 2
-        assert match["n_gts"] == 1
-        assert match["n_tp"] == 1
-        assert match["n_fp"] == 1
-        assert match["n_fn"] == 0
-        assert match["n_tp"] + match["n_fp"] == match["n_preds"]
-        assert match["n_tp"] + match["n_fn"] == match["n_gts"]
-
-    def test_match_detections_empty_predictions_all_fn(self) -> None:
-        """Empty predictions produce only false negatives."""
-        df = pl.DataFrame(
-            {"preds": [[]], "gts": [[_square(0.0, 0.0, 10.0)]]},
-            schema={"preds": CONTOUR_SET_SCHEMA, "gts": CONTOUR_SET_SCHEMA},
-        )
-        out = df.with_columns(
-            match=pl.col("preds").contour.match_detections(pl.col("gts"), threshold=0.5)
-        )
-        match = out["match"][0]
-        assert match["n_preds"] == 0
-        assert match["n_gts"] == 1
-        assert match["n_tp"] == 0
-        assert match["n_fp"] == 0
-        assert match["n_fn"] == 1
-
-    def test_match_detections_score_length_mismatch_errors(self) -> None:
-        """Mismatched score length raises a descriptive compute error."""
-        df = pl.DataFrame(
-            {
-                "preds": [[_square(0.0, 0.0, 10.0), _square(10.0, 10.0, 10.0)]],
-                "gts": [[_square(0.0, 0.0, 10.0)]],
-                "scores": [[0.8]],
-            },
-            schema={
-                "preds": CONTOUR_SET_SCHEMA,
-                "gts": CONTOUR_SET_SCHEMA,
-                "scores": pl.List(pl.Float64),
-            },
-        )
-        with pytest.raises(Exception, match="scores length"):
-            df.with_columns(
-                match=pl.col("preds").contour.match_detections(
-                    pl.col("gts"), scores=pl.col("scores")
-                )
-            ).collect(engine="streaming")
 
 
 @plugin_required
