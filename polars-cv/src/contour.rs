@@ -10,7 +10,6 @@ use crate::geom_schema::{point_anyvalue, point_struct_dtype};
 use polars_arrow::array::{ListArray, PrimitiveArray, StructArray as ArrowStructArray};
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
-use std::cmp::Ordering;
 
 // Import geometry operations from view-buffer
 use view_buffer::geometry::{
@@ -27,7 +26,7 @@ use view_buffer::{naming, ViewBuffer};
 // `geom_arity` being declared before `contour` in lib.rs.
 use crate::contour_accessor;
 use crate::geom_arity::{elementwise_field, pack_row, row_contours, Arity};
-use crate::geom_params::{check_range, GeomParams, InputSlots};
+use crate::geom_params::{GeomParams, InputSlots};
 use crate::params::NullParamPolicy;
 
 // ============================================================================
@@ -339,24 +338,6 @@ pub(crate) fn parse_contour_list(value: &AnyValue) -> PolarsResult<Vec<Contour>>
 }
 
 /// Parse optional score list aligned with contour list.
-fn parse_score_list(value: &AnyValue) -> PolarsResult<Vec<f64>> {
-    match value {
-        AnyValue::List(series) => {
-            let mut scores = Vec::with_capacity(series.len());
-            for i in 0..series.len() {
-                let item = series.get(i)?;
-                let score = item.try_extract::<f64>().map_err(|_| {
-                    polars_err!(ComputeError: "scores must contain numeric values, found {:?}", item)
-                })?;
-                scores.push(score);
-            }
-            Ok(scores)
-        }
-        AnyValue::Null => Ok(Vec::new()),
-        _ => Err(polars_err!(ComputeError: "Expected List[Float64] for scores, got {:?}", value)),
-    }
-}
-
 /// Parse holes from a Series where each element is a ring list of points.
 fn extract_holes_from_series(series: &Series) -> PolarsResult<Vec<Vec<Point>>> {
     let mut holes: Vec<Vec<Point>> = Vec::with_capacity(series.len());
@@ -674,15 +655,6 @@ fn float_list_anyvalue(values: &[f64], name: PlSmallStr) -> AnyValue<'static> {
     AnyValue::List(Series::new(name, values.to_vec()))
 }
 
-fn optional_u32_list_anyvalue(values: &[Option<u32>], name: PlSmallStr) -> AnyValue<'static> {
-    let series = UInt32Chunked::from_iter_options(name, values.iter().copied()).into_series();
-    AnyValue::List(series)
-}
-
-fn u32_list_anyvalue(values: &[u32], name: PlSmallStr) -> AnyValue<'static> {
-    AnyValue::List(Series::new(name, values.to_vec()))
-}
-
 fn matrix_anyvalue(matrix: &[Vec<f64>]) -> PolarsResult<AnyValue<'static>> {
     let rows: Vec<AnyValue> = matrix
         .iter()
@@ -717,33 +689,6 @@ fn pairwise_iou_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     ))
 }
 
-fn match_detections_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
-    let name = input_fields
-        .first()
-        .map(|f| f.name().clone())
-        .unwrap_or_else(|| PlSmallStr::from_static("match"));
-    let fields = vec![
-        Field::new(
-            PlSmallStr::from_static("pred_idx"),
-            DataType::List(Box::new(DataType::UInt32)),
-        ),
-        Field::new(
-            PlSmallStr::from_static("gt_idx"),
-            DataType::List(Box::new(DataType::UInt32)),
-        ),
-        Field::new(
-            PlSmallStr::from_static("iou"),
-            DataType::List(Box::new(DataType::Float64)),
-        ),
-        Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
-    ];
-    Ok(Field::new(name, DataType::Struct(fields)))
-}
-
 fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     let name = input_fields
         .first()
@@ -753,17 +698,6 @@ fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
         name,
         DataType::List(Box::new(DataType::Float64)),
     ))
-}
-
-fn score_order(scores: &[f64]) -> Vec<usize> {
-    let mut indices: Vec<usize> = (0..scores.len()).collect();
-    indices.sort_by(|a, b| {
-        scores[*b]
-            .partial_cmp(&scores[*a])
-            .unwrap_or(Ordering::Equal)
-            .then(a.cmp(b))
-    });
-    indices
 }
 
 // ============================================================================
@@ -969,129 +903,6 @@ fn contour_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     build_pairwise_matrix_series(pred_series.name().clone(), rows)
-}
-
-/// Match detection contour sets with greedy one-to-one IoU assignment.
-#[polars_expr(output_type_func=match_detections_output_type)]
-fn contour_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
-    let pred_series = &inputs[0];
-    // Both operands are looked up by name. `scores` is optional, so its
-    // position is not fixed once per-row parameters can occupy input slots
-    // either; `other` follows the same rule so no read here is positional.
-    let gt_series = params
-        .slot("other")
-        .map(|idx| &inputs[idx])
-        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'other'"))?;
-    let score_series = params.slot("scores").map(|idx| &inputs[idx]);
-    let len = pred_series.len();
-
-    let match_dtype = DataType::Struct(vec![
-        Field::new(
-            PlSmallStr::from_static("pred_idx"),
-            DataType::List(Box::new(DataType::UInt32)),
-        ),
-        Field::new(
-            PlSmallStr::from_static("gt_idx"),
-            DataType::List(Box::new(DataType::UInt32)),
-        ),
-        Field::new(
-            PlSmallStr::from_static("iou"),
-            DataType::List(Box::new(DataType::Float64)),
-        ),
-        Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
-    ]);
-
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
-    for i in 0..len {
-        let preds_value = pred_series.get(i)?;
-        let gts_value = gt_series.get(i)?;
-        if preds_value.is_null() || gts_value.is_null() {
-            rows.push(AnyValue::Null);
-            continue;
-        }
-
-        // Per-row parameters cannot be range-checked once per batch, so the
-        // check moves into the loop and names the offending row. A null
-        // `threshold` under `on_null="null"` nulls this row instead.
-        let Some(threshold) = params.row(|| {
-            let threshold = params.f64("threshold", kwargs.threshold, 0.5, i)?;
-            check_range("threshold", threshold, 0.0, 1.0, i)?;
-            Ok(threshold)
-        })?
-        else {
-            rows.push(AnyValue::Null);
-            continue;
-        };
-
-        let preds = parse_contour_set(&preds_value)?;
-        let gts = parse_contour_set(&gts_value)?;
-
-        let pred_order = if let Some(scores_col) = score_series {
-            let score_value = scores_col.get(i)?;
-            if score_value.is_null() {
-                None
-            } else {
-                let scores = parse_score_list(&score_value)?;
-                if scores.len() != preds.len() {
-                    return Err(polars_err!(
-                        ComputeError:
-                        "scores length ({}) must match prediction count ({}) in row {}",
-                        scores.len(),
-                        preds.len(),
-                        i
-                    ));
-                }
-                Some(score_order(&scores))
-            }
-        } else {
-            None
-        };
-
-        let result = pairwise::match_detections(&preds, &gts, threshold, pred_order.as_deref());
-
-        let pred_idx_u32: Vec<u32> = result.pred_idx.iter().map(|v| *v as u32).collect();
-        let gt_idx_u32: Vec<Option<u32>> =
-            result.gt_idx.iter().map(|v| v.map(|x| x as u32)).collect();
-
-        rows.push(AnyValue::StructOwned(Box::new((
-            vec![
-                u32_list_anyvalue(&pred_idx_u32, PlSmallStr::from_static("pred_idx")),
-                optional_u32_list_anyvalue(&gt_idx_u32, PlSmallStr::from_static("gt_idx")),
-                float_list_anyvalue(&result.iou, PlSmallStr::from_static("iou")),
-                AnyValue::UInt32(result.n_preds as u32),
-                AnyValue::UInt32(result.n_gts as u32),
-                AnyValue::UInt32(result.n_tp as u32),
-                AnyValue::UInt32(result.n_fp as u32),
-                AnyValue::UInt32(result.n_fn as u32),
-            ],
-            vec![
-                Field::new(
-                    PlSmallStr::from_static("pred_idx"),
-                    DataType::List(Box::new(DataType::UInt32)),
-                ),
-                Field::new(
-                    PlSmallStr::from_static("gt_idx"),
-                    DataType::List(Box::new(DataType::UInt32)),
-                ),
-                Field::new(
-                    PlSmallStr::from_static("iou"),
-                    DataType::List(Box::new(DataType::Float64)),
-                ),
-                Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
-                Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
-                Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
-                Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
-                Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
-            ],
-        ))));
-    }
-
-    Series::from_any_values_and_dtype(pred_series.name().clone(), &rows, &match_dtype, true)
 }
 
 /// Score each contour against a heatmap using a configurable reduction.
@@ -1397,130 +1208,6 @@ fn bbox_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     build_pairwise_matrix_series(pred_series.name().clone(), rows)
-}
-
-/// Match detection bbox sets with greedy one-to-one IoU assignment.
-#[polars_expr(output_type_func=match_detections_output_type)]
-fn bbox_match_detections(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
-    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
-    let pred_series = &inputs[0];
-    // Both operands are looked up by name. `scores` is optional, so its
-    // position is not fixed once per-row parameters can occupy input slots
-    // either; `other` follows the same rule so no read here is positional.
-    let gt_series = params
-        .slot("other")
-        .map(|idx| &inputs[idx])
-        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'other'"))?;
-    let score_series = params.slot("scores").map(|idx| &inputs[idx]);
-    let len = pred_series.len();
-
-    let match_dtype = DataType::Struct(vec![
-        Field::new(
-            PlSmallStr::from_static("pred_idx"),
-            DataType::List(Box::new(DataType::UInt32)),
-        ),
-        Field::new(
-            PlSmallStr::from_static("gt_idx"),
-            DataType::List(Box::new(DataType::UInt32)),
-        ),
-        Field::new(
-            PlSmallStr::from_static("iou"),
-            DataType::List(Box::new(DataType::Float64)),
-        ),
-        Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
-        Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
-    ]);
-
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
-    for i in 0..len {
-        let preds_value = pred_series.get(i)?;
-        let gts_value = gt_series.get(i)?;
-        if preds_value.is_null() || gts_value.is_null() {
-            rows.push(AnyValue::Null);
-            continue;
-        }
-
-        // Per-row parameters cannot be range-checked once per batch, so the
-        // check moves into the loop and names the offending row. A null
-        // `threshold` under `on_null="null"` nulls this row instead.
-        let Some(threshold) = params.row(|| {
-            let threshold = params.f64("threshold", kwargs.threshold, 0.5, i)?;
-            check_range("threshold", threshold, 0.0, 1.0, i)?;
-            Ok(threshold)
-        })?
-        else {
-            rows.push(AnyValue::Null);
-            continue;
-        };
-
-        let preds = parse_bbox_list(&preds_value)?;
-        let gts = parse_bbox_list(&gts_value)?;
-
-        let pred_order = if let Some(scores_col) = score_series {
-            let score_value = scores_col.get(i)?;
-            if score_value.is_null() {
-                None
-            } else {
-                let scores = parse_score_list(&score_value)?;
-                if scores.len() != preds.len() {
-                    return Err(polars_err!(
-                        ComputeError:
-                        "scores length ({}) must match prediction count ({}) in row {}",
-                        scores.len(),
-                        preds.len(),
-                        i
-                    ));
-                }
-                Some(score_order(&scores))
-            }
-        } else {
-            None
-        };
-
-        let result =
-            pairwise::bbox_match_detections(&preds, &gts, threshold, pred_order.as_deref());
-
-        let pred_idx_u32: Vec<u32> = result.pred_idx.iter().map(|v| *v as u32).collect();
-        let gt_idx_u32: Vec<Option<u32>> =
-            result.gt_idx.iter().map(|v| v.map(|x| x as u32)).collect();
-
-        rows.push(AnyValue::StructOwned(Box::new((
-            vec![
-                u32_list_anyvalue(&pred_idx_u32, PlSmallStr::from_static("pred_idx")),
-                optional_u32_list_anyvalue(&gt_idx_u32, PlSmallStr::from_static("gt_idx")),
-                float_list_anyvalue(&result.iou, PlSmallStr::from_static("iou")),
-                AnyValue::UInt32(result.n_preds as u32),
-                AnyValue::UInt32(result.n_gts as u32),
-                AnyValue::UInt32(result.n_tp as u32),
-                AnyValue::UInt32(result.n_fp as u32),
-                AnyValue::UInt32(result.n_fn as u32),
-            ],
-            vec![
-                Field::new(
-                    PlSmallStr::from_static("pred_idx"),
-                    DataType::List(Box::new(DataType::UInt32)),
-                ),
-                Field::new(
-                    PlSmallStr::from_static("gt_idx"),
-                    DataType::List(Box::new(DataType::UInt32)),
-                ),
-                Field::new(
-                    PlSmallStr::from_static("iou"),
-                    DataType::List(Box::new(DataType::Float64)),
-                ),
-                Field::new(PlSmallStr::from_static("n_preds"), DataType::UInt32),
-                Field::new(PlSmallStr::from_static("n_gts"), DataType::UInt32),
-                Field::new(PlSmallStr::from_static("n_tp"), DataType::UInt32),
-                Field::new(PlSmallStr::from_static("n_fp"), DataType::UInt32),
-                Field::new(PlSmallStr::from_static("n_fn"), DataType::UInt32),
-            ],
-        ))));
-    }
-
-    Series::from_any_values_and_dtype(pred_series.name().clone(), &rows, &match_dtype, true)
 }
 
 #[cfg(test)]

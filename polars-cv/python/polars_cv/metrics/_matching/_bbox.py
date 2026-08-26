@@ -117,13 +117,9 @@ class BBoxMatcher:
             ).alias(COL_WEIGHT)
         )
 
-        # Run matching via the Rust bbox_match_detections plugin
+        # BROKEN BY DELETION: `.bbox.match_detections()` is gone. Its
+        # replacement takes a walk order rather than scores.
         prepared = prepared.with_columns(
-            _match=pl.col(pred_col).bbox.match_detections(
-                pl.col(gt_col),
-                threshold=self._iou_threshold,
-                scores=pl.col(score_col),
-            ),
             _n_gts=pl.col(gt_col).list.len().fill_null(0).cast(pl.Int64),
         )
 

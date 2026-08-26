@@ -73,7 +73,7 @@ def _contour_df() -> pl.DataFrame:
                 None,
                 {"x": 2.0, "y": 2.0, "width": 5.0, "height": 5.0},
             ],
-            # pairwise_iou and match_detections operate on *sets* per row, so
+            # pairwise_iou operates on *sets* per row, so
             # they need list-valued columns rather than a single struct.
             "aset": [None, [_square(0, 0, 10), _square(4, 4, 4)], [_square(1, 1, 3)]],
             "bset": [[_square(0, 0, 8)], None, [_square(1, 1, 3), _square(5, 5, 2)]],
@@ -154,9 +154,6 @@ CONTOUR_CASES: dict[str, object] = {
     "flip": lambda: pl.col("a").contour.flip(),
     "ensure_winding": lambda: pl.col("a").contour.ensure_winding("ccw"),
     "pairwise_iou": lambda: pl.col("aset").contour.pairwise_iou(pl.col("bset")),
-    "match_detections": lambda: pl.col("aset").contour.match_detections(
-        pl.col("bset"), threshold=0.5
-    ),
 }
 CONTOUR_EXEMPT = {
     "on_null": "a policy setter, not an expression",
@@ -189,9 +186,6 @@ POINT_EXEMPT = {"on_null": "a policy setter, not an expression"}
 
 BBOX_CASES: dict[str, object] = {
     "pairwise_iou": lambda: pl.col("baset").bbox.pairwise_iou(pl.col("bbset")),
-    "match_detections": lambda: pl.col("baset").bbox.match_detections(
-        pl.col("bbset"), threshold=0.5
-    ),
 }
 BBOX_EXEMPT = {"on_null": "a policy setter, not an expression"}
 
@@ -251,7 +245,6 @@ SET_ARITY_EXEMPT = {
     # repack — a lone contour read as a set of one — is covered by
     # `test_set_level_accessors_take_a_lone_contour`.
     "pairwise_iou": "already takes sets on both sides",
-    "match_detections": "already takes sets on both sides",
     # Two contour operands, so the shared frame would make *both* sides sets,
     # which is refused by construction. Swept as set x single below instead.
     "iou": "two contour operands; swept as set x single below",
@@ -351,7 +344,7 @@ def test_broadcast_refuses_a_set_on_both_sides(name: str) -> None:
 
 @plugin_required
 def test_set_level_accessors_take_a_lone_contour() -> None:
-    """`pairwise_iou`/`match_detections` read a single contour as a set of one.
+    """`pairwise_iou` reads a single contour as a set of one.
 
     The mirror of every other accessor taking a set: one repack, used in both
     directions, so a column does not have to be reshaped to reach an accessor.
@@ -360,7 +353,6 @@ def test_set_level_accessors_take_a_lone_contour() -> None:
     for expr in (
         pl.col("a").contour.pairwise_iou(pl.col("bset")),
         pl.col("aset").contour.pairwise_iou(pl.col("b")),
-        pl.col("a").contour.match_detections(pl.col("bset"), threshold=0.5),
     ):
         assert_plan_equals_exec(df, expr)
 

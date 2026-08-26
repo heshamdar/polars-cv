@@ -37,38 +37,3 @@ class BBoxNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         return self._plugin("bbox_pairwise_iou", args=[other])
 
-    def match_detections(
-        self,
-        other: pl.Expr,
-        *,
-        threshold: float | pl.Expr = 0.5,
-        scores: pl.Expr | None = None,
-    ) -> pl.Expr:
-        """Greedy one-to-one detection matching via IoU on bounding boxes.
-
-        Internally converts bboxes to rectangular contours and delegates to the
-        existing contour matching infrastructure.
-
-        Args:
-            other: Ground-truth bboxes (``List[BBOX_SCHEMA]``).
-            threshold: IoU threshold for a match to be considered a TP.
-                Accepts a Polars expression for a per-row threshold.
-            scores: Optional per-prediction confidence scores
-                (``List[Float64]``). When provided, predictions are processed
-                in descending score order.
-
-        Returns:
-            A struct matching ``polars_cv.geometry.MATCH_RESULT_SCHEMA``.
-
-        Note:
-            ``n_fn`` (and the other count fields) are computed **per row**
-            (typically one image). Summing ``n_fn`` over a frame that omits
-            images with ground truth and no detections undercounts false
-            negatives. Keep one row per image in the evaluation population
-            before aggregating.
-        """
-        binder = _ArgBinder()
-        binder.add_data("other", other)
-        binder.add_data("scores", scores)
-        binder.add_param("threshold", threshold)
-        return binder.call(self, "bbox_match_detections")

@@ -15,32 +15,11 @@ use geo::{Area, BooleanOps, BoundingRect, HausdorffDistance, Intersects, MultiPo
 /// Areas below this are treated as degenerate.
 const EPSILON: f64 = 1e-10;
 
-/// Pairwise matching result for a set of predictions and ground truths.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DetectionMatchResult {
-    /// Prediction indices in processing order.
-    pub pred_idx: Vec<usize>,
-    /// Matched GT index for each prediction, or None when unmatched.
-    pub gt_idx: Vec<Option<usize>>,
-    /// IoU value associated with each prediction match decision.
-    pub iou: Vec<f64>,
-    /// Total number of predictions.
-    pub n_preds: usize,
-    /// Total number of ground truths.
-    pub n_gts: usize,
-    /// Number of true positives.
-    pub n_tp: usize,
-    /// Number of false positives.
-    pub n_fp: usize,
-    /// Number of false negatives.
-    pub n_fn: usize,
-}
-
 /// Areas of both regions and of their exact intersection.
 ///
 /// Returns `None` when either region is degenerate or the two cannot possibly
 /// overlap, letting the callers short-circuit to zero. The bounding-box test is
-/// what keeps `match_detections` cheap: most pairs are disjoint and never reach
+/// what keeps [`iou_matrix`] cheap: most pairs are disjoint and never reach
 /// the boolean op.
 ///
 /// Both inputs must come from [`Contour::to_geo_region`], whose output is already
@@ -116,96 +95,7 @@ pub fn iou_matrix(a: &[Contour], b: &[Contour]) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// Greedy one-to-one detection matching using IoU thresholding.
-///
-/// Predictions are processed in `pred_order` if provided, otherwise in natural
-/// order. For each prediction, the unmatched GT with highest IoU is selected.
-/// Ties are broken by choosing the smallest GT index for determinism.
-pub fn match_detections(
-    preds: &[Contour],
-    gts: &[Contour],
-    threshold: f64,
-    pred_order: Option<&[usize]>,
-) -> DetectionMatchResult {
-    match_from_matrix(
-        iou_matrix(preds, gts),
-        preds.len(),
-        gts.len(),
-        threshold,
-        pred_order,
-    )
-}
 
-/// The greedy matcher itself, over a precomputed IoU matrix.
-///
-/// Shared by the contour and bounding-box entry points so the matching policy
-/// lives in exactly one place.
-fn match_from_matrix(
-    matrix: Vec<Vec<f64>>,
-    n_preds: usize,
-    n_gts: usize,
-    threshold: f64,
-    pred_order: Option<&[usize]>,
-) -> DetectionMatchResult {
-    let order: Vec<usize> = match pred_order {
-        Some(indices) => indices.to_vec(),
-        None => (0..n_preds).collect(),
-    };
-
-    let mut gt_taken = vec![false; n_gts];
-    let mut gt_by_pred: Vec<Option<usize>> = vec![None; n_preds];
-    let mut iou_by_pred: Vec<f64> = vec![0.0; n_preds];
-
-    for pred_idx in order {
-        if pred_idx >= n_preds {
-            continue;
-        }
-
-        let mut best_gt: Option<usize> = None;
-        let mut best_iou = -1.0_f64;
-        for (gt_idx, is_taken) in gt_taken.iter().enumerate().take(n_gts) {
-            if *is_taken {
-                continue;
-            }
-            let cand_iou = matrix[pred_idx][gt_idx];
-            if cand_iou > best_iou {
-                best_iou = cand_iou;
-                best_gt = Some(gt_idx);
-            } else if (cand_iou - best_iou).abs() < 1e-12
-                && matches!(best_gt, Some(current_best) if gt_idx < current_best)
-            {
-                best_gt = Some(gt_idx);
-            }
-        }
-
-        match best_gt {
-            Some(gt_idx) if best_iou >= threshold => {
-                gt_taken[gt_idx] = true;
-                gt_by_pred[pred_idx] = Some(gt_idx);
-                iou_by_pred[pred_idx] = best_iou;
-            }
-            _ => {
-                gt_by_pred[pred_idx] = None;
-                iou_by_pred[pred_idx] = 0.0;
-            }
-        }
-    }
-
-    let n_tp = gt_by_pred.iter().filter(|v| v.is_some()).count();
-    let n_fp = n_preds.saturating_sub(n_tp);
-    let n_fn = n_gts.saturating_sub(n_tp);
-
-    DetectionMatchResult {
-        pred_idx: (0..n_preds).collect(),
-        gt_idx: gt_by_pred,
-        iou: iou_by_pred,
-        n_preds,
-        n_gts,
-        n_tp,
-        n_fp,
-        n_fn,
-    }
-}
 
 /// IoU between two axis-aligned bounding boxes.
 ///
@@ -234,21 +124,6 @@ pub fn bbox_iou_matrix(a: &[BoundingBox], b: &[BoundingBox]) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// Greedy one-to-one detection matching on bounding boxes.
-pub fn bbox_match_detections(
-    preds: &[BoundingBox],
-    gts: &[BoundingBox],
-    threshold: f64,
-    pred_order: Option<&[usize]>,
-) -> DetectionMatchResult {
-    match_from_matrix(
-        bbox_iou_matrix(preds, gts),
-        preds.len(),
-        gts.len(),
-        threshold,
-        pred_order,
-    )
-}
 
 /// Computes the Dice coefficient between two contours.
 ///
@@ -591,18 +466,6 @@ mod tests {
             for (j, cb) in b.iter().enumerate() {
                 assert!((matrix[i][j] - iou(ca, cb)).abs() < 1e-12);
             }
-        }
-    }
-
-    #[test]
-    fn test_match_detections_matches_concave_shapes_to_themselves() {
-        let shapes = vec![l_shape(0.0, 0.0), u_shape(), l_shape(500.0, 500.0)];
-        let result = match_detections(&shapes, &shapes, 0.5, None);
-        assert_eq!(result.n_tp, 3);
-        assert_eq!(result.n_fp, 0);
-        assert_eq!(result.n_fn, 0);
-        for (i, gt) in result.gt_idx.iter().enumerate() {
-            assert_eq!(*gt, Some(i));
         }
     }
 

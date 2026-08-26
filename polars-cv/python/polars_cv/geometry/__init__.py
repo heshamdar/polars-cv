@@ -39,7 +39,6 @@ from .schemas import (
     BBOX_SCHEMA,
     CONTOUR_SCHEMA,
     CONTOUR_SET_SCHEMA,
-    MATCH_RESULT_SCHEMA,
     POINT_SCHEMA,
     POINT_SET_SCHEMA,
     RING_SCHEMA,
@@ -53,6 +52,5 @@ __all__ = [
     "RING_SCHEMA",
     "CONTOUR_SCHEMA",
     "CONTOUR_SET_SCHEMA",
-    "MATCH_RESULT_SCHEMA",
     "BBOX_SCHEMA",
 ]
