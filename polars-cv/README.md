@@ -135,7 +135,7 @@ fill it in the expression: `pl.col("target_h").fill_null(224)`.
 - **Layout**: `transpose`, `reshape`.
 - **Geometry**: `extract_contours`, `rasterize`, `area`, `perimeter`, `centroid`, `bounding_box`.
 - **Points**: `normalize`, `translate`, `scale`, `rotate`, `distance`, `manhattan_distance`, `distance_to_contour`, `signed_distance_to_contour`, `nearest_point_on_contour`, `angle_to`, `midpoint`, `interpolate`, `within_bbox`.
-- **Bounding Boxes**: `pairwise_iou`, `match_detections` (via `.bbox` namespace).
+- **Bounding Boxes**: `pairwise_iou`, `correspond` (via `.bbox` namespace).
 - **Analysis**: `histogram`, `perceptual_hash`, `extract_shape`, `label_reduce`.
 - **Reductions**: `reduce_sum`, `reduce_mean`, `reduce_std`, `reduce_max`, `reduce_min`, `reduce_argmax`, `reduce_argmin`, `reduce_percentile`, `reduce_popcount`.
 - **Metadata**: `.cv.width()`, `.cv.height()`, `.cv.channels()`, `.cv.image_dtype()`.

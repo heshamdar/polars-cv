@@ -7,6 +7,92 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **Detection matching left the CV layers; contour correspondence replaced it.**
+  `view-buffer` — the tensor engine — implemented greedy one-to-one assignment
+  *walked in descending confidence order*, which is the COCO/PASCAL evaluation
+  protocol, and returned a struct whose fields were true/false-positive counts.
+  The plugin's `score_order` computed that confidence ranking. Between them the
+  two CV layers owned a policy that belongs to whoever knows what the contours
+  mean.
+
+  `.contour.match_detections()` / `.bbox.match_detections()` are replaced by
+  `.contour.correspond()` / `.bbox.correspond()`, which run the same rule over
+  the same overlap matrix but take a visit **order** — a permutation — instead
+  of scores. Deriving that order from confidence is now `metrics`' business.
+  The engine's half is `pairwise::greedy_assign`, an assignment over a matrix
+  that knows nothing about detections.
+
+  **The rule itself did not change.** Every detection row, average precision,
+  PR AUC (both methods), LROC AUC and Mann-Whitney AUC came back bit-identical
+  across both matcher paths — 208 of 213 captured values exactly equal. The
+  other five are `fp_per_image` and the FROC trapezoidal AUC derived from it,
+  differing by ≤3e-16; that field is *already* nondeterministic run to run
+  (its weights arrive through a join, and joins do not preserve row order), a
+  pre-existing property confirmed by running unmodified code five times and
+  getting two different values.
+
+- **`correspond` rejects a malformed visit order** — wrong length, out of
+  range, or repeated — naming the row. The rule it replaced took scores and
+  silently skipped any index it could not use, so a short or duplicated order
+  quietly left predictions unvisited.
+
+### Removed
+
+- **`n_tp`, `n_fp`, `n_fn` and `pred_idx` are gone from the match result.**
+  All four were computed per row, published in `MATCH_RESULT_SCHEMA`, and
+  documented on two accessors — and read by nothing in the repository. The
+  accessor docstrings argued against reading them: per-row counts undercount
+  false negatives over any population containing ground-truth-bearing images
+  with no detections, which is exactly the population a detection metric
+  evaluates. `pred_idx` was worse than unread, it was `0..n` — a second copy of
+  the position its own list was already indexed by, and removing it collapsed
+  the metrics explode from a join plus two explodes into one explode.
+
+  `MATCH_RESULT_SCHEMA` is replaced by `CORRESPONDENCE_SCHEMA`
+  (`right_idx`, `overlap`), and unlike its predecessor it is exported at the
+  package top level — being geometry-only is why the metrics matchers read the
+  old struct's fields by string literal rather than from its declaration.
+
+- **The tie-break tolerance was unreachable, and is gone.** Both the engine and
+  its Python mirror carried an arm treating overlaps within 1e-12 as tied, so
+  the smaller index would win. Under an ascending scan the incumbent's index is
+  always the smaller one, so the arm's guard was never true — in the deleted
+  code as well as the new. The documented rule is now what the code does:
+  exact ties go to the smallest index, and an overlap larger by one ULP is not
+  a tie. Pinned by `test_greedy_assign_does_not_treat_a_near_tie_as_a_tie`.
+
+- **`metrics` no longer restates the dtype table.** `_POLARS_TO_CV_DTYPE` was a
+  hand-written Polars-type → engine-name map, kept honest by a *core* test that
+  imported a *metrics private* to compare it against `dtype_table!` — a
+  three-way coupling that could not survive the two ever being separated. The
+  correspondence is now generated into `NUMPY_TO_SHORT` and published as
+  `polars_cv.dtype_name_for`; the guard went with the duplicate it existed for.
+
+### Fixed
+
+- **The match-alignment check compared two lists that could not disagree.** It
+  compared `pred_idx` against `gt_idx`, both built by the engine from one
+  result. It now checks the payload against the *prediction* list, which is the
+  alignment the explode actually depends on — and that check immediately caught
+  a real case: `extract_contours` returns null, not an empty list, for a mask
+  with no contours, so predictions on a ground-truth-free image had a null
+  payload. Metrics already reads a null ground-truth column as zero targets;
+  the payload now follows, and those predictions stay the false positives they
+  are.
+
+### Added
+
+- **Greedy assignment is testable on its own.** It used to live in a private
+  `match_from_matrix` reachable only through a detection-shaped wrapper, and
+  had exactly one test — a self-match at threshold 0.5. Tie-breaking, the
+  effect of the visit order, the threshold boundary and `bbox` matching had no
+  coverage at all in either language. `greedy_assign` takes a bare matrix and
+  has ten Rust unit tests; `tests/test_correspondence.py` adds 30 more that
+  cross-check the engine against a plain-Python reference on every case.
+
+
 ## [0.21.0] — 2026-08-24
 
 ### Fixed

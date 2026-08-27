@@ -174,8 +174,8 @@ Runs at Polars planning time (NOT execution time). Parses the graph JSON, resolv
 Because they bypass `vb_graph`, these functions get no `ParamCtx`. Their per-row parameters ride in as **extra input series**: Python's `_ArgBinder` appends each expression-valued parameter to the inputs and records its name in an `input_slots` name→index map inside the kwargs, which `geom_params.rs` reads back through the same `ParamCol` accessors `params.rs` uses. Names, not positions — several of these functions already take optional data operands (`scores`, `origin`) positionally, where an appended parameter would be indistinguishable from an omitted operand. `GeomParams` rejects an out-of-range index and a map that does not account for every input, so a binder/reader drift fails loudly instead of silently dropping an operand.
 
 Key functions in `contour.rs`:
-- `contour_pairwise_iou`, `contour_match_detections`, `contour_label_reduce`
-- `bbox_pairwise_iou`, `bbox_match_detections` — rectangle overlap is a two-interval
+- `contour_pairwise_iou`, `contour_correspond`, `contour_label_reduce`
+- `bbox_pairwise_iou`, `bbox_correspond` — rectangle overlap is a two-interval
   intersection, so these stay analytic (`pairwise::bbox_iou`) rather than going
   through general polygon boolean ops. Both share `match_from_matrix` with the
   contour matcher, so the greedy matching policy lives in one place.

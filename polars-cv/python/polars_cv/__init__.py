@@ -29,6 +29,7 @@ from ._types import (
     CloudOptions,
     ColorSpace,
     HashAlgorithm,
+    dtype_name_for,
 )
 from .display import show_images
 from .expressions import CvNamespace
@@ -36,6 +37,7 @@ from .geometry import (
     BBOX_SCHEMA,
     CONTOUR_SCHEMA,
     CONTOUR_SET_SCHEMA,
+    CORRESPONDENCE_SCHEMA,
     POINT_SCHEMA,
     POINT_SET_SCHEMA,
     RING_SCHEMA,
@@ -465,6 +467,7 @@ __all__ = [
     "CloudOptions",
     "ColorSpace",
     "HashAlgorithm",
+    "dtype_name_for",
     # ImageNet normalization constants
     "IMAGENET_MEAN",
     "IMAGENET_STD",
@@ -512,6 +515,7 @@ __all__ = [
     "RING_SCHEMA",
     "CONTOUR_SCHEMA",
     "CONTOUR_SET_SCHEMA",
+    "CORRESPONDENCE_SCHEMA",
     "BBOX_SCHEMA",
     # Build/version introspection
     "__version__",

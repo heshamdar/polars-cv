@@ -26,7 +26,7 @@ use view_buffer::{naming, ViewBuffer};
 // `geom_arity` being declared before `contour` in lib.rs.
 use crate::contour_accessor;
 use crate::geom_arity::{elementwise_field, pack_row, row_contours, Arity};
-use crate::geom_params::{GeomParams, InputSlots};
+use crate::geom_params::{check_range, GeomParams, InputSlots};
 use crate::params::NullParamPolicy;
 
 // ============================================================================
@@ -280,7 +280,7 @@ pub(crate) fn parse_contour(value: &AnyValue) -> PolarsResult<Contour> {
 /// `extract_contours().sink("native")` emits `List[Contour]`, while a
 /// hand-written contour column is one `Struct` per row. Both arrive here and
 /// leave as a set. Used by the contour *source* (whose rasterizer paints their
-/// union) and by the set-level accessors (`pairwise_iou`, `match_detections`,
+/// union) and by the set-level accessors (`pairwise_iou`, `correspond`,
 /// `label_reduce`), which therefore accept a single contour as a one-element
 /// set — the mirror of the `.contour` accessors accepting a set.
 ///
@@ -689,6 +689,163 @@ fn pairwise_iou_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     ))
 }
 
+fn optional_u32_list_anyvalue(values: &[Option<u32>], name: PlSmallStr) -> AnyValue<'static> {
+    let series = UInt32Chunked::from_iter_options(name, values.iter().copied()).into_series();
+    AnyValue::List(series)
+}
+
+/// The `{right_idx, overlap}` struct a correspondence result publishes.
+///
+/// Declared once, and read by both the output-type function and the row
+/// builder below. What this replaced spelled its schema out three times per
+/// entry point — six copies between the two — which is precisely how the
+/// dtype a query planned against and the value it produced were free to
+/// drift apart.
+fn correspondence_fields() -> Vec<Field> {
+    vec![
+        Field::new(
+            PlSmallStr::from_static("right_idx"),
+            DataType::List(Box::new(DataType::UInt32)),
+        ),
+        Field::new(
+            PlSmallStr::from_static("overlap"),
+            DataType::List(Box::new(DataType::Float64)),
+        ),
+    ]
+}
+
+fn correspondence_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
+    let name = input_fields
+        .first()
+        .map(|f| f.name().clone())
+        .unwrap_or_else(|| PlSmallStr::from_static("correspond"));
+    Ok(Field::new(name, DataType::Struct(correspondence_fields())))
+}
+
+fn correspondence_anyvalue(result: &pairwise::Correspondence) -> AnyValue<'static> {
+    let right: Vec<Option<u32>> = result
+        .right_idx
+        .iter()
+        .map(|v| v.map(|x| x as u32))
+        .collect();
+    AnyValue::StructOwned(Box::new((
+        vec![
+            optional_u32_list_anyvalue(&right, PlSmallStr::from_static("right_idx")),
+            float_list_anyvalue(&result.overlap, PlSmallStr::from_static("overlap")),
+        ],
+        correspondence_fields(),
+    )))
+}
+
+/// Parse a per-row walk order: a permutation of `0..n_left`.
+///
+/// Strict on purpose. A short, long, duplicated or out-of-range order is a
+/// caller mistake that would otherwise show up as elements silently never
+/// visited — the class of quiet degradation this codebase rejects — so it
+/// fails here, naming the row.
+fn parse_order_list(value: &AnyValue, n_left: usize, row: usize) -> PolarsResult<Vec<usize>> {
+    let AnyValue::List(series) = value else {
+        polars_bail!(ComputeError: "Expected List[UInt32] for order, got {:?}", value);
+    };
+    if series.len() != n_left {
+        polars_bail!(ComputeError:
+            "order length ({}) must match the number of left elements ({}) in row {}",
+            series.len(), n_left, row
+        );
+    }
+    let mut order = Vec::with_capacity(series.len());
+    let mut seen = vec![false; n_left];
+    for i in 0..series.len() {
+        let item = series.get(i)?;
+        let index = item.try_extract::<u32>().map_err(|_| {
+            polars_err!(ComputeError:
+                "order must contain non-negative integers, found {:?} in row {}", item, row)
+        })? as usize;
+        if index >= n_left {
+            polars_bail!(ComputeError:
+                "order entry {} is out of range for {} left elements in row {}",
+                index, n_left, row
+            );
+        }
+        if std::mem::replace(&mut seen[index], true) {
+            polars_bail!(ComputeError:
+                "order repeats entry {} in row {}; it must be a permutation", index, row
+            );
+        }
+        order.push(index);
+    }
+    Ok(order)
+}
+
+/// Drive one correspondence entry point over its rows.
+///
+/// The contour and bbox accessors differ only in how a row parses and how its
+/// overlap matrix is built, so those are the two parameters; everything else —
+/// the null handling, the per-row threshold, the order, the output struct —
+/// is shared. The two functions this replaced were near-verbatim duplicates.
+fn correspond_rows<T>(
+    inputs: &[Series],
+    kwargs: &ContourKwargs,
+    parse: impl Fn(&AnyValue) -> PolarsResult<Vec<T>>,
+    build_matrix: impl Fn(&[T], &[T]) -> Vec<Vec<f64>>,
+) -> PolarsResult<Series> {
+    let params = GeomParams::new(inputs, &kwargs.input_slots, kwargs.on_null)?;
+    let left_series = &inputs[0];
+    // Both operands are looked up by name: `order` is optional, so nothing
+    // here may read a fixed position.
+    let right_series = params
+        .slot("other")
+        .map(|idx| &inputs[idx])
+        .ok_or_else(|| polars_err!(ComputeError: "missing required input 'other'"))?;
+    let order_series = params.slot("order").map(|idx| &inputs[idx]);
+    let len = left_series.len();
+    let dtype = DataType::Struct(correspondence_fields());
+
+    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
+    for i in 0..len {
+        let left_value = left_series.get(i)?;
+        let right_value = right_series.get(i)?;
+        if left_value.is_null() || right_value.is_null() {
+            rows.push(AnyValue::Null);
+            continue;
+        }
+
+        // Per-row parameters cannot be range-checked once per batch, so the
+        // check moves into the loop and names the offending row. A null
+        // `threshold` under `on_null="null"` nulls this row instead.
+        let Some(threshold) = params.row(|| {
+            let threshold = params.f64("threshold", kwargs.threshold, 0.5, i)?;
+            check_range("threshold", threshold, 0.0, 1.0, i)?;
+            Ok(threshold)
+        })?
+        else {
+            rows.push(AnyValue::Null);
+            continue;
+        };
+
+        let left = parse(&left_value)?;
+        let right = parse(&right_value)?;
+
+        let order = match order_series {
+            Some(column) => {
+                let value = column.get(i)?;
+                if value.is_null() {
+                    None
+                } else {
+                    Some(parse_order_list(&value, left.len(), i)?)
+                }
+            }
+            None => None,
+        };
+
+        let result =
+            pairwise::greedy_assign(&build_matrix(&left, &right), threshold, order.as_deref());
+        rows.push(correspondence_anyvalue(&result));
+    }
+
+    Series::from_any_values_and_dtype(left_series.name().clone(), &rows, &dtype, true)
+}
+
 fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
     let name = input_fields
         .first()
@@ -903,6 +1060,19 @@ fn contour_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     build_pairwise_matrix_series(pred_series.name().clone(), rows)
+}
+
+/// One-to-one correspondence between two contour sets by overlap.
+///
+/// Generic by construction: it knows about contours and overlap, and nothing
+/// about detections, confidence or true positives. `order` is a permutation
+/// naming the visit sequence; supplying one derived from confidence is what
+/// makes this a detection matcher, and that derivation belongs to the caller.
+#[polars_expr(output_type_func=correspondence_output_type)]
+fn contour_correspond(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
+    correspond_rows(inputs, &kwargs, parse_contour_set, |a, b| {
+        pairwise::iou_matrix(a, b)
+    })
 }
 
 /// Score each contour against a heatmap using a configurable reduction.
@@ -1208,6 +1378,17 @@ fn bbox_pairwise_iou(inputs: &[Series]) -> PolarsResult<Series> {
     }
 
     build_pairwise_matrix_series(pred_series.name().clone(), rows)
+}
+
+/// One-to-one correspondence between two bbox sets by overlap.
+///
+/// The bbox half of [`contour_correspond`], sharing its driver so the two
+/// cannot disagree about the rule, the threshold, the order or the output.
+#[polars_expr(output_type_func=correspondence_output_type)]
+fn bbox_correspond(inputs: &[Series], kwargs: ContourKwargs) -> PolarsResult<Series> {
+    correspond_rows(inputs, &kwargs, parse_bbox_list, |a, b| {
+        pairwise::bbox_iou_matrix(a, b)
+    })
 }
 
 #[cfg(test)]

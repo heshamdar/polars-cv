@@ -221,7 +221,7 @@ class TestPointExpressionParams:
 
 @plugin_required
 class TestDetectionMatchingThreshold:
-    """`match_detections(threshold=)` resolves per row on both namespaces."""
+    """`correspond(threshold=)` resolves per row on both namespaces."""
 
     @staticmethod
     def _boxes() -> tuple[list, list]:
@@ -235,31 +235,29 @@ class TestDetectionMatchingThreshold:
         # IoU here is 1/3; a 0.2 threshold matches, a 0.9 threshold does not.
         df = _two_rows(p=[pred, pred], g=[gt, gt], thr=[0.2, 0.9])
         out = df.with_columns(
-            m=pl.col("p").bbox.match_detections(pl.col("g"), threshold=pl.col("thr"))
+            m=pl.col("p").bbox.correspond(pl.col("g"), threshold=pl.col("thr"))
         )["m"].to_list()
-        assert out[0]["n_tp"] == 1
-        assert out[1]["n_tp"] == 0
+        assert out[0]["right_idx"] == [0]
+        assert out[1]["right_idx"] == [None]
 
-    def test_bbox_threshold_per_row_with_scores_operand(self) -> None:
-        """A dynamic threshold and the optional `scores` operand coexist."""
+    def test_bbox_threshold_per_row_with_order_operand(self) -> None:
+        """A dynamic threshold and the optional `order` operand coexist."""
         pred, gt = self._boxes()
-        df = _two_rows(p=[pred, pred], g=[gt, gt], s=[[0.9], [0.9]], thr=[0.2, 0.9])
+        df = _two_rows(p=[pred, pred], g=[gt, gt], s=[[0], [0]], thr=[0.2, 0.9])
         out = df.with_columns(
-            m=pl.col("p").bbox.match_detections(
-                pl.col("g"), threshold=pl.col("thr"), scores=pl.col("s")
+            m=pl.col("p").bbox.correspond(
+                pl.col("g"), threshold=pl.col("thr"), order=pl.col("s")
             )
         )["m"].to_list()
-        assert out[0]["n_tp"] == 1
-        assert out[1]["n_tp"] == 0
+        assert out[0]["right_idx"] == [0]
+        assert out[1]["right_idx"] == [None]
 
     def test_out_of_range_threshold_names_the_row(self) -> None:
         pred, gt = self._boxes()
         df = _two_rows(p=[pred, pred], g=[gt, gt], thr=[0.5, 1.5])
         with pytest.raises(Exception, match=r"threshold must be in \[0, 1\].*row 1"):
             df.with_columns(
-                m=pl.col("p").bbox.match_detections(
-                    pl.col("g"), threshold=pl.col("thr")
-                )
+                m=pl.col("p").bbox.correspond(pl.col("g"), threshold=pl.col("thr"))
             )
 
 

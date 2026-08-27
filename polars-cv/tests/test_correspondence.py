@@ -7,7 +7,7 @@ this file existed none of them was tested anywhere:
 
 - the **order** decides who wins a contested target,
 - the pairing is **one-to-one** -- a claimed target is gone,
-- **ties** resolve to the smallest target index, and
+- exact **ties** resolve to the smallest target index, and
 - the threshold is **inclusive** (``>=``).
 
 Two independent implementations are compared throughout, in the idiom of
@@ -18,8 +18,9 @@ fine here -- the no-UDF rule binds shipped plugin code, not test oracles.
 
 Everything below is written in the vocabulary of the correspondence relation
 (``order``, ``right_idx``, ``overlap``), never in detection vocabulary. Only
-``_run`` and ``_extract`` touch the accessor being tested; they are the whole
-of what a rename has to move.
+``_run`` and ``_extract`` touch the accessor being tested; they were the whole
+of what the rename had to move -- every assertion below is unchanged from when
+they ran against the old detection-shaped API.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from polars_cv import BBOX_SCHEMA
+from polars_cv import BBOX_SCHEMA, CORRESPONDENCE_SCHEMA
 from polars_cv.geometry import CONTOUR_SET_SCHEMA
 from tests.conftest import plugin_required
 
@@ -68,8 +69,14 @@ def _l_shape(dx: float, dy: float) -> dict[str, object]:
 def _u_shape() -> dict[str, object]:
     """A reflex-notched U. Ported from view-buffer's pairwise tests."""
     pts = [
-        (0, 0), (100, 0), (100, 100), (70, 100),
-        (70, 40), (30, 40), (30, 100), (0, 100),
+        (0, 0),
+        (100, 0),
+        (100, 100),
+        (70, 100),
+        (70, 40),
+        (30, 40),
+        (30, 100),
+        (0, 100),
     ]
     return {
         "exterior": [{"x": float(px), "y": float(py)} for px, py in pts],
@@ -82,12 +89,6 @@ def _u_shape() -> dict[str, object]:
 # The reference implementation
 # ---------------------------------------------------------------------------
 
-#: Overlaps closer than this count as equal when picking a target, mirroring
-#: the engine. Rectangles clipped two different ways can land a few ULPs apart
-#: while being the same area, and without a tolerance the tie rule would be
-#: decided by which way the clip rounded.
-_TIE_EPS = 1e-12
-
 
 def _reference(
     matrix: list[list[float]], threshold: float, order: list[int] | None
@@ -96,8 +97,8 @@ def _reference(
 
     The independent half of the crosscheck. Walks candidates in *order*; each
     takes the unclaimed target with the highest overlap, ties going to the
-    smallest target index, and keeps it only if that overlap is ``>=``
-    *threshold*.
+    smallest target index on an exact tie, and keeps it only if that overlap is
+    ``>=`` *threshold*.
 
     Returns ``(right_idx, overlap)``, both positionally aligned with the left
     set -- ``right_idx[i]`` is ``None`` where candidate ``i`` went unmatched.
@@ -113,14 +114,11 @@ def _reference(
         for j in range(n_right):
             if claimed[j]:
                 continue
-            candidate = matrix[i][j]
-            if candidate > best:
-                best, best_j = candidate, j
-            elif abs(candidate - best) < _TIE_EPS and best_j is not None and j < best_j:
-                # Overlaps that differ only in the last bits count as tied, so
-                # a rectangle clipped two ways does not silently pick a winner
-                # by floating-point noise.
-                best_j = j
+            # Strictly greater, so among *exactly* equal overlaps the first
+            # -- lowest index -- wins. Not a tolerance: an overlap larger by
+            # one ULP is not a tie and does win.
+            if matrix[i][j] > best:
+                best, best_j = matrix[i][j], j
         if best_j is not None and best >= threshold:
             claimed[best_j] = True
             right_idx[i] = best_j
@@ -131,19 +129,6 @@ def _reference(
 # ---------------------------------------------------------------------------
 # The adapter -- the ONLY part that a rename of the accessor has to move
 # ---------------------------------------------------------------------------
-
-
-def _order_to_scores(order: list[int], n: int) -> list[float]:
-    """Scores whose descending sort reproduces *order*.
-
-    The accessor currently takes confidence scores and derives the walk order
-    from them. The tests are written in terms of the order itself, because that
-    is the thing the rule actually depends on -- so this converts.
-    """
-    scores = [0.0] * n
-    for rank, idx in enumerate(order):
-        scores[idx] = float(n - rank)
-    return scores
 
 
 def _run(
@@ -159,16 +144,16 @@ def _run(
     data: dict[str, object] = {"left": [left], "right": [right]}
     schema: dict[str, object] = {"left": item, "right": item}
     if order is not None:
-        data["order"] = [_order_to_scores(order, len(left))]
-        schema["order"] = pl.List(pl.Float64)
+        data["order"] = [order]
+        schema["order"] = pl.List(pl.UInt32)
     df = pl.DataFrame(data, schema=schema)
 
     ns = pl.col("left").contour if kind == "contour" else pl.col("left").bbox
     return df.with_columns(
-        _c=ns.match_detections(
+        _c=ns.correspond(
             pl.col("right"),
             threshold=threshold,
-            scores=pl.col("order") if order is not None else None,
+            order=pl.col("order") if order is not None else None,
         )
     )
 
@@ -176,12 +161,14 @@ def _run(
 def _extract(out: pl.DataFrame) -> tuple[list[int | None], list[float]]:
     """Read ``(right_idx, overlap)`` out of the accessor's struct."""
     cell = out["_c"][0]
-    return list(cell["gt_idx"]), list(cell["iou"])
+    names = [f.name for f in CORRESPONDENCE_SCHEMA.fields]
+    assert names == ["right_idx", "overlap"], (
+        f"CORRESPONDENCE_SCHEMA changed shape: {names}"
+    )
+    return list(cell["right_idx"]), list(cell["overlap"])
 
 
-def _matrix(
-    left: list[object], right: list[object], *, kind: str
-) -> list[list[float]]:
+def _matrix(left: list[object], right: list[object], *, kind: str) -> list[list[float]]:
     """The engine's own pairwise overlap matrix, for the crosscheck."""
     item = CONTOUR_SET_SCHEMA if kind == "contour" else pl.List(BBOX_SCHEMA)
     df = pl.DataFrame(
@@ -311,9 +298,10 @@ def test_an_exact_tie_resolves_to_the_smaller_target_index(kind: str) -> None:
     right = _shapes(kind, (5.0, 0.0, 10.0, 10.0), (0.0, 5.0, 10.0, 10.0))
 
     matrix = _matrix(left, right, kind=kind)
-    assert abs(matrix[0][0] - matrix[0][1]) < _TIE_EPS, (
-        f"fixture is not a tie -- overlaps are {matrix[0]}; the tie rule is "
-        f"not under test"
+    assert matrix[0][0] == matrix[0][1], (
+        f"fixture is not an exact tie -- overlaps are {matrix[0]}; the rule is "
+        f"exact equality, not a tolerance, so a fixture that is merely close "
+        f"tests the wrong thing"
     )
 
     right_idx, _ = _both(left, right, kind=kind, threshold=0.25)
@@ -338,9 +326,12 @@ class TestThresholdIsInclusive:
     RIGHT = ((0.0, 0.0, 5.0, 10.0),)
 
     def test_the_fixture_sits_exactly_on_the_boundary(self, kind: str) -> None:
-        assert _matrix(
-            _shapes(kind, *self.LEFT), _shapes(kind, *self.RIGHT), kind=kind
-        )[0][0] == 0.5
+        assert (
+            _matrix(_shapes(kind, *self.LEFT), _shapes(kind, *self.RIGHT), kind=kind)[
+                0
+            ][0]
+            == 0.5
+        )
 
     def test_overlap_equal_to_the_threshold_matches(self, kind: str) -> None:
         right_idx, overlap = _both(
@@ -437,12 +428,60 @@ def test_contours_and_bboxes_agree_on_axis_aligned_rectangles() -> None:
     targets = [(0.0, 0.0, 10.0, 10.0), (40.0, 40.0, 6.0, 6.0)]
 
     as_contour = _both(
-        _shapes("contour", *rects), _shapes("contour", *targets),
-        kind="contour", order=[0, 1, 2],
+        _shapes("contour", *rects),
+        _shapes("contour", *targets),
+        kind="contour",
+        order=[0, 1, 2],
     )
     as_bbox = _both(
-        _shapes("bbox", *rects), _shapes("bbox", *targets),
-        kind="bbox", order=[0, 1, 2],
+        _shapes("bbox", *rects),
+        _shapes("bbox", *targets),
+        kind="bbox",
+        order=[0, 1, 2],
     )
     assert as_contour[0] == as_bbox[0]
     assert as_contour[1] == pytest.approx(as_bbox[1], abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# The walk order must be a permutation
+# ---------------------------------------------------------------------------
+
+
+@plugin_required
+@pytest.mark.parametrize("kind", KINDS)
+class TestOrderIsValidated:
+    """A malformed order is refused, naming the row.
+
+    The rule this replaced took confidence scores and silently skipped any
+    index it could not use, so a short or duplicated order quietly left
+    elements unvisited. An order is a permutation or it is a mistake.
+    """
+
+    LEFT = ((0.0, 0.0, 10.0, 10.0), (2.0, 0.0, 10.0, 10.0))
+    RIGHT = ((0.0, 0.0, 10.0, 10.0),)
+
+    def _run_with(self, kind: str, order: list[int]) -> None:
+        item = CONTOUR_SET_SCHEMA if kind == "contour" else pl.List(BBOX_SCHEMA)
+        df = pl.DataFrame(
+            {
+                "left": [_shapes(kind, *self.LEFT)],
+                "right": [_shapes(kind, *self.RIGHT)],
+                "order": [order],
+            },
+            schema={"left": item, "right": item, "order": pl.List(pl.UInt32)},
+        )
+        ns = pl.col("left").contour if kind == "contour" else pl.col("left").bbox
+        df.with_columns(_c=ns.correspond(pl.col("right"), order=pl.col("order")))
+
+    def test_a_short_order_is_refused(self, kind: str) -> None:
+        with pytest.raises(Exception, match=r"order length .* row 0"):
+            self._run_with(kind, [0])
+
+    def test_an_out_of_range_entry_is_refused(self, kind: str) -> None:
+        with pytest.raises(Exception, match=r"out of range .* row 0"):
+            self._run_with(kind, [0, 7])
+
+    def test_a_repeated_entry_is_refused(self, kind: str) -> None:
+        with pytest.raises(Exception, match=r"repeats entry .* permutation"):
+            self._run_with(kind, [1, 1])

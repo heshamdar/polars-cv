@@ -95,8 +95,6 @@ pub fn iou_matrix(a: &[Contour], b: &[Contour]) -> Vec<Vec<f64>> {
         .collect()
 }
 
-
-
 /// IoU between two axis-aligned bounding boxes.
 ///
 /// Rectangle overlap is a two-interval intersection, so this stays analytic rather
@@ -124,6 +122,102 @@ pub fn bbox_iou_matrix(a: &[BoundingBox], b: &[BoundingBox]) -> Vec<Vec<f64>> {
         .collect()
 }
 
+/// A one-to-one correspondence between two sets, aligned with the left set.
+///
+/// There is deliberately no `left_idx`: entry `i` describes left element `i`,
+/// so an explicit index column would be a second copy of the position. Nor are
+/// there pair counts — how many pairings a population contains is a question
+/// about the population, not about one row, and answering it here produced a
+/// number that was wrong for every caller whose population had rows the matcher
+/// never saw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Correspondence {
+    /// Partner in the right set for each left element, `None` when unpaired.
+    pub right_idx: Vec<Option<usize>>,
+    /// Overlap of the chosen pair, `0.0` where nothing was chosen.
+    pub overlap: Vec<f64>,
+}
+
+/// Greedy one-to-one assignment over an overlap matrix.
+///
+/// Left elements are visited in `order` (natural order when `None`). Each takes
+/// the highest-overlap right element not already taken, and keeps it only if
+/// that overlap is at least `threshold`. Taking is exclusive: a right element
+/// claimed by an earlier visit is unavailable to every later one, so the order
+/// is what resolves contention.
+///
+/// Exact ties go to the **smallest right index**: the scan runs in ascending
+/// index order and only a strictly greater overlap displaces the incumbent, so
+/// the first maximum wins. This is an exact-equality rule, not a tolerance —
+/// an overlap larger by a single ULP is not a tie and does win. (The rule this
+/// replaced carried a 1e-12 tie-tolerance arm, which was unreachable for
+/// exactly this reason: under an ascending scan the incumbent's index is
+/// always the smaller one, so the arm's guard was never true.)
+///
+/// The threshold bound is **inclusive**: an overlap exactly equal to
+/// `threshold` pairs.
+///
+/// `matrix` is indexed `[left][right]`, as [`iou_matrix`] and
+/// [`bbox_iou_matrix`] produce it; its length defines the left set and the
+/// length of its rows the right set. Indices in `order` outside the left set
+/// are skipped — callers that can name a row should reject them before getting
+/// here rather than relying on that.
+///
+/// The rule carries no notion of what the sets contain. Whether the order means
+/// descending confidence, whether a pairing is a "true positive", and how many
+/// there are across a population are all the caller's business.
+pub fn greedy_assign(
+    matrix: &[Vec<f64>],
+    threshold: f64,
+    order: Option<&[usize]>,
+) -> Correspondence {
+    let n_left = matrix.len();
+    let n_right = matrix.first().map_or(0, Vec::len);
+
+    let mut taken = vec![false; n_right];
+    let mut right_idx: Vec<Option<usize>> = vec![None; n_left];
+    let mut overlap = vec![0.0; n_left];
+
+    let natural: Vec<usize>;
+    let visit: &[usize] = match order {
+        Some(indices) => indices,
+        None => {
+            natural = (0..n_left).collect();
+            &natural
+        }
+    };
+
+    for &left in visit {
+        if left >= n_left {
+            continue;
+        }
+        let mut best: Option<usize> = None;
+        let mut best_overlap = -1.0_f64;
+        for (right, is_taken) in taken.iter().enumerate() {
+            if *is_taken {
+                continue;
+            }
+            // Strictly greater, so among equal overlaps the first -- lowest
+            // index -- wins. That is the whole tie rule; an explicit tie arm
+            // here cannot fire, because the scan is ascending.
+            let candidate = matrix[left][right];
+            if candidate > best_overlap {
+                best_overlap = candidate;
+                best = Some(right);
+            }
+        }
+
+        if let Some(right) = best {
+            if best_overlap >= threshold {
+                taken[right] = true;
+                right_idx[left] = Some(right);
+                overlap[left] = best_overlap;
+            }
+        }
+    }
+
+    Correspondence { right_idx, overlap }
+}
 
 /// Computes the Dice coefficient between two contours.
 ///
@@ -466,6 +560,121 @@ mod tests {
             for (j, cb) in b.iter().enumerate() {
                 assert!((matrix[i][j] - iou(ca, cb)).abs() < 1e-12);
             }
+        }
+    }
+
+    // --- greedy_assign: the correspondence rule, over a bare matrix ---
+    //
+    // These go straight at the matrix rather than through contours. The rule
+    // used to live in a private fn reachable only via a detection-shaped
+    // wrapper, so none of the properties below had a test at all: the
+    // tie-break and the ordering were entirely uncovered, and the threshold
+    // bound was only ever exercised at 1.0 against 0.5.
+
+    #[test]
+    fn test_greedy_assign_visits_in_order() {
+        // Two left elements contest one right element. Both clear the
+        // threshold, so whoever is visited first takes it.
+        let matrix = vec![vec![1.0], vec![0.6]];
+        let first = greedy_assign(&matrix, 0.5, Some(&[0, 1]));
+        assert_eq!(first.right_idx, vec![Some(0), None]);
+
+        let reversed = greedy_assign(&matrix, 0.5, Some(&[1, 0]));
+        assert_eq!(reversed.right_idx, vec![None, Some(0)]);
+        // The worse overlap wins when it is visited first -- which is the
+        // whole point of taking an order.
+        assert_eq!(reversed.overlap, vec![0.0, 0.6]);
+    }
+
+    #[test]
+    fn test_greedy_assign_defaults_to_natural_order() {
+        let matrix = vec![vec![0.6], vec![1.0]];
+        assert_eq!(
+            greedy_assign(&matrix, 0.5, None).right_idx,
+            greedy_assign(&matrix, 0.5, Some(&[0, 1])).right_idx
+        );
+    }
+
+    #[test]
+    fn test_greedy_assign_is_one_to_one() {
+        // Three left elements, all over threshold against a single right one.
+        let matrix = vec![vec![1.0], vec![0.9], vec![0.8]];
+        let got = greedy_assign(&matrix, 0.5, None);
+        assert_eq!(got.right_idx, vec![Some(0), None, None]);
+        assert_eq!(got.right_idx.iter().filter(|r| r.is_some()).count(), 1);
+    }
+
+    #[test]
+    fn test_greedy_assign_breaks_ties_to_the_smaller_right_index() {
+        let matrix = vec![vec![0.5, 0.5]];
+        assert_eq!(greedy_assign(&matrix, 0.25, None).right_idx, vec![Some(0)]);
+    }
+
+    #[test]
+    fn test_greedy_assign_does_not_treat_a_near_tie_as_a_tie() {
+        // One ULP apart is not a tie: the strictly larger overlap wins, even
+        // though it sits at the higher index. The rule this replaced carried a
+        // 1e-12 tie tolerance suggesting otherwise, but the arm was
+        // unreachable under an ascending scan and never ran. Pinned so nobody
+        // reintroduces the tolerance believing it was ever in force.
+        let larger = 0.5_f64 + f64::EPSILON;
+        assert!(larger > 0.5);
+        let matrix = vec![vec![0.5, larger]];
+        assert_eq!(greedy_assign(&matrix, 0.25, None).right_idx, vec![Some(1)]);
+    }
+
+    #[test]
+    fn test_greedy_assign_threshold_is_inclusive() {
+        let matrix = vec![vec![0.5]];
+        assert_eq!(greedy_assign(&matrix, 0.5, None).right_idx, vec![Some(0)]);
+        assert_eq!(
+            greedy_assign(&matrix, 0.5 + 1e-9, None).right_idx,
+            vec![None]
+        );
+    }
+
+    #[test]
+    fn test_greedy_assign_reports_an_unpaired_element_as_zero_overlap() {
+        let matrix = vec![vec![0.1]];
+        let got = greedy_assign(&matrix, 0.5, None);
+        assert_eq!(got.right_idx, vec![None]);
+        assert_eq!(got.overlap, vec![0.0]);
+    }
+
+    #[test]
+    fn test_greedy_assign_handles_empty_sides() {
+        // No left elements: the matrix has no rows.
+        let empty: Vec<Vec<f64>> = Vec::new();
+        let got = greedy_assign(&empty, 0.5, None);
+        assert!(got.right_idx.is_empty() && got.overlap.is_empty());
+
+        // No right elements: one empty row per left element, as `iou_matrix`
+        // builds it.
+        let no_right = vec![Vec::new(), Vec::new()];
+        let got = greedy_assign(&no_right, 0.5, None);
+        assert_eq!(got.right_idx, vec![None, None]);
+        assert_eq!(got.overlap, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_greedy_assign_skips_out_of_range_order_entries() {
+        let matrix = vec![vec![1.0]];
+        assert_eq!(
+            greedy_assign(&matrix, 0.5, Some(&[7, 0])).right_idx,
+            vec![Some(0)]
+        );
+    }
+
+    #[test]
+    fn test_concave_shapes_correspond_to_themselves() {
+        // Replaces the deleted detection-shaped test. Concave shapes are the
+        // point: an intersection routine valid only for convex clips gets the
+        // self-overlap wrong and the identity fails.
+        let shapes = vec![l_shape(0.0, 0.0), u_shape(), l_shape(500.0, 500.0)];
+        let got = greedy_assign(&iou_matrix(&shapes, &shapes), 0.5, None);
+        assert_eq!(got.right_idx, vec![Some(0), Some(1), Some(2)]);
+        for value in got.overlap {
+            assert!((value - 1.0).abs() < 1e-9);
         }
     }
 

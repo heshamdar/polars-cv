@@ -37,7 +37,7 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
     it could mean the N×M matrix (:meth:`pairwise_iou`) or an index-wise
     pairing (``.explode()`` one side), and the two mean different things.
 
-    The set-level accessors (:meth:`pairwise_iou`, :meth:`match_detections`,
+    The set-level accessors (:meth:`pairwise_iou`, :meth:`correspond`,
     :meth:`label_reduce`) work the other way round for the same reason: a lone
     contour is read as a set of one.
 
@@ -328,6 +328,46 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
             A nested list (`List[List[Float64]]`) representing an N x M IoU matrix.
         """
         return self._plugin("contour_pairwise_iou", args=[other])
+
+    def correspond(
+        self,
+        other: pl.Expr,
+        *,
+        threshold: float | pl.Expr = 0.5,
+        order: pl.Expr | None = None,
+    ) -> pl.Expr:
+        """
+        Pair each contour with at most one contour in *other*, by overlap.
+
+        Greedy and exclusive: contours are visited in *order* and each takes the
+        highest-IoU partner not already taken, keeping it only if that IoU is at
+        least *threshold*. A partner claimed earlier is unavailable later, so the
+        order is what resolves contention. Exact ties go to the lowest index in
+        *other*; the threshold bound is inclusive.
+
+        The relation carries no interpretation. Contours can represent anything,
+        and whether a pairing means a "detection" is the caller's business --
+        as is deriving *order* from confidence, and counting pairings across a
+        population.
+
+        Args:
+            other: Contour-set expression to pair against (`List[Contour]`).
+            threshold: Minimum IoU for a pairing. Accepts a Polars expression
+                for a per-row threshold.
+            order: Optional per-row list of indices giving the visit sequence,
+                a permutation of ``0..n``. Defaults to natural order.
+
+        Returns:
+            A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`:
+            ``right_idx`` (index into *other*, null where unpaired) and
+            ``overlap`` (the IoU of the chosen pair, 0.0 where unpaired), both
+            positionally aligned with this expression's contours.
+        """
+        binder = _ArgBinder()
+        binder.add_data("other", other)
+        binder.add_data("order", order)
+        binder.add_param("threshold", threshold)
+        return binder.call(self, "contour_correspond")
 
     def label_reduce(
         self,

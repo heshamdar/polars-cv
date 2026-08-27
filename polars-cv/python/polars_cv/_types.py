@@ -19,6 +19,8 @@ except ImportError:
 
 import polars as pl
 
+from ._dtype_names import NUMPY_TO_SHORT
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -115,6 +117,60 @@ class DType(str, Enum):
     I64 = "i64"
     F32 = "f32"
     F64 = "f64"
+
+
+#: Polars types that reach a buffer through a *cast* rather than a numpy name.
+#:
+#: A boolean mask is the documented shape for a ground-truth mask column and
+#: the natural output of ``np_mask.astype(bool).tolist()``. It is not a buffer
+#: element type, but the source decoder casts rather than reinterprets
+#: (``series_to_bytes`` in ``graph/decode.rs``), so ``u8`` gives the 0/1 a mask
+#: means. This is the one correspondence not derivable from ``dtype_table!``,
+#: so it is written out here and nowhere else.
+_CAST_ONLY_NAMES: dict[str, str] = {"boolean": "u8"}
+
+
+def dtype_name_for(dtype: pl.DataType) -> str:
+    """Name *dtype* the way ``source(dtype=)`` and ``cast()`` take it.
+
+    A Polars type spells itself the numpy way (``Float32`` -> ``float32``);
+    the engine spells itself the short way (``f32``). This is that hop, and it
+    reads the correspondence from :data:`NUMPY_TO_SHORT`, generated from
+    ``dtype_table!``. Callers building a pipeline source for a column whose
+    dtype they only learn at plan time should use this rather than keeping
+    their own table -- which is what the metrics contour matcher did, guarded
+    by a test that reached into a private to compare it against the Rust.
+
+    Args:
+        dtype: A Polars leaf type. Nested ``List``/``Array`` types are not
+            unwrapped; pass the element type.
+
+    Returns:
+        The engine's short name, e.g. ``"f32"``.
+
+    Raises:
+        ValueError: If *dtype* has no meaningful buffer representation. It does
+            not fall back: an unmappable type used to become an ``f32`` source
+            and fail later and deeper with a cast error.
+    """
+    name = getattr(dtype, "__name__", None) or str(dtype)
+    key = name.lower()
+    if key in _CAST_ONLY_NAMES:
+        return _CAST_ONLY_NAMES[key]
+    try:
+        return NUMPY_TO_SHORT[key]
+    except KeyError:
+        # Name the *Polars* types, which is what the caller supplied and can
+        # change. Listing the engine's names instead says nothing actionable,
+        # and repeats "u8" twice since two Polars types map onto it. The
+        # spellings are read back off Polars rather than written out here, so
+        # this stays a lookup and not a fourth copy of the dtype vocabulary.
+        known = {*NUMPY_TO_SHORT, *_CAST_ONLY_NAMES}
+        accepted = ", ".join(sorted(n for n in dir(pl) if n.lower() in known))
+        raise ValueError(
+            f"{dtype} has no meaningful buffer representation. "
+            f"Expected one of: {accepted}."
+        ) from None
 
 
 class NormalizeMethod(str, Enum):

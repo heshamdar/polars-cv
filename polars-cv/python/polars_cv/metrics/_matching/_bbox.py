@@ -23,7 +23,7 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
-from ._contour import _validate_match_alignment
+from ._contour import _OVERLAP, _RIGHT_IDX, _confidence_order, _validate_match_alignment
 
 if TYPE_CHECKING:
     pass
@@ -36,7 +36,7 @@ class BBoxMatcher:
     height}]`` (i.e. ``List[BBOX_SCHEMA]``).  Scores should be provided as a
     separate ``List[Float64]`` column aligned with the prediction bboxes.
 
-    Matching calls the Rust ``bbox_match_detections`` plugin function which
+    Matching calls ``.bbox.correspond()``, supplying a confidence order, which
     internally converts each bbox to a 4-point rectangular contour and
     delegates to the existing contour matching infrastructure.
 
@@ -117,9 +117,14 @@ class BBoxMatcher:
             ).alias(COL_WEIGHT)
         )
 
-        # BROKEN BY DELETION: `.bbox.match_detections()` is gone. Its
-        # replacement takes a walk order rather than scores.
+        # Pair predictions with GT boxes. Confidence decides the visit order,
+        # which is this layer's choice to make; `correspond` only sees overlap.
         prepared = prepared.with_columns(
+            _match=pl.col(pred_col).bbox.correspond(
+                pl.col(gt_col),
+                threshold=self._iou_threshold,
+                order=_confidence_order(score_col),
+            ),
             _n_gts=pl.col(gt_col).list.len().fill_null(0).cast(pl.Int64),
         )
 
@@ -129,9 +134,8 @@ class BBoxMatcher:
             pl.col(COL_WEIGHT),
             pl.col(score_col).alias("_scores"),
             pl.col("_n_gts"),
-            pl.col("_match").struct.field("pred_idx").alias("pred_idx"),
-            pl.col("_match").struct.field("gt_idx").alias("gt_idx"),
-            pl.col("_match").struct.field("iou").alias("iou"),
+            pl.col("_match").struct.field(_RIGHT_IDX).alias("gt_idx"),
+            pl.col("_match").struct.field(_OVERLAP).alias("iou"),
             (pl.col(gt_col).list.len().fill_null(0) > 0).alias("_gt_label"),
             (
                 pl.col(class_col).cast(pl.String).alias(COL_CLASS_ID)
@@ -148,7 +152,9 @@ class BBoxMatcher:
         if image_level_df.height == 0:
             return _empty_bbox_detection_table()
 
-        _validate_match_alignment(image_level_df.lazy(), image_id_col=COL_IMAGE_ID)
+        _validate_match_alignment(
+            image_level_df.lazy(), image_id_col=COL_IMAGE_ID, scores_col="_scores"
+        )
 
         # Explode into per-detection rows
         from ._contour import _explode_match_to_detections
@@ -157,7 +163,6 @@ class BBoxMatcher:
             image_level_df.lazy(),
             image_id_col=COL_IMAGE_ID,
             scores_col="_scores",
-            pred_idx_col="pred_idx",
             gt_idx_col="gt_idx",
             iou_col="iou",
             class_id=DEFAULT_CLASS,

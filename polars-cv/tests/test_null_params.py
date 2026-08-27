@@ -441,7 +441,7 @@ class TestGeometryNamespaces:
         out = df.with_columns(
             m=pl.col("p")
             .bbox.on_null("null")
-            .match_detections(pl.col("g"), threshold=pl.col("thr"))
+            .correspond(pl.col("g"), threshold=pl.col("thr"))
         )["m"].to_list()
         assert out[0] is not None
         assert out[1] is None

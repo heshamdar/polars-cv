@@ -136,6 +136,27 @@ Multiple contours (e.g., multiple detected objects).
 A list of CONTOUR_SCHEMA structs.
 """
 
+CORRESPONDENCE_SCHEMA = pl.Struct(
+    [
+        pl.Field("right_idx", pl.List(pl.UInt32)),
+        pl.Field("overlap", pl.List(pl.Float64)),
+    ]
+)
+"""
+What ``.contour.correspond()`` / ``.bbox.correspond()`` return.
+
+Both fields are positionally aligned with the *left* expression: entry ``i``
+describes its element ``i``. There is deliberately no ``left_idx`` -- the one
+this replaced published ``pred_idx`` as ``0..n``, a second copy of the position
+-- and deliberately no pair counts, because how many pairings a population
+contains is a question about the population, not about one row.
+
+Fields:
+    right_idx: Index of the paired element in the right set, null when the
+        left element was left unpaired.
+    overlap: IoU of the chosen pair, ``0.0`` where nothing was chosen.
+"""
+
 # --- Bounding Box Schema ---
 
 BBOX_SCHEMA = pl.Struct(

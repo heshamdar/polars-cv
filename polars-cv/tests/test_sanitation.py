@@ -1851,17 +1851,33 @@ def test_no_second_dtype_spelling_table() -> None:
     )
 
 
-def test_contour_dtype_map_matches_rust() -> None:
-    """The metrics contour matcher builds pipeline sources without going
-    through the plugin, so it keeps its own Polars-type -> dtype-name map.
-    The correspondence is its own, but the names must be the Rust ones."""
-    from polars_cv.metrics._matching._contour import _POLARS_TO_CV_DTYPE
+def test_dtype_name_for_covers_the_whole_table() -> None:
+    """``dtype_name_for`` must name every dtype ``dtype_table!`` declares.
+
+    This replaces a guard that compared a *private copy* of the correspondence,
+    kept inside the metrics contour matcher, against the Rust table. The copy is
+    gone -- ``polars_cv.dtype_name_for`` reads the generated ``NUMPY_TO_SHORT``
+    -- so what is left to check is coverage: every engine dtype must be
+    reachable from some Polars type, or a column the engine can hold has no way
+    to be named at a source.
+    """
+    import polars as pl
+
+    from polars_cv import dtype_name_for
 
     expected = {short for _variant, short, _code, _numpy in _dtype_table_rows()}
-    actual = set(_POLARS_TO_CV_DTYPE.values())
-    assert actual == expected, (
-        "_POLARS_TO_CV_DTYPE has drifted from dtype_table!: "
-        f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+    reached = set()
+    for name in dir(pl):
+        candidate = getattr(pl, name)
+        if not isinstance(candidate, type) or not issubclass(candidate, pl.DataType):
+            continue
+        try:
+            reached.add(dtype_name_for(candidate))
+        except (ValueError, TypeError):
+            continue
+    assert expected <= reached, (
+        "dtype_name_for cannot name every dtype_table! row: "
+        f"unreachable={sorted(expected - reached)}"
     )
 
 
@@ -1878,6 +1894,11 @@ def test_contour_source_accepts_boolean_masks() -> None:
 
     info = _detect_source_info({"mask": pl.List(pl.List(pl.Boolean))}, "mask")
     assert info.kwargs["dtype"] == "u8"
+
+    # And through the public accessor the matcher now reads it from.
+    from polars_cv import dtype_name_for
+
+    assert dtype_name_for(pl.Boolean) == "u8"
 
 
 def test_contour_source_rejects_types_with_no_buffer_meaning() -> None:
