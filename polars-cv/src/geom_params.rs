@@ -9,7 +9,7 @@
 //!
 //! Position alone is not enough to identify those inputs, because several of
 //! these functions already read *optional* data operands positionally
-//! (`point_rotate`'s `origin`, `bbox_match_detections`' `scores`) — an appended
+//! (`point_rotate`'s `origin`, `bbox_correspond`'s `order`) — an appended
 //! parameter would be indistinguishable from an omitted operand. Looking every
 //! variable input up by name removes the ambiguity.
 //!
@@ -160,3 +160,15 @@ impl<'a> GeomParams<'a> {
     }
 }
 
+/// Validate a resolved parameter that must lie within an inclusive range.
+///
+/// Per-row parameters cannot be range-checked once per batch, so the check
+/// moves into the row loop and names the offending row.
+pub fn check_range(name: &str, value: f64, lo: f64, hi: f64, row: usize) -> PolarsResult<()> {
+    if !(lo..=hi).contains(&value) {
+        polars_bail!(ComputeError:
+            "{} must be in [{}, {}], got {} at row {}", name, lo, hi, value, row
+        );
+    }
+    Ok(())
+}

@@ -18,10 +18,8 @@ class BBoxNamespace(_GeomNullPolicy, _PluginNamespace):
 
         df.with_columns(
             iou_matrix=pl.col("pred_bboxes").bbox.pairwise_iou(pl.col("gt_bboxes")),
-            match_result=pl.col("pred_bboxes").bbox.match_detections(
-                pl.col("gt_bboxes"),
-                threshold=0.5,
-                scores=pl.col("pred_scores"),
+            pairs=pl.col("pred_bboxes").bbox.correspond(
+                pl.col("gt_bboxes"), threshold=0.5
             ),
         )
     """
@@ -37,3 +35,31 @@ class BBoxNamespace(_GeomNullPolicy, _PluginNamespace):
         """
         return self._plugin("bbox_pairwise_iou", args=[other])
 
+    def correspond(
+        self,
+        other: pl.Expr,
+        *,
+        threshold: float | pl.Expr = 0.5,
+        order: pl.Expr | None = None,
+    ) -> pl.Expr:
+        """Pair each bbox with at most one bbox in *other*, by overlap.
+
+        The bounding-box form of :meth:`polars_cv.geometry.ContourNamespace.correspond`,
+        running the same engine rule, so the two agree on ordering, exclusivity,
+        ties and the threshold bound.
+
+        Args:
+            other: Bbox-set expression to pair against (``List[BBOX_SCHEMA]``).
+            threshold: Minimum IoU for a pairing. Accepts a Polars expression
+                for a per-row threshold.
+            order: Optional per-row list of indices giving the visit sequence,
+                a permutation of ``0..n``. Defaults to natural order.
+
+        Returns:
+            A struct matching :data:`polars_cv.CORRESPONDENCE_SCHEMA`.
+        """
+        binder = _ArgBinder()
+        binder.add_data("other", other)
+        binder.add_data("order", order)
+        binder.add_param("threshold", threshold)
+        return binder.call(self, "bbox_correspond")

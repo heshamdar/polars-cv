@@ -104,10 +104,12 @@ def contour_demo(df: pl.DataFrame) -> None:
         pairwise=pl.col("contour_set_pred").contour.pairwise_iou(
             pl.col("contour_set_gt")
         ),
-        matches=pl.col("contour_set_pred").contour.match_detections(
+        matches=pl.col("contour_set_pred").contour.correspond(
             pl.col("contour_set_gt"),
             threshold=0.4,
-            scores=pl.col("pred_scores"),
+            order=pl.col("pred_scores").list.eval(
+            pl.element().rank(method="ordinal", descending=True).arg_sort()
+        ),
         ),
     )
     print("\nContour ops:")
@@ -118,10 +120,12 @@ def bbox_demo(df: pl.DataFrame) -> None:
     """Run bbox namespace operations."""
     out = df.select(
         bbox_iou=pl.col("bbox_set_pred").bbox.pairwise_iou(pl.col("bbox_set_gt")),
-        bbox_match=pl.col("bbox_set_pred").bbox.match_detections(
+        bbox_match=pl.col("bbox_set_pred").bbox.correspond(
             pl.col("bbox_set_gt"),
             threshold=0.4,
-            scores=pl.col("pred_scores"),
+            order=pl.col("pred_scores").list.eval(
+            pl.element().rank(method="ordinal", descending=True).arg_sort()
+        ),
         ),
     )
     print("\nBBox ops:")

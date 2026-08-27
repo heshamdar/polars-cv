@@ -154,6 +154,9 @@ CONTOUR_CASES: dict[str, object] = {
     "flip": lambda: pl.col("a").contour.flip(),
     "ensure_winding": lambda: pl.col("a").contour.ensure_winding("ccw"),
     "pairwise_iou": lambda: pl.col("aset").contour.pairwise_iou(pl.col("bset")),
+    "correspond": lambda: pl.col("aset").contour.correspond(
+        pl.col("bset"), threshold=0.5
+    ),
 }
 CONTOUR_EXEMPT = {
     "on_null": "a policy setter, not an expression",
@@ -186,6 +189,9 @@ POINT_EXEMPT = {"on_null": "a policy setter, not an expression"}
 
 BBOX_CASES: dict[str, object] = {
     "pairwise_iou": lambda: pl.col("baset").bbox.pairwise_iou(pl.col("bbset")),
+    "correspond": lambda: pl.col("baset").bbox.correspond(
+        pl.col("bbset"), threshold=0.5
+    ),
 }
 BBOX_EXEMPT = {"on_null": "a policy setter, not an expression"}
 
@@ -245,6 +251,7 @@ SET_ARITY_EXEMPT = {
     # repack — a lone contour read as a set of one — is covered by
     # `test_set_level_accessors_take_a_lone_contour`.
     "pairwise_iou": "already takes sets on both sides",
+    "correspond": "already takes sets on both sides",
     # Two contour operands, so the shared frame would make *both* sides sets,
     # which is refused by construction. Swept as set x single below instead.
     "iou": "two contour operands; swept as set x single below",

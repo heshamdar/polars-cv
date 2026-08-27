@@ -123,7 +123,7 @@ class _ArgBinder:
 
     Position alone cannot identify those inputs. Several of these functions
     already read *optional* data operands positionally (``point.rotate``'s
-    ``origin``, ``match_detections``' ``scores``), so an appended parameter
+    ``origin``, ``correspond``' ``order``), so an appended parameter
     would be indistinguishable from an omitted operand. Every variable
     argument — data operand and dynamic parameter alike — is therefore
     registered in ``input_slots``, a ``name -> index`` map passed as a kwarg,

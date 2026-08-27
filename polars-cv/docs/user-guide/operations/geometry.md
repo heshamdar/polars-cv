@@ -24,9 +24,9 @@ too.
 
 On `.contour`: `normalize`, `to_absolute`, `translate`, `scale` (`sx`, `sy` and
 `origin`), `simplify`, `ensure_winding(direction=)`, `area(signed=)`,
-`label_reduce(reduction=, region_mode=)` and `match_detections(threshold=)`.
+`label_reduce(reduction=, region_mode=)` and `correspond(threshold=)`.
 On `.point`: `normalize`, `to_absolute`, `translate`, `scale`, `rotate(angle=)`
-and `interpolate(t=)`. On `.bbox`: `match_detections(threshold=)`.
+and `interpolate(t=)`. On `.bbox`: `correspond(threshold=)`.
 
 An aggregation broadcasts, matching Polars' own semantics — `pl.col("w").max()`
 produces one value applied to every row.
@@ -90,7 +90,7 @@ whichever side the set is on. A set on *both* sides raises rather than guessing,
 because it could mean the N×M matrix (`pairwise_iou`) or an index-wise pairing
 (`.explode()` one side), and those are different answers.
 
-The set-level accessors (`pairwise_iou`, `match_detections`, `label_reduce`) run
+The set-level accessors (`pairwise_iou`, `correspond`, `label_reduce`) run
 the rule backwards: a lone contour is read as a set of one.
 
 ### Measurements
@@ -240,19 +240,30 @@ df.with_columns(
 )
 ```
 
-### Detection Matching
+### Correspondence
 
-Greedy one-to-one matching between predicted and ground-truth bounding boxes:
+Greedy one-to-one pairing between two bbox sets, by overlap. Boxes are visited
+in `order` and each takes the highest-IoU partner not already taken:
 
 ```python
 df.with_columns(
-    match_result=pl.col("pred_bboxes").bbox.match_detections(
+    pairs=pl.col("pred_bboxes").bbox.correspond(
         pl.col("gt_bboxes"),
         threshold=0.5,
-        scores=pl.col("pred_scores"),
+        # Visit highest-confidence first. `correspond` only sees overlap, so
+        # what "confidence" means -- and that it should decide the order -- is
+        # yours to say. Omit `order` to visit in natural order.
+        order=pl.col("pred_scores").list.eval(
+            pl.element().rank(method="ordinal", descending=True).arg_sort()
+        ),
     ),
 )
 ```
+
+The result is a struct matching `CORRESPONDENCE_SCHEMA`: `right_idx` (the
+partner's index, null where unpaired) and `overlap` (its IoU), both positionally
+aligned with the left column. Counting how many pairings your dataset contains
+is a question about your dataset, so `correspond` does not answer it.
 
 ---
 

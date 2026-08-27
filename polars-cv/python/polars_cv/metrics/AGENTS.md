@@ -35,8 +35,8 @@ Supports IoU re-thresholding via `at_iou_threshold()`, class filtering via `filt
 
 | Matcher | Input | Uses |
 |---------|-------|------|
-| `ContourMatcher` | heatmap + binary mask (blob, list, or array) | `Pipeline().threshold().extract_contours()`, `contour.match_detections()` |
-| `BBoxMatcher` | `List[BBOX_SCHEMA]` columns | Rust `bbox_match_detections` plugin |
+| `ContourMatcher` | heatmap + binary mask (blob, list, or array) | `Pipeline().threshold().extract_contours()`, `contour.correspond()` |
+| `BBoxMatcher` | `List[BBOX_SCHEMA]` columns | `bbox.correspond()`, ordered by confidence here |
 | `PreMatchedAdapter` | pre-computed TP/FP per detection | Direct DataFrame wrapping |
 
 ## AUC API

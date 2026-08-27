@@ -148,6 +148,19 @@ def generate() -> str:
     lines.append("NUMPY_BY_WIRE_CODE: dict[int, str] = {\n")
     for _, _, code, numpy in sorted(rows, key=lambda row: row[2]):
         lines.append(f"    {code}: {numpy!r},\n")
+    lines.append("}\n\n")
+    lines.append(
+        "#: numpy name -> engine short name. The hop a caller needs to name the\n"
+        "#: dtype of a column it is about to hand to ``source(dtype=)``: a Polars\n"
+        "#: type spells itself the numpy way, the engine spells itself the short\n"
+        "#: way. ``polars_cv.dtype_name_for`` is the public face of this table.\n"
+        "#: It exists because metrics kept a hand-written copy of exactly this\n"
+        "#: correspondence, guarded by a test that reached into a private to\n"
+        "#: compare it against `dtype_table!`.\n"
+    )
+    lines.append("NUMPY_TO_SHORT: dict[str, str] = {\n")
+    for _, short, _, numpy in sorted(rows, key=lambda row: row[3]):
+        lines.append(f"    {numpy!r}: {short!r},\n")
     lines.append("}\n")
     return ruff_format("".join(lines), filename="_dtype_names.py")
 

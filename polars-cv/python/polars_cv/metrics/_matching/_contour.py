@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from ...geometry.schemas import CONTOUR_SET_SCHEMA
+from ..._types import dtype_name_for
+from ...geometry.schemas import CONTOUR_SET_SCHEMA, CORRESPONDENCE_SCHEMA
 from ...pipeline import Pipeline
 from .._types import (
     COL_CLASS_ID,
@@ -32,9 +33,15 @@ from .._types import (
 if TYPE_CHECKING:
     pass
 
+#: Field names read off the published schema rather than spelled again here.
+#: A private copy of this struct's layout is exactly what the correspondence
+#: refactor removed; re-typing the names would restore it in miniature.
+_RIGHT_IDX, _OVERLAP = (f.name for f in CORRESPONDENCE_SCHEMA.fields)
+
 # ---------------------------------------------------------------------------
 # Source format detection
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class _SourceInfo:
@@ -91,12 +98,17 @@ def _detect_source_info(schema: dict[str, pl.DataType], col: str) -> _SourceInfo
 
     # Nested columns are the only case where Polars knows something Rust cannot
     # infer at plan time: the leaf element dtype, which a typed source needs
-    # before any data moves. `_polars_dtype_to_cv` raises for leaves with no
-    # buffer meaning (String, Duration), which stays a Polars-side check
-    # because it is a Polars type that is wrong.
+    # before any data moves. `dtype_name_for` is polars-cv's public naming of
+    # that hop and raises for leaves with no buffer meaning (String, Duration);
+    # metrics used to keep its own copy of the table it reads.
     if isinstance(dtype, (pl.List, pl.Array)):
         leaf = _leaf_dtype(dtype)
-        return _SourceInfo(kwargs={"dtype": _polars_dtype_to_cv(leaf, col)})
+        try:
+            return _SourceInfo(kwargs={"dtype": dtype_name_for(leaf)})
+        except ValueError as exc:
+            # Name the column: the caller supplied it and can change it, and
+            # the shared accessor only knows about the type.
+            raise ValueError(f"Column {col!r}: {exc}") from None
 
     # Everything else — Binary above all — goes to `auto` unqualified. An
     # unroutable dtype is rejected there, by the same code that rejects it for
@@ -286,6 +298,25 @@ def _score_contours_from_heatmap(
     )
 
 
+def _confidence_order(scores_col: str) -> pl.Expr:
+    """Visit order for `correspond`: highest confidence first, ties by index.
+
+    The engine takes a permutation, not scores -- deriving one from confidence
+    is a detection-evaluation choice and belongs here rather than in the CV
+    layer. ``rank(method="ordinal")`` assigns *distinct* ranks in order of
+    appearance, so the ``arg_sort`` that inverts it into a visit order has no
+    ties left to resolve. Sorting the scores directly instead would lean on
+    ``arg_sort`` being stable, which this Polars neither documents nor exposes
+    a ``maintain_order`` flag for -- and the tie-break is exactly what decides
+    which of two equally-confident detections claims a target.
+    """
+    return (
+        pl.col(scores_col)
+        .list.eval(pl.element().rank(method="ordinal", descending=True).arg_sort())
+        .cast(pl.List(pl.UInt32))
+    )
+
+
 def _filter_zero_score_detections(lf: pl.LazyFrame) -> pl.LazyFrame:
     """Remove zero-score contours *before* matching.
 
@@ -326,33 +357,43 @@ def _validate_match_alignment(
     matched_lf: pl.LazyFrame,
     *,
     image_id_col: str,
-    pred_idx_col: str = "pred_idx",
+    scores_col: str,
     gt_idx_col: str = "gt_idx",
 ) -> None:
-    """Raise if match payload lists are misaligned.
+    """Raise if a row's match payload is not aligned with its predictions.
+
+    ``correspond`` returns lists positionally aligned with the predictions it
+    was given, so one score per pairing. The check used to compare two payload
+    lists against *each other*, which the engine built from one result and so
+    could never disagree; comparing against the score list is the alignment the
+    explode below actually depends on.
 
     Args:
         matched_lf: Lazy frame containing match results.
         image_id_col: Image identifier column.
-        pred_idx_col: Prediction index list column.
-        gt_idx_col: GT index list column.
+        scores_col: Prediction score list column.
+        gt_idx_col: Matched-index list column.
 
     Raises:
         ValueError: If any row has mismatched list lengths.
     """
     mismatch = (
         matched_lf.with_columns(
-            _pred_len=pl.col(pred_idx_col).list.len().fill_null(0),
-            _gt_len=pl.col(gt_idx_col).list.len().fill_null(0),
+            _pred_len=pl.col(scores_col).list.len().fill_null(0),
+            _gt_len=pl.col(gt_idx_col).list.len(),
         )
-        .filter(pl.col("_pred_len") != pl.col("_gt_len"))
+        # A null payload is the "no ground truth at all" row, filled in by the
+        # explode; only a *present* payload of the wrong length is misalignment.
+        .filter(
+            pl.col("_gt_len").is_not_null() & (pl.col("_pred_len") != pl.col("_gt_len"))
+        )
         .select(image_id_col, "_pred_len", "_gt_len")
         .limit(5)
         .collect(engine="streaming")
     )
     if mismatch.height > 0:
         raise ValueError(
-            "Matched prediction-index and GT-index lists are misaligned. "
+            "Match payload is not aligned with the prediction list. "
             f"Examples: {mismatch.to_dicts()}"
         )
 
@@ -362,7 +403,6 @@ def _explode_match_to_detections(
     *,
     image_id_col: str,
     scores_col: str,
-    pred_idx_col: str,
     gt_idx_col: str,
     iou_col: str,
     class_id: str,
@@ -373,34 +413,41 @@ def _explode_match_to_detections(
         image_level: One row per image with list columns.
         image_id_col: Image identifier column.
         scores_col: Score list column.
-        pred_idx_col: Prediction index list column.
-        gt_idx_col: GT index list column.
+        gt_idx_col: Matched-index list column.
         iou_col: IoU list column.
         class_id: Class label to assign.
 
     Returns:
         Per-detection lazy frame with canonical column names.
     """
-    det_base = (
-        image_level.select(
-            image_id_col,
-            _scores=pl.col(scores_col),
-            _det_ord=pl.int_ranges(0, pl.col(scores_col).list.len()),
-        )
-        .explode("_scores", "_det_ord", empty_as_null=True)
-        .with_columns(_det_ord=pl.col("_det_ord").cast(pl.UInt32))
+    # A row whose ground-truth column was null gets a null payload, because
+    # `correspond` declines to answer when an operand is null. Metrics has
+    # already decided what a null GT column means -- `_n_gts` reads it as zero
+    # -- so the payload follows: no pairings, one per prediction. Without this
+    # the predictions on a ground-truth-free image would vanish instead of
+    # counting as false positives, which is exactly what they are.
+    unpaired = pl.col(gt_idx_col).is_null()
+    payload = image_level.select(
+        image_id_col,
+        _scores=pl.col(scores_col),
+        _gt_idx=pl.when(unpaired)
+        .then(pl.col(scores_col).list.eval(pl.lit(None, dtype=pl.UInt32)))
+        .otherwise(pl.col(gt_idx_col)),
+        _iou=pl.when(unpaired)
+        .then(pl.col(scores_col).list.eval(pl.lit(0.0)))
+        .otherwise(pl.col(iou_col)),
+        _det_ord=pl.int_ranges(0, pl.col(scores_col).list.len()),
     )
-    match_pairs = (
-        image_level.select(
-            image_id_col,
-            _det_ord=pl.col(pred_idx_col),
-            _gt_idx=pl.col(gt_idx_col),
-            _iou=pl.col(iou_col),
-        )
-        .explode("_det_ord", "_gt_idx", "_iou", empty_as_null=True)
-        .with_columns(_det_ord=pl.col("_det_ord").cast(pl.UInt32))
-    )
-    return det_base.join(match_pairs, on=[image_id_col, "_det_ord"], how="left").select(
+
+    # One explode, no join. The payload is positionally aligned with the
+    # scores, so the ordinal is just the position -- the join this replaced
+    # existed only to match a `pred_idx` column back up with it, and that
+    # column was `0..n` spelled out.
+    return (
+        payload.explode(
+            "_scores", "_gt_idx", "_iou", "_det_ord", empty_as_null=True
+        ).with_columns(_det_ord=pl.col("_det_ord").cast(pl.UInt32))
+    ).select(
         pl.col(image_id_col).alias(COL_IMAGE_ID),
         pl.lit(class_id).alias(COL_CLASS_ID),
         pl.col("_scores").alias(COL_SCORE),
@@ -422,7 +469,7 @@ class ContourMatcher:
     This is the refactored version of the original ``prepare_detection_table``
     from ``_prepare.py``.  It extracts contours from both predictions and GT
     masks, scores predictions against the heatmap, and runs greedy IoU matching
-    via ``.contour.match_detections()``.
+    via ``.contour.correspond()``.
 
     Args:
         iou_threshold: IoU threshold for TP matching.
@@ -576,10 +623,14 @@ class ContourMatcher:
         # contour cannot claim a GT object during greedy assignment.
         prepared = _filter_zero_score_detections(prepared)
 
-        # BROKEN BY DELETION: `.contour.match_detections()` is gone. Its
-        # replacement takes a walk order rather than scores, and returns
-        # right_idx/overlap rather than gt_idx/iou plus five dead counts.
+        # Pair predictions with GT contours. The order is ours to choose;
+        # `correspond` only knows about overlap.
         prepared = prepared.with_columns(
+            _match=pl.col("_pred_contours").contour.correspond(
+                pl.col("_gt_contours"),
+                threshold=self._iou_threshold,
+                order=_confidence_order("_pred_scores"),
+            ),
             _n_gts=pl.col("_gt_contours").list.len().fill_null(0).cast(pl.Int64),
         )
 
@@ -589,9 +640,8 @@ class ContourMatcher:
             COL_WEIGHT,
             "_pred_scores",
             "_n_gts",
-            pred_idx=pl.col("_match").struct.field("pred_idx"),
-            gt_idx=pl.col("_match").struct.field("gt_idx"),
-            iou=pl.col("_match").struct.field("iou"),
+            gt_idx=pl.col("_match").struct.field(_RIGHT_IDX),
+            iou=pl.col("_match").struct.field(_OVERLAP),
             _gt_label=(pl.col("_gt_contours").list.len().fill_null(0) > 0),
             **(
                 {COL_CLASS_ID: pl.col(class_col).cast(pl.String)}
@@ -615,6 +665,7 @@ class ContourMatcher:
         _validate_match_alignment(
             image_level_df.lazy(),
             image_id_col=COL_IMAGE_ID,
+            scores_col="_pred_scores",
         )
 
         # Explode into per-detection rows and drop null-score rows (images
@@ -624,7 +675,6 @@ class ContourMatcher:
             image_level_df.lazy(),
             image_id_col=COL_IMAGE_ID,
             scores_col="_pred_scores",
-            pred_idx_col="pred_idx",
             gt_idx_col="gt_idx",
             iou_col="iou",
             class_id=DEFAULT_CLASS,
@@ -637,7 +687,6 @@ class ContourMatcher:
                     image_level_df.lazy(),
                     image_id_col=COL_IMAGE_ID,
                     scores_col="_pred_scores",
-                    pred_idx_col="pred_idx",
                     gt_idx_col="gt_idx",
                     iou_col="iou",
                     class_id=DEFAULT_CLASS,

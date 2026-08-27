@@ -79,3 +79,23 @@ NUMPY_BY_WIRE_CODE: dict[int, str] = {
     9: "uint64",
     10: "int64",
 }
+
+#: numpy name -> engine short name. The hop a caller needs to name the
+#: dtype of a column it is about to hand to ``source(dtype=)``: a Polars
+#: type spells itself the numpy way, the engine spells itself the short
+#: way. ``polars_cv.dtype_name_for`` is the public face of this table.
+#: It exists because metrics kept a hand-written copy of exactly this
+#: correspondence, guarded by a test that reached into a private to
+#: compare it against `dtype_table!`.
+NUMPY_TO_SHORT: dict[str, str] = {
+    "float32": "f32",
+    "float64": "f64",
+    "int16": "i16",
+    "int32": "i32",
+    "int64": "i64",
+    "int8": "i8",
+    "uint16": "u16",
+    "uint32": "u32",
+    "uint64": "u64",
+    "uint8": "u8",
+}

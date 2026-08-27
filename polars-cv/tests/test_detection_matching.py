@@ -262,15 +262,21 @@ class TestPolarsNativeComposition:
         )
 
         matched = df.with_columns(
-            match=pl.col("preds").contour.match_detections(
-                pl.col("gts"), threshold=0.5, scores=pl.col("scores")
+            match=pl.col("preds").contour.correspond(
+                pl.col("gts"),
+                threshold=0.5,
+                # Highest confidence first: the visit order is the caller's to
+                # choose, and "confidence" is a meaning only this layer knows.
+                order=pl.col("scores").list.eval(
+                    pl.element().rank(method="ordinal", descending=True).arg_sort()
+                ),
             )
         )
 
         per_det = matched.select(
             "image_id",
-            pl.col("match").struct.field("gt_idx"),
-            pl.col("scores"),
+            gt_idx=pl.col("match").struct.field("right_idx"),
+            scores=pl.col("scores"),
         ).explode("gt_idx", "scores", empty_as_null=True)
 
         thresholds = pl.DataFrame({"threshold": [0.2, 0.8]})

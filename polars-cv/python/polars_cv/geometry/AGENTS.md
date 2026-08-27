@@ -15,8 +15,8 @@ Geometry data is represented as Polars Struct columns with well-defined schemas.
 |------|---------------|
 | `__init__.py` | Re-exports schemas and `BBoxNamespace` |
 | `bbox.py` | `BBoxNamespace` (`.bbox`) — pairwise IoU, match detections for bounding boxes |
-| `schemas.py` | Schema constants (`POINT_SCHEMA`, `CONTOUR_SCHEMA`, `CONTOUR_SET_SCHEMA`, `MATCH_RESULT_SCHEMA`, `BBOX_SCHEMA`, etc.), validation helpers, factory functions |
-| `contours.py` | `ContourNamespace` (`.contour`) — area, perimeter, centroid, bounding_box, IoU/Dice/Hausdorff, set-level matching (`pairwise_iou`, `match_detections`), and heatmap scoring (`label_reduce`) |
+| `schemas.py` | Schema constants (`POINT_SCHEMA`, `CONTOUR_SCHEMA`, `CONTOUR_SET_SCHEMA`, `CORRESPONDENCE_SCHEMA`, `BBOX_SCHEMA`, etc.), validation helpers, factory functions |
+| `contours.py` | `ContourNamespace` (`.contour`) — area, perimeter, centroid, bounding_box, IoU/Dice/Hausdorff, set-level correspondence (`pairwise_iou`, `correspond`), and heatmap scoring (`label_reduce`) |
 | `points.py` | `PointNamespace` (`.point`) — normalize, to_absolute, translate, scale, rotate, distance, angle_to, etc. |
 
 ## Schemas
@@ -68,16 +68,16 @@ Registered on `pl.Expr` for columns matching `CONTOUR_SCHEMA`. Each method calls
 
 Set-level detection helpers also live here and operate on `CONTOUR_SET_SCHEMA`:
 - `pairwise_iou(other)` -> `List[List[Float64]]`
-- `match_detections(other, threshold, scores)` -> `MATCH_RESULT_SCHEMA`
+- `correspond(other, threshold, order)` -> `CORRESPONDENCE_SCHEMA`
 - `label_reduce(heatmap, reduction, region_mode)` -> `List[Float64]`
 
 ### `.bbox` (BBoxNamespace)
 
 Registered on `pl.Expr` for columns containing `List[BBOX_SCHEMA]`. Methods:
 - `pairwise_iou(other)` -> `List[List[Float64]]`
-- `match_detections(other, threshold, scores)` -> `MATCH_RESULT_SCHEMA`
+- `correspond(other, threshold, order)` -> `CORRESPONDENCE_SCHEMA`
 
-These delegate to Rust functions `bbox_pairwise_iou` and `bbox_match_detections`
+These delegate to Rust functions `bbox_pairwise_iou` and `bbox_correspond`
 which internally convert bounding boxes to rectangular contours and reuse the
 existing contour matching logic. Used by `BBoxMatcher` in the metrics subsystem.
 
@@ -101,7 +101,7 @@ these namespaces inherit the graph engine's dtype coverage, scalar broadcasting
 and null-as-error policy for free.
 
 **Look inputs up by name, never by position.** Several of these functions take
-*optional* data operands (`match_detections`' `scores`, `point.rotate`'s
+*optional* data operands (`correspond`'s `order`, `point.rotate`'s
 `origin`). With per-row parameters also occupying input slots, an appended
 parameter is otherwise indistinguishable from an omitted operand. Register the
 data operands in the map too (`binder.add_data("scores", scores)`) and read them
@@ -113,7 +113,7 @@ rather than carry a value stay literal kwargs (`scale`'s `origin`,
 
 Validation that can no longer happen once per batch moves into the row loop and
 names the offending row — see the `threshold` range check in
-`contour_match_detections` and the zero-dimension guard in `point_normalize`.
+`contour_correspond` and the zero-dimension guard in `point_normalize`.
 
 **Keep signatures honest.** These namespaces have no generated stub, and
 their *annotations* have no parity test — the schema they publish does
@@ -135,7 +135,7 @@ API reference.
 
 ## Schema export policy
 
-- `ANNOTATED_POINT_SCHEMA` and `MATCH_RESULT_SCHEMA` are deliberately geometry-only exports (`polars_cv.geometry.ANNOTATED_POINT_SCHEMA`): they describe internal match-result structures, unlike the six user-facing geometry schemas re-exported at the package top level. Import them from `polars_cv.geometry` when needed.
+- `ANNOTATED_POINT_SCHEMA` is a deliberately geometry-only export (`polars_cv.geometry.ANNOTATED_POINT_SCHEMA`): it describes an internal structure, unlike the user-facing geometry schemas re-exported at the package top level. Import it from `polars_cv.geometry` when needed. `CORRESPONDENCE_SCHEMA` is *not* in that category and is exported at the top level: keeping the old match-result schema geometry-only is why the metrics matchers read its fields by string literal instead of from the declaration.
 
 ## Arity: one contour or a set of them
 
@@ -153,7 +153,7 @@ on one side and a single contour on the other gives one result per contour,
 whichever side the set is on. A set on *both* sides **raises** — it could mean
 the N×M matrix (`pairwise_iou`) or an index-wise pairing (`.explode()` one
 side), and guessing between two different answers is the fallback behaviour this
-codebase removes. The set-level accessors (`pairwise_iou`, `match_detections`,
+codebase removes. The set-level accessors (`pairwise_iou`, `correspond`,
 `label_reduce`) run the same rule backwards: a lone contour is read as a set of
 one, via `parse_contour_set`.
 

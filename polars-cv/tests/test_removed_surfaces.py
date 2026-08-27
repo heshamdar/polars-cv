@@ -352,35 +352,98 @@ def test_the_benchmark_does_not_restate_a_deleted_concurrency_constant() -> None
 
 
 # ---------------------------------------------------------------------------
-# match_detections(strategy=): validated against one legal value, then dropped
+# match_detections: an evaluation protocol that had colonised the CV layers
 # ---------------------------------------------------------------------------
 
 
-def test_match_detections_has_no_strategy_parameter() -> None:
-    """Neither ``.contour.match_detections`` nor ``.bbox.match_detections``
-    may accept ``strategy``.
+def test_match_detections_is_gone_from_both_namespaces() -> None:
+    """Neither geometry namespace may offer ``match_detections`` again.
 
-    It was typed ``Literal["greedy"] = "greedy"`` on both namespaces, rode the
-    wire as ``ContourKwargs.strategy``, and was never read to select anything —
-    the greedy policy is unconditional, in the ``match_from_matrix`` both
-    matchers share. The contour entry point checked the value was ``"greedy"``
-    and threw it away; the bbox entry point did not check at all, so
-    ``.bbox.match_detections(strategy="hungarian")`` was accepted, ignored, and
-    matched greedily.
+    It performed greedy one-to-one assignment walked in descending *confidence*
+    order -- the COCO/PASCAL evaluation protocol -- from inside a crate whose
+    job is strided arrays. Its replacement, ``correspond``, runs the same rule
+    over the same overlap matrix but takes a visit *order* instead of scores,
+    so deciding that confidence is what orders the walk stays with the caller
+    who knows what the contours mean.
 
-    That is the shape `CLAUDE.md` bans outright — a parameter accepted and
-    ignored is not free, and the graph path already rejects it mechanically via
-    ``OpParams::unread()``. A caller that passes it now gets a TypeError.
+    This also subsumes the old ``strategy=`` guard: that parameter was typed
+    ``Literal["greedy"]``, rode the wire unread, and selected nothing. There is
+    no method left for it to sit on.
     """
     from polars_cv.geometry.bbox import BBoxNamespace
     from polars_cv.geometry.contours import ContourNamespace
 
     for namespace in (ContourNamespace, BBoxNamespace):
-        params = inspect.signature(namespace.match_detections).parameters
-        assert "strategy" not in params, (
-            f"{namespace.__name__}.match_detections accepts 'strategy' again; "
-            "it selects nothing -- the greedy policy lives in match_from_matrix."
+        # Probe first: an absence assertion is equally true of a namespace that
+        # lost every set-level accessor, or was renamed out from under this.
+        assert hasattr(namespace, "correspond"), (
+            f"probe is broken: {namespace.__name__} has no `correspond`"
         )
+        assert not hasattr(namespace, "match_detections"), (
+            f"{namespace.__name__}.match_detections is back; detection matching "
+            "is `correspond` plus an order the caller chooses."
+        )
+
+
+def test_the_correspondence_result_carries_no_counts() -> None:
+    """``n_tp`` / ``n_fp`` / ``n_fn`` / ``pred_idx`` must not come back.
+
+    All four were computed per row, published in the result schema, documented
+    on two accessors -- and read by nothing in the repository. The accessor
+    docstrings even warned against reading them: per-row counts undercount
+    false negatives over any population containing ground-truth-bearing images
+    with no detections, which is precisely the population a detection metric
+    evaluates. ``pred_idx`` was worse than unread, it was ``0..n``: a second
+    copy of the position its own list was already indexed by.
+
+    Counting pairings is a question about a population, so it belongs to
+    whoever defines the population.
+    """
+    import polars_cv
+
+    schema = polars_cv.CORRESPONDENCE_SCHEMA
+    names = {f.name for f in schema.fields}
+    assert names == {"right_idx", "overlap"}, (
+        f"CORRESPONDENCE_SCHEMA publishes {sorted(names)}; it is the pairing "
+        "and its overlap, nothing about how many pairings a population holds."
+    )
+
+    contour_rs = (
+        Path(__file__).resolve().parents[1] / "src" / "contour.rs"
+    ).read_text()
+    assert "fn correspondence_fields()" in contour_rs, (
+        "probe is broken: correspondence_fields not found in src/contour.rs"
+    )
+    for dead in ("n_tp", "n_fp", "n_fn", "pred_idx"):
+        assert dead not in contour_rs, (
+            f"src/contour.rs names {dead!r} again -- nothing read it, and the "
+            "docs argued against reading it."
+        )
+
+
+@requires_checkout
+def test_the_engine_carries_no_detection_vocabulary() -> None:
+    """view-buffer must not learn what a detection is again.
+
+    The greedy matcher lived in the tensor engine, returning a struct whose
+    field names were true-positive counts. What the engine owns now is
+    ``greedy_assign``: an assignment over an overlap matrix that knows nothing
+    about detections, confidence or populations.
+    """
+    saw_replacement = False
+    for path in rust_sources():
+        text = path.read_text()
+        if "pub fn greedy_assign(" in text:
+            saw_replacement = True
+        for dead in ("DetectionMatchResult", "match_from_matrix", "fn score_order("):
+            assert dead not in text, (
+                f"{path.name} declares {dead} again; the visit order and the "
+                f"tallying belong above the CV layer, not inside it."
+            )
+    assert saw_replacement, (
+        "probe is broken: no source declares `greedy_assign`, so the sweep "
+        "above would pass over an engine with no assignment rule at all"
+    )
 
 
 def test_the_contour_kwargs_wire_field_is_gone() -> None:
