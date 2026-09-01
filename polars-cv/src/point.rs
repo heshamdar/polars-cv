@@ -619,65 +619,6 @@ fn point_interpolate(inputs: &[Series], kwargs: PointKwargs) -> PolarsResult<Ser
     build_point_series(series_a.name().clone(), x_results, y_results)
 }
 
-/// Parse bbox struct {x, y, width, height} from any supported AnyValue format.
-fn parse_bbox(value: &AnyValue) -> PolarsResult<(f64, f64, f64, f64)> {
-    match value {
-        AnyValue::StructOwned(boxed) => {
-            let (values, fields) = boxed.as_ref();
-            let mut x = None;
-            let mut y = None;
-            let mut w = None;
-            let mut h = None;
-
-            for (i, field) in fields.iter().enumerate() {
-                match field.name().as_str() {
-                    "x" => x = values.get(i).and_then(|v| v.try_extract::<f64>().ok()),
-                    "y" => y = values.get(i).and_then(|v| v.try_extract::<f64>().ok()),
-                    "width" => w = values.get(i).and_then(|v| v.try_extract::<f64>().ok()),
-                    "height" => h = values.get(i).and_then(|v| v.try_extract::<f64>().ok()),
-                    _ => {}
-                }
-            }
-
-            Ok((
-                x.unwrap_or(0.0),
-                y.unwrap_or(0.0),
-                w.unwrap_or(0.0),
-                h.unwrap_or(0.0),
-            ))
-        }
-        AnyValue::Struct(row_idx, struct_arr, fields) => {
-            let values = struct_arr.values();
-            let mut x = None;
-            let mut y = None;
-            let mut w = None;
-            let mut h = None;
-
-            for (i, field) in fields.iter().enumerate() {
-                if let Some(arr) = values.get(i) {
-                    if let Some(f64_arr) = arr.as_any().downcast_ref::<PrimitiveArray<f64>>() {
-                        match field.name().as_str() {
-                            "x" => x = f64_arr.get(*row_idx),
-                            "y" => y = f64_arr.get(*row_idx),
-                            "width" => w = f64_arr.get(*row_idx),
-                            "height" => h = f64_arr.get(*row_idx),
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            Ok((
-                x.unwrap_or(0.0),
-                y.unwrap_or(0.0),
-                w.unwrap_or(0.0),
-                h.unwrap_or(0.0),
-            ))
-        }
-        _ => Err(polars_err!(ComputeError: "Expected BBox struct")),
-    }
-}
-
 /// Check if point is within bounding box.
 #[polars_expr(output_type=Boolean)]
 fn point_within_bbox(inputs: &[Series]) -> PolarsResult<Series> {
@@ -694,9 +635,12 @@ fn point_within_bbox(inputs: &[Series]) -> PolarsResult<Series> {
             results.push(None);
         } else {
             let (px, py) = parse_point(&point_value)?;
-            let (bx, by, bw, bh) = parse_bbox(&bbox_value)?;
+            let bbox = crate::geom_schema::parse_bbox(&bbox_value)?;
 
-            let within = px >= bx && px <= bx + bw && py >= by && py <= by + bh;
+            let within = px >= bbox.x
+                && px <= bbox.x + bbox.width
+                && py >= bbox.y
+                && py <= bbox.y + bbox.height;
             results.push(Some(within));
         }
     }
