@@ -69,7 +69,7 @@ from .metrics import (
 )
 from .pipeline import Pipeline
 
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 
 def _source_hash_from_tree() -> str | None:
