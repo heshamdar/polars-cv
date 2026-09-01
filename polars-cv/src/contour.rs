@@ -6,7 +6,10 @@
 
 use polars::prelude::*;
 
-use crate::geom_schema::{point_anyvalue, point_struct_dtype};
+use crate::geom_schema::{
+    bbox_anyvalue, bbox_struct_dtype, contour_fields, parse_bbox, point_anyvalue,
+    point_struct_dtype,
+};
 use polars_arrow::array::{ListArray, PrimitiveArray, StructArray as ArrowStructArray};
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
@@ -89,24 +92,15 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
     )
     .unwrap_or_else(|_| Series::new_empty(PlSmallStr::from_static("holes"), &hole_list_schema));
 
-    // Create the outer contour struct
+    // Create the outer contour struct. The field layout is declared once in
+    // `geom_schema::contour_fields`; this reads it rather than re-spelling it.
     AnyValue::StructOwned(Box::new((
         vec![
             AnyValue::List(exterior_series),
             AnyValue::List(holes_series),
             AnyValue::Boolean(true), // is_closed: reserved, never read back
         ],
-        vec![
-            Field::new(
-                PlSmallStr::from_static("exterior"),
-                DataType::List(Box::new(point_schema.clone())),
-            ),
-            Field::new(
-                PlSmallStr::from_static("holes"),
-                DataType::List(Box::new(hole_list_schema)),
-            ),
-            Field::new(PlSmallStr::from_static("is_closed"), DataType::Boolean),
-        ],
+        contour_fields(),
     )))
 }
 
@@ -861,35 +855,9 @@ fn label_reduce_output_type(input_fields: &[Field]) -> PolarsResult<Field> {
 // Contour Plugin Functions - Measures
 // ============================================================================
 
-/// The `{x, y, width, height}` struct dtype a bbox-valued result publishes.
-fn bbox_struct_dtype() -> DataType {
-    DataType::Struct(bbox_struct_fields())
-}
-
-fn bbox_struct_fields() -> Vec<Field> {
-    vec![
-        Field::new(PlSmallStr::from_static("x"), DataType::Float64),
-        Field::new(PlSmallStr::from_static("y"), DataType::Float64),
-        Field::new(PlSmallStr::from_static("width"), DataType::Float64),
-        Field::new(PlSmallStr::from_static("height"), DataType::Float64),
-    ]
-}
-
-/// One bbox as a struct value matching [`bbox_struct_dtype`], or null.
-fn bbox_anyvalue(bbox: Option<BoundingBox>) -> AnyValue<'static> {
-    let Some(bbox) = bbox else {
-        return AnyValue::Null;
-    };
-    AnyValue::StructOwned(Box::new((
-        vec![
-            AnyValue::Float64(bbox.x),
-            AnyValue::Float64(bbox.y),
-            AnyValue::Float64(bbox.width),
-            AnyValue::Float64(bbox.height),
-        ],
-        bbox_struct_fields(),
-    )))
-}
+// The bbox `{x, y, width, height}` struct authority (`bbox_struct_dtype`,
+// `bbox_anyvalue`) and the per-row `parse_bbox` live in `geom_schema`, shared
+// with the point namespace so the two cannot spell the wire format differently.
 
 contour_accessor! {
     /// Compute contour area.
@@ -1273,33 +1241,8 @@ contour_accessor! {
 // BBox Matching Plugin Functions
 // ============================================================================
 
-/// Parse a single bbox struct AnyValue into a `BoundingBox`.
-fn parse_bbox(value: &AnyValue) -> PolarsResult<BoundingBox> {
-    match value {
-        AnyValue::StructOwned(boxed) => {
-            let (values, fields) = boxed.as_ref();
-            let mut x = 0.0_f64;
-            let mut y = 0.0_f64;
-            let mut width = 0.0_f64;
-            let mut height = 0.0_f64;
-            for (i, field) in fields.iter().enumerate() {
-                let f = values
-                    .get(i)
-                    .and_then(|v| v.try_extract::<f64>().ok())
-                    .unwrap_or(0.0);
-                match field.name().as_str() {
-                    "x" => x = f,
-                    "y" => y = f,
-                    "width" => width = f,
-                    "height" => height = f,
-                    _ => {}
-                }
-            }
-            Ok(BoundingBox::new(x, y, width, height))
-        }
-        _ => Err(polars_err!(ComputeError: "Expected bbox struct, got {:?}", value)),
-    }
-}
+// A single bbox struct parses via `geom_schema::parse_bbox` (imported above) --
+// the one per-row bbox parser, shared with the point namespace.
 
 /// Parse a List[BBOX_SCHEMA] AnyValue into a Vec<BoundingBox>.
 fn parse_bbox_list(value: &AnyValue) -> PolarsResult<Vec<BoundingBox>> {
@@ -1465,22 +1408,12 @@ mod parse_contour_tests {
 
     /// The dtype `extract_contours().sink("native")` emits, element-wise.
     fn contour_dtype() -> DataType {
-        // Reads the authority rather than restating it. The independent
-        // cross-check on this schema is Python's `POINT_SCHEMA`, held to Rust
-        // by `test_point_schema_matches_the_rust_declaration`; a second Rust
-        // spelling here would only add a place for a rename to miss.
-        let point = crate::geom_schema::point_struct_dtype();
-        DataType::Struct(vec![
-            Field::new(
-                PlSmallStr::from_static("exterior"),
-                DataType::List(Box::new(point.clone())),
-            ),
-            Field::new(
-                PlSmallStr::from_static("holes"),
-                DataType::List(Box::new(DataType::List(Box::new(point)))),
-            ),
-            Field::new(PlSmallStr::from_static("is_closed"), DataType::Boolean),
-        ])
+        // Reads the authority rather than restating it. The whole
+        // `{exterior, holes, is_closed}` layout lives in
+        // `geom_schema::contour_fields`; a second spelling here would only add
+        // a place for a rename to miss. Python's `CONTOUR_SCHEMA` is held to
+        // the same authority by `test_contour_schema_matches_the_rust_declaration`.
+        DataType::Struct(crate::geom_schema::contour_fields())
     }
 
     #[test]

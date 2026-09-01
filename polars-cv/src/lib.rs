@@ -50,6 +50,8 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
     m.add_function(wrap_pyfunction!(rotate_affine_params, m)?)?;
     Ok(())
 }
@@ -535,6 +537,34 @@ fn enum_names() -> Vec<String> {
 #[pyfunction]
 fn point_schema() -> Vec<String> {
     crate::geom_schema::POINT_FIELD_NAMES
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+/// The contour `{exterior, holes, is_closed}` field names, in wire order.
+///
+/// The sibling of [`point_schema`] for contours: read by
+/// `test_contour_schema_matches_the_rust_declaration`, which holds
+/// `geometry.schemas.CONTOUR_SCHEMA` to `geom_schema::CONTOUR_FIELD_NAMES` in
+/// both directions.
+#[pyfunction]
+fn contour_schema() -> Vec<String> {
+    crate::geom_schema::CONTOUR_FIELD_NAMES
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+/// The bbox `{x, y, width, height}` field names, in wire order.
+///
+/// The sibling of [`point_schema`] for bounding boxes: read by
+/// `test_bbox_schema_matches_the_rust_declaration`, which holds
+/// `geometry.schemas.BBOX_SCHEMA` to `geom_schema::BBOX_FIELD_NAMES` in both
+/// directions.
+#[pyfunction]
+fn bbox_schema() -> Vec<String> {
+    crate::geom_schema::BBOX_FIELD_NAMES
         .iter()
         .map(|s| (*s).to_string())
         .collect()

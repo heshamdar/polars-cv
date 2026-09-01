@@ -594,6 +594,11 @@ _REQUIRED_LIB_HOOKS = (
     # The `{x, y}` point struct authority, read by the geometry parity test so
     # Python's POINT_SCHEMA cannot drift from `geom_schema::point_fields`.
     "point_schema",
+    # The contour and bbox field-name authorities, the siblings of
+    # `point_schema` that hold Python's CONTOUR_SCHEMA / BBOX_SCHEMA to
+    # `geom_schema::{CONTOUR,BBOX}_FIELD_NAMES`.
+    "contour_schema",
+    "bbox_schema",
 )
 
 
@@ -2583,6 +2588,74 @@ class TestPointSchemaHasOneDeclaration:
         dtypes = {field.name: field.dtype for field in POINT_SCHEMA.fields}
         assert all(dtype == pl.Float64 for dtype in dtypes.values()), (
             f"point fields must be Float64 to match geom_schema::point_fields, "
+            f"got {dtypes}"
+        )
+
+
+@plugin_required
+class TestContourAndBboxSchemaHaveOneDeclaration:
+    """Contour and bbox structs are declared once in Rust, mirrored once in Python.
+
+    The same treatment the point struct has, extended to the other two geometry
+    structs. Before this, the contour `{exterior, holes, is_closed}` dtype was
+    spelled in `contour_to_anyvalue` and again in a test helper, `parse_bbox`
+    existed in both `point.rs` and `contour.rs`, and Python's CONTOUR_SCHEMA /
+    BBOX_SCHEMA were tied to Rust only by round-trip tests. Now Rust reads
+    `geom_schema::{contour,bbox}_fields`, and these tests hold the Python
+    mirrors to `geom_schema::{CONTOUR,BBOX}_FIELD_NAMES` — the FFIs are
+    decoration without them.
+    """
+
+    def test_contour_schema_matches_the_rust_declaration(self) -> None:
+        """CONTOUR_SCHEMA field names, held to the Rust authority both ways.
+
+        The sibling of the point guard for contours. Rust reads
+        `geom_schema::CONTOUR_FIELD_NAMES` (via `contour_to_anyvalue` and the
+        `contour_schema` FFI); Python declares CONTOUR_SCHEMA. The nested field
+        *dtypes* are pinned structurally by
+        `test_geometry_schemas.py::TestContourSchema`; this pins the names.
+        """
+        from polars_cv._lib import contour_schema
+
+        from polars_cv.geometry.schemas import CONTOUR_SCHEMA
+
+        rust_names = list(contour_schema())
+        python_names = [field.name for field in CONTOUR_SCHEMA.fields]
+
+        assert python_names == rust_names, (
+            f"CONTOUR_SCHEMA and geom_schema::contour_fields disagree: Python "
+            f"has {python_names}, Rust has {rust_names}. The Rust declaration in "
+            f"polars-cv/src/geom_schema.rs is the authority — change it there "
+            f"and mirror it here."
+        )
+
+    def test_bbox_schema_matches_the_rust_declaration(self) -> None:
+        """BBOX_SCHEMA field names, held to the Rust authority both ways."""
+        from polars_cv._lib import bbox_schema
+
+        from polars_cv.geometry.schemas import BBOX_SCHEMA
+
+        rust_names = list(bbox_schema())
+        python_names = [field.name for field in BBOX_SCHEMA.fields]
+
+        assert python_names == rust_names, (
+            f"BBOX_SCHEMA and geom_schema::bbox_fields disagree: Python has "
+            f"{python_names}, Rust has {rust_names}. The Rust declaration in "
+            f"polars-cv/src/geom_schema.rs is the authority — change it there "
+            f"and mirror it here."
+        )
+
+    def test_the_bbox_fields_are_all_float64(self) -> None:
+        """Names alone would let a dtype change pass unnoticed.
+
+        Rust's own `a_bbox_value_matches_the_published_dtype` covers its half;
+        this pins Python's, mirroring the point-field dtype guard above.
+        """
+        from polars_cv.geometry.schemas import BBOX_SCHEMA
+
+        dtypes = {field.name: field.dtype for field in BBOX_SCHEMA.fields}
+        assert all(dtype == pl.Float64 for dtype in dtypes.values()), (
+            f"bbox fields must be Float64 to match geom_schema::bbox_fields, "
             f"got {dtypes}"
         )
 
