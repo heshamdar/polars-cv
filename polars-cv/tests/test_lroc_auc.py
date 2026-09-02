@@ -160,6 +160,20 @@ class TestLrocAucGroupParity:
             )
             assert got[region] == pytest.approx(want, abs=_TOL)
 
+    def test_mann_whitney_detection_group_by_region(self) -> None:
+        # group_id lives only on the metadata; the detection-level path must join
+        # it onto the detections before grouping (regression: it used to crash).
+        table = _table().with_group("region")
+        grouped = lroc_auc(
+            table, method="mann_whitney", level="detection", group_by="group_id"
+        ).collect()
+        got = dict(zip(grouped["group_id"].to_list(), grouped["auc"].to_list()))
+        for region in ("g1", "g2"):
+            want = _v(
+                lroc_auc(_sub_table(region), method="mann_whitney", level="detection")
+            )
+            assert got[region] == pytest.approx(want, abs=_TOL)
+
 
 class TestLrocStandaloneHelpers:
     @pytest.mark.parametrize("fpf", [0.0, 0.25, 0.5, 1.0])

@@ -284,7 +284,9 @@ def _resolve_bootstrap_samples(
     return (
         samples.rename({COL_IMAGE_ID: "_entity"})
         .join(map_df, on="_entity", how="left")
-        .explode(COL_IMAGE_ID)  # every entity maps to >=1 image, so no empties
+        # every entity maps to >=1 image, so empty_as_null is a no-op here — set
+        # it explicitly to pin the Polars-2.0 behaviour and silence the warning.
+        .explode(COL_IMAGE_ID, empty_as_null=True)
         .select("bootstrap_id", COL_IMAGE_ID)
     )
 
@@ -361,6 +363,7 @@ def bootstrap_froc_auc(
     method: str = "trapezoidal",
     fp_range: tuple[float, float] | None = None,
     correction: str | None = None,
+    level: str = "detection",
     sample_col: str | None = None,
 ) -> BootstrapResult:
     """Vectorized, seed-reproducible bootstrap for FROC AUC.
@@ -378,6 +381,7 @@ def bootstrap_froc_auc(
         method: ``"trapezoidal"`` or ``"mann_whitney"``.
         fp_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
         correction: Partial-AUC correction (trapezoidal only).
+        level: Mann-Whitney granularity — ``"detection"`` or ``"image"``.
         sample_col: Optional entity column (e.g. ``"case_id"``) to resample at
             the entity level, expanding to images; ``None`` resamples images.
 
@@ -387,7 +391,9 @@ def bootstrap_froc_auc(
     from ._metrics import froc_auc
 
     point = (
-        froc_auc(table, method=method, fp_range=fp_range, correction=correction)
+        froc_auc(
+            table, method=method, fp_range=fp_range, correction=correction, level=level
+        )
         .collect()
         .item()
     )
@@ -406,6 +412,7 @@ def bootstrap_froc_auc(
         method=method,
         fp_range=fp_range,
         correction=correction,
+        level=level,
         group_by="bootstrap_id",
     )
     empty_value = 0.5 if method == "mann_whitney" else 0.0

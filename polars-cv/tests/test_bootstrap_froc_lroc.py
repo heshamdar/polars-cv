@@ -106,6 +106,20 @@ class TestBootstrapFrocReproducible:
         assert r.ci_lower == pytest.approx(point, abs=1e-9)
         assert r.ci_upper == pytest.approx(point, abs=1e-9)
 
+    @pytest.mark.parametrize("level", ["detection", "image"])
+    def test_mann_whitney_levels(self, level: str) -> None:
+        # Both MW levels are reachable through the bootstrap (image-level was
+        # previously not wired for FROC).
+        table = _mixed()
+        r = bootstrap_froc_auc(
+            table, n_bootstrap=50, seed=2, method="mann_whitney", level=level
+        )
+        assert len(r.distribution) == 50
+        assert r.ci_lower <= r.ci_upper
+        assert r.point_estimate == pytest.approx(
+            froc_auc(table, method="mann_whitney", level=level).collect().item()
+        )
+
 
 class TestBootstrapLrocReproducible:
     def test_same_seed_is_bit_identical(self) -> None:
