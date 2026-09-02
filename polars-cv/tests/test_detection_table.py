@@ -9,7 +9,6 @@ import polars as pl
 import pytest
 
 from polars_cv.metrics import BBoxMatcher, ContourMatcher, PreMatchedAdapter
-from polars_cv.metrics._matching._contour import _empty_detection_table
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -217,6 +216,18 @@ def _by_contour_matcher() -> DetectionTable:
     return ContourMatcher().match(_contour_inputs(), pred_col="pred", gt_col="gt")
 
 
+def _by_empty_contour_matcher() -> DetectionTable:
+    """The empty case: a matcher over an empty input frame.
+
+    The empty table no longer comes from a hand-written literal — it flows
+    through the same lazy matcher expressions as a populated match, so the two
+    cannot disagree about dtypes by construction.
+    """
+    return ContourMatcher().match(
+        _contour_inputs().clear(), pred_col="pred", gt_col="gt"
+    )
+
+
 def _by_bbox_matcher() -> DetectionTable:
     return BBoxMatcher().match(
         _bbox_inputs(), pred_col="pred", gt_col="gt", score_col="scores"
@@ -236,7 +247,7 @@ _PRODUCERS = {
     "ContourMatcher": _by_contour_matcher,
     "BBoxMatcher": _by_bbox_matcher,
     "PreMatchedAdapter": _by_prematched_adapter,
-    "empty": _empty_detection_table,
+    "empty": _by_empty_contour_matcher,
 }
 
 
