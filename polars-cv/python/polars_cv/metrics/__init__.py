@@ -11,7 +11,13 @@ This module provides a layered metrics system:
 
 from __future__ import annotations
 
-from ._bootstrap import BootstrapResult, bootstrap_metric_sequential, bootstrap_pr_auc
+from ._bootstrap import (
+    BootstrapResult,
+    bootstrap_froc_auc,
+    bootstrap_lroc_auc,
+    bootstrap_metric_sequential,
+    bootstrap_pr_auc,
+)
 from ._matching import BBoxMatcher, ContourMatcher, Matcher, PreMatchedAdapter
 from ._metrics import (
     ConfusionResult,
@@ -65,6 +71,8 @@ __all__ = [
     "LROCResult",
     "PrecisionRecallResult",
     # Bootstrap
+    "bootstrap_froc_auc",
+    "bootstrap_lroc_auc",
     "bootstrap_metric_sequential",
     "bootstrap_pr_auc",
 ]
