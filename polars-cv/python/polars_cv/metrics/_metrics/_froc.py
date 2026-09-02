@@ -593,6 +593,56 @@ def froc_auc(
     return collapsed.select(auc=auc_expr)
 
 
+def froc_sensitivity_at_fp(
+    table: DetectionTable,
+    fp_per_image: float,
+    *,
+    thresholds: list[float] | None = None,
+) -> float | None:
+    """Interpolate FROC sensitivity at a requested FP/image rate.
+
+    The lazy, standalone replacement for ``FROCResult.sensitivity_at_fp``. It
+    builds the curve via :func:`froc_curve_lazy` and interpolates with the shared
+    :class:`~polars_cv.metrics.MetricResult` geometry (upper-envelope, no
+    extrapolation).
+
+    Args:
+        table: Canonical detection table.
+        fp_per_image: Target false-positive-per-image rate.
+        thresholds: Optional explicit score thresholds to keep.
+
+    Returns:
+        Interpolated sensitivity, or ``None`` when ``fp_per_image`` is outside
+        the observed range of the curve.
+    """
+    curve = froc_curve_lazy(table, thresholds=thresholds).collect(engine="streaming")
+    return MetricResult(curve=curve).interpolate(
+        x_col="fp_per_image", y_col="sensitivity", at=fp_per_image
+    )
+
+
+def froc_summary_table(
+    table: DetectionTable,
+    fp_rates: list[float] | None = None,
+) -> pl.DataFrame:
+    """Sensitivity at standard FP/image operating points.
+
+    The lazy, standalone replacement for ``FROCResult.summary_table``.
+
+    Args:
+        table: Canonical detection table.
+        fp_rates: Operating points. Defaults to the standard radiology set.
+
+    Returns:
+        DataFrame with ``fp_per_image`` and ``sensitivity`` columns.
+    """
+    rates = fp_rates or [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+    curve = froc_curve_lazy(table).collect(engine="streaming")
+    return MetricResult(curve=curve).summary_table(
+        x_col="fp_per_image", y_col="sensitivity", operating_points=rates
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

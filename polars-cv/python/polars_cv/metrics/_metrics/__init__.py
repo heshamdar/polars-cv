@@ -3,8 +3,21 @@
 from __future__ import annotations
 
 from ._confusion import ConfusionResult, confusion_at_threshold
-from ._froc import FROCResult, froc_auc, froc_curve, froc_curve_lazy
-from ._lroc import LROCResult, lroc_auc, lroc_curve, lroc_curve_lazy
+from ._froc import (
+    FROCResult,
+    froc_auc,
+    froc_curve,
+    froc_curve_lazy,
+    froc_sensitivity_at_fp,
+    froc_summary_table,
+)
+from ._lroc import (
+    LROCResult,
+    lroc_auc,
+    lroc_curve,
+    lroc_curve_lazy,
+    lroc_sensitivity_at_fpf,
+)
 from ._precision_recall import (
     PrecisionRecallResult,
     average_precision,
@@ -26,9 +39,12 @@ __all__ = [
     "froc_auc",
     "froc_curve",
     "froc_curve_lazy",
+    "froc_sensitivity_at_fp",
+    "froc_summary_table",
     "lroc_auc",
     "lroc_curve",
     "lroc_curve_lazy",
+    "lroc_sensitivity_at_fpf",
     "mean_average_precision",
     "precision_at_threshold",
     "precision_recall_curve",
