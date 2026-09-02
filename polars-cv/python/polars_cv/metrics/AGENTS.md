@@ -61,9 +61,11 @@ Supports IoU re-thresholding via `at_iou_threshold()`, class filtering via `filt
 Vectorized, seed-reproducible, all replicates in one lazy plan:
 
 ```python
-bootstrap_froc_auc(table, n_bootstrap=1000, seed=42)                     # detection AUC
-bootstrap_froc_auc(table, n_bootstrap=1000, seed=42, sample_col="case_id")  # entity-level
-bootstrap_froc_auc(table, method="mann_whitney")                        # MW AUC
+bootstrap_froc_auc(table, n_bootstrap=1000, seed=42)  # detection AUC
+bootstrap_froc_auc(
+    table, n_bootstrap=1000, seed=42, sample_col="case_id"
+)  # entity-level
+bootstrap_froc_auc(table, method="mann_whitney")  # MW AUC
 bootstrap_lroc_auc(table, level="image")
 bootstrap_pr_auc(table, n_bootstrap=1000, seed=42)
 ```
