@@ -1,0 +1,155 @@
+"""Parity + group-awareness tests for the lazy, expression-valued LROC AUC.
+
+Mirrors ``test_froc_auc.py``: builds ``DetectionTable``s from literal frames and
+asserts ``lroc_auc(table).collect().item()`` reproduces the eager
+``lroc_curve(table).auc(...)`` across methods, and that a grouped result equals
+the per-group AUC on the filtered sub-table.
+"""
+
+from __future__ import annotations
+
+import polars as pl
+import pytest
+
+from polars_cv.metrics import DetectionTable, lroc_auc, lroc_curve
+from polars_cv.metrics._types import (
+    COL_CLASS_ID,
+    COL_DET_IDX,
+    COL_GT_IDX,
+    COL_GT_LABEL,
+    COL_IMAGE_ID,
+    COL_IOU,
+    COL_IS_TP,
+    COL_N_GTS,
+    COL_SCORE,
+    COL_WEIGHT,
+)
+
+_TOL = 1e-9
+
+# (image, region, score, is_tp) — one row per detection; empty images omitted.
+_DETS = [
+    ("a", "g1", 0.90, True),
+    ("a", "g1", 0.40, False),
+    ("b", "g2", 0.50, False),  # positive image, no TP
+    ("c", "g1", 0.70, False),  # negative image with a detection
+    ("e", "g2", 0.65, True),
+    ("e", "g2", 0.30, False),
+]
+# (image, region, gt_label, weight)
+_IMAGES = [
+    ("a", "g1", True, 1.0),
+    ("b", "g2", True, 1.2),
+    ("c", "g1", False, 0.8),
+    ("d", "g2", False, 1.0),  # negative image, no detections
+    ("e", "g2", True, 0.9),
+]
+
+
+def _table() -> DetectionTable:
+    det = pl.DataFrame(
+        {
+            COL_IMAGE_ID: [r[0] for r in _DETS],
+            COL_CLASS_ID: ["__all__"] * len(_DETS),
+            COL_SCORE: [r[2] for r in _DETS],
+            COL_IS_TP: [r[3] for r in _DETS],
+            COL_GT_IDX: [0 if r[3] else None for r in _DETS],
+            COL_IOU: [0.7 if r[3] else 0.0 for r in _DETS],
+            COL_DET_IDX: list(range(len(_DETS))),
+        },
+        schema={
+            COL_IMAGE_ID: pl.String,
+            COL_CLASS_ID: pl.String,
+            COL_SCORE: pl.Float64,
+            COL_IS_TP: pl.Boolean,
+            COL_GT_IDX: pl.UInt32,
+            COL_IOU: pl.Float64,
+            COL_DET_IDX: pl.UInt32,
+        },
+    )
+    meta = pl.DataFrame(
+        {
+            COL_IMAGE_ID: [r[0] for r in _IMAGES],
+            COL_CLASS_ID: ["__all__"] * len(_IMAGES),
+            COL_N_GTS: [1 if r[2] else 0 for r in _IMAGES],
+            COL_WEIGHT: [r[3] for r in _IMAGES],
+            COL_GT_LABEL: [r[2] for r in _IMAGES],
+            "region": [r[1] for r in _IMAGES],
+        },
+        schema={
+            COL_IMAGE_ID: pl.String,
+            COL_CLASS_ID: pl.String,
+            COL_N_GTS: pl.Int64,
+            COL_WEIGHT: pl.Float64,
+            COL_GT_LABEL: pl.Boolean,
+            "region": pl.String,
+        },
+    )
+    return DetectionTable.from_matched(det, meta, matching_iou_threshold=0.5)
+
+
+def _sub_table(region: str) -> DetectionTable:
+    """The sub-table for one region (detections filtered by that region's images)."""
+    table = _table()
+    meta = table.image_metadata.filter(pl.col("region") == region)
+    ids = meta.select(COL_IMAGE_ID)
+    det = table.detections.join(ids, on=COL_IMAGE_ID, how="semi")
+    return DetectionTable.from_matched(det, meta, matching_iou_threshold=0.5)
+
+
+def _v(lf: pl.LazyFrame) -> float:
+    return lf.collect().item()
+
+
+class TestLrocAucParity:
+    @pytest.mark.parametrize("variant", ["best_tp", "top_scoring"])
+    def test_trapezoidal_raw(self, variant: str) -> None:
+        table = _table()
+        got = _v(lroc_auc(table, variant=variant))
+        want = lroc_curve(table, variant=variant).auc()
+        assert got == pytest.approx(want, abs=_TOL)
+
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.parametrize("fpf_range", [(0.0, 0.5), (0.0, 1.0), (0.25, 1.0)])
+    def test_partial(self, fpf_range: tuple[float, float]) -> None:
+        table = _table()
+        got = _v(lroc_auc(table, fpf_range=fpf_range))
+        want = lroc_curve(table).auc(fpf_range=fpf_range)
+        assert got == pytest.approx(want, abs=1e-7)
+
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.parametrize("correction", ["normalize", "mcclish"])
+    def test_partial_corrections(self, correction: str) -> None:
+        table = _table()
+        got = _v(lroc_auc(table, fpf_range=(0.0, 1.0), correction=correction))
+        want = lroc_curve(table).auc(fpf_range=(0.0, 1.0), correction=correction)
+        assert got == pytest.approx(want, abs=1e-7)
+
+    @pytest.mark.parametrize("level", ["image", "detection"])
+    def test_mann_whitney(self, level: str) -> None:
+        table = _table()
+        got = _v(lroc_auc(table, method="mann_whitney", level=level))
+        want = lroc_curve(table).auc(method="mann_whitney", level=level)
+        assert got == pytest.approx(want, abs=_TOL)
+
+
+class TestLrocAucGroupParity:
+    def test_trapezoidal_group_by_region(self) -> None:
+        table = _table().with_group("region")
+        grouped = lroc_auc(table, group_by="group_id").collect()
+        got = dict(zip(grouped["group_id"].to_list(), grouped["auc"].to_list()))
+        for region in ("g1", "g2"):
+            want = _v(lroc_auc(_sub_table(region)))
+            assert got[region] == pytest.approx(want, abs=_TOL)
+
+    def test_mann_whitney_image_group_by_region(self) -> None:
+        table = _table().with_group("region")
+        grouped = lroc_auc(
+            table, method="mann_whitney", level="image", group_by="group_id"
+        ).collect()
+        got = dict(zip(grouped["group_id"].to_list(), grouped["auc"].to_list()))
+        for region in ("g1", "g2"):
+            want = _v(
+                lroc_auc(_sub_table(region), method="mann_whitney", level="image")
+            )
+            assert got[region] == pytest.approx(want, abs=_TOL)
