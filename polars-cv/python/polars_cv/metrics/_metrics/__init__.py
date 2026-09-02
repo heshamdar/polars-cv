@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ._confusion import ConfusionResult, confusion_at_threshold
-from ._froc import FROCResult, froc_curve
+from ._froc import FROCResult, froc_auc, froc_curve, froc_curve_lazy
 from ._lroc import LROCResult, lroc_curve
 from ._precision_recall import (
     PrecisionRecallResult,
@@ -23,7 +23,9 @@ __all__ = [
     "average_precision",
     "confusion_at_threshold",
     "f1_at_threshold",
+    "froc_auc",
     "froc_curve",
+    "froc_curve_lazy",
     "lroc_curve",
     "mean_average_precision",
     "precision_at_threshold",
