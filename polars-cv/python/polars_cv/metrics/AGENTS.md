@@ -9,19 +9,26 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
 
 - **PR**: `precision_recall_curve`, `average_precision`, `mean_average_precision`
 - **Threshold**: `precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold`, `confusion_at_threshold`
-- **FROC/LROC**: `froc_curve`, `lroc_curve`
-- **Bootstrap**: `bootstrap_metric_sequential` (general), `bootstrap_pr_auc` (vectorized fast path)
-- **AUC**: `trapz_auc`, `partial_auc`, `mcclish_correction`, `mann_whitney_u_auc`, `detection_level_mann_whitney`
+- **FROC/LROC** (expression-valued, lazy, group-aware): `froc_auc`/`lroc_auc`
+  (LazyFrame, one row per group), `froc_curve_lazy`/`lroc_curve_lazy`,
+  `froc_sensitivity_at_fp`/`lroc_sensitivity_at_fpf`, `froc_summary_table`
+- **Bootstrap** (vectorized, seed-reproducible): `bootstrap_froc_auc`,
+  `bootstrap_lroc_auc`, `bootstrap_pr_auc`; `bootstrap_metric_sequential` for
+  custom callbacks
+- **AUC integrals**: the single authority is `_auc_expr.py`
+  (`trapz_auc_expr`, `partial_auc_expr`, `mann_whitney_auc_expr`,
+  `collapse_curve`); `_auc.py` keeps `trapz_auc`/`partial_auc`/`_interp`/
+  `mcclish_correction` for the PR curve + `MetricResult` interpolation only
 
 ## Architecture
 
 ```
-Input Data → Matcher → DetectionTable → Metric Function → MetricResult
+Input Data → Matcher → DetectionTable → Metric function → pl.LazyFrame / pl.Expr
 ```
 
-1. **Matchers** (`_matching/`) convert raw data into a canonical `DetectionTable`. All implement the `Matcher` protocol.
-2. **Metric functions** (`_metrics/`) operate on `DetectionTable`, return a `MetricResult` subclass.
-3. **Result objects** (`_result.py`) carry curves with `auc(method=...)`, `interpolate()`, `summary_table()`, `bootstrap_ci()`.
+1. **Matchers** (`_matching/`) convert raw data into a canonical `DetectionTable` (two lazy frames). All implement the `Matcher` protocol. `ContourMatcher.match` also accepts a pre-decoded `LazyPipelineExpr` (via `_SourceHandle`) so a caller's graph can share the decode.
+2. **FROC/LROC metric functions** (`_metrics/`) operate on `DetectionTable` and return a `pl.LazyFrame` (`froc_auc`, `froc_curve_lazy`, …) — no result object, no eager `.item()` until the caller collects. The integral is the reusable expression in `_auc_expr.py`.
+3. **PR / Confusion** still return `MetricResult` subclasses (`_result.py`) with `auc()`, `interpolate()`, `summary_table()`, `bootstrap_ci()`. The FROC/LROC curve helpers reuse `MetricResult.interpolate`/`summary_table` on a collected `*_curve_lazy` frame.
 
 ### DetectionTable (`_types.py`)
 
@@ -41,32 +48,30 @@ Supports IoU re-thresholding via `at_iou_threshold()`, class filtering via `filt
 
 ## AUC API
 
-All result types expose AUC via `auc(method=...)`:
-
-- **FROC/LROC**: `"trapezoidal"` (default), `"mann_whitney"`. Trapezoidal supports `correction="mcclish"|"normalize"` and range parameters (`fp_range`/`fpf_range`).
-- **PR**: `"all_points"` (default, monotone envelope), `"11_point"`, `"trapezoidal"` (raw).
-
-Mann-Whitney is a global rank statistic (`P(positive > negative)`) — no range/correction support.
+- **FROC/LROC**: `froc_auc(table, *, method, fp_range, correction, level, group_by)`
+  → `pl.LazyFrame` (`[*group_by, auc]`). `method="trapezoidal"` (default) supports
+  `correction="mcclish"|"normalize"` and `fp_range`/`fpf_range`; `method="mann_whitney"`
+  (`level="detection"|"image"`) is a global rank statistic (no range/correction).
+  A scalar is `froc_auc(table).collect().item()`; grouping is `group_by=`.
+- **PR**: `PrecisionRecallResult.auc(method=...)` — `"all_points"` (default, monotone
+  envelope), `"11_point"`, `"trapezoidal"`. PR still uses `_auc.trapz_auc`.
 
 ## Bootstrap
 
-`MetricResult.bootstrap_ci()` in the base class. Uses `_reconstruct(sampled_ids)` hook per subclass.
+Vectorized, seed-reproducible, all replicates in one lazy plan:
 
 ```python
-result.bootstrap_ci(metric="auc")  # default
-result.bootstrap_ci(
-    metric="auc", metric_kwargs={"method": "mann_whitney"}
-)  # Mann-Whitney
-result.bootstrap_ci(
-    metric={  # multi-metric
-        "mw": {"metric": "auc", "method": "mann_whitney"},
-        "pauc": {"metric": "auc", "fp_range": (0, 2), "correction": "mcclish"},
-    }
-)
-result.bootstrap_ci(sample_col="case_id")  # entity-level resampling
+bootstrap_froc_auc(table, n_bootstrap=1000, seed=42)                     # detection AUC
+bootstrap_froc_auc(table, n_bootstrap=1000, seed=42, sample_col="case_id")  # entity-level
+bootstrap_froc_auc(table, method="mann_whitney")                        # MW AUC
+bootstrap_lroc_auc(table, level="image")
+bootstrap_pr_auc(table, n_bootstrap=1000, seed=42)
 ```
 
-`bootstrap_pr_auc` remains as a vectorized fast path for PR AUC specifically.
+Each draw gets a distinct synthetic `image_id` (`_bootstrap_table_with_draws`) so
+a redraw counts once per draw. `bootstrap_metric_sequential` remains for custom
+metric callbacks; `MetricResult.bootstrap_ci` (with multi-metric dict + entity-level
+via `_reconstruct`) still backs PR/Confusion results.
 
 ## File Layout
 
@@ -74,17 +79,18 @@ result.bootstrap_ci(sample_col="case_id")  # entity-level resampling
 metrics/
 ├── __init__.py           # Public re-exports
 ├── _types.py             # DetectionTable, column constants, schema validation
-├── _result.py            # MetricResult base class (auc, bootstrap_ci, interpolate)
-├── _auc.py               # AUC utilities (trapz, partial, mcclish, mann_whitney)
-├── _bootstrap.py         # bootstrap_metric_sequential, bootstrap_pr_auc, BootstrapResult
+├── _result.py            # MetricResult base (auc, bootstrap_ci, interpolate) — PR/Confusion
+├── _auc.py               # eager AUC utilities kept for PR: trapz, partial, mcclish, _interp
+├── _auc_expr.py          # the FROC/LROC integral authority: *_expr + collapse_curve
+├── _bootstrap.py         # bootstrap_{froc,lroc,pr}_auc, bootstrap_metric_sequential
 ├── _matching/
 │   ├── _protocol.py      # Matcher protocol
 │   ├── _contour.py       # ContourMatcher
 │   ├── _bbox.py          # BBoxMatcher
 │   └── _prematched.py    # PreMatchedAdapter
 └── _metrics/
-    ├── _froc.py           # froc_curve, FROCResult
-    ├── _lroc.py           # lroc_curve, LROCResult
+    ├── _froc.py           # froc_auc, froc_curve_lazy, froc_sensitivity_at_fp, froc_summary_table
+    ├── _lroc.py           # lroc_auc, lroc_curve_lazy, lroc_sensitivity_at_fpf
     ├── _precision_recall.py  # PR curve, AP, mAP, threshold metrics
     └── _confusion.py     # confusion_at_threshold
 ```
@@ -141,11 +147,11 @@ metrics/
 
 ### The FROC evaluation unit
 - An `image_metadata` row is one (image, class). The **image count** — the
-  FP-per-image denominator, and `FROCResult.n_images` — is the number of
-  distinct `image_id`s, read once via `_count_images`. Counting rows divides
-  the false-positive rate by the number of classes.
+  FP-per-image denominator — is the number of distinct `image_id`s: the weighted
+  denominator dedupes on `image_id` per group. Counting rows divides the
+  false-positive rate by the number of classes.
 - Bootstrap draws are renamed to distinct synthetic `image_id`s
-  (`<image_id>#draw<n>`) in `FROCResult._reconstruct`, so a redraw is a
+  (`<image_id>#d<n>`) in `_bootstrap_table_with_draws`, so a redraw is a
   separate evaluation unit rather than a duplicate id. Nothing downstream has
   to guess whether a repeated id is a redraw or shared ownership.
 
@@ -162,13 +168,14 @@ metrics/
   disagreeing about its weight is exactly as ill-defined.
 
 ### Interpolation beyond the curve
-- `MetricResult.interpolate` / `sensitivity_at_fp` / `sensitivity_at_fpf` /
-  `summary_table` return `None` / null for x-values outside the observed
-  range — no endpoint clamping. `summary_table`'s y column is Float64 even when
-  every point is null.
+- `froc_sensitivity_at_fp` / `lroc_sensitivity_at_fpf` / `froc_summary_table`
+  (built on `MetricResult.interpolate` / `summary_table` over a collected
+  `*_curve_lazy` frame) return `None` / null for x-values outside the observed
+  range — no endpoint clamping. `froc_summary_table`'s y column is Float64 even
+  when every point is null.
 - At an x the curve visits more than once, the *highest* y there is returned:
-  `sensitivity_at_fp(0.0)` is the sensitivity reachable with no false
-  positives, not the origin's zero.
+  `froc_sensitivity_at_fp(table, 0.0)` is the sensitivity reachable with no
+  false positives, not the origin's zero.
 
 ## Known Issues
 

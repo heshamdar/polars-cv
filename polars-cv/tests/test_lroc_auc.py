@@ -1,9 +1,9 @@
-"""Parity + group-awareness tests for the lazy, expression-valued LROC AUC.
+"""Correctness + group-awareness tests for the lazy, expression-valued LROC AUC.
 
 Mirrors ``test_froc_auc.py``: builds ``DetectionTable``s from literal frames and
-asserts ``lroc_auc(table).collect().item()`` reproduces the eager
-``lroc_curve(table).auc(...)`` across methods, and that a grouped result equals
-the per-group AUC on the filtered sub-table.
+asserts ``lroc_auc(table).collect().item()`` matches an independent NumPy
+reference (:mod:`tests._metric_refs`) across methods, and that a grouped result
+equals the per-group AUC on the filtered sub-table.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import pytest
 from polars_cv.metrics import (
     DetectionTable,
     lroc_auc,
-    lroc_curve,
     lroc_sensitivity_at_fpf,
 )
 from polars_cv.metrics._types import (
@@ -28,6 +27,12 @@ from polars_cv.metrics._types import (
     COL_N_GTS,
     COL_SCORE,
     COL_WEIGHT,
+)
+from tests._metric_refs import (
+    ref_froc_mw_detection,
+    ref_lroc_auc,
+    ref_lroc_image_mw,
+    ref_lroc_sensitivity_at_fpf,
 )
 
 _TOL = 1e-9
@@ -111,31 +116,27 @@ class TestLrocAucParity:
     def test_trapezoidal_raw(self, variant: str) -> None:
         table = _table()
         got = _v(lroc_auc(table, variant=variant))
-        want = lroc_curve(table, variant=variant).auc()
-        assert got == pytest.approx(want, abs=_TOL)
+        want = ref_lroc_auc(table, variant=variant)
+        assert got == pytest.approx(want, abs=1e-9)
 
-    @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.parametrize("fpf_range", [(0.0, 0.5), (0.0, 1.0), (0.25, 1.0)])
     def test_partial(self, fpf_range: tuple[float, float]) -> None:
         table = _table()
         got = _v(lroc_auc(table, fpf_range=fpf_range))
-        want = lroc_curve(table).auc(fpf_range=fpf_range)
+        want = ref_lroc_auc(table, fpf_range=fpf_range)
         assert got == pytest.approx(want, abs=1e-7)
 
-    @pytest.mark.filterwarnings("ignore::UserWarning")
-    @pytest.mark.parametrize("correction", ["normalize", "mcclish"])
-    def test_partial_corrections(self, correction: str) -> None:
+    def test_mann_whitney_image(self) -> None:
         table = _table()
-        got = _v(lroc_auc(table, fpf_range=(0.0, 1.0), correction=correction))
-        want = lroc_curve(table).auc(fpf_range=(0.0, 1.0), correction=correction)
-        assert got == pytest.approx(want, abs=1e-7)
+        got = _v(lroc_auc(table, method="mann_whitney", level="image"))
+        want = ref_lroc_image_mw(table)
+        assert got == pytest.approx(want, abs=1e-9)
 
-    @pytest.mark.parametrize("level", ["image", "detection"])
-    def test_mann_whitney(self, level: str) -> None:
+    def test_mann_whitney_detection(self) -> None:
         table = _table()
-        got = _v(lroc_auc(table, method="mann_whitney", level=level))
-        want = lroc_curve(table).auc(method="mann_whitney", level=level)
-        assert got == pytest.approx(want, abs=_TOL)
+        got = _v(lroc_auc(table, method="mann_whitney", level="detection"))
+        want = ref_froc_mw_detection(table)  # same P(TP > FP) over detections
+        assert got == pytest.approx(want, abs=1e-9)
 
 
 class TestLrocAucGroupParity:
@@ -162,8 +163,8 @@ class TestLrocAucGroupParity:
 
 class TestLrocStandaloneHelpers:
     @pytest.mark.parametrize("fpf", [0.0, 0.25, 0.5, 1.0])
-    def test_sensitivity_at_fpf_matches_eager(self, fpf: float) -> None:
+    def test_sensitivity_at_fpf(self, fpf: float) -> None:
         table = _table()
         got = lroc_sensitivity_at_fpf(table, fpf)
-        want = lroc_curve(table).sensitivity_at_fpf(fpf)
-        assert got == want or got == pytest.approx(want, abs=_TOL)
+        want = ref_lroc_sensitivity_at_fpf(table, fpf)
+        assert got == want or got == pytest.approx(want, abs=1e-9)

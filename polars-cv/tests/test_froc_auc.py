@@ -1,10 +1,9 @@
-"""Parity + group-awareness tests for the lazy, expression-valued FROC AUC.
+"""Correctness + group-awareness tests for the lazy, expression-valued FROC AUC.
 
-Builds ``DetectionTable``s from literal frames (no compiled plugin needed to
-construct one, and ``froc_curve``/``froc_auc`` only collect), then asserts:
+Builds ``DetectionTable``s from literal frames and asserts:
 
-* ``froc_auc(table).collect().item()`` reproduces the eager
-  ``froc_curve(table).auc(...)`` for every method/range/correction, and
+* ``froc_auc(table).collect().item()`` matches an independent NumPy reference
+  (:mod:`tests._metric_refs`) for every method/range/correction, and
 * ``froc_auc(table, group_by="class_id")`` per class equals ``froc_auc`` on
   ``table.filter_class(cid)`` — the property that replaces a per-group loop.
 """
@@ -17,7 +16,6 @@ import pytest
 from polars_cv.metrics import (
     DetectionTable,
     froc_auc,
-    froc_curve,
     froc_sensitivity_at_fp,
     froc_summary_table,
 )
@@ -32,6 +30,11 @@ from polars_cv.metrics._types import (
     COL_N_GTS,
     COL_SCORE,
     COL_WEIGHT,
+)
+from tests._metric_refs import (
+    ref_froc_auc,
+    ref_froc_mw_detection,
+    ref_froc_sensitivity_at_fp,
 )
 
 _TOL = 1e-9
@@ -105,35 +108,33 @@ def _auc_value(lf: pl.LazyFrame) -> float:
 
 
 class TestFrocAucParity:
-    """froc_auc reproduces the eager FROCResult.auc for a pooled table."""
+    """froc_auc matches an independent NumPy reference for a pooled table."""
 
     def test_trapezoidal_raw(self) -> None:
         table = _table(multiclass=False)
         got = _auc_value(froc_auc(table))
-        want = froc_curve(table).auc()
-        assert got == pytest.approx(want, abs=_TOL)
+        want = ref_froc_auc(table)
+        assert got == pytest.approx(want, abs=1e-9)
 
-    @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.parametrize("fp_range", [(0.0, 1.0), (0.25, 2.0), (0.0, 8.0)])
     def test_partial(self, fp_range: tuple[float, float]) -> None:
         table = _table(multiclass=False)
         got = _auc_value(froc_auc(table, fp_range=fp_range))
-        want = froc_curve(table).auc(fp_range=fp_range)
+        want = ref_froc_auc(table, fp_range=fp_range)
         assert got == pytest.approx(want, abs=1e-7)
 
-    @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.parametrize("correction", ["normalize", "mcclish"])
     def test_partial_corrections(self, correction: str) -> None:
         table = _table(multiclass=False)
         got = _auc_value(froc_auc(table, fp_range=(0.25, 2.0), correction=correction))
-        want = froc_curve(table).auc(fp_range=(0.25, 2.0), correction=correction)
+        want = ref_froc_auc(table, fp_range=(0.25, 2.0), correction=correction)
         assert got == pytest.approx(want, abs=1e-7)
 
     def test_mann_whitney_detection(self) -> None:
         table = _table(multiclass=False)
         got = _auc_value(froc_auc(table, method="mann_whitney"))
-        want = froc_curve(table).auc(method="mann_whitney", level="detection")
-        assert got == pytest.approx(want, abs=_TOL)
+        want = ref_froc_mw_detection(table)
+        assert got == pytest.approx(want, abs=1e-9)
 
 
 class TestFrocAucGroupParity:
@@ -169,17 +170,25 @@ class TestFrocAucGroupParity:
 
 
 class TestFrocStandaloneHelpers:
-    """The lazy standalone helpers reproduce the eager result methods."""
+    """The lazy standalone helpers match the NumPy reference."""
 
     @pytest.mark.parametrize("fp", [0.0, 0.25, 0.5, 1.0, 2.0, 100.0])
-    def test_sensitivity_at_fp_matches_eager(self, fp: float) -> None:
+    def test_sensitivity_at_fp(self, fp: float) -> None:
         table = _table(multiclass=False)
         got = froc_sensitivity_at_fp(table, fp)
-        want = froc_curve(table).sensitivity_at_fp(fp)
-        assert got == want or got == pytest.approx(want, abs=_TOL)
+        want = ref_froc_sensitivity_at_fp(table, fp)
+        assert got == want or got == pytest.approx(want, abs=1e-9)
 
-    def test_summary_table_matches_eager(self) -> None:
+    def test_summary_table_interpolates_the_curve(self) -> None:
         table = _table(multiclass=False)
-        got = froc_summary_table(table)
-        want = froc_curve(table).summary_table()
-        assert got.equals(want)
+        got = froc_summary_table(table, fp_rates=[0.25, 0.5, 1.0])
+        assert got.columns == ["fp_per_image", "sensitivity"]
+        assert got["fp_per_image"].to_list() == [0.25, 0.5, 1.0]
+        for fp, sens in zip(
+            got["fp_per_image"].to_list(), got["sensitivity"].to_list()
+        ):
+            want = ref_froc_sensitivity_at_fp(table, fp)
+            if want is None:
+                assert sens is None
+            else:
+                assert sens == pytest.approx(want, abs=1e-9)

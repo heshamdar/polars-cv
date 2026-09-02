@@ -15,7 +15,6 @@ import polars as pl
 import pytest
 
 from polars_cv.metrics._auc import (
-    mann_whitney_u_auc,
     partial_auc,
     trapz_auc,
 )
@@ -25,6 +24,7 @@ from polars_cv.metrics._auc_expr import (
     partial_auc_expr,
     trapz_auc_expr,
 )
+from tests._metric_refs import ref_mann_whitney
 
 _TOL = 1e-9
 
@@ -138,9 +138,7 @@ class TestMannWhitneyParity:
             got = df.select(
                 auc=mann_whitney_auc_expr(score="score", label="label")
             ).item()
-            pos = pl.Series("s", [s for s, lab in zip(scores, labels) if lab])
-            neg = pl.Series("s", [s for s, lab in zip(scores, labels) if not lab])
-            want = mann_whitney_u_auc(pos, neg)
+            want = ref_mann_whitney(scores, labels)
             assert got == pytest.approx(want, abs=1e-9), (scores, labels)
 
 

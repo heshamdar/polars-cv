@@ -236,11 +236,9 @@ def mann_whitney_auc_expr(
 ) -> pl.Expr:
     """Mann-Whitney U AUC — P(positive score > negative score) — as an expression.
 
-    Non-parametric AUC via the O(n log n) rank-sum, ported from
-    ``_auc.mann_whitney_u_auc`` (which already used a sort + ``over(score)``
-    tie-average). ``label`` is ``1.0`` for positives and ``0.0`` for negatives;
-    ties in ``score`` receive their average rank. Usable inside
-    ``group_by(group).agg(...)`` and in ``select``.
+    Non-parametric AUC via the O(n log n) rank-sum. ``label`` is ``1.0`` for
+    positives and ``0.0`` for negatives; ties in ``score`` receive their average
+    rank. Usable inside ``group_by(group).agg(...)`` and in ``select``.
 
     Args:
         score: Score column name or expression.

@@ -21,19 +21,15 @@ from ._bootstrap import (
 from ._matching import BBoxMatcher, ContourMatcher, Matcher, PreMatchedAdapter
 from ._metrics import (
     ConfusionResult,
-    FROCResult,
-    LROCResult,
     PrecisionRecallResult,
     average_precision,
     confusion_at_threshold,
     f1_at_threshold,
     froc_auc,
-    froc_curve,
     froc_curve_lazy,
     froc_sensitivity_at_fp,
     froc_summary_table,
     lroc_auc,
-    lroc_curve,
     lroc_curve_lazy,
     lroc_sensitivity_at_fpf,
     mean_average_precision,
@@ -56,12 +52,10 @@ __all__ = [
     "PreMatchedAdapter",
     # Metric functions
     "froc_auc",
-    "froc_curve",
     "froc_curve_lazy",
     "froc_sensitivity_at_fp",
     "froc_summary_table",
     "lroc_auc",
-    "lroc_curve",
     "lroc_curve_lazy",
     "lroc_sensitivity_at_fpf",
     "precision_recall_curve",
@@ -73,8 +67,6 @@ __all__ = [
     "confusion_at_threshold",
     # Result types
     "ConfusionResult",
-    "FROCResult",
-    "LROCResult",
     "PrecisionRecallResult",
     # Bootstrap
     "bootstrap_froc_auc",

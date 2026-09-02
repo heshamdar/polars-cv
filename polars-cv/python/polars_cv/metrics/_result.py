@@ -20,8 +20,9 @@ if TYPE_CHECKING:
 class MetricResult:
     """Base class for all detection metric results.
 
-    Subclasses add metric-specific convenience methods with pre-bound column
-    names (e.g., ``FROCResult.sensitivity_at_fp``).
+    Subclasses (e.g. ``PrecisionRecallResult``) add metric-specific convenience
+    methods with pre-bound column names. The FROC/LROC metrics interpolate their
+    curves through this base directly (see ``froc_sensitivity_at_fp``).
 
     Attributes:
         curve: DataFrame containing the computed metric curve.
