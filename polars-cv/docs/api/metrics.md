@@ -74,11 +74,31 @@
     options:
       show_root_heading: true
 
-::: polars_cv.metrics.froc_curve
+::: polars_cv.metrics.froc_auc
     options:
       show_root_heading: true
 
-::: polars_cv.metrics.lroc_curve
+::: polars_cv.metrics.froc_curve_lazy
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.froc_sensitivity_at_fp
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.froc_summary_table
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.lroc_auc
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.lroc_curve_lazy
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.lroc_sensitivity_at_fpf
     options:
       show_root_heading: true
 
@@ -93,5 +113,13 @@
       show_root_heading: true
 
 ::: polars_cv.metrics.bootstrap_pr_auc
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.bootstrap_froc_auc
+    options:
+      show_root_heading: true
+
+::: polars_cv.metrics.bootstrap_lroc_auc
     options:
       show_root_heading: true

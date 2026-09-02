@@ -549,3 +549,46 @@ def test_domain_op_is_gone() -> None:
             f"GraphStep in the plugin"
         )
         assert "DomainOp" not in text, f"{path.name} still references DomainOp"
+
+
+# ---------------------------------------------------------------------------
+# Eager FROC/LROC result API: replaced by expression-valued functions
+# ---------------------------------------------------------------------------
+
+
+def test_eager_froc_lroc_result_api_is_gone() -> None:
+    """The eager FROC/LROC AUC surface must not come back.
+
+    ``froc_curve``/``lroc_curve`` returned ``FROCResult``/``LROCResult`` whose
+    ``.auc()`` reduced a curve to a Python float through the eager integrals in
+    ``_auc.py``. That was a second implementation of the integral the
+    expression path now owns (``froc_auc``/``lroc_auc`` +
+    ``metrics._auc_expr``), so a lazy plan could not carry an AUC and grouping
+    meant a Python loop. Callers use ``froc_auc(table).collect().item()`` (or
+    ``froc_sensitivity_at_fp`` / ``froc_summary_table`` for the curve helpers,
+    ``bootstrap_froc_auc`` / ``bootstrap_lroc_auc`` for CIs).
+
+    The FROC/LROC-only Mann-Whitney helpers went with them:
+    ``mann_whitney_u_auc`` / ``detection_level_mann_whitney`` are now
+    ``metrics._auc_expr.mann_whitney_auc_expr``.
+    """
+    import polars_cv.metrics as m
+
+    removed = [
+        "froc_curve",
+        "lroc_curve",
+        "FROCResult",
+        "LROCResult",
+    ]
+    for name in removed:
+        assert not hasattr(m, name), f"polars_cv.metrics re-exports removed {name!r}"
+        assert not hasattr(polars_cv, name), f"polars_cv re-exports removed {name!r}"
+
+    from polars_cv.metrics import _auc
+
+    for name in ("mann_whitney_u_auc", "detection_level_mann_whitney"):
+        assert not hasattr(_auc, name), f"_auc still defines removed {name!r}"
+
+    # The replacements are present.
+    for name in ("froc_auc", "lroc_auc", "froc_sensitivity_at_fp"):
+        assert hasattr(m, name), f"replacement {name!r} missing"

@@ -284,7 +284,7 @@ def _resolve_bootstrap_samples(
     return (
         samples.rename({COL_IMAGE_ID: "_entity"})
         .join(map_df, on="_entity", how="left")
-        .explode(COL_IMAGE_ID)
+        .explode(COL_IMAGE_ID)  # every entity maps to >=1 image, so no empties
         .select("bootstrap_id", COL_IMAGE_ID)
     )
 

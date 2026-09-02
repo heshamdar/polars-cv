@@ -7,9 +7,25 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from polars_cv.metrics import ContourMatcher, froc_curve, lroc_curve
-from polars_cv.metrics._metrics._lroc import _build_lroc_curve
+from polars_cv.metrics import (
+    ContourMatcher,
+    bootstrap_froc_auc,
+    froc_auc,
+    froc_curve_lazy,
+    froc_sensitivity_at_fp,
+    lroc_auc,
+    lroc_curve_lazy,
+    lroc_sensitivity_at_fpf,
+)
+from polars_cv.metrics._metrics._lroc import _build_lroc_curve_grouped
 from tests.conftest import plugin_required
+
+
+def _lroc_curve_from_per_image(per_image: pl.DataFrame) -> pl.DataFrame:
+    """Build an LROC curve from a hand-crafted per-image frame (test helper)."""
+    lf = per_image.lazy().with_columns(pl.lit(0, dtype=pl.Int32).alias("_lroc_grp"))
+    return _build_lroc_curve_grouped(lf, ["_lroc_grp"]).drop("_lroc_grp").collect()
+
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture  # noqa: F401
@@ -96,8 +112,8 @@ class TestFrocMetrics:
             image_id_col="image_id",
             weight_col="sample_weight",
         )
-        result = froc_curve(table)
-        assert set(result.curve.columns) == {
+        curve = froc_curve_lazy(table).collect()
+        assert set(curve.columns) == {
             "threshold",
             "tp",
             "fp",
@@ -106,9 +122,9 @@ class TestFrocMetrics:
             "fp_per_image",
             "sensitivity",
         }
-        assert result.curve.height >= 1
-        assert 0.0 <= result.auc() <= 10.0
-        sens = result.sensitivity_at_fp(1.0)
+        assert curve.height >= 1
+        assert 0.0 <= froc_auc(table).collect().item() <= 10.0
+        sens = froc_sensitivity_at_fp(table, 1.0)
         assert sens is None or 0.0 <= sens <= 1.0
 
     def test_froc_no_resize_trusts_user(self) -> None:
@@ -120,8 +136,7 @@ class TestFrocMetrics:
             gt_col="gt_mask",
             image_id_col="image_id",
         )
-        result = froc_curve(table)
-        assert result.curve.height >= 1
+        assert froc_curve_lazy(table).collect().height >= 1
 
     def test_froc_shape_mismatch_auto_resize(self) -> None:
         """Auto-resize handles shape mismatches without eager preprocessing."""
@@ -137,8 +152,7 @@ class TestFrocMetrics:
             gt_col="gt_mask",
             image_id_col="image_id",
         )
-        result = froc_curve(table)
-        assert result.curve.height >= 1
+        assert froc_curve_lazy(table).collect().height >= 1
 
     def test_froc_bootstrap_ci_runs(self) -> None:
         """Bootstrap CI returns bounded interval and expected sample count."""
@@ -149,8 +163,7 @@ class TestFrocMetrics:
             gt_col="gt_mask",
             image_id_col="image_id",
         )
-        result = froc_curve(table)
-        ci = result.bootstrap_ci(n_bootstrap=20, seed=42)
+        ci = bootstrap_froc_auc(table, n_bootstrap=20, seed=42)
         assert len(ci.distribution) == 20
         assert ci.ci_lower <= ci.ci_upper
 
@@ -169,11 +182,11 @@ class TestLrocMetrics:
             image_id_col="image_id",
             weight_col="sample_weight",
         )
-        result = lroc_curve(table)
-        assert set(result.curve.columns) == {"threshold", "fpf", "sensitivity"}
-        assert result.curve.height >= 1
-        assert 0.0 <= result.auc() <= 1.0
-        sens = result.sensitivity_at_fpf(0.25)
+        curve = lroc_curve_lazy(table).collect()
+        assert set(curve.columns) == {"threshold", "fpf", "sensitivity"}
+        assert curve.height >= 1
+        assert 0.0 <= lroc_auc(table).collect().item() <= 1.0
+        sens = lroc_sensitivity_at_fpf(table, 0.25)
         assert sens is None or 0.0 <= sens <= 1.0
 
     def test_lroc_allows_multiple_targets_per_positive(self) -> None:
@@ -194,10 +207,10 @@ class TestLrocMetrics:
             gt_col="gt_mask",
             image_id_col="image_id",
         )
-        result = lroc_curve(table)
-        assert set(result.curve.columns) == {"threshold", "fpf", "sensitivity"}
-        assert result.curve.height >= 1
-        assert 0.0 <= result.auc() <= 1.0
+        curve = lroc_curve_lazy(table).collect()
+        assert set(curve.columns) == {"threshold", "fpf", "sensitivity"}
+        assert curve.height >= 1
+        assert 0.0 <= lroc_auc(table).collect().item() <= 1.0
 
 
 def test_lroc_curve_builder_expected_points() -> None:
@@ -212,7 +225,7 @@ def test_lroc_curve_builder_expected_points() -> None:
             "top_is_tp": [True, False, False, False],
         }
     )
-    curve = _build_lroc_curve(per_image).sort("threshold")
+    curve = _lroc_curve_from_per_image(per_image).sort("threshold")
 
     by_threshold = {
         float(row["threshold"]): (float(row["fpf"]), float(row["sensitivity"]))
@@ -236,7 +249,7 @@ def test_lroc_curve_builder_weighted_points() -> None:
             "top_is_tp": [True, False, False, False],
         }
     )
-    curve = _build_lroc_curve(per_image).sort("threshold")
+    curve = _lroc_curve_from_per_image(per_image).sort("threshold")
     row_06 = curve.filter(pl.col("threshold") == 0.6).to_dicts()[0]
     row_09 = curve.filter(pl.col("threshold") == 0.9).to_dicts()[0]
 

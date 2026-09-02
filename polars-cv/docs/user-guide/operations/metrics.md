@@ -64,12 +64,16 @@ rather than silently ignoring them.
 For heatmap + binary mask inputs (used by FROC/LROC workflows):
 
 ```python
-from polars_cv.metrics import ContourMatcher, froc_curve
+from polars_cv.metrics import ContourMatcher, froc_auc
 
 matcher = ContourMatcher(iou_threshold=0.5, extraction_threshold=0.1)
 table = matcher.match(data, pred_col="heatmap", gt_col="gt_mask")
-result = froc_curve(table)
+auc = froc_auc(table).collect().item()
 ```
+
+`ContourMatcher.match` also accepts a pre-decoded `LazyPipelineExpr` for
+`pred_col`/`gt_col`, so a segmentation graph and the contour extraction can
+share one decode and stream from a single collect.
 
 Both columns go through `source("auto")`, so a mask may be a nested
 `List`/`Array` of numbers or booleans, encoded image bytes (PNG/JPEG or a VIEW
@@ -113,29 +117,46 @@ map_val = mean_average_precision(table, iou_thresholds=[0.5, 0.55, 0.6, ..., 0.9
 
 ### FROC
 
-```python
-from polars_cv.metrics import froc_curve
+The FROC metrics are **expression-valued and lazy**: `froc_auc` returns a
+`LazyFrame` (one row per group), so a scalar is `.collect().item()` and grouping
+is a normal `group_by` rather than a Python loop.
 
-result = froc_curve(table)
-print(result.auc(fp_range=(0, 8)))
-print(result.sensitivity_at_fp(1.0))
-print(result.summary_table())
+```python
+from polars_cv.metrics import (
+    froc_auc,
+    froc_curve_lazy,
+    froc_sensitivity_at_fp,
+    froc_summary_table,
+)
+
+print(froc_auc(table, fp_range=(0, 8)).collect().item())
+print(froc_sensitivity_at_fp(table, 1.0))
+print(froc_summary_table(table))
+
+# One AUC per class, in a single lazy plan:
+per_class = froc_auc(table, group_by="class_id").collect()
+
+# Mann-Whitney AUC (detection- or image-level):
+mw = froc_auc(table, method="mann_whitney", level="detection").collect().item()
+
+# The full curve, when you need the operating points:
+curve = froc_curve_lazy(table).collect()
 ```
 
-`sensitivity_at_fp` returns `None` — and `summary_table` a null — when the
-requested FP/image rate lies beyond the curve's observed range. An operating
-point the detector never reaches is reported as unreachable rather than
-clamped to the last value on the curve. Where an x is visited more than once,
-the highest sensitivity there is returned.
+`froc_sensitivity_at_fp` returns `None` — and `froc_summary_table` a null —
+when the requested FP/image rate lies beyond the curve's observed range. An
+operating point the detector never reaches is reported as unreachable rather
+than clamped to the last value on the curve. Where an x is visited more than
+once, the highest sensitivity there is returned.
 
 ### LROC
 
 ```python
-from polars_cv.metrics import lroc_curve
+from polars_cv.metrics import lroc_auc, lroc_curve_lazy, lroc_sensitivity_at_fpf
 
-result = lroc_curve(table)
-print(result.auc())
-print(result.sensitivity_at_fpf(0.5))  # None if 0.5 FPF is off the curve
+print(lroc_auc(table).collect().item())
+print(lroc_sensitivity_at_fpf(table, 0.5))  # None if 0.5 FPF is off the curve
+curve = lroc_curve_lazy(table).collect()
 ```
 
 ### Confusion Matrix
@@ -152,13 +173,24 @@ counts.to_dict()  # {'tp': 10, 'fp': 3, 'fn': 2}
 
 ## Bootstrap Confidence Intervals
 
-```python
-# Sequential (works with any metric)
-ci = result.bootstrap_ci(n_bootstrap=1000, seed=42)
+The FROC/LROC/PR bootstraps are vectorized (all replicates in one lazy plan) and
+seed-reproducible. Pass `sample_col` to resample at the entity level (e.g. by
+case) instead of by image.
 
-# Vectorized (faster, for PR AUC)
-from polars_cv.metrics import bootstrap_pr_auc
+```python
+from polars_cv.metrics import (
+    bootstrap_froc_auc,
+    bootstrap_lroc_auc,
+    bootstrap_pr_auc,
+    bootstrap_metric_sequential,
+)
+
+ci = bootstrap_froc_auc(table, n_bootstrap=1000, seed=42)
+ci = bootstrap_froc_auc(table, n_bootstrap=1000, seed=42, sample_col="case_id")
+ci = bootstrap_lroc_auc(table, n_bootstrap=1000, seed=42)
 ci = bootstrap_pr_auc(table, n_bootstrap=1000, seed=42)
+
+# `bootstrap_metric_sequential` remains for fully custom metric callbacks.
 ```
 
 ## IoU Re-thresholding

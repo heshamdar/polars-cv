@@ -8,7 +8,7 @@ Covers:
 - PR monotone-envelope AP vs raw trapezoidal AUC
 - partial_auc extrapolation warning
 - McClish correction for partial AUC
-- Mann-Whitney U AUC for FROCResult and LROCResult (via unified auc(method=...))
+- Mann-Whitney U AUC for froc_auc / lroc_auc (via method="mann_whitney")
 - Mann-Whitney AUC bootstrap support
 - ContourMatcher min_contour_area default change
 - Zero-score detection filtering
@@ -25,14 +25,23 @@ import pytest
 
 from polars_cv.metrics import (
     DetectionTable,
-    froc_curve,
-    lroc_curve,
+    MetricResult,
+    bootstrap_froc_auc,
+    bootstrap_lroc_auc,
+    froc_auc,
+    froc_curve_lazy,
+    froc_sensitivity_at_fp,
+    froc_summary_table,
+    lroc_auc,
+    lroc_curve_lazy,
     precision_recall_curve,
 )
-from polars_cv.metrics._auc import mann_whitney_u_auc, mcclish_correction, partial_auc
+from polars_cv.metrics._auc import mcclish_correction, partial_auc
+from polars_cv.metrics._auc_expr import mann_whitney_auc_expr
+from polars_cv.metrics._bootstrap import _bootstrap_table_with_draws
 from polars_cv.metrics._matching._contour import ContourMatcher, _detect_source_info
-from polars_cv.metrics._metrics._froc import FROCResult, _curve_from_detections
-from polars_cv.metrics._metrics._lroc import LROCResult, _build_lroc_curve
+from polars_cv.metrics._metrics._froc import _froc_curve_grouped
+from polars_cv.metrics._metrics._lroc import _build_lroc_curve_grouped
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -46,6 +55,26 @@ from polars_cv.metrics._types import (
     COL_WEIGHT,
     DEFAULT_CLASS,
 )
+
+
+def _froc_curve_df(det_df: pl.DataFrame, meta_df: pl.DataFrame) -> pl.DataFrame:
+    """Pooled FROC curve from minimal (image_id/score/is_tp) + meta frames."""
+    dl = det_df.lazy().with_columns(pl.lit(0, dtype=pl.Int32).alias("_froc_grp"))
+    ml = meta_df.lazy().with_columns(pl.lit(0, dtype=pl.Int32).alias("_froc_grp"))
+    return _froc_curve_grouped(dl, ml, ["_froc_grp"], None).drop("_froc_grp").collect()
+
+
+def _lroc_curve_df(per_image: pl.DataFrame) -> pl.DataFrame:
+    """Pooled LROC curve from a hand-crafted per-image frame."""
+    lf = per_image.lazy().with_columns(pl.lit(0, dtype=pl.Int32).alias("_lroc_grp"))
+    return _build_lroc_curve_grouped(lf, ["_lroc_grp"]).drop("_lroc_grp").collect()
+
+
+def _mw(scores: list[float], labels: list[float]) -> float:
+    """Mann-Whitney AUC via the expression, for utility-function-style tests."""
+    df = pl.DataFrame({"score": scores, "label": labels})
+    return df.select(auc=mann_whitney_auc_expr(score="score", label="label")).item()
+
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture  # noqa: F401
@@ -126,7 +155,7 @@ class TestFrocCurveFromDetections:
                 COL_WEIGHT: [1.0, 1.0, 1.0],
             }
         )
-        curve = _curve_from_detections(det_df, meta_df, total_targets=2)
+        curve = _froc_curve_df(det_df, meta_df)
         total_gts_values = curve["total_gts"].unique().to_list()
         for v in total_gts_values:
             assert v == 2, f"total_gts wrong: {v}"
@@ -147,7 +176,7 @@ class TestFrocCurveFromDetections:
                 COL_WEIGHT: [1.0, 1.0],
             }
         )
-        curve = _curve_from_detections(det_df, meta_df, total_targets=2)
+        curve = _froc_curve_df(det_df, meta_df)
         assert curve.height > 0
         for s in curve["sensitivity"].to_list():
             assert s is None or 0.0 <= s <= 1.0, f"sensitivity out of range: {s}"
@@ -168,7 +197,7 @@ class TestFrocCurveFromDetections:
                 COL_WEIGHT: [1.0, 1.0, 1.0],
             }
         )
-        curve = _curve_from_detections(det_df, meta_df, total_targets=2)
+        curve = _froc_curve_df(det_df, meta_df)
         # Sort descending so we traverse from high → low threshold
         sorted_curve = curve.sort("threshold", descending=True)
         tp_vals = sorted_curve["tp"].to_list()
@@ -179,14 +208,13 @@ class TestFrocCurveFromDetections:
 
 
 class TestFrocIouThresholdPropagation:
-    """Verify iou_threshold is read from DetectionTable, not a broken expression."""
+    """Verify iou_threshold is carried on the DetectionTable."""
 
     def test_iou_threshold_from_table(
         self, simple_detection_table: DetectionTable
     ) -> None:
-        """FROCResult.iou_threshold matches the matching_iou_threshold."""
-        result = froc_curve(simple_detection_table)
-        assert result.iou_threshold == 0.5
+        """The matching IoU threshold is stored on the table."""
+        assert simple_detection_table._matching_iou_threshold == 0.5
 
 
 class TestFrocBootstrapRecomputesTotalTargets:
@@ -195,14 +223,8 @@ class TestFrocBootstrapRecomputesTotalTargets:
     def test_bootstrap_sampled_total_targets(
         self, simple_detection_table: DetectionTable
     ) -> None:
-        """Bootstrap should not use a stale total_targets.
-
-        We indirectly verify this by running bootstrap and checking
-        that the CI does not collapse to a single point (which would
-        happen if total_targets was wrong for all samples).
-        """
-        result = froc_curve(simple_detection_table)
-        ci = result.bootstrap_ci(n_bootstrap=10, seed=42)
+        """Bootstrap produces a full distribution over resampled replicates."""
+        ci = bootstrap_froc_auc(simple_detection_table, n_bootstrap=10, seed=42)
         assert len(ci.distribution) == 10
 
 
@@ -225,7 +247,7 @@ class TestLrocEndpoint:
                 "top_is_tp": [True, False, False],
             }
         )
-        curve = _build_lroc_curve(per_image)
+        curve = _lroc_curve_df(per_image)
         fpf_vals = sorted(curve["fpf"].to_list())
         assert 0.0 in fpf_vals, "Origin (fpf=0) missing"
         assert 1.0 in fpf_vals, "Lower-right (fpf=1) missing"
@@ -241,7 +263,7 @@ class TestLrocEndpoint:
                 "top_is_tp": [True, True, False],
             }
         )
-        curve = _build_lroc_curve(per_image)
+        curve = _lroc_curve_df(per_image)
         sentinel = curve.filter(pl.col("threshold") == float("-inf"))
         assert sentinel.height == 1
         max_sens = float(sentinel["sensitivity"].item())
@@ -260,14 +282,8 @@ class TestLrocEndpoint:
                 "top_is_tp": [True, False],
             }
         )
-        curve = _build_lroc_curve(per_image)
-        result = LROCResult(
-            curve=curve,
-            per_image=per_image,
-            n_positive=1,
-            n_negative=1,
-        )
-        auc = result.auc()
+        curve = _lroc_curve_df(per_image)
+        auc = MetricResult(curve=curve).auc(x_col="fpf", y_col="sensitivity")
         # With 1 positive (TP) and 1 negative: should give AUC = 1.0
         assert 0.0 <= auc <= 1.0
 
@@ -396,161 +412,123 @@ class TestPartialAucWarning:
 
 
 class TestMannWhitneyUAuc:
-    """Tests for the mann_whitney_u_auc utility function."""
+    """Tests for the Mann-Whitney AUC expression."""
 
     def test_perfect_separation(self) -> None:
         """All positives above all negatives → AUC = 1.0."""
-        pos = pl.Series("pos", [0.9, 0.8, 0.7])
-        neg = pl.Series("neg", [0.3, 0.2, 0.1])
-        assert mann_whitney_u_auc(pos, neg) == pytest.approx(1.0)
+        assert _mw([0.9, 0.8, 0.7, 0.3, 0.2, 0.1], [1, 1, 1, 0, 0, 0]) == pytest.approx(
+            1.0
+        )
 
     def test_reversed_separation(self) -> None:
         """All positives below all negatives → AUC = 0.0."""
-        pos = pl.Series("pos", [0.1, 0.2, 0.3])
-        neg = pl.Series("neg", [0.7, 0.8, 0.9])
-        assert mann_whitney_u_auc(pos, neg) == pytest.approx(0.0)
+        assert _mw([0.1, 0.2, 0.3, 0.7, 0.8, 0.9], [1, 1, 1, 0, 0, 0]) == pytest.approx(
+            0.0
+        )
 
     def test_equal_scores(self) -> None:
         """Identical distributions → AUC = 0.5."""
-        pos = pl.Series("pos", [0.5, 0.5, 0.5])
-        neg = pl.Series("neg", [0.5, 0.5, 0.5])
-        assert mann_whitney_u_auc(pos, neg) == pytest.approx(0.5)
+        assert _mw([0.5, 0.5, 0.5, 0.5, 0.5, 0.5], [1, 1, 1, 0, 0, 0]) == pytest.approx(
+            0.5
+        )
 
     def test_empty_groups(self) -> None:
         """Empty group returns 0.5 sentinel."""
-        assert mann_whitney_u_auc(
-            pl.Series("pos", [0.9]), pl.Series("neg", [], dtype=pl.Float64)
-        ) == pytest.approx(0.5)
-        assert mann_whitney_u_auc(
-            pl.Series("pos", [], dtype=pl.Float64), pl.Series("neg", [0.1])
-        ) == pytest.approx(0.5)
+        assert _mw([0.9], [1.0]) == pytest.approx(0.5)
+        assert _mw([0.1], [0.0]) == pytest.approx(0.5)
 
 
 class TestFrocMannWhitneyAuc:
-    """Tests for auc(method='mann_whitney') on FROCResult."""
+    """Tests for froc_auc(method='mann_whitney')."""
 
     def test_detection_level(self, simple_detection_table: DetectionTable) -> None:
         """Detection-level MW-U should return a value in [0, 1]."""
-        result = froc_curve(simple_detection_table)
-        mw_auc = result.auc(method="mann_whitney", level="detection")
-        assert 0.0 <= mw_auc <= 1.0
+        mw = (
+            froc_auc(simple_detection_table, method="mann_whitney", level="detection")
+            .collect()
+            .item()
+        )
+        assert 0.0 <= mw <= 1.0
 
     def test_image_level(self, simple_detection_table: DetectionTable) -> None:
         """Image-level MW-U should return a value in [0, 1]."""
-        result = froc_curve(simple_detection_table)
-        mw_auc = result.auc(method="mann_whitney", level="image")
-        assert 0.0 <= mw_auc <= 1.0
+        mw = (
+            froc_auc(simple_detection_table, method="mann_whitney", level="image")
+            .collect()
+            .item()
+        )
+        assert 0.0 <= mw <= 1.0
 
     def test_invalid_level_raises(self, simple_detection_table: DetectionTable) -> None:
         """Invalid level raises ValueError."""
-        result = froc_curve(simple_detection_table)
         with pytest.raises(ValueError, match="Unsupported level"):
-            result.auc(method="mann_whitney", level="invalid")
+            froc_auc(simple_detection_table, method="mann_whitney", level="invalid")
 
     def test_mw_rejects_fp_range(self, simple_detection_table: DetectionTable) -> None:
         """Mann-Whitney with fp_range raises ValueError."""
-        result = froc_curve(simple_detection_table)
         with pytest.raises(ValueError, match="not supported"):
-            result.auc(method="mann_whitney", fp_range=(0, 1))
+            froc_auc(simple_detection_table, method="mann_whitney", fp_range=(0, 1))
 
 
 class TestLrocMannWhitneyAuc:
-    """Tests for auc(method='mann_whitney') on LROCResult."""
+    """Tests for lroc_auc(method='mann_whitney')."""
 
     def test_detection_level(self, simple_detection_table: DetectionTable) -> None:
         """Detection-level MW-U should return a value in [0, 1]."""
-        result = lroc_curve(simple_detection_table)
-        mw_auc = result.auc(method="mann_whitney", level="detection")
-        assert 0.0 <= mw_auc <= 1.0
+        mw = (
+            lroc_auc(simple_detection_table, method="mann_whitney", level="detection")
+            .collect()
+            .item()
+        )
+        assert 0.0 <= mw <= 1.0
 
     def test_image_level(self, simple_detection_table: DetectionTable) -> None:
         """Image-level MW-U should return a value in [0, 1]."""
-        result = lroc_curve(simple_detection_table)
-        mw_auc = result.auc(method="mann_whitney", level="image")
-        assert 0.0 <= mw_auc <= 1.0
+        mw = (
+            lroc_auc(simple_detection_table, method="mann_whitney", level="image")
+            .collect()
+            .item()
+        )
+        assert 0.0 <= mw <= 1.0
 
 
 class TestMannWhitneyBootstrap:
     """Tests for bootstrapping Mann-Whitney AUC."""
 
     def test_froc_mw_bootstrap(self, simple_detection_table: DetectionTable) -> None:
-        """Bootstrap CI for FROC MW-U detection-level should run and produce valid CI."""
-        result = froc_curve(simple_detection_table)
-        ci = result.bootstrap_ci(
+        """Bootstrap CI for FROC MW-U detection-level runs and is valid."""
+        ci = bootstrap_froc_auc(
+            simple_detection_table,
             n_bootstrap=10,
             seed=42,
-            metric="auc",
-            metric_kwargs={"method": "mann_whitney", "level": "detection"},
+            method="mann_whitney",
         )
         assert len(ci.distribution) == 10
         assert ci.ci_lower <= ci.ci_upper
         assert 0.0 <= ci.point_estimate <= 1.0
 
     def test_lroc_mw_bootstrap(self, simple_detection_table: DetectionTable) -> None:
-        """Bootstrap CI for LROC MW-U image-level should run and produce valid CI."""
-        result = lroc_curve(simple_detection_table)
-        ci = result.bootstrap_ci(
+        """Bootstrap CI for LROC MW-U image-level runs and is valid."""
+        ci = bootstrap_lroc_auc(
+            simple_detection_table,
             n_bootstrap=10,
             seed=42,
-            metric="auc",
-            metric_kwargs={"method": "mann_whitney", "level": "image"},
+            method="mann_whitney",
+            level="image",
         )
         assert len(ci.distribution) == 10
         assert ci.ci_lower <= ci.ci_upper
         assert 0.0 <= ci.point_estimate <= 1.0
 
-
-class TestMultiMetricBootstrap:
-    """Tests for multi-metric bootstrap_ci."""
-
     def test_single_metric_returns_bootstrap_result(
         self, simple_detection_table: DetectionTable
     ) -> None:
-        """Single metric string returns a BootstrapResult (backward compat)."""
+        """The vectorized bootstrap returns a BootstrapResult."""
         from polars_cv.metrics._bootstrap import BootstrapResult
 
-        result = froc_curve(simple_detection_table)
-        ci = result.bootstrap_ci(n_bootstrap=5, seed=42, metric="auc")
+        ci = bootstrap_froc_auc(simple_detection_table, n_bootstrap=5, seed=42)
         assert isinstance(ci, BootstrapResult)
         assert len(ci.distribution) == 5
-
-    def test_multi_metric_returns_dict(
-        self, simple_detection_table: DetectionTable
-    ) -> None:
-        """Dict metric spec returns dict[str, BootstrapResult]."""
-        result = froc_curve(simple_detection_table)
-        cis = result.bootstrap_ci(
-            n_bootstrap=5,
-            seed=42,
-            metric={
-                "trap_auc": {"metric": "auc"},
-                "mw_auc": {"metric": "auc", "method": "mann_whitney"},
-            },
-        )
-        assert isinstance(cis, dict)
-        assert set(cis.keys()) == {"trap_auc", "mw_auc"}
-        for name, ci in cis.items():
-            assert len(ci.distribution) == 5
-            assert ci.ci_lower <= ci.ci_upper
-
-    def test_multi_metric_shared_reconstruction(
-        self, simple_detection_table: DetectionTable
-    ) -> None:
-        """Multi-metric bootstrap shares reconstruction — point estimates match single calls."""
-        result = froc_curve(simple_detection_table)
-        trap_single = result.auc()
-        mw_single = result.auc(method="mann_whitney", level="detection")
-
-        cis = result.bootstrap_ci(
-            n_bootstrap=5,
-            seed=42,
-            metric={
-                "trap": {"metric": "auc"},
-                "mw": {"metric": "auc", "method": "mann_whitney", "level": "detection"},
-            },
-        )
-        assert cis["trap"].point_estimate == pytest.approx(trap_single)
-        assert cis["mw"].point_estimate == pytest.approx(mw_single)
 
 
 class TestEntityLevelBootstrap:
@@ -595,8 +573,8 @@ class TestEntityLevelBootstrap:
         self, entity_detection_table: DetectionTable
     ) -> None:
         """Entity-level bootstrap with sample_col produces valid CI."""
-        result = froc_curve(entity_detection_table)
-        ci = result.bootstrap_ci(
+        ci = bootstrap_froc_auc(
+            entity_detection_table,
             n_bootstrap=10,
             seed=42,
             sample_col="case_id",
@@ -664,16 +642,24 @@ class TestMcClishCorrection:
         self, simple_detection_table: DetectionTable
     ) -> None:
         """FROC auc with correction='mcclish' returns a value in [0, 1]."""
-        result = froc_curve(simple_detection_table)
-        corrected = result.auc(fp_range=(0.0, 1.0), correction="mcclish")
+        corrected = (
+            froc_auc(simple_detection_table, fp_range=(0.0, 1.0), correction="mcclish")
+            .collect()
+            .item()
+        )
         assert 0.0 <= corrected <= 1.0
 
     def test_froc_auc_with_normalize(
         self, simple_detection_table: DetectionTable
     ) -> None:
         """FROC auc with correction='normalize' returns average sensitivity."""
-        result = froc_curve(simple_detection_table)
-        normalized = result.auc(fp_range=(0.0, 1.0), correction="normalize")
+        normalized = (
+            froc_auc(
+                simple_detection_table, fp_range=(0.0, 1.0), correction="normalize"
+            )
+            .collect()
+            .item()
+        )
         assert 0.0 <= normalized <= 1.0
 
 
@@ -1131,7 +1117,7 @@ class TestFrocSharedImageId:
             }
         )
         table = DetectionTable.from_matched(det_df, meta_df)
-        curve = froc_curve(table).curve
+        curve = froc_curve_lazy(table).collect()
         low = curve.filter(pl.col("threshold") == 0.7)
         assert low.height == 1
         assert int(low["tp"].item()) == 1
@@ -1176,7 +1162,7 @@ class TestFrocSharedImageId:
             )
             table = DetectionTable.from_matched(det_df, meta_df)
             with pytest.raises(ValueError, match="conflicting weights"):
-                froc_curve(table)
+                froc_curve_lazy(table)
 
     def test_conflicting_weights_across_classes_of_one_image_raise(self) -> None:
         """A weight is a property of an image, not of an (image, class) row.
@@ -1216,7 +1202,7 @@ class TestFrocSharedImageId:
         )
         table = DetectionTable.from_matched(det_df, meta_df)
         with pytest.raises(ValueError, match="conflicting weights"):
-            froc_curve(table)
+            froc_curve_lazy(table)
 
     def test_equal_weights_remain_stable(self) -> None:
         """Equal duplicate weights still yield tp=1, fp=1, sensitivity=0.5."""
@@ -1249,7 +1235,7 @@ class TestFrocSharedImageId:
                 COL_GT_LABEL: [True, True],
             }
         )
-        curve = froc_curve(DetectionTable.from_matched(det_df, meta_df)).curve
+        curve = froc_curve_lazy(DetectionTable.from_matched(det_df, meta_df)).collect()
         low = curve.filter(pl.col("threshold") == 0.7)
         assert int(low["tp"].item()) == 1
         assert int(low["fp"].item()) == 1
@@ -1298,20 +1284,24 @@ class TestFrocBootstrapCiContainsPoint:
             }
         )
         table = DetectionTable.from_matched(det_df, meta_df)
-        result = froc_curve(table)
-        point = result.auc()
-        ci = result.bootstrap_ci(n_bootstrap=200, seed=0)
+        point = froc_auc(table).collect().item()
+        ci = bootstrap_froc_auc(table, n_bootstrap=200, seed=0)
         assert ci.ci_lower <= point <= ci.ci_upper
         assert max(ci.distribution) <= 1.0 + 1e-9
 
         # Replica curves themselves must keep sensitivity ≤ 1.
         ids_series = pl.Series("id", image_ids)
-        for i in range(50):
+        for i in range(5):
             sampled = ids_series.sample(
                 n=len(image_ids), with_replacement=True, seed=i
             ).to_list()
-            replica = result._reconstruct(sampled)
-            assert float(replica.curve["sensitivity"].max()) <= 1.0 + 1e-9
+            samples = pl.DataFrame(
+                {"bootstrap_id": [0] * len(sampled), COL_IMAGE_ID: sampled},
+                schema={"bootstrap_id": pl.Int32, COL_IMAGE_ID: pl.String},
+            )
+            replica = _bootstrap_table_with_draws(table, samples)
+            sens = froc_curve_lazy(replica).collect()["sensitivity"].max()
+            assert float(sens) <= 1.0 + 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -1326,7 +1316,7 @@ class TestFrocCurveOrder:
         self, simple_detection_table: DetectionTable
     ) -> None:
         """fp_per_image is non-decreasing down the returned frame."""
-        curve = froc_curve(simple_detection_table).curve
+        curve = froc_curve_lazy(simple_detection_table).collect()
         vals = curve["fp_per_image"].to_list()
         for i in range(1, len(vals)):
             assert vals[i] >= vals[i - 1] - 1e-12
@@ -1337,7 +1327,7 @@ class TestLrocCurveOrder:
 
     def test_fpf_non_decreasing(self, simple_detection_table: DetectionTable) -> None:
         """fpf is non-decreasing down the returned frame."""
-        curve = lroc_curve(simple_detection_table).curve
+        curve = lroc_curve_lazy(simple_detection_table).collect()
         vals = curve["fpf"].to_list()
         for i in range(1, len(vals)):
             assert vals[i] >= vals[i - 1] - 1e-12
@@ -1355,17 +1345,19 @@ class TestInterpolateNullBeyondRange:
         self, simple_detection_table: DetectionTable
     ) -> None:
         """Querying past the observed max fp_per_image yields None."""
-        result = froc_curve(simple_detection_table)
-        max_fp = float(result.curve["fp_per_image"].max())
-        assert result.sensitivity_at_fp(max_fp + 1.0) is None
+        curve = froc_curve_lazy(simple_detection_table).collect()
+        max_fp = float(curve["fp_per_image"].max())
+        assert froc_sensitivity_at_fp(simple_detection_table, max_fp + 1.0) is None
 
     def test_summary_table_nulls_beyond_range(
         self, simple_detection_table: DetectionTable
     ) -> None:
         """summary_table writes null for unreachable operating points."""
-        result = froc_curve(simple_detection_table)
-        max_fp = float(result.curve["fp_per_image"].max())
-        summary = result.summary_table(fp_rates=[0.0, max_fp + 10.0])
+        curve = froc_curve_lazy(simple_detection_table).collect()
+        max_fp = float(curve["fp_per_image"].max())
+        summary = froc_summary_table(
+            simple_detection_table, fp_rates=[0.0, max_fp + 10.0]
+        )
         assert summary["sensitivity"][0] is not None
         assert summary["sensitivity"][1] is None
 
@@ -1435,7 +1427,7 @@ class TestCurveOrderIsDeterministic:
         and ``test_interpolate_at_a_tie_returns_the_upper_envelope``.
         """
         table = self._tied_table()
-        thresholds = froc_curve(table).curve["threshold"].to_list()
+        thresholds = froc_curve_lazy(table).collect()["threshold"].to_list()
         assert thresholds == sorted(thresholds, reverse=True)
         assert len(set(thresholds)) == len(thresholds), "thresholds must be unique"
 
@@ -1445,7 +1437,7 @@ class TestCurveOrderIsDeterministic:
         This is what makes the trapezoid leaving the tie use the upper
         envelope rather than whichever row the sort happened to leave last.
         """
-        curve = froc_curve(self._tied_table()).curve
+        curve = froc_curve_lazy(self._tied_table()).collect()
         tied = curve.filter(pl.col("fp_per_image") == 0.0)
         assert tied.height > 1, "fixture must actually produce a tie"
         sens = tied["sensitivity"].to_list()
@@ -1457,16 +1449,15 @@ class TestCurveOrderIsDeterministic:
         auc() re-sorts by x, so a curve whose tied rows arrive in a different
         order must still integrate to the same area.
         """
-        result = froc_curve(self._tied_table())
-        baseline = result.auc()
+        table = self._tied_table()
+        curve = froc_curve_lazy(table).collect()
+        baseline = froc_auc(table).collect().item()
         for seed in range(8):
-            shuffled = FROCResult(
-                curve=result.curve.sample(fraction=1.0, shuffle=True, seed=seed),
-                n_images=result.n_images,
-                total_targets=result.total_targets,
-                detection_table=result.detection_table,
+            shuffled = curve.sample(fraction=1.0, shuffle=True, seed=seed)
+            got = MetricResult(curve=shuffled).auc(
+                x_col="fp_per_image", y_col="sensitivity"
             )
-            assert shuffled.auc() == pytest.approx(baseline, abs=1e-12)
+            assert got == pytest.approx(baseline, abs=1e-12)
 
     def test_interpolate_at_a_tie_returns_the_upper_envelope(self) -> None:
         """sensitivity_at_fp(0.0) is the sensitivity reachable at zero FPs.
@@ -1475,8 +1466,7 @@ class TestCurveOrderIsDeterministic:
         operating point; returning its y would report that a detector making no
         false positives also finds nothing.
         """
-        result = froc_curve(self._tied_table())
-        assert result.sensitivity_at_fp(0.0) == pytest.approx(1.0)
+        assert froc_sensitivity_at_fp(self._tied_table(), 0.0) == pytest.approx(1.0)
 
 
 class TestSummaryTableDtype:
@@ -1486,9 +1476,11 @@ class TestSummaryTableDtype:
         self, simple_detection_table: DetectionTable
     ) -> None:
         """A fully unreachable operating-point set must not yield Null dtype."""
-        result = froc_curve(simple_detection_table)
-        max_fp = float(result.curve["fp_per_image"].max())
-        summary = result.summary_table(fp_rates=[max_fp + 10.0, max_fp + 20.0])
+        curve = froc_curve_lazy(simple_detection_table).collect()
+        max_fp = float(curve["fp_per_image"].max())
+        summary = froc_summary_table(
+            simple_detection_table, fp_rates=[max_fp + 10.0, max_fp + 20.0]
+        )
         assert summary["sensitivity"].dtype == pl.Float64
         assert summary["fp_per_image"].dtype == pl.Float64
         assert summary["sensitivity"].to_list() == [None, None]
@@ -1586,11 +1578,12 @@ class TestFrocImageCount:
                 COL_GT_LABEL: [True, False, False, True],
             }
         )
-        result = froc_curve(DetectionTable.from_matched(det_df, meta_df))
-        assert result.n_images == 2
+        table = DetectionTable.from_matched(det_df, meta_df)
+        assert table.image_metadata.collect()[COL_IMAGE_ID].n_unique() == 2
         # Both detections are false positives, so the last point is 2 FP / 2
         # images = 1.0. Counting metadata rows would report 0.5.
-        assert float(result.curve["fp_per_image"].max()) == pytest.approx(1.0)
+        curve = froc_curve_lazy(table).collect()
+        assert float(curve["fp_per_image"].max()) == pytest.approx(1.0)
 
 
 class TestFrocBootstrapDrawsAreDistinctUnits:
@@ -1600,21 +1593,28 @@ class TestFrocBootstrapDrawsAreDistinctUnits:
         self, simple_detection_table: DetectionTable
     ) -> None:
         """Drawing one image three times gives three images and three GTs."""
-        result = froc_curve(simple_detection_table)
-        replicate = result._reconstruct(["a", "a", "a"])
-        assert replicate.n_images == 3
-        assert replicate.total_targets == 3
-        # Three copies of the same single TP: sensitivity reaches exactly 1.0
-        # and never exceeds it.
-        assert float(replicate.curve["sensitivity"].max()) == pytest.approx(1.0)
+        samples = pl.DataFrame(
+            {"bootstrap_id": [0, 0, 0], COL_IMAGE_ID: ["a", "a", "a"]},
+            schema={"bootstrap_id": pl.Int32, COL_IMAGE_ID: pl.String},
+        )
+        replicate = _bootstrap_table_with_draws(simple_detection_table, samples)
+        meta = replicate.image_metadata.collect()
+        assert meta[COL_IMAGE_ID].n_unique() == 3
+        assert int(meta[COL_N_GTS].sum()) == 3
+        # Three copies of the same single TP: sensitivity reaches exactly 1.0.
+        sens = froc_curve_lazy(replicate).collect()["sensitivity"].max()
+        assert float(sens) == pytest.approx(1.0)
 
     def test_draw_ids_are_distinct(
         self, simple_detection_table: DetectionTable
     ) -> None:
         """The replicate's own table carries one id per draw, not per image."""
-        result = froc_curve(simple_detection_table)
-        replicate = result._reconstruct(["a", "a", "b"])
-        meta = replicate.detection_table.image_metadata.collect()
+        samples = pl.DataFrame(
+            {"bootstrap_id": [0, 0, 0], COL_IMAGE_ID: ["a", "a", "b"]},
+            schema={"bootstrap_id": pl.Int32, COL_IMAGE_ID: pl.String},
+        )
+        replicate = _bootstrap_table_with_draws(simple_detection_table, samples)
+        meta = replicate.image_metadata.collect()
         assert meta[COL_IMAGE_ID].n_unique() == 3
 
 

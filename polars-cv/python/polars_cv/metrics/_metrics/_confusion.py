@@ -15,8 +15,8 @@ class ConfusionResult:
 
     Detection problems have no true negatives (the background is unbounded), so
     only ``tp``, ``fp`` and ``fn`` are reported. Returned as a frozen dataclass
-    to match the other metric result types (:class:`FROCResult`,
-    :class:`PrecisionRecallResult`); call :meth:`to_dict` for the legacy mapping.
+    to match the other metric result type (:class:`PrecisionRecallResult`); call
+    :meth:`to_dict` for the legacy mapping.
 
     Attributes:
         tp: True positives (matched detections at or above the threshold).
