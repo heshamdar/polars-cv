@@ -119,3 +119,35 @@ class TestBootstrapLrocReproducible:
         r = bootstrap_lroc_auc(table, n_bootstrap=100, seed=3)
         assert r.point_estimate == pytest.approx(lroc_auc(table).collect().item())
         assert len(r.distribution) == 100
+
+
+class TestEntityLevelBootstrap:
+    """sample_col resamples at the entity level and stays seed-reproducible."""
+
+    def _table_with_cases(self) -> DetectionTable:
+        # two images per case; resampling by case draws both images together
+        images = [
+            ("a", 0.9, True),
+            ("b", 0.8, True),
+            ("c", 0.7, False),
+            ("d", 0.6, True),
+            ("e", 0.5, False),
+            ("f", 0.4, True),
+        ]
+        table = _table(images)
+        meta = table.image_metadata.with_columns(
+            case_id=pl.Series("case_id", ["c1", "c1", "c2", "c2", "c3", "c3"]).cast(
+                pl.String
+            )
+        )
+        return DetectionTable.from_matched(
+            table.detections, meta, matching_iou_threshold=0.5
+        )
+
+    def test_entity_bootstrap_reproducible(self) -> None:
+        table = self._table_with_cases()
+        r1 = bootstrap_froc_auc(table, n_bootstrap=100, seed=5, sample_col="case_id")
+        r2 = bootstrap_froc_auc(table, n_bootstrap=100, seed=5, sample_col="case_id")
+        assert r1.distribution == r2.distribution
+        assert len(r1.distribution) == 100
+        assert r1.ci_lower <= r1.point_estimate <= r1.ci_upper

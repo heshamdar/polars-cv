@@ -558,6 +558,31 @@ def lroc_auc(
     return collapsed.select(auc=auc_expr)
 
 
+def lroc_sensitivity_at_fpf(
+    table: DetectionTable,
+    fpf: float,
+    *,
+    variant: Literal["best_tp", "top_scoring"] = "best_tp",
+) -> float | None:
+    """Interpolate LROC sensitivity at a requested false-positive fraction.
+
+    The lazy, standalone replacement for ``LROCResult.sensitivity_at_fpf``.
+
+    Args:
+        table: Canonical detection table.
+        fpf: Target false-positive fraction.
+        variant: ``"best_tp"`` or ``"top_scoring"``.
+
+    Returns:
+        Interpolated sensitivity, or ``None`` when ``fpf`` is outside the
+        observed range of the curve.
+    """
+    curve = lroc_curve_lazy(table, variant=variant).collect(engine="streaming")
+    return MetricResult(curve=curve).interpolate(
+        x_col="fpf", y_col="sensitivity", at=fpf
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

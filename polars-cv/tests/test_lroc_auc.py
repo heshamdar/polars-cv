@@ -11,7 +11,12 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from polars_cv.metrics import DetectionTable, lroc_auc, lroc_curve
+from polars_cv.metrics import (
+    DetectionTable,
+    lroc_auc,
+    lroc_curve,
+    lroc_sensitivity_at_fpf,
+)
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -153,3 +158,12 @@ class TestLrocAucGroupParity:
                 lroc_auc(_sub_table(region), method="mann_whitney", level="image")
             )
             assert got[region] == pytest.approx(want, abs=_TOL)
+
+
+class TestLrocStandaloneHelpers:
+    @pytest.mark.parametrize("fpf", [0.0, 0.25, 0.5, 1.0])
+    def test_sensitivity_at_fpf_matches_eager(self, fpf: float) -> None:
+        table = _table()
+        got = lroc_sensitivity_at_fpf(table, fpf)
+        want = lroc_curve(table).sensitivity_at_fpf(fpf)
+        assert got == want or got == pytest.approx(want, abs=_TOL)

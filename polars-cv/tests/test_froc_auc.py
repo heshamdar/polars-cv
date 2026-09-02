@@ -14,7 +14,13 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from polars_cv.metrics import DetectionTable, froc_auc, froc_curve
+from polars_cv.metrics import (
+    DetectionTable,
+    froc_auc,
+    froc_curve,
+    froc_sensitivity_at_fp,
+    froc_summary_table,
+)
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -160,3 +166,20 @@ class TestFrocAucGroupParity:
         grouped = froc_auc(table, group_by="class_id").collect()
         assert sorted(grouped[COL_CLASS_ID].to_list()) == ["x", "y"]
         assert grouped.height == 2
+
+
+class TestFrocStandaloneHelpers:
+    """The lazy standalone helpers reproduce the eager result methods."""
+
+    @pytest.mark.parametrize("fp", [0.0, 0.25, 0.5, 1.0, 2.0, 100.0])
+    def test_sensitivity_at_fp_matches_eager(self, fp: float) -> None:
+        table = _table(multiclass=False)
+        got = froc_sensitivity_at_fp(table, fp)
+        want = froc_curve(table).sensitivity_at_fp(fp)
+        assert got == want or got == pytest.approx(want, abs=_TOL)
+
+    def test_summary_table_matches_eager(self) -> None:
+        table = _table(multiclass=False)
+        got = froc_summary_table(table)
+        want = froc_curve(table).summary_table()
+        assert got.equals(want)

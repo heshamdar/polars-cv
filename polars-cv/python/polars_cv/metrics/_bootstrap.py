@@ -241,6 +241,54 @@ def bootstrap_pr_auc(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_bootstrap_samples(
+    table: DetectionTable,
+    *,
+    sample_col: str | None,
+    n_bootstrap: int,
+    confidence: float,
+    seed: int | None,
+) -> pl.DataFrame:
+    """Seeded ``(bootstrap_id, image_id)`` resample frame, image- or entity-level.
+
+    With ``sample_col`` set, entities (e.g. ``case_id``) are resampled and
+    expanded to their images, matching ``MetricResult.bootstrap_ci``'s
+    entity-level sampling; otherwise images are resampled directly. Sample ids
+    are sorted so a given seed is reproducible (``image_ids_and_strata`` reads an
+    unstable ``.unique()`` order).
+    """
+    from ._result import _resolve_sampling_entities
+
+    _, strata = table.image_ids_and_strata()
+    sample_ids, entity_to_images = _resolve_sampling_entities(table, sample_col)
+    sample_ids = sorted(sample_ids)
+    _validate_bootstrap_params(n_bootstrap, confidence, sample_ids)
+
+    samples = _generate_bootstrap_samples(
+        image_ids=sample_ids,
+        strata=(strata if sample_col is None else None),
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+    )
+    if entity_to_images is None:
+        return samples
+
+    # Expand each sampled entity to its images (carrying bootstrap_id).
+    map_df = pl.DataFrame(
+        {
+            "_entity": list(entity_to_images.keys()),
+            COL_IMAGE_ID: list(entity_to_images.values()),
+        },
+        schema={"_entity": pl.String, COL_IMAGE_ID: pl.List(pl.String)},
+    )
+    return (
+        samples.rename({COL_IMAGE_ID: "_entity"})
+        .join(map_df, on="_entity", how="left")
+        .explode(COL_IMAGE_ID)
+        .select("bootstrap_id", COL_IMAGE_ID)
+    )
+
+
 def _bootstrap_table_with_draws(
     table: DetectionTable,
     samples_df: pl.DataFrame,
@@ -313,6 +361,7 @@ def bootstrap_froc_auc(
     method: str = "trapezoidal",
     fp_range: tuple[float, float] | None = None,
     correction: str | None = None,
+    sample_col: str | None = None,
 ) -> BootstrapResult:
     """Vectorized, seed-reproducible bootstrap for FROC AUC.
 
@@ -329,17 +378,13 @@ def bootstrap_froc_auc(
         method: ``"trapezoidal"`` or ``"mann_whitney"``.
         fp_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
         correction: Partial-AUC correction (trapezoidal only).
+        sample_col: Optional entity column (e.g. ``"case_id"``) to resample at
+            the entity level, expanding to images; ``None`` resamples images.
 
     Returns:
         ``BootstrapResult`` with percentile confidence interval.
     """
     from ._metrics import froc_auc
-
-    image_ids, strata = table.image_ids_and_strata()
-    # image_ids_and_strata reads a `.unique()`, whose row order is not stable
-    # across calls; sort so a given seed samples the same images every time.
-    image_ids = sorted(image_ids)
-    _validate_bootstrap_params(n_bootstrap, confidence, image_ids)
 
     point = (
         froc_auc(table, method=method, fp_range=fp_range, correction=correction)
@@ -347,8 +392,12 @@ def bootstrap_froc_auc(
         .item()
     )
 
-    samples_df = _generate_bootstrap_samples(
-        image_ids=image_ids, strata=strata, n_bootstrap=n_bootstrap, seed=seed
+    samples_df = _resolve_bootstrap_samples(
+        table,
+        sample_col=sample_col,
+        n_bootstrap=n_bootstrap,
+        confidence=confidence,
+        seed=seed,
     )
     boot_table = _bootstrap_table_with_draws(table, samples_df)
 
@@ -375,6 +424,7 @@ def bootstrap_lroc_auc(
     fpf_range: tuple[float, float] | None = None,
     correction: str | None = None,
     level: str = "image",
+    sample_col: str | None = None,
 ) -> BootstrapResult:
     """Vectorized, seed-reproducible bootstrap for LROC AUC.
 
@@ -391,16 +441,12 @@ def bootstrap_lroc_auc(
         fpf_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
         correction: Partial-AUC correction (trapezoidal only).
         level: Mann-Whitney granularity (``"image"`` or ``"detection"``).
+        sample_col: Optional entity column to resample at the entity level.
 
     Returns:
         ``BootstrapResult`` with percentile confidence interval.
     """
     from ._metrics import lroc_auc
-
-    image_ids, strata = table.image_ids_and_strata()
-    # See bootstrap_froc_auc: sort for seed-stable sampling.
-    image_ids = sorted(image_ids)
-    _validate_bootstrap_params(n_bootstrap, confidence, image_ids)
 
     point = (
         lroc_auc(
@@ -415,8 +461,12 @@ def bootstrap_lroc_auc(
         .item()
     )
 
-    samples_df = _generate_bootstrap_samples(
-        image_ids=image_ids, strata=strata, n_bootstrap=n_bootstrap, seed=seed
+    samples_df = _resolve_bootstrap_samples(
+        table,
+        sample_col=sample_col,
+        n_bootstrap=n_bootstrap,
+        confidence=confidence,
+        seed=seed,
     )
     boot_table = _bootstrap_table_with_draws(table, samples_df)
 
