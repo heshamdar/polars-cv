@@ -22,6 +22,7 @@ from .._auc_expr import (
 from .._result import MetricResult
 from .._types import (
     COL_GT_LABEL,
+    COL_IMAGE_ID,
     COL_IS_TP,
     COL_SCORE,
     COL_WEIGHT,
@@ -249,6 +250,18 @@ def lroc_auc(
             det = table.detections.with_columns(
                 pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
             )
+            if group_keys:
+                # A metadata-only key (e.g. group_id) is not on the detections
+                # frame; join it in before grouping, as froc_auc does.
+                meta_only = [
+                    k for k in group_keys if k not in set(det.collect_schema().names())
+                ]
+                if meta_only:
+                    det = det.join(
+                        table.image_metadata.select(COL_IMAGE_ID, *meta_only).unique(),
+                        on=COL_IMAGE_ID,
+                        how="left",
+                    )
             return (
                 det.group_by([_DUMMY_GROUP, *group_keys])
                 .agg(auc=mann_whitney_auc_expr(score=COL_SCORE, label=COL_IS_TP))

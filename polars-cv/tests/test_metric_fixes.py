@@ -206,6 +206,38 @@ class TestFrocCurveFromDetections:
             assert tp_vals[i] >= tp_vals[i - 1], "TP not monotonic"
             assert fp_vals[i] >= fp_vals[i - 1], "FP not monotonic"
 
+    def test_weighted_curve_exact_values(self) -> None:
+        """Distinct per-image weights drive the weighted numerator/denominator.
+
+        a: w=2, n_gts=1, TP@0.9 ; b: w=1, n_gts=1, FP@0.5 ; c: w=3, n_gts=0, FP@0.3.
+        total_weighted_gts = 1*2 + 1*1 + 0*3 = 3 ; per-image weight_sum = 2+1+3 = 6.
+        At threshold 0.3 (all dets): weighted TP = 2 → sensitivity = 2/3;
+        weighted FP = 1 + 3 = 4 → fp_per_image = 4/6 = 2/3.
+        Uniform weights would give sensitivity 1/1 and fp_per_image 2/3 instead.
+        """
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c"],
+                COL_SCORE: [0.9, 0.5, 0.3],
+                COL_IS_TP: [True, False, False],
+            }
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b", "c"],
+                COL_N_GTS: [1, 1, 0],
+                COL_WEIGHT: [2.0, 1.0, 3.0],
+            }
+        )
+        curve = _froc_curve_df(det_df, meta_df)
+        low = curve.filter(pl.col("threshold") == 0.3).to_dicts()[0]
+        assert low["sensitivity"] == pytest.approx(2.0 / 3.0)
+        assert low["fp_per_image"] == pytest.approx(4.0 / 6.0)
+        # Highest threshold keeps only the weighted TP; no false positives yet.
+        high = curve.filter(pl.col("threshold") == 0.9).to_dicts()[0]
+        assert high["sensitivity"] == pytest.approx(2.0 / 3.0)
+        assert high["fp_per_image"] == pytest.approx(0.0)
+
 
 class TestFrocIouThresholdPropagation:
     """Verify iou_threshold is carried on the DetectionTable."""
