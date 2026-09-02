@@ -237,6 +237,204 @@ def bootstrap_pr_auc(
 
 
 # ---------------------------------------------------------------------------
+# Vectorized bootstrap for FROC / LROC AUC (single Polars lazy plan)
+# ---------------------------------------------------------------------------
+
+
+def _bootstrap_table_with_draws(
+    table: DetectionTable,
+    samples_df: pl.DataFrame,
+) -> DetectionTable:
+    """Build a per-replicate ``DetectionTable`` keyed by ``bootstrap_id``.
+
+    Each sampled image draw is given a distinct synthetic ``image_id`` so that an
+    image drawn more than once within a replicate counts once per draw — the same
+    reason the sequential ``_reconstruct`` renames draws. The ``bootstrap_id``
+    rides along on both frames so ``froc_auc`` / ``lroc_auc`` can group by it.
+    """
+    from ._types import DetectionTable
+
+    samples = (
+        samples_df.lazy()
+        .with_row_index("_ridx")
+        .with_columns(
+            _draw_uid=pl.col(COL_IMAGE_ID)
+            + pl.lit("#d")
+            + pl.col("_ridx").cast(pl.String)
+        )
+    )
+
+    det_boot = (
+        samples.join(table.detections, on=COL_IMAGE_ID, how="left")
+        .drop_nulls(COL_SCORE)  # zero-detection draws contribute no rows
+        .with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID))
+        .drop("_draw_uid", "_ridx")
+    )
+    meta_boot = (
+        samples.join(table.image_metadata, on=COL_IMAGE_ID, how="left")
+        .with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID))
+        .drop("_draw_uid", "_ridx")
+    )
+    return DetectionTable.from_matched(
+        det_boot, meta_boot, matching_iou_threshold=table._matching_iou_threshold
+    )
+
+
+def _bootstrap_distribution(
+    auc_lf: pl.LazyFrame,
+    n_bootstrap: int,
+    empty_value: float,
+) -> list[float]:
+    """Collect one AUC per ``bootstrap_id``, filling absent replicates.
+
+    A replicate whose resample produced no detections is absent from a
+    detection-grouped result (e.g. Mann-Whitney); it is filled with
+    *empty_value* so the distribution always has ``n_bootstrap`` entries in
+    replicate order.
+    """
+    all_ids = pl.LazyFrame(
+        {"bootstrap_id": pl.int_range(0, n_bootstrap, dtype=pl.Int32, eager=True)}
+    )
+    filled = (
+        all_ids.join(auc_lf, on="bootstrap_id", how="left")
+        .with_columns(pl.col("auc").fill_null(empty_value))
+        .sort("bootstrap_id")
+        .collect(engine="streaming")
+    )
+    return filled["auc"].to_list()
+
+
+def bootstrap_froc_auc(
+    table: DetectionTable,
+    *,
+    n_bootstrap: int = 1000,
+    confidence: float = 0.95,
+    seed: int | None = None,
+    method: str = "trapezoidal",
+    fp_range: tuple[float, float] | None = None,
+    correction: str | None = None,
+) -> BootstrapResult:
+    """Vectorized, seed-reproducible bootstrap for FROC AUC.
+
+    Generates all replicates as one seeded ``(bootstrap_id, image_id)`` frame,
+    joins it to the detection table, and computes ``froc_auc`` grouped by
+    ``bootstrap_id`` — every replicate in one lazy plan. A given ``seed`` yields
+    an identical confidence interval, unlike the sequential path.
+
+    Args:
+        table: Canonical detection table.
+        n_bootstrap: Number of bootstrap iterations.
+        confidence: Confidence level in ``(0, 1)``.
+        seed: Optional RNG seed (set it for reproducible bounds).
+        method: ``"trapezoidal"`` or ``"mann_whitney"``.
+        fp_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
+        correction: Partial-AUC correction (trapezoidal only).
+
+    Returns:
+        ``BootstrapResult`` with percentile confidence interval.
+    """
+    from ._metrics import froc_auc
+
+    image_ids, strata = table.image_ids_and_strata()
+    # image_ids_and_strata reads a `.unique()`, whose row order is not stable
+    # across calls; sort so a given seed samples the same images every time.
+    image_ids = sorted(image_ids)
+    _validate_bootstrap_params(n_bootstrap, confidence, image_ids)
+
+    point = (
+        froc_auc(table, method=method, fp_range=fp_range, correction=correction)
+        .collect()
+        .item()
+    )
+
+    samples_df = _generate_bootstrap_samples(
+        image_ids=image_ids, strata=strata, n_bootstrap=n_bootstrap, seed=seed
+    )
+    boot_table = _bootstrap_table_with_draws(table, samples_df)
+
+    auc_lf = froc_auc(
+        boot_table,
+        method=method,
+        fp_range=fp_range,
+        correction=correction,
+        group_by="bootstrap_id",
+    )
+    empty_value = 0.5 if method == "mann_whitney" else 0.0
+    distribution = _bootstrap_distribution(auc_lf, n_bootstrap, empty_value)
+    return _finalize(distribution, point, confidence)
+
+
+def bootstrap_lroc_auc(
+    table: DetectionTable,
+    *,
+    n_bootstrap: int = 1000,
+    confidence: float = 0.95,
+    seed: int | None = None,
+    variant: str = "best_tp",
+    method: str = "trapezoidal",
+    fpf_range: tuple[float, float] | None = None,
+    correction: str | None = None,
+    level: str = "image",
+) -> BootstrapResult:
+    """Vectorized, seed-reproducible bootstrap for LROC AUC.
+
+    The LROC counterpart of :func:`bootstrap_froc_auc`: ``lroc_auc`` grouped by
+    ``bootstrap_id`` over one seeded resample frame.
+
+    Args:
+        table: Canonical detection table.
+        n_bootstrap: Number of bootstrap iterations.
+        confidence: Confidence level in ``(0, 1)``.
+        seed: Optional RNG seed.
+        variant: ``"best_tp"`` or ``"top_scoring"``.
+        method: ``"trapezoidal"`` or ``"mann_whitney"``.
+        fpf_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
+        correction: Partial-AUC correction (trapezoidal only).
+        level: Mann-Whitney granularity (``"image"`` or ``"detection"``).
+
+    Returns:
+        ``BootstrapResult`` with percentile confidence interval.
+    """
+    from ._metrics import lroc_auc
+
+    image_ids, strata = table.image_ids_and_strata()
+    # See bootstrap_froc_auc: sort for seed-stable sampling.
+    image_ids = sorted(image_ids)
+    _validate_bootstrap_params(n_bootstrap, confidence, image_ids)
+
+    point = (
+        lroc_auc(
+            table,
+            variant=variant,
+            method=method,
+            fpf_range=fpf_range,
+            correction=correction,
+            level=level,
+        )
+        .collect()
+        .item()
+    )
+
+    samples_df = _generate_bootstrap_samples(
+        image_ids=image_ids, strata=strata, n_bootstrap=n_bootstrap, seed=seed
+    )
+    boot_table = _bootstrap_table_with_draws(table, samples_df)
+
+    auc_lf = lroc_auc(
+        boot_table,
+        variant=variant,
+        method=method,
+        fpf_range=fpf_range,
+        correction=correction,
+        level=level,
+        group_by="bootstrap_id",
+    )
+    empty_value = 0.5 if method == "mann_whitney" else 0.0
+    distribution = _bootstrap_distribution(auc_lf, n_bootstrap, empty_value)
+    return _finalize(distribution, point, confidence)
+
+
+# ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
