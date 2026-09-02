@@ -8,6 +8,12 @@ from typing import Literal
 import polars as pl
 
 from .._auc import CorrectionMethod, detection_level_mann_whitney, mann_whitney_u_auc
+from .._auc_expr import (
+    collapse_curve,
+    mann_whitney_auc_expr,
+    partial_auc_expr,
+    trapz_auc_expr,
+)
 from .._result import MetricResult
 from .._types import (
     COL_CLASS_ID,
@@ -19,6 +25,10 @@ from .._types import (
     COL_WEIGHT,
     DetectionTable,
 )
+
+# Internal dummy group key used to run the group-aware curve/AUC path with a
+# single implicit group. Dropped from every public result.
+_DUMMY_GROUP = "_froc_grp"
 
 # Columns the bootstrap uses to name each draw before it becomes the image_id.
 _COL_DRAW_ID = "_draw_id"
@@ -321,6 +331,266 @@ def froc_curve(
         iou_threshold=table._matching_iou_threshold or 0.5,
         detection_table=table,
     )
+
+
+# ---------------------------------------------------------------------------
+# Expression-valued, group-aware curve + AUC (lazy)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_group_by(group_by: str | list[str] | None) -> list[str]:
+    """Normalize the ``group_by`` argument to a list of column names."""
+    if group_by is None:
+        return []
+    if isinstance(group_by, str):
+        return [group_by]
+    return list(group_by)
+
+
+def froc_curve_lazy(
+    table: DetectionTable,
+    *,
+    group_by: str | list[str] | None = None,
+    thresholds: list[float] | None = None,
+) -> pl.LazyFrame:
+    """Build the FROC curve as a lazy, group-aware frame.
+
+    The expression-valued replacement for the eager :func:`froc_curve` curve
+    build: every cumulative sum runs ``.over`` the group, and the weighted
+    denominators are per-group aggregations rather than eager ``.item()``
+    Python floats. With ``group_by=None`` the whole table is one group and the
+    numbers match :func:`froc_curve` exactly; with a grouping column each group
+    is computed as if on its filtered sub-table (so
+    ``froc_curve_lazy(group_by="class_id")`` per class equals
+    ``froc_curve_lazy`` on ``table.filter_class(cid)``).
+
+    Args:
+        table: Canonical detection table produced by a matcher.
+        group_by: Optional column(s) partitioning the curve. May name a column
+            on the detections (e.g. ``class_id``) or one only on the metadata
+            (e.g. ``group_id``); metadata-only keys are joined onto detections
+            by ``image_id``.
+        thresholds: Optional explicit score thresholds to keep.
+
+    Returns:
+        A ``LazyFrame`` with ``[*group_by, threshold, tp, fp, fn, total_gts,
+        fp_per_image, sensitivity]`` (no group columns when ``group_by`` is
+        ``None``).
+    """
+    group_keys = _normalize_group_by(group_by)
+
+    det = table.detections.with_columns(pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP))
+    meta = table.image_metadata.with_columns(
+        pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
+    )
+    keys = [_DUMMY_GROUP, *group_keys]
+
+    # A conflicting weight for one (image[, class]) key makes weighted FROC
+    # order-dependent; reuse the same eager guard the pooled path uses. The
+    # metadata frame is one row per (image, class) — small — so this targeted
+    # collect is not the curve materialization the lazy path removes.
+    _raise_on_conflicting_weights(
+        table.image_metadata.collect(engine="streaming"), [COL_IMAGE_ID]
+    )
+
+    curve = _froc_curve_grouped(det, meta, keys, thresholds)
+    return curve.drop(_DUMMY_GROUP)
+
+
+def _froc_curve_grouped(
+    det: pl.LazyFrame,
+    meta: pl.LazyFrame,
+    keys: list[str],
+    thresholds: list[float] | None,
+) -> pl.LazyFrame:
+    """Group-aware FROC curve over ``keys`` (always non-empty; carries dummy)."""
+    det_schema = set(det.collect_schema().names())
+    meta_schema = set(meta.collect_schema().names())
+
+    # Attach any group key that lives only on the metadata (e.g. group_id) to
+    # each detection, keyed by image_id.
+    meta_only = [k for k in keys if k not in det_schema and k in meta_schema]
+    if meta_only:
+        det = det.join(
+            meta.select(COL_IMAGE_ID, *meta_only).unique(),
+            on=COL_IMAGE_ID,
+            how="left",
+        )
+
+    # Numerator: one weight per (image[, class]) lookup key, attached to each
+    # detection. Deduping keeps a repeated metadata row from fanning detections.
+    weight_keys = (
+        [COL_IMAGE_ID, COL_CLASS_ID] if COL_CLASS_ID in meta_schema else [COL_IMAGE_ID]
+    )
+    weight_lookup = meta.select(*weight_keys, COL_WEIGHT).unique(
+        subset=weight_keys, keep="first"
+    )
+    det_w = det.join(weight_lookup, on=weight_keys, how="left").with_columns(
+        pl.col(COL_WEIGHT).fill_null(1.0)
+    )
+
+    # Per-group denominators, each scoped to the group's metadata subset so a
+    # grouped curve equals the curve of that group's filtered sub-table.
+    gt_stats = meta.group_by(keys).agg(
+        total_targets=pl.col(COL_N_GTS).sum().cast(pl.Int64),
+        _tw_gts=(pl.col(COL_N_GTS).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
+    )
+    # FP-per-image counts images: dedup weight to one per (group, image_id).
+    weight_stats = (
+        meta.unique(subset=[*keys, COL_IMAGE_ID], keep="first")
+        .group_by(keys)
+        .agg(_weight_sum=pl.col(COL_WEIGHT).sum())
+    )
+    group_stats = gt_stats.join(weight_stats, on=keys, how="left").with_columns(
+        _tw_gts_f=pl.max_horizontal(pl.col("_tw_gts"), pl.lit(1.0)),
+        _weight_sum_f=pl.max_horizontal(pl.col("_weight_sum"), pl.lit(1.0)),
+    )
+
+    bucketed = (
+        det_w.group_by(*keys, COL_SCORE)
+        .agg(
+            tp_count=pl.col(COL_IS_TP).sum().cast(pl.Int64),
+            fp_count=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
+            weighted_tp=(pl.col(COL_IS_TP).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
+            weighted_fp=(
+                (~pl.col(COL_IS_TP)).cast(pl.Float64) * pl.col(COL_WEIGHT)
+            ).sum(),
+        )
+        .sort(*keys, COL_SCORE, descending=[False] * len(keys) + [True])
+        .with_columns(
+            tp=pl.col("tp_count").cum_sum().over(keys),
+            fp=pl.col("fp_count").cum_sum().over(keys),
+            cum_weighted_tp=pl.col("weighted_tp").cum_sum().over(keys),
+            cum_weighted_fp=pl.col("weighted_fp").cum_sum().over(keys),
+        )
+        .rename({COL_SCORE: "threshold"})
+        .join(group_stats, on=keys, how="left")
+        .with_columns(
+            total_gts=pl.col("total_targets"),
+            fn=(pl.col("total_targets") - pl.col("tp")).clip(lower_bound=0),
+            sensitivity=pl.col("cum_weighted_tp") / pl.col("_tw_gts_f"),
+            fp_per_image=pl.col("cum_weighted_fp") / pl.col("_weight_sum_f"),
+        )
+        .select(
+            *keys,
+            "threshold",
+            "tp",
+            "fp",
+            "fn",
+            "total_gts",
+            "fp_per_image",
+            "sensitivity",
+        )
+    )
+
+    # One origin point (threshold=+inf, everything zero) per group.
+    origin = group_stats.select(
+        *keys,
+        threshold=pl.lit(float("inf")),
+        tp=pl.lit(0, dtype=pl.Int64),
+        fp=pl.lit(0, dtype=pl.Int64),
+        fn=pl.col("total_targets"),
+        total_gts=pl.col("total_targets"),
+        fp_per_image=pl.lit(0.0),
+        sensitivity=pl.lit(0.0),
+    )
+
+    curve = pl.concat([origin, bucketed], how="vertical").sort(
+        *keys, "threshold", descending=[False] * len(keys) + [True]
+    )
+    if thresholds is not None:
+        threshold_set = set(thresholds)
+        curve = curve.filter(pl.col("threshold").is_in(threshold_set))
+    return curve
+
+
+def froc_auc(
+    table: DetectionTable,
+    *,
+    method: Literal["trapezoidal", "mann_whitney"] = "trapezoidal",
+    fp_range: tuple[float, float] | None = None,
+    correction: CorrectionMethod = None,
+    level: Literal["detection", "image"] = "detection",
+    group_by: str | list[str] | None = None,
+) -> pl.LazyFrame:
+    """Compute FROC AUC as a lazy, group-aware frame — one row per group.
+
+    The expression-valued replacement for ``FROCResult.auc``: the integral is
+    the reusable expression in :mod:`polars_cv.metrics._auc_expr`, and a scalar
+    is ``froc_auc(table).collect().item()``.
+
+    Args:
+        table: Canonical detection table.
+        method: ``"trapezoidal"`` integrates the curve; ``"mann_whitney"``
+            computes the detection-level rank statistic P(TP > FP).
+        fp_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
+        correction: Partial-AUC correction (trapezoidal only).
+        level: Mann-Whitney granularity. Only ``"detection"`` is supported here.
+        group_by: Optional grouping column(s). ``None`` yields a single row.
+
+    Returns:
+        A ``LazyFrame`` with ``[*group_by, auc]`` (plus ``count_tp``,
+        ``count_fp``, ``total_targets`` for the trapezoidal path).
+    """
+    group_keys = _normalize_group_by(group_by)
+
+    if method == "mann_whitney":
+        if fp_range is not None or correction is not None:
+            raise ValueError(
+                "fp_range and correction are not supported with "
+                "method='mann_whitney'. Mann-Whitney computes a global rank "
+                "statistic, not a curve integral."
+            )
+        if level != "detection":
+            raise ValueError(
+                "froc_auc supports only level='detection' for method='mann_whitney'."
+            )
+        det = table.detections.with_columns(
+            pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
+        )
+        if group_keys:
+            meta = table.image_metadata
+            meta_only = [
+                k for k in group_keys if k not in set(det.collect_schema().names())
+            ]
+            if meta_only:
+                det = det.join(
+                    meta.select(COL_IMAGE_ID, *meta_only).unique(),
+                    on=COL_IMAGE_ID,
+                    how="left",
+                )
+        auc_expr = mann_whitney_auc_expr(score=COL_SCORE, label=COL_IS_TP)
+        return (
+            det.group_by([_DUMMY_GROUP, *group_keys])
+            .agg(auc=auc_expr)
+            .drop(_DUMMY_GROUP)
+        )
+
+    if method != "trapezoidal":
+        raise ValueError(
+            f"Unknown method {method!r}. Expected 'trapezoidal' or 'mann_whitney'."
+        )
+
+    curve = froc_curve_lazy(table, group_by=group_by)
+    collapsed = collapse_curve(
+        curve, x_col="fp_per_image", y_col="sensitivity", group_keys=group_keys
+    )
+    if fp_range is None:
+        auc_expr = trapz_auc_expr(
+            x="fp_per_image", y="sensitivity", correction=correction
+        )
+    else:
+        auc_expr = partial_auc_expr(
+            x="fp_per_image",
+            y="sensitivity",
+            lo=fp_range[0],
+            hi=fp_range[1],
+            correction=correction,
+        )
+
+    if group_keys:
+        return collapsed.group_by(group_keys).agg(auc=auc_expr)
+    return collapsed.select(auc=auc_expr)
 
 
 # ---------------------------------------------------------------------------
