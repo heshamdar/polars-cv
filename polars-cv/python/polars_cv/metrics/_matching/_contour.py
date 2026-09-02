@@ -23,8 +23,6 @@ from .._types import (
     COL_SCORE,
     COL_WEIGHT,
     DEFAULT_CLASS,
-    DETECTION_SCHEMA,
-    IMAGE_META_SCHEMA,
     DetectionTable,
     ensure_columns_exist,
     to_lazy,
@@ -353,51 +351,6 @@ def _filter_zero_score_detections(lf: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def _validate_match_alignment(
-    matched_lf: pl.LazyFrame,
-    *,
-    image_id_col: str,
-    scores_col: str,
-    gt_idx_col: str = "gt_idx",
-) -> None:
-    """Raise if a row's match payload is not aligned with its predictions.
-
-    ``correspond`` returns lists positionally aligned with the predictions it
-    was given, so one score per pairing. The check used to compare two payload
-    lists against *each other*, which the engine built from one result and so
-    could never disagree; comparing against the score list is the alignment the
-    explode below actually depends on.
-
-    Args:
-        matched_lf: Lazy frame containing match results.
-        image_id_col: Image identifier column.
-        scores_col: Prediction score list column.
-        gt_idx_col: Matched-index list column.
-
-    Raises:
-        ValueError: If any row has mismatched list lengths.
-    """
-    mismatch = (
-        matched_lf.with_columns(
-            _pred_len=pl.col(scores_col).list.len().fill_null(0),
-            _gt_len=pl.col(gt_idx_col).list.len(),
-        )
-        # A null payload is the "no ground truth at all" row, filled in by the
-        # explode; only a *present* payload of the wrong length is misalignment.
-        .filter(
-            pl.col("_gt_len").is_not_null() & (pl.col("_pred_len") != pl.col("_gt_len"))
-        )
-        .select(image_id_col, "_pred_len", "_gt_len")
-        .limit(5)
-        .collect(engine="streaming")
-    )
-    if mismatch.height > 0:
-        raise ValueError(
-            "Match payload is not aligned with the prediction list. "
-            f"Examples: {mismatch.to_dicts()}"
-        )
-
-
 def _explode_match_to_detections(
     image_level: pl.LazyFrame,
     *,
@@ -655,24 +608,20 @@ class ContourMatcher:
             ),
         )
 
-        # Materialize so we can validate and split
-        image_level_df = image_level.collect(engine="streaming")
-
-        if image_level_df.height == 0:
-            return _empty_detection_table()
-
-        # Validate match alignment
-        _validate_match_alignment(
-            image_level_df.lazy(),
-            image_id_col=COL_IMAGE_ID,
-            scores_col="_pred_scores",
-        )
+        # Cache the shared upstream so the two derived branches (detections and
+        # image metadata) run the extraction/correspond graph once — not twice —
+        # under a single collect at the caller's boundary. This replaces an
+        # eager `.collect()` that materialized here only to split the frame; the
+        # explode below enforces prediction/payload alignment structurally, so
+        # the former eager alignment guard is no longer needed. An empty input
+        # now flows through as an empty table rather than a short-circuit.
+        image_level = image_level.cache()
 
         # Explode into per-detection rows and drop null-score rows (images
         # with no predictions).  Zero-score artifacts are already removed
         # upstream by _filter_zero_score_detections.
         detections_lf = _explode_match_to_detections(
-            image_level_df.lazy(),
+            image_level,
             image_id_col=COL_IMAGE_ID,
             scores_col="_pred_scores",
             gt_idx_col="gt_idx",
@@ -680,30 +629,22 @@ class ContourMatcher:
             class_id=DEFAULT_CLASS,
         ).filter(pl.col(COL_SCORE).is_not_null())
 
-        # Handle per-class explode if class_col was provided
+        # When a class column was provided, replace the placeholder class with
+        # the per-image class from the image-level frame.
         if class_col is not None:
-            detections_lf = (
-                _explode_match_to_detections(
-                    image_level_df.lazy(),
-                    image_id_col=COL_IMAGE_ID,
-                    scores_col="_pred_scores",
-                    gt_idx_col="gt_idx",
-                    iou_col="iou",
-                    class_id=DEFAULT_CLASS,
-                )
-                .filter(pl.col(COL_SCORE).is_not_null())
-                .with_columns(pl.col(COL_IMAGE_ID))
-            )
-            # Re-join with the class_id from the image-level frame
             detections_lf = detections_lf.drop(COL_CLASS_ID).join(
-                image_level_df.lazy().select(COL_IMAGE_ID, COL_CLASS_ID).unique(),
+                image_level.select(COL_IMAGE_ID, COL_CLASS_ID).unique(),
                 on=COL_IMAGE_ID,
                 how="left",
             )
 
         # Build image metadata
-        group_cols = [COL_GROUP_ID] if COL_GROUP_ID in image_level_df.columns else []
-        meta_lf = image_level_df.lazy().select(
+        group_cols = (
+            [COL_GROUP_ID]
+            if COL_GROUP_ID in image_level.collect_schema().names()
+            else []
+        )
+        meta_lf = image_level.select(
             COL_IMAGE_ID,
             COL_CLASS_ID,
             pl.col("_n_gts").alias(COL_N_GTS),
@@ -717,16 +658,3 @@ class ContourMatcher:
             meta_lf,
             matching_iou_threshold=self._iou_threshold,
         )
-
-
-def _empty_detection_table() -> DetectionTable:
-    """Return an empty ``DetectionTable`` for edge cases.
-
-    Both frames are built from the declared schemas rather than a second
-    hand-written dtype list, so an empty result and a populated one cannot
-    disagree about what a detection table looks like.
-    """
-    return DetectionTable.from_matched(
-        pl.DataFrame(schema=DETECTION_SCHEMA),
-        pl.DataFrame(schema=IMAGE_META_SCHEMA),
-    )

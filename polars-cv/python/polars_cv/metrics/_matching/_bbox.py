@@ -8,22 +8,17 @@ import polars as pl
 
 from .._types import (
     COL_CLASS_ID,
-    COL_DET_IDX,
     COL_GROUP_ID,
-    COL_GT_IDX,
     COL_GT_LABEL,
     COL_IMAGE_ID,
-    COL_IOU,
-    COL_IS_TP,
     COL_N_GTS,
-    COL_SCORE,
     COL_WEIGHT,
     DEFAULT_CLASS,
     DetectionTable,
     ensure_columns_exist,
     to_lazy,
 )
-from ._contour import _OVERLAP, _RIGHT_IDX, _confidence_order, _validate_match_alignment
+from ._contour import _OVERLAP, _RIGHT_IDX, _confidence_order
 
 if TYPE_CHECKING:
     pass
@@ -147,20 +142,18 @@ class BBoxMatcher:
             select_exprs.append(pl.col(group_col).cast(pl.String).alias(COL_GROUP_ID))
         image_level = prepared.select(select_exprs)
 
-        image_level_df = image_level.collect(engine="streaming")
-
-        if image_level_df.height == 0:
-            return _empty_bbox_detection_table()
-
-        _validate_match_alignment(
-            image_level_df.lazy(), image_id_col=COL_IMAGE_ID, scores_col="_scores"
-        )
+        # Cache the shared upstream so the detections and image-metadata frames
+        # derived below run the correspond graph once under a single collect at
+        # the caller's boundary, rather than eagerly materializing here. The
+        # explode enforces prediction/payload alignment structurally, and an
+        # empty input now flows through as an empty table.
+        image_level = image_level.cache()
 
         # Explode into per-detection rows
         from ._contour import _explode_match_to_detections
 
         detections_lf = _explode_match_to_detections(
-            image_level_df.lazy(),
+            image_level,
             image_id_col=COL_IMAGE_ID,
             scores_col="_scores",
             gt_idx_col="gt_idx",
@@ -170,14 +163,18 @@ class BBoxMatcher:
 
         if class_col is not None:
             detections_lf = detections_lf.drop(COL_CLASS_ID).join(
-                image_level_df.lazy().select(COL_IMAGE_ID, COL_CLASS_ID).unique(),
+                image_level.select(COL_IMAGE_ID, COL_CLASS_ID).unique(),
                 on=COL_IMAGE_ID,
                 how="left",
             )
 
         # Build image metadata
-        group_cols = [COL_GROUP_ID] if COL_GROUP_ID in image_level_df.columns else []
-        meta_lf = image_level_df.lazy().select(
+        group_cols = (
+            [COL_GROUP_ID]
+            if COL_GROUP_ID in image_level.collect_schema().names()
+            else []
+        )
+        meta_lf = image_level.select(
             COL_IMAGE_ID,
             COL_CLASS_ID,
             pl.col("_n_gts").alias(COL_N_GTS),
@@ -191,28 +188,3 @@ class BBoxMatcher:
             meta_lf,
             matching_iou_threshold=self._iou_threshold,
         )
-
-
-def _empty_bbox_detection_table() -> DetectionTable:
-    """Return an empty ``DetectionTable`` for edge cases."""
-    det_df = pl.DataFrame(
-        schema={
-            COL_IMAGE_ID: pl.String,
-            COL_CLASS_ID: pl.String,
-            COL_SCORE: pl.Float64,
-            COL_IS_TP: pl.Boolean,
-            COL_GT_IDX: pl.UInt32,
-            COL_IOU: pl.Float64,
-            COL_DET_IDX: pl.UInt32,
-        }
-    )
-    meta_df = pl.DataFrame(
-        schema={
-            COL_IMAGE_ID: pl.String,
-            COL_CLASS_ID: pl.String,
-            COL_N_GTS: pl.Int64,
-            COL_WEIGHT: pl.Float64,
-            COL_GT_LABEL: pl.Boolean,
-        }
-    )
-    return DetectionTable.from_matched(det_df, meta_df)

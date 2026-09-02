@@ -304,15 +304,21 @@ class DetectionTable:
     # ------------------------------------------------------------------
 
     def collect(self, engine: str = "streaming") -> tuple[pl.DataFrame, pl.DataFrame]:
-        """Materialize both frames.
+        """Materialize both frames in one pass.
+
+        Uses ``pl.collect_all`` so that a shared upstream subplan (e.g. the
+        matcher's cached contour-extraction/correspond graph, feeding both the
+        detections and the image metadata) executes once across both frames
+        rather than once per frame. Common-subplan elimination is what makes the
+        decode-once, collect-once path hold end to end.
 
         Returns:
             Tuple of ``(detections_df, image_meta_df)``.
         """
-        return (
-            self._detections.collect(engine=engine),
-            self._image_meta.collect(engine=engine),
+        det_df, meta_df = pl.collect_all(
+            [self._detections, self._image_meta], engine=engine
         )
+        return det_df, meta_df
 
     # ------------------------------------------------------------------
     # Image IDs and strata (for bootstrap)
