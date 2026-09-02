@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any, Callable
 
 import polars as pl
 
 from ..._types import dtype_name_for
 from ...geometry.schemas import CONTOUR_SET_SCHEMA, CORRESPONDENCE_SCHEMA
+from ...lazy import LazyPipelineExpr
 from ...pipeline import Pipeline
 from .._types import (
     COL_CLASS_ID,
@@ -27,9 +28,6 @@ from .._types import (
     ensure_columns_exist,
     to_lazy,
 )
-
-if TYPE_CHECKING:
-    pass
 
 #: Field names read off the published schema rather than spelled again here.
 #: A private copy of this struct's layout is exactly what the correspondence
@@ -114,52 +112,102 @@ def _detect_source_info(schema: dict[str, pl.DataType], col: str) -> _SourceInfo
     return _SourceInfo(kwargs={})
 
 
+@dataclass
+class _SourceHandle:
+    """How to obtain a decoded buffer expression for a matcher operand.
+
+    Either a *named column* — decoded with ``source("auto")`` exactly as the
+    matcher always has — or a caller-supplied *pre-decoded* ``LazyPipelineExpr``
+    that the matcher extends with its own ops. The pre-decoded form lets the
+    decode be shared with the caller's own graph (e.g. a segmentation pipeline):
+    the matcher appends ``threshold``/``extract_contours``/``label_reduce`` onto
+    the node the caller already built, so common-subexpression elimination
+    collapses the two into a single decode.
+
+    ``apply`` is the one entry point; a column and an expr differ only in the
+    head of the expression they produce, never in the ops appended to it.
+    """
+
+    _column: str | None = None
+    _kwargs: dict[str, Any] | None = None
+    _expr: LazyPipelineExpr | None = None
+
+    @classmethod
+    def from_column(cls, col: str, source_info: _SourceInfo) -> _SourceHandle:
+        """A handle that decodes *col* via ``source("auto", …)``."""
+        return cls(_column=col, _kwargs=source_info.kwargs)
+
+    @classmethod
+    def from_expr(cls, expr: LazyPipelineExpr) -> _SourceHandle:
+        """A handle that reuses a caller's already-decoded pipeline expr."""
+        return cls(_expr=expr)
+
+    @property
+    def column(self) -> str | None:
+        """The backing column name, or ``None`` for a pre-decoded expr."""
+        return self._column
+
+    def apply(self, build_ops: Callable[[Pipeline], Pipeline]) -> LazyPipelineExpr:
+        """Decode (or reuse the decoded expr) and append *build_ops*' operations.
+
+        For a column, ``build_ops`` extends ``source("auto", …)`` and the result
+        is piped over the column — byte-identical to the pre-handle code. For a
+        pre-decoded expr, ``build_ops`` extends a source-less continuation
+        pipeline applied onto that expr.
+        """
+        if self._expr is not None:
+            return self._expr.pipe(build_ops(Pipeline()))
+        return pl.col(self._column).cv.pipe(
+            build_ops(Pipeline().source("auto", **(self._kwargs or {})))
+        )
+
+
 def _add_gt_shape_columns(
     lf: pl.LazyFrame,
-    gt_col: str,
-    gt_source: _SourceInfo,
+    gt_handle: _SourceHandle,
+    gt_dtype: pl.DataType | None,
 ) -> pl.LazyFrame:
-    """Add ``_gt_h`` and ``_gt_w`` columns from the GT mask column.
+    """Add ``_gt_h`` and ``_gt_w`` columns from the GT mask.
 
-    These are used as the dynamic resize target when ``auto_resize``
-    is enabled. The strategy is chosen from the **Polars dtype**, which is what
-    decides whether a cheaper native path exists — not from a source format,
-    which is Rust's decision to make:
+    These are the dynamic resize target when ``auto_resize`` is enabled. The
+    cheap paths are chosen from the **Polars column dtype**, which is what
+    decides whether a native path exists — not from a source format, which is
+    Rust's decision:
 
     - **List**: native ``.list.len()`` expressions.
     - **Array**: literal values from the Polars type metadata.
-    - **anything else** (`Binary`, whether a VIEW blob or image bytes):
-      ``extract_shape()`` through the pipeline, which works for every source
-      ``auto`` can resolve.
+    - **anything else** (`Binary`, or a pre-decoded GT expr with dtype ``None``):
+      ``extract_shape()`` through the pipeline, which works for every source.
 
     Args:
         lf: Input lazy frame.
-        gt_col: Ground-truth mask column name.
-        gt_source: Source spec for the GT column (its leaf dtype, if nested).
+        gt_handle: Source handle for the GT mask.
+        gt_dtype: The GT column's Polars dtype, or ``None`` for a pre-decoded
+            expr (which has no column dtype, so it takes the ``extract_shape``
+            path).
 
     Returns:
         LazyFrame with ``_gt_h`` and ``_gt_w`` columns added.
     """
-    dtype = dict(lf.collect_schema())[gt_col]
-
-    if isinstance(dtype, pl.List):
+    if isinstance(gt_dtype, pl.List):
+        col = gt_handle.column
         return lf.with_columns(
-            _gt_h=pl.col(gt_col).list.len().cast(pl.Int64),
-            _gt_w=pl.col(gt_col).list.first().list.len().cast(pl.Int64),
+            _gt_h=pl.col(col).list.len().cast(pl.Int64),
+            _gt_w=pl.col(col).list.first().list.len().cast(pl.Int64),
         )
 
-    if isinstance(dtype, pl.Array):
-        h = dtype.size
-        inner = dtype.inner
+    if isinstance(gt_dtype, pl.Array):
+        h = gt_dtype.size
+        inner = gt_dtype.inner
         w = inner.size if isinstance(inner, pl.Array) else 1
         return lf.with_columns(
             _gt_h=pl.lit(h, dtype=pl.Int64),
             _gt_w=pl.lit(w, dtype=pl.Int64),
         )
 
-    shape_pipe = gt_source.build_source().extract_shape()
+    shape_expr = gt_handle.apply(lambda p: p.extract_shape()).sink("native")
     return (
-        lf.with_columns(_gt_shape=pl.col(gt_col).cv.pipe(shape_pipe).sink("native"))
+        lf.with_columns(_gt_shape=shape_expr)
         .with_columns(
             _gt_h=pl.col("_gt_shape").list.get(0).cast(pl.Int64),
             _gt_w=pl.col("_gt_shape").list.get(1).cast(pl.Int64),
@@ -176,10 +224,9 @@ def _add_gt_shape_columns(
 def _extract_with_fused_resize(
     lf: pl.LazyFrame,
     *,
-    pred_col: str,
+    pred_handle: _SourceHandle,
     threshold: float,
     min_area: float,
-    source_info: _SourceInfo,
 ) -> pl.LazyFrame:
     """Fuse resize + extract into a single pipeline with multi-output sink.
 
@@ -190,18 +237,16 @@ def _extract_with_fused_resize(
 
     Args:
         lf: LazyFrame with ``_gt_h``, ``_gt_w`` dimension columns.
-        pred_col: Prediction heatmap column.
+        pred_handle: Source handle for the prediction heatmap.
         threshold: Binary threshold for contour extraction.
         min_area: Minimum contour area filter.
-        source_info: Auto-detected source format for the prediction column.
 
     Returns:
         LazyFrame with ``_pred_contours`` and ``_pred_heatmap_aligned``.
     """
-    resize_pipe = source_info.build_source().resize(
-        height=pl.col("_gt_h"), width=pl.col("_gt_w")
-    )
-    lazy_resized = pl.col(pred_col).cv.pipe(resize_pipe).alias("resized_heatmap")
+    lazy_resized = pred_handle.apply(
+        lambda p: p.resize(height=pl.col("_gt_h"), width=pl.col("_gt_w"))
+    ).alias("resized_heatmap")
 
     extract_builder = Pipeline().threshold(value=threshold)
     if min_area > 0.0:
@@ -229,70 +274,69 @@ def _extract_with_fused_resize(
     )
 
 
-def _extract_contours_from_col(
+def _extract_contours_via(
     lf: pl.LazyFrame,
+    handle: _SourceHandle,
     *,
-    source_col: str,
     threshold: float,
     min_area: float,
     output_col: str,
-    source_info: _SourceInfo,
 ) -> pl.LazyFrame:
-    """Extract contours from a buffer column of any supported format.
+    """Extract contours from a buffer handle (column or pre-decoded expr).
 
     Args:
         lf: Input lazy frame.
-        source_col: Buffer column (blob, nested list, or array).
+        handle: Source handle for the buffer to threshold and extract from.
         threshold: Binary threshold used prior to extraction.
         min_area: Minimum contour area.
         output_col: Name of output contour-set column.
-        source_info: Auto-detected source format for the column.
 
     Returns:
         LazyFrame with ``output_col`` as a list of contours.
     """
-    pipe_builder = source_info.build_source().threshold(value=threshold)
-    if min_area > 0.0:
-        extract_pipe = pipe_builder.extract_contours(
-            mode="external", method="simple", min_area=min_area
-        )
-    else:
-        extract_pipe = pipe_builder.extract_contours(mode="external", method="simple")
+
+    def build_ops(p: Pipeline) -> Pipeline:
+        p = p.threshold(value=threshold)
+        if min_area > 0.0:
+            return p.extract_contours(
+                mode="external", method="simple", min_area=min_area
+            )
+        return p.extract_contours(mode="external", method="simple")
 
     return lf.with_columns(
-        pl.col(source_col)
-        .cv.pipe(extract_pipe)
+        handle.apply(build_ops)
         .sink("native")
         .cast(CONTOUR_SET_SCHEMA)
         .alias(output_col)
     )
 
 
-def _score_contours_from_heatmap(
+def _score_contours_via(
     lf: pl.LazyFrame,
+    handle: _SourceHandle,
     *,
     contour_col: str,
-    heatmap_col: str,
     output_col: str = "_pred_scores",
-    source_info: _SourceInfo,
 ) -> pl.LazyFrame:
-    """Score contour sets from heatmaps using max interior value.
+    """Score contour sets from a heatmap handle using max interior value.
 
     Args:
         lf: Input lazy frame.
+        handle: Source handle for the heatmap to score against.
         contour_col: Contour-set column.
-        heatmap_col: Heatmap column.
         output_col: Output score list column.
-        source_info: Auto-detected source format for the heatmap column.
 
     Returns:
         LazyFrame with score column added.
     """
-    score_pipe = source_info.build_source().label_reduce(
-        contours=pl.col(contour_col), reduction="max", region_mode="interior"
-    )
     return lf.with_columns(
-        pl.col(heatmap_col).cv.pipe(score_pipe).sink("native").alias(output_col)
+        handle.apply(
+            lambda p: p.label_reduce(
+                contours=pl.col(contour_col), reduction="max", region_mode="interior"
+            )
+        )
+        .sink("native")
+        .alias(output_col)
     )
 
 
@@ -453,8 +497,8 @@ class ContourMatcher:
         self,
         data: pl.LazyFrame | pl.DataFrame,
         *,
-        pred_col: str,
-        gt_col: str,
+        pred_col: str | LazyPipelineExpr,
+        gt_col: str | LazyPipelineExpr,
         score_col: str | None = None,
         class_col: str | None = None,
         image_id_col: str | None = None,
@@ -463,15 +507,20 @@ class ContourMatcher:
     ) -> DetectionTable:
         """Produce a ``DetectionTable`` from heatmap + binary mask data.
 
-        Accepts any column format supported by polars-cv sources: nested
-        ``List[List[...]]``, VIEW protocol ``Binary`` (blob), or fixed-size
-        ``Array[...]``.  The source format is auto-detected from the column
-        dtype.
+        ``pred_col`` / ``gt_col`` accept either a **column name** (any format a
+        polars-cv source supports: nested ``List[List[...]]``, VIEW ``Binary``
+        blob, or fixed-size ``Array[...]`` — the format is auto-detected) **or a
+        pre-decoded ``LazyPipelineExpr``**. Passing a pre-decoded expr lets the
+        matcher extend the caller's own decoded buffer instead of decoding a
+        column itself, so a segmentation graph and the contour extraction can
+        share one decode (collapsed by CSE) and stream from a single collect.
 
         Args:
             data: Input frame with one image/sample per row.
-            pred_col: Prediction heatmap column (any supported format).
-            gt_col: Ground-truth binary mask column (any supported format).
+            pred_col: Prediction heatmap column name, or a pre-decoded
+                ``LazyPipelineExpr`` producing the heatmap buffer.
+            gt_col: Ground-truth mask column name, or a pre-decoded
+                ``LazyPipelineExpr`` producing the mask buffer.
             score_col: Unused for contour matching (scores are derived from
                 heatmap peaks).
             class_col: Optional class label column for multi-class metrics.
@@ -485,7 +534,12 @@ class ContourMatcher:
         lf = to_lazy(data)
         schema = lf.collect_schema()
         schema_names = list(schema.names())
-        ensure_columns_exist(schema_names, [pred_col, gt_col])
+        pred_is_expr = isinstance(pred_col, LazyPipelineExpr)
+        gt_is_expr = isinstance(gt_col, LazyPipelineExpr)
+        if not pred_is_expr:
+            ensure_columns_exist(schema_names, [pred_col])
+        if not gt_is_expr:
+            ensure_columns_exist(schema_names, [gt_col])
         if class_col is not None:
             ensure_columns_exist(schema_names, [class_col])
         if image_id_col is not None:
@@ -495,10 +549,25 @@ class ContourMatcher:
         if group_col is not None:
             ensure_columns_exist(schema_names, [group_col])
 
-        # Auto-detect source format from column dtypes (planning-time only)
+        # A column is decoded via source("auto") (its leaf dtype read at plan
+        # time); a pre-decoded expr is reused as-is. Either way the same ops are
+        # appended through the handle.
         schema_dict = dict(schema)
-        pred_source = _detect_source_info(schema_dict, pred_col)
-        gt_source = _detect_source_info(schema_dict, gt_col)
+        pred_handle = (
+            _SourceHandle.from_expr(pred_col)
+            if pred_is_expr
+            else _SourceHandle.from_column(
+                pred_col, _detect_source_info(schema_dict, pred_col)
+            )
+        )
+        gt_handle = (
+            _SourceHandle.from_expr(gt_col)
+            if gt_is_expr
+            else _SourceHandle.from_column(
+                gt_col, _detect_source_info(schema_dict, gt_col)
+            )
+        )
+        gt_dtype = None if gt_is_expr else schema_dict[gt_col]
 
         # Assign image_id
         if image_id_col is None:
@@ -523,53 +592,49 @@ class ContourMatcher:
         if self._auto_resize:
             # Resize prediction heatmaps to GT mask dimensions via a fused
             # pipeline.  If shapes already match the resize is a no-op.
-            prepared = _add_gt_shape_columns(prepared, gt_col, gt_source)
+            prepared = _add_gt_shape_columns(prepared, gt_handle, gt_dtype)
             prepared = _extract_with_fused_resize(
                 prepared,
-                pred_col=pred_col,
+                pred_handle=pred_handle,
                 threshold=self._extraction_threshold,
                 min_area=self._min_contour_area,
-                source_info=pred_source,
             )
-            aligned_pred_col = "_pred_heatmap_aligned"
-            # `_pred_heatmap_aligned` is a VIEW blob this pipeline just
-            # emitted, so `auto` recognises it by magic bytes — no need to name
-            # the format, and naming it would be the second authority again.
-            aligned_source = _SourceInfo(kwargs={})
+            # `_pred_heatmap_aligned` is a VIEW blob this pipeline just emitted,
+            # so `auto` recognises it by magic bytes — scoring reads it back as a
+            # column regardless of how the prediction was supplied.
+            aligned_handle = _SourceHandle.from_column(
+                "_pred_heatmap_aligned", _SourceInfo(kwargs={})
+            )
         else:
             # Trust the user: shapes are assumed to match.
-            prepared = _extract_contours_from_col(
+            prepared = _extract_contours_via(
                 prepared,
-                source_col=pred_col,
+                pred_handle,
                 threshold=self._extraction_threshold,
                 min_area=self._min_contour_area,
                 output_col="_pred_contours",
-                source_info=pred_source,
             )
-            aligned_pred_col = pred_col
-            aligned_source = pred_source
+            aligned_handle = pred_handle
 
         gt_area = (
             self._gt_min_contour_area
             if self._gt_min_contour_area is not None
             else self._min_contour_area
         )
-        prepared = _extract_contours_from_col(
+        prepared = _extract_contours_via(
             prepared,
-            source_col=gt_col,
+            gt_handle,
             threshold=0.5,
             min_area=gt_area,
             output_col="_gt_contours",
-            source_info=gt_source,
         )
 
         # Score predictions against the (possibly resized) heatmap
-        prepared = _score_contours_from_heatmap(
+        prepared = _score_contours_via(
             prepared,
+            aligned_handle,
             contour_col="_pred_contours",
-            heatmap_col=aligned_pred_col,
             output_col="_pred_scores_raw",
-            source_info=aligned_source,
         )
 
         # Drop detections that score 0.0 against the heatmap, so an unevidenced
