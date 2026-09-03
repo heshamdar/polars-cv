@@ -15,11 +15,12 @@ import polars as pl
 from .._auc import CorrectionMethod
 from .._auc_expr import (
     collapse_curve,
+    collapse_scores,
+    interpolate_curve_lazy,
     mann_whitney_auc_expr,
     partial_auc_expr,
     trapz_auc_expr,
 )
-from .._result import MetricResult
 from .._types import (
     COL_GT_LABEL,
     COL_IMAGE_ID,
@@ -27,6 +28,12 @@ from .._types import (
     COL_SCORE,
     COL_WEIGHT,
     DetectionTable,
+)
+from .._weights import (
+    WeightAgg,
+    attach_resolved_weight,
+    image_weight_keys,
+    resolve_key_weights,
 )
 
 # Internal dummy group key used to run the group-aware curve/AUC path with a
@@ -95,6 +102,7 @@ def lroc_curve_lazy(
     *,
     variant: Literal["best_tp", "top_scoring"] = "best_tp",
     group_by: str | list[str] | None = None,
+    weight_agg: WeightAgg = "first",
 ) -> pl.LazyFrame:
     """Build the LROC curve as a lazy, group-aware frame.
 
@@ -106,6 +114,10 @@ def lroc_curve_lazy(
         variant: ``"best_tp"`` or ``"top_scoring"``.
         group_by: Optional per-image column(s) partitioning the curve (e.g.
             ``group_id``).
+        weight_agg: How to resolve duplicate metadata weights for one
+            ``(image[, class])`` key (see :func:`resolve_key_weights`); the
+            per-image weight is resolved to one value per key so a repeated
+            metadata row cannot make the weighted curve order-dependent.
 
     Returns:
         A ``LazyFrame`` with ``[*group_by, threshold, fpf, sensitivity]``.
@@ -115,8 +127,16 @@ def lroc_curve_lazy(
             f"Invalid variant {variant!r}. Expected 'best_tp' or 'top_scoring'."
         )
     group_keys = _normalize_group_by(group_by)
-    per_image = _scored_per_image_lazy(table, variant).with_columns(
-        pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
+    per_image = _scored_per_image_lazy(table, variant)
+    keys_w = image_weight_keys(per_image)
+    resolved = resolve_key_weights(per_image, keys_w, weight_agg)
+    per_image = (
+        per_image.drop(COL_WEIGHT)
+        .join(resolved, on=keys_w, how="left")
+        .with_columns(
+            pl.col(COL_WEIGHT).fill_null(1.0),
+            pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP),
+        )
     )
     keys = [_DUMMY_GROUP, *group_keys]
     curve = _build_lroc_curve_grouped(per_image, keys)
@@ -217,11 +237,17 @@ def lroc_auc(
     correction: CorrectionMethod = None,
     level: Literal["detection", "image"] = "image",
     group_by: str | list[str] | None = None,
+    weight_agg: WeightAgg = "first",
 ) -> pl.LazyFrame:
     """Compute LROC AUC as a lazy, group-aware frame — one row per group.
 
     The single authority for the LROC integral. A scalar is
     ``lroc_auc(table).collect().item()``.
+
+    Both families are weighted by ``image_metadata.weight``: the trapezoidal path
+    through the weighted curve, and Mann-Whitney through a weighted rank-sum
+    (``collapse_scores`` + ``mann_whitney_auc_expr``). Unit weights recover the
+    unweighted statistic.
 
     Args:
         table: Canonical detection table.
@@ -233,6 +259,8 @@ def lroc_auc(
         level: Mann-Whitney granularity — ``"image"`` (default) or
             ``"detection"``.
         group_by: Optional grouping column(s). ``None`` yields a single row.
+        weight_agg: Duplicate-weight resolution policy (see
+            :func:`resolve_key_weights`).
 
     Returns:
         A ``LazyFrame`` with ``[*group_by, auc]``.
@@ -250,6 +278,7 @@ def lroc_auc(
             det = table.detections.with_columns(
                 pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
             )
+            meta = table.image_metadata
             if group_keys:
                 # A metadata-only key (e.g. group_id) is not on the detections
                 # frame; join it in before grouping, as froc_auc does.
@@ -258,18 +287,35 @@ def lroc_auc(
                 ]
                 if meta_only:
                     det = det.join(
-                        table.image_metadata.select(COL_IMAGE_ID, *meta_only).unique(),
+                        meta.select(COL_IMAGE_ID, *meta_only).unique(),
                         on=COL_IMAGE_ID,
                         how="left",
                     )
+            det = attach_resolved_weight(det, meta, weight_agg=weight_agg)
+            keys = [_DUMMY_GROUP, *group_keys]
+            bucketed = collapse_scores(
+                det,
+                score=COL_SCORE,
+                label=COL_IS_TP,
+                weight=COL_WEIGHT,
+                group_keys=keys,
+            )
             return (
-                det.group_by([_DUMMY_GROUP, *group_keys])
-                .agg(auc=mann_whitney_auc_expr(score=COL_SCORE, label=COL_IS_TP))
+                bucketed.group_by(keys)
+                .agg(auc=mann_whitney_auc_expr())
                 .drop(_DUMMY_GROUP)
             )
         if level == "image":
-            per_image = _scored_per_image_lazy(table, variant).with_columns(
-                pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
+            per_image = _scored_per_image_lazy(table, variant)
+            keys_w = image_weight_keys(per_image)
+            resolved = resolve_key_weights(per_image, keys_w, weight_agg)
+            per_image = (
+                per_image.drop(COL_WEIGHT)
+                .join(resolved, on=keys_w, how="left")
+                .with_columns(
+                    pl.col(COL_WEIGHT).fill_null(1.0),
+                    pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP),
+                )
             )
             # Image score: positives commit their best-TP score (0 if none),
             # negatives their max detection score (0 if none).
@@ -283,13 +329,17 @@ def lroc_auc(
                 .otherwise(pl.col("max_score"))
                 .fill_null(0.0)
             )
+            keys = [_DUMMY_GROUP, *group_keys]
+            bucketed = collapse_scores(
+                per_image,
+                score=score_expr,
+                label=pl.col(COL_GT_LABEL),
+                weight=COL_WEIGHT,
+                group_keys=keys,
+            )
             return (
-                per_image.group_by([_DUMMY_GROUP, *group_keys])
-                .agg(
-                    auc=mann_whitney_auc_expr(
-                        score=score_expr, label=pl.col(COL_GT_LABEL)
-                    )
-                )
+                bucketed.group_by(keys)
+                .agg(auc=mann_whitney_auc_expr())
                 .drop(_DUMMY_GROUP)
             )
         raise ValueError(
@@ -301,7 +351,9 @@ def lroc_auc(
             f"Unknown method {method!r}. Expected 'trapezoidal' or 'mann_whitney'."
         )
 
-    curve = lroc_curve_lazy(table, variant=variant, group_by=group_by)
+    curve = lroc_curve_lazy(
+        table, variant=variant, group_by=group_by, weight_agg=weight_agg
+    )
     collapsed = collapse_curve(
         curve, x_col="fpf", y_col="sensitivity", group_keys=group_keys
     )
@@ -325,19 +377,20 @@ def lroc_sensitivity_at_fpf(
     fpf: float,
     *,
     variant: Literal["best_tp", "top_scoring"] = "best_tp",
-) -> float | None:
-    """Interpolate LROC sensitivity at a requested false-positive fraction.
+    weight_agg: WeightAgg = "first",
+) -> pl.LazyFrame:
+    """Interpolate LROC sensitivity at a requested false-positive fraction, lazily.
 
     Args:
         table: Canonical detection table.
         fpf: Target false-positive fraction.
         variant: ``"best_tp"`` or ``"top_scoring"``.
+        weight_agg: Duplicate-weight resolution policy.
 
     Returns:
-        Interpolated sensitivity, or ``None`` when ``fpf`` is outside the
-        observed range of the curve.
+        A one-row ``LazyFrame`` ``[fpf, sensitivity]``; ``sensitivity`` is null
+        when ``fpf`` is outside the observed range of the curve. The caller
+        collects.
     """
-    curve = lroc_curve_lazy(table, variant=variant).collect(engine="streaming")
-    return MetricResult(curve=curve).interpolate(
-        x_col="fpf", y_col="sensitivity", at=fpf
-    )
+    curve = lroc_curve_lazy(table, variant=variant, weight_agg=weight_agg)
+    return interpolate_curve_lazy(curve, x_col="fpf", y_col="sensitivity", at=[fpf])

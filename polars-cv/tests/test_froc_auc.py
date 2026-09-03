@@ -16,6 +16,7 @@ import pytest
 from polars_cv.metrics import (
     DetectionTable,
     froc_auc,
+    froc_curve_lazy,
     froc_sensitivity_at_fp,
     froc_summary_table,
 )
@@ -175,13 +176,13 @@ class TestFrocStandaloneHelpers:
     @pytest.mark.parametrize("fp", [0.0, 0.25, 0.5, 1.0, 2.0, 100.0])
     def test_sensitivity_at_fp(self, fp: float) -> None:
         table = _table(multiclass=False)
-        got = froc_sensitivity_at_fp(table, fp)
+        got = froc_sensitivity_at_fp(table, fp).collect()["sensitivity"].item()
         want = ref_froc_sensitivity_at_fp(table, fp)
         assert got == want or got == pytest.approx(want, abs=1e-9)
 
     def test_summary_table_interpolates_the_curve(self) -> None:
         table = _table(multiclass=False)
-        got = froc_summary_table(table, fp_rates=[0.25, 0.5, 1.0])
+        got = froc_summary_table(table, fp_rates=[0.25, 0.5, 1.0]).collect()
         assert got.columns == ["fp_per_image", "sensitivity"]
         assert got["fp_per_image"].to_list() == [0.25, 0.5, 1.0]
         for fp, sens in zip(
@@ -192,3 +193,63 @@ class TestFrocStandaloneHelpers:
                 assert sens is None
             else:
                 assert sens == pytest.approx(want, abs=1e-9)
+
+
+class TestFrocIsPureLazy:
+    """No FROC entry point may collect during plan construction.
+
+    The trapezoidal path used to run an eager ``image_metadata.collect(...)`` at
+    build time (to feed a conflicting-weight guard); the guard is gone and the
+    weight is resolved lazily instead. These pin that ``froc_curve_lazy`` /
+    ``froc_auc`` and the standalone helpers build a plan without materialising
+    anything — the caller owns the collect. Watched failing against the pre-fix
+    code (3 collects).
+    """
+
+    @staticmethod
+    def _collects_during(build) -> int:
+        calls = {"n": 0}
+        original = pl.LazyFrame.collect
+
+        def counting(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            return original(self, *args, **kwargs)
+
+        pl.LazyFrame.collect = counting  # type: ignore[assignment]
+        try:
+            build()
+        finally:
+            pl.LazyFrame.collect = original  # type: ignore[assignment]
+        return calls["n"]
+
+    def test_froc_curve_lazy_builds_without_collecting(self) -> None:
+        table = _table(multiclass=False)
+        assert self._collects_during(lambda: froc_curve_lazy(table)) == 0
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            pytest.param(lambda t: froc_auc(t), id="trapezoidal"),
+            pytest.param(lambda t: froc_auc(t, fp_range=(0.0, 2.0)), id="partial"),
+            pytest.param(lambda t: froc_auc(t, correction="normalize"), id="normalize"),
+            pytest.param(
+                lambda t: froc_auc(t, method="mann_whitney", level="detection"),
+                id="mw-detection",
+            ),
+            pytest.param(
+                lambda t: froc_auc(t, method="mann_whitney", level="image"),
+                id="mw-image",
+            ),
+            pytest.param(lambda t: froc_sensitivity_at_fp(t, 1.0), id="sensitivity"),
+            pytest.param(
+                lambda t: froc_summary_table(t, fp_rates=[0.5, 1.0]), id="summary"
+            ),
+        ],
+    )
+    def test_pooled_entry_points_build_without_collecting(self, build) -> None:
+        table = _table(multiclass=False)
+        assert self._collects_during(lambda: build(table)) == 0
+
+    def test_grouped_froc_auc_builds_without_collecting(self) -> None:
+        table = _table(multiclass=True)
+        assert self._collects_during(lambda: froc_auc(table, group_by="class_id")) == 0

@@ -37,7 +37,7 @@ from polars_cv.metrics import (
     precision_recall_curve,
 )
 from polars_cv.metrics._auc import mcclish_correction, partial_auc
-from polars_cv.metrics._auc_expr import mann_whitney_auc_expr
+from polars_cv.metrics._auc_expr import collapse_scores, mann_whitney_auc_expr
 from polars_cv.metrics._bootstrap import _bootstrap_table_with_draws
 from polars_cv.metrics._matching._contour import ContourMatcher, _detect_source_info
 from polars_cv.metrics._metrics._froc import _froc_curve_grouped
@@ -71,9 +71,10 @@ def _lroc_curve_df(per_image: pl.DataFrame) -> pl.DataFrame:
 
 
 def _mw(scores: list[float], labels: list[float]) -> float:
-    """Mann-Whitney AUC via the expression, for utility-function-style tests."""
-    df = pl.DataFrame({"score": scores, "label": labels})
-    return df.select(auc=mann_whitney_auc_expr(score="score", label="label")).item()
+    """Mann-Whitney AUC via the two-stage expression, for utility-style tests."""
+    lf = pl.DataFrame({"score": scores, "label": labels}).lazy()
+    bucketed = collapse_scores(lf, score="score", label="label")
+    return bucketed.select(auc=mann_whitney_auc_expr()).collect().item()
 
 
 if TYPE_CHECKING:
@@ -1156,21 +1157,19 @@ class TestFrocSharedImageId:
         assert int(low["fp"].item()) == 1
         assert float(low["sensitivity"].item()) == pytest.approx(0.5)
 
-    def test_conflicting_weights_raise(self) -> None:
-        """Conflicting weights on a shared image_id raise ValueError.
-
-        Both row orders must raise — the bug was that they produced different
-        numeric sensitivities instead of failing loudly.
-        """
+    @staticmethod
+    def _conflicting_weight_table(weights: list[float]) -> DetectionTable:
+        """One positive image `a` (TP) and a negative image `s` whose metadata
+        appears twice with disagreeing weights (a single FP)."""
         det_df = pl.DataFrame(
             {
-                COL_IMAGE_ID: ["shared", "shared"],
+                COL_IMAGE_ID: ["a", "s"],
                 COL_CLASS_ID: [DEFAULT_CLASS] * 2,
-                COL_SCORE: [0.8, 0.7],
+                COL_SCORE: [0.9, 0.5],
                 COL_IS_TP: [True, False],
                 COL_GT_IDX: [0, None],
-                COL_IOU: [0.6, 0.0],
-                COL_DET_IDX: [0, 1],
+                COL_IOU: [0.9, 0.0],
+                COL_DET_IDX: [0, 0],
             },
             schema={
                 COL_IMAGE_ID: pl.String,
@@ -1182,26 +1181,51 @@ class TestFrocSharedImageId:
                 COL_DET_IDX: pl.UInt32,
             },
         )
-        for weights in ([1.0, 5.0], [5.0, 1.0]):
-            meta_df = pl.DataFrame(
-                {
-                    COL_IMAGE_ID: ["shared", "shared"],
-                    COL_CLASS_ID: [DEFAULT_CLASS] * 2,
-                    COL_N_GTS: [1, 1],
-                    COL_WEIGHT: weights,
-                    COL_GT_LABEL: [True, True],
-                }
-            )
-            table = DetectionTable.from_matched(det_df, meta_df)
-            with pytest.raises(ValueError, match="conflicting weights"):
-                froc_curve_lazy(table)
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "s", "s"],
+                COL_CLASS_ID: [DEFAULT_CLASS] * 3,
+                COL_N_GTS: [1, 0, 0],
+                COL_WEIGHT: [1.0, *weights],
+                COL_GT_LABEL: [True, False, False],
+            }
+        )
+        return DetectionTable.from_matched(det_df, meta_df)
 
-    def test_conflicting_weights_across_classes_of_one_image_raise(self) -> None:
-        """A weight is a property of an image, not of an (image, class) row.
+    def test_conflicting_weights_do_not_raise(self) -> None:
+        """The guard is gone: disagreeing weights resolve, they do not raise.
 
-        The FP-per-image denominator dedupes on ``image_id`` alone, so two
-        classes of one image disagreeing about its weight would make that
-        denominator depend on which row `unique` happened to keep.
+        (Was ``test_conflicting_weights_raise`` — the eager build-time guard that
+        forced a collect was removed in favour of the lazy ``weight_agg`` policy,
+        so the plan builds and only materialises when the caller collects.)
+        """
+        for order in ([2.0, 8.0], [8.0, 2.0]):
+            table = self._conflicting_weight_table(order)
+            # Build (no collect) and full collect both succeed for every policy.
+            for agg in ("first", "min", "max", "mean", "sum"):
+                froc_curve_lazy(table, weight_agg=agg).collect()
+
+    @pytest.mark.parametrize(
+        ("agg", "resolved_s"),
+        [("min", 2.0), ("max", 8.0), ("mean", 5.0), ("sum", 10.0)],
+    )
+    def test_weight_agg_resolves_the_conflicting_weight(
+        self, agg: str, resolved_s: float
+    ) -> None:
+        """Each order-independent policy resolves image ``s`` to a known weight,
+        visible through ``fp_per_image`` = w(s) / (w(a) + w(s))."""
+        table = self._conflicting_weight_table([2.0, 8.0])
+        curve = froc_curve_lazy(table, weight_agg=agg).collect()
+        low = curve.filter(pl.col("threshold") == 0.5).to_dicts()[0]
+        assert low["fp_per_image"] == pytest.approx(resolved_s / (1.0 + resolved_s))
+        # The single TP always drives sensitivity to 1.0 here.
+        assert low["sensitivity"] == pytest.approx(1.0)
+
+    def test_cross_class_weights_are_per_image_class_keys(self) -> None:
+        """Two classes of one image are distinct weight keys, not a conflict.
+
+        Weights are looked up per ``(image_id, class_id)``, so ``cat`` and ``dog``
+        of image ``a`` simply carry their own weights — nothing raises.
         """
         det_df = pl.DataFrame(
             {
@@ -1233,8 +1257,8 @@ class TestFrocSharedImageId:
             }
         )
         table = DetectionTable.from_matched(det_df, meta_df)
-        with pytest.raises(ValueError, match="conflicting weights"):
-            froc_curve_lazy(table)
+        # Per class the weight is unambiguous; both build and collect cleanly.
+        froc_curve_lazy(table, group_by="class_id").collect()
 
     def test_equal_weights_remain_stable(self) -> None:
         """Equal duplicate weights still yield tp=1, fp=1, sensitivity=0.5."""
@@ -1379,7 +1403,12 @@ class TestInterpolateNullBeyondRange:
         """Querying past the observed max fp_per_image yields None."""
         curve = froc_curve_lazy(simple_detection_table).collect()
         max_fp = float(curve["fp_per_image"].max())
-        assert froc_sensitivity_at_fp(simple_detection_table, max_fp + 1.0) is None
+        got = (
+            froc_sensitivity_at_fp(simple_detection_table, max_fp + 1.0)
+            .collect()["sensitivity"]
+            .item()
+        )
+        assert got is None
 
     def test_summary_table_nulls_beyond_range(
         self, simple_detection_table: DetectionTable
@@ -1389,7 +1418,7 @@ class TestInterpolateNullBeyondRange:
         max_fp = float(curve["fp_per_image"].max())
         summary = froc_summary_table(
             simple_detection_table, fp_rates=[0.0, max_fp + 10.0]
-        )
+        ).collect()
         assert summary["sensitivity"][0] is not None
         assert summary["sensitivity"][1] is None
 
@@ -1498,7 +1527,12 @@ class TestCurveOrderIsDeterministic:
         operating point; returning its y would report that a detector making no
         false positives also finds nothing.
         """
-        assert froc_sensitivity_at_fp(self._tied_table(), 0.0) == pytest.approx(1.0)
+        got = (
+            froc_sensitivity_at_fp(self._tied_table(), 0.0)
+            .collect()["sensitivity"]
+            .item()
+        )
+        assert got == pytest.approx(1.0)
 
 
 class TestSummaryTableDtype:
@@ -1512,7 +1546,7 @@ class TestSummaryTableDtype:
         max_fp = float(curve["fp_per_image"].max())
         summary = froc_summary_table(
             simple_detection_table, fp_rates=[max_fp + 10.0, max_fp + 20.0]
-        )
+        ).collect()
         assert summary["sensitivity"].dtype == pl.Float64
         assert summary["fp_per_image"].dtype == pl.Float64
         assert summary["sensitivity"].to_list() == [None, None]

@@ -143,10 +143,54 @@ def ref_mann_whitney(scores: list[float], labels: list[bool]) -> float:
     return wins / (len(pos) * len(neg))
 
 
+def ref_weighted_mann_whitney(
+    scores: list[float],
+    labels: list[bool],
+    weights: list[float],
+) -> float:
+    """Brute-force *weighted* Mann-Whitney AUC — the independent oracle.
+
+    Sums ``w_p * w_n`` over every positive/negative pair the positive wins (½ on
+    ties), divided by the product of the class weight masses. With unit weights
+    this equals :func:`ref_mann_whitney`, and it is a second, pairwise
+    implementation of exactly the quantity the vectorized ``collapse_scores`` +
+    ``mann_whitney_auc_expr`` path computes.
+    """
+    pos = [(s, w) for s, lb, w in zip(scores, labels, weights) if lb]
+    neg = [(s, w) for s, lb, w in zip(scores, labels, weights) if not lb]
+    if not pos or not neg:
+        return 0.5
+    w_pos = sum(w for _, w in pos)
+    w_neg = sum(w for _, w in neg)
+    num = 0.0
+    for sp, wp in pos:
+        for sn, wn in neg:
+            if sp > sn:
+                num += wp * wn
+            elif sp == sn:
+                num += 0.5 * wp * wn
+    return num / (w_pos * w_neg)
+
+
 def ref_froc_mw_detection(table: DetectionTable) -> float:
-    det, _ = table.collect()
+    """Weighted detection-level MW: each detection carries its image's weight."""
+    det, meta = table.collect()
+    wmap = {
+        (iid, cid): float(w)
+        for iid, cid, w in zip(
+            meta["image_id"].to_list(),
+            meta["class_id"].to_list(),
+            meta["weight"].to_list(),
+        )
+    }
     d = det.filter(pl.col("score").is_not_null())
-    return ref_mann_whitney(d["score"].to_list(), d["is_tp"].to_list())
+    weights = [
+        wmap.get((iid, cid), 1.0)
+        for iid, cid in zip(d["image_id"].to_list(), d["class_id"].to_list())
+    ]
+    return ref_weighted_mann_whitney(
+        d["score"].to_list(), d["is_tp"].to_list(), weights
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -248,9 +292,11 @@ def ref_lroc_sensitivity_at_fpf(
 
 
 def ref_lroc_image_mw(table: DetectionTable, variant: str = "best_tp") -> float:
+    """Weighted image-level MW: each per-image observation carries its weight."""
     rows = _lroc_per_image(table, variant)
     scores: list[float] = []
     labels: list[bool] = []
+    weights: list[float] = []
     for r in rows:
         ms = r["max_score"]
         if r["gt"]:
@@ -259,4 +305,5 @@ def ref_lroc_image_mw(table: DetectionTable, variant: str = "best_tp") -> float:
             s = ms if ms is not None else 0.0
         scores.append(float(s))
         labels.append(r["gt"])
-    return ref_mann_whitney(scores, labels)
+        weights.append(float(r["w"]))
+    return ref_weighted_mann_whitney(scores, labels, weights)

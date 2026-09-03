@@ -592,3 +592,45 @@ def test_eager_froc_lroc_result_api_is_gone() -> None:
     # The replacements are present.
     for name in ("froc_auc", "lroc_auc", "froc_sensitivity_at_fp"):
         assert hasattr(m, name), f"replacement {name!r} missing"
+
+
+def test_conflicting_weight_guard_is_gone() -> None:
+    """The eager conflicting-weight guard was removed for pure-lazy streaming.
+
+    ``_froc._raise_on_conflicting_weights`` collected ``image_metadata`` at build
+    time to fail loudly on disagreeing duplicate weights. That broke the lazy
+    plan (a collect before the caller asked for one), so it was replaced by the
+    order-independent ``weight_agg`` policy (``resolve_key_weights``): conflicting
+    weights now resolve, they do not raise. Do not reintroduce a build-time guard.
+    """
+    from polars_cv.metrics import DetectionTable, froc_curve_lazy
+    from polars_cv.metrics._metrics import _froc
+
+    assert not hasattr(_froc, "_raise_on_conflicting_weights"), (
+        "_raise_on_conflicting_weights is back — it forces an eager collect"
+    )
+
+    det = pl.DataFrame(
+        {
+            "image_id": ["s", "s"],
+            "class_id": ["__all__", "__all__"],
+            "score": [0.8, 0.7],
+            "is_tp": [True, False],
+            "gt_idx": pl.Series([0, None], dtype=pl.UInt32),
+            "iou": [0.6, 0.0],
+            "det_idx": pl.Series([0, 1], dtype=pl.UInt32),
+        }
+    )
+    meta = pl.DataFrame(
+        {
+            "image_id": ["s", "s"],
+            "class_id": ["__all__", "__all__"],
+            "n_gts": [1, 1],
+            "weight": [1.0, 5.0],  # conflicting
+            "gt_label": [True, True],
+        }
+    )
+    table = DetectionTable.from_matched(det, meta)
+    # No raise, at build or at collect, under any policy.
+    for agg in ("first", "min", "max", "mean", "sum"):
+        froc_curve_lazy(table, weight_agg=agg).collect()

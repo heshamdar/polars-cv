@@ -124,7 +124,7 @@ class TestFrocMetrics:
         }
         assert curve.height >= 1
         assert 0.0 <= froc_auc(table).collect().item() <= 10.0
-        sens = froc_sensitivity_at_fp(table, 1.0)
+        sens = froc_sensitivity_at_fp(table, 1.0).collect()["sensitivity"].item()
         assert sens is None or 0.0 <= sens <= 1.0
 
     def test_froc_no_resize_trusts_user(self) -> None:
@@ -186,7 +186,7 @@ class TestLrocMetrics:
         assert set(curve.columns) == {"threshold", "fpf", "sensitivity"}
         assert curve.height >= 1
         assert 0.0 <= lroc_auc(table).collect().item() <= 1.0
-        sens = lroc_sensitivity_at_fpf(table, 0.25)
+        sens = lroc_sensitivity_at_fpf(table, 0.25).collect()["sensitivity"].item()
         assert sens is None or 0.0 <= sens <= 1.0
 
     def test_lroc_allows_multiple_targets_per_positive(self) -> None:

@@ -16,11 +16,12 @@ import polars as pl
 from .._auc import CorrectionMethod
 from .._auc_expr import (
     collapse_curve,
+    collapse_scores,
+    interpolate_curve_lazy,
     mann_whitney_auc_expr,
     partial_auc_expr,
     trapz_auc_expr,
 )
-from .._result import MetricResult
 from .._types import (
     COL_CLASS_ID,
     COL_GT_LABEL,
@@ -30,6 +31,12 @@ from .._types import (
     COL_SCORE,
     COL_WEIGHT,
     DetectionTable,
+)
+from .._weights import (
+    WeightAgg,
+    attach_resolved_weight,
+    image_weight_keys,
+    resolve_key_weights,
 )
 
 # Internal dummy group key used to run the group-aware curve/AUC path with a
@@ -51,6 +58,7 @@ def froc_curve_lazy(
     *,
     group_by: str | list[str] | None = None,
     thresholds: list[float] | None = None,
+    weight_agg: WeightAgg = "first",
 ) -> pl.LazyFrame:
     """Build the FROC curve as a lazy, group-aware frame.
 
@@ -68,6 +76,12 @@ def froc_curve_lazy(
             (e.g. ``group_id``); metadata-only keys are joined onto detections
             by ``image_id``.
         thresholds: Optional explicit score thresholds to keep.
+        weight_agg: How to resolve duplicate metadata weights for one
+            ``(image[, class])`` key (see :func:`resolve_key_weights`). ``"first"``
+            (default) keeps whichever row survives ``unique``; ``"min"`` / ``"max"``
+            / ``"mean"`` / ``"sum"`` are order-independent. Supplying consistent
+            weights is the caller's responsibility — conflicting weights resolve
+            per this policy rather than raising.
 
     Returns:
         A ``LazyFrame`` with ``[*group_by, threshold, tp, fp, fn, total_gts,
@@ -82,15 +96,7 @@ def froc_curve_lazy(
     )
     keys = [_DUMMY_GROUP, *group_keys]
 
-    # A conflicting weight for one (image[, class]) key makes weighted FROC
-    # order-dependent; guard it. The metadata frame is one row per (image, class)
-    # — small — so this targeted collect is not the curve materialization the
-    # lazy path removes.
-    _raise_on_conflicting_weights(
-        table.image_metadata.collect(engine="streaming"), [COL_IMAGE_ID]
-    )
-
-    curve = _froc_curve_grouped(det, meta, keys, thresholds)
+    curve = _froc_curve_grouped(det, meta, keys, thresholds, weight_agg)
     return curve.drop(_DUMMY_GROUP)
 
 
@@ -99,10 +105,27 @@ def _froc_curve_grouped(
     meta: pl.LazyFrame,
     keys: list[str],
     thresholds: list[float] | None,
+    weight_agg: WeightAgg = "first",
 ) -> pl.LazyFrame:
     """Group-aware FROC curve over ``keys`` (always non-empty; carries dummy)."""
     det_schema = set(det.collect_schema().names())
     meta_schema = set(meta.collect_schema().names())
+
+    # Resolve the metadata weight to one value per (image[, class]) key up front,
+    # so the numerator lookup and the summed denominators below read the *same*
+    # weight. This keeps the path pure-lazy (no build-time guard): disagreeing
+    # duplicate weights resolve per `weight_agg` instead of making the result
+    # order-dependent.
+    weight_keys = (
+        [COL_IMAGE_ID, COL_CLASS_ID] if COL_CLASS_ID in meta_schema else [COL_IMAGE_ID]
+    )
+    resolved = resolve_key_weights(meta, weight_keys, weight_agg)
+    meta_orig = meta
+    # Fan the resolved per-key weight back onto every metadata row: the
+    # per-target denominator sums n_gts*weight over rows (a shared image owned by
+    # two cases contributes each case's n_gts), and every row of a key now carries
+    # the same resolved weight.
+    meta = meta.drop(COL_WEIGHT).join(resolved, on=weight_keys, how="left")
 
     # Attach any group key that lives only on the metadata (e.g. group_id) to
     # each detection, keyed by image_id.
@@ -114,15 +137,8 @@ def _froc_curve_grouped(
             how="left",
         )
 
-    # Numerator: one weight per (image[, class]) lookup key, attached to each
-    # detection. Deduping keeps a repeated metadata row from fanning detections.
-    weight_keys = (
-        [COL_IMAGE_ID, COL_CLASS_ID] if COL_CLASS_ID in meta_schema else [COL_IMAGE_ID]
-    )
-    weight_lookup = meta.select(*weight_keys, COL_WEIGHT).unique(
-        subset=weight_keys, keep="first"
-    )
-    det_w = det.join(weight_lookup, on=weight_keys, how="left").with_columns(
+    # Numerator: the resolved per-key weight attached to each detection.
+    det_w = det.join(resolved, on=weight_keys, how="left").with_columns(
         pl.col(COL_WEIGHT).fill_null(1.0)
     )
 
@@ -132,9 +148,12 @@ def _froc_curve_grouped(
         total_targets=pl.col(COL_N_GTS).sum().cast(pl.Int64),
         _tw_gts=(pl.col(COL_N_GTS).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
     )
-    # FP-per-image counts images: dedup weight to one per (group, image_id).
+    # FP-per-image counts images: resolve one weight per (group, image_id) from
+    # the *original* metadata (not the fanned `meta`, which would sum a key's
+    # weight once per duplicate row), then sum over images. `resolve_key_weights`
+    # keeps this order-independent when an image spans several metadata rows.
     weight_stats = (
-        meta.unique(subset=[*keys, COL_IMAGE_ID], keep="first")
+        resolve_key_weights(meta_orig, [*keys, COL_IMAGE_ID], weight_agg)
         .group_by(keys)
         .agg(_weight_sum=pl.col(COL_WEIGHT).sum())
     )
@@ -209,11 +228,17 @@ def froc_auc(
     correction: CorrectionMethod = None,
     level: Literal["detection", "image"] = "detection",
     group_by: str | list[str] | None = None,
+    weight_agg: WeightAgg = "first",
 ) -> pl.LazyFrame:
     """Compute FROC AUC as a lazy, group-aware frame — one row per group.
 
     The single authority for the FROC integral: the reusable expressions in
     :mod:`polars_cv.metrics._auc_expr`. A scalar is ``froc_auc(table).collect().item()``.
+
+    Both families are weighted by ``image_metadata.weight``: the trapezoidal path
+    through the weighted curve, and Mann-Whitney through a weighted rank-sum
+    (``collapse_scores`` + ``mann_whitney_auc_expr``). Unit weights recover the
+    unweighted statistic.
 
     Args:
         table: Canonical detection table.
@@ -224,6 +249,8 @@ def froc_auc(
         level: Mann-Whitney granularity — ``"detection"`` (P(TP > FP), the
             default) or ``"image"`` (P(positive-image score > negative-image)).
         group_by: Optional grouping column(s). ``None`` yields a single row.
+        weight_agg: Duplicate-weight resolution policy (see
+            :func:`resolve_key_weights`).
 
     Returns:
         A ``LazyFrame`` with ``[*group_by, auc]``.
@@ -241,8 +268,8 @@ def froc_auc(
             det = table.detections.with_columns(
                 pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
             )
+            meta = table.image_metadata
             if group_keys:
-                meta = table.image_metadata
                 meta_only = [
                     k for k in group_keys if k not in set(det.collect_schema().names())
                 ]
@@ -252,10 +279,18 @@ def froc_auc(
                         on=COL_IMAGE_ID,
                         how="left",
                     )
-            auc_expr = mann_whitney_auc_expr(score=COL_SCORE, label=COL_IS_TP)
+            det = attach_resolved_weight(det, meta, weight_agg=weight_agg)
+            keys = [_DUMMY_GROUP, *group_keys]
+            bucketed = collapse_scores(
+                det,
+                score=COL_SCORE,
+                label=COL_IS_TP,
+                weight=COL_WEIGHT,
+                group_keys=keys,
+            )
             return (
-                det.group_by([_DUMMY_GROUP, *group_keys])
-                .agg(auc=auc_expr)
+                bucketed.group_by(keys)
+                .agg(auc=mann_whitney_auc_expr())
                 .drop(_DUMMY_GROUP)
             )
         if level == "image":
@@ -269,22 +304,34 @@ def froc_auc(
                 .max(),
                 _max_any=pl.col(COL_SCORE).max(),
             )
-            joined = table.image_metadata.with_columns(
-                pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP)
-            ).join(per_img, on=COL_IMAGE_ID, how="left")
+            meta = table.image_metadata
+            resolved = resolve_key_weights(meta, image_weight_keys(meta), weight_agg)
+            joined = (
+                meta.drop(COL_WEIGHT)
+                .join(resolved, on=image_weight_keys(meta), how="left")
+                .with_columns(
+                    pl.col(COL_WEIGHT).fill_null(1.0),
+                    pl.lit(0, dtype=pl.Int32).alias(_DUMMY_GROUP),
+                )
+                .join(per_img, on=COL_IMAGE_ID, how="left")
+            )
             score_expr = (
                 pl.when(pl.col(COL_GT_LABEL))
                 .then(pl.col("_max_tp").fill_null(0.0))
                 .otherwise(pl.col("_max_any").fill_null(0.0))
                 .fill_null(0.0)
             )
+            keys = [_DUMMY_GROUP, *group_keys]
+            bucketed = collapse_scores(
+                joined,
+                score=score_expr,
+                label=pl.col(COL_GT_LABEL),
+                weight=COL_WEIGHT,
+                group_keys=keys,
+            )
             return (
-                joined.group_by([_DUMMY_GROUP, *group_keys])
-                .agg(
-                    auc=mann_whitney_auc_expr(
-                        score=score_expr, label=pl.col(COL_GT_LABEL)
-                    )
-                )
+                bucketed.group_by(keys)
+                .agg(auc=mann_whitney_auc_expr())
                 .drop(_DUMMY_GROUP)
             )
         raise ValueError(
@@ -296,7 +343,7 @@ def froc_auc(
             f"Unknown method {method!r}. Expected 'trapezoidal' or 'mann_whitney'."
         )
 
-    curve = froc_curve_lazy(table, group_by=group_by)
+    curve = froc_curve_lazy(table, group_by=group_by, weight_agg=weight_agg)
     collapsed = collapse_curve(
         curve, x_col="fp_per_image", y_col="sensitivity", group_keys=group_keys
     )
@@ -323,90 +370,51 @@ def froc_sensitivity_at_fp(
     fp_per_image: float,
     *,
     thresholds: list[float] | None = None,
-) -> float | None:
-    """Interpolate FROC sensitivity at a requested FP/image rate.
+    weight_agg: WeightAgg = "first",
+) -> pl.LazyFrame:
+    """Interpolate FROC sensitivity at a requested FP/image rate, lazily.
 
-    Builds the curve via :func:`froc_curve_lazy` and interpolates with the shared
-    :class:`~polars_cv.metrics.MetricResult` geometry (upper-envelope, no
-    extrapolation).
+    Builds the curve via :func:`froc_curve_lazy` and interpolates it with the
+    shared lazy geometry (upper-envelope, no extrapolation) — nothing is
+    collected here; the caller owns the collect.
 
     Args:
         table: Canonical detection table.
         fp_per_image: Target false-positive-per-image rate.
         thresholds: Optional explicit score thresholds to keep.
+        weight_agg: Duplicate-weight resolution policy.
 
     Returns:
-        Interpolated sensitivity, or ``None`` when ``fp_per_image`` is outside
-        the observed range of the curve.
+        A one-row ``LazyFrame`` ``[fp_per_image, sensitivity]``; ``sensitivity``
+        is null when ``fp_per_image`` is outside the observed range of the curve.
+        A scalar is ``froc_sensitivity_at_fp(t, fp).collect().item()``.
     """
-    curve = froc_curve_lazy(table, thresholds=thresholds).collect(engine="streaming")
-    return MetricResult(curve=curve).interpolate(
-        x_col="fp_per_image", y_col="sensitivity", at=fp_per_image
+    curve = froc_curve_lazy(table, thresholds=thresholds, weight_agg=weight_agg)
+    return interpolate_curve_lazy(
+        curve, x_col="fp_per_image", y_col="sensitivity", at=[fp_per_image]
     )
 
 
 def froc_summary_table(
     table: DetectionTable,
     fp_rates: list[float] | None = None,
-) -> pl.DataFrame:
-    """Sensitivity at standard FP/image operating points.
+    *,
+    weight_agg: WeightAgg = "first",
+) -> pl.LazyFrame:
+    """Sensitivity at standard FP/image operating points, lazily.
 
     Args:
         table: Canonical detection table.
         fp_rates: Operating points. Defaults to the standard radiology set.
+        weight_agg: Duplicate-weight resolution policy.
 
     Returns:
-        DataFrame with ``fp_per_image`` and ``sensitivity`` columns.
+        A ``LazyFrame`` with ``fp_per_image`` and ``sensitivity`` columns, one row
+        per operating point (``sensitivity`` null off the curve). The caller
+        collects.
     """
     rates = fp_rates or [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
-    curve = froc_curve_lazy(table).collect(engine="streaming")
-    return MetricResult(curve=curve).summary_table(
-        x_col="fp_per_image", y_col="sensitivity", operating_points=rates
-    )
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _raise_on_conflicting_weights(
-    meta_df: pl.DataFrame,
-    weight_keys: list[str],
-) -> None:
-    """Raise when a lookup key has more than one distinct weight.
-
-    Equal weights on duplicate keys are fine (shared image / bootstrap redraws).
-    Conflicting weights make the weighted FROC numerator (first-row weight)
-    disagree with the denominators (sum of every row) in an order-dependent way.
-
-    Args:
-        meta_df: Image metadata frame that includes ``weight``.
-        weight_keys: Columns identifying a weight-lookup unit.
-
-    Raises:
-        ValueError: If any key group has more than one distinct weight.
-    """
-    conflicts = (
-        meta_df.group_by(weight_keys)
-        .agg(
-            n_weights=pl.col(COL_WEIGHT).n_unique(),
-            weights=pl.col(COL_WEIGHT).unique().sort(),
-        )
-        .filter(pl.col("n_weights") > 1)
-    )
-    if conflicts.height == 0:
-        return
-
-    examples: list[str] = []
-    for row in conflicts.head(3).iter_rows(named=True):
-        key_parts = [f"{k}={row[k]!r}" for k in weight_keys]
-        examples.append(f"({', '.join(key_parts)}): weights={row['weights']}")
-    raise ValueError(
-        "image_metadata has conflicting weights for the same "
-        f"{'+'.join(weight_keys)} key(s). Weighted FROC attaches one weight "
-        "per key to detections while denominators sum every metadata row, "
-        "so disagreeing weights make sensitivity order-dependent. Use a "
-        "single weight per unit, or a composite image_id when each ownership "
-        f"is a distinct evaluation unit. Examples: {'; '.join(examples)}"
+    curve = froc_curve_lazy(table, weight_agg=weight_agg)
+    return interpolate_curve_lazy(
+        curve, x_col="fp_per_image", y_col="sensitivity", at=rates
     )

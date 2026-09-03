@@ -7,6 +7,39 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **FROC is fully lazy again; the conflicting-weight guard is gone.**
+  `froc_curve_lazy` / `froc_auc` no longer collect `image_metadata` at
+  construction time — they build a plan with **zero** eager collects, so the
+  trapezoidal path streams like the Mann-Whitney and LROC paths already did. The
+  build-time guard that raised `ValueError` on disagreeing duplicate weights is
+  removed; a new `weight_agg` keyword (`"first"` default, plus `"min"` / `"max"` /
+  `"mean"` / `"sum"`) resolves each `(image[, class])` key's weight
+  deterministically for the numerator and the denominators alike
+  (`metrics._weights.resolve_key_weights`). Conflicting weights now resolve per
+  this policy instead of raising — supplying consistent weights is the caller's
+  responsibility.
+- **The interpolation/summary helpers are lazy.** `froc_sensitivity_at_fp`,
+  `froc_summary_table` and `lroc_sensitivity_at_fpf` now return a `LazyFrame`
+  (**breaking**: previously `float | None` / `DataFrame`); no metric method
+  collects internally — the caller owns the collect. A scalar is
+  `froc_sensitivity_at_fp(t, fp).collect().item()`. They and
+  `MetricResult.interpolate` / `summary_table` share one lazy authority,
+  `metrics._auc_expr.interpolate_curve_lazy` (`collapse_curve` + `join_asof`).
+
+### Added
+
+- **Weighted Mann-Whitney FROC/LROC AUC.** `froc_auc` / `lroc_auc` with
+  `method="mann_whitney"` are now weighted by `image_metadata.weight` at both
+  `level="detection"` and `level="image"`, consistent with the trapezoidal path
+  (previously weights were ignored). Implemented as one weighted-capable authority
+  — `metrics._auc_expr.collapse_scores` (bucket by distinct score → positive/
+  negative weight mass) then `mann_whitney_auc_expr` (weighted rank-sum) — so the
+  unweighted statistic is literally the weighted one with every weight `= 1`, not
+  a second implementation. `bootstrap_froc_auc` / `bootstrap_lroc_auc` inherit the
+  weighting through `froc_auc` / `lroc_auc`.
+
 ## [0.23.0] — 2026-09-03
 
 ### Added

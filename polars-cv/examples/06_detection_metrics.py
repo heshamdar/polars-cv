@@ -39,10 +39,10 @@ OUTPUT_DIR = Path(__file__).parent / "outputs"
 def fmt(value: float | None, digits: int = 4) -> str:
     """Format a metric value, tolerating an out-of-range operating point.
 
-    ``froc_sensitivity_at_fp`` / ``lroc_sensitivity_at_fpf`` return ``None`` when
-    the requested operating point lies beyond the observed curve — an
-    unreachable point is reported rather than silently clamped to the last
-    y-value.
+    ``froc_sensitivity_at_fp`` / ``lroc_sensitivity_at_fpf`` return a lazy frame
+    whose collected ``sensitivity`` is ``None`` when the requested operating point
+    lies beyond the observed curve — an unreachable point is reported rather than
+    silently clamped to the last y-value.
     """
     return "n/a" if value is None else str(round(value, digits))
 
@@ -139,7 +139,7 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
             4,
         ),
         "\nSens@1FP:",
-        fmt(froc_sensitivity_at_fp(contour_table, 1.0)),
+        fmt(froc_sensitivity_at_fp(contour_table, 1.0).collect()["sensitivity"].item()),
     )
     print(
         "LROC AUC:",
@@ -168,7 +168,9 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
             4,
         ),
         "\nSens@0.5FPF:",
-        fmt(lroc_sensitivity_at_fpf(contour_table, 0.5)),
+        fmt(
+            lroc_sensitivity_at_fpf(contour_table, 0.5).collect()["sensitivity"].item()
+        ),
     )
     print(
         f"Threshold metrics @{args.score_threshold}:",
