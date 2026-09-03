@@ -174,7 +174,8 @@ Available matchers: `ContourMatcher` (heatmap/mask), `BBoxMatcher` (bounding box
 `PreMatchedAdapter` (pre-computed TP/FP).
 
 Available metrics: `precision_recall_curve`, `average_precision`,
-`mean_average_precision`, `froc_curve`, `lroc_curve`, `confusion_at_threshold`,
-`precision_at_threshold`, `recall_at_threshold`, `f1_at_threshold`.
+`mean_average_precision`, `froc_auc`, `lroc_auc`, `froc_curve_lazy`,
+`lroc_curve_lazy`, `confusion_at_threshold`, `precision_at_threshold`,
+`recall_at_threshold`, `f1_at_threshold`.
 
 For full details, see the [Documentation](https://heshamdar.github.io/polars-cv/)

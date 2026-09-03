@@ -19,8 +19,12 @@ from polars_cv import (
     average_precision,
     confusion_at_threshold,
     f1_at_threshold,
-    froc_curve,
-    lroc_curve,
+    froc_auc,
+    froc_curve_lazy,
+    froc_sensitivity_at_fp,
+    lroc_auc,
+    lroc_curve_lazy,
+    lroc_sensitivity_at_fpf,
     mean_average_precision,
     precision_at_threshold,
     precision_recall_curve,
@@ -35,9 +39,10 @@ OUTPUT_DIR = Path(__file__).parent / "outputs"
 def fmt(value: float | None, digits: int = 4) -> str:
     """Format a metric value, tolerating an out-of-range operating point.
 
-    ``sensitivity_at_fp`` / ``sensitivity_at_fpf`` return ``None`` when the
-    requested operating point lies beyond the observed curve — an unreachable
-    point is reported rather than silently clamped to the last y-value.
+    ``froc_sensitivity_at_fp`` / ``lroc_sensitivity_at_fpf`` return ``None`` when
+    the requested operating point lies beyond the observed curve — an
+    unreachable point is reported rather than silently clamped to the last
+    y-value.
     """
     return "n/a" if value is None else str(round(value, digits))
 
@@ -105,37 +110,65 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
     )
 
     pr = precision_recall_curve(contour_table, class_id="lesion")
-    froc = froc_curve(contour_table)
-    lroc = lroc_curve(contour_table)
     print("\nContourMatcher metrics:")
     print("AP:", round(pr.auc(), 4))
     print(
         "FROC AUC:",
-        round(froc.auc(), 4),
+        round(froc_auc(contour_table).collect().item(), 4),
         "\nFROC AUC normalized:",
-        round(froc.auc(fp_range=(0, 8), correction="normalize"), 4),
+        round(
+            froc_auc(contour_table, fp_range=(0, 8), correction="normalize")
+            .collect()
+            .item(),
+            4,
+        ),
         "\nFROC AUC (0, 0.5):",
-        round(froc.auc(fp_range=(0, 0.5)), 4),
+        round(froc_auc(contour_table, fp_range=(0, 0.5)).collect().item(), 4),
         "\nFROC AUC (0, 0.5) McClish:",
-        round(froc.auc(fp_range=(0, 0.5), correction="mcclish"), 4),
+        round(
+            froc_auc(contour_table, fp_range=(0, 0.5), correction="mcclish")
+            .collect()
+            .item(),
+            4,
+        ),
         "\nFROC MW-U (detection):",
-        round(froc.auc(method="mann_whitney", level="detection"), 4),
+        round(
+            froc_auc(contour_table, method="mann_whitney", level="detection")
+            .collect()
+            .item(),
+            4,
+        ),
         "\nSens@1FP:",
-        fmt(froc.sensitivity_at_fp(1.0)),
+        fmt(froc_sensitivity_at_fp(contour_table, 1.0)),
     )
     print(
         "LROC AUC:",
-        round(lroc.auc(), 4),
+        round(lroc_auc(contour_table).collect().item(), 4),
         "\nLROC AUC normalized:",
-        round(lroc.auc(fpf_range=(0, 1), correction="normalize"), 4),
+        round(
+            lroc_auc(contour_table, fpf_range=(0, 1), correction="normalize")
+            .collect()
+            .item(),
+            4,
+        ),
         "\nLROC AUC (0, 0.5):",
-        round(lroc.auc(fpf_range=(0, 0.5)), 4),
+        round(lroc_auc(contour_table, fpf_range=(0, 0.5)).collect().item(), 4),
         "\nLROC AUC (0, 0.5) McClish:",
-        round(lroc.auc(fpf_range=(0, 0.5), correction="mcclish"), 4),
+        round(
+            lroc_auc(contour_table, fpf_range=(0, 0.5), correction="mcclish")
+            .collect()
+            .item(),
+            4,
+        ),
         "\nLROC MW-U (image):",
-        round(lroc.auc(method="mann_whitney", level="image"), 4),
+        round(
+            lroc_auc(contour_table, method="mann_whitney", level="image")
+            .collect()
+            .item(),
+            4,
+        ),
         "\nSens@0.5FPF:",
-        fmt(lroc.sensitivity_at_fpf(0.5)),
+        fmt(lroc_sensitivity_at_fpf(contour_table, 0.5)),
     )
     print(
         f"Threshold metrics @{args.score_threshold}:",
@@ -181,9 +214,19 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
         "06_pr_contour.png",
     )
     plot_curve(
-        froc.curve, "fp_per_image", "sensitivity", "FROC Curve", "06_froc_contour.png"
+        froc_curve_lazy(contour_table).collect(),
+        "fp_per_image",
+        "sensitivity",
+        "FROC Curve",
+        "06_froc_contour.png",
     )
-    plot_curve(lroc.curve, "fpf", "sensitivity", "LROC Curve", "06_lroc_contour.png")
+    plot_curve(
+        lroc_curve_lazy(contour_table).collect(),
+        "fpf",
+        "sensitivity",
+        "LROC Curve",
+        "06_lroc_contour.png",
+    )
     return contour_table
 
 
@@ -214,12 +257,11 @@ def prematched_section(bbox_table: object) -> None:
         image_meta=population,
     )
     pr = precision_recall_curve(table, class_id="lesion")
-    lroc = lroc_curve(table)
     print("\nPreMatchedAdapter metrics (rebuilt from BBoxMatcher TP/FP assignments):")
     print("PreMatchedAdapter AP:", round(pr.auc(method="11_point"), 4))
-    print("PreMatchedAdapter LROC AUC:", round(lroc.auc(), 4))
+    print("PreMatchedAdapter LROC AUC:", round(lroc_auc(table).collect().item(), 4))
     plot_curve(
-        lroc.curve,
+        lroc_curve_lazy(table).collect(),
         "fpf",
         "sensitivity",
         "LROC Curve (PreMatched)",
