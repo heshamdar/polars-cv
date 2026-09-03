@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-09-03
+
 ### Changed
 
 - **FROC is fully lazy again; the conflicting-weight guard is gone.**
@@ -2385,6 +2387,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.24.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.24.0
 [0.23.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.23.0
 [0.22.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.22.0
 [0.21.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.21.0
