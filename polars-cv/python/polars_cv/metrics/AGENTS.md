@@ -161,13 +161,19 @@ metrics/
 - A repeated `image_id` (and `class_id`, when present) now means only one
   thing: one rendered image owned by two cases. FROC weight lookups dedupe by
   that key so detections are not fan-out-multiplied. Equal weights are fine;
-  conflicting weights raise `ValueError` (the numerator would pick an arbitrary
-  row while denominators sum every row). Prefer a composite key in `image_id`
-  when each ownership should be a distinct evaluation unit.
+  conflicting weights raise (the numerator would pick an arbitrary row while
+  denominators sum every row). Prefer a composite key in `image_id` when each
+  ownership should be a distinct evaluation unit.
 - The conflict check is on `image_id` alone, which subsumes the
   `(image_id, class_id)` check: a `weight` is a property of an *image*, and the
   FP-per-image denominator dedupes on `image_id`, so two classes of one image
   disagreeing about its weight is exactly as ill-defined.
+- The guard is **deferred** (`_guarded_weight_lookup` wraps the numerator's
+  weight lookup in `pl.defer`) so `froc_curve_lazy` / `froc_auc` build a
+  pure-lazy plan — nothing runs until the caller collects. The conflict
+  therefore surfaces on `.collect()` as a `ComputeError` wrapping the
+  `ValueError` message, not at construction time. Running the check eagerly here
+  is what previously made the trapezoidal FROC path execute at build time.
 
 ### Interpolation beyond the curve
 - `froc_sensitivity_at_fp` / `lroc_sensitivity_at_fpf` / `froc_summary_table`

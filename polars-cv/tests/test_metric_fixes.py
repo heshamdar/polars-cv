@@ -1157,10 +1157,12 @@ class TestFrocSharedImageId:
         assert float(low["sensitivity"].item()) == pytest.approx(0.5)
 
     def test_conflicting_weights_raise(self) -> None:
-        """Conflicting weights on a shared image_id raise ValueError.
+        """Conflicting weights on a shared image_id raise at collection.
 
         Both row orders must raise — the bug was that they produced different
-        numeric sensitivities instead of failing loudly.
+        numeric sensitivities instead of failing loudly. The guard is deferred
+        (``pl.defer``) so the curve builds as a pure-lazy plan; it fires when the
+        plan is collected, surfaced as a ``ComputeError`` wrapping the message.
         """
         det_df = pl.DataFrame(
             {
@@ -1193,15 +1195,17 @@ class TestFrocSharedImageId:
                 }
             )
             table = DetectionTable.from_matched(det_df, meta_df)
-            with pytest.raises(ValueError, match="conflicting weights"):
-                froc_curve_lazy(table)
+            # Construction stays lazy; the deferred guard raises on collection.
+            with pytest.raises(pl.exceptions.ComputeError, match="conflicting weights"):
+                froc_curve_lazy(table).collect()
 
     def test_conflicting_weights_across_classes_of_one_image_raise(self) -> None:
         """A weight is a property of an image, not of an (image, class) row.
 
         The FP-per-image denominator dedupes on ``image_id`` alone, so two
         classes of one image disagreeing about its weight would make that
-        denominator depend on which row `unique` happened to keep.
+        denominator depend on which row `unique` happened to keep. The guard is
+        deferred, so it raises when the curve is collected, not when it is built.
         """
         det_df = pl.DataFrame(
             {
@@ -1233,8 +1237,8 @@ class TestFrocSharedImageId:
             }
         )
         table = DetectionTable.from_matched(det_df, meta_df)
-        with pytest.raises(ValueError, match="conflicting weights"):
-            froc_curve_lazy(table)
+        with pytest.raises(pl.exceptions.ComputeError, match="conflicting weights"):
+            froc_curve_lazy(table).collect()
 
     def test_equal_weights_remain_stable(self) -> None:
         """Equal duplicate weights still yield tp=1, fp=1, sensitivity=0.5."""

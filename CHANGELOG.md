@@ -60,6 +60,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   inputs flow through the same lazy expressions, so their detection tables can
   no longer disagree about dtypes.
 
+- **The trapezoidal FROC path is now fully lazy.** `froc_auc` /
+  `froc_curve_lazy` built a plan that eagerly collected the image metadata to
+  run the conflicting-weight guard, so constructing them executed before the
+  caller collected — asymmetric with the Mann-Whitney path and every LROC path,
+  which were already pure-lazy. The guard now rides on the numerator's weight
+  lookup via `pl.defer`, so construction executes nothing and the check fires on
+  `.collect()` instead (a conflicting weight now raises a `ComputeError`
+  wrapping the same message, rather than a `ValueError` at build time).
+
 ### Removed
 
 - **The eager FROC/LROC result API is gone.** `FROCResult` / `LROCResult`,

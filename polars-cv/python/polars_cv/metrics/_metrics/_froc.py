@@ -82,14 +82,10 @@ def froc_curve_lazy(
     )
     keys = [_DUMMY_GROUP, *group_keys]
 
-    # A conflicting weight for one (image[, class]) key makes weighted FROC
-    # order-dependent; guard it. The metadata frame is one row per (image, class)
-    # — small — so this targeted collect is not the curve materialization the
-    # lazy path removes.
-    _raise_on_conflicting_weights(
-        table.image_metadata.collect(engine="streaming"), [COL_IMAGE_ID]
-    )
-
+    # The conflicting-weight guard rides on the numerator's weight lookup inside
+    # `_froc_curve_grouped` (see `_guarded_weight_lookup`), deferred to collection
+    # so this function returns a pure-lazy plan — nothing executes until the
+    # caller collects.
     curve = _froc_curve_grouped(det, meta, keys, thresholds)
     return curve.drop(_DUMMY_GROUP)
 
@@ -115,13 +111,13 @@ def _froc_curve_grouped(
         )
 
     # Numerator: one weight per (image[, class]) lookup key, attached to each
-    # detection. Deduping keeps a repeated metadata row from fanning detections.
+    # detection. Deduping keeps a repeated metadata row from fanning detections;
+    # the image-level conflicting-weight guard rides on the same (deferred)
+    # lookup so the plan stays lazy at construction.
     weight_keys = (
         [COL_IMAGE_ID, COL_CLASS_ID] if COL_CLASS_ID in meta_schema else [COL_IMAGE_ID]
     )
-    weight_lookup = meta.select(*weight_keys, COL_WEIGHT).unique(
-        subset=weight_keys, keep="first"
-    )
+    weight_lookup = _guarded_weight_lookup(meta, weight_keys)
     det_w = det.join(weight_lookup, on=weight_keys, how="left").with_columns(
         pl.col(COL_WEIGHT).fill_null(1.0)
     )
@@ -368,6 +364,38 @@ def froc_summary_table(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _guarded_weight_lookup(
+    meta: pl.LazyFrame,
+    weight_keys: list[str],
+) -> pl.LazyFrame:
+    """Deduped ``(image[, class]) → weight`` lookup with a deferred image-level guard.
+
+    Weighted FROC attaches one weight per lookup key to each detection while the
+    denominators sum every metadata row, so a weight that disagrees across the
+    rows of one image makes sensitivity order-dependent. That must fail loudly —
+    but running the check eagerly would materialize the metadata at
+    *plan-construction* time, so ``froc_curve_lazy`` / ``froc_auc`` would execute
+    before the caller collects. ``pl.defer`` keeps construction pure-lazy:
+    ``_build`` runs only when the returned frame is collected, raising then (a
+    ``ValueError`` surfaced as a ``ComputeError``) on a conflict and otherwise
+    returning the deduped lookup. The guard is on ``image_id`` alone — a weight
+    is a property of an image, not an ``(image, class)`` row. The metadata is one
+    row per ``(image, class)`` — small — so this collect is not the curve
+    materialization the lazy path removes.
+    """
+    schema = {k: meta.collect_schema()[k] for k in (*weight_keys, COL_WEIGHT)}
+    select_cols = list(dict.fromkeys([COL_IMAGE_ID, *weight_keys, COL_WEIGHT]))
+
+    def _build() -> pl.DataFrame:
+        df = meta.select(select_cols).collect(engine="streaming")
+        _raise_on_conflicting_weights(df, [COL_IMAGE_ID])
+        return df.select(*weight_keys, COL_WEIGHT).unique(
+            subset=weight_keys, keep="first"
+        )
+
+    return pl.defer(_build, schema=schema)
 
 
 def _raise_on_conflicting_weights(

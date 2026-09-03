@@ -16,6 +16,7 @@ import pytest
 from polars_cv.metrics import (
     DetectionTable,
     froc_auc,
+    froc_curve_lazy,
     froc_sensitivity_at_fp,
     froc_summary_table,
 )
@@ -105,6 +106,53 @@ def _table(*, multiclass: bool) -> DetectionTable:
 
 def _auc_value(lf: pl.LazyFrame) -> float:
     return lf.collect().item()
+
+
+class TestFrocIsPureLazy:
+    """Building the FROC curve/AUC plan must not execute anything.
+
+    The trapezoidal path used to run an eager ``collect`` on the metadata for the
+    conflicting-weight guard, so ``froc_auc``/``froc_curve_lazy`` materialized at
+    construction time (asymmetric with the Mann-Whitney path and every LROC
+    path). The guard is now deferred (``pl.defer``); this pins construction at
+    zero eager collects so the regression cannot return. Watched failing against
+    the pre-fix code: it reported three collects.
+    """
+
+    def _construction_collects(self, monkeypatch, build) -> int:
+        calls = {"n": 0}
+        orig = pl.LazyFrame.collect
+
+        def spy(self, *args, **kwargs):
+            calls["n"] += 1
+            return orig(self, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", spy)
+        result = build()
+        assert isinstance(result, pl.LazyFrame)
+        return calls["n"]
+
+    def test_froc_curve_lazy_builds_without_collecting(self, monkeypatch) -> None:
+        table = _table(multiclass=False)
+        assert (
+            self._construction_collects(monkeypatch, lambda: froc_curve_lazy(table))
+            == 0
+        )
+
+    @pytest.mark.parametrize(
+        "build_name",
+        ["trapezoidal", "partial", "grouped"],
+    )
+    def test_froc_auc_builds_without_collecting(
+        self, monkeypatch, build_name: str
+    ) -> None:
+        table = _table(multiclass=True)
+        builders = {
+            "trapezoidal": lambda: froc_auc(table),
+            "partial": lambda: froc_auc(table, fp_range=(0.0, 8.0)),
+            "grouped": lambda: froc_auc(table, group_by="class_id"),
+        }
+        assert self._construction_collects(monkeypatch, builders[build_name]) == 0
 
 
 class TestFrocAucParity:
