@@ -13,9 +13,17 @@ The two stages are kept separate, mirroring the eager path
 * :func:`collapse_curve` turns a raw curve into strictly-increasing ``x`` with
   the upper-envelope ``y`` **per group** (the lazy replacement for
   ``_curve_xy``). It changes the row count, so it is a ``LazyFrame`` transform.
+  :func:`collapse_scores` is its Mann-Whitney counterpart: one bucket per
+  ``(group, distinct score)`` carrying the positive/negative weight mass.
 * :func:`trapz_auc_expr` / :func:`partial_auc_expr` / :func:`mann_whitney_auc_expr`
-  are the reductions. They assume each group's ``x`` is already unique (i.e.
-  the curve was collapsed), matching the eager helpers' precondition.
+  are the reductions. They assume each group's ``x`` (or score bucket) is already
+  unique (i.e. the curve/scores were collapsed), matching the eager helpers'
+  precondition.
+
+:func:`interpolate_curve_lazy` is the lazy replacement for
+``MetricResult.interpolate`` / ``summary_table``: it reads y at requested x
+operating points off a collapsed curve without collecting, so the curve helpers
+return a ``LazyFrame`` and the caller owns the collect.
 """
 
 from __future__ import annotations
@@ -229,36 +237,171 @@ def _mcclish_correction_expr(raw: pl.Expr, lo: float, hi: float) -> pl.Expr:
     return (1.0 + (raw - min_pauc) / denom) / 2.0
 
 
+def collapse_scores(
+    lf: pl.LazyFrame,
+    *,
+    score: str | pl.Expr,
+    label: str | pl.Expr,
+    weight: str | pl.Expr | None = None,
+    group_keys: list[str] | None = None,
+) -> pl.LazyFrame:
+    """Collapse rows to one bucket per ``(group, distinct score)`` for MW-U.
+
+    The Mann-Whitney counterpart of :func:`collapse_curve`: a weighted rank
+    statistic with ties needs the per-score positive/negative *weight* mass, and
+    Polars' ``rank`` produces unweighted mid-ranks. Bucketing by distinct score
+    removes every tie, so the downstream reduction is a plain cumulative sum that
+    is correct for weighted and unweighted (weight ``= 1``) data alike. Rows with
+    a null score are dropped — an unrankable score contributes to neither class,
+    matching the eager reference.
+
+    Args:
+        lf: Frame carrying ``score``, ``label``, optional ``weight`` and every
+            group key.
+        score: Score column name or expression.
+        label: Positive/negative flag (truthy = positive).
+        weight: Per-row weight column/expression; ``None`` means unit weights, so
+            the collapsed masses are plain counts and the reduction is the
+            standard tie-averaged Mann-Whitney AUC.
+        group_keys: Optional grouping columns (empty/None ⇒ one group).
+
+    Returns:
+        A ``LazyFrame`` with ``[*group_keys, "score", "w_pos", "w_neg"]``, one row
+        per ``(group, score)``: ``w_pos`` the positive weight mass at that score,
+        ``w_neg`` the negative mass.
+    """
+    keys = list(group_keys or [])
+    sc = _as_expr(score)
+    lb = _as_expr(label).cast(pl.Float64)
+    w = pl.lit(1.0) if weight is None else _as_expr(weight).cast(pl.Float64)
+    return (
+        lf.select(
+            *keys,
+            sc.alias("score"),
+            lb.alias("_lb"),
+            w.alias("_w"),
+        )
+        .filter(pl.col("score").is_not_null())
+        .group_by([*keys, "score"])
+        .agg(
+            w_pos=(pl.col("_lb") * pl.col("_w")).sum(),
+            w_neg=((1.0 - pl.col("_lb")) * pl.col("_w")).sum(),
+        )
+    )
+
+
 def mann_whitney_auc_expr(
     *,
     score: str | pl.Expr = "score",
-    label: str | pl.Expr = "label",
+    w_pos: str | pl.Expr = "w_pos",
+    w_neg: str | pl.Expr = "w_neg",
 ) -> pl.Expr:
-    """Mann-Whitney U AUC — P(positive score > negative score) — as an expression.
+    """Weighted Mann-Whitney U AUC as a reduction over collapsed score buckets.
 
-    Non-parametric AUC via the O(n log n) rank-sum. ``label`` is ``1.0`` for
-    positives and ``0.0`` for negatives; ties in ``score`` receive their average
-    rank. Usable inside ``group_by(group).agg(...)`` and in ``select``.
+    ``P(positive score > negative score)`` with ties counted at ½, computed as a
+    weighted rank-sum: for each score bucket (ascending), the positive mass beats
+    all strictly-lower negative mass plus half its tied negative mass. Assumes the
+    input is one row per distinct score — call :func:`collapse_scores` first,
+    exactly as :func:`trapz_auc_expr` assumes a collapsed curve. Usable inside
+    ``group_by(group).agg(...)`` and in ``select``.
+
+    With unit weights the masses are class counts and this reduces to the standard
+    tie-averaged Mann-Whitney AUC, so the unweighted case is literally the
+    weighted case with every weight ``= 1`` — one implementation, not two.
 
     Args:
-        score: Score column name or expression.
-        label: Positive/negative flag (truthy = positive).
+        score: Bucket score column/expression to order by.
+        w_pos: Positive weight-mass column/expression.
+        w_neg: Negative weight-mass column/expression.
 
     Returns:
         A ``pl.Expr`` reducing to the MW-U AUC in ``[0, 1]``; ``0.5`` when either
-        class is empty.
+        class has zero mass.
     """
-    sc = _as_expr(score).cast(pl.Float64)
-    lb = _as_expr(label).cast(pl.Float64)
+    sc = _as_expr(score)
+    wp = _as_expr(w_pos).cast(pl.Float64)
+    wn = _as_expr(w_neg).cast(pl.Float64)
 
-    # 1-based ranks, averaged within tied-score groups. `rank("average")` keeps
-    # the result aligned with row order, so it multiplies against `lb`
-    # element-wise with no sort — and works inside `.agg()` (no window needed).
-    avg_rank = sc.rank(method="average").cast(pl.Float64)
+    wp_sorted = wp.sort_by(sc)
+    wn_sorted = wn.sort_by(sc)
+    # Strictly-lower negative mass at each bucket (exclusive prefix). Buckets are
+    # unique in score, so cum_sum minus the bucket's own mass is exact.
+    cum_neg_below = wn_sorted.cum_sum() - wn_sorted
+    numerator = (wp_sorted * (cum_neg_below + 0.5 * wn_sorted)).sum()
 
-    n_pos = lb.sum()
-    n_neg = lb.len() - n_pos
-    rank_sum_pos = (avg_rank * lb).sum()
-    u = rank_sum_pos - n_pos * (n_pos + 1.0) / 2.0
-    auc = u / (n_pos * n_neg)
-    return pl.when((n_pos == 0) | (n_neg == 0)).then(pl.lit(0.5)).otherwise(auc)
+    total_pos = wp.sum()
+    total_neg = wn.sum()
+    auc = numerator / (total_pos * total_neg)
+    return pl.when((total_pos == 0) | (total_neg == 0)).then(pl.lit(0.5)).otherwise(auc)
+
+
+# ---------------------------------------------------------------------------
+# Lazy curve interpolation (operating points)
+# ---------------------------------------------------------------------------
+
+
+def interpolate_curve_lazy(
+    curve_lf: pl.LazyFrame,
+    *,
+    x_col: str,
+    y_col: str,
+    at: list[float],
+) -> pl.LazyFrame:
+    """Interpolate ``y`` at requested ``x`` operating points, lazily.
+
+    The lazy replacement for ``MetricResult.interpolate`` / ``summary_table``: it
+    collapses the curve to the strictly-increasing upper envelope
+    (:func:`collapse_curve`), then brackets each query point with a backward and a
+    forward as-of join and linearly interpolates. A point outside the observed
+    ``[min x, max x]`` yields a null ``y`` (no extrapolation); an exact knot (and
+    the endpoints) yields that knot's collapsed ``y``. Nothing is collected — the
+    caller owns the collect.
+
+    Args:
+        curve_lf: Curve carrying ``x_col`` and ``y_col``.
+        x_col: X-axis column name.
+        y_col: Y-axis column name.
+        at: X operating points to report ``y`` for.
+
+    Returns:
+        A ``LazyFrame`` with columns ``[x_col, y_col]``, one row per element of
+        ``at`` in the given order; ``y_col`` is Float64 and null off the curve.
+    """
+    collapsed = collapse_curve(curve_lf, x_col=x_col, y_col=y_col)
+    # `sort` after `select` keeps the join key flagged sorted for `join_asof`.
+    ref = collapsed.select(pl.col(x_col), _xk=pl.col(x_col), _yk=pl.col(y_col)).sort(
+        x_col
+    )
+
+    query = (
+        pl.LazyFrame({x_col: [float(a) for a in at]})
+        .with_columns(pl.col(x_col).cast(pl.Float64))
+        .with_row_index("_ord")
+        .sort(x_col)
+    )
+    bracketed = query.join_asof(ref, on=x_col, strategy="backward").rename(
+        {"_xk": "_x_lo", "_yk": "_y_lo"}
+    )
+    bracketed = (
+        bracketed.sort(x_col)
+        .join_asof(ref, on=x_col, strategy="forward")
+        .rename({"_xk": "_x_hi", "_yk": "_y_hi"})
+    )
+
+    denom = pl.col("_x_hi") - pl.col("_x_lo")
+    t = (
+        pl.when(denom != 0.0)
+        .then((pl.col(x_col) - pl.col("_x_lo")) / denom)
+        .otherwise(0.0)
+    )
+    interp = pl.col("_y_lo") + t * (pl.col("_y_hi") - pl.col("_y_lo"))
+    # Off the observed range (no knot on one side) ⇒ null; exact knot ⇒ its y.
+    y_out = (
+        pl.when(pl.col("_x_lo").is_null() | pl.col("_x_hi").is_null())
+        .then(None)
+        .when(pl.col("_x_lo") == pl.col("_x_hi"))
+        .then(pl.col("_y_lo"))
+        .otherwise(interp)
+        .cast(pl.Float64)
+    )
+    return bracketed.sort("_ord").select(pl.col(x_col), y_out.alias(y_col))

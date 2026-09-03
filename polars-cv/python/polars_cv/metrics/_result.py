@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from ._auc import CorrectionMethod, _interp, partial_auc, trapz_auc
+from ._auc import CorrectionMethod, partial_auc, trapz_auc
+from ._auc_expr import interpolate_curve_lazy
 from ._types import COL_IMAGE_ID
 
 if TYPE_CHECKING:
@@ -108,6 +109,10 @@ class MetricResult:
     def interpolate(self, *, x_col: str, y_col: str, at: float) -> float | None:
         """Linearly interpolate a y-value at a given x-value.
 
+        Delegates to :func:`~polars_cv.metrics._auc_expr.interpolate_curve_lazy`
+        — the single interpolation authority the lazy FROC/LROC helpers also use
+        — and collects at this eager boundary.
+
         Args:
             x_col: Column name for the x-axis.
             y_col: Column name for the y-axis.
@@ -118,10 +123,11 @@ class MetricResult:
             observed x-range of the curve (no extrapolation). At an x the
             curve visits more than once, the highest y there is returned.
         """
-        x, y = self._curve_xy(x_col, y_col)
-        if x.len() == 0:
-            return None
-        return _interp(x, y, at)
+        result = interpolate_curve_lazy(
+            self.curve.lazy(), x_col=x_col, y_col=y_col, at=[float(at)]
+        ).collect()
+        value = result[y_col][0]
+        return None if value is None else float(value)
 
     # ------------------------------------------------------------------
     # Summary table
@@ -148,19 +154,12 @@ class MetricResult:
             column, not a ``Null``-dtype one that breaks arithmetic
             downstream.
         """
-        return pl.DataFrame(
-            {
-                x_col: pl.Series(x_col, operating_points, dtype=pl.Float64),
-                y_col: pl.Series(
-                    y_col,
-                    [
-                        self.interpolate(x_col=x_col, y_col=y_col, at=pt)
-                        for pt in operating_points
-                    ],
-                    dtype=pl.Float64,
-                ),
-            }
-        )
+        return interpolate_curve_lazy(
+            self.curve.lazy(),
+            x_col=x_col,
+            y_col=y_col,
+            at=operating_points,
+        ).collect()
 
     # ------------------------------------------------------------------
     # Bootstrap CI

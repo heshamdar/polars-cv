@@ -20,11 +20,12 @@ from polars_cv.metrics._auc import (
 )
 from polars_cv.metrics._auc_expr import (
     collapse_curve,
+    collapse_scores,
     mann_whitney_auc_expr,
     partial_auc_expr,
     trapz_auc_expr,
 )
-from tests._metric_refs import ref_mann_whitney
+from tests._metric_refs import ref_mann_whitney, ref_weighted_mann_whitney
 
 _TOL = 1e-9
 
@@ -127,19 +128,68 @@ class TestPartialParity:
         assert got == pytest.approx((1.0 - 0.0) * 0.3, abs=1e-9)
 
 
+def _mw_auc(scores, labels, weights=None) -> float:
+    """AUC through the two-stage weighted path (collapse_scores → reduction)."""
+    data = {"score": scores, "label": labels}
+    if weights is not None:
+        data["w"] = weights
+    lf = pl.DataFrame(data).lazy()
+    bucketed = collapse_scores(
+        lf, score="score", label="label", weight="w" if weights is not None else None
+    )
+    return bucketed.select(auc=mann_whitney_auc_expr()).collect().item()
+
+
 class TestMannWhitneyParity:
-    def test_matches_eager_mann_whitney(self) -> None:
+    def test_unit_weight_matches_unweighted_reference(self) -> None:
+        """weight=1 (and weight=None) equals the brute-force unweighted MW."""
         rng = random.Random(4)
         for _ in range(200):
             n = rng.randint(2, 20)
             scores = [round(rng.uniform(0.0, 1.0), 2) for _ in range(n)]  # ties likely
             labels = [rng.random() < 0.5 for _ in range(n)]
-            df = pl.DataFrame({"score": scores, "label": labels})
-            got = df.select(
-                auc=mann_whitney_auc_expr(score="score", label="label")
-            ).item()
             want = ref_mann_whitney(scores, labels)
-            assert got == pytest.approx(want, abs=1e-9), (scores, labels)
+            assert _mw_auc(scores, labels) == pytest.approx(want, abs=1e-9)
+            assert _mw_auc(scores, labels, [1.0] * n) == pytest.approx(want, abs=1e-9)
+
+    def test_matches_weighted_reference(self) -> None:
+        """Random non-unit weights match the brute-force weighted MW oracle."""
+        rng = random.Random(11)
+        for _ in range(300):
+            n = rng.randint(2, 12)
+            scores = [round(rng.uniform(0.0, 1.0), 1) for _ in range(n)]  # heavy ties
+            labels = [rng.random() < 0.5 for _ in range(n)]
+            weights = [rng.choice([0.5, 1.0, 2.0, 3.0]) for _ in range(n)]
+            got = _mw_auc(scores, labels, weights)
+            want = ref_weighted_mann_whitney(scores, labels, weights)
+            assert got == pytest.approx(want, abs=1e-9), (scores, labels, weights)
+
+    def test_weighted_per_group_equals_individual(self) -> None:
+        """Grouped weighted MW equals each group computed on its own."""
+        rng = random.Random(12)
+        frames = []
+        expected: dict[str, float] = {}
+        for gid in ("a", "b", "c"):
+            n = rng.randint(3, 10)
+            scores = [round(rng.uniform(0.0, 1.0), 1) for _ in range(n)]
+            labels = [rng.random() < 0.5 for _ in range(n)]
+            weights = [rng.choice([0.5, 1.0, 2.0]) for _ in range(n)]
+            frames.append(
+                pl.DataFrame({"g": gid, "score": scores, "label": labels, "w": weights})
+            )
+            expected[gid] = ref_weighted_mann_whitney(scores, labels, weights)
+        df = pl.concat(frames)
+        got = (
+            collapse_scores(
+                df.lazy(), score="score", label="label", weight="w", group_keys=["g"]
+            )
+            .group_by("g")
+            .agg(auc=mann_whitney_auc_expr())
+            .collect()
+        )
+        got_map = dict(zip(got["g"].to_list(), got["auc"].to_list()))
+        for gid, want in expected.items():
+            assert got_map[gid] == pytest.approx(want, abs=_TOL)
 
 
 class TestGroupAwareness:

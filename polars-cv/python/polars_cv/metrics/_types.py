@@ -101,11 +101,13 @@ class DetectionTable:
 
     When the same ``image_id`` (and ``class_id``, when present) appears more
     than once in ``image_metadata`` (e.g. one rendered image owned by two
-    cases), FROC weight lookups dedupe by that key so detections are not
-    fan-out-multiplied. Equal weights on the duplicates are fine; conflicting
-    weights raise ``ValueError`` because the numerator would pick an arbitrary
-    row while denominators sum every row. Prefer a composite key in
-    ``image_id`` when each ownership should be a distinct evaluation unit.
+    cases), FROC/LROC resolve the per-key weight to a single value so detections
+    are not fan-out-multiplied. Equal weights on the duplicates are the common
+    case; disagreeing weights are resolved by the metric's ``weight_agg`` policy
+    (``"first"`` default, or ``"min"``/``"max"``/``"mean"``/``"sum"``) rather than
+    raising — supplying consistent weights is the caller's responsibility. Prefer
+    a composite key in ``image_id`` when each ownership should be a distinct
+    evaluation unit.
 
     Use :meth:`from_matched` to construct with schema validation.
     """

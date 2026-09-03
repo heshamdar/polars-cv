@@ -16,9 +16,18 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
   `bootstrap_lroc_auc`, `bootstrap_pr_auc`; `bootstrap_metric_sequential` for
   custom callbacks
 - **AUC integrals**: the single authority is `_auc_expr.py`
-  (`trapz_auc_expr`, `partial_auc_expr`, `mann_whitney_auc_expr`,
-  `collapse_curve`); `_auc.py` keeps `trapz_auc`/`partial_auc`/`_interp`/
-  `mcclish_correction` for the PR curve + `MetricResult` interpolation only
+  (`trapz_auc_expr`, `partial_auc_expr`, `collapse_curve`; the weighted
+  Mann-Whitney two-stage `collapse_scores` + `mann_whitney_auc_expr`; and the
+  lazy `interpolate_curve_lazy`); `_auc.py` keeps `trapz_auc`/`partial_auc`/
+  `_interp`/`mcclish_correction` for the eager PR-curve `MetricResult.auc` only —
+  its `interpolate`/`summary_table` delegate to `interpolate_curve_lazy`
+- **Weighted Mann-Whitney**: `froc_auc`/`lroc_auc(method="mann_whitney")` are
+  weighted by `image_metadata.weight` (both `level="detection"` and
+  `level="image"`), via `collapse_scores` (bucket by distinct score, carrying the
+  positive/negative weight mass) then `mann_whitney_auc_expr` (weighted rank-sum).
+  A pure `rank("average")` reduction can't weight ties; bucketing removes them.
+  Unit weights recover the standard tie-averaged MW — one implementation, not two,
+  cross-checked against the pairwise `ref_weighted_mann_whitney` oracle
 
 ## Architecture
 
@@ -150,34 +159,38 @@ metrics/
 ### The FROC evaluation unit
 - An `image_metadata` row is one (image, class). The **image count** — the
   FP-per-image denominator — is the number of distinct `image_id`s: the weighted
-  denominator dedupes on `image_id` per group. Counting rows divides the
-  false-positive rate by the number of classes.
+  denominator resolves one weight per `image_id` per group. Counting rows divides
+  the false-positive rate by the number of classes.
 - Bootstrap draws are renamed to distinct synthetic `image_id`s
   (`<image_id>#d<n>`) in `_bootstrap_table_with_draws`, so a redraw is a
   separate evaluation unit rather than a duplicate id. Nothing downstream has
   to guess whether a repeated id is a redraw or shared ownership.
 
-### Duplicate `image_id` in metadata
-- A repeated `image_id` (and `class_id`, when present) now means only one
-  thing: one rendered image owned by two cases. FROC weight lookups dedupe by
-  that key so detections are not fan-out-multiplied. Equal weights are fine;
-  conflicting weights raise `ValueError` (the numerator would pick an arbitrary
-  row while denominators sum every row). Prefer a composite key in `image_id`
-  when each ownership should be a distinct evaluation unit.
-- The conflict check is on `image_id` alone, which subsumes the
-  `(image_id, class_id)` check: a `weight` is a property of an *image*, and the
-  FP-per-image denominator dedupes on `image_id`, so two classes of one image
-  disagreeing about its weight is exactly as ill-defined.
+### Duplicate `image_id` in metadata — `weight_agg`, no guard
+- A repeated `(image_id[, class_id])` key means one rendered image owned by two
+  cases. The per-key weight is resolved to a single value by `_weights.py`'s
+  `resolve_key_weights`, keyed by the same policy for the numerator lookup and
+  the summed denominators, so detections are never fan-out-multiplied and the
+  result does not depend on row order.
+- **There is no build-time guard.** The old `_raise_on_conflicting_weights`
+  eagerly collected `image_metadata` to fail on disagreeing weights; that broke
+  pure-lazy streaming (a collect before the caller asked for one). It was removed
+  in favour of a `weight_agg` keyword (`"first"` default, plus `"min"`/`"max"`/
+  `"mean"`/`"sum"`) on `froc_curve_lazy`/`froc_auc`/`lroc_curve_lazy`/`lroc_auc`
+  and the standalone helpers. `"first"` keeps the cheap `unique(keep="first")`
+  and is not guaranteed stable when weights disagree — supplying consistent
+  weights is the caller's responsibility; the other policies are order-independent.
 
-### Interpolation beyond the curve
+### Interpolation beyond the curve — lazy
 - `froc_sensitivity_at_fp` / `lroc_sensitivity_at_fpf` / `froc_summary_table`
-  (built on `MetricResult.interpolate` / `summary_table` over a collected
-  `*_curve_lazy` frame) return `None` / null for x-values outside the observed
-  range — no endpoint clamping. `froc_summary_table`'s y column is Float64 even
-  when every point is null.
+  return a **`LazyFrame`** (the caller collects — no method collects internally),
+  built on the single lazy authority `_auc_expr.interpolate_curve_lazy`
+  (`collapse_curve` + backward/forward `join_asof`). `sensitivity` is `null` for
+  x-values outside the observed range — no endpoint clamping — and the summary's
+  y column stays Float64 even when every point is null.
 - At an x the curve visits more than once, the *highest* y there is returned:
-  `froc_sensitivity_at_fp(table, 0.0)` is the sensitivity reachable with no
-  false positives, not the origin's zero.
+  `froc_sensitivity_at_fp(table, 0.0).collect().item()` is the sensitivity
+  reachable with no false positives, not the origin's zero.
 
 ## Known Issues
 

@@ -179,6 +179,6 @@ class TestLrocStandaloneHelpers:
     @pytest.mark.parametrize("fpf", [0.0, 0.25, 0.5, 1.0])
     def test_sensitivity_at_fpf(self, fpf: float) -> None:
         table = _table()
-        got = lroc_sensitivity_at_fpf(table, fpf)
+        got = lroc_sensitivity_at_fpf(table, fpf).collect()["sensitivity"].item()
         want = ref_lroc_sensitivity_at_fpf(table, fpf)
         assert got == want or got == pytest.approx(want, abs=1e-9)
