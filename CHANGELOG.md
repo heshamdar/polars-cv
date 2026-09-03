@@ -7,6 +7,76 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-09-03
+
+### Added
+
+- **Expression-valued, group-aware FROC and LROC AUC.** `froc_auc` and
+  `lroc_auc` return a `LazyFrame` — one row per group — instead of reducing a
+  curve to a Python float, so the integral rides inside a lazy plan and a
+  `group_by` becomes a Polars grouping rather than a Python loop. Both take the
+  trapezoidal family (`raw` / `partial` / `normalize` / `mcclish`) and the
+  Mann-Whitney family; FROC keeps its image-level Mann-Whitney (`level="image"`)
+  and both expose the detection level. The reusable expression core lives in
+  `metrics._auc_expr`, the single authority both the curve builders and the AUC
+  path read.
+
+- **Lazy curve and summary helpers.** `froc_curve_lazy` / `lroc_curve_lazy`
+  return the curve as a `LazyFrame`, and `froc_sensitivity_at_fp`,
+  `lroc_sensitivity_at_fpf` and `froc_summary_table` are standalone lazy
+  functions built on them, reusing the shared `MetricResult` interpolation and
+  summary geometry. `froc_sensitivity_at_fp` / `lroc_sensitivity_at_fpf` return
+  `None` when the operating point is off the curve; `froc_summary_table` returns
+  a null row.
+
+- **Vectorized, seed-reproducible FROC/LROC bootstrap.** `bootstrap_froc_auc`
+  and `bootstrap_lroc_auc` build every replicate as one seeded
+  `(bootstrap_id, image_id)` sample frame and compute the AUC grouped by
+  replicate in a single lazy plan, replacing the sequential per-replicate
+  Python loop. The confidence interval is now reproducible for a given `seed`
+  (the ids are sorted before sampling, closing the `.unique()` order-dependence
+  that made a fixed seed sample different images each run). A `sample_col`
+  argument resamples at the entity level (expanding entities to their images),
+  and a `level` argument selects the image- or detection-level Mann-Whitney AUC.
+
+- **Contour/bbox matchers accept a pre-decoded `LazyPipelineExpr`.**
+  `ContourMatcher.match()` (and `BBoxMatcher.match()`) now take either a column
+  name or a pre-decoded `LazyPipelineExpr` for `pred_col` / `gt_col`. When an
+  expression is passed the matcher appends its threshold / `extract_contours` /
+  `label_reduce` onto the node the caller already built, so a segmentation graph
+  and the contour extraction share one decode (collapsed by CSE) and stream from
+  a single collect.
+
+### Changed
+
+- **The contour and bbox matchers are lazy — one collect at the boundary.**
+  `ContourMatcher.match` / `BBoxMatcher.match` no longer materialize internally;
+  the eager `collect(engine="streaming")` that split the frame and ran an
+  alignment guard is replaced by a cached lazy `image_level`, and
+  `DetectionTable.collect` runs both derived frames through a single
+  `pl.collect_all`, so common-subplan elimination executes the shared
+  contour-extraction/correspond graph once (decode-once, collect-once) instead
+  of once per frame. The empty short-circuit is gone: empty and populated
+  inputs flow through the same lazy expressions, so their detection tables can
+  no longer disagree about dtypes.
+
+### Removed
+
+- **The eager FROC/LROC result API is gone.** `FROCResult` / `LROCResult`,
+  `froc_curve` / `lroc_curve`, the dead eager curve builders, and the
+  FROC/LROC-only `mann_whitney_u_auc` / `detection_level_mann_whitney` in
+  `_auc.py` are removed — they were a second implementation of the integral the
+  expression path now owns. Callers use `froc_auc(table).collect().item()` (or
+  the `froc_sensitivity_at_fp` / `froc_summary_table` curve helpers, and
+  `bootstrap_froc_auc` / `bootstrap_lroc_auc` for CIs); the FROC/LROC
+  Mann-Whitney is now `metrics._auc_expr.mann_whitney_auc_expr`. The shared
+  `MetricResult` base and `_auc.py`'s `trapz_auc` / `partial_auc` / `_interp` /
+  `mcclish_correction` stay — the PR curve and AP still use them.
+  `test_removed_surfaces.py` guards the deletion.
+
+- **The multi-metric-dict bootstrap convenience is dropped for FROC/LROC.** Call
+  `bootstrap_froc_auc` / `bootstrap_lroc_auc` once per metric.
+
 ## [0.22.0] — 2026-09-01
 
 ### Changed
@@ -2282,6 +2352,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.23.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.23.0
 [0.22.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.22.0
 [0.21.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.21.0
 [0.20.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.20.0
