@@ -1351,9 +1351,17 @@ class TestFrocBootstrapCiContainsPoint:
             sampled = ids_series.sample(
                 n=len(image_ids), with_replacement=True, seed=i
             ).to_list()
-            samples = pl.DataFrame(
-                {"bootstrap_id": [0] * len(sampled), COL_IMAGE_ID: sampled},
-                schema={"bootstrap_id": pl.Int32, COL_IMAGE_ID: pl.String},
+            samples = pl.LazyFrame(
+                {
+                    "bootstrap_id": [0] * len(sampled),
+                    COL_IMAGE_ID: sampled,
+                    "_slot": list(range(len(sampled))),
+                },
+                schema={
+                    "bootstrap_id": pl.Int32,
+                    COL_IMAGE_ID: pl.String,
+                    "_slot": pl.Int64,
+                },
             )
             replica = _bootstrap_table_with_draws(table, samples)
             sens = froc_curve_lazy(replica).collect()["sensitivity"].max()
@@ -1659,9 +1667,17 @@ class TestFrocBootstrapDrawsAreDistinctUnits:
         self, simple_detection_table: DetectionTable
     ) -> None:
         """Drawing one image three times gives three images and three GTs."""
-        samples = pl.DataFrame(
-            {"bootstrap_id": [0, 0, 0], COL_IMAGE_ID: ["a", "a", "a"]},
-            schema={"bootstrap_id": pl.Int32, COL_IMAGE_ID: pl.String},
+        samples = pl.LazyFrame(
+            {
+                "bootstrap_id": [0, 0, 0],
+                COL_IMAGE_ID: ["a", "a", "a"],
+                "_slot": [0, 1, 2],
+            },
+            schema={
+                "bootstrap_id": pl.Int32,
+                COL_IMAGE_ID: pl.String,
+                "_slot": pl.Int64,
+            },
         )
         replicate = _bootstrap_table_with_draws(simple_detection_table, samples)
         meta = replicate.image_metadata.collect()
@@ -1675,9 +1691,17 @@ class TestFrocBootstrapDrawsAreDistinctUnits:
         self, simple_detection_table: DetectionTable
     ) -> None:
         """The replicate's own table carries one id per draw, not per image."""
-        samples = pl.DataFrame(
-            {"bootstrap_id": [0, 0, 0], COL_IMAGE_ID: ["a", "a", "b"]},
-            schema={"bootstrap_id": pl.Int32, COL_IMAGE_ID: pl.String},
+        samples = pl.LazyFrame(
+            {
+                "bootstrap_id": [0, 0, 0],
+                COL_IMAGE_ID: ["a", "a", "b"],
+                "_slot": [0, 1, 2],
+            },
+            schema={
+                "bootstrap_id": pl.Int32,
+                COL_IMAGE_ID: pl.String,
+                "_slot": pl.Int64,
+            },
         )
         replicate = _bootstrap_table_with_draws(simple_detection_table, samples)
         meta = replicate.image_metadata.collect()

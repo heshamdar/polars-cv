@@ -634,3 +634,26 @@ def test_conflicting_weight_guard_is_gone() -> None:
     # No raise, at build or at collect, under any policy.
     for agg in ("first", "min", "max", "mean", "sum"):
         froc_curve_lazy(table, weight_agg=agg).collect()
+
+
+def test_bootstrap_reconstruct_hook_is_gone() -> None:
+    """``MetricResult._reconstruct`` (and the PR override) must not come back.
+
+    ``bootstrap_ci`` used to rebuild a whole result and collect once *per
+    replicate per metric* through ``_reconstruct``. It is now vectorized: one
+    lazy resample feeds ``_bootstrap_grouped``, which computes every replicate's
+    metric grouped by ``bootstrap_id`` in a single streaming plan. The
+    per-replicate reconstruct loop — the eager path — is deleted, so nothing
+    should reintroduce ``_reconstruct``; the vectorized hook is the way in.
+    """
+    from polars_cv.metrics._metrics._precision_recall import PrecisionRecallResult
+    from polars_cv.metrics._result import MetricResult
+
+    assert not hasattr(MetricResult, "_reconstruct"), (
+        "_reconstruct is back — bootstrap_ci must vectorize via _bootstrap_grouped, "
+        "not a per-replicate reconstruct loop"
+    )
+    assert not hasattr(PrecisionRecallResult, "_reconstruct")
+    # The vectorized hook is present in its place.
+    assert hasattr(MetricResult, "_bootstrap_grouped")
+    assert "_bootstrap_grouped" in vars(PrecisionRecallResult)
