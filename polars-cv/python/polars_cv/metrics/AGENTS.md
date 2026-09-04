@@ -67,7 +67,8 @@ Supports IoU re-thresholding via `at_iou_threshold()`, class filtering via `filt
 
 ## Bootstrap
 
-Vectorized, seed-reproducible, all replicates in one lazy plan:
+Vectorized, seed-reproducible, and **fully lazy/streaming** — the resample
+itself, not just the per-replicate metric, is a Polars plan:
 
 ```python
 bootstrap_froc_auc(table, n_bootstrap=1000, seed=42)  # detection AUC
@@ -77,12 +78,46 @@ bootstrap_froc_auc(
 bootstrap_froc_auc(table, method="mann_whitney")  # MW AUC
 bootstrap_lroc_auc(table, level="image")
 bootstrap_pr_auc(table, n_bootstrap=1000, seed=42)
+pr_result.bootstrap_ci(n_bootstrap=1000, seed=42, metric="auc")  # PR/Confusion
 ```
 
-Each draw gets a distinct synthetic `image_id` (`_bootstrap_table_with_draws`) so
-a redraw counts once per draw. `bootstrap_metric_sequential` remains for custom
-metric callbacks; `MetricResult.bootstrap_ci` (with multi-metric dict + entity-level
-via `_reconstruct`) still backs PR/Confusion results.
+### The lazy resampler (`_lazy_resample`)
+
+Resampling is a **position-independent hash expression**, not a Python loop over
+eager `pl.Series.sample` calls: `pl.int_range(0, n_bootstrap * n)` is the draw
+skeleton, `bootstrap_id = slot // n`, and each draw is
+`hash(slot, seed) % stratum_size` mapped back to a base unit. Because the draw
+depends only on the row's own global slot id, it is **identical across thread
+counts and streaming morsels** (guarded by
+`test_bootstrap_lazy.py::TestThreadCountInvariant`) — the same property that
+removes the join-order nondeterminism the old path fought (the macOS
+negative-AUC comment in `_bootstrap.py`). Sampling is stratified within
+`gt_label` for image-level draws (each stratum redrawn to its own size) and
+unstratified for entity-level (`sample_col`), which resamples entities then
+expands to images with a lazy `group_by`/`explode`. The one materialization is
+an `O(1)` scalar collect of the base-unit count `n` (needed for the modulus);
+the `n_bootstrap × n_units` frame never leaves the streaming engine.
+
+`seed=None` maps to a fixed hash constant, so lazy mode is **deterministic even
+without an explicit seed** — a deliberate change from the old eager path, which
+gave a fresh draw each run. A given `seed` reproduces the CI bit-for-bit, but the
+draw *values* differ from the pre-lazy `pl.Series.sample` stream.
+
+Each draw gets a distinct synthetic `image_id` from its deterministic global slot
+(`_bootstrap_table_with_draws`) so a redraw counts once per draw.
+
+### `MetricResult.bootstrap_ci` — vectorized, one grouped plan
+
+`bootstrap_ci` (PR/Confusion) builds one lazy resample shared across every
+requested metric, then computes each metric grouped by `bootstrap_id` through the
+subclass `_bootstrap_grouped` hook — no per-replicate Python reconstruct loop.
+`PrecisionRecallResult` reads the shared lazy authorities
+`all_points_ap_by_group` and `threshold_counts_by_group` (in `_precision_recall.py`),
+so `bootstrap_ci(metric="auc")` is bit-identical to `bootstrap_pr_auc`. Supported
+metrics: `auc` (`method="all_points"`), `precision_at`, `recall_at`; any other
+method (including `auc` with `11_point`/`trapezoidal`) **raises** rather than
+silently degrading. `bootstrap_metric_sequential` remains the one eager path, for
+arbitrary Python metric callbacks that cannot be expressed as a grouped plan.
 
 ## File Layout
 
@@ -109,7 +144,7 @@ metrics/
 ## Design Principles
 
 - **NumPy-free**: Entirely Polars-native. All numerical operations (AUC, interpolation, rank statistics, bootstrap sampling, percentile intervals) use Polars Series/expressions or pure Python.
-- **No Python loops over rows**: All curve aggregation uses Polars expressions (`explode`/`group_by`/`cum_sum`/window functions).
+- **No Python loops over rows**: All curve aggregation uses Polars expressions (`explode`/`group_by`/`cum_sum`/window functions). Bootstrap resampling is likewise loop-free — a hash-expression draw over a lazy `int_range` skeleton (`_lazy_resample`), not a `range(n_bootstrap)` loop.
 - **Cumulative-sum curves**: FROC and LROC use sorted score buckets + cumulative sums to avoid quadratic scaling.
 - **Class-aware**: `class_id` is optional; when present, metric functions include it in `group_by`.
 - **IoU preservation**: IoU values from matching enable re-thresholding without re-running the matcher.

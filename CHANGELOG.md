@@ -7,6 +7,47 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **Bootstrap resampling is now fully lazy and streaming.** The resample frame
+  was the last eager step — a Python `for b in range(n_bootstrap)` loop calling
+  `pl.Series.sample` and building a `n_bootstrap × n_units` DataFrame in memory
+  before any lazy plan ran. It is replaced by `_lazy_resample`, a
+  position-independent hash-expression draw over a lazy `pl.int_range` skeleton
+  (`hash(slot, seed) % stratum_size`), so the whole bootstrap — draw included —
+  runs as one streaming plan and the intermediate frame never leaves the engine.
+  The only materialization is an `O(1)` scalar collect of the base-unit count.
+  `bootstrap_froc_auc` / `bootstrap_lroc_auc` / `bootstrap_pr_auc` inherit this;
+  `bootstrap_pr_auc` also dropped the two eager `collect()`s it did on the source
+  frames.
+- **The draw is invariant to the runtime thread count.** Because each draw is a
+  hash of its own global slot id (never of row position), a given `seed` yields a
+  bit-identical confidence interval regardless of `POLARS_MAX_THREADS` or how the
+  streaming engine morselizes — closing the join-order nondeterminism the old
+  path fought (it once produced negative AUCs on macOS CI).
+- **`MetricResult.bootstrap_ci` (PR/Confusion) is vectorized.** The sequential
+  per-replicate reconstruct loop (a full collect per replicate per metric) is
+  gone; one shared lazy resample feeds `_bootstrap_grouped`, which computes each
+  metric grouped by `bootstrap_id` in a single plan. `bootstrap_ci(metric="auc")`
+  is now bit-identical to `bootstrap_pr_auc` (same stratified resample, same
+  all-points estimator, read from the shared `all_points_ap_by_group` /
+  `threshold_counts_by_group` authorities). Supported metrics: `auc`
+  (`all_points`), `precision_at`, `recall_at`; any other method raises rather
+  than silently degrading.
+
+### Removed
+
+- **`MetricResult._reconstruct` (and the PR override).** It rebuilt and collected
+  a whole result per replicate; the vectorized `_bootstrap_grouped` hook replaces
+  it. Guarded by `test_removed_surfaces.py::test_bootstrap_reconstruct_hook_is_gone`.
+
+### Note
+
+- The lazy sampler changes the RNG *stream*: a given `seed` no longer reproduces
+  the pre-lazy `pl.Series.sample` draw values (it reproduces its own draws
+  bit-for-bit, on every platform and thread count). `seed=None` is now
+  deterministic (a fixed hash constant) rather than a fresh draw each run.
+
 ## [0.24.0] — 2026-09-03
 
 ### Changed

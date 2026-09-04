@@ -10,7 +10,6 @@ import polars as pl
 from .._auc import trapz_auc
 from .._result import MetricResult
 from .._types import (
-    COL_IMAGE_ID,
     COL_IS_TP,
     COL_N_GTS,
     COL_SCORE,
@@ -109,17 +108,70 @@ class PrecisionRecallResult(MetricResult):
             raise ValueError("bootstrap_ci requires detection_table to be set.")
         return self.detection_table
 
-    def _reconstruct(self, sampled_ids: list[str]) -> PrecisionRecallResult:
-        """Rebuild a PrecisionRecallResult from bootstrap-sampled image IDs."""
-        table = self._get_detection_table()
+    def _bootstrap_grouped(
+        self,
+        boot_table: DetectionTable,
+        method: str,
+        kwargs: dict[str, object],
+    ) -> tuple[pl.LazyFrame, float]:
+        """Grouped PR metric over the resampled table, keyed by ``bootstrap_id``.
 
-        sampled_ids_lf = pl.DataFrame({COL_IMAGE_ID: sampled_ids}).lazy()
-        sampled_det = sampled_ids_lf.join(table.detections, on=COL_IMAGE_ID, how="left")
-        sampled_meta = sampled_ids_lf.join(
-            table.image_metadata, on=COL_IMAGE_ID, how="left"
+        Reads the shared lazy authorities (:func:`all_points_ap_by_group`,
+        :func:`threshold_counts_by_group`) so a replicate uses the exact
+        estimator the scalar point estimate does. Only the vectorizable PR
+        metrics are supported; anything else raises rather than silently
+        degrading.
+        """
+        det = boot_table.detections
+        meta = boot_table.image_metadata
+
+        if method == "auc":
+            ap_method = kwargs.get("method", "all_points")
+            if ap_method != "all_points":
+                raise ValueError(
+                    "bootstrap_ci vectorizes auc only for method='all_points'; "
+                    f"got {ap_method!r}."
+                )
+            gts = meta.group_by("bootstrap_id").agg(
+                total_gts=pl.col(COL_N_GTS).sum().cast(pl.Float64)
+            )
+            expanded = (
+                det.select("bootstrap_id", COL_SCORE, COL_IS_TP)
+                .drop_nulls(COL_SCORE)
+                .join(gts, on="bootstrap_id", how="left")
+            )
+            grouped = all_points_ap_by_group(expanded, group_col="bootstrap_id").rename(
+                {"ap": "auc"}
+            )
+            return grouped, 0.0
+
+        if method in ("precision_at", "recall_at"):
+            threshold = float(kwargs["threshold"])  # type: ignore[arg-type]
+            counts = threshold_counts_by_group(
+                det, meta, group_col="bootstrap_id", threshold=threshold
+            )
+            denom = pl.col("tp") + pl.col("fp")
+            if method == "precision_at":
+                value = (
+                    pl.when(denom == 0)
+                    .then(pl.lit(1.0))
+                    .otherwise(pl.col("tp") / denom)
+                )
+                empty_value = 1.0
+            else:
+                value = (
+                    pl.when(pl.col("total_gts") == 0)
+                    .then(pl.lit(0.0))
+                    .otherwise(pl.col("tp") / pl.col("total_gts"))
+                )
+                empty_value = 0.0
+            grouped = counts.select("bootstrap_id", auc=value.cast(pl.Float64))
+            return grouped, empty_value
+
+        raise ValueError(
+            f"metric {method!r} has no vectorized bootstrap form on "
+            f"{type(self).__name__}."
         )
-        sampled_table = DetectionTable.from_matched(sampled_det, sampled_meta)
-        return precision_recall_curve(sampled_table, class_id=self.class_id)
 
 
 # ---------------------------------------------------------------------------
@@ -421,3 +473,102 @@ def _eleven_point_ap(curve: pl.DataFrame) -> float:
         .collect(engine="streaming")
     )
     return float(result.item())
+
+
+# ---------------------------------------------------------------------------
+# Grouped (lazy) PR estimators — the single authority for vectorized bootstrap
+# ---------------------------------------------------------------------------
+
+
+def all_points_ap_by_group(
+    expanded: pl.LazyFrame,
+    *,
+    group_col: str,
+) -> pl.LazyFrame:
+    """All-points AP per group — the lazy authority shared by every bootstrap.
+
+    ``expanded`` carries ``[group_col, score, is_tp, total_gts]`` (one row per
+    detection, ``total_gts`` broadcast per group). The estimator is identical to
+    the scalar :func:`_all_points_ap`: sort by score within group, cumulative
+    TP/FP, the monotone decreasing precision envelope, then trapezoidal
+    integration anchored at recall = 0. Keeping the sort as the last
+    row-reordering step (nothing joins between it and the windowed ops) makes the
+    curve stable across thread counts.
+
+    Args:
+        expanded: Per-detection frame with ``group_col``, ``score``, ``is_tp``
+            and per-group ``total_gts``.
+        group_col: The grouping column (e.g. ``bootstrap_id``).
+
+    Returns:
+        ``LazyFrame`` with ``[group_col, ap]``.
+    """
+    pr = (
+        expanded.sort(group_col, COL_SCORE, descending=[False, True])
+        .with_columns(
+            cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum().over(group_col),
+            cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum().over(group_col),
+        )
+        .with_columns(
+            precision=pl.col("cum_tp")
+            / (pl.col("cum_tp") + pl.col("cum_fp")).cast(pl.Float64),
+            recall=pl.col("cum_tp").cast(pl.Float64) / pl.col("total_gts"),
+        )
+        .with_columns(
+            precision=pl.col("precision").reverse().cum_max().reverse().over(group_col),
+        )
+    )
+    return (
+        pr.with_columns(
+            d_recall=(
+                pl.col("recall") - pl.col("recall").shift(1).over(group_col)
+            ).fill_null(pl.col("recall")),
+            avg_precision=(
+                (pl.col("precision") + pl.col("precision").shift(1).over(group_col))
+                / 2.0
+            ).fill_null(pl.col("precision")),
+        )
+        .with_columns(slice_area=pl.col("d_recall") * pl.col("avg_precision"))
+        .group_by(group_col)
+        .agg(ap=pl.col("slice_area").sum())
+    )
+
+
+def threshold_counts_by_group(
+    det: pl.LazyFrame,
+    meta: pl.LazyFrame,
+    *,
+    group_col: str,
+    threshold: float,
+) -> pl.LazyFrame:
+    """Per-group ``tp``/``fp`` at a score threshold plus ``total_gts``.
+
+    The lazy, grouped counterpart of :func:`precision_at_threshold` /
+    :func:`recall_at_threshold`: one row per group (every group in ``meta``,
+    even those with no detection at or above ``threshold`` — those get
+    ``tp = fp = 0``). Callers derive precision (``1.0`` when ``tp + fp == 0``)
+    and recall (``0.0`` when ``total_gts == 0``) from the counts, matching the
+    scalar conventions.
+
+    Args:
+        det: Per-detection frame carrying ``group_col``, ``score``, ``is_tp``.
+        meta: Per-(image) metadata carrying ``group_col`` and ``n_gts``.
+        group_col: The grouping column (e.g. ``bootstrap_id``).
+        threshold: Score threshold — detections with ``score >= threshold`` count.
+
+    Returns:
+        ``LazyFrame`` with ``[group_col, tp, fp, total_gts]``.
+    """
+    counts = (
+        det.filter(pl.col(COL_SCORE) >= threshold)
+        .group_by(group_col)
+        .agg(
+            tp=pl.col(COL_IS_TP).sum().cast(pl.Int64),
+            fp=(~pl.col(COL_IS_TP)).sum().cast(pl.Int64),
+        )
+    )
+    gts = meta.group_by(group_col).agg(total_gts=pl.col(COL_N_GTS).sum().cast(pl.Int64))
+    return gts.join(counts, on=group_col, how="left").with_columns(
+        pl.col("tp").fill_null(0),
+        pl.col("fp").fill_null(0),
+    )

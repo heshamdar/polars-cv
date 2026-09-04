@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -217,7 +216,12 @@ class MetricResult:
             ValueError: If ``detection_table`` is not available or the
                 metric name is invalid.
         """
-        from ._bootstrap import _finalize, _validate_bootstrap_params
+        from ._bootstrap import (
+            _bootstrap_distribution,
+            _bootstrap_table_with_draws,
+            _finalize,
+            _resolve_bootstrap_samples,
+        )
 
         table = self._get_detection_table()
 
@@ -231,49 +235,28 @@ class MetricResult:
             multi_mode = True
             metric_specs = metric
 
-        # Resolve sampling entities and get image ID expansion
-        sample_ids, entity_to_images = _resolve_sampling_entities(table, sample_col)
-        _, strata = table.image_ids_and_strata()
+        # One lazy, streaming resample shared across every requested metric, and
+        # one per-replicate DetectionTable keyed by ``bootstrap_id``. Replaces the
+        # old sequential Python loop that reconstructed a whole result — and
+        # collected — once per replicate per metric.
+        samples = _resolve_bootstrap_samples(
+            table,
+            sample_col=sample_col,
+            n_bootstrap=n_bootstrap,
+            confidence=confidence,
+            seed=seed,
+        )
+        boot_table = _bootstrap_table_with_draws(table, samples)
 
-        _validate_bootstrap_params(n_bootstrap, confidence, sample_ids)
-
-        # Compute point estimates
-        point_estimates: dict[str, float] = {}
+        results: dict[str, BootstrapResult] = {}
         for name, spec in metric_specs.items():
             kw = {k: v for k, v in spec.items() if k != "metric"}
-            point_estimates[name] = self._resolve_metric(spec["metric"], kw)
-
-        # Bootstrap loop with shared reconstruction
-        distributions: dict[str, list[float]] = defaultdict(list)
-        ids_series = pl.Series("id", sample_ids)
-
-        for i in range(n_bootstrap):
-            iter_seed = (seed + i) if seed is not None else None
-            sampled_entities = ids_series.sample(
-                n=ids_series.len(), with_replacement=True, seed=iter_seed
-            ).to_list()
-
-            if entity_to_images is not None:
-                sampled_image_ids: list[str] = []
-                for eid in sampled_entities:
-                    sampled_image_ids.extend(entity_to_images[eid])
-            else:
-                sampled_image_ids = sampled_entities
-
-            reconstructed = self._reconstruct(sampled_image_ids)
-
-            for name, spec in metric_specs.items():
-                kw = {k: v for k, v in spec.items() if k != "metric"}
-                distributions[name].append(
-                    reconstructed._resolve_metric(spec["metric"], kw)
-                )
-
-        # Build results
-        results: dict[str, BootstrapResult] = {}
-        for name in metric_specs:
-            results[name] = _finalize(
-                distributions[name], point_estimates[name], confidence
+            grouped, empty_value = self._bootstrap_grouped(
+                boot_table, spec["metric"], kw
             )
+            distribution = _bootstrap_distribution(grouped, n_bootstrap, empty_value)
+            point = self._resolve_metric(spec["metric"], kw)
+            results[name] = _finalize(distribution, point, confidence)
 
         if multi_mode:
             return results
@@ -317,20 +300,33 @@ class MetricResult:
             f"to support bootstrap_ci."
         )
 
-    def _reconstruct(self, sampled_ids: list[str]) -> MetricResult:
-        """Reconstruct a result from bootstrap-sampled image IDs.
+    def _bootstrap_grouped(
+        self,
+        boot_table: DetectionTable,
+        method: str,
+        kwargs: dict[str, Any],
+    ) -> tuple[pl.LazyFrame, float]:
+        """Vectorized metric over a per-replicate table, keyed by ``bootstrap_id``.
 
-        Subclasses must override this to rebuild their specific result
-        type from resampled data.
+        Subclasses override this to map each bootstrap-able metric to a single
+        grouped lazy plan — replacing the old per-replicate reconstruct loop.
 
         Args:
-            sampled_ids: Image IDs sampled with replacement.
+            boot_table: The resampled ``DetectionTable`` carrying ``bootstrap_id``
+                on both frames (from ``_bootstrap_table_with_draws``).
+            method: The metric method name (as in ``_resolve_metric``).
+            kwargs: Keyword arguments for that metric.
+
+        Returns:
+            ``(grouped, empty_value)`` where ``grouped`` is a ``LazyFrame`` with
+            ``[bootstrap_id, auc]`` (one row per replicate that produced a value)
+            and ``empty_value`` fills replicates absent from ``grouped``.
 
         Raises:
             NotImplementedError: Always, unless overridden.
         """
         raise NotImplementedError(
-            f"{type(self).__name__} must implement _reconstruct() "
+            f"{type(self).__name__} must implement _bootstrap_grouped() "
             f"to support bootstrap_ci."
         )
 

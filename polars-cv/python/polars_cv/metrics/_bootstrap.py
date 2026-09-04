@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Callable
 
 import polars as pl
 
-from ._types import COL_IMAGE_ID, COL_IS_TP, COL_N_GTS, COL_SCORE
+from ._types import COL_GT_LABEL, COL_IMAGE_ID, COL_IS_TP, COL_N_GTS, COL_SCORE
 
 if TYPE_CHECKING:
     from ._types import DetectionTable
@@ -114,9 +114,10 @@ def bootstrap_pr_auc(
 ) -> BootstrapResult:
     """Vectorized bootstrap for precision-recall AUC.
 
-    Generates all bootstrap samples as a single DataFrame, joins with the
-    detection table, and computes AP per bootstrap iteration using Polars
-    window functions -- all in one lazy plan.
+    Generates the resample as a lazy hash-expression frame (``_lazy_resample``),
+    joins it with the detection table, and computes all-points AP per bootstrap
+    iteration via the shared ``all_points_ap_by_group`` authority -- one
+    streaming plan, no eager collect of the source frames.
 
     Args:
         table: Canonical detection table.
@@ -128,29 +129,30 @@ def bootstrap_pr_auc(
     Returns:
         ``BootstrapResult`` with percentile confidence interval.
     """
-    image_ids, strata = table.image_ids_and_strata()
-    _validate_bootstrap_params(n_bootstrap, confidence, image_ids)
+    # Sampling base is the (unfiltered) image population, stratified by gt_label;
+    # detections / gts below come from the class-filtered table.
+    base = table.image_metadata.select(COL_IMAGE_ID, COL_GT_LABEL).unique()
 
     if class_id is not None:
         table = table.filter_class(class_id)
 
     from ._metrics._precision_recall import average_precision
 
-    point = average_precision(table, class_id=class_id)
+    point = average_precision(table)
 
-    samples_df = _generate_bootstrap_samples(
-        image_ids=image_ids,
-        strata=strata,
+    samples = _lazy_resample(
+        base,
+        unit_col=COL_IMAGE_ID,
         n_bootstrap=n_bootstrap,
+        confidence=confidence,
         seed=seed,
+        strata_col=COL_GT_LABEL,
     )
 
-    # Get total GTs per bootstrap by joining with metadata
-    meta_df = table.image_metadata.collect(engine="streaming")
+    # Get total GTs per bootstrap by joining with metadata (lazy throughout).
     boot_gts = (
-        samples_df.lazy()
-        .join(
-            meta_df.lazy().select(COL_IMAGE_ID, COL_N_GTS),
+        samples.join(
+            table.image_metadata.select(COL_IMAGE_ID, COL_N_GTS),
             on=COL_IMAGE_ID,
             how="left",
         )
@@ -168,11 +170,9 @@ def bootstrap_pr_auc(
     # nondeterministically across platforms (e.g. it silently yielded
     # negative AUCs on macOS CI). Keeping the sort as the last row-reordering
     # step guarantees a stable, correct curve everywhere.
-    det_df = table.detections.collect(engine="streaming")
     expanded = (
-        samples_df.lazy()
-        .join(
-            det_df.lazy().select(COL_IMAGE_ID, COL_SCORE, COL_IS_TP),
+        samples.join(
+            table.detections.select(COL_IMAGE_ID, COL_SCORE, COL_IS_TP),
             on=COL_IMAGE_ID,
             how="left",
         )
@@ -180,59 +180,15 @@ def bootstrap_pr_auc(
         .join(boot_gts, on="bootstrap_id", how="left")
     )
 
-    # Compute PR curve per bootstrap: sort by score, cumulative TP/FP, then
-    # the same monotone precision envelope average_precision applies (the
-    # point estimate's estimator), then trapezoidal AUC via diff + product.
-    pr_per_boot = (
-        expanded.sort("bootstrap_id", COL_SCORE, descending=[False, True])
-        .with_columns(
-            cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum().over("bootstrap_id"),
-            cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum().over("bootstrap_id"),
-        )
-        .with_columns(
-            precision=pl.col("cum_tp")
-            / (pl.col("cum_tp") + pl.col("cum_fp")).cast(pl.Float64),
-            recall=pl.col("cum_tp").cast(pl.Float64) / pl.col("total_gts"),
-        )
-        # Monotone decreasing envelope per replicate (reverse, cum_max,
-        # reverse back) — mirrors `_all_points_ap` so every replicate uses
-        # the same estimator as the point estimate.
-        .with_columns(
-            precision=pl.col("precision")
-            .reverse()
-            .cum_max()
-            .reverse()
-            .over("bootstrap_id"),
-        )
-    )
+    # Per-bootstrap all-points AP via the shared lazy authority (same estimator
+    # as the scalar point estimate). A replicate with no detections is absent
+    # from the grouped result and filled with AP = 0.
+    from ._metrics._precision_recall import all_points_ap_by_group
 
-    # Trapezoidal AUC per bootstrap_id using shift + diff
-    auc_per_boot = (
-        pr_per_boot.with_columns(
-            # Anchor the first point at recall = 0 (fill_null with the current
-            # recall so the first slice width is recall − 0), mirroring
-            # `_all_points_ap`.
-            d_recall=(
-                pl.col("recall") - pl.col("recall").shift(1).over("bootstrap_id")
-            ).fill_null(pl.col("recall")),
-            avg_precision=(
-                (
-                    pl.col("precision")
-                    + pl.col("precision").shift(1).over("bootstrap_id")
-                )
-                / 2.0
-            ).fill_null(pl.col("precision")),
-        )
-        .with_columns(
-            slice_area=pl.col("d_recall") * pl.col("avg_precision"),
-        )
-        .group_by("bootstrap_id")
-        .agg(ap=pl.col("slice_area").sum())
-        .sort("bootstrap_id")
-        .collect(engine="streaming")
+    auc_lf = all_points_ap_by_group(expanded, group_col="bootstrap_id").rename(
+        {"ap": "auc"}
     )
-
-    distribution = auc_per_boot["ap"].to_list()
+    distribution = _bootstrap_distribution(auc_lf, n_bootstrap, 0.0)
     return _finalize(distribution, point, confidence)
 
 
@@ -248,52 +204,56 @@ def _resolve_bootstrap_samples(
     n_bootstrap: int,
     confidence: float,
     seed: int | None,
-) -> pl.DataFrame:
-    """Seeded ``(bootstrap_id, image_id)`` resample frame, image- or entity-level.
+) -> pl.LazyFrame:
+    """Seeded, lazy ``(bootstrap_id, image_id)`` resample frame.
 
-    With ``sample_col`` set, entities (e.g. ``case_id``) are resampled and
-    expanded to their images, matching ``MetricResult.bootstrap_ci``'s
-    entity-level sampling; otherwise images are resampled directly. Sample ids
-    are sorted so a given seed is reproducible (``image_ids_and_strata`` reads an
-    unstable ``.unique()`` order).
+    Image-level (``sample_col is None``) resamples images directly, stratified by
+    ``gt_label``. Entity-level (``sample_col`` set, e.g. ``case_id``) resamples
+    entities and expands each drawn entity to its images — the expansion map is
+    built lazily (``group_by``/``explode``), never as a Python dict. The whole
+    frame is a ``LazyFrame`` so the caller collects once at the streaming
+    boundary.
     """
-    from ._result import _resolve_sampling_entities
+    if sample_col is None:
+        base = table.image_metadata.select(COL_IMAGE_ID, COL_GT_LABEL).unique()
+        return _lazy_resample(
+            base,
+            unit_col=COL_IMAGE_ID,
+            n_bootstrap=n_bootstrap,
+            confidence=confidence,
+            seed=seed,
+            strata_col=COL_GT_LABEL,
+        )
 
-    _, strata = table.image_ids_and_strata()
-    sample_ids, entity_to_images = _resolve_sampling_entities(table, sample_col)
-    sample_ids = sorted(sample_ids)
-    _validate_bootstrap_params(n_bootstrap, confidence, sample_ids)
-
-    samples = _generate_bootstrap_samples(
-        image_ids=sample_ids,
-        strata=(strata if sample_col is None else None),
+    # Entity-level: resample entities (unstratified), then expand to images.
+    entity = pl.col(sample_col).cast(pl.String).alias("_entity")
+    base = table.image_metadata.select(entity).unique()
+    ent_samples = _lazy_resample(
+        base,
+        unit_col="_entity",
         n_bootstrap=n_bootstrap,
+        confidence=confidence,
         seed=seed,
+        strata_col=None,
     )
-    if entity_to_images is None:
-        return samples
-
-    # Expand each sampled entity to its images (carrying bootstrap_id).
-    map_df = pl.DataFrame(
-        {
-            "_entity": list(entity_to_images.keys()),
-            COL_IMAGE_ID: list(entity_to_images.values()),
-        },
-        schema={"_entity": pl.String, COL_IMAGE_ID: pl.List(pl.String)},
+    ent_map = (
+        table.image_metadata.select(entity, COL_IMAGE_ID)
+        .unique()
+        .group_by("_entity")
+        .agg(pl.col(COL_IMAGE_ID))
     )
     return (
-        samples.rename({COL_IMAGE_ID: "_entity"})
-        .join(map_df, on="_entity", how="left")
-        # every entity maps to >=1 image, so empty_as_null is a no-op here — set
-        # it explicitly to pin the Polars-2.0 behaviour and silence the warning.
+        ent_samples.join(ent_map, on="_entity", how="left")
+        # every entity maps to >=1 image, so empty_as_null is a no-op — set it
+        # explicitly to pin the Polars-2.0 behaviour and silence the warning.
         .explode(COL_IMAGE_ID, empty_as_null=True)
-        .select("bootstrap_id", COL_IMAGE_ID)
+        .select("bootstrap_id", COL_IMAGE_ID, "_slot")
     )
 
 
 def _bootstrap_table_with_draws(
     table: DetectionTable,
-    samples_df: pl.DataFrame,
+    samples_df: pl.LazyFrame,
 ) -> DetectionTable:
     """Build a per-replicate ``DetectionTable`` keyed by ``bootstrap_id``.
 
@@ -301,29 +261,33 @@ def _bootstrap_table_with_draws(
     image drawn more than once within a replicate counts once per draw — the same
     reason the sequential ``_reconstruct`` renames draws. The ``bootstrap_id``
     rides along on both frames so ``froc_auc`` / ``lroc_auc`` can group by it.
+
+    ``samples_df`` is a ``LazyFrame``; the synthetic id uses a global row index,
+    so it stays unique per draw regardless of the (possibly nondeterministic)
+    row order the resample join emits — the per-replicate metric is invariant to
+    that labeling.
     """
     from ._types import DetectionTable
 
-    samples = (
-        samples_df.lazy()
-        .with_row_index("_ridx")
-        .with_columns(
-            _draw_uid=pl.col(COL_IMAGE_ID)
-            + pl.lit("#d")
-            + pl.col("_ridx").cast(pl.String)
-        )
+    # ``_slot`` is unique per image draw (image-level) and unique per
+    # (entity draw, image) (entity-level); pairing it with the base image_id
+    # yields a synthetic id that is unique per draw *and* deterministic for a
+    # given seed, so the resulting table — and every grouped metric over it — is
+    # reproducible.
+    samples = samples_df.with_columns(
+        _draw_uid=pl.col(COL_IMAGE_ID) + pl.lit("#d") + pl.col("_slot").cast(pl.String)
     )
 
     det_boot = (
         samples.join(table.detections, on=COL_IMAGE_ID, how="left")
         .drop_nulls(COL_SCORE)  # zero-detection draws contribute no rows
         .with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID))
-        .drop("_draw_uid", "_ridx")
+        .drop("_draw_uid", "_slot")
     )
     meta_boot = (
         samples.join(table.image_metadata, on=COL_IMAGE_ID, how="left")
         .with_columns(pl.col("_draw_uid").alias(COL_IMAGE_ID))
-        .drop("_draw_uid", "_ridx")
+        .drop("_draw_uid", "_slot")
     )
     return DetectionTable.from_matched(
         det_boot, meta_boot, matching_iou_threshold=table._matching_iou_threshold
@@ -496,66 +460,102 @@ def bootstrap_lroc_auc(
 # ---------------------------------------------------------------------------
 
 
-def _generate_bootstrap_samples(
+def _lazy_resample(
+    base: pl.LazyFrame,
     *,
-    image_ids: list[str],
-    strata: dict[str, str] | None,
+    unit_col: str,
     n_bootstrap: int,
+    confidence: float,
     seed: int | None,
-) -> pl.DataFrame:
-    """Generate all bootstrap sample rows as a single DataFrame.
+    strata_col: str | None = None,
+) -> pl.LazyFrame:
+    """Lazy, streaming ``(bootstrap_id, unit_col)`` resample-with-replacement frame.
 
-    Returns a DataFrame with columns ``bootstrap_id`` (Int32) and
-    ``image_id`` (String), with ``n_bootstrap * len(image_ids)`` rows.
+    Every draw is a *position-independent* hash of its global slot index, so the
+    result is bit-identical across thread counts and streaming morsels and
+    reproducible for a given ``seed`` — the same property that lets the whole
+    bootstrap run as one streaming plan instead of a Python loop over eager
+    ``pl.Series.sample`` calls. ``seed=None`` maps to a fixed constant, so lazy
+    mode is deterministic even without an explicit seed (a deliberate change from
+    the old eager path).
 
-    Uses ``pl.Series.sample()`` for Polars-native resampling.
+    Sampling is stratified within ``strata_col`` — each stratum is redrawn to its
+    own size, matching the eager path's per-stratum resampling. ``strata_col=None``
+    treats the whole frame as one stratum.
 
     Args:
-        image_ids: Base image IDs.
-        strata: Optional image->stratum mapping for stratified sampling.
-        n_bootstrap: Number of bootstrap iterations.
-        seed: Optional RNG seed.
+        base: Distinct sampling units, one row per unit (plus ``strata_col`` when
+            stratifying). Must be a ``LazyFrame``.
+        unit_col: Column naming the sampling unit (e.g. ``image_id``).
+        n_bootstrap: Number of replicates.
+        confidence: Confidence level in ``(0, 1)`` — validated here so the lazy
+            paths share one validation point.
+        seed: Optional RNG seed (``None`` → deterministic constant).
+        strata_col: Optional stratum column on ``base``.
 
     Returns:
-        DataFrame with ``bootstrap_id`` and ``image_id`` columns.
+        A ``LazyFrame`` with ``bootstrap_id`` (Int32) and ``unit_col`` (String),
+        ``n_bootstrap * n_units`` rows.
+
+    Note:
+        The draw is ``hash(slot) % stratum_size``; the modulo bias for
+        ``u64 % n`` is negligible for realistic unit counts.
     """
-    boot_ids: list[int] = []
-    img_ids: list[str] = []
+    if n_bootstrap <= 0:
+        raise ValueError("`n_bootstrap` must be > 0.")
+    if not (0.0 < confidence < 1.0):
+        raise ValueError("`confidence` must be in (0, 1).")
 
-    if strata is None:
-        ids_series = pl.Series(COL_IMAGE_ID, image_ids)
-        for b in range(n_bootstrap):
-            iter_seed = (seed + b) if seed is not None else None
-            sampled = ids_series.sample(
-                n=ids_series.len(), with_replacement=True, seed=iter_seed
-            )
-            boot_ids.extend([b] * sampled.len())
-            img_ids.extend(sampled.to_list())
-    else:
-        grouped: dict[str, list[str]] = {}
-        for iid in image_ids:
-            key = strata.get(iid, "__missing__")
-            grouped.setdefault(key, []).append(iid)
-        grouped_series = {k: pl.Series(k, v) for k, v in grouped.items()}
+    hash_seed = 0 if seed is None else int(seed)
+    strata = strata_col if strata_col is not None else "_strata"
 
-        for b in range(n_bootstrap):
-            iter_seed = (seed + b) if seed is not None else None
-            for j, (key, s) in enumerate(grouped_series.items()):
-                stratum_seed = (
-                    (iter_seed * len(grouped_series) + j)
-                    if iter_seed is not None
-                    else None
-                )
-                sampled = s.sample(n=s.len(), with_replacement=True, seed=stratum_seed)
-                boot_ids.extend([b] * sampled.len())
-                img_ids.extend(sampled.to_list())
-
-    return pl.DataFrame(
-        {
-            "bootstrap_id": pl.Series("bootstrap_id", boot_ids, dtype=pl.Int32),
-            COL_IMAGE_ID: pl.Series(COL_IMAGE_ID, img_ids, dtype=pl.String),
-        }
+    b = base
+    if strata_col is None:
+        b = b.with_columns(pl.lit(0, dtype=pl.Int32).alias("_strata"))
+    # Deterministic order (this replaces the eager path's Python `sorted()` that
+    # closed the `.unique()` order-dependence); within-stratum index + stratum
+    # size; and a global position for the slot -> stratum lookup below.
+    b = (
+        b.sort([strata, unit_col])
+        .with_columns(
+            _sidx=pl.int_range(pl.len(), dtype=pl.Int64).over(strata),
+            _s=pl.len().over(strata),
+        )
+        .with_row_index("_pos")
     )
+
+    n = int(b.select(pl.len()).collect(engine="streaming").item())
+    if n == 0:
+        raise ValueError("`image_ids` cannot be empty.")
+
+    # n_bootstrap * n draw slots as a streamable integer source.
+    slots = pl.select(
+        pl.int_range(0, n_bootstrap * n, dtype=pl.Int64).alias("_slot")
+    ).lazy()
+    slots = slots.with_columns(
+        bootstrap_id=(pl.col("_slot") // n).cast(pl.Int32),
+        _slot_pos=(pl.col("_slot") % n),
+    )
+    # Each slot inherits its base unit's stratum + stratum size, then draws a
+    # within-stratum index by hashing its own global slot id (position-free).
+    slots = slots.join(
+        b.select("_pos", strata, "_s"),
+        left_on="_slot_pos",
+        right_on="_pos",
+        how="left",
+    ).with_columns(
+        _draw=(pl.col("_slot").hash(seed=hash_seed) % pl.col("_s")).cast(pl.Int64),
+    )
+    # ``_slot`` is a globally-unique, deterministic per-draw id; it rides along so
+    # ``_bootstrap_table_with_draws`` can mint reproducible synthetic image ids
+    # (a post-hoc ``with_row_index`` over the join output would be
+    # order-nondeterministic).
+    return slots.join(
+        b.select(strata, "_sidx", unit_col),
+        left_on=[strata, "_draw"],
+        right_on=[strata, "_sidx"],
+        how="left",
+    ).select("bootstrap_id", unit_col, "_slot")
 
 
 def _validate_bootstrap_params(
