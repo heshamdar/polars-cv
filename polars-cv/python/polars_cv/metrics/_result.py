@@ -9,7 +9,6 @@ import polars as pl
 
 from ._auc import CorrectionMethod, partial_auc, trapz_auc
 from ._auc_expr import interpolate_curve_lazy
-from ._types import COL_IMAGE_ID
 
 if TYPE_CHECKING:
     from ._bootstrap import BootstrapResult
@@ -329,44 +328,3 @@ class MetricResult:
             f"{type(self).__name__} must implement _bootstrap_grouped() "
             f"to support bootstrap_ci."
         )
-
-
-# ---------------------------------------------------------------------------
-# Sampling helpers
-# ---------------------------------------------------------------------------
-
-
-def _resolve_sampling_entities(
-    table: DetectionTable,
-    sample_col: str | None,
-) -> tuple[list[str], dict[str, list[str]] | None]:
-    """Determine the sampling units and their image-ID expansion.
-
-    Args:
-        table: Detection table containing image metadata.
-        sample_col: Column name for entity-level sampling, or ``None``
-            for image-level sampling.
-
-    Returns:
-        Tuple of ``(entity_ids, entity_to_images_map | None)``.
-        When ``sample_col`` is ``None``, returns ``(image_ids, None)``
-        — each entity IS an image.
-        When ``sample_col`` is set, returns ``(unique_entity_values,
-        {entity -> [image_ids]})``.
-    """
-    if sample_col is None:
-        ids, _ = table.image_ids_and_strata()
-        return ids, None
-
-    meta_df = (
-        table.image_metadata.select(COL_IMAGE_ID, sample_col)
-        .unique()
-        .collect(engine="streaming")
-    )
-
-    entity_to_images: dict[str, list[str]] = {}
-    for row in meta_df.iter_rows(named=True):
-        entity = str(row[sample_col])
-        entity_to_images.setdefault(entity, []).append(str(row[COL_IMAGE_ID]))
-
-    return list(entity_to_images.keys()), entity_to_images

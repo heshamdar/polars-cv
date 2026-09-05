@@ -173,9 +173,12 @@ counts.to_dict()  # {'tp': 10, 'fp': 3, 'fn': 2}
 
 ## Bootstrap Confidence Intervals
 
-The FROC/LROC/PR bootstraps are vectorized (all replicates in one lazy plan) and
-seed-reproducible. Pass `sample_col` to resample at the entity level (e.g. by
-case) instead of by image.
+The FROC/LROC/PR bootstraps are **fully lazy and streaming**: the resample
+itself, not just the per-replicate metric, is a single Polars plan. The draw is a
+position-independent hash of each unit's global slot, so it never builds the
+`n_bootstrap × n_units` frame in Python — the only materialization is an `O(1)`
+scalar collect of the unit count. Pass `sample_col` to resample at the entity
+level (e.g. by case) instead of by image.
 
 ```python
 from polars_cv.metrics import (
@@ -183,6 +186,7 @@ from polars_cv.metrics import (
     bootstrap_lroc_auc,
     bootstrap_pr_auc,
     bootstrap_metric_sequential,
+    precision_recall_curve,
 )
 
 ci = bootstrap_froc_auc(table, n_bootstrap=1000, seed=42)
@@ -190,8 +194,20 @@ ci = bootstrap_froc_auc(table, n_bootstrap=1000, seed=42, sample_col="case_id")
 ci = bootstrap_lroc_auc(table, n_bootstrap=1000, seed=42)
 ci = bootstrap_pr_auc(table, n_bootstrap=1000, seed=42)
 
+# PR / confusion results carry a vectorized `bootstrap_ci` over the same lazy
+# resample. `metric="auc"` is bit-identical to `bootstrap_pr_auc`.
+pr = precision_recall_curve(table)
+ci = pr.bootstrap_ci(n_bootstrap=1000, seed=42, metric="auc")
+
 # `bootstrap_metric_sequential` remains for fully custom metric callbacks.
 ```
+
+Because each draw hashes its own slot id (never a row position), a given `seed`
+reproduces the confidence interval **bit-for-bit regardless of thread count**
+(`POLARS_MAX_THREADS`) or how the streaming engine morselizes. Reproducibility is
+against the lazy sampler's own stream — a `seed` does not reproduce the older
+eager `pl.Series.sample` draw values — and `seed=None` is now deterministic (a
+fixed constant) rather than a fresh draw each run.
 
 ## IoU Re-thresholding
 

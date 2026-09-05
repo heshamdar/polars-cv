@@ -618,31 +618,53 @@ class TestEntityLevelBootstrap:
     def test_entity_bootstrap_samples_at_entity_level(
         self, entity_detection_table: DetectionTable
     ) -> None:
-        """Entity-level bootstrap should sample entities, not individual images.
+        """Entity-level resampling draws entities, then expands to their images.
 
-        With 2 entities (case_A, case_B), each with 2 images, the bootstrap
-        should sample 2 entities (with replacement) and expand to their images.
+        With 2 entities (case_A, case_B), each with 2 images, every replicate
+        draws 2 entities (with replacement) and expands each to its 2 images —
+        4 image rows per replicate — computed as one lazy plan (never a Python
+        entity->image dict). Because a redrawn entity yields two rows carrying
+        the *same* base image ids, the per-replicate row count, not the distinct
+        image count, is what pins entity-level granularity.
         """
-        from polars_cv.metrics._result import _resolve_sampling_entities
+        from polars_cv.metrics._bootstrap import _resolve_bootstrap_samples
 
-        entities, entity_map = _resolve_sampling_entities(
-            entity_detection_table, "case_id"
+        samples = _resolve_bootstrap_samples(
+            entity_detection_table,
+            sample_col="case_id",
+            n_bootstrap=5,
+            confidence=0.95,
+            seed=42,
         )
-        assert len(entities) == 2
-        assert entity_map is not None
-        assert set(entity_map.keys()) == {"case_A", "case_B"}
-        assert set(entity_map["case_A"]) == {"a1", "a2"}
-        assert set(entity_map["case_B"]) == {"b1", "b2"}
+        assert isinstance(samples, pl.LazyFrame)
+        df = samples.collect(engine="streaming")
+        # 2 entities drawn * 2 images each = 4 image rows per replicate.
+        per_replicate = df.group_by("bootstrap_id").len()
+        assert per_replicate["len"].unique().to_list() == [4]
+        # Only ever the images that belong to the two known entities.
+        assert set(df[COL_IMAGE_ID].unique()) <= {"a1", "a2", "b1", "b2"}
 
-    def test_no_sample_col_returns_image_level(
+    def test_no_sample_col_resamples_at_image_level(
         self, entity_detection_table: DetectionTable
     ) -> None:
-        """Without sample_col, sampling is at image level (entity_map is None)."""
-        from polars_cv.metrics._result import _resolve_sampling_entities
+        """Without sample_col, resampling is at the image level.
 
-        entities, entity_map = _resolve_sampling_entities(entity_detection_table, None)
-        assert entity_map is None
-        assert len(entities) == 4
+        Each replicate draws exactly the 4 base images (with replacement),
+        stratified by ``gt_label``.
+        """
+        from polars_cv.metrics._bootstrap import _resolve_bootstrap_samples
+
+        samples = _resolve_bootstrap_samples(
+            entity_detection_table,
+            sample_col=None,
+            n_bootstrap=5,
+            confidence=0.95,
+            seed=42,
+        )
+        assert isinstance(samples, pl.LazyFrame)
+        df = samples.collect(engine="streaming")
+        per_replicate = df.group_by("bootstrap_id").len()
+        assert per_replicate["len"].unique().to_list() == [4]
 
 
 class TestMcClishCorrection:
