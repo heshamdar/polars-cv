@@ -12,7 +12,6 @@
         - class_ids
         - at_iou_threshold
         - to_per_image
-        - image_ids_and_strata
         - collect
 
 ::: polars_cv.metrics.MetricResult

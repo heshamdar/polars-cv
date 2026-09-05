@@ -322,34 +322,6 @@ class DetectionTable:
         )
         return det_df, meta_df
 
-    # ------------------------------------------------------------------
-    # Image IDs and strata (for bootstrap)
-    # ------------------------------------------------------------------
-
-    def image_ids_and_strata(
-        self,
-    ) -> tuple[list[str], dict[str, str] | None]:
-        """Extract image IDs and optional stratification mapping.
-
-        Returns:
-            Tuple of ``(image_ids, strata_dict | None)``.
-        """
-        meta_df = (
-            self._image_meta.select(COL_IMAGE_ID, COL_GT_LABEL)
-            .unique()
-            .collect(engine="streaming")
-        )
-        image_ids = [str(v) for v in meta_df[COL_IMAGE_ID].to_list()]
-        strata = {
-            str(iid): str(lbl)
-            for iid, lbl in zip(
-                meta_df[COL_IMAGE_ID].to_list(),
-                meta_df[COL_GT_LABEL].to_list(),
-                strict=True,
-            )
-        }
-        return image_ids, strata
-
 
 def ensure_columns_exist(
     columns: Sequence[str],

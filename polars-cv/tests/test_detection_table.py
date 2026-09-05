@@ -185,13 +185,6 @@ class TestDetectionTableViews:
         assert isinstance(det_df, pl.DataFrame)
         assert isinstance(meta_df, pl.DataFrame)
 
-    def test_image_ids_and_strata(self, detection_table: DetectionTable) -> None:
-        """image_ids_and_strata returns IDs and stratification dict."""
-        ids, strata = detection_table.image_ids_and_strata()
-        assert len(ids) == 2
-        assert strata is not None
-        assert len(strata) == 2
-
 
 # ---------------------------------------------------------------------------
 # The declared schema is what the matchers produce
