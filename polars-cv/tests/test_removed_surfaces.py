@@ -679,3 +679,21 @@ def test_eager_sampling_entity_resolver_is_gone() -> None:
     from polars_cv.metrics._bootstrap import _resolve_bootstrap_samples
 
     assert callable(_resolve_bootstrap_samples)
+
+
+def test_detection_table_image_ids_and_strata_is_gone() -> None:
+    """``DetectionTable.image_ids_and_strata`` (eager id + strata dict) is gone.
+
+    It collected the metadata and built a Python ``{image_id: stratum}`` dict for
+    the old eager bootstrap. Its only caller (``_resolve_sampling_entities``) was
+    removed with the lazy resampler, which stratifies inside ``_lazy_resample``
+    directly off the ``gt_label`` column — no Python-side id list or strata dict.
+    Reintroducing it would restore a materialization the streaming bootstrap has
+    no reason to pay for.
+    """
+    from polars_cv.metrics import DetectionTable
+
+    assert not hasattr(DetectionTable, "image_ids_and_strata"), (
+        "image_ids_and_strata is back — bootstrap stratification is lazy inside "
+        "_lazy_resample, not an eager image-id/strata-dict collect"
+    )

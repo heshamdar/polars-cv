@@ -48,6 +48,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   entities to images with a lazy `group_by`/`explode` instead, so nothing in the
   bootstrap flow leaves the streaming engine. Guarded by
   `test_removed_surfaces.py::test_eager_sampling_entity_resolver_is_gone`.
+- **`DetectionTable.image_ids_and_strata`** — the eager image-id list plus
+  `{image_id: stratum}` dict the old bootstrap sampled from. Its only caller was
+  `_resolve_sampling_entities` (also removed); `_lazy_resample` now stratifies
+  directly off the `gt_label` column with no Python-side id list or strata dict.
+  Guarded by
+  `test_removed_surfaces.py::test_detection_table_image_ids_and_strata_is_gone`.
 
 ### Note
 
