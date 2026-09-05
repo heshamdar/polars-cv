@@ -657,3 +657,25 @@ def test_bootstrap_reconstruct_hook_is_gone() -> None:
     # The vectorized hook is present in its place.
     assert hasattr(MetricResult, "_bootstrap_grouped")
     assert "_bootstrap_grouped" in vars(PrecisionRecallResult)
+
+
+def test_eager_sampling_entity_resolver_is_gone() -> None:
+    """``_result._resolve_sampling_entities`` (the eager entity expander) is gone.
+
+    Entity-level bootstrap once resolved its ``entity -> [image_id]`` map by
+    collecting the metadata and iterating rows in Python
+    (``_resolve_sampling_entities``). The lazy resampler builds that expansion as
+    a ``group_by``/``explode`` inside ``_resolve_bootstrap_samples`` instead, so
+    the eager helper is deleted. Reintroducing it would restore a per-row Python
+    loop that the fully-streaming bootstrap exists to avoid.
+    """
+    import polars_cv.metrics._result as result_mod
+
+    assert not hasattr(result_mod, "_resolve_sampling_entities"), (
+        "_resolve_sampling_entities is back — entity expansion must stay lazy "
+        "inside _resolve_bootstrap_samples, not an eager collect + Python loop"
+    )
+    # The lazy replacement is the way in.
+    from polars_cv.metrics._bootstrap import _resolve_bootstrap_samples
+
+    assert callable(_resolve_bootstrap_samples)

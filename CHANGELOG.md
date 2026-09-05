@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-09-05
+
 ### Changed
 
 - **Bootstrap resampling is now fully lazy and streaming.** The resample frame
@@ -40,6 +42,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **`MetricResult._reconstruct` (and the PR override).** It rebuilt and collected
   a whole result per replicate; the vectorized `_bootstrap_grouped` hook replaces
   it. Guarded by `test_removed_surfaces.py::test_bootstrap_reconstruct_hook_is_gone`.
+- **`MetricResult._resolve_sampling_entities`** — the last eager step in the
+  entity-level path. It collected the metadata and iterated rows in Python to
+  build the `entity → [image_id]` map; `_resolve_bootstrap_samples` now expands
+  entities to images with a lazy `group_by`/`explode` instead, so nothing in the
+  bootstrap flow leaves the streaming engine. Guarded by
+  `test_removed_surfaces.py::test_eager_sampling_entity_resolver_is_gone`.
 
 ### Note
 
@@ -2428,6 +2436,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.25.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.25.0
 [0.24.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.24.0
 [0.23.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.23.0
 [0.22.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.22.0

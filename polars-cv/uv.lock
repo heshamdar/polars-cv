@@ -2962,7 +2962,7 @@ wheels = [
 
 [[package]]
 name = "polars-cv"
-version = "0.24.0"
+version = "0.25.0"
 source = { editable = "." }
 dependencies = [
     { name = "graphviz" },
