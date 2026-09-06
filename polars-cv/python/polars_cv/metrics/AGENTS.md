@@ -116,10 +116,13 @@ once per draw.
 Per-group bounds are a lazy `group_by(group_keys).agg(quantile(...))` over the
 complete `groups × int_range(n_bootstrap)` grid: absent replicates are filled
 with `empty_value` (`0.0`, or `0.5` for Mann-Whitney — a resample that drew no
-detections legitimately scores that). A **degenerate group** — one with no
-positive target (`sum(gt_label) == 0`) — nulls its `ci_lower`/`ci_upper` instead
-of reporting a spurious interval, while keeping its point estimate. That single
-viability rule (needs ≥1 positive) is the one behavioral choice worth knowing.
+detections legitimately scores that). A **degenerate group** nulls its
+`ci_lower`/`ci_upper` instead of reporting a spurious interval, while keeping its
+point estimate. Viability needs ≥1 positive target (`sum(gt_label) > 0`); for the
+two-class rank statistics (`method="mann_whitney"`, threaded as
+`require_both_classes`) it additionally needs ≥1 negative, since that AUC is
+undefined without both classes. That viability rule is the one behavioral choice
+worth knowing.
 
 ## File Layout
 

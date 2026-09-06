@@ -699,6 +699,13 @@ def test_eager_bootstrap_surface_is_gone() -> None:
     assert not hasattr(PrecisionRecallResult, "_bootstrap_grouped")
     assert not hasattr(PrecisionRecallResult, "bootstrap_ci")
 
+    # The `detection_table` field existed only to feed the removed `bootstrap_ci`
+    # (via `_get_detection_table`); nothing reads it now, so it is gone too.
+    assert "detection_table" not in PrecisionRecallResult.__dataclass_fields__, (
+        "PrecisionRecallResult.detection_table is back — it fed only the removed "
+        "bootstrap_ci and is otherwise write-only"
+    )
+
     from polars_cv.metrics._metrics import _precision_recall
 
     assert not hasattr(_precision_recall, "threshold_counts_by_group"), (

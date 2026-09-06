@@ -318,6 +318,46 @@ class TestDegenerateGroups:
         assert isinstance(out, pl.LazyFrame)
         assert out.collect().height == 0  # no raise
 
+    def test_mann_whitney_requires_both_classes(self) -> None:
+        """Mann-Whitney AUC is a two-class rank statistic, undefined without both
+        classes: a group with positives but no negatives nulls its bounds, while
+        the trapezoidal path (which needs only positives) keeps them."""
+        # g1 viable (both classes); g2 has positives only (no negatives).
+        table = _table(
+            [
+                ("a", 0.9, True, "g1"),
+                ("b", 0.8, False, "g1"),
+                ("c", 0.7, True, "g1"),
+                ("d", 0.6, True, "g2"),
+                ("e", 0.5, True, "g2"),
+            ]
+        )
+        mw = (
+            froc_auc_ci_lazy(
+                table,
+                group_by="group_id",
+                n_bootstrap=50,
+                seed=1,
+                method="mann_whitney",
+            )
+            .collect()
+            .sort("group_id")
+        )
+        mw_by = {r["group_id"]: r for r in mw.iter_rows(named=True)}
+        assert mw_by["g1"]["ci_lower"] is not None
+        assert mw_by["g2"]["ci_lower"] is None  # one-class group → null under MW
+        assert mw_by["g2"]["ci_upper"] is None
+        assert mw_by["g2"]["auc"] is not None  # point still reported
+
+        # Trapezoidal only needs positives, so g2 stays viable there.
+        trap = (
+            froc_auc_ci_lazy(table, group_by="group_id", n_bootstrap=50, seed=1)
+            .collect()
+            .sort("group_id")
+        )
+        trap_by = {r["group_id"]: r for r in trap.iter_rows(named=True)}
+        assert trap_by["g2"]["ci_lower"] is not None
+
 
 class TestEntityLevel:
     """``sample_col`` resamples entities, composing with ``group_by``."""

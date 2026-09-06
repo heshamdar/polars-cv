@@ -134,6 +134,7 @@ def froc_auc_ci_lazy(
         seed=seed,
         sample_col=sample_col,
         empty_value=empty_value,
+        require_both_classes=method == "mann_whitney",
     )
 
 
@@ -199,6 +200,7 @@ def lroc_auc_ci_lazy(
         seed=seed,
         sample_col=sample_col,
         empty_value=empty_value,
+        require_both_classes=method == "mann_whitney",
     )
 
 
@@ -238,7 +240,7 @@ def average_precision_ci_lazy(
         table = table.filter_class(class_id)
 
     def metric(tbl: DetectionTable, keys: list[str]) -> pl.LazyFrame:
-        return _all_points_ap_grouped(tbl, keys).rename({"ap": "ap"})
+        return _all_points_ap_grouped(tbl, keys)
 
     return _auc_ci_lazy(
         table,
@@ -269,13 +271,15 @@ def _auc_ci_lazy(
     seed: int | None,
     sample_col: str | None,
     empty_value: float,
+    require_both_classes: bool = False,
 ) -> pl.LazyFrame:
     """Compose point estimate + per-group bootstrap quantiles into one plan.
 
     ``metric(table, keys)`` returns a lazy ``[*keys, value_col]`` frame for the
     given grouping (the shared lazy authority for this family). It is called once
     for the point estimate (``keys = group_keys``) and once per replicate
-    (``keys = [*group_keys, bootstrap_id]``).
+    (``keys = [*group_keys, bootstrap_id]``). ``require_both_classes`` tightens the
+    degeneracy rule for the two-class rank statistics (Mann-Whitney).
     """
     point = metric(table, group_keys)
 
@@ -297,6 +301,7 @@ def _auc_ci_lazy(
         n_bootstrap=n_bootstrap,
         confidence=confidence,
         empty_value=empty_value,
+        require_both_classes=require_both_classes,
     )
     return _join_point_and_ci(point, ci, group_keys, value_col)
 
@@ -310,6 +315,7 @@ def _bootstrap_ci_from_replicates(
     n_bootstrap: int,
     confidence: float,
     empty_value: float,
+    require_both_classes: bool = False,
 ) -> pl.LazyFrame:
     """Per-group percentile bounds from a per-replicate grouped-metric frame.
 
@@ -317,14 +323,20 @@ def _bootstrap_ci_from_replicates(
     replicate that produced a value). The complete group set and a per-group
     viability flag come from ``table.image_metadata``. Absent replicates are
     filled with ``empty_value`` (a resample that drew no detections legitimately
-    scores ``0.0`` / ``0.5``). A **non-viable group** — one with no positive
-    target — nulls its bounds instead of reporting a spurious interval.
+    scores ``0.0`` / ``0.5``). A **non-viable group** nulls its bounds instead of
+    reporting a spurious interval: viability needs at least one positive target,
+    and — for the two-class rank statistics (``require_both_classes``, i.e.
+    Mann-Whitney) — at least one negative as well, since the AUC is undefined
+    without both classes.
 
     Returns a ``LazyFrame`` with ``[*group_keys, ci_lower, ci_upper]``.
     """
     alpha = (1.0 - confidence) / 2.0
     meta = table.image_metadata
-    viable_expr = (pl.col(COL_GT_LABEL).cast(pl.Int64).sum() > 0).alias("_viable")
+    viable = pl.col(COL_GT_LABEL).cast(pl.Int64).sum() > 0
+    if require_both_classes:
+        viable = viable & ((~pl.col(COL_GT_LABEL)).cast(pl.Int64).sum() > 0)
+    viable_expr = viable.alias("_viable")
 
     reps = pl.LazyFrame(
         {_COL_BOOT: pl.int_range(0, n_bootstrap, dtype=pl.Int32, eager=True)}
