@@ -30,9 +30,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `O(1)` scalar collect the previous release still paid. Draws are partitioned
   within each group (a group only redraws its own units) and stratified within
   `gt_label`; an empty base or group yields no rows instead of raising.
-- **Degenerate groups null their bounds instead of raising.** A group with no
-  positive target keeps its point estimate but reports null `ci_lower`/`ci_upper`,
-  so one lazy plan spans viable and degenerate groups — no per-group `try/except`.
+- **Degenerate groups null their bounds instead of raising.** A group keeps its
+  point estimate but reports null `ci_lower`/`ci_upper`, so one lazy plan spans
+  viable and degenerate groups — no per-group `try/except`. Viability needs ≥1
+  positive target; under `method="mann_whitney"` (a two-class rank statistic) it
+  also needs ≥1 negative.
+
+### Removed
+
+- `PrecisionRecallResult.detection_table` — it existed only to feed the removed
+  `bootstrap_ci`; nothing reads it now.
 
 ## [0.25.0] — 2026-09-05
 

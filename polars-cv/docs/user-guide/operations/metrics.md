@@ -210,9 +210,10 @@ own slot id (never a row position), a given `seed` reproduces the interval
 **bit-for-bit regardless of thread count** (`POLARS_MAX_THREADS`) or streaming
 morselization, and `seed=None` is deterministic (a fixed constant). The `auc` /
 `ap` column is the deterministic point estimate; only the bounds are
-bootstrapped. A **degenerate group** (one with no positive targets) keeps its
-point estimate but reports null `ci_lower` / `ci_upper` rather than raising, so a
-single plan spans viable and degenerate groups alike.
+bootstrapped. A **degenerate group** keeps its point estimate but reports null
+`ci_lower` / `ci_upper` rather than raising, so a single plan spans viable and
+degenerate groups alike. Viability needs at least one positive target — and, for
+`method="mann_whitney"` (a two-class rank statistic), at least one negative too.
 
 ## IoU Re-thresholding
 

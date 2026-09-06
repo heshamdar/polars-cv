@@ -27,12 +27,10 @@ class PrecisionRecallResult(MetricResult):
             ``cum_tp``, ``cum_fp``.
         total_gts: Total ground-truth count for this class.
         class_id: Class this curve was computed for.
-        detection_table: The underlying ``DetectionTable`` this curve came from.
     """
 
     total_gts: int = 0
     class_id: str = DEFAULT_CLASS
-    detection_table: DetectionTable | None = None
 
     def auc(  # type: ignore[override]
         self,
@@ -144,7 +142,6 @@ def precision_recall_curve(
             curve=empty_curve,
             total_gts=total_gts,
             class_id=resolved_class,
-            detection_table=table,
         )
 
     curve = (
@@ -172,7 +169,6 @@ def precision_recall_curve(
         curve=curve,
         total_gts=total_gts,
         class_id=resolved_class,
-        detection_table=table,
     )
 
 
