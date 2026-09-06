@@ -72,10 +72,10 @@ Seed-reproducible, group-aware, and **fully lazy** — the entire bootstrap
 the caller collects. Three free functions in `_bootstrap.py` are the only way in:
 
 ```python
-froc_auc_ci_lazy(table, n_bootstrap=1000, seed=42)                    # detection AUC
-froc_auc_ci_lazy(table, group_by="group_id", seed=42)                 # per-group CI
-froc_auc_ci_lazy(table, group_by="group_id", sample_col="case_id")    # entity-level
-froc_auc_ci_lazy(table, method="mann_whitney")                        # MW AUC
+froc_auc_ci_lazy(table, n_bootstrap=1000, seed=42)  # detection AUC
+froc_auc_ci_lazy(table, group_by="group_id", seed=42)  # per-group CI
+froc_auc_ci_lazy(table, group_by="group_id", sample_col="case_id")  # entity-level
+froc_auc_ci_lazy(table, method="mann_whitney")  # MW AUC
 lroc_auc_ci_lazy(table, level="image")
 average_precision_ci_lazy(table, group_by="group_id", n_bootstrap=1000, seed=42)
 ```
