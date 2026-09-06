@@ -9,8 +9,8 @@ import pytest
 
 from polars_cv.metrics import (
     ContourMatcher,
-    bootstrap_froc_auc,
     froc_auc,
+    froc_auc_ci_lazy,
     froc_curve_lazy,
     froc_sensitivity_at_fp,
     lroc_auc,
@@ -155,7 +155,7 @@ class TestFrocMetrics:
         assert froc_curve_lazy(table).collect().height >= 1
 
     def test_froc_bootstrap_ci_runs(self) -> None:
-        """Bootstrap CI returns bounded interval and expected sample count."""
+        """Bootstrap CI returns a lazy, bounded interval."""
         matcher = ContourMatcher()
         table = matcher.match(
             _dataset(),
@@ -163,9 +163,9 @@ class TestFrocMetrics:
             gt_col="gt_mask",
             image_id_col="image_id",
         )
-        ci = bootstrap_froc_auc(table, n_bootstrap=20, seed=42)
-        assert len(ci.distribution) == 20
-        assert ci.ci_lower <= ci.ci_upper
+        ci = froc_auc_ci_lazy(table, n_bootstrap=20, seed=42).collect()
+        assert ci.height == 1
+        assert ci["ci_lower"].item() <= ci["ci_upper"].item()
 
 
 @plugin_required

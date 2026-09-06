@@ -7,6 +7,33 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **Bootstrap confidence intervals are now lazy and group-aware (breaking).**
+  The eager, scalar bootstrap API is removed — `bootstrap_froc_auc`,
+  `bootstrap_lroc_auc`, `bootstrap_pr_auc`, `bootstrap_metric_sequential`,
+  `BootstrapResult`, and `MetricResult.bootstrap_ci` (with its
+  `_bootstrap_grouped` hook and the `threshold_counts_by_group` authority) are
+  all gone. In their place are three free functions —
+  `froc_auc_ci_lazy`, `lroc_auc_ci_lazy`, `average_precision_ci_lazy` — each
+  returning a `pl.LazyFrame` `[*group_by, <metric>, ci_lower, ci_upper]` and
+  **never collecting internally**. The whole bootstrap (resample, per-replicate
+  metric, and the percentile bounds) is one Polars plan the caller collects, so a
+  CI can be built at plan time with no data present and joined onto a
+  point-metric frame instead of looping over groups in Python. Migrate
+  `bootstrap_froc_auc(t, seed=0).ci_lower` →
+  `froc_auc_ci_lazy(t, seed=0).collect()["ci_lower"].item()`, and reach for
+  `group_by=` to get one bound row per group.
+- **The resample is now genuinely collect-free.** `_lazy_resample` builds its
+  draw skeleton by cross-joining a constant-length reps frame against the base
+  units, so the per-replicate slot count is a window expression rather than the
+  `O(1)` scalar collect the previous release still paid. Draws are partitioned
+  within each group (a group only redraws its own units) and stratified within
+  `gt_label`; an empty base or group yields no rows instead of raising.
+- **Degenerate groups null their bounds instead of raising.** A group with no
+  positive target keeps its point estimate but reports null `ci_lower`/`ci_upper`,
+  so one lazy plan spans viable and degenerate groups — no per-group `try/except`.
+
 ## [0.25.0] — 2026-09-05
 
 ### Changed

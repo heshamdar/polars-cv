@@ -12,6 +12,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import polars as pl
 from detection_data import SyntheticDetectionConfig, generate_detection_dataset
+
 from polars_cv import (
     BBoxMatcher,
     ContourMatcher,
@@ -30,7 +31,7 @@ from polars_cv import (
     precision_recall_curve,
     recall_at_threshold,
 )
-from polars_cv.metrics import bootstrap_pr_auc
+from polars_cv.metrics import average_precision_ci_lazy
 from polars_cv.metrics._types import COL_CLASS_ID, COL_IMAGE_ID
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
@@ -196,16 +197,20 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
         round(average_precision(strict_table, class_id="lesion"), 4),
     )
 
-    boot = bootstrap_pr_auc(
-        contour_table,
-        n_bootstrap=args.bootstrap_samples,
-        seed=args.seed + 101,
-        class_id="lesion",
+    boot = (
+        average_precision_ci_lazy(
+            contour_table,
+            n_bootstrap=args.bootstrap_samples,
+            seed=args.seed + 101,
+            class_id="lesion",
+        )
+        .collect()
+        .row(0, named=True)
     )
     print(
         "Bootstrap AP 95% CI:",
-        f"[{boot.ci_lower:.4f}, {boot.ci_upper:.4f}]",
-        f"(point={boot.point_estimate:.4f})",
+        f"[{boot['ci_lower']:.4f}, {boot['ci_upper']:.4f}]",
+        f"(point={boot['ap']:.4f})",
     )
 
     plot_curve(
