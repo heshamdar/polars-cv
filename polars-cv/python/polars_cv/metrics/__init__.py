@@ -12,11 +12,9 @@ This module provides a layered metrics system:
 from __future__ import annotations
 
 from ._bootstrap import (
-    BootstrapResult,
-    bootstrap_froc_auc,
-    bootstrap_lroc_auc,
-    bootstrap_metric_sequential,
-    bootstrap_pr_auc,
+    average_precision_ci_lazy,
+    froc_auc_ci_lazy,
+    lroc_auc_ci_lazy,
 )
 from ._matching import BBoxMatcher, ContourMatcher, Matcher, PreMatchedAdapter
 from ._metrics import (
@@ -44,7 +42,6 @@ __all__ = [
     # Core types
     "DetectionTable",
     "MetricResult",
-    "BootstrapResult",
     # Matchers
     "Matcher",
     "ContourMatcher",
@@ -68,9 +65,8 @@ __all__ = [
     # Result types
     "ConfusionResult",
     "PrecisionRecallResult",
-    # Bootstrap
-    "bootstrap_froc_auc",
-    "bootstrap_lroc_auc",
-    "bootstrap_metric_sequential",
-    "bootstrap_pr_auc",
+    # Bootstrap confidence intervals (lazy, group-aware)
+    "froc_auc_ci_lazy",
+    "lroc_auc_ci_lazy",
+    "average_precision_ci_lazy",
 ]

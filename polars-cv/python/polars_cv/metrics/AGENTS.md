@@ -12,9 +12,9 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
 - **FROC/LROC** (expression-valued, lazy, group-aware): `froc_auc`/`lroc_auc`
   (LazyFrame, one row per group), `froc_curve_lazy`/`lroc_curve_lazy`,
   `froc_sensitivity_at_fp`/`lroc_sensitivity_at_fpf`, `froc_summary_table`
-- **Bootstrap** (vectorized, seed-reproducible): `bootstrap_froc_auc`,
-  `bootstrap_lroc_auc`, `bootstrap_pr_auc`; `bootstrap_metric_sequential` for
-  custom callbacks
+- **Bootstrap CIs** (lazy, group-aware, seed-reproducible): `froc_auc_ci_lazy`,
+  `lroc_auc_ci_lazy`, `average_precision_ci_lazy` — each returns a `LazyFrame`
+  `[*group_by, <metric>, ci_lower, ci_upper]` and never collects internally
 - **AUC integrals**: the single authority is `_auc_expr.py`
   (`trapz_auc_expr`, `partial_auc_expr`, `collapse_curve`; the weighted
   Mann-Whitney two-stage `collapse_scores` + `mann_whitney_auc_expr`; and the
@@ -37,7 +37,7 @@ Input Data → Matcher → DetectionTable → Metric function → pl.LazyFrame /
 
 1. **Matchers** (`_matching/`) convert raw data into a canonical `DetectionTable` (two lazy frames). All implement the `Matcher` protocol. `ContourMatcher.match` also accepts a pre-decoded `LazyPipelineExpr` (via `_SourceHandle`) so a caller's graph can share the decode.
 2. **FROC/LROC metric functions** (`_metrics/`) operate on `DetectionTable` and return a `pl.LazyFrame` (`froc_auc`, `froc_curve_lazy`, …) — no result object, no eager `.item()` until the caller collects. The integral is the reusable expression in `_auc_expr.py`.
-3. **PR / Confusion** still return `MetricResult` subclasses (`_result.py`) with `auc()`, `interpolate()`, `summary_table()`, `bootstrap_ci()`. The FROC/LROC curve helpers reuse `MetricResult.interpolate`/`summary_table` on a collected `*_curve_lazy` frame.
+3. **PR / Confusion** still return `MetricResult` subclasses (`_result.py`) with `auc()`, `interpolate()`, `summary_table()`. The FROC/LROC curve helpers reuse `MetricResult.interpolate`/`summary_table` on a collected `*_curve_lazy` frame. Confidence intervals are the free `*_ci_lazy` functions in `_bootstrap.py`, not a result-object method.
 
 ### DetectionTable (`_types.py`)
 
@@ -65,59 +65,61 @@ Supports IoU re-thresholding via `at_iou_threshold()`, class filtering via `filt
 - **PR**: `PrecisionRecallResult.auc(method=...)` — `"all_points"` (default, monotone
   envelope), `"11_point"`, `"trapezoidal"`. PR still uses `_auc.trapz_auc`.
 
-## Bootstrap
+## Bootstrap CIs
 
-Vectorized, seed-reproducible, and **fully lazy/streaming** — the resample
-itself, not just the per-replicate metric, is a Polars plan:
+Seed-reproducible, group-aware, and **fully lazy** — the entire bootstrap
+(resample, per-replicate metric, and the percentile bounds) is one Polars plan
+the caller collects. Three free functions in `_bootstrap.py` are the only way in:
 
 ```python
-bootstrap_froc_auc(table, n_bootstrap=1000, seed=42)  # detection AUC
-bootstrap_froc_auc(
-    table, n_bootstrap=1000, seed=42, sample_col="case_id"
-)  # entity-level
-bootstrap_froc_auc(table, method="mann_whitney")  # MW AUC
-bootstrap_lroc_auc(table, level="image")
-bootstrap_pr_auc(table, n_bootstrap=1000, seed=42)
-pr_result.bootstrap_ci(n_bootstrap=1000, seed=42, metric="auc")  # PR/Confusion
+froc_auc_ci_lazy(table, n_bootstrap=1000, seed=42)                    # detection AUC
+froc_auc_ci_lazy(table, group_by="group_id", seed=42)                 # per-group CI
+froc_auc_ci_lazy(table, group_by="group_id", sample_col="case_id")    # entity-level
+froc_auc_ci_lazy(table, method="mann_whitney")                        # MW AUC
+lroc_auc_ci_lazy(table, level="image")
+average_precision_ci_lazy(table, group_by="group_id", n_bootstrap=1000, seed=42)
 ```
+
+Each returns a `LazyFrame` `[*group_by, <metric>, ci_lower, ci_upper]`: one row
+per group (a single row when `group_by=None`). The `<metric>` column (`auc`/`ap`)
+is the deterministic point estimate — `froc_auc`/`lroc_auc`/`all_points_ap_by_group`
+grouped by the real keys — so **only the bounds are bootstrapped**. Nothing
+collects internally (`tests/test_bootstrap_ci_lazy.py` pins zero
+`pl.LazyFrame.collect` during plan construction), so a CI can be built at plan
+time with no data and joined onto a point-metric frame.
 
 ### The lazy resampler (`_lazy_resample`)
 
 Resampling is a **position-independent hash expression**, not a Python loop over
-eager `pl.Series.sample` calls: `pl.int_range(0, n_bootstrap * n)` is the draw
-skeleton, `bootstrap_id = slot // n`, and each draw is
-`hash(slot, seed) % stratum_size` mapped back to a base unit. Because the draw
-depends only on the row's own global slot id, it is **identical across thread
-counts and streaming morsels** (guarded by
-`test_bootstrap_lazy.py::TestThreadCountInvariant`) — the same property that
-removes the join-order nondeterminism the old path fought (the macOS
-negative-AUC comment in `_bootstrap.py`). Sampling is stratified within
-`gt_label` for image-level draws (each stratum redrawn to its own size) and
-unstratified for entity-level (`sample_col`), which resamples entities then
-expands to images with a lazy `group_by`/`explode`. The one materialization is
-an `O(1)` scalar collect of the base-unit count `n` (needed for the modulus);
-the `n_bootstrap × n_units` frame never leaves the streaming engine.
+eager `pl.Series.sample` calls, and it is **collect-free**: a constant-length
+reps frame (`int_range(0, n_bootstrap)`) is cross-joined against the base units,
+so the per-replicate slot count is a window (`pl.len().over("bootstrap_id")`),
+never a materialized scalar. Each draw is `hash(slot, seed) % stratum_size` where
+`slot = bootstrap_id * n_units + pos`; because it depends only on the row's own
+global slot id, it is **identical across thread counts and streaming morsels**
+(guarded by `test_bootstrap_ci_lazy.py::TestThreadCountInvariant`) — the same
+property that removes the join-order nondeterminism the old path fought (the
+macOS negative-AUC comment in `_bootstrap.py`). Draws are **partitioned within
+`group_keys`** (a group only ever redraws its own units) and **stratified within
+`gt_label`** for image-level draws (each `(group, stratum)` redrawn to its own
+size); entity-level (`sample_col`) resamples entities within group, then expands
+to images with a lazy `group_by`/`explode`. An empty base or empty group
+cross-joins to zero rows — it does **not** raise.
 
-`seed=None` maps to a fixed hash constant, so lazy mode is **deterministic even
-without an explicit seed** — a deliberate change from the old eager path, which
-gave a fresh draw each run. A given `seed` reproduces the CI bit-for-bit, but the
-draw *values* differ from the pre-lazy `pl.Series.sample` stream.
+`seed=None` maps to a fixed hash constant, so the CI is **deterministic even
+without an explicit seed**. Each draw gets a distinct synthetic `image_id` from
+its deterministic global slot (`_bootstrap_table_with_draws`) so a redraw counts
+once per draw.
 
-Each draw gets a distinct synthetic `image_id` from its deterministic global slot
-(`_bootstrap_table_with_draws`) so a redraw counts once per draw.
+### The interval (`_bootstrap_ci_from_replicates`)
 
-### `MetricResult.bootstrap_ci` — vectorized, one grouped plan
-
-`bootstrap_ci` (PR/Confusion) builds one lazy resample shared across every
-requested metric, then computes each metric grouped by `bootstrap_id` through the
-subclass `_bootstrap_grouped` hook — no per-replicate Python reconstruct loop.
-`PrecisionRecallResult` reads the shared lazy authorities
-`all_points_ap_by_group` and `threshold_counts_by_group` (in `_precision_recall.py`),
-so `bootstrap_ci(metric="auc")` is bit-identical to `bootstrap_pr_auc`. Supported
-metrics: `auc` (`method="all_points"`), `precision_at`, `recall_at`; any other
-method (including `auc` with `11_point`/`trapezoidal`) **raises** rather than
-silently degrading. `bootstrap_metric_sequential` remains the one eager path, for
-arbitrary Python metric callbacks that cannot be expressed as a grouped plan.
+Per-group bounds are a lazy `group_by(group_keys).agg(quantile(...))` over the
+complete `groups × int_range(n_bootstrap)` grid: absent replicates are filled
+with `empty_value` (`0.0`, or `0.5` for Mann-Whitney — a resample that drew no
+detections legitimately scores that). A **degenerate group** — one with no
+positive target (`sum(gt_label) == 0`) — nulls its `ci_lower`/`ci_upper` instead
+of reporting a spurious interval, while keeping its point estimate. That single
+viability rule (needs ≥1 positive) is the one behavioral choice worth knowing.
 
 ## File Layout
 
@@ -125,10 +127,10 @@ arbitrary Python metric callbacks that cannot be expressed as a grouped plan.
 metrics/
 ├── __init__.py           # Public re-exports
 ├── _types.py             # DetectionTable, column constants, schema validation
-├── _result.py            # MetricResult base (auc, bootstrap_ci, interpolate) — PR/Confusion
+├── _result.py            # MetricResult base (auc, interpolate, summary_table) — PR/Confusion
 ├── _auc.py               # eager AUC utilities kept for PR: trapz, partial, mcclish, _interp
 ├── _auc_expr.py          # the FROC/LROC integral authority: *_expr + collapse_curve
-├── _bootstrap.py         # bootstrap_{froc,lroc,pr}_auc, bootstrap_metric_sequential
+├── _bootstrap.py         # {froc_auc,lroc_auc,average_precision}_ci_lazy + lazy resampler
 ├── _matching/
 │   ├── _protocol.py      # Matcher protocol
 │   ├── _contour.py       # ContourMatcher

@@ -566,7 +566,7 @@ def test_eager_froc_lroc_result_api_is_gone() -> None:
     ``metrics._auc_expr``), so a lazy plan could not carry an AUC and grouping
     meant a Python loop. Callers use ``froc_auc(table).collect().item()`` (or
     ``froc_sensitivity_at_fp`` / ``froc_summary_table`` for the curve helpers,
-    ``bootstrap_froc_auc`` / ``bootstrap_lroc_auc`` for CIs).
+    ``froc_auc_ci_lazy`` / ``lroc_auc_ci_lazy`` for CIs).
 
     The FROC/LROC-only Mann-Whitney helpers went with them:
     ``mann_whitney_u_auc`` / ``detection_level_mann_whitney`` are now
@@ -636,27 +636,80 @@ def test_conflicting_weight_guard_is_gone() -> None:
         froc_curve_lazy(table, weight_agg=agg).collect()
 
 
-def test_bootstrap_reconstruct_hook_is_gone() -> None:
-    """``MetricResult._reconstruct`` (and the PR override) must not come back.
+def test_eager_bootstrap_surface_is_gone() -> None:
+    """The entire eager, scalar bootstrap surface is removed.
 
-    ``bootstrap_ci`` used to rebuild a whole result and collect once *per
-    replicate per metric* through ``_reconstruct``. It is now vectorized: one
-    lazy resample feeds ``_bootstrap_grouped``, which computes every replicate's
-    metric grouped by ``bootstrap_id`` in a single streaming plan. The
-    per-replicate reconstruct loop — the eager path — is deleted, so nothing
-    should reintroduce ``_reconstruct``; the vectorized hook is the way in.
+    The old CIs collapsed a lazy plan to an eager scalar ``BootstrapResult``
+    (``bootstrap_{froc,lroc,pr}_auc``, ``MetricResult.bootstrap_ci``,
+    ``bootstrap_metric_sequential``): the point estimate, the distribution and the
+    quantiles were all collected at the API boundary, and the result was one
+    ungrouped number — not joinable per group. They are replaced by the lazy,
+    group-aware ``froc_auc_ci_lazy`` / ``lroc_auc_ci_lazy`` /
+    ``average_precision_ci_lazy``, which return a ``LazyFrame`` with one
+    ``ci_lower``/``ci_upper`` row per group and never collect internally. The
+    private eager helpers (``_bootstrap_distribution``, ``_finalize``) and hooks
+    (``MetricResult._bootstrap_grouped`` / ``_reconstruct`` / ``_resolve_metric`` /
+    ``_get_detection_table``, ``PrecisionRecallResult._bootstrap_grouped``,
+    ``threshold_counts_by_group``) went with them. Reintroducing any of these
+    restores the eager collapse the lazy seam exists to remove.
     """
+    import polars_cv
+    import polars_cv.metrics as m
+
+    removed_public = [
+        "BootstrapResult",
+        "bootstrap_froc_auc",
+        "bootstrap_lroc_auc",
+        "bootstrap_pr_auc",
+        "bootstrap_metric_sequential",
+        "bootstrap_metric",
+    ]
+    for name in removed_public:
+        assert not hasattr(m, name), f"polars_cv.metrics re-exports removed {name!r}"
+        assert not hasattr(polars_cv, name), f"polars_cv re-exports removed {name!r}"
+
+    from polars_cv.metrics import _bootstrap
+
+    for name in (
+        "BootstrapResult",
+        "bootstrap_froc_auc",
+        "bootstrap_lroc_auc",
+        "bootstrap_pr_auc",
+        "bootstrap_metric_sequential",
+        "bootstrap_metric",
+        "_bootstrap_distribution",
+        "_finalize",
+        "_validate_bootstrap_params",
+    ):
+        assert not hasattr(_bootstrap, name), (
+            f"_bootstrap still defines removed {name!r}"
+        )
+
     from polars_cv.metrics._metrics._precision_recall import PrecisionRecallResult
     from polars_cv.metrics._result import MetricResult
 
-    assert not hasattr(MetricResult, "_reconstruct"), (
-        "_reconstruct is back — bootstrap_ci must vectorize via _bootstrap_grouped, "
-        "not a per-replicate reconstruct loop"
+    for hook in (
+        "_reconstruct",
+        "_bootstrap_grouped",
+        "_resolve_metric",
+        "_get_detection_table",
+        "bootstrap_ci",
+    ):
+        assert not hasattr(MetricResult, hook), f"MetricResult still defines {hook!r}"
+    assert not hasattr(PrecisionRecallResult, "_bootstrap_grouped")
+    assert not hasattr(PrecisionRecallResult, "bootstrap_ci")
+
+    from polars_cv.metrics._metrics import _precision_recall
+
+    assert not hasattr(_precision_recall, "threshold_counts_by_group"), (
+        "threshold_counts_by_group is back — it existed only for the removed "
+        "precision/recall bootstrap CI"
     )
-    assert not hasattr(PrecisionRecallResult, "_reconstruct")
-    # The vectorized hook is present in its place.
-    assert hasattr(MetricResult, "_bootstrap_grouped")
-    assert "_bootstrap_grouped" in vars(PrecisionRecallResult)
+
+    # The lazy, group-aware replacements are the only way in.
+    for name in ("froc_auc_ci_lazy", "lroc_auc_ci_lazy", "average_precision_ci_lazy"):
+        assert hasattr(m, name), f"replacement {name!r} missing from polars_cv.metrics"
+        assert hasattr(polars_cv, name), f"replacement {name!r} missing from polars_cv"
 
 
 def test_eager_sampling_entity_resolver_is_gone() -> None:

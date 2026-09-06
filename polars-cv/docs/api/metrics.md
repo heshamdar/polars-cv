@@ -23,10 +23,6 @@
         - interpolate
         - summary_table
 
-::: polars_cv.metrics.BootstrapResult
-    options:
-      show_root_heading: true
-
 ## Matchers
 
 ::: polars_cv.metrics.ContourMatcher
@@ -105,20 +101,16 @@
     options:
       show_root_heading: true
 
-## Bootstrap
+## Bootstrap confidence intervals (lazy, group-aware)
 
-::: polars_cv.metrics.bootstrap_metric_sequential
+::: polars_cv.metrics.froc_auc_ci_lazy
     options:
       show_root_heading: true
 
-::: polars_cv.metrics.bootstrap_pr_auc
+::: polars_cv.metrics.lroc_auc_ci_lazy
     options:
       show_root_heading: true
 
-::: polars_cv.metrics.bootstrap_froc_auc
-    options:
-      show_root_heading: true
-
-::: polars_cv.metrics.bootstrap_lroc_auc
+::: polars_cv.metrics.average_precision_ci_lazy
     options:
       show_root_heading: true

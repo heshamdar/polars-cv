@@ -4,7 +4,7 @@ The eager ``froc_curve``/``FROCResult`` API was removed in favour of the
 expression-valued functions here: :func:`froc_curve_lazy` (group-aware curve),
 :func:`froc_auc` (one row per group), :func:`froc_sensitivity_at_fp` and
 :func:`froc_summary_table`. Confidence intervals come from
-``bootstrap_froc_auc`` in :mod:`polars_cv.metrics._bootstrap`.
+``froc_auc_ci_lazy`` in :mod:`polars_cv.metrics._bootstrap`.
 """
 
 from __future__ import annotations

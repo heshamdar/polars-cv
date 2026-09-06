@@ -3,7 +3,7 @@
 The eager ``lroc_curve``/``LROCResult`` API was removed in favour of the
 expression-valued functions here: :func:`lroc_curve_lazy`, :func:`lroc_auc`,
 :func:`lroc_sensitivity_at_fpf`. Confidence intervals come from
-``bootstrap_lroc_auc`` in :mod:`polars_cv.metrics._bootstrap`.
+``lroc_auc_ci_lazy`` in :mod:`polars_cv.metrics._bootstrap`.
 """
 
 from __future__ import annotations

@@ -26,13 +26,14 @@ import pytest
 from polars_cv.metrics import (
     DetectionTable,
     MetricResult,
-    bootstrap_froc_auc,
-    bootstrap_lroc_auc,
+    average_precision_ci_lazy,
     froc_auc,
+    froc_auc_ci_lazy,
     froc_curve_lazy,
     froc_sensitivity_at_fp,
     froc_summary_table,
     lroc_auc,
+    lroc_auc_ci_lazy,
     lroc_curve_lazy,
     precision_recall_curve,
 )
@@ -256,9 +257,10 @@ class TestFrocBootstrapRecomputesTotalTargets:
     def test_bootstrap_sampled_total_targets(
         self, simple_detection_table: DetectionTable
     ) -> None:
-        """Bootstrap produces a full distribution over resampled replicates."""
-        ci = bootstrap_froc_auc(simple_detection_table, n_bootstrap=10, seed=42)
-        assert len(ci.distribution) == 10
+        """Bootstrap produces a valid CI over resampled replicates."""
+        ci = froc_auc_ci_lazy(simple_detection_table, n_bootstrap=10, seed=42).collect()
+        assert ci.height == 1
+        assert ci["ci_lower"].item() <= ci["auc"].item() <= ci["ci_upper"].item()
 
 
 # ---------------------------------------------------------------------------
@@ -530,38 +532,46 @@ class TestMannWhitneyBootstrap:
 
     def test_froc_mw_bootstrap(self, simple_detection_table: DetectionTable) -> None:
         """Bootstrap CI for FROC MW-U detection-level runs and is valid."""
-        ci = bootstrap_froc_auc(
+        ci = froc_auc_ci_lazy(
             simple_detection_table,
             n_bootstrap=10,
             seed=42,
             method="mann_whitney",
+        ).collect()
+        assert ci.height == 1
+        lo, hi, auc = (
+            ci["ci_lower"].item(),
+            ci["ci_upper"].item(),
+            ci["auc"].item(),
         )
-        assert len(ci.distribution) == 10
-        assert ci.ci_lower <= ci.ci_upper
-        assert 0.0 <= ci.point_estimate <= 1.0
+        assert lo <= hi
+        assert 0.0 <= auc <= 1.0
 
     def test_lroc_mw_bootstrap(self, simple_detection_table: DetectionTable) -> None:
         """Bootstrap CI for LROC MW-U image-level runs and is valid."""
-        ci = bootstrap_lroc_auc(
+        ci = lroc_auc_ci_lazy(
             simple_detection_table,
             n_bootstrap=10,
             seed=42,
             method="mann_whitney",
             level="image",
+        ).collect()
+        assert ci.height == 1
+        lo, hi, auc = (
+            ci["ci_lower"].item(),
+            ci["ci_upper"].item(),
+            ci["auc"].item(),
         )
-        assert len(ci.distribution) == 10
-        assert ci.ci_lower <= ci.ci_upper
-        assert 0.0 <= ci.point_estimate <= 1.0
+        assert lo <= hi
+        assert 0.0 <= auc <= 1.0
 
-    def test_single_metric_returns_bootstrap_result(
+    def test_ci_lazy_returns_lazyframe(
         self, simple_detection_table: DetectionTable
     ) -> None:
-        """The vectorized bootstrap returns a BootstrapResult."""
-        from polars_cv.metrics._bootstrap import BootstrapResult
-
-        ci = bootstrap_froc_auc(simple_detection_table, n_bootstrap=5, seed=42)
-        assert isinstance(ci, BootstrapResult)
-        assert len(ci.distribution) == 5
+        """The public CI seam is lazy — it returns a LazyFrame, never a scalar."""
+        out = froc_auc_ci_lazy(simple_detection_table, n_bootstrap=5, seed=42)
+        assert isinstance(out, pl.LazyFrame)
+        assert out.collect().columns == ["auc", "ci_lower", "ci_upper"]
 
 
 class TestEntityLevelBootstrap:
@@ -606,14 +616,14 @@ class TestEntityLevelBootstrap:
         self, entity_detection_table: DetectionTable
     ) -> None:
         """Entity-level bootstrap with sample_col produces valid CI."""
-        ci = bootstrap_froc_auc(
+        ci = froc_auc_ci_lazy(
             entity_detection_table,
             n_bootstrap=10,
             seed=42,
             sample_col="case_id",
-        )
-        assert len(ci.distribution) == 10
-        assert ci.ci_lower <= ci.ci_upper
+        ).collect()
+        assert ci.height == 1
+        assert ci["ci_lower"].item() <= ci["ci_upper"].item()
 
     def test_entity_bootstrap_samples_at_entity_level(
         self, entity_detection_table: DetectionTable
@@ -633,7 +643,6 @@ class TestEntityLevelBootstrap:
             entity_detection_table,
             sample_col="case_id",
             n_bootstrap=5,
-            confidence=0.95,
             seed=42,
         )
         assert isinstance(samples, pl.LazyFrame)
@@ -658,7 +667,6 @@ class TestEntityLevelBootstrap:
             entity_detection_table,
             sample_col=None,
             n_bootstrap=5,
-            confidence=0.95,
             seed=42,
         )
         assert isinstance(samples, pl.LazyFrame)
@@ -874,7 +882,7 @@ class TestElevenPointApDenominator:
 
 
 # ---------------------------------------------------------------------------
-# bootstrap_pr_auc: replicates must use the same AP estimator as the point
+# average_precision_ci_lazy: replicates must use the same AP estimator as the point
 # ---------------------------------------------------------------------------
 
 
@@ -921,29 +929,28 @@ class TestBootstrapPrAucEstimatorConsistency:
         return DetectionTable.from_matched(det_df, meta_df)
 
     def test_identity_replicates_equal_point_estimate(self) -> None:
-        """With a single image, every bootstrap sample IS the full sample,
-        so every replicate value must equal the point estimate."""
-        from polars_cv.metrics._bootstrap import bootstrap_pr_auc
-
+        """With a single image, every bootstrap sample IS the full sample, so
+        the CI collapses onto the point estimate (bounds equal the point)."""
         table = self._dipping_table()
-        result = bootstrap_pr_auc(table, n_bootstrap=8, seed=7)
+        result = average_precision_ci_lazy(table, n_bootstrap=8, seed=7).collect()
 
-        assert len(result.distribution) == 8
-        for value in result.distribution:
-            assert value == pytest.approx(result.point_estimate, abs=1e-9)
+        ap = result["ap"].item()
+        assert result["ci_lower"].item() == pytest.approx(ap, abs=1e-9)
+        assert result["ci_upper"].item() == pytest.approx(ap, abs=1e-9)
 
     def test_ci_brackets_point_estimate(self) -> None:
-        from polars_cv.metrics._bootstrap import bootstrap_pr_auc
-
         table = self._dipping_table()
-        result = bootstrap_pr_auc(table, n_bootstrap=8, seed=7)
-        assert result.ci_lower <= result.point_estimate <= result.ci_upper
+        result = average_precision_ci_lazy(table, n_bootstrap=8, seed=7).collect()
+        assert (
+            result["ci_lower"].item()
+            <= result["ap"].item()
+            <= result["ci_upper"].item()
+        )
 
     def test_recall_anchor_matches_average_precision(self) -> None:
-        """bootstrap_pr_auc point estimate equals average_precision after
-        the shared recall=0 anchor fix (issue 1 paired fix)."""
+        """The CI ``ap`` point estimate equals ``average_precision`` after the
+        shared recall=0 anchor fix (issue 1 paired fix)."""
         from polars_cv.metrics import average_precision
-        from polars_cv.metrics._bootstrap import bootstrap_pr_auc
 
         det_df = pl.DataFrame(
             {
@@ -976,9 +983,9 @@ class TestBootstrapPrAucEstimatorConsistency:
         )
         table = DetectionTable.from_matched(det_df, meta_df)
         point = average_precision(table)
-        result = bootstrap_pr_auc(table, n_bootstrap=5, seed=1)
+        result = average_precision_ci_lazy(table, n_bootstrap=5, seed=1).collect()
         assert point == pytest.approx(2.0 / 3.0, abs=1e-9)
-        assert result.point_estimate == pytest.approx(point, abs=1e-9)
+        assert result["ap"].item() == pytest.approx(point, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -1363,9 +1370,9 @@ class TestFrocBootstrapCiContainsPoint:
         )
         table = DetectionTable.from_matched(det_df, meta_df)
         point = froc_auc(table).collect().item()
-        ci = bootstrap_froc_auc(table, n_bootstrap=200, seed=0)
-        assert ci.ci_lower <= point <= ci.ci_upper
-        assert max(ci.distribution) <= 1.0 + 1e-9
+        ci = froc_auc_ci_lazy(table, n_bootstrap=200, seed=0).collect()
+        assert ci["ci_lower"].item() <= point <= ci["ci_upper"].item()
+        assert ci["ci_upper"].item() <= 1.0 + 1e-9
 
         # Replica curves themselves must keep sensitivity ≤ 1.
         ids_series = pl.Series("id", image_ids)

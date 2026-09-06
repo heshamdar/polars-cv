@@ -173,41 +173,46 @@ counts.to_dict()  # {'tp': 10, 'fp': 3, 'fn': 2}
 
 ## Bootstrap Confidence Intervals
 
-The FROC/LROC/PR bootstraps are **fully lazy and streaming**: the resample
-itself, not just the per-replicate metric, is a single Polars plan. The draw is a
-position-independent hash of each unit's global slot, so it never builds the
-`n_bootstrap × n_units` frame in Python — the only materialization is an `O(1)`
-scalar collect of the unit count. Pass `sample_col` to resample at the entity
-level (e.g. by case) instead of by image.
+The FROC / LROC / PR AUC confidence intervals are **fully lazy and group-aware**.
+Each entry point returns a `pl.LazyFrame` and never collects internally — the
+whole bootstrap (resample, per-replicate metric, and the percentile bounds) is
+one Polars plan the *caller* collects. That means a CI can be built at plan time
+with no data present and joined onto a point-metric frame, one `ci_lower` /
+`ci_upper` row per group, instead of looping over groups in Python.
 
 ```python
 from polars_cv.metrics import (
-    bootstrap_froc_auc,
-    bootstrap_lroc_auc,
-    bootstrap_pr_auc,
-    bootstrap_metric_sequential,
-    precision_recall_curve,
+    average_precision_ci_lazy,
+    froc_auc_ci_lazy,
+    lroc_auc_ci_lazy,
 )
 
-ci = bootstrap_froc_auc(table, n_bootstrap=1000, seed=42)
-ci = bootstrap_froc_auc(table, n_bootstrap=1000, seed=42, sample_col="case_id")
-ci = bootstrap_lroc_auc(table, n_bootstrap=1000, seed=42)
-ci = bootstrap_pr_auc(table, n_bootstrap=1000, seed=42)
+# Ungrouped: one row [auc, ci_lower, ci_upper].
+froc_auc_ci_lazy(table, n_bootstrap=1000, seed=42).collect()
 
-# PR / confusion results carry a vectorized `bootstrap_ci` over the same lazy
-# resample. `metric="auc"` is bit-identical to `bootstrap_pr_auc`.
-pr = precision_recall_curve(table)
-ci = pr.bootstrap_ci(n_bootstrap=1000, seed=42, metric="auc")
+# Group-aware: one row per group, ready to join onto the point-metric frame.
+ci = froc_auc_ci_lazy(table, group_by="group_id", n_bootstrap=1000, seed=42)
+point = froc_auc(table, group_by="group_id")
+point.join(ci.select("group_id", "ci_lower", "ci_upper"), on="group_id").collect()
 
-# `bootstrap_metric_sequential` remains for fully custom metric callbacks.
+# Entity-level resampling (e.g. by case), composing with the grouping.
+froc_auc_ci_lazy(table, group_by="group_id", seed=42, sample_col="case_id")
+
+lroc_auc_ci_lazy(table, n_bootstrap=1000, seed=42)
+average_precision_ci_lazy(table, group_by="group_id", n_bootstrap=1000, seed=42)
 ```
 
-Because each draw hashes its own slot id (never a row position), a given `seed`
-reproduces the confidence interval **bit-for-bit regardless of thread count**
-(`POLARS_MAX_THREADS`) or how the streaming engine morselizes. Reproducibility is
-against the lazy sampler's own stream — a `seed` does not reproduce the older
-eager `pl.Series.sample` draw values — and `seed=None` is now deterministic (a
-fixed constant) rather than a fresh draw each run.
+The resample is a **position-independent hash** of each unit's global slot,
+built collect-free by cross-joining a constant-length reps frame against the
+units — so it never materializes the `n_bootstrap × n_units` frame and each group
+resamples within itself, stratified by `gt_label`. Because the draw hashes its
+own slot id (never a row position), a given `seed` reproduces the interval
+**bit-for-bit regardless of thread count** (`POLARS_MAX_THREADS`) or streaming
+morselization, and `seed=None` is deterministic (a fixed constant). The `auc` /
+`ap` column is the deterministic point estimate; only the bounds are
+bootstrapped. A **degenerate group** (one with no positive targets) keeps its
+point estimate but reports null `ci_lower` / `ci_upper` rather than raising, so a
+single plan spans viable and degenerate groups alike.
 
 ## IoU Re-thresholding
 
