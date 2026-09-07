@@ -1529,21 +1529,16 @@ class Pipeline:
                 assert dtype_enum is not None
                 new._expected_ndim = 1
                 new._output_dtype = dtype_enum.value
-            elif fmt == SourceFormat.BLOB:
-                # Blob is self-describing; dtype/ndim unknown until runtime.
-                # User may assert dtype for planning (e.g., list/array sinks).
-                new._expected_ndim = None
-                if dtype_enum is not None:
-                    new._output_dtype = dtype_enum.value
-                else:
-                    new._output_dtype = "auto"
-            elif fmt == SourceFormat.AUTO:
-                # The concrete decode path is chosen from the column dtype at
-                # runtime, so dtype/rank are not knowable here — treat like blob.
-                # For List/Array columns Rust does resolve the leaf dtype at
-                # plan-time-with-input (resolved_output_specs); a Binary/String
-                # column stays "auto" (image dtype isn't known until decode).
-                # An explicit dtype assertion still flows through for planning.
+            elif fmt in (SourceFormat.BLOB, SourceFormat.AUTO):
+                # Blob and Auto are both non-self-declaring at plan time:
+                # dtype/rank are unknown here, so an explicit dtype assertion
+                # (e.g. for list/array sinks) is the only thing that can pin
+                # them. Blob is self-describing at decode. For Auto the concrete
+                # decode path is chosen from the column dtype at runtime; for
+                # List/Array columns Rust does resolve the leaf dtype at
+                # plan-time-with-input (resolved_output_specs), while a
+                # Binary/String column stays "auto" (image dtype isn't known
+                # until decode).
                 new._expected_ndim = None
                 if dtype_enum is not None:
                     new._output_dtype = dtype_enum.value

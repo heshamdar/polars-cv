@@ -499,6 +499,10 @@ class ContourMatcher:
         *,
         pred_col: str | LazyPipelineExpr,
         gt_col: str | LazyPipelineExpr,
+        # Accepted only for `Matcher`-protocol conformance (see
+        # `_matching/_protocol.py`); ignored by contour matching, whose scores
+        # come from heatmap peaks, not a caller column. `BBoxMatcher` is the
+        # sibling that genuinely reads it.
         score_col: str | None = None,
         class_col: str | None = None,
         image_id_col: str | None = None,
@@ -521,8 +525,11 @@ class ContourMatcher:
                 ``LazyPipelineExpr`` producing the heatmap buffer.
             gt_col: Ground-truth mask column name, or a pre-decoded
                 ``LazyPipelineExpr`` producing the mask buffer.
-            score_col: Unused for contour matching (scores are derived from
-                heatmap peaks).
+            score_col: Accepted only for ``Matcher`` protocol conformance
+                (``_matching/_protocol.py``); ignored by contour matching, whose
+                scores derive from heatmap peaks rather than a caller column.
+                ``BBoxMatcher`` is the sibling matcher that genuinely requires
+                it.
             class_col: Optional class label column for multi-class metrics.
             image_id_col: Optional image identifier column (defaults to row index).
             weight_col: Optional sample weight column.
