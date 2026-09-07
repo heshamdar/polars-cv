@@ -22,7 +22,7 @@ pub enum ExprNode {
     View(ViewOp, Arc<ViewExpr>),
 
     /// Compute operation (allocating).
-    Compute(ComputeOp, Vec<Arc<ViewExpr>>),
+    Compute(ComputeOp, Arc<ViewExpr>),
 
     /// Image processing operation.
     Image(ImageOp, Arc<ViewExpr>),
@@ -109,7 +109,7 @@ impl ViewExpr {
                     let new_shape = r.infer_shape(&[&self.shape]);
                     let new_strides = self.calc_strides(&r, &new_shape);
                     Arc::new(Self {
-                        node: ExprNode::Compute(r, vec![self.clone()]),
+                        node: ExprNode::Compute(r, self.clone()),
                         shape: new_shape,
                         strides: new_strides,
                         dtype: self.dtype,
@@ -287,7 +287,7 @@ impl ViewExpr {
         };
 
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: new_shape,
             strides: new_strides,
             dtype: target,
@@ -300,7 +300,7 @@ impl ViewExpr {
         let new_strides = self.calc_strides(&op, &new_shape); // RequiresContiguous -> New Layout
 
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: new_shape,
             strides: new_strides,
             dtype: self.dtype,
@@ -314,7 +314,7 @@ impl ViewExpr {
         let new_dtype = op.resolve_output_dtype(self.dtype);
 
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: new_shape,
             strides: new_strides,
             dtype: new_dtype,
@@ -326,7 +326,7 @@ impl ViewExpr {
         let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: self.shape.clone(),
             strides: new_strides,
             dtype: new_dtype,
@@ -339,7 +339,7 @@ impl ViewExpr {
         let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: self.shape.clone(),
             strides: new_strides,
             dtype: new_dtype,
@@ -359,7 +359,7 @@ impl ViewExpr {
 
         let new_dtype = op.resolve_output_dtype(self.dtype);
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: new_shape,
             strides: new_strides,
             dtype: new_dtype,
@@ -372,7 +372,7 @@ impl ViewExpr {
         let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: self.shape.clone(),
             strides: new_strides,
             dtype: new_dtype,
@@ -385,7 +385,7 @@ impl ViewExpr {
         let new_strides = self.calc_strides(&op, &self.shape);
         let new_dtype = op.resolve_output_dtype(self.dtype);
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: self.shape.clone(),
             strides: new_strides,
             dtype: new_dtype,
@@ -398,7 +398,7 @@ impl ViewExpr {
         let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: self.shape.clone(),
             strides: new_strides,
             dtype: new_dtype,
@@ -411,7 +411,7 @@ impl ViewExpr {
         let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
-            node: ExprNode::Compute(op, vec![self.clone()]),
+            node: ExprNode::Compute(op, self.clone()),
             shape: self.shape.clone(),
             strides: new_strides,
             dtype: new_dtype,
@@ -494,10 +494,7 @@ impl ViewExpr {
         let optimized_node = match &self.node {
             ExprNode::Source(_) => return self.clone(),
             ExprNode::View(op, child) => ExprNode::View(op.clone(), child.optimize()),
-            ExprNode::Compute(op, children) => {
-                let opt_children: Vec<_> = children.iter().map(|c| c.optimize()).collect();
-                ExprNode::Compute(op.clone(), opt_children)
-            }
+            ExprNode::Compute(op, child) => ExprNode::Compute(op.clone(), child.optimize()),
             ExprNode::Image(op, child) => ExprNode::Image(op.clone(), child.optimize()),
             ExprNode::Color(op, child) => ExprNode::Color(op.clone(), child.optimize()),
             ExprNode::Filter(op, child) => ExprNode::Filter(op.clone(), child.optimize()),
@@ -515,84 +512,66 @@ impl ViewExpr {
 
             ExprNode::View(ViewOp::Transpose(p1), child) => {
                 if let ExprNode::View(ViewOp::Transpose(ref p2), ref grandchild) = &child.node {
+                    // Compose the two permutations: applying `p1` after `p2` is a
+                    // single transpose by `merged[i] = p2[p1[i]]`.
                     let merged: Vec<usize> = p1.iter().map(|&i| p2[i]).collect();
                     let is_identity = merged.iter().enumerate().all(|(i, &x)| i == x);
                     if is_identity {
                         return grandchild.clone();
-                    } else {
+                    }
+                    // Build the merged transpose through the canonical `transpose`
+                    // builder so its shape/strides are recomputed from the
+                    // grandchild's real layout, rather than copied from `self`
+                    // (whose strides described the two-transpose chain and need
+                    // not match the fused node's).
+                    return grandchild.transpose(merged);
+                }
+                self.rebuild(ExprNode::View(ViewOp::Transpose(p1), child))
+            }
+
+            ExprNode::Compute(op1, child) => {
+                // Cast optimization: eliminate redundant casts
+                if let ComputeOp::Cast(target_dtype) = &op1 {
+                    // Optimization 1: Identity cast (cast to same dtype as child)
+                    // Example: u8 input -> cast(u8) -> output
+                    // Result: eliminate the cast entirely
+                    if child.dtype == *target_dtype {
+                        return child.clone();
+                    }
+
+                    // Optimization 2: Consecutive casts (cast(A) -> cast(B) -> cast(A))
+                    // Example: cast(f32) -> cast(u8) -> cast(f32)
+                    // Result: just cast(f32)
+                    if let ExprNode::Compute(ComputeOp::Cast(_), ref grandchild) = &child.node {
+                        // Skip the intermediate cast, cast directly from grandchild
                         return Arc::new(Self {
-                            node: ExprNode::View(ViewOp::Transpose(merged), grandchild.clone()),
+                            node: ExprNode::Compute(ComputeOp::Cast(*target_dtype), grandchild.clone()),
                             shape: self.shape.clone(),
-                            // We must re-calc strides here for the optimized node in a real implementation
-                            // For prototype, reusing self fields via rebuild might be slightly inaccurate if
-                            // fusion changed layout semantics, but for Transpose fusion it should be consistent.
-                            // Ideally, optimize() returns a new clean expression with recalculated metadata.
+                            strides: self.strides.clone(),
+                            dtype: *target_dtype,
+                        });
+                    }
+                }
+
+                // Try fusing scalar operations
+                if let ExprNode::Compute(ref op2, ref grandchild) = &child.node {
+                    // Each op's lowering may depend on the dtype it would have
+                    // received unfused; the kernel's output is pinned to the
+                    // chain's planned dtype.
+                    let inner_input_dtype = grandchild.dtype;
+                    let outer_input_dtype = child.dtype;
+                    if let Some(fused) =
+                        try_fuse(&op1, op2, inner_input_dtype, outer_input_dtype, self.dtype)
+                    {
+                        return Arc::new(Self {
+                            node: ExprNode::Compute(fused, grandchild.clone()),
+                            shape: self.shape.clone(),
                             strides: self.strides.clone(),
                             dtype: self.dtype,
                         });
                     }
                 }
-                self.rebuild(ExprNode::View(ViewOp::Transpose(p1), child))
-            }
-
-            ExprNode::Compute(op1, children) => {
-                if children.len() == 1 {
-                    let child = &children[0];
-
-                    // Cast optimization: eliminate redundant casts
-                    if let ComputeOp::Cast(target_dtype) = &op1 {
-                        // Optimization 1: Identity cast (cast to same dtype as child)
-                        // Example: u8 input -> cast(u8) -> output
-                        // Result: eliminate the cast entirely
-                        if child.dtype == *target_dtype {
-                            return child.clone();
-                        }
-
-                        // Optimization 2: Consecutive casts (cast(A) -> cast(B) -> cast(A))
-                        // Example: cast(f32) -> cast(u8) -> cast(f32)
-                        // Result: just cast(f32)
-                        if let ExprNode::Compute(ComputeOp::Cast(_), ref grand_children) =
-                            &child.node
-                        {
-                            // Skip the intermediate cast, cast directly from grandchild
-                            return Arc::new(Self {
-                                node: ExprNode::Compute(
-                                    ComputeOp::Cast(*target_dtype),
-                                    grand_children.clone(),
-                                ),
-                                shape: self.shape.clone(),
-                                strides: self.strides.clone(),
-                                dtype: *target_dtype,
-                            });
-                        }
-                    }
-
-                    // Try fusing scalar operations
-                    if let ExprNode::Compute(ref op2, ref grand_children) = &child.node {
-                        if grand_children.len() == 1 {
-                            // Each op's lowering may depend on the dtype it
-                            // would have received unfused; the kernel's output
-                            // is pinned to the chain's planned dtype.
-                            let inner_input_dtype = grand_children[0].dtype;
-                            let outer_input_dtype = child.dtype;
-                            if let Some(fused) = try_fuse(
-                                &op1,
-                                op2,
-                                inner_input_dtype,
-                                outer_input_dtype,
-                                self.dtype,
-                            ) {
-                                return Arc::new(Self {
-                                    node: ExprNode::Compute(fused, grand_children.clone()),
-                                    shape: self.shape.clone(),
-                                    strides: self.strides.clone(),
-                                    dtype: self.dtype,
-                                });
-                            }
-                        }
-                    }
-                }
-                self.rebuild(ExprNode::Compute(op1, children))
+                self.rebuild(ExprNode::Compute(op1, child))
             }
 
             _ => self.rebuild(optimized_node),
@@ -627,8 +606,8 @@ impl ViewExpr {
                 plan.steps.push(PlanStep::View(op.clone()));
                 plan
             }
-            ExprNode::Compute(op, children) => {
-                let mut plan = children[0].build_plan();
+            ExprNode::Compute(op, child) => {
+                let mut plan = child.build_plan();
 
                 if op.memory_effect() == MemoryEffect::RequiresContiguous
                     && (plan_ends_in_view(&plan) || !plan.source.layout.is_contiguous())
