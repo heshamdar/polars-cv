@@ -17,6 +17,7 @@ from .._types import (
     DEFAULT_CLASS,
     DetectionTable,
 )
+from ._confusion import confusion_at_threshold
 
 
 @dataclass(frozen=True)
@@ -384,8 +385,16 @@ def f1_at_threshold(
     Returns:
         F1 value in [0, 1].
     """
-    p = precision_at_threshold(table, threshold, class_id=class_id)
-    r = recall_at_threshold(table, threshold, class_id=class_id)
+    # One confusion pass rather than precision + recall separately, which each
+    # re-derived `tp` over the identical ``detections.filter(score >= threshold)``
+    # subplan. `confusion` gives tp/fp/fn from the same filter in one place;
+    # precision and recall fall out arithmetically with the same edge cases the
+    # standalone functions use (precision 1.0 when there are no positives, recall
+    # 0.0 when there are no ground truths).
+    conf = confusion_at_threshold(table, threshold, class_id=class_id)
+    total_gts = conf.tp + conf.fn  # confusion's fn = max(total_gts - tp, 0)
+    p = 1.0 if conf.tp + conf.fp == 0 else conf.tp / (conf.tp + conf.fp)
+    r = 0.0 if total_gts == 0 else conf.tp / total_gts
     if p + r == 0.0:
         return 0.0
     return 2.0 * p * r / (p + r)
