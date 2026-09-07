@@ -907,7 +907,7 @@ mod tests {
                 );
                 assert_eq!(
                     out.dtype(),
-                    op.resolve_output_dtype(src.dtype(), None),
+                    op.resolve_output_dtype(src.dtype()),
                     "{from:?}->{to:?} execution dtype diverges from the contract"
                 );
             }

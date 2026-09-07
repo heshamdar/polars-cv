@@ -157,8 +157,6 @@ pub enum OutputDTypeRule {
     PreserveInput,
     /// Output is always a fixed dtype (e.g., always F32).
     Fixed(DType),
-    /// Default to a specific dtype, but can be overridden via out_dtype parameter.
-    Configurable(DType),
     /// Promote integers to float32, preserve float types.
     PromoteToFloat,
     /// Force output to F64 (for reductions that need precision).
@@ -258,17 +256,10 @@ impl OutputDTypeRule {
     /// source: every rule except `PreserveInput` either fixes the output or
     /// constrains it to a float, so an unknown input does not have to mean an
     /// unknown output.
-    pub fn resolve_planned(
-        &self,
-        input: PlannedDType,
-        out_dtype_override: Option<DType>,
-    ) -> PlannedDType {
-        if let Some(override_dtype) = out_dtype_override {
-            return PlannedDType::Known(override_dtype);
-        }
+    pub fn resolve_planned(&self, input: PlannedDType) -> PlannedDType {
         match (self, input) {
             // Fully known input: defer to the concrete rule.
-            (_, PlannedDType::Known(dt)) => PlannedDType::Known(self.resolve(dt, None)),
+            (_, PlannedDType::Known(dt)) => PlannedDType::Known(self.resolve(dt)),
             // Output follows an input we do not know.
             (OutputDTypeRule::PreserveInput, other) => other,
             // A float in, a float out; anything else in, f32 out. Either way a
@@ -277,21 +268,15 @@ impl OutputDTypeRule {
             // The remaining rules ignore the input entirely, so an unknown
             // input is no obstacle. U8 is an arbitrary stand-in that `resolve`
             // is documented to discard for these.
-            (rule, _) => PlannedDType::Known(rule.resolve(DType::U8, None)),
+            (rule, _) => PlannedDType::Known(rule.resolve(DType::U8)),
         }
     }
 
-    /// Resolve the output dtype given an input dtype and optional override.
-    pub fn resolve(&self, input_dtype: DType, out_dtype_override: Option<DType>) -> DType {
-        // If there's an explicit override, use it
-        if let Some(override_dtype) = out_dtype_override {
-            return override_dtype;
-        }
-
+    /// Resolve the output dtype given an input dtype.
+    pub fn resolve(&self, input_dtype: DType) -> DType {
         match self {
             OutputDTypeRule::PreserveInput => input_dtype,
             OutputDTypeRule::Fixed(dtype) => *dtype,
-            OutputDTypeRule::Configurable(default) => *default,
             OutputDTypeRule::PromoteToFloat => {
                 if matches!(input_dtype, DType::F32 | DType::F64) {
                     input_dtype
@@ -382,7 +367,6 @@ mod planned_dtype_tests {
     const EVERY_RULE: &[OutputDTypeRule] = &[
         OutputDTypeRule::PreserveInput,
         OutputDTypeRule::Fixed(DType::U8),
-        OutputDTypeRule::Configurable(DType::F32),
         OutputDTypeRule::PromoteToFloat,
         OutputDTypeRule::ForceF64,
         OutputDTypeRule::ForceI64,
@@ -398,13 +382,11 @@ mod planned_dtype_tests {
         // exact failure the lattice was added to prevent.
         for rule in EVERY_RULE {
             for &dt in EVERY_DTYPE {
-                for over in [None, Some(DType::I16)] {
-                    assert_eq!(
-                        rule.resolve_planned(PlannedDType::Known(dt), over),
-                        PlannedDType::Known(rule.resolve(dt, over)),
-                        "{rule:?} on {dt:?} with override {over:?}"
-                    );
-                }
+                assert_eq!(
+                    rule.resolve_planned(PlannedDType::Known(dt)),
+                    PlannedDType::Known(rule.resolve(dt)),
+                    "{rule:?} on {dt:?}"
+                );
             }
         }
     }
@@ -414,16 +396,16 @@ mod planned_dtype_tests {
         // The whole reason the lattice exists: an unknown input still pins the
         // output to a float, which is enough to rule out an 8-bit codec.
         assert_eq!(
-            OutputDTypeRule::PromoteToFloat.resolve_planned(PlannedDType::Unknown, None),
+            OutputDTypeRule::PromoteToFloat.resolve_planned(PlannedDType::Unknown),
             PlannedDType::SomeFloat
         );
         // Stable under repetition, and carried through by PreserveInput.
         assert_eq!(
-            OutputDTypeRule::PromoteToFloat.resolve_planned(PlannedDType::SomeFloat, None),
+            OutputDTypeRule::PromoteToFloat.resolve_planned(PlannedDType::SomeFloat),
             PlannedDType::SomeFloat
         );
         assert_eq!(
-            OutputDTypeRule::PreserveInput.resolve_planned(PlannedDType::SomeFloat, None),
+            OutputDTypeRule::PreserveInput.resolve_planned(PlannedDType::SomeFloat),
             PlannedDType::SomeFloat
         );
     }
@@ -438,8 +420,7 @@ mod planned_dtype_tests {
                 continue;
             }
             assert!(
-                rule.resolve_planned(PlannedDType::Unknown, None)
-                    .is_concrete(),
+                rule.resolve_planned(PlannedDType::Unknown).is_concrete(),
                 "{rule:?} ignores its input, so an unknown one is no obstacle"
             );
         }

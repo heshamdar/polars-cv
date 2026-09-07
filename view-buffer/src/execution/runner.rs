@@ -155,8 +155,8 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
 /// Apply normalization and cast the f32 result to the configured output dtype.
 ///
 /// Normalization always computes in f32 (see [`apply_normalize_f32`]); the
-/// `out_dtype` is the target the planner resolved from the `Configurable(F32)`
-/// rule. Casting here is what keeps the produced dtype equal to the planned
+/// `out_dtype` is the target the planner resolved from the op's `Fixed`
+/// rule (defaulting to f32). Casting here is what keeps the produced dtype equal to the planned
 /// dtype — without it the planner could declare, say, `u8` while execution
 /// emitted `f32` (a plan/execution contract violation guarded by the
 /// dtype-contract tests).

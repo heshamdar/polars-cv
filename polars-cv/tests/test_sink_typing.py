@@ -139,7 +139,7 @@ class TestDtypePreservationListSink:
         """
         Normalize outputs F32 by default, list sink should preserve Float32 as innermost type.
 
-        The normalize operation has Configurable(F32) output dtype rule.
+        The normalize operation has a Fixed output dtype rule (defaulting to F32).
         Shape is [H, W, C], so result is nested lists with Float32 innermost.
         """
         df = pl.DataFrame({"image": [simple_image_bytes]})

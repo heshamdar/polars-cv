@@ -1926,7 +1926,7 @@ class Pipeline:
         the dtype the unfused chain would have produced. An op-carried dtype
         would instead need `extract_ops` and that pinning taught about it, and
         would turn the op's ``PromoteToFloat`` rule — which preserves f64 input
-        — into a ``Configurable`` one that silently downgrades it to f32.
+        — into a fixed-dtype one that silently downgrades it to f32.
 
         A no-op cast (the op already produced ``target``) is skipped.
         """
@@ -2040,8 +2040,9 @@ class Pipeline:
             # Add out_dtype if specified. Normalization computes in f32 and
             # casts the result to this dtype at execution (so plan ==
             # production). Unlike `scale`/`clamp`, this one rides on the op:
-            # `Normalize`'s dtype rule is `Configurable(F32)`, the one rule
-            # `output_dtype_for` honours an override for, and the runner's
+            # `out_dtype` is folded into `Normalize`'s `Fixed(out_dtype)` dtype
+            # rule (defaulting to f32), so the planner resolves the right dtype
+            # straight from `output_dtype_rule()`, and the runner's
             # `apply_normalize` performs the cast.
             if out_dtype is not None:
                 out_dtype_enum = _validate_enum(out_dtype, DType, "out_dtype")

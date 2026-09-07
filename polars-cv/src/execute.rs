@@ -512,7 +512,7 @@ fn resolve_op_inner(
                 }
             };
             // Honor the configured output dtype so the produced buffer matches
-            // the planner's `Configurable(F32)` resolution (default f32). Without
+            // the planner's `Fixed(out_dtype)` resolution (default f32). Without
             // this, `normalize(out_dtype=...)` planned one dtype and executed
             // another — a plan/execution contract violation.
             let out_dtype = match params.get("out_dtype") {

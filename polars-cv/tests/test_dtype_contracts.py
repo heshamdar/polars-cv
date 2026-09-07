@@ -403,10 +403,11 @@ class TestF64ScalarOpsEndToEnd:
 class TestNormalizeOutDtypeContract:
     """normalize(out_dtype=...) must satisfy plan == production.
 
-    Regression guard for the one op with a ``Configurable`` dtype rule: the
-    planner honored ``out_dtype`` (declaring, e.g., u8) but execution built
-    ``Normalize`` with no dtype and always produced f32, so any ``out_dtype`` !=
-    f32 tripped the runtime guard ("planned <X> but execution produced Float32").
+    Regression guard for the one op with a structural ``out_dtype`` folded into
+    its dtype rule: the planner honored ``out_dtype`` (declaring, e.g., u8) but
+    execution built ``Normalize`` with no dtype and always produced f32, so any
+    ``out_dtype`` != f32 tripped the runtime guard ("planned <X> but execution
+    produced Float32").
     Execution now casts the f32 result to the configured dtype, so plan == exec.
     This closes the hole in the dtype-contract suite (it never exercised the
     ``out_dtype`` path).
@@ -499,8 +500,8 @@ class TestScalarOpOutDtypeIsHonored:
     The parameter used to be accepted, validated, serialized into the op's
     params — so it entered the op's identity and the CSE / compiled-graph cache
     key — and then read by nobody: ``resolve_op``'s arms never looked at it, and
-    ``output_dtype_for`` honours an override only for the ``Configurable`` rule,
-    which is ``normalize``'s, not theirs (``PromoteToFloat``).
+    unlike ``normalize`` (which folds ``out_dtype`` into a ``Fixed`` rule)
+    ``scale``/``clamp`` carry a ``PromoteToFloat`` rule that ignores it.
 
     That made it invisible to a plan-vs-exec test: plan and execution *agreed*,
     both reporting the promoted float. What was wrong was the value they agreed
@@ -556,7 +557,7 @@ class TestScalarOpOutDtypeIsHonored:
     def test_out_dtype_does_not_downgrade_the_default(self) -> None:
         """Omitting ``out_dtype`` must still promote-to-float, preserving f64.
 
-        The alternative fix — giving the ops a ``Configurable(F32)`` rule like
+        The alternative fix — giving the ops a fixed-f32 rule like
         ``normalize``'s — would have silently turned f64 input into f32 here.
         """
         out = self._run(lambda p: p.scale(2.0))
