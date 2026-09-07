@@ -56,7 +56,12 @@ impl ViewExpr {
     }
 
     /// Entry point for applying a serializable operation DTO (from JSON/Plugins).
-    /// Dispatches to the specific builder methods.
+    ///
+    /// This is the single construction authority: it computes the new node's
+    /// shape, strides and dtype from the op's own contract. The typed builder
+    /// methods (`grayscale`, `resize`, `cast`, …) are sugar that name an op and
+    /// delegate here, so none of them can track metadata a contract does not
+    /// declare.
     pub fn apply_op(self: &Arc<Self>, op: ViewDto) -> Arc<Self> {
         match op {
             ViewDto::View(view) => match view {
@@ -111,59 +116,34 @@ impl ViewExpr {
                     })
                 }
             },
-            ViewDto::Image(img) => match img.kind {
-                ImageOpKind::Threshold(val) => self.threshold(val),
-                ImageOpKind::Resize {
-                    width,
-                    height,
-                    filter,
-                } => self.resize(width, height, filter),
-                ImageOpKind::Blur { sigma } => self.blur(sigma),
-                ImageOpKind::Grayscale => self.grayscale(),
-                // Listed rather than `_ =>`: exhaustive, so a new ImageOpKind
-                // has to say whether it belongs here or needs its own path,
-                // instead of inheriting this one silently.
+            ViewDto::Image(img) => {
+                // The one construction path for every image op. Output metadata
+                // is derived from the op's own contract and never restated
+                // here: shape from `infer_shape`, strides from `calc_strides`
+                // (which honours the op's declared `MemoryEffect`), dtype from
+                // its `OutputDTypeRule`. The typed builders (`grayscale`,
+                // `threshold`, `resize`, `blur`, the morphology ops) are thin
+                // wrappers over this arm, so no op can track a dtype its
+                // contract does not declare.
                 //
-                // Every op below resolves the way its `Filter`
-                // and `Compute` neighbours do: shape from `infer_shape`,
-                // strides from `calc_strides` (which honours the op's declared
-                // `MemoryEffect`), dtype from the op's own
-                // `OutputDTypeRule`.
-                //
-                // Canny and HistogramEqualize used to be separate arms that
-                // hardcoded `DType::U8` and `strides: None` — a second copy of
-                // a rule `image.rs` already declares as
-                // `OutputDTypeRule::Fixed(DType::U8)`, sitting in the module
-                // the planner reads the first copy from through the FFI.
-                // Change either op's declared rule and the planner would have
-                // published one dtype while `ViewExpr` tracked another. The
-                // dtype-preserving group beside them restated `PreserveInput`
-                // the same way.
-                ImageOpKind::Canny { .. }
-                | ImageOpKind::HistogramEqualize
-                | ImageOpKind::Erode { .. }
-                | ImageOpKind::Dilate { .. }
-                | ImageOpKind::MorphGradient { .. }
-                | ImageOpKind::ResizeScale { .. }
-                | ImageOpKind::ResizeToHeight { .. }
-                | ImageOpKind::ResizeToWidth { .. }
-                | ImageOpKind::ResizeMax { .. }
-                | ImageOpKind::ResizeMin { .. }
-                | ImageOpKind::Pad { .. }
-                | ImageOpKind::PadToSize { .. }
-                | ImageOpKind::Letterbox { .. }
-                | ImageOpKind::ChannelSwap { .. } => {
-                    let new_shape = img.infer_shape(&[&self.shape]);
-                    let new_strides = self.calc_strides(&img, &new_shape);
-                    let new_dtype = img.resolve_output_dtype(self.dtype, None);
-                    Arc::new(Self {
-                        shape: new_shape,
-                        strides: new_strides,
-                        dtype: new_dtype,
-                        node: ExprNode::Image(img, self.clone()),
-                    })
-                }
-            },
+                // This used to be split: `Canny`/`HistogramEqualize` had arms
+                // hardcoding `DType::U8`, and `Grayscale`/`Threshold`/`Resize`/
+                // `Blur` routed through builders that recomputed metadata by
+                // hand — `grayscale()` hardcoded `DType::U8`, diverging from
+                // its `PreserveInput` contract on non-u8 input and silently
+                // poisoning downstream kernel fusion (a fused `invert` read the
+                // mistracked `U8` and computed `255 - x` instead of `1 - x`).
+                // One arm, one authority, removes that whole class.
+                let new_shape = img.infer_shape(&[&self.shape]);
+                let new_strides = self.calc_strides(&img, &new_shape);
+                let new_dtype = img.resolve_output_dtype(self.dtype, None);
+                Arc::new(Self {
+                    shape: new_shape,
+                    strides: new_strides,
+                    dtype: new_dtype,
+                    node: ExprNode::Image(img, self.clone()),
+                })
+            }
             ViewDto::Filter(op) => {
                 let new_shape = Op::infer_shape(&op, &[&self.shape]);
                 let new_strides = self.calc_strides(&op, &new_shape);
@@ -452,115 +432,59 @@ impl ViewExpr {
 
     // --- Image Ops ---
 
+    // The image builders below are sugar over `apply_op` — they name the op and
+    // delegate. `apply_op`'s `ViewDto::Image` arm is the single authority for
+    // output shape/strides/dtype, so a builder cannot track metadata its
+    // contract does not declare (the bug that `grayscale`/`threshold` carried
+    // when they built the node by hand and hardcoded `DType::U8`).
+
     pub fn resize(self: &Arc<Self>, width: u32, height: u32, filter: FilterType) -> Arc<Self> {
-        let op = ImageOp {
+        self.apply_op(ViewDto::Image(ImageOp {
             kind: ImageOpKind::Resize {
                 width,
                 height,
                 filter,
             },
-        };
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-
-        Arc::new(Self {
-            node: ExprNode::Image(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: self.dtype,
-        })
+        }))
     }
 
     pub fn blur(self: &Arc<Self>, sigma: f32) -> Arc<Self> {
-        let op = ImageOp {
+        self.apply_op(ViewDto::Image(ImageOp {
             kind: ImageOpKind::Blur { sigma },
-        };
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-
-        Arc::new(Self {
-            node: ExprNode::Image(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: self.dtype,
-        })
+        }))
     }
 
     pub fn threshold(self: &Arc<Self>, value: f64) -> Arc<Self> {
-        let op = ImageOp {
+        self.apply_op(ViewDto::Image(ImageOp {
             kind: ImageOpKind::Threshold(value),
-        };
-        // The kernel always materializes a fresh contiguous u8 mask, so
-        // the output strides are contiguous u8 strides — never the input's
-        // (whose element size may differ and which may be non-contiguous).
-        let new_strides = self.calc_strides(&op, &self.shape);
-
-        Arc::new(Self {
-            node: ExprNode::Image(op, self.clone()),
-            shape: self.shape.clone(),
-            strides: new_strides,
-            dtype: DType::U8,
-        })
+        }))
     }
 
     pub fn grayscale(self: &Arc<Self>) -> Arc<Self> {
-        let op = ImageOp {
+        self.apply_op(ViewDto::Image(ImageOp {
             kind: ImageOpKind::Grayscale,
-        };
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-
-        Arc::new(Self {
-            node: ExprNode::Image(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: DType::U8,
-        })
+        }))
     }
 
     /// Morphological erosion: local minimum over `ksize×ksize` neighborhood.
     pub fn erode(self: &Arc<Self>, ksize: u32, iterations: u32) -> Arc<Self> {
-        let op = ImageOp {
+        self.apply_op(ViewDto::Image(ImageOp {
             kind: ImageOpKind::Erode { ksize, iterations },
-        };
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-        Arc::new(Self {
-            node: ExprNode::Image(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: self.dtype,
-        })
+        }))
     }
 
     /// Morphological dilation: local maximum over `ksize×ksize` neighborhood.
     pub fn dilate(self: &Arc<Self>, ksize: u32, iterations: u32) -> Arc<Self> {
-        let op = ImageOp {
+        self.apply_op(ViewDto::Image(ImageOp {
             kind: ImageOpKind::Dilate { ksize, iterations },
-        };
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-        Arc::new(Self {
-            node: ExprNode::Image(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: self.dtype,
-        })
+        }))
     }
 
     /// Morphological gradient: dilate − erode (edge outline).
     pub fn morph_gradient(self: &Arc<Self>, ksize: u32) -> Arc<Self> {
-        let op = ImageOp {
+        self.apply_op(ViewDto::Image(ImageOp {
             kind: ImageOpKind::MorphGradient { ksize },
-        };
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-        Arc::new(Self {
-            node: ExprNode::Image(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: self.dtype,
-        })
+        }))
     }
 
     // --- Optimization ---
@@ -960,6 +884,18 @@ mod dtype_contract_tests {
             ImageOpKind::ChannelSwap {
                 order: vec![2, 1, 0],
             },
+            // Grayscale (`PreserveInput`) and Threshold (`Fixed(U8)`) reached
+            // `apply_op` through hand-written builders that stamped their own
+            // dtype; `grayscale()` hardcoded `U8`, diverging from the contract
+            // on non-u8 input. They now route through the same canonical block.
+            ImageOpKind::Grayscale,
+            ImageOpKind::Threshold(128.0),
+            ImageOpKind::Blur { sigma: 1.0 },
+            ImageOpKind::Resize {
+                width: 4,
+                height: 4,
+                filter: FilterType::Triangle,
+            },
         ];
 
         for dtype in [DType::U8, DType::U16, DType::F32] {
@@ -976,6 +912,85 @@ mod dtype_contract_tests {
                     applied.dtype
                 );
             }
+        }
+    }
+
+    /// The typed builders are sugar over `apply_op`, not a second construction
+    /// path: whatever dtype `apply_op` tracks for an op, the builder for that
+    /// op must track the same. This is the direct regression for the
+    /// `grayscale()`/`threshold()` hardcoded-`DType::U8` bug — a builder that
+    /// stamps its own dtype instead of routing through `apply_op` fails here.
+    #[test]
+    fn typed_builders_agree_with_apply_op() {
+        for dtype in [DType::U8, DType::U16, DType::F32] {
+            let base = ViewBuffer::from_vec_with_shape(vec![0u8; 8 * 8 * 3], vec![8, 8, 3]);
+            let source = ViewExpr::new_source(base.cast(dtype));
+
+            let cases: [(Arc<ViewExpr>, ImageOpKind); 4] = [
+                (source.grayscale(), ImageOpKind::Grayscale),
+                (source.threshold(128.0), ImageOpKind::Threshold(128.0)),
+                (
+                    source.resize(4, 4, FilterType::Triangle),
+                    ImageOpKind::Resize {
+                        width: 4,
+                        height: 4,
+                        filter: FilterType::Triangle,
+                    },
+                ),
+                (source.blur(1.0), ImageOpKind::Blur { sigma: 1.0 }),
+            ];
+
+            for (built, kind) in cases {
+                let op = ImageOp { kind: kind.clone() };
+                let expected = op.resolve_output_dtype(dtype, None);
+                assert_eq!(
+                    built.dtype, expected,
+                    "the builder for {kind:?} on {dtype:?} tracks {:?} but the \
+                     op's OutputDTypeRule resolves to {expected:?}",
+                    built.dtype
+                );
+            }
+        }
+    }
+
+    /// Fusion must not change executed values. A grayscale on f32 input feeds a
+    /// downstream fused compute block; if grayscale mistracks its dtype as `U8`,
+    /// the fused block reads `U8` as its input dtype and `invert` computes
+    /// `255 - x` instead of `1 - x`. Comparing the fused chain against the
+    /// unfused one pins the invariant without hardcoding the luminance formula.
+    #[test]
+    fn grayscale_f32_fused_chain_matches_unfused() {
+        let data: Vec<u8> = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+        let base = ViewBuffer::from_vec_with_shape(data, vec![2, 2, 3]);
+        // Normalize to [0, 1] f32, then reduce to a single grayscale channel.
+        let src = ViewExpr::new_source(base)
+            .cast(DType::F32)
+            .scale(1.0 / 255.0);
+
+        // Unfused: `invert`'s child is an Image node, so it does not fuse.
+        let unfused = src.grayscale().invert().plan().execute();
+        // Fused: the trailing `scale` makes `invert` the inner op of a fusion,
+        // whose input dtype is read from the grayscale node's tracked dtype.
+        let fused = src.grayscale().invert().scale(1.0).plan().execute();
+
+        assert_eq!(unfused.dtype(), DType::F32);
+        assert_eq!(fused.dtype(), DType::F32);
+
+        let u = unfused.as_slice::<f32>();
+        let f = fused.as_slice::<f32>();
+        assert_eq!(u.len(), f.len());
+        for (a, b) in u.iter().zip(f.iter()) {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "fusion changed the result: fused {b} != unfused {a}"
+            );
+        }
+        // The correct inverted value of normalized data is `1 - gray` in [0, 1].
+        for &a in u {
+            assert!(
+                (0.0..=1.0).contains(&a),
+                "invert on normalized f32 produced {a}, expected [0, 1]"
+            );
         }
     }
 }

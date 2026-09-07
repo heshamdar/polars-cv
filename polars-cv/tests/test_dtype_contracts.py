@@ -591,3 +591,60 @@ class TestScalarOpOutDtypeIsHonored:
         )
         vals = [row[0][0] for row in out["out"][0]]
         assert vals == [255, 0, 5], f"expected saturate/round, got {vals}"
+
+
+@plugin_required
+class TestGrayscaleFusionDtypeRegression:
+    """Grayscale must not mistrack its dtype and poison downstream fusion.
+
+    ``ViewExpr::grayscale()`` used to hardcode a tracked dtype of ``u8``,
+    contradicting its ``PreserveInput`` contract. On normalized ``f32`` data a
+    fused block after grayscale (``grayscale -> invert -> scale``) then read the
+    mistracked ``u8`` and inverted as ``255 - x`` instead of ``1 - x`` — a
+    silent, ~254-off wrong result that the (correct) published schema never
+    revealed. Fixed by making ``apply_op`` the single metadata authority.
+    """
+
+    @staticmethod
+    def _nested_f32(data: np.ndarray) -> list:
+        """A single (H, W, C) f32 array as nested Polars lists for ``list``."""
+        return data.tolist()
+
+    def test_fused_invert_after_grayscale_matches_unfused(self) -> None:
+        from polars_cv import numpy_from_struct
+
+        # 2x2x3 image already normalized to [0, 1].
+        data = np.array(
+            [
+                [[0.10, 0.20, 0.30], [0.40, 0.50, 0.60]],
+                [[0.70, 0.80, 0.90], [0.15, 0.25, 0.35]],
+            ],
+            dtype=np.float32,
+        )
+        df = pl.DataFrame({"buf": [self._nested_f32(data)]})
+
+        # Unfused: invert's operand is the grayscale (image) node, so no fusion.
+        unfused_pipe = Pipeline().source("list", dtype="f32").grayscale().invert()
+        # Fused: the trailing scale pulls invert into a fused compute block whose
+        # input dtype is read from the grayscale node's tracked dtype.
+        fused_pipe = (
+            Pipeline().source("list", dtype="f32").grayscale().invert().scale(1.0)
+        )
+
+        unfused = numpy_from_struct(
+            df.select(out=pl.col("buf").cv.pipe(unfused_pipe).sink("numpy")).row(0)[0]
+        )
+        fused = numpy_from_struct(
+            df.select(out=pl.col("buf").cv.pipe(fused_pipe).sink("numpy")).row(0)[0]
+        )
+
+        assert unfused.dtype == np.float32
+        assert fused.dtype == np.float32
+        # Fusion must not change the values.
+        np.testing.assert_allclose(fused, unfused, atol=1e-5)
+        # And the correct inverted value of normalized data is 1 - gray, in [0, 1]
+        # — not 255 - gray.
+        assert unfused.min() >= 0.0 and unfused.max() <= 1.0, (
+            f"invert on normalized f32 left [0, 1]: range "
+            f"[{unfused.min()}, {unfused.max()}]"
+        )

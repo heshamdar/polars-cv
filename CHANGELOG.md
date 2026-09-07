@@ -41,6 +41,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - `PrecisionRecallResult.detection_table` — it existed only to feed the removed
   `bootstrap_ci`; nothing reads it now.
 
+### Fixed
+
+- **`grayscale` on non-`u8` data no longer corrupts downstream kernel fusion.**
+  `ViewExpr::grayscale()` tracked its output dtype as `u8` regardless of input,
+  contradicting the op's `PreserveInput` contract. The published schema stayed
+  correct (it reads the contract over FFI), so the divergence was silent — but a
+  fused compute block after grayscale (e.g. `grayscale → invert → scale`) read
+  the mistracked `u8` and inverted normalized `f32` as `255 − x` instead of
+  `1 − x`, an off-by-254 wrong result. The four remaining image ops that still
+  routed through hand-written builders (`grayscale`, `threshold`, `resize`,
+  `blur`) are folded into `apply_op`'s single `ViewDto::Image` construction
+  arm, which derives shape/strides/dtype from each op's contract; the image
+  builders are now thin wrappers over it, so no builder can track a dtype its
+  contract does not declare. The dtype-tracking guard was extended to cover
+  `Grayscale`/`Threshold`/`Blur`/`Resize` and the builder methods, and a
+  fusion-execution regression was added.
+
 ## [0.25.0] — 2026-09-05
 
 ### Changed
