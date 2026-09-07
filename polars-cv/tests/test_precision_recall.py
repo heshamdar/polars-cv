@@ -416,17 +416,12 @@ class TestPrecisionRecallAtThreshold:
 class TestAllPointsAPAuthority:
     """The scalar ``_all_points_ap`` and grouped ``all_points_ap_by_group``.
 
-    Both implement the same monotone-envelope + anchored-trapezoid estimator.
-    They agree *exactly* on any curve with distinct scores. They *can* diverge
-    on exact score ties, because the all-points AP is tie-order-sensitive and
-    each path presents a differently ordered frame to an unstable Polars sort
-    — the tie-break, and thus the AP, is arbitrary in both. Whether a given
-    tied fixture actually diverges depends on the sort behaviour of whichever
-    Polars engine/platform runs it, so no specific fixture is guaranteed to
-    diverge everywhere. That possible divergence is the documented reason
-    CR-06 keeps them as two functions rather than folding
-    ``PrecisionRecallResult.auc`` onto the grouped path (which would change its
-    already-arbitrary tie output); see ``metrics/AGENTS.md`` and CR-30.
+    Both implement the same monotone-envelope + anchored-trapezoid estimator and
+    agree *exactly* — on distinct scores and on ties alike. CR-30 gave them a
+    shared canonical tie convention (collapse every detection sharing a score
+    into one PR point, at the cumulative counts after the whole tied block), so
+    the all-points AP no longer depends on the input row order among equal scores
+    and the two paths no longer diverge; see ``metrics/AGENTS.md`` and CR-30.
     """
 
     @staticmethod
@@ -496,23 +491,36 @@ class TestAllPointsAPAuthority:
         grouped = self._grouped_ap(scores, is_tp, float(gts))
         assert scalar == pytest.approx(grouped, abs=1e-12)
 
-    def test_tie_curve_is_valid_on_both_paths(self) -> None:
-        """On exact score ties the two paths may legitimately disagree.
+    def test_tie_handling_is_order_independent_and_the_paths_agree(self) -> None:
+        """On exact score ties both paths collapse the tie into one PR point.
 
-        Which way the tie-break falls depends on the sort implementation of
-        whichever Polars engine/platform runs it (see the class docstring),
-        so the two values are *not* pinned to differ: they coincided on
-        macOS-arm64 CI while diverging on Linux for this exact fixture. What
-        is guaranteed, and what this pins, is that both remain valid
-        all-points APs for the tied curve — see CR-30 for the eventual merge
-        of the two authorities.
+        The all-points AP used to be tie-order-sensitive and the two paths could
+        disagree (the documented CR-06 gap, which earlier only pinned that both
+        stayed valid all-points APs because the divergence was platform-
+        dependent). CR-30's canonical tie convention -- collapse detections
+        sharing a score to the cumulative counts after the whole tied block --
+        makes the AP independent of the row order among equal scores and makes
+        the scalar and grouped authorities agree exactly.
         """
         scores = [0.5, 0.5, 0.5, 0.5]
         is_tp = [True, False, True, False]
+        # Same score multiset, tied rows permuted -- must not change the AP.
+        permuted_is_tp = [False, True, False, True]
+
         scalar = self._scalar_ap(scores, is_tp, 4)
         grouped = self._grouped_ap(scores, is_tp, 4.0)
+        # Both remain valid all-points APs...
         assert 0.0 <= scalar <= 1.0
         assert 0.0 <= grouped <= 1.0
+        # ...and now agree exactly on the tied curve.
+        assert scalar == pytest.approx(grouped, abs=1e-12)
+        # And the value is invariant to the input order among the tied scores.
+        assert self._scalar_ap(scores, permuted_is_tp, 4) == pytest.approx(
+            scalar, abs=1e-12
+        )
+        assert self._grouped_ap(scores, permuted_is_tp, 4.0) == pytest.approx(
+            grouped, abs=1e-12
+        )
 
 
 class TestConfusionAtThreshold:

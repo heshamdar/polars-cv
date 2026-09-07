@@ -9,6 +9,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **All-points AP is now independent of input row order on tied scores.**
+  The all-points average precision (`average_precision(...,
+  interpolation="all_points")`, `PrecisionRecallResult.auc("all_points")`,
+  `mean_average_precision`, `all_points_ap_by_group`, and the `*_ap` bootstraps)
+  now applies a canonical tie convention: detections that share a score collapse
+  into a single precision–recall point, using the cumulative TP/FP after the
+  whole tied block (the scikit-learn / COCO convention). Previously the curve
+  visited tied detections in input row order, so the AP — and the
+  `PrecisionRecallResult.curve` — could differ between runs that shuffled equal-
+  scored rows. **This changes AP output on inputs with tied scores** (values with
+  strictly distinct scores are unaffected). It also makes the scalar and grouped
+  estimators agree exactly on ties.
+
 - **Bootstrap confidence intervals are now lazy and group-aware (breaking).**
   The eager, scalar bootstrap API is removed — `bootstrap_froc_auc`,
   `bootstrap_lroc_auc`, `bootstrap_pr_auc`, `bootstrap_metric_sequential`,
