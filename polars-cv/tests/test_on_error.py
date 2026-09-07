@@ -69,7 +69,7 @@ class TestOnErrorRaise:
         df = pl.DataFrame({"img": [b"not a valid image"]})
         pipe = Pipeline().source("image_bytes").grayscale()
         expr = pl.col("img").cv.pipe(pipe).sink("png")
-        with pytest.raises(Exception):
+        with pytest.raises(pl.exceptions.ComputeError):
             df.with_columns(out=expr).collect()
 
 

@@ -924,7 +924,7 @@ class TestPipelineValidation:
 
     def test_invalid_source_format(self) -> None:
         """Invalid source format should raise."""
-        with pytest.raises((ValueError, KeyError)):
+        with pytest.raises(ValueError, match="Invalid source format"):
             Pipeline().source("invalid_format")
 
     def test_contour_op_on_buffer_domain_raises(self) -> None:
@@ -978,7 +978,7 @@ class TestNumpyFromStructValidation:
         """Data size that doesn't match shape should raise."""
         # Shape says 10 elements, but data is only 2 bytes
         struct = {"data": b"\x00\x00", "dtype": "uint8", "shape": [10]}
-        with pytest.raises((ValueError, Exception)):
+        with pytest.raises(ValueError, match="cannot reshape"):
             numpy_from_struct(struct)
 
 

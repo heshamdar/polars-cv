@@ -104,6 +104,12 @@ jobs:
       - name: Build and Test (Rust & Python)
         working-directory: ${{ steps.package_dir.outputs.dir }}
         shell: bash
+        # This step builds the extension (`maturin develop`), so a *missing*
+        # extension here is a real failure, not a not-yet-built skip. The flag
+        # makes `test_plugin_is_present_when_required` assert `_lib` is importable
+        # instead of letting the whole @plugin_required structural sweep skip.
+        env:
+          POLARS_CV_REQUIRE_PLUGIN: "1"
         run: |
           source .venv/bin/activate
 

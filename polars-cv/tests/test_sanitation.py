@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import io
+import os
 import re
 from pathlib import Path
 
@@ -575,7 +576,7 @@ def test_registry_parity_no_dead_contracts():
     # sobel/laplacian/sharpen lower to convolve2d; they are not real executable
     # ops, so resolving them must fail (their standalone contracts are dead, B2).
     for lowered in ("sobel", "laplacian", "sharpen"):
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="Unknown operation"):
             contract_fn(json.dumps({"op": lowered}))
 
 
@@ -618,6 +619,38 @@ def test_lib_introspection_api_is_present():
         name for name in _REQUIRED_LIB_HOOKS if not callable(getattr(lib, name, None))
     ]
     assert not missing, f"_lib is built but missing introspection hooks: {missing}"
+
+
+#: Env flag a lane that has built the extension sets so a *missing* extension
+#: fails loudly instead of self-skipping the whole structural sweep. Set by CI's
+#: "Build and Test" step and by `scripts/verify.sh`, both of which run
+#: `maturin develop` first; left unset for local unbuilt dev.
+_REQUIRE_PLUGIN_ENV = "POLARS_CV_REQUIRE_PLUGIN"
+
+
+def test_plugin_is_present_when_required() -> None:
+    """In a lane that builds the extension, its absence must be a hard failure.
+
+    Every parity test in this file is ``@plugin_required`` and *skips* without
+    ``_lib`` -- and so does the ``test_lib_introspection_api_is_present``
+    backstop above, which is itself ``@plugin_required``. So a lane that was
+    supposed to build the plugin but somehow did not would go green on a sweep
+    that never ran a single assertion. This test is deliberately **not**
+    ``@plugin_required``: when ``POLARS_CV_REQUIRE_PLUGIN=1`` it asserts the
+    compiled ``_lib`` is importable, turning a silently-unbuilt extension into a
+    failure. Local unbuilt dev leaves the flag unset and still self-skips.
+    """
+    if os.environ.get(_REQUIRE_PLUGIN_ENV) != "1":
+        pytest.skip(
+            f"{_REQUIRE_PLUGIN_ENV} not set; plugin presence is not required in "
+            "this lane (local unbuilt dev)."
+        )
+    assert _lib() is not None, (
+        f"{_REQUIRE_PLUGIN_ENV}=1 but polars_cv._lib is not importable -- the "
+        "compiled extension is missing in a lane meant to have built it (did "
+        "`maturin develop` run and succeed?). Every @plugin_required parity test "
+        "in this file, and its backstop, would otherwise skip silently."
+    )
 
 
 def _binary_op_names_from_source() -> set[str]:
@@ -1602,6 +1635,15 @@ def test_no_local_plugin_available_definitions() -> None:
 #: Pillow they errored where the suite means to skip.
 _CONFTEST_PNG_FACTORIES = ("create_test_png", "encode_png")
 
+#: conftest-owned image *data* fixtures (as opposed to the factory functions
+#: above). Overriding one per-module is a legitimate pytest pattern *when it
+#: delegates to a guarded factory* -- e.g. `test_statistical_reductions.py`
+#: takes `encode_png` and feeds it a test-specific array. What is banned is a
+#: redefinition that builds the PNG itself via Pillow, bypassing conftest's
+#: `except ImportError: pytest.skip` -- `test_typed_nodes.py` carried one, so on
+#: a Pillow-less machine it raised at collection where the suite means to skip.
+_CONFTEST_IMAGE_DATA_FIXTURES = ("sample_image_bytes",)
+
 
 def test_no_local_png_factories() -> None:
     """PNG construction fixtures live in conftest.py only; test files must not
@@ -1632,6 +1674,79 @@ def test_no_local_png_factories() -> None:
         f"these modules redefine a conftest PNG factory: {offenders}. "
         "Use the shared fixture -- a local copy shadows it, and the copies "
         "have already dropped its Pillow-missing skip."
+    )
+
+
+def _image_data_fixture_offenders(source: str, names: tuple[str, ...]) -> list[str]:
+    """Names in ``names`` that ``source`` defines as a fixture building a PNG via
+    direct Pillow calls (a body that references the ``Image`` / ``PIL`` name)
+    rather than delegating to a guarded conftest factory.
+
+    A delegating override -- ``def sample_image_bytes(encode_png): return
+    encode_png(arr)`` -- keeps the shared ``except ImportError: pytest.skip`` and
+    is fine; its body never names ``Image``. Limit: an override that imported
+    ``Image`` only for a type annotation would false-positive, but none do.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:  # pragma: no cover - suite modules parse
+        return []
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in names
+        ):
+            if any(
+                isinstance(inner, ast.Name) and inner.id in ("Image", "PIL")
+                for inner in ast.walk(node)
+            ):
+                offenders.append(node.name)
+    return offenders
+
+
+def test_no_unguarded_local_image_data_fixtures() -> None:
+    """A per-module override of a conftest image-*data* fixture must delegate to
+    a guarded factory (``create_test_png``/``encode_png``), never build the PNG
+    itself via Pillow.
+
+    ``test_no_local_png_factories`` bans redefining the factory *functions*; this
+    is its sibling for the *data* fixtures they feed. Building the PNG inline
+    drops conftest's ``except ImportError: pytest.skip`` and raises at collection
+    on a Pillow-less machine -- ``test_typed_nodes.py`` carried exactly such a
+    ``sample_image_bytes``. The detector is watched both ways below so it cannot
+    silently match nothing.
+    """
+    bad = (
+        "@pytest.fixture\n"
+        "def sample_image_bytes():\n"
+        "    buf = BytesIO()\n"
+        "    Image.fromarray(arr).save(buf, format='PNG')\n"
+        "    return buf.getvalue()\n"
+    )
+    good = (
+        "@pytest.fixture\n"
+        "def sample_image_bytes(encode_png):\n"
+        "    return encode_png(arr)\n"
+    )
+    assert _image_data_fixture_offenders(bad, _CONFTEST_IMAGE_DATA_FIXTURES) == [
+        "sample_image_bytes"
+    ], "detector must flag a direct-Pillow override"
+    assert _image_data_fixture_offenders(good, _CONFTEST_IMAGE_DATA_FIXTURES) == [], (
+        "detector must not flag a factory-delegating override"
+    )
+
+    offenders: dict[str, list[str]] = {}
+    for module in suite_modules():
+        for name in _image_data_fixture_offenders(
+            module.read_text(), _CONFTEST_IMAGE_DATA_FIXTURES
+        ):
+            offenders.setdefault(name, []).append(str(module.name))
+
+    assert not offenders, (
+        f"these modules override a conftest image-data fixture with a direct-"
+        f"Pillow build, bypassing the shared skip: {offenders}. Take `encode_png`"
+        " (or `create_test_png`) and feed it your array instead."
     )
 
 
@@ -2531,7 +2646,7 @@ class TestPluginKwargsRejectUnknownFields:
     @pytest.mark.parametrize("function_name", sorted(_ENTRY_POINTS))
     def test_an_undeclared_kwarg_is_rejected(self, function_name: str) -> None:
         base = dict(self._ENTRY_POINTS[function_name])
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(pl.exceptions.ComputeError) as excinfo:
             self._call(function_name, {**base, "definitely_not_a_real_kwarg": 1})
         # The rejection must be serde's, not an incidental failure on the
         # otherwise-valid base kwargs — otherwise this passes for the wrong

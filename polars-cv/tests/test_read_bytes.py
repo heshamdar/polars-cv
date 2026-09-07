@@ -197,11 +197,15 @@ class TestSharedMechanismWithFilePathSource:
         missing = str(tmp_path / "does_not_exist.png")
         df = pl.DataFrame({"path": [missing]})
 
-        with pytest.raises(Exception) as via_read_bytes:  # noqa: PT011
+        with pytest.raises(
+            pl.exceptions.ComputeError, match="Failed to read local file"
+        ) as via_read_bytes:
             df.with_columns(raw=pl.col("path").cv.read_bytes()).height
 
         pipe = Pipeline().source("file_path")
-        with pytest.raises(Exception) as via_source:  # noqa: PT011
+        with pytest.raises(
+            pl.exceptions.ComputeError, match="Failed to read local file"
+        ) as via_source:
             df.with_columns(out=pl.col("path").cv.pipe(pipe).sink("png")).height
 
         marker = "Failed to read local file"
@@ -214,11 +218,15 @@ class TestSharedMechanismWithFilePathSource:
         url = f"{base}/img/missing.png"
         df = pl.DataFrame({"path": [url]})
 
-        with pytest.raises(Exception) as via_read_bytes:  # noqa: PT011
+        with pytest.raises(
+            pl.exceptions.ComputeError, match="Failed to read remote file"
+        ) as via_read_bytes:
             df.with_columns(raw=pl.col("path").cv.read_bytes()).height
 
         pipe = Pipeline().source("file_path")
-        with pytest.raises(Exception) as via_source:  # noqa: PT011
+        with pytest.raises(
+            pl.exceptions.ComputeError, match="Failed to read remote file"
+        ) as via_source:
             df.with_columns(out=pl.col("path").cv.pipe(pipe).sink("png")).height
 
         marker = "Failed to read remote file"
@@ -339,7 +347,7 @@ class TestErrorHandling:
 
     def test_on_error_raise_is_the_default(self, tmp_path: Path) -> None:
         df = pl.DataFrame({"path": [str(tmp_path / "gone.png")]})
-        with pytest.raises(Exception):  # noqa: B017, PT011
+        with pytest.raises(pl.exceptions.ComputeError):
             df.with_columns(raw=pl.col("path").cv.read_bytes()).height
 
     def test_all_null_column_yields_all_null_binary(self) -> None:
@@ -350,7 +358,7 @@ class TestErrorHandling:
 
     def test_non_string_column_is_rejected(self) -> None:
         df = pl.DataFrame({"path": [1, 2, 3]})
-        with pytest.raises(Exception) as exc:  # noqa: PT011
+        with pytest.raises(pl.exceptions.ComputeError, match="String column") as exc:
             df.with_columns(raw=pl.col("path").cv.read_bytes()).height
         assert "String column" in str(exc.value)
 

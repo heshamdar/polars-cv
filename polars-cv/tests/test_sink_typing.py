@@ -366,7 +366,7 @@ class TestNativeSinkTypes:
 
         pipe = Pipeline().source("image_bytes").grayscale()
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
             df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("native"))
 
         # Should mention that buffer requires explicit format

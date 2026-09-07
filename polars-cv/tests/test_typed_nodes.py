@@ -10,18 +10,16 @@ The seamless multi-domain pipeline feature has landed, so TestSeamlessPipeline r
 
 from __future__ import annotations
 
-from io import BytesIO
 from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
 import pytest
-from PIL import Image
 
 from polars_cv import CONTOUR_SCHEMA, Pipeline, numpy_from_struct
 
 if TYPE_CHECKING:
-    pass
+    from collections.abc import Callable
 
 
 # ============================================================
@@ -30,15 +28,16 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-def sample_image_bytes() -> bytes:
-    """Create a simple test image with a white square on black background."""
+def sample_image_bytes(encode_png: Callable[[np.ndarray], bytes]) -> bytes:
+    """A 100x100 white square on black, for the resize/threshold/contour tests.
+
+    Delegates to conftest's guarded ``encode_png`` (which carries the Pillow
+    skip) instead of calling Pillow here; the bytes are identical to the old
+    local build since ``encode_png`` is the same ``Image.fromarray`` path.
+    """
     img = np.zeros((100, 100), dtype=np.uint8)
     img[25:75, 25:75] = 255  # White square in center
-
-    pil_img = Image.fromarray(img)
-    buf = BytesIO()
-    pil_img.save(buf, format="PNG")
-    return buf.getvalue()
+    return encode_png(img)
 
 
 @pytest.fixture
