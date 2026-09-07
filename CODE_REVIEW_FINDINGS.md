@@ -78,7 +78,7 @@ not left as a static report.
 
 ## Medium
 
-### CR-02 — The "known gaps" ledger drifted from its own prose · `Open`
+### CR-02 — The "known gaps" ledger drifted from its own prose · `Resolved`
 
 - **Location:** root `AGENTS.md` §"What Is Left" vs `polars-cv/tests/test_known_gaps.py`.
 - **What's wrong:** `AGENTS.md` states the open gaps (shear/rotate_and_scale
@@ -86,19 +86,30 @@ not left as a static report.
   one `xfail(strict=True)` each." In reality that file holds **one** entry (the
   contour-scale default). The mechanism built specifically so a backlog "cannot
   silently become stale" has itself gone stale.
-- **Proposed fix:** add the two missing `xfail(strict=True)` pins (they reference
-  CR-03 and the f64-fusion known limitation), or correct the prose. The repo's
-  philosophy says pin them.
+- **Resolution:** the AGENTS.md prose was corrected rather than back-filled with
+  pins. `test_known_gaps.py` is for verified *defects* (wrong behaviour); neither
+  referenced item is one — shear/rotate auto-sizing is a deliberate design
+  decision (CR-03), and f64-fusion is a perf limitation already tracked in
+  **Known Issues**. The false "pinned … one xfail each" claim is removed and each
+  item is described where it actually lives (this ledger / Known Issues), so the
+  defect file is not misused for non-defects.
 
-### CR-03 — `shear`/`rotate_and_scale` advertise unimplemented auto-sizing · `Open`
+### CR-03 — `shear`/`rotate_and_scale` advertise unimplemented auto-sizing · `Resolved`
 
-- **Location:** `polars-cv/python/polars_cv/pipeline.py:3265` (`shear`), `:3311`
-  (`rotate_and_scale`); TODOs at `:3302`, `:3361`.
-- **What's wrong:** `output_size`/`center` default to `None` then immediately
-  raise "auto-... not yet implemented" — the exact "accepted and ignored /
-  documented as not-yet-implemented" pattern `CLAUDE.md` forbids.
-- **Proposed fix:** make the params **required** (drop `| None`), or implement the
-  auto-computation now that the planner tracks input shape. Pair with CR-02.
+- **Location:** `polars-cv/python/polars_cv/pipeline.py` (`shear`, `rotate_and_scale`).
+- **What's wrong:** `output_size`/`center` defaulted to `None` then immediately
+  raised "auto-... not yet implemented" — the "documented as not-yet-implemented"
+  pattern `CLAUDE.md` forbids, on a signature that advertised the params as
+  optional.
+- **Resolution:** made them **required keyword-only arguments** (dropped `| None`,
+  the manual `None`-checks, and the "not yet implemented" docstrings). This is the
+  principled end state, not a placeholder: `output_size` is *structural* (it sets
+  the output H/W that the plan-time schema publishes), and an image source's H/W
+  is unknown at plan time, so auto-sizing cannot yield a plan-time shape for the
+  common case — a "sometimes required, sometimes not" default would violate
+  "explicit over implicit". The signature now enforces the requirement the three
+  `test_affine_builder.py` tests already asserted (updated from `ValueError` to
+  the signature-level `TypeError`). Lazy stub regenerated; parity guards green.
 
 ### CR-04 — `OutputDTypeRule::Configurable` is declared but never emitted · `Open`
 

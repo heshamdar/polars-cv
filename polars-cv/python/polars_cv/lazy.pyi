@@ -267,9 +267,9 @@ class LazyPipelineExpr:
         self,
         *,
         angle: FloatOrExpr,
+        center: tuple[FloatOrExpr, FloatOrExpr],
+        output_size: tuple[IntOrExpr, IntOrExpr],
         scale: FloatOrExpr = ...,
-        center: tuple[FloatOrExpr, FloatOrExpr] | None = ...,
-        output_size: tuple[IntOrExpr, IntOrExpr] | None = ...,
     ) -> LazyPipelineExpr: ...
     def scale(
         self,
@@ -290,7 +290,7 @@ class LazyPipelineExpr:
         *,
         sx: FloatOrExpr = ...,
         sy: FloatOrExpr = ...,
-        output_size: tuple[IntOrExpr, IntOrExpr] | None = ...,
+        output_size: tuple[IntOrExpr, IntOrExpr],
     ) -> LazyPipelineExpr: ...
     def simplify(self, *, tolerance: FloatOrExpr) -> LazyPipelineExpr: ...
     def sobel(self, *, axis: str = ..., ksize: int = ...) -> LazyPipelineExpr: ...

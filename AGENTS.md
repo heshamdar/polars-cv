@@ -268,15 +268,33 @@ current instead.
    take the policy as a *required* argument, so a new caller cannot reach a
    path by omitting it.
 
-**Open, in rough priority order.** The items below, and the wider set the
-structural review recorded, are pinned executably in
-`polars-cv/tests/test_known_gaps.py` — one `xfail(strict=True)` each, so a fix
-turns the suite red rather than passing unnoticed. Prefer adding an entry there
-to extending this prose list.
+**Where deferred work is tracked.** Verified *defects* — a behaviour the code
+should have but does not — are pinned executably in
+`polars-cv/tests/test_known_gaps.py`, one `xfail(strict=True)` each, so a fix
+turns the suite red rather than passing unnoticed; prefer adding an entry there
+to extending a prose list. That file currently holds exactly one such defect
+(the two `scale`-contour surfaces defaulting their origin differently). The
+broader structural-review backlog — dead code, duplicate declarations, coverage
+holes — lives in the root `CODE_REVIEW_FINDINGS.md` ledger with a stable id per
+item, since most of those are cleanups rather than xfail-able wrong-behaviour
+defects.
 
-- **`shear` and `rotate_and_scale` require `output_size` / `center`.** Both
-  raise rather than auto-computing from the input shape. They fail loudly, so
-  this is a missing feature and not the `anti_alias` class of defect — but the
-  planner now tracks input shape well enough to compute both.
-- **f64 through the float-promoting scalar ops is excluded from kernel
-  fusion**, which computes in f32. Correct, but slower than it needs to be.
+(An earlier version of this section claimed the two items below were each pinned
+in `test_known_gaps.py`. They were not — one was a missing feature, the other a
+perf limitation, and neither is a defect the ledger is for. The claim is removed
+rather than back-filled with pins that would misuse the file.)
+
+**Known non-defect gaps.**
+
+- **`shear` / `rotate_and_scale` take `output_size` (and `center`) as required
+  arguments.** This is by design, not a missing feature: the output shape is
+  part of the plan-time schema, and an image source's height/width are unknown
+  until execution, so there is no plan-time value to auto-compute from. The
+  signatures enforce it (a required keyword-only argument) instead of raising
+  late. Auto-sizing could be offered *only* for sources whose shape is already
+  known at plan time (e.g. a `list` source with explicit dims, or post-`resize`);
+  making it a silent conditional default would violate "explicit over implicit",
+  so it is intentionally not done.
+- **f64 through the float-promoting scalar ops is excluded from kernel fusion**,
+  which computes in f32. Correct, but slower than it needs to be. This is a perf
+  limitation, tracked in the root **Known Issues** section, not a defect.
