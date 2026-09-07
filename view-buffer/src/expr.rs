@@ -607,61 +607,6 @@ impl ViewExpr {
         })
     }
 
-    // --- Introspection ---
-
-    /// Returns a text visualization of the execution graph.
-    pub fn explain(&self) -> String {
-        self.explain_impl(0)
-    }
-
-    fn explain_impl(&self, depth: usize) -> String {
-        let indent = "  ".repeat(depth);
-        let mut info = format!("{}Node: {:?}\n", indent, self.node_type_name());
-        info.push_str(&format!("{}  Shape: {:?}\n", indent, self.shape));
-        info.push_str(&format!("{}  Strides: {:?}\n", indent, self.strides));
-        info.push_str(&format!("{}  DType: {:?}\n", indent, self.dtype));
-
-        match &self.node {
-            ExprNode::Source(_) => {
-                info.push_str(&format!("{indent}  Source: ViewBuffer\n"));
-            }
-            ExprNode::View(op, child) => {
-                info.push_str(&format!("{indent}  Op: {op:?}\n"));
-                info.push_str(&child.explain_impl(depth + 1));
-            }
-            ExprNode::Compute(op, children) => {
-                info.push_str(&format!("{indent}  Op: {op:?}\n"));
-                for child in children {
-                    info.push_str(&child.explain_impl(depth + 1));
-                }
-            }
-            ExprNode::Image(op, child) => {
-                info.push_str(&format!("{indent}  Op: {op:?}\n"));
-                info.push_str(&child.explain_impl(depth + 1));
-            }
-            ExprNode::Color(op, child) => {
-                info.push_str(&format!("{indent}  Op: {op:?}\n"));
-                info.push_str(&child.explain_impl(depth + 1));
-            }
-            ExprNode::Filter(op, child) => {
-                info.push_str(&format!("{indent}  Op: {op:?}\n"));
-                info.push_str(&child.explain_impl(depth + 1));
-            }
-        }
-        info
-    }
-
-    fn node_type_name(&self) -> &'static str {
-        match &self.node {
-            ExprNode::Source(_) => "Source",
-            ExprNode::View(_, _) => "View",
-            ExprNode::Compute(_, _) => "Compute",
-            ExprNode::Image(_, _) => "Image",
-            ExprNode::Color(_, _) => "Color",
-            ExprNode::Filter(_, _) => "Filter",
-        }
-    }
-
     // --- Execution Planning ---
 
     /// Builds and returns an execution plan from the expression graph.

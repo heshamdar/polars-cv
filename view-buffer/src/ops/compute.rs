@@ -252,8 +252,15 @@ impl Op for ComputeOp {
             ComputeOp::Relu => Some(DType::F32),
             ComputeOp::AdjustContrast(_) => Some(DType::F32),
             ComputeOp::AdjustGamma(_) => Some(DType::F32),
-            ComputeOp::Invert => None,
-            _ => None,
+            // No fixed f32 working dtype: these compute in the input dtype
+            // (or defer to a nested kernel). Listed rather than `_ => None` so a
+            // new ComputeOp must declare its working dtype instead of inheriting
+            // `None` silently.
+            ComputeOp::Invert
+            | ComputeOp::Cast(_)
+            | ComputeOp::Affine(_)
+            | ComputeOp::RotateAffine { .. }
+            | ComputeOp::Fused(_) => None,
         }
     }
 
