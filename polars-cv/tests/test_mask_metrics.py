@@ -185,7 +185,7 @@ class TestArraySink:
         pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
 
         # This should fail because element count doesn't match
-        with pytest.raises(Exception):
+        with pytest.raises(pl.exceptions.ComputeError):
             df.select(values=pl.col("mask").cv.pipe(pipe).sink("array", shape=[3, 3]))
 
     def test_array_sink_shape_validation_exact_match(self) -> None:
@@ -200,7 +200,7 @@ class TestArraySink:
         pipe = Pipeline().source("image_bytes", dtype="u8").grayscale()
 
         # This should fail because exact shape doesn't match (use squeeze() first)
-        with pytest.raises(Exception):
+        with pytest.raises(pl.exceptions.ComputeError):
             df.select(values=pl.col("mask").cv.pipe(pipe).sink("array", shape=[2, 2]))
 
     def test_array_sink_values_structure(self) -> None:

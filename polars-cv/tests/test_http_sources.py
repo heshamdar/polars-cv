@@ -135,7 +135,7 @@ class TestHttpErrorHandling:
         pipe = Pipeline().source("file_path")
 
         # Should raise an error during execution, not crash
-        with pytest.raises(Exception):
+        with pytest.raises(pl.exceptions.ComputeError):
             df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("png"))
 
     def test_404_url(self) -> None:
@@ -145,7 +145,7 @@ class TestHttpErrorHandling:
         pipe = Pipeline().source("file_path")
 
         # Should raise an error with meaningful message
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
             df.with_columns(out=pl.col("url").cv.pipe(pipe).sink("png"))
 
         # Error message should mention HTTP status or the URL

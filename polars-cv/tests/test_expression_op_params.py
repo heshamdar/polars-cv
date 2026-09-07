@@ -440,5 +440,5 @@ class TestConvolveKsizeExpression:
             .source("image_bytes", dtype="u8")
             .convolve2d([0.0] * 4 + [1.0] + [0.0] * 4, pl.col("k"))
         )
-        with pytest.raises(Exception):
+        with pytest.raises(pl.exceptions.ComputeError):
             df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("list"))

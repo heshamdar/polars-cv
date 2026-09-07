@@ -528,7 +528,7 @@ def test_a_runtime_vector_is_refused_by_a_binary_op(sink: str) -> None:
     right = pl.col("img").cv.pipe(_base())
 
     lf = df.lazy().with_columns(out=left.add(right).sink(sink))
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(pl.exceptions.ComputeError) as excinfo:
         lf.collect()
     assert "vector" in str(excinfo.value).lower(), (
         f"the refusal should say why a vector cannot be read here; got {excinfo.value}"

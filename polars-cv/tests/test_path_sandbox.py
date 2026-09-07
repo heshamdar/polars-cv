@@ -173,7 +173,7 @@ def test_denial_says_what_was_refused_and_what_would_pass(tree) -> None:
     blindly; one that names the path and the configured roots does not.
     """
     df = pl.DataFrame({"p": [str(tree["secret"] / "passwd.txt")]})
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(pl.exceptions.ComputeError) as excinfo:
         df.select(b=pl.col("p").cv.read_bytes(allowed_roots=[str(tree["allowed"])]))
     message = str(excinfo.value)
     assert "is not permitted" in message
@@ -196,7 +196,7 @@ def test_refusal_follows_on_error(tree) -> None:
     assert nulled[0] is not None and nulled[1] is None
 
     df = pl.DataFrame({"p": paths})
-    with pytest.raises(Exception):
+    with pytest.raises(pl.exceptions.ComputeError):
         df.select(b=pl.col("p").cv.read_bytes(allowed_roots=roots))
 
 

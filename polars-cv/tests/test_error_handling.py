@@ -78,7 +78,7 @@ class TestCorruptedImageHandling:
         corrupted_bytes = b"this is not a valid image at all"
         df = pl.DataFrame({"images": [corrupted_bytes]})
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
             df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # Verify we got a meaningful error message
@@ -98,7 +98,7 @@ class TestCorruptedImageHandling:
 
         df = pl.DataFrame({"images": [truncated]})
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
             df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # Should get an error about decoding
@@ -113,7 +113,7 @@ class TestCorruptedImageHandling:
 
         df = pl.DataFrame({"images": [b""]})
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
             df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         # Should get an error about decoding
@@ -337,7 +337,7 @@ class TestErrorMessageQuality:
         invalid_bytes = b"PNG\x00\x00\x00\x00invalid"
         df = pl.DataFrame({"images": [invalid_bytes]})
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
             df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         error_message = str(exc_info.value)
@@ -358,7 +358,7 @@ class TestErrorMessageQuality:
         invalid_bytes = bytes([0xFF] * 50)  # Not a valid image
         df = pl.DataFrame({"images": [invalid_bytes]})
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(pl.exceptions.ComputeError) as exc_info:
             df.with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))
 
         error_message = str(exc_info.value).lower()
@@ -379,7 +379,7 @@ class TestStreamingErrorHandling:
         corrupted_bytes = b"not an image"
         df = pl.DataFrame({"images": [corrupted_bytes]})
 
-        with pytest.raises(Exception):
+        with pytest.raises(pl.exceptions.ComputeError):
             (
                 df.lazy()
                 .with_columns(processed=pl.col("images").cv.pipe(pipe).sink("blob"))

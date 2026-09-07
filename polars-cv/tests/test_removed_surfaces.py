@@ -143,7 +143,7 @@ def test_graph_node_rejects_unknown_fields() -> None:
         "vb_graph",
         kwargs={"graph_json": tampered, "expr_column_names": []},
     )
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(pl.exceptions.ComputeError) as excinfo:
         df.lazy().select(out=expr).collect()
     assert "definitely_not_a_field" in str(excinfo.value) or "unknown field" in str(
         excinfo.value

@@ -65,6 +65,13 @@ run_check "cargo test polars-cv"     cargo test -p polars-cv
 # at its last build -- a stale .so silently turns plugin tests into skips.
 run_check "maturin develop (debug)"  uv run --no-sync --directory polars-cv maturin develop
 
+# `maturin develop` just built the extension, so from here a *missing* `_lib`
+# is a real failure, not a not-yet-built skip. This flag makes
+# `test_plugin_is_present_when_required` assert the extension is importable so
+# the whole @plugin_required structural sweep cannot silently skip (e.g. if the
+# build above failed but an old .so is gone). Mirrors ci.yml's Build-and-Test.
+export POLARS_CV_REQUIRE_PLUGIN=1
+
 # The structural lane runs first and on its own: it is what pre-commit runs,
 # so when it fails the local hook would have caught this before the push, and
 # saying so up front beats finding it under the full suite's output. It is a
