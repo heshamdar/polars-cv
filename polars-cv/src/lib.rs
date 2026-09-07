@@ -81,15 +81,13 @@ fn parse_dtype(s: &str) -> PyResult<view_buffer::DType> {
 /// Canonical string for an output-dtype rule.
 ///
 /// This is the shared vocabulary the Python planner reads (via `op_contract`)
-/// to infer output dtypes: `preserve`, `promote`, `fixed:<dtype>`,
-/// `config:<dtype>`.
+/// to infer output dtypes: `preserve`, `promote`, `fixed:<dtype>`.
 fn dtype_rule_name(rule: view_buffer::OutputDTypeRule) -> String {
     use view_buffer::OutputDTypeRule as R;
     match rule {
         R::PreserveInput => "preserve".to_string(),
         R::PromoteToFloat => "promote".to_string(),
         R::Fixed(d) => format!("fixed:{}", dtype_short_name(d)),
-        R::Configurable(d) => format!("config:{}", dtype_short_name(d)),
         R::ForceF64 => "fixed:f64".to_string(),
         R::ForceI64 => "fixed:i64".to_string(),
         R::ForceU64 => "fixed:u64".to_string(),
@@ -335,40 +333,25 @@ fn infer_shape_probe(op_json: &str, input_dims: &[Option<i64>], probe: i64) -> P
 /// `input_dtype` is a short dtype name (`"u8"`, `"f32"`, …) or the sentinel
 /// `"auto"` used for image sources whose decoded dtype is not yet known. For
 /// `"auto"`, input-dependent rules (`PreserveInput`, `PromoteToFloat`)
-/// propagate `"auto"`; fixed/configurable rules resolve to their concrete
-/// dtype. An `out_dtype` literal parameter overrides the result only for the
-/// `Configurable` rule, mirroring the configurable-output contract.
-fn output_dtype_for(
-    step: &crate::graph::step::GraphStep,
-    op_json: &str,
-    input_dtype: &str,
-) -> PyResult<String> {
+/// propagate `"auto"`; fixed/force rules resolve to their concrete dtype. A
+/// structural `out_dtype` parameter (e.g. `normalize`) is not an override here:
+/// it is folded into the op's own `Fixed` rule, so it flows through
+/// `output_dtype_rule()` like any other fixed dtype.
+fn output_dtype_for(step: &crate::graph::step::GraphStep, input_dtype: &str) -> PyResult<String> {
     use view_buffer::OutputDTypeRule as R;
-    let dto = step;
-    let rule = dto.output_dtype_rule();
-
-    // The out_dtype override is honored only for the configurable rule
-    // (other rules ignore it).
-    let override_dt = if matches!(rule, R::Configurable(_)) {
-        out_dtype_override(op_json)?
-    } else {
-        None
-    };
+    let rule = step.output_dtype_rule();
 
     if input_dtype == "auto" {
-        if let Some(d) = override_dt {
-            return Ok(dtype_short_name(d).to_string());
-        }
         return Ok(match rule {
             // Output follows the (unknown) input: stays unknown.
             R::PreserveInput | R::PromoteToFloat => "auto".to_string(),
-            // Fixed/configurable/force rules ignore the input dtype.
-            _ => dtype_short_name(rule.resolve(view_buffer::DType::U8, None)).to_string(),
+            // Fixed/force rules ignore the input dtype.
+            _ => dtype_short_name(rule.resolve(view_buffer::DType::U8)).to_string(),
         });
     }
 
     let in_dt = parse_dtype(input_dtype)?;
-    Ok(dtype_short_name(rule.resolve(in_dt, override_dt)).to_string())
+    Ok(dtype_short_name(rule.resolve(in_dt)).to_string())
 }
 
 /// Resolve one op's full schema effect: `(domain, dtype, ndim)`.
@@ -406,7 +389,7 @@ fn op_schema(
     {
         "auto".to_string()
     } else {
-        output_dtype_for(&step, op_json, input_dtype)?
+        output_dtype_for(&step, input_dtype)?
     };
 
     let ndim = match step.output_rank_rule() {
@@ -456,22 +439,6 @@ fn binary_output_dtype(op_name: &str, left: &str, right: &str) -> PyResult<Strin
     let l = parse_dtype(left)?;
     let r = parse_dtype(right)?;
     Ok(dtype_short_name(op.output_dtype(l, r)).to_string())
-}
-
-/// Extract the literal `out_dtype` parameter from a serialized op spec, if any.
-///
-/// Returns `None` when the parameter is absent or is an expression (dynamic),
-/// in which case the rule's default applies.
-fn out_dtype_override(op_json: &str) -> PyResult<Option<view_buffer::DType>> {
-    let op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
-    match op_spec.params.get("out_dtype") {
-        Some(crate::params::ParamValue::Literal { value }) => match value.as_str() {
-            Some(s) => Ok(Some(parse_dtype(s)?)),
-            None => Ok(None),
-        },
-        _ => Ok(None),
-    }
 }
 
 /// Return the string variants of a Rust enum, for Python<->Rust parity checks.

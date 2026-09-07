@@ -115,7 +115,7 @@ fn apply_op_executes_every_view_dto_variant() {
 
         let source = ViewBuffer::from_vec_with_shape(vec![7u8; 4 * 4 * 3], vec![4, 4, 3]);
         let expected_shape = dto.as_op().infer_shape(&[&[4, 4, 3]]);
-        let expected_dtype = dto.output_dtype_rule().resolve(DType::U8, None);
+        let expected_dtype = dto.output_dtype_rule().resolve(DType::U8);
 
         let expr = ViewExpr::new_source(source).apply_op(dto);
         let result = expr.plan().execute();

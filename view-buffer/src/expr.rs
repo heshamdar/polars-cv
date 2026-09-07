@@ -136,7 +136,7 @@ impl ViewExpr {
                 // One arm, one authority, removes that whole class.
                 let new_shape = img.infer_shape(&[&self.shape]);
                 let new_strides = self.calc_strides(&img, &new_shape);
-                let new_dtype = img.resolve_output_dtype(self.dtype, None);
+                let new_dtype = img.resolve_output_dtype(self.dtype);
                 Arc::new(Self {
                     shape: new_shape,
                     strides: new_strides,
@@ -147,7 +147,7 @@ impl ViewExpr {
             ViewDto::Filter(op) => {
                 let new_shape = Op::infer_shape(&op, &[&self.shape]);
                 let new_strides = self.calc_strides(&op, &new_shape);
-                let new_dtype = op.resolve_output_dtype(self.dtype, None);
+                let new_dtype = op.resolve_output_dtype(self.dtype);
                 Arc::new(Self {
                     shape: new_shape,
                     strides: new_strides,
@@ -157,7 +157,7 @@ impl ViewExpr {
             }
             ViewDto::Color(op) => {
                 let new_shape = ColorConvertOp::infer_shape(&op, &self.shape);
-                let new_dtype = Op::resolve_output_dtype(&op, self.dtype, None);
+                let new_dtype = Op::resolve_output_dtype(&op, self.dtype);
                 Arc::new(Self {
                     shape: new_shape,
                     strides: None, // Color conversion always allocates
@@ -178,7 +178,7 @@ impl ViewExpr {
             // (either because it requires contiguous input, or because it allocates a new buffer).
             // Calculate contiguous strides for the new shape.
             if res.is_none() {
-                let new_dtype = op.resolve_output_dtype(self.dtype, None);
+                let new_dtype = op.resolve_output_dtype(self.dtype);
                 let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
                 return Some(l.strides);
             }
@@ -188,7 +188,7 @@ impl ViewExpr {
             // If input strides are unknown, calculate contiguous strides for allocating ops
             // or ops that require contiguous input
             if op.memory_effect() != MemoryEffect::View {
-                let new_dtype = op.resolve_output_dtype(self.dtype, None);
+                let new_dtype = op.resolve_output_dtype(self.dtype);
                 let l = Layout::new_contiguous(new_shape.to_vec(), new_dtype);
                 return Some(l.strides);
             }
@@ -311,7 +311,7 @@ impl ViewExpr {
         let op = ComputeOp::Scale(factor);
         let new_shape = self.shape.clone();
         let new_strides = self.calc_strides(&op, &new_shape);
-        let new_dtype = op.resolve_output_dtype(self.dtype, None);
+        let new_dtype = op.resolve_output_dtype(self.dtype);
 
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -323,7 +323,7 @@ impl ViewExpr {
 
     pub fn relu(self: &Arc<Self>) -> Arc<Self> {
         let op = ComputeOp::Relu;
-        let new_dtype = op.resolve_output_dtype(self.dtype, None);
+        let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -336,7 +336,7 @@ impl ViewExpr {
     pub fn fused(self: &Arc<Self>, kernel: FusedKernel) -> Arc<Self> {
         let op = ComputeOp::Fused(kernel);
         // Fused kernels preserve shape but write a fresh contiguous buffer.
-        let new_dtype = op.resolve_output_dtype(self.dtype, None);
+        let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -350,13 +350,14 @@ impl ViewExpr {
     ///
     /// Only supports 2D (HW) or single-channel (HW1) shapes. Computation is in
     /// f32; pass `DType::F32` for the default float output, or another dtype to
-    /// have the normalized result cast to it (the `Configurable` output rule).
+    /// have the normalized result cast to it (folded into the op's `Fixed`
+    /// output rule).
     pub fn normalize(self: &Arc<Self>, method: NormalizeMethod, out_dtype: DType) -> Arc<Self> {
         let op = ComputeOp::Normalize(method, out_dtype);
         let new_shape = op.infer_shape(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
 
-        let new_dtype = op.resolve_output_dtype(self.dtype, None);
+        let new_dtype = op.resolve_output_dtype(self.dtype);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: new_shape,
@@ -368,7 +369,7 @@ impl ViewExpr {
     /// Clamp values to [min, max] range.
     pub fn clamp(self: &Arc<Self>, min: f32, max: f32) -> Arc<Self> {
         let op = ComputeOp::Clamp { min, max };
-        let new_dtype = op.resolve_output_dtype(self.dtype, None);
+        let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -382,7 +383,7 @@ impl ViewExpr {
     pub fn adjust_contrast(self: &Arc<Self>, factor: f32) -> Arc<Self> {
         let op = ComputeOp::AdjustContrast(factor);
         let new_strides = self.calc_strides(&op, &self.shape);
-        let new_dtype = op.resolve_output_dtype(self.dtype, None);
+        let new_dtype = op.resolve_output_dtype(self.dtype);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
             shape: self.shape.clone(),
@@ -394,7 +395,7 @@ impl ViewExpr {
     /// Adjust gamma (power-law transformation).
     pub fn adjust_gamma(self: &Arc<Self>, gamma: f32) -> Arc<Self> {
         let op = ComputeOp::AdjustGamma(gamma);
-        let new_dtype = op.resolve_output_dtype(self.dtype, None);
+        let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -407,7 +408,7 @@ impl ViewExpr {
     /// Invert pixel values: `max_val - pixel`.
     pub fn invert(self: &Arc<Self>) -> Arc<Self> {
         let op = ComputeOp::Invert;
-        let new_dtype = op.resolve_output_dtype(self.dtype, None);
+        let new_dtype = op.resolve_output_dtype(self.dtype);
         let new_strides = self.calc_strides(&op, &self.shape);
         Arc::new(Self {
             node: ExprNode::Compute(op, vec![self.clone()]),
@@ -848,7 +849,7 @@ mod dtype_contract_tests {
             let source = ViewExpr::new_source(base.cast(dtype));
             for kind in &kinds {
                 let op = ImageOp { kind: kind.clone() };
-                let expected = op.resolve_output_dtype(dtype, None);
+                let expected = op.resolve_output_dtype(dtype);
                 let applied = source.clone().apply_op(ViewDto::Image(op));
                 assert_eq!(
                     applied.dtype, expected,
@@ -887,7 +888,7 @@ mod dtype_contract_tests {
 
             for (built, kind) in cases {
                 let op = ImageOp { kind: kind.clone() };
-                let expected = op.resolve_output_dtype(dtype, None);
+                let expected = op.resolve_output_dtype(dtype);
                 assert_eq!(
                     built.dtype, expected,
                     "the builder for {kind:?} on {dtype:?} tracks {:?} but the \

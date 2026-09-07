@@ -66,11 +66,12 @@ pub enum ComputeOp {
     Fused(FusedKernel),
     /// Normalize data - requires full buffer scan. Only supports 2D-like shapes (HW or HW1).
     ///
-    /// Computation always happens in f32; the second field is the configured
-    /// output dtype (the `Configurable(F32)` rule's resolved target). Execution
-    /// casts the f32 result to it so the produced dtype matches the planner's
-    /// `output_dtype_rule().resolve(input, out_dtype)` — see the dtype-contract
-    /// tests. Defaults to `F32` when no `out_dtype` is requested.
+    /// Computation always happens in f32; the second field is the output dtype,
+    /// folded from the structural `out_dtype` parameter (defaulting to `F32`).
+    /// The op reports it via a `Fixed(out_dtype)` rule, so the planner's
+    /// `output_dtype_rule().resolve(input)` already yields it; execution casts
+    /// the f32 result to it so the produced dtype matches — see the
+    /// dtype-contract tests.
     Normalize(NormalizeMethod, DType),
     /// Clamp values to [min, max] range.
     Clamp { min: f32, max: f32 },

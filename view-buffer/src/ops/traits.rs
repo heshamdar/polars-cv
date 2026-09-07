@@ -130,12 +130,11 @@ pub trait Op {
     /// cannot silently inherit `PreserveInput` and mis-report its output dtype.
     fn output_dtype_rule(&self) -> OutputDTypeRule;
 
-    /// Resolves the actual output dtype given input dtype and optional override.
+    /// Resolves the actual output dtype given input dtype.
     ///
     /// This is a convenience method that uses `output_dtype_rule()`.
-    fn resolve_output_dtype(&self, input_dtype: DType, out_dtype_override: Option<DType>) -> DType {
-        self.output_dtype_rule()
-            .resolve(input_dtype, out_dtype_override)
+    fn resolve_output_dtype(&self, input_dtype: DType) -> DType {
+        self.output_dtype_rule().resolve(input_dtype)
     }
 
     /// Validate that a produced buffer matches this operation's dtype contract.
@@ -147,7 +146,7 @@ pub trait Op {
     ///
     /// This is intended to be called after execution as a runtime guardrail.
     fn validate_output_dtype(&self, input_dtype: DType, output_dtype: DType) -> Result<(), String> {
-        let expected = self.output_dtype_rule().resolve(input_dtype, None);
+        let expected = self.output_dtype_rule().resolve(input_dtype);
         if output_dtype != expected {
             return Err(format!(
                 "{}: expected output dtype {:?} (rule {:?} with input {:?}), but got {:?}",

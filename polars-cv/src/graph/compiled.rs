@@ -1540,7 +1540,7 @@ fn fold_output_dtype(
         let step = crate::resolve_op_from_json(&op_probe_json(op)).ok()?;
         // `out_dtype` overrides ride on the op's own params, which
         // `op_probe_json` preserves, so the step's rule already reflects them.
-        dtype = step.output_dtype_rule().resolve_planned(dtype, None);
+        dtype = step.output_dtype_rule().resolve_planned(dtype);
     }
     Some(dtype)
 }
