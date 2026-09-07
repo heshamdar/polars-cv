@@ -105,16 +105,7 @@ impl ViewExpr {
                 ComputeOp::AdjustContrast(factor) => self.adjust_contrast(factor),
                 ComputeOp::AdjustGamma(gamma) => self.adjust_gamma(gamma),
                 ComputeOp::Invert => self.invert(),
-                r @ ComputeOp::RotateAffine { .. } => {
-                    let new_shape = r.infer_shape(&[&self.shape]);
-                    let new_strides = self.calc_strides(&r, &new_shape);
-                    Arc::new(Self {
-                        node: ExprNode::Compute(r, self.clone()),
-                        shape: new_shape,
-                        strides: new_strides,
-                        dtype: self.dtype,
-                    })
-                }
+                r @ ComputeOp::RotateAffine { .. } => self.compute_node(r),
             },
             ViewDto::Image(img) => {
                 // The one construction path for every image op. Output metadata
@@ -196,19 +187,49 @@ impl ViewExpr {
         }
     }
 
-    // --- View Ops ---
-
-    pub fn transpose(self: &Arc<Self>, perm: Vec<usize>) -> Arc<Self> {
-        let op = ViewOp::Transpose(perm);
+    /// Build a `Compute` node whose metadata comes entirely from the op's own
+    /// contract: shape from `infer_shape`, strides from `calc_strides` (which
+    /// honours the op's declared `MemoryEffect`), dtype from its
+    /// `OutputDTypeRule`. The compute analogue of `apply_op`'s `Image` arm and
+    /// the single construction authority the compute builders share, so none of
+    /// them can track metadata a contract does not declare.
+    ///
+    /// `cast` keeps its own builder: a same-dtype cast passes the input strides
+    /// through untouched, which this generic contiguous-or-inferred path cannot
+    /// express.
+    fn compute_node(self: &Arc<Self>, op: ComputeOp) -> Arc<Self> {
         let new_shape = op.infer_shape(&[&self.shape]);
         let new_strides = self.calc_strides(&op, &new_shape);
+        let new_dtype = op.resolve_output_dtype(self.dtype);
+        Arc::new(Self {
+            node: ExprNode::Compute(op, self.clone()),
+            shape: new_shape,
+            strides: new_strides,
+            dtype: new_dtype,
+        })
+    }
 
+    /// Build a `View` node from the op's contract (shape via `infer_shape`,
+    /// strides via `calc_strides`); a view never changes dtype, so it is
+    /// preserved. The view analogue of [`compute_node`](Self::compute_node).
+    ///
+    /// `reshape` keeps its own builder because it must reject a non-contiguous
+    /// input (its bespoke panic) rather than route through here.
+    fn view_node(self: &Arc<Self>, op: ViewOp) -> Arc<Self> {
+        let new_shape = op.infer_shape(&[&self.shape]);
+        let new_strides = self.calc_strides(&op, &new_shape);
         Arc::new(Self {
             node: ExprNode::View(op, self.clone()),
             shape: new_shape,
             strides: new_strides,
             dtype: self.dtype,
         })
+    }
+
+    // --- View Ops ---
+
+    pub fn transpose(self: &Arc<Self>, perm: Vec<usize>) -> Arc<Self> {
+        self.view_node(ViewOp::Transpose(perm))
     }
 
     pub fn reshape(self: &Arc<Self>, new_shape: Vec<usize>) -> Arc<Self> {
@@ -243,29 +264,11 @@ impl ViewExpr {
     }
 
     pub fn crop(self: &Arc<Self>, start: Vec<usize>, end: Vec<usize>) -> Arc<Self> {
-        let op = ViewOp::Crop { start, end };
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-
-        Arc::new(Self {
-            node: ExprNode::View(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: self.dtype,
-        })
+        self.view_node(ViewOp::Crop { start, end })
     }
 
     pub fn flip(self: &Arc<Self>, axes: Vec<usize>) -> Arc<Self> {
-        let op = ViewOp::Flip(axes);
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-
-        Arc::new(Self {
-            node: ExprNode::View(op, self.clone()),
-            shape: new_shape, // Flip preserves shape
-            strides: new_strides,
-            dtype: self.dtype,
-        })
+        self.view_node(ViewOp::Flip(axes))
     }
 
     // --- Compute Ops ---
@@ -295,55 +298,19 @@ impl ViewExpr {
     }
 
     pub fn affine(self: &Arc<Self>, params: AffineParams) -> Arc<Self> {
-        let op = ComputeOp::Affine(params);
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape); // RequiresContiguous -> New Layout
-
-        Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: self.dtype,
-        })
+        self.compute_node(ComputeOp::Affine(params))
     }
 
     pub fn scale(self: &Arc<Self>, factor: f32) -> Arc<Self> {
-        let op = ComputeOp::Scale(factor);
-        let new_shape = self.shape.clone();
-        let new_strides = self.calc_strides(&op, &new_shape);
-        let new_dtype = op.resolve_output_dtype(self.dtype);
-
-        Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: new_dtype,
-        })
+        self.compute_node(ComputeOp::Scale(factor))
     }
 
     pub fn relu(self: &Arc<Self>) -> Arc<Self> {
-        let op = ComputeOp::Relu;
-        let new_dtype = op.resolve_output_dtype(self.dtype);
-        let new_strides = self.calc_strides(&op, &self.shape);
-        Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
-            shape: self.shape.clone(),
-            strides: new_strides,
-            dtype: new_dtype,
-        })
+        self.compute_node(ComputeOp::Relu)
     }
 
     pub fn fused(self: &Arc<Self>, kernel: FusedKernel) -> Arc<Self> {
-        let op = ComputeOp::Fused(kernel);
-        // Fused kernels preserve shape but write a fresh contiguous buffer.
-        let new_dtype = op.resolve_output_dtype(self.dtype);
-        let new_strides = self.calc_strides(&op, &self.shape);
-        Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
-            shape: self.shape.clone(),
-            strides: new_strides,
-            dtype: new_dtype,
-        })
+        self.compute_node(ComputeOp::Fused(kernel))
     }
 
     /// Normalize data using the specified method, emitting `out_dtype`.
@@ -353,82 +320,32 @@ impl ViewExpr {
     /// have the normalized result cast to it (folded into the op's `Fixed`
     /// output rule).
     pub fn normalize(self: &Arc<Self>, method: NormalizeMethod, out_dtype: DType) -> Arc<Self> {
-        let op = ComputeOp::Normalize(method, out_dtype);
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-
-        let new_dtype = op.resolve_output_dtype(self.dtype);
-        Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: new_dtype,
-        })
+        self.compute_node(ComputeOp::Normalize(method, out_dtype))
     }
 
     /// Clamp values to [min, max] range.
     pub fn clamp(self: &Arc<Self>, min: f32, max: f32) -> Arc<Self> {
-        let op = ComputeOp::Clamp { min, max };
-        let new_dtype = op.resolve_output_dtype(self.dtype);
-        let new_strides = self.calc_strides(&op, &self.shape);
-        Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
-            shape: self.shape.clone(),
-            strides: new_strides,
-            dtype: new_dtype,
-        })
+        self.compute_node(ComputeOp::Clamp { min, max })
     }
 
     /// Adjust contrast: `(pixel - mean) * factor + mean`.
     pub fn adjust_contrast(self: &Arc<Self>, factor: f32) -> Arc<Self> {
-        let op = ComputeOp::AdjustContrast(factor);
-        let new_strides = self.calc_strides(&op, &self.shape);
-        let new_dtype = op.resolve_output_dtype(self.dtype);
-        Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
-            shape: self.shape.clone(),
-            strides: new_strides,
-            dtype: new_dtype,
-        })
+        self.compute_node(ComputeOp::AdjustContrast(factor))
     }
 
     /// Adjust gamma (power-law transformation).
     pub fn adjust_gamma(self: &Arc<Self>, gamma: f32) -> Arc<Self> {
-        let op = ComputeOp::AdjustGamma(gamma);
-        let new_dtype = op.resolve_output_dtype(self.dtype);
-        let new_strides = self.calc_strides(&op, &self.shape);
-        Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
-            shape: self.shape.clone(),
-            strides: new_strides,
-            dtype: new_dtype,
-        })
+        self.compute_node(ComputeOp::AdjustGamma(gamma))
     }
 
     /// Invert pixel values: `max_val - pixel`.
     pub fn invert(self: &Arc<Self>) -> Arc<Self> {
-        let op = ComputeOp::Invert;
-        let new_dtype = op.resolve_output_dtype(self.dtype);
-        let new_strides = self.calc_strides(&op, &self.shape);
-        Arc::new(Self {
-            node: ExprNode::Compute(op, self.clone()),
-            shape: self.shape.clone(),
-            strides: new_strides,
-            dtype: new_dtype,
-        })
+        self.compute_node(ComputeOp::Invert)
     }
 
     /// Select a single channel from a [H, W, C] buffer, producing [H, W].
     pub fn channel_select(self: &Arc<Self>, index: usize) -> Arc<Self> {
-        let op = ViewOp::ChannelSelect { index };
-        let new_shape = op.infer_shape(&[&self.shape]);
-        let new_strides = self.calc_strides(&op, &new_shape);
-        Arc::new(Self {
-            node: ExprNode::View(op, self.clone()),
-            shape: new_shape,
-            strides: new_strides,
-            dtype: self.dtype,
-        })
+        self.view_node(ViewOp::ChannelSelect { index })
     }
 
     // --- Image Ops ---
@@ -545,7 +462,10 @@ impl ViewExpr {
                     if let ExprNode::Compute(ComputeOp::Cast(_), ref grandchild) = &child.node {
                         // Skip the intermediate cast, cast directly from grandchild
                         return Arc::new(Self {
-                            node: ExprNode::Compute(ComputeOp::Cast(*target_dtype), grandchild.clone()),
+                            node: ExprNode::Compute(
+                                ComputeOp::Cast(*target_dtype),
+                                grandchild.clone(),
+                            ),
                             shape: self.shape.clone(),
                             strides: self.strides.clone(),
                             dtype: *target_dtype,
