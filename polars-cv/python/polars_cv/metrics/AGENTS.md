@@ -165,16 +165,15 @@ metrics/
   form (`all_points_ap_by_group`). Both `mean_average_precision(...,
   interpolation="all_points")` and every `*_ap` bootstrap go through the grouped
   authority; the eager per-class PR result uses the scalar one.
-- The two are **bit-identical on any curve with distinct scores** (pinned by
+- The two are **identical on every curve, ties included** (pinned by
   `test_precision_recall.py::TestAllPointsAPAuthority` and, end to end, by
-  `test_bootstrap_ci_lazy.py::test_pr_point_matches_average_precision`). They can
-  diverge **only on exact score ties**, because the all-points AP is
-  tie-order-sensitive and the two paths feed differently ordered frames to an
-  unstable Polars sort — the tie-break, and thus the AP, is arbitrary in both.
-  That divergence is why they are kept as two functions rather than folded into
-  one: collapsing them would change `PrecisionRecallResult.auc`'s already
-  arbitrary tie output. A future canonical tie convention (a stable secondary
-  sort key) would let them merge; see `CODE_REVIEW_FINDINGS.md` CR-30.
+  `test_bootstrap_ci_lazy.py::test_pr_point_matches_average_precision`). Both
+  apply the same canonical tie convention (CR-30): all detections sharing a
+  score collapse into a single PR point, taken at the cumulative TP/FP *after*
+  the whole tied block. So the all-points AP no longer depends on the input row
+  order among equal scores, and the scalar and grouped paths no longer diverge.
+  They remain two functions only because they take different inputs (a pre-built
+  curve vs per-detection rows), not because they can disagree.
 - `mean_average_precision` keeps the eager per-`(threshold, class)` loop for the
   `"11_point"` (VOC) method only, which has no grouped form; the `"all_points"`
   method is one lazy plan with a single collect.

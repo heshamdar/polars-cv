@@ -153,6 +153,17 @@ def precision_recall_curve(
             cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum(),
             cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum(),
         )
+        # Canonical tie handling: one PR point per distinct score, at the
+        # cumulative counts *after* the whole tied block (max, as cum_tp/cum_fp
+        # only grow in the score-descending sort). This makes the curve -- and
+        # the AP integrated from it -- independent of the input row order among
+        # equal scores, matching the grouped estimator `all_points_ap_by_group`.
+        .group_by(COL_SCORE)
+        .agg(
+            cum_tp=pl.col("cum_tp").max(),
+            cum_fp=pl.col("cum_fp").max(),
+        )
+        .sort(COL_SCORE, descending=True)
         .with_columns(
             precision=pl.col("cum_tp") / (pl.col("cum_tp") + pl.col("cum_fp")),
             recall=pl.col("cum_tp") / pl.lit(float(total_gts)),
@@ -510,6 +521,18 @@ def all_points_ap_by_group(
             cum_tp=pl.col(COL_IS_TP).cast(pl.Int64).cum_sum().over(keys),
             cum_fp=(~pl.col(COL_IS_TP)).cast(pl.Int64).cum_sum().over(keys),
         )
+        # Canonical tie handling: collapse all detections sharing a score into a
+        # single PR point, taking the cumulative counts *after* the whole tied
+        # block (the max, since cum_tp/cum_fp only grow in the score-descending
+        # sort). Without this, the intermediate points inside a tie -- and so the
+        # integrated AP -- depend on the input row order among equal scores.
+        .group_by([*keys, COL_SCORE])
+        .agg(
+            cum_tp=pl.col("cum_tp").max(),
+            cum_fp=pl.col("cum_fp").max(),
+            total_gts=pl.col("total_gts").first(),
+        )
+        .sort(*keys, COL_SCORE, descending=[False] * len(keys) + [True])
         .with_columns(
             precision=pl.col("cum_tp")
             / (pl.col("cum_tp") + pl.col("cum_fp")).cast(pl.Float64),
