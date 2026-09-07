@@ -86,6 +86,18 @@ def _rotation_matrix(
     Returns:
         Six-element list ``[a, b, tx, c, d, ty]`` (forward mapping).
     """
+    cx, cy = center
+    if not any(isinstance(v, pl.Expr) for v in (angle_deg, cx, cy, scale)):
+        # All-literal: read the matrix from the Rust authority
+        # (`AffineParams::rotation_matrix_2d`) rather than transliterating the
+        # trig, so the formula lives in exactly one place. The `pl.Expr` path
+        # below cannot -- the engine evaluates those operands per row at
+        # execution, not at plan time -- and is the one guard-sanctioned copy.
+        from polars_cv._lib import rotation_matrix_2d
+
+        return list(
+            rotation_matrix_2d(float(angle_deg), float(cx), float(cy), float(scale))
+        )
     if isinstance(angle_deg, pl.Expr):
         rad = angle_deg.radians()
         cos_a = rad.cos() * scale
@@ -94,7 +106,6 @@ def _rotation_matrix(
         rad = math.radians(angle_deg)
         cos_a = math.cos(rad) * scale
         sin_a = math.sin(rad) * scale
-    cx, cy = center
     tx = (1 - cos_a) * cx + sin_a * cy
     ty = -sin_a * cx + (1 - cos_a) * cy
     return [cos_a, -sin_a, tx, sin_a, cos_a, ty]

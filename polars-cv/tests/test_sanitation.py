@@ -592,6 +592,10 @@ _REQUIRED_LIB_HOOKS = (
     # The rotation-matrix authority, read by the planner's affine fusion so it
     # does not recompute what `AffineParams::from_rotation` already defines.
     "rotate_affine_params",
+    # Its sibling: the 2x3 rotation+scale matrix about an arbitrary centre, read
+    # by the planner's literal `rotate_and_scale` so `_rotation_matrix` does not
+    # recompute the trig.
+    "rotation_matrix_2d",
     # The `{x, y}` point struct authority, read by the geometry parity test so
     # Python's POINT_SCHEMA cannot drift from `geom_schema::point_fields`.
     "point_schema",

@@ -524,10 +524,24 @@ def test_the_planner_does_not_recompute_the_rotation_matrix() -> None:
         "silently disagree."
     )
 
-    # The trig that builds a rotation matrix. `_rotation_matrix` (used by
-    # `rotate_and_scale`) legitimately keeps its own, because it must accept
-    # `pl.Expr` operands the engine cannot evaluate at plan time -- so scope
-    # this to the fusion helper rather than the whole module.
+    # `_rotation_matrix` (used by `rotate_and_scale`) must read the same Rust
+    # authority for its all-literal case: its fast path calls the
+    # `rotation_matrix_2d` FFI rather than recomputing the trig. Only the
+    # `pl.Expr` branch keeps its own arithmetic, because the engine cannot
+    # evaluate an expression at plan time -- the one sanctioned copy.
+    rot_start = source.index("def _rotation_matrix")
+    rot_end = source.index("def ", rot_start + 1)
+    rotation_matrix = source[rot_start:rot_end]
+    assert "rotation_matrix_2d" in rotation_matrix, (
+        "_rotation_matrix no longer reads the rotation_matrix_2d FFI for its "
+        "literal case -- if it recomputes the matrix in Python, that is a "
+        "second implementation of the formula the FFI already owns."
+    )
+
+    # The trig that builds a rotation matrix, in the fusion helper. Scope this
+    # to the helper rather than the whole module: `_rotation_matrix`'s `pl.Expr`
+    # branch (asserted above to defer to the FFI for literals) legitimately
+    # keeps its own trig for the expression case.
     #
     # Matched on the bare names as well as the `math.` attribute form: a
     # `from math import cos, sin` inside the helper reintroduces exactly the
