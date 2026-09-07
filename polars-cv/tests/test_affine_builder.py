@@ -2,7 +2,10 @@
 Tests for affine transform pipeline builder operations.
 
 Tests the Python-side pipeline construction for warp_affine, shear,
-and rotate_and_scale. These tests do NOT require the compiled plugin.
+and rotate_and_scale. Most need no compiled plugin; the exceptions are the
+``rotate_and_scale`` cases that actually build a matrix, which now read it from
+the ``rotation_matrix_2d`` FFI (the single rotation-matrix authority) and so
+carry ``@plugin_required``.
 """
 
 from __future__ import annotations
@@ -210,6 +213,7 @@ class TestShearPipelineBuilder:
 class TestRotateAndScalePipelineBuilder:
     """Tests for the rotate_and_scale convenience method."""
 
+    @plugin_required
     def test_rotate_and_scale_basic(self) -> None:
         """Build a rotate_and_scale pipeline."""
         pipe = (
@@ -237,8 +241,14 @@ class TestRotateAndScalePipelineBuilder:
         with pytest.raises(TypeError, match="output_size"):
             pipe.rotate_and_scale(angle=45.0, center=(50.0, 50.0))
 
+    @plugin_required
     def test_rotate_and_scale_matrix_correctness(self) -> None:
-        """Verify the rotation matrix is correct for 90 degrees."""
+        """Verify the rotation matrix is correct for 90 degrees.
+
+        Independent cross-check: the pipeline's matrix comes from the
+        ``rotation_matrix_2d`` FFI, and this recomputes it from the reference
+        formula in Python, so the two must agree.
+        """
         import math
 
         pipe = (
@@ -262,6 +272,7 @@ class TestRotateAndScalePipelineBuilder:
         for actual, exp in zip(matrix, expected):
             assert abs(actual - exp) < 1e-10
 
+    @plugin_required
     def test_rotate_and_scale_with_scale(self) -> None:
         """rotate_and_scale with scale factor."""
         pipe = (
