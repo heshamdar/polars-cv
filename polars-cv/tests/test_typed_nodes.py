@@ -5,7 +5,7 @@ This module contains two test classes:
 1. TestMultiPhaseWorkaround - Current approach requiring materialization between domains
 2. TestSeamlessPipeline - Target approach with unified multi-domain pipelines
 
-The seamless tests will initially fail (marked xfail) until implementation is complete.
+The seamless multi-domain pipeline feature has landed, so TestSeamlessPipeline runs live (no xfail).
 """
 
 from __future__ import annotations

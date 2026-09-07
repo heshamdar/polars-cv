@@ -373,7 +373,6 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         self,
         image: pl.Expr | None = None,
         *,
-        heatmap: pl.Expr | None = None,
         reduction: LabelReduction | str | pl.Expr = "max",
         region_mode: LabelRegionMode | str | pl.Expr = "interior",
     ) -> pl.Expr:
@@ -391,7 +390,6 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
 
         Args:
             image: Image/array expression aligned by row with contour sets.
-            heatmap: Backward-compatible alias for ``image``.
             reduction: Aggregation method over pixels in each contour region.
                 Accepts a Polars expression for a per-row choice.
             region_mode: Region selector - ``"interior"`` (pixels strictly inside),
@@ -401,16 +399,11 @@ class ContourNamespace(_GeomNullPolicy, _PluginNamespace):
         Returns:
             A list of float scores, aligned to the input contour order.
         """
-        if image is None and heatmap is None:
-            msg = "Either `image` or `heatmap` must be provided."
+        if image is None:
+            msg = "`image` must be provided."
             raise ValueError(msg)
-        if image is not None and heatmap is not None:
-            msg = "Provide only one of `image` or `heatmap`."
-            raise ValueError(msg)
-        image_expr = image if image is not None else heatmap
-        assert image_expr is not None
         binder = _ArgBinder()
-        binder.add_data("image", image_expr)
+        binder.add_data("image", image)
         binder.add_param("reduction", reduction, cast=str)
         binder.add_param("region_mode", region_mode, cast=str)
         return binder.call(self, "contour_label_reduce")

@@ -18,12 +18,11 @@ from polars_cv.geometry import (
     RING_SCHEMA,
 )
 from polars_cv.geometry.schemas import (
-    bbox_from_center,
-    bbox_from_corners,
     contour_from_points,
     validate_contour,
     validate_point,
 )
+from tests._geometry_helpers import bbox_from_center, bbox_from_corners
 
 if TYPE_CHECKING:
     pass

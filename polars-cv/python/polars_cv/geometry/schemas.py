@@ -243,6 +243,8 @@ def validate_contour(contour: dict) -> bool:
     return True
 
 
+# Public constructor helper: advertised in docs/api/geometry.md and used to
+# build CONTOUR_SCHEMA dicts from raw (x, y) tuples.
 def contour_from_points(
     points: list[tuple[float, float]],
     holes: list[list[tuple[float, float]]] | None = None,
@@ -274,46 +276,4 @@ def contour_from_points(
         "exterior": exterior,
         "holes": hole_rings,
         "is_closed": is_closed,
-    }
-
-
-def bbox_from_corners(x1: float, y1: float, x2: float, y2: float) -> dict:
-    """
-    Create a bounding box from corner coordinates.
-
-    Args:
-        x1: Left X coordinate.
-        y1: Top Y coordinate.
-        x2: Right X coordinate.
-        y2: Bottom Y coordinate.
-
-    Returns:
-        Dictionary matching BBOX_SCHEMA.
-    """
-    return {
-        "x": min(x1, x2),
-        "y": min(y1, y2),
-        "width": abs(x2 - x1),
-        "height": abs(y2 - y1),
-    }
-
-
-def bbox_from_center(cx: float, cy: float, width: float, height: float) -> dict:
-    """
-    Create a bounding box from center and dimensions.
-
-    Args:
-        cx: Center X coordinate.
-        cy: Center Y coordinate.
-        width: Width of the box.
-        height: Height of the box.
-
-    Returns:
-        Dictionary matching BBOX_SCHEMA.
-    """
-    return {
-        "x": cx - width / 2,
-        "y": cy - height / 2,
-        "width": width,
-        "height": height,
     }

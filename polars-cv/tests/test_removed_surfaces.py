@@ -385,6 +385,32 @@ def test_match_detections_is_gone_from_both_namespaces() -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# label_reduce(heatmap=...): a back-compat alias with no callers
+# ---------------------------------------------------------------------------
+
+
+def test_label_reduce_has_no_heatmap_alias() -> None:
+    """``.contour.label_reduce`` must not accept ``heatmap=``.
+
+    ``heatmap`` was a back-compat alias for ``image`` with no callers anywhere
+    in the repo: ``Pipeline.label_reduce`` never carried it, and nothing passed
+    ``heatmap=`` to the accessor. Per "delete superseded-but-accepted params"
+    it is gone -- ``image`` is the sole input, and a caller passing ``heatmap=``
+    now gets a TypeError rather than a silently-accepted alias that entered the
+    method's identity for nothing.
+    """
+    from polars_cv.geometry.contours import ContourNamespace
+
+    params = inspect.signature(ContourNamespace.label_reduce).parameters
+    assert "image" in params, "probe is broken: label_reduce lost its image input"
+    assert "heatmap" not in params
+
+    ns = pl.col("contours").contour
+    with pytest.raises(TypeError):
+        ns.label_reduce(pl.col("img"), heatmap=pl.col("img"))  # type: ignore[call-arg]
+
+
 def test_the_correspondence_result_carries_no_counts() -> None:
     """``n_tp`` / ``n_fp`` / ``n_fn`` / ``pred_idx`` must not come back.
 
