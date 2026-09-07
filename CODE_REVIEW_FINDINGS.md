@@ -130,34 +130,79 @@ not left as a static report.
   side reads `"config:"`, so it wants its own careful commit rather than riding
   with the mechanical deletions.
 
-### CR-05 — Metrics helpers documented as load-bearing are orphaned · `Open`
+### CR-05 — Metrics helpers documented as load-bearing are orphaned · `Resolved (premise partly corrected)`
 
 - **Location:** `metrics/_auc.py` `partial_auc` (`:72`), `mcclish_correction`
   (`:13`), `_interp` (`:173`); `metrics/_result.py` `interpolate` (`:103`),
   `summary_table` (`:130`).
-- **What's wrong:** `partial_auc`/`mcclish_correction`/`_interp` are reachable
-  only via `MetricResult.auc(x_range=...)`, which nothing calls with a range;
-  `interpolate`/`summary_table` have no internal caller. `metrics/AGENTS.md:21,40`
-  still describes them as used.
-- **Proposed fix:** delete the orphans (per "deleting is part of the work") and
-  correct `metrics/AGENTS.md`.
+- **Correction to the premise (verified 2026-09-07):** the `_auc.py` trio is
+  **not** orphaned. `partial_auc`/`mcclish_correction`/`_interp` back the public
+  `MetricResult.auc(x_col, y_col, x_range=..., correction=...)` partial-AUC /
+  McClish feature and are imported and tested directly by
+  `tests/test_metric_fixes.py` (`partial_auc` extrapolation-warning test,
+  `mcclish_correction` correction test, integer-bound tests). They are live and
+  stay. AGENTS.md's statement that `_auc.py` keeps them "for the eager PR-curve
+  `MetricResult.auc`" is accurate.
+- **What was actually dead:** only the two `_result.py` methods,
+  `MetricResult.interpolate` and `MetricResult.summary_table`. Zero callers in
+  `python/`, `tests/`, `docs/`, `examples/` — the FROC/LROC helpers use
+  `_auc_expr.interpolate_curve_lazy` directly, and no test invoked the methods.
+- **Resolution:** removed `MetricResult.interpolate` / `summary_table` (and the
+  now-unused `interpolate_curve_lazy` import from `_result.py`). Guarded by
+  `tests/test_removed_surfaces.py::test_metric_result_interpolate_and_summary_table_are_gone`.
+  Dropped the two from the `docs/api/metrics.md` autodoc member list (which also
+  listed a `partial_auc` member `MetricResult` never had). Corrected
+  `metrics/AGENTS.md` lines 21-23, 40, 133. The `_auc.py` helpers were left in
+  place per the corrected premise.
 
-### CR-06 — Two all-points-AP implementations kept in sync by hand · `Open`
+### CR-06 — Two all-points-AP implementations kept in sync by hand · `Won't fix (documented) — kept separate, tie divergence`
 
 - **Location:** `metrics/_metrics/_precision_recall.py` scalar `_all_points_ap`
   (`:330`) vs vectorized `all_points_ap_by_group` (`:404`).
-- **What's wrong:** same estimator, two code paths; the second's docstring admits
-  identity. `average_precision`/mAP use one, bootstrap the other.
-- **Proposed fix:** collapse to one authority (express the scalar path in terms of
-  the grouped one, or vice-versa).
+- **What's wrong:** same estimator, two code paths; `average_precision` /
+  `PrecisionRecallResult.auc` use the scalar one, bootstrap + (now) mAP use the
+  grouped one.
+- **Finding (verified 2026-09-07):** the two are **bit-identical on any curve
+  with distinct scores** — pinned directly by
+  `test_precision_recall.py::TestAllPointsAPAuthority` (parametrized tie-free
+  curves incl. single point, all-TP, all-FP) and end-to-end by the pre-existing
+  `test_bootstrap_ci_lazy.py::test_pr_point_matches_average_precision`. They
+  **diverge on exact score ties** (e.g. scores `[0.5,0.5,0.5,0.5]`, TP/FP mix:
+  scalar 0.25 vs grouped 0.4166…). Root cause: all-points AP is
+  tie-order-sensitive, and the two paths feed differently ordered frames to an
+  unstable Polars sort — the tie-break is arbitrary in *both*; neither value is
+  "more correct".
+- **Decision:** kept as two functions. Collapsing `_all_points_ap` onto the
+  grouped path would change `PrecisionRecallResult.auc("all_points")`'s public
+  (already arbitrary) output on tied curves, violating the "do not change public
+  numeric output" constraint. Per the review protocol ("if they don't agree,
+  keep them separate and report why"), the divergence is now documented in
+  `metrics/AGENTS.md` and pinned as a known gap
+  (`TestAllPointsAPAuthority::test_tie_divergence_is_the_documented_known_gap`).
+  A clean future collapse is tracked as **CR-30** (adopt a canonical tie
+  convention first).
 
-### CR-07 — `mean_average_precision` runs an eager Python loop · `Open`
+### CR-07 — `mean_average_precision` runs an eager Python loop · `Resolved`
 
-- **Location:** `metrics/_metrics/_precision_recall.py:218`.
+- **Location:** `metrics/_metrics/_precision_recall.py` (`mean_average_precision`,
+  now `_mean_average_precision_all_points`).
 - **What's wrong:** nested Python `for` over IoU × class, each iteration a full
   eager `average_precision().collect()` — a left-behind eager path now that the
   grouped lazy authority (`all_points_ap_by_group`) exists.
-- **Proposed fix:** vectorize onto the grouped authority.
+- **Resolution:** the `interpolation="all_points"` path is now one lazy plan with
+  a single final collect: detections are stacked across thresholds (re-thresholded
+  through the canonical `DetectionTable.at_iou_threshold`, so the `is_tp` rule and
+  its lowering warning are not re-implemented), joined to per-class `total_gts`,
+  reduced by `all_points_ap_by_group` grouped on `(_iou_t, class_id)`, then
+  averaged over the full `(threshold, class)` grid (so a class with no detections
+  or zero GTs still averages in as `AP = 0`, exactly as the loop did). The
+  `"11_point"` (VOC) method has **no** grouped form, so it keeps the eager
+  per-cell loop (that branch also preserves the original `ValueError` for an
+  unknown `interpolation`). Output is bit-identical for all tie-free inputs — the
+  realistic and tested domain (see CR-06 for the exact-tie caveat, which the
+  scalar loop was equally subject to). Pinned by new exact-value tests in
+  `test_precision_recall.py::TestMeanAveragePrecision` (single/multi-threshold,
+  multi-class, all interpolations, no-detection and zero-GT classes).
 
 ### CR-08 — `_rotation_matrix` reintroduces rotation trig in Python · `Open`
 
@@ -170,14 +215,20 @@ not left as a static report.
 - **Proposed fix:** extend `rotate_affine_params` to accept `center`+`scale` so
   Python stops doing trig, or document a sanctioned exception + add a guard.
 
-### CR-09 — Duplicate integral families (eager vs expression) · `Open`
+### CR-09 — Duplicate integral families (eager vs expression) · `Won't fix (premise corrected)`
 
 - **Location:** `metrics/_auc.py` (eager) vs `metrics/_auc_expr.py` (expression).
-- **What's wrong:** the `trapz` split is justified (eager PR path), but the eager
-  `partial_auc`/`mcclish_correction` are dead (CR-05), so those copies are pure
-  redundancy alongside `partial_auc_expr`/`_mcclish_correction_expr`.
-- **Proposed fix:** remove the dead eager copies with CR-05; keep only the
-  expression versions.
+- **Original claim:** the eager `partial_auc`/`mcclish_correction` are dead
+  (CR-05), so those copies are redundant alongside
+  `partial_auc_expr`/`_mcclish_correction_expr`.
+- **Correction (verified 2026-09-07):** the premise does not hold. The eager
+  `partial_auc`/`mcclish_correction`/`_interp` are **live** — they back the
+  public `MetricResult.auc(x_range=..., correction=...)` partial-AUC / McClish
+  feature and are imported and tested by `tests/test_metric_fixes.py` (see the
+  CR-05 correction). The two families serve two execution models: `_auc.py`
+  (eager, Series-based) for the eager PR-curve `MetricResult.auc`, and
+  `_auc_expr.py` (expression) for the lazy FROC/LROC + bootstrap plans. Neither
+  is redundant. No deletion; both kept.
 
 ### CR-10 — PNG-factory guard enforces a subset and is being evaded · `Open`
 
@@ -263,6 +314,15 @@ not left as a static report.
 - **CR-28** — `ExprNode::Compute` holds `Vec<Arc<ViewExpr>>` but every site uses
   exactly one child (`view-buffer/src/expr.rs`); narrow to `Arc<ViewExpr>`. Spun
   out of CR-16 as a standalone type change. · `Open`
+- **CR-30** — All-points AP has no canonical tie convention, so its two
+  implementations (scalar `_all_points_ap`, grouped `all_points_ap_by_group` in
+  `metrics/_metrics/_precision_recall.py`) can return different (both arbitrary)
+  values on exact score ties, which is why CR-06 keeps them separate. Adopt a
+  deterministic secondary sort key (e.g. `is_tp` descending — TP before FP at
+  equal score, the COCO/sklearn-friendly convention) in *both* paths, verify it
+  leaves every existing pin unchanged (all use distinct scores) and does not move
+  the bootstrap CI pins, then collapse the two onto one authority. Spun out of
+  CR-06. · `Open`
 
 ---
 

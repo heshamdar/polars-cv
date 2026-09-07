@@ -19,9 +19,6 @@
       show_root_heading: true
       members:
         - auc
-        - partial_auc
-        - interpolate
-        - summary_table
 
 ## Matchers
 

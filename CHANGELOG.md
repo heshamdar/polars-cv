@@ -36,10 +36,26 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   positive target; under `method="mann_whitney"` (a two-class rank statistic) it
   also needs ≥1 negative.
 
+### Changed
+
+- **`mean_average_precision(interpolation="all_points")` is now a single lazy
+  plan.** It computes every `(iou_threshold, class)` AP through the shared
+  grouped authority `all_points_ap_by_group` instead of a Python loop of eager
+  per-cell `average_precision` collects. Output is bit-identical for any input
+  with distinct scores; it can differ only on *exact* score ties, where the
+  all-points AP is order-dependent and was already arbitrary in the previous
+  per-class path (a canonical tie convention is tracked as a follow-up). The
+  VOC `"11_point"` method is unchanged (it keeps the per-class loop).
+
 ### Removed
 
 - `PrecisionRecallResult.detection_table` — it existed only to feed the removed
   `bootstrap_ci`; nothing reads it now.
+- `MetricResult.interpolate` / `MetricResult.summary_table` — unused eager
+  wrappers over `interpolate_curve_lazy`; nothing called them (the FROC/LROC
+  helpers build on `interpolate_curve_lazy` directly and stay lazy). To
+  interpolate a result's curve, call `interpolate_curve_lazy(result.curve.lazy(),
+  …)`.
 
 ### Fixed
 

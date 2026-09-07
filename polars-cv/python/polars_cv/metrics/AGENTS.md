@@ -19,8 +19,9 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
   (`trapz_auc_expr`, `partial_auc_expr`, `collapse_curve`; the weighted
   Mann-Whitney two-stage `collapse_scores` + `mann_whitney_auc_expr`; and the
   lazy `interpolate_curve_lazy`); `_auc.py` keeps `trapz_auc`/`partial_auc`/
-  `_interp`/`mcclish_correction` for the eager PR-curve `MetricResult.auc` only —
-  its `interpolate`/`summary_table` delegate to `interpolate_curve_lazy`
+  `_interp`/`mcclish_correction` for the eager PR-curve `MetricResult.auc` only
+  (partial-AUC range + McClish/normalize correction), which is the *only* method
+  `MetricResult` exposes
 - **Weighted Mann-Whitney**: `froc_auc`/`lroc_auc(method="mann_whitney")` are
   weighted by `image_metadata.weight` (both `level="detection"` and
   `level="image"`), via `collapse_scores` (bucket by distinct score, carrying the
@@ -37,7 +38,7 @@ Input Data → Matcher → DetectionTable → Metric function → pl.LazyFrame /
 
 1. **Matchers** (`_matching/`) convert raw data into a canonical `DetectionTable` (two lazy frames). All implement the `Matcher` protocol. `ContourMatcher.match` also accepts a pre-decoded `LazyPipelineExpr` (via `_SourceHandle`) so a caller's graph can share the decode.
 2. **FROC/LROC metric functions** (`_metrics/`) operate on `DetectionTable` and return a `pl.LazyFrame` (`froc_auc`, `froc_curve_lazy`, …) — no result object, no eager `.item()` until the caller collects. The integral is the reusable expression in `_auc_expr.py`.
-3. **PR / Confusion** still return `MetricResult` subclasses (`_result.py`) with `auc()`, `interpolate()`, `summary_table()`. The FROC/LROC curve helpers reuse `MetricResult.interpolate`/`summary_table` on a collected `*_curve_lazy` frame. Confidence intervals are the free `*_ci_lazy` functions in `_bootstrap.py`, not a result-object method.
+3. **PR / Confusion** still return `MetricResult` subclasses (`_result.py`), whose only method is `auc()` (eager PR-curve AUC, with optional partial-AUC range + correction). The FROC/LROC curve helpers do **not** go through `MetricResult`: `froc_sensitivity_at_fp` / `froc_summary_table` / `lroc_sensitivity_at_fpf` build on the lazy `_auc_expr.interpolate_curve_lazy` authority directly and return `LazyFrame`s (the caller collects). Confidence intervals are the free `*_ci_lazy` functions in `_bootstrap.py`, not a result-object method.
 
 ### DetectionTable (`_types.py`)
 
@@ -130,7 +131,7 @@ worth knowing.
 metrics/
 ├── __init__.py           # Public re-exports
 ├── _types.py             # DetectionTable, column constants, schema validation
-├── _result.py            # MetricResult base (auc, interpolate, summary_table) — PR/Confusion
+├── _result.py            # MetricResult base (auc only) — PR/Confusion
 ├── _auc.py               # eager AUC utilities kept for PR: trapz, partial, mcclish, _interp
 ├── _auc_expr.py          # the FROC/LROC integral authority: *_expr + collapse_curve
 ├── _bootstrap.py         # {froc_auc,lroc_auc,average_precision}_ci_lazy + lazy resampler
@@ -156,6 +157,27 @@ metrics/
 - **Streaming materialization**: Materialization points use `collect(engine="streaming")`.
 
 ## Important Patterns
+
+### All-points AP: two authorities, one estimator
+- The all-points AP estimator (sort by score desc, cumulative TP/FP, monotone
+  precision envelope, anchored trapezoid) exists as a scalar (`_all_points_ap`,
+  behind `PrecisionRecallResult.auc("all_points")`) and a vectorized grouped
+  form (`all_points_ap_by_group`). Both `mean_average_precision(...,
+  interpolation="all_points")` and every `*_ap` bootstrap go through the grouped
+  authority; the eager per-class PR result uses the scalar one.
+- The two are **bit-identical on any curve with distinct scores** (pinned by
+  `test_precision_recall.py::TestAllPointsAPAuthority` and, end to end, by
+  `test_bootstrap_ci_lazy.py::test_pr_point_matches_average_precision`). They can
+  diverge **only on exact score ties**, because the all-points AP is
+  tie-order-sensitive and the two paths feed differently ordered frames to an
+  unstable Polars sort — the tie-break, and thus the AP, is arbitrary in both.
+  That divergence is why they are kept as two functions rather than folded into
+  one: collapsing them would change `PrecisionRecallResult.auc`'s already
+  arbitrary tie output. A future canonical tie convention (a stable secondary
+  sort key) would let them merge; see `CODE_REVIEW_FINDINGS.md` CR-30.
+- `mean_average_precision` keeps the eager per-`(threshold, class)` loop for the
+  `"11_point"` (VOC) method only, which has no grouped form; the `"all_points"`
+  method is one lazy plan with a single collect.
 
 ### Null and edge-case handling
 - Contour extraction returns `null` (not empty list) when no contours found. All matchers use `.fill_null(0)` on `list.len()` for `n_gts`.

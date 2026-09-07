@@ -20,10 +20,11 @@ The two stages are kept separate, mirroring the eager path
   unique (i.e. the curve/scores were collapsed), matching the eager helpers'
   precondition.
 
-:func:`interpolate_curve_lazy` is the lazy replacement for
-``MetricResult.interpolate`` / ``summary_table``: it reads y at requested x
-operating points off a collapsed curve without collecting, so the curve helpers
-return a ``LazyFrame`` and the caller owns the collect.
+:func:`interpolate_curve_lazy` is the single lazy interpolation authority: it
+reads y at requested x operating points off a collapsed curve without collecting,
+so the FROC/LROC curve helpers (``froc_sensitivity_at_fp`` / ``froc_summary_table``
+/ ``lroc_sensitivity_at_fpf``) return a ``LazyFrame`` and the caller owns the
+collect.
 """
 
 from __future__ import annotations
@@ -349,7 +350,8 @@ def interpolate_curve_lazy(
 ) -> pl.LazyFrame:
     """Interpolate ``y`` at requested ``x`` operating points, lazily.
 
-    The lazy replacement for ``MetricResult.interpolate`` / ``summary_table``: it
+    The single lazy interpolation authority (the FROC/LROC sensitivity/summary
+    helpers build on it): it
     collapses the curve to the strictly-increasing upper envelope
     (:func:`collapse_curve`), then brackets each query point with a backward and a
     forward as-of join and linearly interpolates. A point outside the observed

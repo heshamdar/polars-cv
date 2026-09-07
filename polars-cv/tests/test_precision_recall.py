@@ -18,6 +18,10 @@ from polars_cv.metrics import (
     precision_recall_curve,
     recall_at_threshold,
 )
+from polars_cv.metrics._metrics._precision_recall import (
+    _all_points_ap,
+    all_points_ap_by_group,
+)
 from polars_cv.metrics._types import (
     COL_CLASS_ID,
     COL_DET_IDX,
@@ -197,8 +201,53 @@ class TestAveragePrecision:
         assert abs(ap_all - 1.0) < 0.01
 
 
+@pytest.fixture()
+def multiclass_detection_table() -> DetectionTable:
+    """Two classes (``cat``/``dog``), distinct scores, one GT per (image, class).
+
+    Distinct scores keep every all-points AP well-defined (no tie-order
+    ambiguity), so the pinned mAP values below are exact ground truth.
+    """
+    det_df = pl.DataFrame(
+        {
+            COL_IMAGE_ID: ["i1", "i1", "i2", "i1", "i2", "i2"],
+            COL_CLASS_ID: ["cat", "cat", "cat", "dog", "dog", "dog"],
+            COL_SCORE: [0.9, 0.8, 0.6, 0.85, 0.7, 0.4],
+            COL_IS_TP: [True, False, True, True, False, True],
+            COL_GT_IDX: [0, None, 1, 0, None, 1],
+            COL_IOU: [0.95, 0.0, 0.72, 0.9, 0.0, 0.55],
+            COL_DET_IDX: [0, 1, 2, 0, 1, 2],
+        },
+        schema={
+            COL_IMAGE_ID: pl.String,
+            COL_CLASS_ID: pl.String,
+            COL_SCORE: pl.Float64,
+            COL_IS_TP: pl.Boolean,
+            COL_GT_IDX: pl.UInt32,
+            COL_IOU: pl.Float64,
+            COL_DET_IDX: pl.UInt32,
+        },
+    )
+    meta_df = pl.DataFrame(
+        {
+            COL_IMAGE_ID: ["i1", "i2", "i1", "i2"],
+            COL_CLASS_ID: ["cat", "cat", "dog", "dog"],
+            COL_N_GTS: [1, 1, 1, 1],
+            COL_WEIGHT: [1.0, 1.0, 1.0, 1.0],
+            COL_GT_LABEL: [True, True, True, True],
+        }
+    )
+    return DetectionTable.from_matched(det_df, meta_df, matching_iou_threshold=0.5)
+
+
 class TestMeanAveragePrecision:
-    """Tests for mean_average_precision function."""
+    """Tests for mean_average_precision function.
+
+    The exact-value pins below lock the numeric output of ``mAP`` so the
+    vectorization onto the grouped all-points authority (CR-07) cannot change
+    any result. All fixtures use distinct scores, where the all-points estimator
+    is tie-order-independent and therefore exactly reproducible.
+    """
 
     def test_single_threshold(self, simple_detection_table: DetectionTable) -> None:
         """mAP at default threshold should match AP for single class."""
@@ -213,6 +262,130 @@ class TestMeanAveragePrecision:
             iou_thresholds=[0.5, 0.75],
         )
         assert 0.0 <= map_val <= 1.0
+
+    def test_single_class_exact_values(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """Exact pins on the single-class fixture (both interpolations)."""
+        assert mean_average_precision(simple_detection_table) == pytest.approx(
+            0.7555555555555555, abs=1e-9
+        )
+        assert mean_average_precision(
+            simple_detection_table, interpolation="11_point"
+        ) == pytest.approx(0.7636363636363636, abs=1e-9)
+
+    def test_multi_threshold_exact_values(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        """Exact pins across a COCO-style set of IoU thresholds."""
+        assert mean_average_precision(
+            simple_detection_table, iou_thresholds=[0.5, 0.75]
+        ) == pytest.approx(0.5444444444444444, abs=1e-9)
+        assert mean_average_precision(
+            simple_detection_table, iou_thresholds=[0.5, 0.75], interpolation="11_point"
+        ) == pytest.approx(0.5636363636363637, abs=1e-9)
+
+    def test_multiclass_exact_values(
+        self, multiclass_detection_table: DetectionTable
+    ) -> None:
+        """Exact pins for multiple classes, single and multiple thresholds."""
+        t = multiclass_detection_table
+        assert mean_average_precision(t) == pytest.approx(0.8333333333333333, abs=1e-9)
+        assert mean_average_precision(t, interpolation="11_point") == pytest.approx(
+            0.8484848484848484, abs=1e-9
+        )
+        assert mean_average_precision(t, iou_thresholds=[0.5, 0.75]) == pytest.approx(
+            0.6666666666666666, abs=1e-9
+        )
+        assert mean_average_precision(
+            t, iou_thresholds=[0.5, 0.6, 0.7, 0.8, 0.9]
+        ) == pytest.approx(0.6333333333333333, abs=1e-9)
+        assert mean_average_precision(
+            t, iou_thresholds=[0.5, 0.6, 0.7, 0.8, 0.9], interpolation="11_point"
+        ) == pytest.approx(0.6666666666666664, abs=1e-9)
+
+    def test_class_without_detections_contributes_zero(self) -> None:
+        """A class with GTs but no detections averages in as AP = 0.
+
+        ``cat`` is a perfect detector (AP = 1.0); ``dog`` has metadata (2 GTs)
+        but no detections, so its AP is 0.0. mAP = (1.0 + 0.0) / 2 = 0.5. This
+        pins the grid-denominator behaviour the vectorized path must preserve:
+        every ``(threshold, class)`` cell counts, present in the detections or
+        not.
+        """
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["i1", "i1"],
+                COL_CLASS_ID: ["cat", "cat"],
+                COL_SCORE: [0.9, 0.5],
+                COL_IS_TP: [True, True],
+                COL_GT_IDX: [0, 1],
+                COL_IOU: [0.9, 0.8],
+                COL_DET_IDX: [0, 1],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["i1", "i1"],
+                COL_CLASS_ID: ["cat", "dog"],
+                COL_N_GTS: [2, 2],
+                COL_WEIGHT: [1.0, 1.0],
+                COL_GT_LABEL: [True, True],
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        assert mean_average_precision(table) == pytest.approx(0.5, abs=1e-9)
+        assert mean_average_precision(table, interpolation="11_point") == pytest.approx(
+            0.5, abs=1e-9
+        )
+
+    def test_class_with_zero_gts_contributes_zero(self) -> None:
+        """A class whose GT count is zero scores AP = 0 (no division blow-up).
+
+        ``cat`` has 1 GT and a perfect TP (AP = 1.0); ``dog`` has detections but
+        ``n_gts = 0``, so recall is undefined and its AP is defined as 0.0. mAP =
+        (1.0 + 0.0) / 2 = 0.5.
+        """
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["i1", "i2"],
+                COL_CLASS_ID: ["cat", "dog"],
+                COL_SCORE: [0.9, 0.7],
+                COL_IS_TP: [True, False],
+                COL_GT_IDX: [0, None],
+                COL_IOU: [0.9, 0.0],
+                COL_DET_IDX: [0, 0],
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["i1", "i2"],
+                COL_CLASS_ID: ["cat", "dog"],
+                COL_N_GTS: [1, 0],
+                COL_WEIGHT: [1.0, 1.0],
+                COL_GT_LABEL: [True, False],
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        assert mean_average_precision(table) == pytest.approx(0.5, abs=1e-9)
 
 
 class TestPrecisionRecallAtThreshold:
@@ -238,6 +411,101 @@ class TestPrecisionRecallAtThreshold:
         f1 = f1_at_threshold(simple_detection_table, 0.7)
         # P = R = 2/3, so F1 = 2/3
         assert abs(f1 - 2 / 3) < 0.01
+
+
+class TestAllPointsAPAuthority:
+    """The scalar ``_all_points_ap`` and grouped ``all_points_ap_by_group``.
+
+    Both implement the same monotone-envelope + anchored-trapezoid estimator.
+    They agree *exactly* on any curve with distinct scores. They can diverge on
+    exact score ties, because the all-points AP is tie-order-sensitive and each
+    path presents a differently ordered frame to an unstable Polars sort — the
+    tie-break, and thus the AP, is arbitrary in both. That divergence is the
+    documented reason CR-06 keeps them as two functions rather than folding
+    ``PrecisionRecallResult.auc`` onto the grouped path (which would change its
+    already-arbitrary tie output); see ``metrics/AGENTS.md`` and CR-30.
+    """
+
+    @staticmethod
+    def _grouped_ap(scores: list[float], is_tp: list[bool], total_gts: float) -> float:
+        expanded = pl.LazyFrame(
+            {
+                COL_SCORE: scores,
+                COL_IS_TP: is_tp,
+                "total_gts": [float(total_gts)] * len(scores),
+                "_g": [0] * len(scores),
+            }
+        )
+        out = all_points_ap_by_group(expanded, group_col="_g").collect()
+        return float(out["ap"][0]) if out.height else 0.0
+
+    @staticmethod
+    def _scalar_ap(scores: list[float], is_tp: list[bool], total_gts: int) -> float:
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: [f"i{i}" for i in range(len(scores))],
+                COL_CLASS_ID: [DEFAULT_CLASS] * len(scores),
+                COL_SCORE: scores,
+                COL_IS_TP: is_tp,
+                COL_GT_IDX: [i if t else None for i, t in enumerate(is_tp)],
+                COL_IOU: [0.9 if t else 0.0 for t in is_tp],
+                COL_DET_IDX: list(range(len(scores))),
+            },
+            schema={
+                COL_IMAGE_ID: pl.String,
+                COL_CLASS_ID: pl.String,
+                COL_SCORE: pl.Float64,
+                COL_IS_TP: pl.Boolean,
+                COL_GT_IDX: pl.UInt32,
+                COL_IOU: pl.Float64,
+                COL_DET_IDX: pl.UInt32,
+            },
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["m"],
+                COL_CLASS_ID: [DEFAULT_CLASS],
+                COL_N_GTS: [total_gts],
+                COL_WEIGHT: [1.0],
+                COL_GT_LABEL: [True],
+            }
+        )
+        table = DetectionTable.from_matched(det_df, meta_df)
+        return _all_points_ap(precision_recall_curve(table).curve)
+
+    @pytest.mark.parametrize(
+        ("scores", "is_tp", "gts"),
+        [
+            ([0.9, 0.8, 0.7, 0.5, 0.3], [True, False, True, False, True], 3),
+            ([0.9], [True], 1),
+            ([0.9], [False], 1),
+            ([0.95, 0.85, 0.75], [True, True, True], 3),
+            ([0.95, 0.85, 0.75], [False, False, False], 3),
+            ([0.9, 0.8, 0.7, 0.6], [True, True, False, True], 5),
+            ([0.42, 0.31, 0.20, 0.11], [False, True, True, False], 3),
+        ],
+    )
+    def test_scalar_matches_grouped_on_distinct_scores(
+        self, scores: list[float], is_tp: list[bool], gts: int
+    ) -> None:
+        """On distinct scores the two authorities are bit-identical."""
+        scalar = self._scalar_ap(scores, is_tp, gts)
+        grouped = self._grouped_ap(scores, is_tp, float(gts))
+        assert scalar == pytest.approx(grouped, abs=1e-12)
+
+    def test_tie_divergence_is_the_documented_known_gap(self) -> None:
+        """On exact score ties the two paths may legitimately disagree.
+
+        This pins the *existence* of the divergence (not a specific value) so a
+        future author who collapses the two authorities does so knowing it
+        changes ``PrecisionRecallResult.auc``'s tie output — see CR-30.
+        """
+        scores = [0.5, 0.5, 0.5, 0.5]
+        is_tp = [True, False, True, False]
+        scalar = self._scalar_ap(scores, is_tp, 4)
+        grouped = self._grouped_ap(scores, is_tp, 4.0)
+        # Both are valid all-points APs for the tied curve; they differ here.
+        assert scalar != pytest.approx(grouped, abs=1e-9)
 
 
 class TestConfusionAtThreshold:
