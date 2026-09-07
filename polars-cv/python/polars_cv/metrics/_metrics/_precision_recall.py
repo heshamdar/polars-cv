@@ -10,6 +10,7 @@ import polars as pl
 from .._auc import trapz_auc
 from .._result import MetricResult
 from .._types import (
+    COL_CLASS_ID,
     COL_IS_TP,
     COL_N_GTS,
     COL_SCORE,
@@ -213,8 +214,15 @@ def mean_average_precision(
         mAP value in [0, 1].
     """
     thresholds = iou_thresholds or [0.5]
-    class_ids = table.class_ids()
 
+    if interpolation == "all_points":
+        return _mean_average_precision_all_points(table, thresholds)
+
+    # The grouped authority implements only the all-points estimator; the VOC
+    # 11-point method has no grouped form, so it keeps the per-(threshold, class)
+    # eager path. This branch also validates ``interpolation``: an unknown value
+    # reaches ``PrecisionRecallResult.auc`` and raises there, as before.
+    class_ids = table.class_ids()
     ap_values: list[float] = []
     for iou_thresh in thresholds:
         rethresholded = table.at_iou_threshold(iou_thresh)
@@ -228,6 +236,67 @@ def mean_average_precision(
     if not ap_values:
         return 0.0
     return float(pl.Series("ap", ap_values).mean())  # type: ignore[arg-type]
+
+
+def _mean_average_precision_all_points(
+    table: DetectionTable,
+    thresholds: list[float],
+) -> float:
+    """Vectorized all-points mAP over every ``(threshold, class)`` cell.
+
+    One lazy plan, one collect: the per-cell APs come from the shared grouped
+    authority :func:`all_points_ap_by_group` (the same estimator the scalar
+    ``average_precision`` uses), rather than a Python loop of eager
+    ``average_precision`` collects. Re-thresholding goes through the canonical
+    :meth:`DetectionTable.at_iou_threshold`, so the ``is_tp`` rule and its
+    "lowering has no effect" warning are not re-implemented here.
+
+    The averaging grid is every ``(threshold, class)`` pair — classes from
+    :meth:`DetectionTable.class_ids` — so a class with no detections (or zero
+    GTs) still averages in as ``AP = 0``, exactly as the eager loop did.
+    """
+    class_ids = table.class_ids()
+    if not class_ids or not thresholds:
+        return 0.0
+
+    gts = table.image_metadata.group_by(COL_CLASS_ID).agg(
+        total_gts=pl.col(COL_N_GTS).sum().cast(pl.Float64)
+    )
+
+    # Per-detection rows, stacked across thresholds with ``is_tp`` recomputed by
+    # the canonical re-thresholder (which also emits the lowering warning).
+    per_threshold = [
+        table.at_iou_threshold(iou_thresh)
+        .detections.select(COL_CLASS_ID, COL_SCORE, COL_IS_TP)
+        .with_columns(_iou_t=pl.lit(float(iou_thresh), dtype=pl.Float64))
+        for iou_thresh in thresholds
+    ]
+    expanded = pl.concat(per_threshold, how="vertical").join(
+        gts, on=COL_CLASS_ID, how="left"
+    )
+    ap = all_points_ap_by_group(expanded, group_col=["_iou_t", COL_CLASS_ID])
+
+    grid = (
+        pl.LazyFrame(
+            {"_iou_t": pl.Series([float(t) for t in thresholds], dtype=pl.Float64)}
+        )
+        .join(
+            pl.LazyFrame({COL_CLASS_ID: pl.Series(class_ids, dtype=pl.String)}),
+            how="cross",
+        )
+        .join(gts, on=COL_CLASS_ID, how="left")
+        .join(ap, on=["_iou_t", COL_CLASS_ID], how="left")
+        .with_columns(
+            # A cell with GTs but no qualifying detections is a null AP → 0.0; a
+            # cell whose class has zero GTs has undefined recall → 0.0.
+            ap=pl.when(pl.col("total_gts") > 0)
+            .then(pl.col("ap").fill_null(0.0))
+            .otherwise(0.0)
+        )
+        .select(pl.col("ap").mean())
+    )
+    result = grid.collect(engine="streaming").item()
+    return float(result) if result is not None else 0.0
 
 
 def precision_at_threshold(

@@ -594,6 +594,32 @@ def test_eager_froc_lroc_result_api_is_gone() -> None:
         assert hasattr(m, name), f"replacement {name!r} missing"
 
 
+def test_metric_result_interpolate_and_summary_table_are_gone() -> None:
+    """``MetricResult.interpolate`` / ``summary_table`` must not come back.
+
+    Both were thin eager wrappers over ``_auc_expr.interpolate_curve_lazy`` that
+    nothing called: the FROC/LROC curve helpers (``froc_sensitivity_at_fp`` /
+    ``froc_summary_table`` / ``lroc_sensitivity_at_fpf``) build on
+    ``interpolate_curve_lazy`` directly and stay lazy, and no other caller — in
+    ``python/``, ``tests/``, ``docs/`` or ``examples/`` — used the methods. They
+    were removed per "delete what nothing reaches"; the interpolation authority
+    remains the single lazy ``interpolate_curve_lazy``. Interpolating a
+    ``MetricResult`` again means calling that function on ``result.curve.lazy()``,
+    not re-adding an eager method here.
+    """
+    from polars_cv.metrics import MetricResult
+    from polars_cv.metrics._result import MetricResult as _MR
+
+    for name in ("interpolate", "summary_table"):
+        assert not hasattr(MetricResult, name), (
+            f"MetricResult re-exposes removed {name!r}"
+        )
+        assert not hasattr(_MR, name), f"_result.MetricResult defines removed {name!r}"
+
+    # The eager AUC surface it kept is still present.
+    assert hasattr(MetricResult, "auc"), "MetricResult.auc must remain"
+
+
 def test_conflicting_weight_guard_is_gone() -> None:
     """The eager conflicting-weight guard was removed for pure-lazy streaming.
 

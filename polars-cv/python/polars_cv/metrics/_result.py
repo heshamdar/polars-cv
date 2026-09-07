@@ -8,7 +8,6 @@ from typing import Any
 import polars as pl
 
 from ._auc import CorrectionMethod, partial_auc, trapz_auc
-from ._auc_expr import interpolate_curve_lazy
 
 
 @dataclass(frozen=True)
@@ -16,8 +15,11 @@ class MetricResult:
     """Base class for all detection metric results.
 
     Subclasses (e.g. ``PrecisionRecallResult``) add metric-specific convenience
-    methods with pre-bound column names. The FROC/LROC metrics interpolate their
-    curves through this base directly (see ``froc_sensitivity_at_fp``).
+    methods with pre-bound column names. This base carries the eager PR-curve
+    ``auc`` (with optional partial-AUC range and correction). FROC/LROC curve
+    interpolation does **not** go through here — those helpers build on the lazy
+    ``_auc_expr.interpolate_curve_lazy`` authority directly (see
+    ``froc_sensitivity_at_fp`` / ``froc_summary_table``).
 
     Attributes:
         curve: DataFrame containing the computed metric curve.
@@ -34,8 +36,8 @@ class MetricResult:
     def _curve_xy(self, x_col: str, y_col: str) -> tuple[pl.Series, pl.Series]:
         """Return the curve as strictly increasing x with the upper envelope y.
 
-        Every consumer of a curve's geometry goes through here — ``auc`` and
-        ``interpolate`` must not sort for themselves. A curve carries many rows
+        Every consumer of a curve's geometry goes through here — ``auc`` must
+        not sort for itself. A curve carries many rows
         tied at one x (a FROC threshold bucket that adds only true positives
         leaves ``fp_per_image`` unchanged), and Polars' ``sort`` defaults to
         ``maintain_order=False``, so a sort on x alone leaves the y at each tie
@@ -95,62 +97,3 @@ class MetricResult:
         if x_range is None:
             return trapz_auc(x, y, correction)
         return partial_auc(x, y, x_range[0], x_range[1], correction)
-
-    # ------------------------------------------------------------------
-    # Interpolation
-    # ------------------------------------------------------------------
-
-    def interpolate(self, *, x_col: str, y_col: str, at: float) -> float | None:
-        """Linearly interpolate a y-value at a given x-value.
-
-        Delegates to :func:`~polars_cv.metrics._auc_expr.interpolate_curve_lazy`
-        — the single interpolation authority the lazy FROC/LROC helpers also use
-        — and collects at this eager boundary.
-
-        Args:
-            x_col: Column name for the x-axis.
-            y_col: Column name for the y-axis.
-            at: The x-value at which to interpolate.
-
-        Returns:
-            Interpolated y-value, or ``None`` when ``at`` falls outside the
-            observed x-range of the curve (no extrapolation). At an x the
-            curve visits more than once, the highest y there is returned.
-        """
-        result = interpolate_curve_lazy(
-            self.curve.lazy(), x_col=x_col, y_col=y_col, at=[float(at)]
-        ).collect()
-        value = result[y_col][0]
-        return None if value is None else float(value)
-
-    # ------------------------------------------------------------------
-    # Summary table
-    # ------------------------------------------------------------------
-
-    def summary_table(
-        self,
-        *,
-        x_col: str,
-        y_col: str,
-        operating_points: list[float],
-    ) -> pl.DataFrame:
-        """Build a summary at specific operating points.
-
-        Args:
-            x_col: Column for x-axis values.
-            y_col: Column for y-axis values.
-            operating_points: x-values at which to report interpolated y.
-
-        Returns:
-            DataFrame with ``x_col`` and ``y_col`` columns. ``y_col`` is
-            null for operating points outside the observed x-range, and is
-            always Float64 — an all-null column must still be a sensitivity
-            column, not a ``Null``-dtype one that breaks arithmetic
-            downstream.
-        """
-        return interpolate_curve_lazy(
-            self.curve.lazy(),
-            x_col=x_col,
-            y_col=y_col,
-            at=operating_points,
-        ).collect()
