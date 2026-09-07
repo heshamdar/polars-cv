@@ -121,6 +121,14 @@ not left as a static report.
   but the code returns `Fixed`.
 - **Proposed fix:** delete the variant (and its arms/test), or wire `Normalize`
   to actually emit it; fix the three doc comments either way.
+- **Note (deferred from the dead-code batch):** this is *not* the low-risk
+  deletion it first looked like — `Configurable` is live in the FFI contract, not
+  just view-buffer. `polars-cv/src/lib.rs` serializes it as `"config:<dtype>"`
+  and branches on `matches!(rule, R::Configurable(_))` in the planner-facing
+  `op_output_dtype` path (`execute.rs` resolves it too). Removing it means
+  changing the Rust↔Python wire contract and confirming nothing on the Python
+  side reads `"config:"`, so it wants its own careful commit rather than riding
+  with the mechanical deletions.
 
 ### CR-05 — Metrics helpers documented as load-bearing are orphaned · `Open`
 
@@ -206,19 +214,27 @@ not left as a static report.
 
 ## Low
 
-- **CR-13** — `TypedBufferData::polars_dtype()` (`polars-cv/src/graph/types.rs:304`)
-  re-enumerates the `DType`→Polars mapping that `polars_dtype_for`
-  (`decode.rs:613`) owns; delegate via `polars_dtype_for(self.dtype())`. · `Open`
-- **CR-14** — `GraphNode.alias` (`polars-cv/src/graph/types.rs:390`) is a dead
-  `#[allow(dead_code)]` field whose doc comment ("becomes the key in outputs map")
-  is false; fix the comment or drop the field (keep only for wire-closure). · `Open`
-- **CR-15** — Stale TODO pointer at `polars-cv/src/graph/compiled.rs:642` to an
-  already-shipped path sandbox; remove. · `Open`
-- **CR-16** — view-buffer dead code: `FusedKernel` helpers
-  (`new/push/len/is_empty/describe/op_names`, `ops/scalar.rs`), `ScalarOp::name`,
-  `ViewExpr::explain`+`explain_impl`+`node_type_name` (`expr.rs:689`),
-  `ViewDto::validate_input_domain` (`ops/dto.rs:89`), and `ExprNode::Compute`'s
-  always-length-1 `Vec<Arc<ViewExpr>>` (`expr.rs:25`). Delete. · `Open`
+- **CR-13** — `TypedBufferData::polars_dtype()` (`polars-cv/src/graph/types.rs`)
+  re-enumerated the `DType`→Polars mapping that `polars_dtype_for`
+  (`decode.rs`) owns. · `Resolved` — now delegates via
+  `decode::polars_dtype_for(self.dtype())`.
+- **CR-14** — `GraphNode.alias` (`polars-cv/src/graph/types.rs`) carried a false
+  doc comment ("becomes the key in outputs map"). · `Resolved` — the field is
+  kept (Python emits `alias` per node and `GraphNode` is `deny_unknown_fields`,
+  so it is required for wire-closure); the comment now states it is
+  deserialized-but-unread, matching its `domain`/`output_dtype` siblings.
+- **CR-15** — Stale TODO pointer at `polars-cv/src/graph/compiled.rs` to an
+  already-shipped path sandbox. · `Resolved` — reworded to name the `PathPolicy`
+  sandbox instead of a TODO.
+- **CR-16** — view-buffer dead code. · `Resolved (partial)` — **deleted**
+  `FusedKernel::describe`/`op_names`, `ScalarOp::name`,
+  `ViewExpr::explain`/`explain_impl`/`node_type_name`, and
+  `ViewDto::validate_input_domain` (all confirmed zero-caller). **Corrected:** the
+  subagent listed `FusedKernel::new`/`push`/`len`/`is_empty` as dead, but they are
+  the builder API used throughout `view-buffer/tests/` (`clamp_fusion.rs`,
+  `fused_ops.rs`, …) — kept. **Deferred:** `ExprNode::Compute`'s always-length-1
+  `Vec<Arc<ViewExpr>>` → `Arc<ViewExpr>` is a type change touching every
+  construction/match site; left as its own follow-up (see CR-28).
 - **CR-17** — `source()` `BLOB` and `AUTO` branches are byte-identical
   (`pipeline.py:1532`); collapse. · `Open`
 - **CR-18** — `contours.py:376` `label_reduce(heatmap=)` back-compat alias with no
@@ -240,8 +256,13 @@ not left as a static report.
   slightly inaccurate" comment (`view-buffer/src/expr.rs` ~600); derive from first
   principles or narrow the comment. · `Open`
 - **CR-25** — Redundant `_ => None` catch-all after `Invert` in `working_dtype`
-  (`view-buffer/src/ops/compute.rs:255`) lets a new `ComputeOp` inherit `None`
-  silently; make it exhaustive. · `Open`
+  (`view-buffer/src/ops/compute.rs`) let a new `ComputeOp` inherit `None`
+  silently. · `Resolved` — replaced with explicit
+  `Cast`/`Affine`/`RotateAffine`/`Fused` arms (behaviour-preserving), so the
+  match is exhaustive and a new variant must declare its working dtype.
+- **CR-28** — `ExprNode::Compute` holds `Vec<Arc<ViewExpr>>` but every site uses
+  exactly one child (`view-buffer/src/expr.rs`); narrow to `Arc<ViewExpr>`. Spun
+  out of CR-16 as a standalone type change. · `Open`
 
 ---
 

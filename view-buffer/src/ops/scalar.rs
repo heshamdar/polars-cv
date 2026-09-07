@@ -20,20 +20,6 @@ pub enum ScalarOp {
     Clamp(f32, f32),
 }
 
-impl ScalarOp {
-    /// Returns a human-readable name for this operation with parameters.
-    pub fn name(&self) -> String {
-        match self {
-            ScalarOp::Add(v) => format!("Add({v:.2})"),
-            ScalarOp::Mul(v) => format!("Mul({v:.2})"),
-            ScalarOp::Div(v) => format!("Div({v:.2})"),
-            ScalarOp::Pow(v) => format!("Pow({v:.2})"),
-            ScalarOp::Relu => "Relu".to_string(),
-            ScalarOp::Clamp(min, max) => format!("Clamp({min:.2}, {max:.2})"),
-        }
-    }
-}
-
 #[cfg(feature = "serde")]
 fn default_out_dtype() -> DType {
     DType::F32
@@ -84,22 +70,6 @@ impl FusedKernel {
     /// Returns true if the kernel has no operations.
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
-    }
-
-    /// Returns a human-readable description of the fused operations.
-    /// Example: "Fused(Mul(2.00), Add(1.00), Relu)" — a non-f32 output
-    /// dtype is reported as a trailing `Out(<dtype>)`.
-    pub fn describe(&self) -> String {
-        let mut op_names: Vec<String> = self.ops.iter().map(|op| op.name()).collect();
-        if self.out_dtype != DType::F32 {
-            op_names.push(format!("Out({:?})", self.out_dtype));
-        }
-        format!("Fused({})", op_names.join(", "))
-    }
-
-    /// Returns a list of operation names for detailed reporting.
-    pub fn op_names(&self) -> Vec<String> {
-        self.ops.iter().map(|op| op.name()).collect()
     }
 }
 

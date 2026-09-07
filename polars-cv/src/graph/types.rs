@@ -301,19 +301,11 @@ impl TypedBufferData {
         }
     }
     /// Get the Polars DataType for this typed data.
+    ///
+    /// Reads the single `DType`→`DataType` authority (`decode::polars_dtype_for`)
+    /// rather than re-enumerating the mapping.
     pub(crate) fn polars_dtype(&self) -> DataType {
-        match self {
-            TypedBufferData::U8(_) => DataType::UInt8,
-            TypedBufferData::I8(_) => DataType::Int8,
-            TypedBufferData::U16(_) => DataType::UInt16,
-            TypedBufferData::I16(_) => DataType::Int16,
-            TypedBufferData::U32(_) => DataType::UInt32,
-            TypedBufferData::I32(_) => DataType::Int32,
-            TypedBufferData::U64(_) => DataType::UInt64,
-            TypedBufferData::I64(_) => DataType::Int64,
-            TypedBufferData::F32(_) => DataType::Float32,
-            TypedBufferData::F64(_) => DataType::Float64,
-        }
+        crate::graph::decode::polars_dtype_for(self.dtype())
     }
     /// The view-buffer dtype this variant holds.
     pub(crate) fn dtype(&self) -> view_buffer::DType {
@@ -384,8 +376,10 @@ pub struct GraphNode {
     /// Upstream node IDs this node depends on.
     #[serde(default)]
     pub upstream: Vec<String>,
-    /// Optional user-defined alias for multi-output.
-    /// Note: Used for deserialization; alias becomes the key in outputs map.
+    /// User-defined alias the Python planner attaches for multi-output. The
+    /// executor keys its outputs off `UnifiedGraph.outputs`, not this field, so
+    /// it is deserialized-but-unread — declared, like `domain`/`output_dtype`
+    /// below, only so the node stays closed under `deny_unknown_fields`.
     #[serde(default)]
     #[allow(dead_code)]
     pub alias: Option<String>,

@@ -82,22 +82,4 @@ impl ViewDto {
     pub fn name(&self) -> &'static str {
         self.as_op().name()
     }
-
-    /// Validate that this operation can receive input from the given domain.
-    ///
-    /// Returns an error with a helpful message if the domains are incompatible.
-    pub fn validate_input_domain(&self, input_domain: Domain) -> Result<(), String> {
-        let expected = self.input_domain();
-        if expected.accepts(input_domain) {
-            Ok(())
-        } else {
-            Err(format!(
-                "{}() expects {} input but pipeline is currently in {} domain. \
-                 Add a domain-converting operation (e.g., rasterize() or extract_contours()).",
-                self.name(),
-                expected.name(),
-                input_domain.name()
-            ))
-        }
-    }
 }

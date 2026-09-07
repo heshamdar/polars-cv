@@ -638,8 +638,8 @@ impl CompiledGraph {
                                 _ => Ok(None),
                             }
                         // `file_path` is fetch + decode: `crate::fetch` reads the
-                        // bytes the path names (see that module for the path
-                        // sandboxing TODO), then they decode as image bytes.
+                        // bytes the path names (applying its `PathPolicy`
+                        // sandbox), then they decode as image bytes.
                         } else if source_format == "file_path" {
                             if input_series.dtype() == &DataType::Null {
                                 Ok(None)
