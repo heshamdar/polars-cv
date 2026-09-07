@@ -3267,7 +3267,7 @@ class Pipeline:
         *,
         sx: FloatOrExpr = 0.0,
         sy: FloatOrExpr = 0.0,
-        output_size: tuple[IntOrExpr, IntOrExpr] | None = None,
+        output_size: tuple[IntOrExpr, IntOrExpr],
     ) -> "Pipeline":
         """
         Apply a shear transformation.
@@ -3280,14 +3280,13 @@ class Pipeline:
         Args:
             sx: Horizontal shear factor (literal or per-row Polars expression).
             sy: Vertical shear factor (literal or per-row Polars expression).
-            output_size: ``(height, width)`` of the output. Required
-                (auto-sizing not yet implemented).
+            output_size: ``(height, width)`` of the output. Required, because the
+                output shape is part of the plan-time schema and a shear does not
+                imply one — an image source's height/width are not known until
+                execution. Each element accepts a per-row Polars expression.
 
         Returns:
             Self for chaining.
-
-        Raises:
-            ValueError: If *output_size* is not provided.
 
         Example:
             ```python
@@ -3299,10 +3298,6 @@ class Pipeline:
             ... )
             ```
         """
-        # TODO: auto-compute output_size from input shape + shear if not provided
-        if output_size is None:
-            msg = "output_size is required for shear (auto-size not yet implemented)"
-            raise ValueError(msg)
         # sx/sy may be per-row expressions; warp_affine tracks each matrix
         # element independently, so the shear matrix passes them through.
         matrix: list[FloatOrExpr] = [1.0, sx, 0.0, sy, 1.0, 0.0]
@@ -3312,9 +3307,9 @@ class Pipeline:
         self,
         *,
         angle: FloatOrExpr,
+        center: tuple[FloatOrExpr, FloatOrExpr],
+        output_size: tuple[IntOrExpr, IntOrExpr],
         scale: FloatOrExpr = 1.0,
-        center: tuple[FloatOrExpr, FloatOrExpr] | None = None,
-        output_size: tuple[IntOrExpr, IntOrExpr] | None = None,
     ) -> "Pipeline":
         """
         Combined rotation and scaling around a center point.
@@ -3327,19 +3322,17 @@ class Pipeline:
         Args:
             angle: Rotation angle in degrees (positive = clockwise). Accepts a
                 Polars expression for a per-row angle.
+            center: ``(cx, cy)`` center of rotation. Required — an image source's
+                height/width are not known until execution, so there is no
+                plan-time centre to default to. Each element accepts an
+                expression.
+            output_size: ``(height, width)`` of the output. Required, because the
+                output shape is part of the plan-time schema (same reason as
+                *center*). Each element accepts an expression.
             scale: Scale factor (default 1.0). Accepts an expression.
-            center: ``(cx, cy)`` center of rotation. Required
-                (auto-compute not yet implemented). Each element accepts an
-                expression.
-            output_size: ``(height, width)`` of the output. Required
-                (auto-sizing not yet implemented). Each element accepts an
-                expression.
 
         Returns:
             Self for chaining.
-
-        Raises:
-            ValueError: If *center* or *output_size* is not provided.
 
         Note:
             A matrix built from expressions cannot participate in plan-time
@@ -3358,13 +3351,6 @@ class Pipeline:
             ... )
             ```
         """
-        # TODO: auto-compute center from input shape if not provided
-        if center is None:
-            msg = "center is required for rotate_and_scale (auto-compute not yet implemented)"
-            raise ValueError(msg)
-        if output_size is None:
-            msg = "output_size is required for rotate_and_scale (auto-size not yet implemented)"
-            raise ValueError(msg)
         matrix = _rotation_matrix(angle, center, scale)
         return self.warp_affine(matrix, output_size)
 

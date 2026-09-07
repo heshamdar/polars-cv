@@ -181,9 +181,13 @@ class TestShearPipelineBuilder:
         assert [m["value"] for m in matrix] == [1.0, 0.2, 0.0, 0.0, 1.0, 0.0]
 
     def test_shear_requires_output_size(self) -> None:
-        """Shear requires output_size."""
+        """Shear requires output_size (a required keyword-only argument).
+
+        The output shape is part of the plan-time schema and a shear does not
+        imply one, so the signature enforces it rather than raising later.
+        """
         pipe = Pipeline().source("image_bytes")
-        with pytest.raises(ValueError, match="output_size"):
+        with pytest.raises(TypeError, match="output_size"):
             pipe.shear(sx=0.2, sy=0.0)
 
     def test_shear_both_axes(self) -> None:
@@ -222,15 +226,15 @@ class TestRotateAndScalePipelineBuilder:
         assert pipe._ops[0].op == "warp_affine"
 
     def test_rotate_and_scale_requires_center(self) -> None:
-        """rotate_and_scale requires center."""
+        """rotate_and_scale requires center (a required keyword-only argument)."""
         pipe = Pipeline().source("image_bytes")
-        with pytest.raises(ValueError, match="center"):
+        with pytest.raises(TypeError, match="center"):
             pipe.rotate_and_scale(angle=45.0, output_size=(100, 100))
 
     def test_rotate_and_scale_requires_output_size(self) -> None:
-        """rotate_and_scale requires output_size."""
+        """rotate_and_scale requires output_size (a required keyword-only argument)."""
         pipe = Pipeline().source("image_bytes")
-        with pytest.raises(ValueError, match="output_size"):
+        with pytest.raises(TypeError, match="output_size"):
             pipe.rotate_and_scale(angle=45.0, center=(50.0, 50.0))
 
     def test_rotate_and_scale_matrix_correctness(self) -> None:
