@@ -21,6 +21,14 @@ not left as a static report.
 1 xfailed, fast lane 3650 passed / 1 xfailed (exit 0). All findings below are
 *additions* to a green suite, i.e. gaps in coverage, not existing failures.
 
+**Progress (as of the 0.26.0 pre-release review):** CR-01/02/03/05/07/13/14/15/16/25
+were closed in the first review pass; the batched follow-ups then closed
+CR-04 (Batch C), CR-24/CR-28 (Batch D1), CR-27 (Batch D2), CR-08 (Batch E),
+CR-21 (Batch F1), CR-30 — and with it CR-06's divergence — (Batch F2),
+CR-10/CR-12/CR-22 (Batch B), and CR-17/18/19/20/23 (Batch A). The only
+substantive item still **Open** is **CR-11** (no non-network CI coverage for
+`cloud.rs`/`cloud_auth.rs`); **CR-09** stays *Won't fix (premise corrected)*.
+
 ---
 
 ## High
@@ -111,7 +119,19 @@ not left as a static report.
   `test_affine_builder.py` tests already asserted (updated from `ValueError` to
   the signature-level `TypeError`). Lazy stub regenerated; parity guards green.
 
-### CR-04 — `OutputDTypeRule::Configurable` is declared but never emitted · `Open`
+### CR-04 — `OutputDTypeRule::Configurable` is declared but never emitted · `Resolved`
+
+> **Resolved** in Batch C (`5648e0e`). Deleted the `Configurable(DType)` variant,
+> its `resolve()` arm and the `EVERY_RULE` test entry (`dtype.rs`); the
+> `config:<dtype>` wire arm (`lib.rs`); and the whole `out_dtype_override`
+> plumbing — the `matches!(rule, Configurable(_))` branch in `output_dtype_for`,
+> the `out_dtype_override()` helper, and the `Option<DType>` parameter threaded
+> through `resolve`/`resolve_planned`/`resolve_output_dtype` (every caller passed
+> `None`; `Configurable` was the only `Some`-producer, so it was exactly the
+> "plumbed deep and discarded" anti-pattern). `Normalize` keeps its structural
+> `out_dtype` folded into a `Fixed(out_dtype)` rule, so plan == execution is
+> unchanged. The six stale doc sites were corrected and the fold-agreement test
+> dropped its now-meaningless override dimension.
 
 - **Location:** `view-buffer/src/core/dtype.rs:161`; docs at
   `view-buffer/src/ops/compute.rs:70`, `expr.rs:373`, `runner.rs:158`;
@@ -155,7 +175,16 @@ not left as a static report.
   `metrics/AGENTS.md` lines 21-23, 40, 133. The `_auc.py` helpers were left in
   place per the corrected premise.
 
-### CR-06 — Two all-points-AP implementations kept in sync by hand · `Won't fix (documented) — kept separate, tie divergence`
+### CR-06 — Two all-points-AP implementations kept in sync by hand · `Resolved (divergence closed; kept as two agreeing functions)`
+
+> **Update (CR-30, `3b30751`):** the tie divergence this entry documented as a
+> known gap is closed — both estimators now adopt the sklearn/COCO tie
+> convention and agree exactly on ties as well as distinct scores, and
+> `TestAllPointsAPAuthority` was rewritten from pinning the divergence to pinning
+> the agreement. The two functions are still separate (a scalar single-curve path
+> and a grouped `.over(keys)` path) but no longer merely "kept in sync by hand":
+> they now genuinely agree on every input, guarded by that test.
+
 
 - **Location:** `metrics/_metrics/_precision_recall.py` scalar `_all_points_ap`
   (`:330`) vs vectorized `all_points_ap_by_group` (`:404`).
@@ -204,7 +233,21 @@ not left as a static report.
   `test_precision_recall.py::TestMeanAveragePrecision` (single/multi-threshold,
   multi-class, all interpolations, no-detection and zero-GT classes).
 
-### CR-08 — `_rotation_matrix` reintroduces rotation trig in Python · `Open`
+### CR-08 — `_rotation_matrix` reintroduces rotation trig in Python · `Resolved`
+
+> **Resolved** in Batch E (`9fa830a`). Added
+> `AffineParams::rotation_matrix_2d(angle_deg, cx, cy, scale)` (view-buffer) — the
+> 2x3 rotation+scale matrix about an arbitrary centre, now the single authority;
+> `from_rotation` builds on it (adding only the expand canvas + recentering), so
+> the image-centre and arbitrary-centre paths share one formula. Exposed as the
+> `rotation_matrix_2d` FFI (registered + in `_REQUIRED_LIB_HOOKS`), and
+> `_rotation_matrix`'s all-literal path now reads the FFI instead of the trig. The
+> `pl.Expr` branch stays in Python — the engine cannot evaluate an expression at
+> plan time — and is the one guard-sanctioned copy, now asserted by
+> `test_the_planner_does_not_recompute_the_rotation_matrix`. Building a *literal*
+> `rotate_and_scale` therefore now touches the compiled plugin (a deliberate
+> trade), so the matrix-building `test_affine_builder.py` cases carry
+> `@plugin_required`.
 
 - **Location:** `polars-cv/python/polars_cv/pipeline.py:65`.
 - **What's wrong:** the rotate→affine matrix has a Rust authority
@@ -230,7 +273,16 @@ not left as a static report.
   `_auc_expr.py` (expression) for the lazy FROC/LROC + bootstrap plans. Neither
   is redundant. No deletion; both kept.
 
-### CR-10 — PNG-factory guard enforces a subset and is being evaded · `Open`
+### CR-10 — PNG-factory guard enforces a subset and is being evaded · `Resolved`
+
+> **Resolved** in Batch B (`a093b44`). Added a sibling guard
+> `test_no_unguarded_local_image_data_fixtures` that AST-scans each suite module
+> and flags an override of a conftest image-*data* fixture whose body references
+> `Image`/`PIL` directly (bypassing conftest's Pillow skip), while allowing an
+> override that delegates to a guarded factory. The detector is watched both ways
+> with inline known-bad/known-good fixtures. The offender
+> (`test_typed_nodes.py::sample_image_bytes`) now delegates to `encode_png` and
+> drops its module-scope PIL/BytesIO imports.
 
 - **Location:** `polars-cv/tests/test_sanitation.py` (`test_no_local_png_factories`,
   `_CONFTEST_PNG_FACTORIES`); offender `polars-cv/tests/test_typed_nodes.py:33`
@@ -252,7 +304,15 @@ not left as a static report.
 - **Proposed fix:** add table-driven URL→backend / options-parse unit tests (Rust)
   or a mock `object_store` backend so the logic runs in the default lane.
 
-### CR-12 — Structural parity sweep self-skips without the `.so` · `Open (mitigated)`
+### CR-12 — Structural parity sweep self-skips without the `.so` · `Resolved`
+
+> **Resolved** in Batch B (`a093b44`). Added
+> `test_plugin_is_present_when_required` (not `@plugin_required`): when
+> `POLARS_CV_REQUIRE_PLUGIN=1` it asserts `_lib` is importable, else it self-skips.
+> The flag is set in `ci.yml`'s Build-and-Test step and in `scripts/verify.sh`
+> (both run `maturin develop` first), so a lane that is supposed to have built the
+> plugin now fails — rather than silently skipping the whole `@plugin_required`
+> sweep — if the extension is missing.
 
 - **Location:** `polars-cv/tests/test_sanitation.py` (~10 `pytest.skip("_lib.X not
   built")` sites) + backstop `test_lib_introspection_api_is_present`.
@@ -287,25 +347,42 @@ not left as a static report.
   `Vec<Arc<ViewExpr>>` → `Arc<ViewExpr>` is a type change touching every
   construction/match site; left as its own follow-up (see CR-28).
 - **CR-17** — `source()` `BLOB` and `AUTO` branches are byte-identical
-  (`pipeline.py:1532`); collapse. · `Open`
+  (`pipeline.py:1532`); collapse. · `Resolved` — Batch A (`3d987d7`): merged into
+  one `elif fmt in (BLOB, AUTO)` arm, both comments preserved.
 - **CR-18** — `contours.py:376` `label_reduce(heatmap=)` back-compat alias with no
-  caller; delete. · `Open`
+  caller; delete. · `Resolved` — Batch A (`3d987d7`): alias deleted, `image` is the
+  sole input; guarded by `test_label_reduce_has_no_heatmap_alias`.
 - **CR-19** — `metrics/_matching/_contour.py:502` `match(score_col=)` accepted and
   ignored (Matcher-protocol conformance); document at the site or restructure the
-  protocol. · `Open`
+  protocol. · `Resolved` — Batch A (`3d987d7`): documented at the site (kept for
+  `Matcher`-protocol conformance; `BBoxMatcher` genuinely reads it, contour scores
+  come from heatmap peaks).
 - **CR-20** — `geometry/schemas.py` factory helpers
   (`validate_point`/`validate_contour`/`contour_from_points`/`bbox_from_*`) used
-  only by tests; move to a test helper or re-export intentionally. · `Open`
+  only by tests; move to a test helper or re-export intentionally. · `Resolved` —
+  Batch A (`3d987d7`): the genuinely test-only `bbox_from_corners`/`bbox_from_center`
+  moved to `tests/_geometry_helpers.py`; `validate_point` (production caller) and
+  `contour_from_points` (docs/tests) kept, the latter marked a public helper.
 - **CR-21** — `metrics/_metrics/_confusion.py` + `f1_at_threshold` issue several
-  separate `.collect()`s instead of sharing the upstream subplan. · `Open`
+  separate `.collect()`s instead of sharing the upstream subplan. · `Resolved` —
+  Batch F part 1 (`f912cfd`): `f1_at_threshold` routes through
+  `confusion_at_threshold` (one tp/fp/fn pass); precision/recall/f1 fall out
+  arithmetically with the same edge cases. Behaviour unchanged.
 - **CR-22** — ~6 test files use bare `pytest.raises(Exception)` without `match=`
-  (e.g. `test_correctness_audit.py:981` uses `(ValueError, Exception)`); tighten. · `Open`
+  (e.g. `test_correctness_audit.py:981` uses `(ValueError, Exception)`); tighten. ·
+  `Resolved` — Batch B (`a093b44`): narrowed 27 sites across 12 files to the actual
+  exception type, adding `match=` where a stable message exists; dropped the
+  now-unnecessary PT011/B017 noqas.
 - **CR-23** — Stale docstring at `polars-cv/tests/test_typed_nodes.py:8` ("marked
   xfail until implementation complete" — no xfails exist; the seamless-pipeline
-  feature landed and `TestSeamlessPipeline` runs live). · `Open`
+  feature landed and `TestSeamlessPipeline` runs live). · `Resolved` — Batch A
+  (`3d987d7`): docstring rewritten.
 - **CR-24** — `optimize()` transpose-merge carries a self-admitted "prototype …
   slightly inaccurate" comment (`view-buffer/src/expr.rs` ~600); derive from first
-  principles or narrow the comment. · `Open`
+  principles or narrow the comment. · `Resolved` — Batch D part 1 (`865428c`):
+  the hand-built merged node is replaced with `grandchild.transpose(merged)`, so
+  shape/strides are recomputed from the grandchild's real layout through the
+  canonical builder; the hedge is gone.
 - **CR-25** — Redundant `_ => None` catch-all after `Invert` in `working_dtype`
   (`view-buffer/src/ops/compute.rs`) let a new `ComputeOp` inherit `None`
   silently. · `Resolved` — replaced with explicit
@@ -313,7 +390,9 @@ not left as a static report.
   match is exhaustive and a new variant must declare its working dtype.
 - **CR-28** — `ExprNode::Compute` holds `Vec<Arc<ViewExpr>>` but every site uses
   exactly one child (`view-buffer/src/expr.rs`); narrow to `Arc<ViewExpr>`. Spun
-  out of CR-16 as a standalone type change. · `Open`
+  out of CR-16 as a standalone type change. · `Resolved` — Batch D part 1
+  (`865428c`): narrowed to `Compute(ComputeOp, Arc<ViewExpr>)`, which makes the
+  `.len() == 1` guards in `optimize`/`build_plan` unrepresentable and deletes them.
 - **CR-30** — All-points AP has no canonical tie convention, so its two
   implementations (scalar `_all_points_ap`, grouped `all_points_ap_by_group` in
   `metrics/_metrics/_precision_recall.py`) can return different (both arbitrary)
@@ -322,13 +401,30 @@ not left as a static report.
   equal score, the COCO/sklearn-friendly convention) in *both* paths, verify it
   leaves every existing pin unchanged (all use distinct scores) and does not move
   the bootstrap CI pins, then collapse the two onto one authority. Spun out of
-  CR-06. · `Open`
+  CR-06. · `Resolved` — Batch F part 2 (`3b30751`): both estimators now collapse
+  each tied-score block to one PR point at the cumulative counts *after* the block
+  (the sklearn/COCO convention), making the AP order-independent and the two paths
+  agree exactly on ties as well as distinct scores. This changes public AP output
+  on tied-score inputs (documented in `CHANGELOG.md`); `TestAllPointsAPAuthority`
+  is rewritten from pinning the divergence to pinning the agreement. The two
+  functions remain separate but now genuinely agree (the guard pins it).
 
 ---
 
 ## Architectural follow-up (spun out of CR-01)
 
-### CR-27 — Extend the single-metadata-authority collapse to `Compute` and `View` builders · `Open`
+### CR-27 — Extend the single-metadata-authority collapse to `Compute` and `View` builders · `Resolved`
+
+> **Resolved** in Batch D part 2 (`bb1f184`). Added two private authorities,
+> `compute_node` and `view_node`, that build a Compute/View node purely from the
+> op's contract (shape via `infer_shape`, strides via `calc_strides`, dtype via
+> `resolve_output_dtype`), and routed the builders through them: affine, scale,
+> relu, fused, normalize, clamp, adjust_contrast, adjust_gamma, invert (and
+> `apply_op`'s `RotateAffine` arm) → `compute_node`; transpose, crop, flip,
+> channel_select → `view_node`. Behaviour is identical. `cast` keeps its own
+> builder (a same-dtype cast passes strides through untouched) and `reshape` keeps
+> its own (its non-contiguous-input panic), both documented at the helpers. No
+> builder can now stamp shape/strides/dtype independently of an op contract.
 
 CR-01's fix makes `apply_op` the sole metadata authority for **image** ops. The
 `Compute` (cast/scale/normalize/clamp/…) and `View` (transpose/reshape/crop/flip)

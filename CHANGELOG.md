@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-09-08
+
 ### Changed
 
 - **All-points AP is now independent of input row order on tied scores.**
@@ -48,17 +50,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   viable and degenerate groups — no per-group `try/except`. Viability needs ≥1
   positive target; under `method="mann_whitney"` (a two-class rank statistic) it
   also needs ≥1 negative.
-
-### Changed
-
 - **`mean_average_precision(interpolation="all_points")` is now a single lazy
   plan.** It computes every `(iou_threshold, class)` AP through the shared
   grouped authority `all_points_ap_by_group` instead of a Python loop of eager
-  per-cell `average_precision` collects. Output is bit-identical for any input
-  with distinct scores; it can differ only on *exact* score ties, where the
-  all-points AP is order-dependent and was already arbitrary in the previous
-  per-class path (a canonical tie convention is tracked as a follow-up). The
-  VOC `"11_point"` method is unchanged (it keeps the per-class loop).
+  per-cell `average_precision` collects. It now applies the same canonical tie
+  convention as the rest of the all-points path (above), so its output is
+  order-independent on ties as well as bit-identical to the previous loop on
+  distinct scores. The VOC `"11_point"` method is unchanged (it keeps the
+  per-class loop).
+- **`shear` and `rotate_and_scale` require their sizing parameters (breaking).**
+  `output_size` (both) and `center` (`rotate_and_scale`) are now required
+  keyword-only arguments instead of defaulting to `None` and immediately raising
+  "auto-size not yet implemented". `output_size` is structural — it sets the
+  plan-time output H/W — and an image source's dimensions are unknown at plan
+  time, so auto-sizing cannot yield a plan-time shape; the requirement is the
+  principled end state, not a placeholder. Callers that already passed both are
+  unaffected; omitting one now raises `TypeError` at call time rather than
+  `ValueError` at build time.
 
 ### Removed
 
@@ -69,6 +77,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   helpers build on `interpolate_curve_lazy` directly and stay lazy). To
   interpolate a result's curve, call `interpolate_curve_lazy(result.curve.lazy(),
   …)`.
+- The `heatmap=` back-compat alias on the `.contour.label_reduce()` accessor —
+  it had no callers and duplicated `image=`. Pass `image=` instead. (The
+  `Pipeline.label_reduce(contours=...)` method is unaffected.)
 
 ### Fixed
 
@@ -2522,6 +2533,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.26.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.26.0
 [0.25.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.25.0
 [0.24.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.24.0
 [0.23.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.23.0
