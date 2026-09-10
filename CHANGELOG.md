@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-09-10
+
 ### Removed
 
 - **The McClish standardized partial-AUC correction is removed (breaking).**
@@ -2554,6 +2556,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 _Releases earlier than 0.10.0 predate this changelog; see the git history for
 details._
 
+[0.27.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.27.0
 [0.26.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.26.0
 [0.25.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.25.0
 [0.24.0]: https://github.com/heshamdar/polars-cv/releases/tag/v0.24.0
