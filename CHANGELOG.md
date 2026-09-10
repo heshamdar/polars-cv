@@ -7,6 +7,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Removed
+
+- **The McClish standardized partial-AUC correction is removed (breaking).**
+  `correction="mcclish"` is no longer accepted by `froc_auc`, `lroc_auc`,
+  `partial_auc`/`trapz_auc`, their `_auc_expr` reductions, or
+  `MetricResult.auc`; the `mcclish_correction` helper and its expression twin
+  `_mcclish_correction_expr` are deleted. McClish's standardization
+  (Med Decis Making 1989;9(3):190–195) maps a partial area into `[0.5, 1.0]`
+  against the **ROC** chance diagonal `y = x` on the unit square, so it is only
+  meaningful when the x-axis is a probability bounded to `[0, 1]`. None of the
+  curves this package integrates is that ROC curve: FROC's x-axis is false
+  positives **per image** (unbounded — for any window with `lo+hi ≥ 2`, such as
+  the standard `fp_range=(0, 8)`, the old code silently returned the sentinel
+  `0.5` for *every* model), LROC's chance line is not the diagonal, and the PR
+  chance line is horizontal at prevalence. The `correction` vocabulary is now
+  `"normalize"` (divide the partial area by the window width — a bounded mean
+  sensitivity that needs no ROC assumption) or `None`, and an unrecognised
+  `correction` is now **rejected** with `ValueError` rather than silently
+  degraded to the raw area. Migrate `correction="mcclish"` →
+  `correction="normalize"`.
+
 ## [0.26.0] — 2026-09-08
 
 ### Changed

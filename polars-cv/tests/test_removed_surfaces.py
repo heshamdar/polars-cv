@@ -823,3 +823,71 @@ def test_detection_table_image_ids_and_strata_is_gone() -> None:
         "image_ids_and_strata is back — bootstrap stratification is lazy inside "
         "_lazy_resample, not an eager image-id/strata-dict collect"
     )
+
+
+# ---------------------------------------------------------------------------
+# mcclish: a partial-AUC "correction" misapplied to non-ROC curves
+# ---------------------------------------------------------------------------
+
+
+def test_mcclish_partial_auc_correction_is_gone() -> None:
+    """The McClish standardized partial-AUC correction is removed everywhere.
+
+    McClish (Med Decis Making 1989;9(3):190-195) standardizes a *ROC* partial
+    area by mapping it into ``[0.5, 1.0]`` against the ROC chance diagonal
+    ``y = x`` on the unit square: ``pAUC_min = (lo+hi)(hi-lo)/2`` (area under the
+    diagonal over ``[lo, hi]``), ``pAUC_max = (hi-lo)``. That reference is only
+    meaningful when the x-axis is a probability bounded to ``[0, 1]`` and the
+    diagonal is the chance line. None of the curves this package integrates is
+    such an ROC curve:
+
+    * FROC's x-axis is false positives **per image** — unbounded (can exceed 1,
+      → ∞ in principle), so for any window with ``lo+hi >= 2`` the denominator
+      ``pAUC_max - pAUC_min`` is ``<= 0`` and the old code returned the sentinel
+      ``0.5`` for *every* input (e.g. the standard ``fp_range=(0, 8)`` collapsed
+      every model to 0.5), silently hiding that the correction does not apply.
+    * LROC's x-axis (FPF) is bounded but its chance line is not ``y = x``.
+    * PR's chance line is horizontal at prevalence, not the diagonal.
+
+    So the option was deleted rather than guarded. ``CorrectionMethod`` now
+    admits only ``"normalize"`` (divide the partial area by the window width — a
+    real, bounded average that needs no ROC assumption) or ``None``. A caller
+    that still passes ``"mcclish"`` must be *rejected*, not silently degraded to
+    the raw area.
+    """
+    from polars_cv.metrics import _auc, _auc_expr
+
+    # The scalar helper and its expression twin are gone.
+    assert not hasattr(_auc, "mcclish_correction"), (
+        "_auc.mcclish_correction is back — McClish standardization assumes a "
+        "bounded [0,1] ROC axis with a y=x chance diagonal, which FROC/LROC/PR "
+        "are not; see test docstring"
+    )
+    assert not hasattr(_auc_expr, "_mcclish_correction_expr"), (
+        "_auc_expr._mcclish_correction_expr is back — same reason as "
+        "_auc.mcclish_correction"
+    )
+
+    # 'mcclish' is no longer a spelling of the correction vocabulary.
+    for mod in (_auc, _auc_expr):
+        args = getattr(mod.CorrectionMethod, "__args__", ())
+        spellings = {a for a in args if isinstance(a, str)}
+        # Literal[...] | None nests the Literal; pull its members out too.
+        for a in args:
+            spellings |= {s for s in getattr(a, "__args__", ()) if isinstance(s, str)}
+        assert "mcclish" not in spellings, (
+            f"{mod.__name__}.CorrectionMethod still spells 'mcclish'"
+        )
+
+    # An unknown correction is rejected at the entry points, not silently
+    # treated as the raw area.
+    x = pl.Series("x", [0.0, 1.0, 2.0])
+    y = pl.Series("y", [0.0, 0.5, 0.8])
+    with pytest.raises(ValueError, match="mcclish|correction"):
+        _auc.partial_auc(x, y, 0.0, 2.0, correction="mcclish")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="mcclish|correction"):
+        pl.LazyFrame({"x": [0.0, 1.0], "y": [0.0, 0.5]}).select(
+            auc=_auc_expr.partial_auc_expr(
+                x="x", y="y", lo=0.0, hi=1.0, correction="mcclish"
+            )
+        ).collect()

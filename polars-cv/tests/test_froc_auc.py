@@ -124,7 +124,7 @@ class TestFrocAucParity:
         want = ref_froc_auc(table, fp_range=fp_range)
         assert got == pytest.approx(want, abs=1e-7)
 
-    @pytest.mark.parametrize("correction", ["normalize", "mcclish"])
+    @pytest.mark.parametrize("correction", ["normalize"])
     def test_partial_corrections(self, correction: str) -> None:
         table = _table(multiclass=False)
         got = _auc_value(froc_auc(table, fp_range=(0.25, 2.0), correction=correction))

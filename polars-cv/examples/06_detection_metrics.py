@@ -125,13 +125,6 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
         ),
         "\nFROC AUC (0, 0.5):",
         round(froc_auc(contour_table, fp_range=(0, 0.5)).collect().item(), 4),
-        "\nFROC AUC (0, 0.5) McClish:",
-        round(
-            froc_auc(contour_table, fp_range=(0, 0.5), correction="mcclish")
-            .collect()
-            .item(),
-            4,
-        ),
         "\nFROC MW-U (detection):",
         round(
             froc_auc(contour_table, method="mann_whitney", level="detection")
@@ -154,13 +147,6 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
         ),
         "\nLROC AUC (0, 0.5):",
         round(lroc_auc(contour_table, fpf_range=(0, 0.5)).collect().item(), 4),
-        "\nLROC AUC (0, 0.5) McClish:",
-        round(
-            lroc_auc(contour_table, fpf_range=(0, 0.5), correction="mcclish")
-            .collect()
-            .item(),
-            4,
-        ),
         "\nLROC MW-U (image):",
         round(
             lroc_auc(contour_table, method="mann_whitney", level="image")

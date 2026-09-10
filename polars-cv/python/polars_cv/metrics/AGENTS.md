@@ -19,9 +19,16 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
   (`trapz_auc_expr`, `partial_auc_expr`, `collapse_curve`; the weighted
   Mann-Whitney two-stage `collapse_scores` + `mann_whitney_auc_expr`; and the
   lazy `interpolate_curve_lazy`); `_auc.py` keeps `trapz_auc`/`partial_auc`/
-  `_interp`/`mcclish_correction` for the eager PR-curve `MetricResult.auc` only
-  (partial-AUC range + McClish/normalize correction), which is the *only* method
-  `MetricResult` exposes
+  `_interp`/`validate_correction` for the eager PR-curve `MetricResult.auc` only
+  (partial-AUC range + `normalize` correction), which is the *only* method
+  `MetricResult` exposes. The `correction` vocabulary is `"normalize"` or `None`;
+  `validate_correction` (in `_auc.py`, imported by `_auc_expr.py`) is its single
+  authority and *rejects* anything else instead of degrading to the raw area.
+  McClish's standardized ROC partial-AUC correction was removed — it standardizes
+  against the `y = x` chance diagonal on the unit square, valid only when the
+  x-axis is a probability in `[0, 1]`; FROC's axis (FP/image) is unbounded, LROC's
+  chance line is not the diagonal, and PR's is horizontal at prevalence. Its
+  removal is pinned by `test_removed_surfaces.py`
 - **Weighted Mann-Whitney**: `froc_auc`/`lroc_auc(method="mann_whitney")` are
   weighted by `image_metadata.weight` (both `level="detection"` and
   `level="image"`), via `collapse_scores` (bucket by distinct score, carrying the
@@ -60,7 +67,7 @@ Supports IoU re-thresholding via `at_iou_threshold()`, class filtering via `filt
 
 - **FROC/LROC**: `froc_auc(table, *, method, fp_range, correction, level, group_by)`
   → `pl.LazyFrame` (`[*group_by, auc]`). `method="trapezoidal"` (default) supports
-  `correction="mcclish"|"normalize"` and `fp_range`/`fpf_range`; `method="mann_whitney"`
+  `correction="normalize"` and `fp_range`/`fpf_range`; `method="mann_whitney"`
   (`level="detection"|"image"`) is a global rank statistic (no range/correction).
   A scalar is `froc_auc(table).collect().item()`; grouping is `group_by=`.
 - **PR**: `PrecisionRecallResult.auc(method=...)` — `"all_points"` (default, monotone
@@ -132,7 +139,7 @@ metrics/
 ├── __init__.py           # Public re-exports
 ├── _types.py             # DetectionTable, column constants, schema validation
 ├── _result.py            # MetricResult base (auc only) — PR/Confusion
-├── _auc.py               # eager AUC utilities kept for PR: trapz, partial, mcclish, _interp
+├── _auc.py               # eager AUC utilities kept for PR: trapz, partial, validate_correction, _interp
 ├── _auc_expr.py          # the FROC/LROC integral authority: *_expr + collapse_curve
 ├── _bootstrap.py         # {froc_auc,lroc_auc,average_precision}_ci_lazy + lazy resampler
 ├── _matching/
