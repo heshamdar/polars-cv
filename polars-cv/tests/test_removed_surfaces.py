@@ -39,6 +39,7 @@ pytestmark = pytest.mark.structural
 # ---------------------------------------------------------------------------
 
 
+@plugin_required
 def test_rasterize_has_no_anti_alias_parameter() -> None:
     """``rasterize`` must not accept ``anti_alias``.
 
@@ -82,6 +83,7 @@ def test_anti_alias_is_gone_from_the_type_stub() -> None:
 # ---------------------------------------------------------------------------
 
 
+@plugin_required
 def test_graph_json_carries_no_shape_hints() -> None:
     """Node-level ``shape_hints`` must not be serialized.
 
@@ -287,6 +289,7 @@ def test_out_dtype_rejects_the_preserve_strategy(op: str) -> None:
         build()
 
 
+@plugin_required
 @pytest.mark.parametrize("op", ["scale", "clamp"])
 def test_out_dtype_does_not_reach_the_op_params(op: str) -> None:
     """``scale``/``clamp`` must not carry ``out_dtype`` on the wire.
