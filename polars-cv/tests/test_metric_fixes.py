@@ -7,7 +7,7 @@ Covers:
 - LROC lower-right endpoint addition
 - PR monotone-envelope AP vs raw trapezoidal AUC
 - partial_auc extrapolation warning
-- McClish correction for partial AUC
+- Partial-AUC normalize correction (McClish removed; see test_removed_surfaces)
 - Mann-Whitney U AUC for froc_auc / lroc_auc (via method="mann_whitney")
 - Mann-Whitney AUC bootstrap support
 - ContourMatcher min_contour_area default change
@@ -37,7 +37,7 @@ from polars_cv.metrics import (
     lroc_curve_lazy,
     precision_recall_curve,
 )
-from polars_cv.metrics._auc import mcclish_correction, partial_auc
+from polars_cv.metrics._auc import partial_auc
 from polars_cv.metrics._auc_expr import collapse_scores, mann_whitney_auc_expr
 from polars_cv.metrics._bootstrap import _bootstrap_table_with_draws
 from polars_cv.metrics._matching._contour import ContourMatcher, _detect_source_info
@@ -675,42 +675,25 @@ class TestEntityLevelBootstrap:
         assert per_replicate["len"].unique().to_list() == [4]
 
 
-class TestMcClishCorrection:
-    """Tests for the McClish standardized partial AUC correction."""
+class TestPartialAUCCorrection:
+    """Tests for partial-AUC ``correction`` (``"normalize"`` / ``None``).
 
-    def test_perfect_classifier_gives_one(self) -> None:
-        """Perfect classifier in [0, 1] range gives corrected pAUC = 1.0."""
-        corrected = mcclish_correction(raw_pauc=1.0, lo=0.0, hi=1.0)
-        assert corrected == pytest.approx(1.0)
+    The McClish standardized correction was removed (it assumes a bounded [0,1]
+    ROC axis with a ``y = x`` chance diagonal, which FROC/LROC/PR are not); its
+    removal is pinned in ``test_removed_surfaces.py``. An unknown correction is
+    rejected rather than silently treated as the raw area.
+    """
 
-    def test_chance_classifier_gives_half(self) -> None:
-        """Diagonal (chance) classifier gives corrected pAUC = 0.5."""
-        corrected = mcclish_correction(raw_pauc=0.5, lo=0.0, hi=1.0)
-        assert corrected == pytest.approx(0.5)
-
-    def test_partial_range(self) -> None:
-        """McClish correction works for a partial range."""
-        lo, hi = 0.0, 0.5
-        min_pauc = (lo + hi) * (hi - lo) / 2  # 0.125
-        max_pauc = hi - lo  # 0.5
-        raw = (min_pauc + max_pauc) / 2  # midpoint
-        corrected = mcclish_correction(raw, lo, hi)
-        assert corrected == pytest.approx(0.75)
-
-    def test_zero_span_gives_half(self) -> None:
-        """Zero-width interval returns 0.5 sentinel."""
-        assert mcclish_correction(0.0, 0.5, 0.5) == pytest.approx(0.5)
-
-    def test_froc_auc_with_mcclish(
+    def test_unknown_correction_is_rejected(
         self, simple_detection_table: DetectionTable
     ) -> None:
-        """FROC auc with correction='mcclish' returns a value in [0, 1]."""
-        corrected = (
-            froc_auc(simple_detection_table, fp_range=(0.0, 1.0), correction="mcclish")
-            .collect()
-            .item()
-        )
-        assert 0.0 <= corrected <= 1.0
+        """FROC auc with a removed/unknown correction raises, not degrades."""
+        with pytest.raises(ValueError, match="correction"):
+            froc_auc(
+                simple_detection_table,
+                fp_range=(0.0, 1.0),
+                correction="mcclish",  # type: ignore[arg-type]
+            ).collect()
 
     def test_froc_auc_with_normalize(
         self, simple_detection_table: DetectionTable

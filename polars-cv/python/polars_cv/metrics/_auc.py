@@ -7,36 +7,36 @@ from typing import Literal
 
 import polars as pl
 
-CorrectionMethod = Literal["normalize", "mcclish"] | None
+CorrectionMethod = Literal["normalize"] | None
 
 
-def mcclish_correction(raw_pauc: float, lo: float, hi: float) -> float:
-    """Apply McClish's standardized partial AUC correction.
+def validate_correction(correction: CorrectionMethod) -> None:
+    """Reject any correction outside the supported vocabulary.
 
-    Maps a raw partial AUC to a [0.5, 1.0] scale where 0.5 corresponds to
-    chance-level performance within the restricted interval.
-
-    Reference:
-        McClish DC. Analyzing a portion of the ROC curve.
-        Medical Decision Making. 1989;9(3):190-195.
+    The single authority for the ``correction`` vocabulary, so an unrecognised
+    value fails loudly at the entry point rather than being silently treated as
+    the raw area (the ``if correction == "normalize": ...; return raw`` shape
+    would otherwise swallow it). ``"mcclish"`` — McClish's standardized ROC
+    partial-AUC correction — was removed here: it standardizes against the ROC
+    chance diagonal ``y = x`` on the unit square, which is only meaningful when
+    the x-axis is a probability bounded to ``[0, 1]``. FROC's x-axis (false
+    positives per image) is unbounded, LROC's chance line is not the diagonal,
+    and PR's chance line is horizontal at prevalence — so none of the curves in
+    this package is the ROC curve McClish assumes.
 
     Args:
-        raw_pauc: Raw partial AUC value (trapezoidal integration over [lo, hi]).
-        lo: Lower x-axis bound of the partial region.
-        hi: Upper x-axis bound of the partial region.
+        correction: The correction requested by the caller.
 
-    Returns:
-        Corrected partial AUC in [0.5, 1.0].
+    Raises:
+        ValueError: If ``correction`` is neither ``None`` nor ``"normalize"``.
     """
-    span = hi - lo
-    if span <= 0:
-        return 0.5
-    min_pauc = (lo + hi) * span / 2  # diagonal (chance-level)
-    max_pauc = span  # perfect classifier
-    denom = max_pauc - min_pauc
-    if denom <= 0:
-        return 0.5
-    return (1 + (raw_pauc - min_pauc) / denom) / 2
+    if correction is not None and correction != "normalize":
+        raise ValueError(
+            f"Unknown correction {correction!r}. Expected 'normalize' or None. "
+            "(The McClish standardized correction was removed: it assumes a "
+            "bounded [0,1] ROC x-axis with a y=x chance diagonal, which the "
+            "FROC/LROC/PR curves are not.)"
+        )
 
 
 def trapz_auc(
@@ -56,6 +56,7 @@ def trapz_auc(
     Returns:
         Area under the curve.
     """
+    validate_correction(correction)
     if x.len() < 2 or y.len() < 2:
         return 0.0
 
@@ -85,13 +86,13 @@ def partial_auc(
         hi: Upper x bound.
         correction: Optional correction for the partial area.
             ``None`` returns the raw partial area.
-            ``"normalize"`` divides by the range width ``(hi - lo)``.
-            ``"mcclish"`` applies McClish's standardized correction,
-            mapping the result to [0.5, 1.0] where 0.5 = chance level.
+            ``"normalize"`` divides by the range width ``(hi - lo)``, giving the
+            mean y-value over the window (bounded to ``[0, 1]`` when ``y`` is).
 
     Returns:
         Area under the clipped curve (optionally corrected).
     """
+    validate_correction(correction)
     if hi <= lo:
         return 0.0
     if x.len() == 0 or y.len() == 0:
@@ -165,8 +166,6 @@ def partial_auc(
     if correction == "normalize":
         span = hi - lo
         return raw / span if span > 0 else 0.0
-    if correction == "mcclish":
-        return mcclish_correction(raw, lo, hi)
     return raw
 
 

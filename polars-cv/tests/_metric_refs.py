@@ -74,17 +74,6 @@ def _froc_points(table: DetectionTable) -> tuple[np.ndarray, np.ndarray]:
     return np.array(fps), np.array(sens)
 
 
-def _mcclish(raw: float, lo: float, hi: float) -> float:
-    span = hi - lo
-    if span <= 0:
-        return 0.5
-    min_pauc = (lo + hi) * span / 2.0
-    denom = span - min_pauc
-    if denom <= 0:
-        return 0.5
-    return (1.0 + (raw - min_pauc) / denom) / 2.0
-
-
 def ref_froc_auc(
     table: DetectionTable,
     *,
@@ -99,8 +88,6 @@ def ref_froc_auc(
     if correction == "normalize":
         span = fp_range[1] - fp_range[0]
         return raw / span if span > 0 else 0.0
-    if correction == "mcclish":
-        return _mcclish(raw, fp_range[0], fp_range[1])
     return raw
 
 

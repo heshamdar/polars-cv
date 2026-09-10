@@ -29,11 +29,9 @@ collect.
 
 from __future__ import annotations
 
-from typing import Literal
-
 import polars as pl
 
-CorrectionMethod = Literal["normalize", "mcclish"] | None
+from ._auc import CorrectionMethod, validate_correction
 
 
 def _as_expr(value: str | pl.Expr) -> pl.Expr:
@@ -111,6 +109,7 @@ def trapz_auc_expr(
     Returns:
         A ``pl.Expr`` reducing to the (corrected) area; ``0.0`` for < 2 points.
     """
+    validate_correction(correction)
     xc = _as_expr(x)
     yc = _as_expr(y)
 
@@ -151,13 +150,14 @@ def partial_auc_expr(
         y: y-axis column name or expression aligned with ``x``.
         lo: Lower x bound.
         hi: Upper x bound.
-        correction: ``None`` raw; ``"normalize"`` divides by ``(hi - lo)``;
-            ``"mcclish"`` applies McClish's standardized correction.
+        correction: ``None`` raw; ``"normalize"`` divides by ``(hi - lo)``,
+            giving the mean y-value over the window.
 
     Returns:
         A ``pl.Expr`` reducing to the (corrected) partial area; ``0.0`` when
         ``hi <= lo`` or the curve is empty.
     """
+    validate_correction(correction)
     lo_f = float(lo)
     hi_f = float(hi)
     span = hi_f - lo_f
@@ -211,31 +211,7 @@ def partial_auc_expr(
 
     if correction == "normalize":
         return raw / span
-    if correction == "mcclish":
-        return _mcclish_correction_expr(raw, lo_f, hi_f)
     return raw
-
-
-def _mcclish_correction_expr(raw: pl.Expr, lo: float, hi: float) -> pl.Expr:
-    """McClish standardized partial-AUC correction as an expression.
-
-    Maps a raw partial AUC to ``[0.5, 1.0]`` where ``0.5`` is chance level over
-    ``[lo, hi]``. Ports ``_auc.mcclish_correction``; ``lo``/``hi`` are Python
-    floats so every bound below is a constant.
-
-    Reference:
-        McClish DC. Analyzing a portion of the ROC curve.
-        Medical Decision Making. 1989;9(3):190-195.
-    """
-    span = hi - lo
-    if span <= 0:
-        return pl.lit(0.5)
-    min_pauc = (lo + hi) * span / 2.0  # diagonal (chance-level)
-    max_pauc = span  # perfect classifier
-    denom = max_pauc - min_pauc
-    if denom <= 0:
-        return pl.lit(0.5)
-    return (1.0 + (raw - min_pauc) / denom) / 2.0
 
 
 def collapse_scores(

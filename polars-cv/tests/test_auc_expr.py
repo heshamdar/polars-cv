@@ -86,7 +86,7 @@ class TestPartialParity:
             assert got == pytest.approx(want, abs=1e-7), (xs, ys, lo, hi)
 
     @pytest.mark.filterwarnings("ignore::UserWarning")
-    @pytest.mark.parametrize("correction", ["normalize", "mcclish"])
+    @pytest.mark.parametrize("correction", ["normalize"])
     def test_corrections(self, correction: str) -> None:
         rng = random.Random(3)
         for _ in range(100):

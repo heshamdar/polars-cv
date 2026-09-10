@@ -84,9 +84,7 @@ class MetricResult:
             x_range: Optional ``(lo, hi)`` bounds for partial AUC.
             correction: Optional correction for partial AUC.
                 ``None`` returns the raw area.
-                ``"normalize"`` divides by the x-range width.
-                ``"mcclish"`` applies McClish's standardized correction
-                (only valid with ``x_range``).
+                ``"normalize"`` divides by the x-range width (mean y-value).
 
         Returns:
             Area under the curve (or partial area).
