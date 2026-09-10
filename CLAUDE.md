@@ -166,6 +166,18 @@ maturin develop                  # Compile Rust plugin (debug) and install into 
 maturin build --release          # Build distributable wheels
 ```
 
+**Check the Rust toolchain first — it is the common reason a build fails.** Both
+crates set `rust-version = "1.96"` (MSRV) in their `Cargo.toml`, so cargo
+*refuses to compile* on anything older, erroring before it starts:
+`error: rustc <old> is not supported ... requires rustc 1.96`. A fresh
+web/remote-session container often ships a stale `stable` toolchain — run
+`rustc --version` and, if it is below 1.96, `rustup update stable` (or install a
+newer toolchain) before `maturin develop`/`uv sync`. If you skip this the `.so`
+is never built, and the whole plugin-dependent suite **self-skips silently**
+(`@plugin_required`) rather than failing — so a green-looking run can be one that
+tested nothing. Bump `rust-version` in both `Cargo.toml`s only deliberately: it
+is the pinned MSRV, not a free knob.
+
 **Use the debug build for the develop/test loop.** `maturin develop` with no
 `--release` is what `scripts/verify.sh` and both CI workflows run, and it is
 several minutes faster per iteration — the release build re-optimises the whole
