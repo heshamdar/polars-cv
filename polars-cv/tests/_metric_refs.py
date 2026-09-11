@@ -260,12 +260,17 @@ def ref_lroc_auc(
     *,
     variant: str = "best_tp",
     fpf_range: tuple[float, float] | None = None,
+    correction: str | None = None,
 ) -> float:
     """Reference trapezoidal LROC AUC (raw or partial), single-class table."""
     fpf, sens = _lroc_points(table, variant)
     if fpf_range is None:
         return _collapse_and_trapz(fpf, sens)
-    return _collapse_and_trapz(fpf, sens, fpf_range[0], fpf_range[1])
+    raw = _collapse_and_trapz(fpf, sens, fpf_range[0], fpf_range[1])
+    if correction == "normalize":
+        span = fpf_range[1] - fpf_range[0]
+        return raw / span if span > 0 else 0.0
+    return raw
 
 
 def ref_lroc_sensitivity_at_fpf(

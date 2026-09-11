@@ -68,7 +68,7 @@ from polars_cv.metrics import ContourMatcher, froc_auc
 
 matcher = ContourMatcher(iou_threshold=0.5, extraction_threshold=0.1)
 table = matcher.match(data, pred_col="heatmap", gt_col="gt_mask")
-auc = froc_auc(table).collect().item()
+auc = froc_auc(table, fp_range=(0.0, 8.0)).collect().item()
 ```
 
 `ContourMatcher.match` also accepts a pre-decoded `LazyPipelineExpr` for
@@ -129,12 +129,15 @@ from polars_cv.metrics import (
     froc_summary_table,
 )
 
+# Trapezoidal FROC AUC requires an explicit FP window (the FP/image axis is
+# unbounded); the default correction="normalize" returns mean sensitivity over
+# it. Pass correction=None for the raw partial area.
 print(froc_auc(table, fp_range=(0, 8)).collect().item())
 print(froc_sensitivity_at_fp(table, 1.0))
 print(froc_summary_table(table))
 
 # One AUC per class, in a single lazy plan:
-per_class = froc_auc(table, group_by="class_id").collect()
+per_class = froc_auc(table, group_by="class_id", fp_range=(0, 8)).collect()
 
 # Mann-Whitney AUC (detection- or image-level):
 mw = froc_auc(table, method="mann_whitney", level="detection").collect().item()
@@ -154,6 +157,8 @@ once, the highest sensitivity there is returned.
 ```python
 from polars_cv.metrics import lroc_auc, lroc_curve_lazy, lroc_sensitivity_at_fpf
 
+# LROC's FPF axis is bounded to [0, 1], so no range is needed — the default
+# integrates the full [0, 1] domain (normalized, i.e. the standard LROC AUC).
 print(lroc_auc(table).collect().item())
 print(lroc_sensitivity_at_fpf(table, 0.5))  # None if 0.5 FPF is off the curve
 curve = lroc_curve_lazy(table).collect()
@@ -187,16 +192,20 @@ from polars_cv.metrics import (
     lroc_auc_ci_lazy,
 )
 
-# Ungrouped: one row [auc, ci_lower, ci_upper].
-froc_auc_ci_lazy(table, n_bootstrap=1000, seed=42).collect()
+# Ungrouped: one row [auc, ci_lower, ci_upper]. Trapezoidal FROC needs fp_range.
+froc_auc_ci_lazy(table, fp_range=(0, 8), n_bootstrap=1000, seed=42).collect()
 
 # Group-aware: one row per group, ready to join onto the point-metric frame.
-ci = froc_auc_ci_lazy(table, group_by="group_id", n_bootstrap=1000, seed=42)
-point = froc_auc(table, group_by="group_id")
+ci = froc_auc_ci_lazy(
+    table, group_by="group_id", fp_range=(0, 8), n_bootstrap=1000, seed=42
+)
+point = froc_auc(table, group_by="group_id", fp_range=(0, 8))
 point.join(ci.select("group_id", "ci_lower", "ci_upper"), on="group_id").collect()
 
 # Entity-level resampling (e.g. by case), composing with the grouping.
-froc_auc_ci_lazy(table, group_by="group_id", seed=42, sample_col="case_id")
+froc_auc_ci_lazy(
+    table, group_by="group_id", fp_range=(0, 8), seed=42, sample_col="case_id"
+)
 
 lroc_auc_ci_lazy(table, n_bootstrap=1000, seed=42)
 average_precision_ci_lazy(table, group_by="group_id", n_bootstrap=1000, seed=42)

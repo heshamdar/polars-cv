@@ -20,7 +20,6 @@ from .._auc_expr import (
     interpolate_curve_lazy,
     mann_whitney_auc_expr,
     partial_auc_expr,
-    trapz_auc_expr,
 )
 from .._types import (
     COL_CLASS_ID,
@@ -225,7 +224,7 @@ def froc_auc(
     *,
     method: Literal["trapezoidal", "mann_whitney"] = "trapezoidal",
     fp_range: tuple[float, float] | None = None,
-    correction: CorrectionMethod = None,
+    correction: CorrectionMethod = "normalize",
     level: Literal["detection", "image"] = "detection",
     group_by: str | list[str] | None = None,
     weight_agg: WeightAgg = "first",
@@ -233,7 +232,15 @@ def froc_auc(
     """Compute FROC AUC as a lazy, group-aware frame — one row per group.
 
     The single authority for the FROC integral: the reusable expressions in
-    :mod:`polars_cv.metrics._auc_expr`. A scalar is ``froc_auc(table).collect().item()``.
+    :mod:`polars_cv.metrics._auc_expr`. A scalar is
+    ``froc_auc(table, fp_range=(0.0, 8.0)).collect().item()``.
+
+    The trapezoidal method **requires** an explicit ``fp_range``. FROC's x-axis
+    is false positives per image — unbounded, with a model-dependent observed
+    maximum — so an all-range area is not comparable across models and there is
+    no reasonable default window. With the default ``correction="normalize"`` the
+    result is the mean sensitivity over ``fp_range`` (bounded to ``[0, 1]`` when
+    the curve is); pass ``correction=None`` for the raw partial area.
 
     Both families are weighted by ``image_metadata.weight``: the trapezoidal path
     through the weighted curve, and Mann-Whitney through a weighted rank-sum
@@ -242,10 +249,13 @@ def froc_auc(
 
     Args:
         table: Canonical detection table.
-        method: ``"trapezoidal"`` integrates the curve; ``"mann_whitney"``
-            computes a rank statistic.
-        fp_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
-        correction: Partial-AUC correction (trapezoidal only).
+        method: ``"trapezoidal"`` integrates the curve over ``fp_range``;
+            ``"mann_whitney"`` computes a range-free rank statistic.
+        fp_range: ``(lo, hi)`` FP-per-image window to integrate (**required** for
+            ``method="trapezoidal"``; rejected for ``method="mann_whitney"``).
+        correction: Partial-AUC correction (trapezoidal only). ``"normalize"``
+            (default) divides by ``hi - lo``, giving mean sensitivity over the
+            window; ``None`` returns the raw partial area.
         level: Mann-Whitney granularity — ``"detection"`` (P(TP > FP), the
             default) or ``"image"`` (P(positive-image score > negative-image)).
         group_by: Optional grouping column(s). ``None`` yields a single row.
@@ -254,15 +264,19 @@ def froc_auc(
 
     Returns:
         A ``LazyFrame`` with ``[*group_by, auc]``.
+
+    Raises:
+        ValueError: If ``method="trapezoidal"`` and ``fp_range`` is ``None``, or
+            if ``fp_range`` is passed with ``method="mann_whitney"``.
     """
     group_keys = _normalize_group_by(group_by)
 
     if method == "mann_whitney":
-        if fp_range is not None or correction is not None:
+        if fp_range is not None:
             raise ValueError(
-                "fp_range and correction are not supported with "
-                "method='mann_whitney'. Mann-Whitney computes a global rank "
-                "statistic, not a curve integral."
+                "fp_range is not supported with method='mann_whitney'. "
+                "Mann-Whitney computes a global rank statistic, not a curve "
+                "integral over an FP window."
             )
         if level == "detection":
             det = table.detections.with_columns(
@@ -343,22 +357,30 @@ def froc_auc(
             f"Unknown method {method!r}. Expected 'trapezoidal' or 'mann_whitney'."
         )
 
+    if fp_range is None:
+        raise ValueError(
+            "froc_auc(method='trapezoidal') requires an explicit fp_range. FROC's "
+            "x-axis is false positives per image — unbounded, with a "
+            "model-dependent observed maximum — so an all-range area is not "
+            "comparable across models and there is no reasonable default window. "
+            "Pass fp_range=(lo, hi) to integrate a fixed FP window (e.g. "
+            "fp_range=(0.0, 8.0)); with the default correction='normalize' the "
+            "result is the mean sensitivity over that window. For per-operating-"
+            "point sensitivities use froc_summary_table, or method='mann_whitney' "
+            "for a range-free rank statistic."
+        )
+
     curve = froc_curve_lazy(table, group_by=group_by, weight_agg=weight_agg)
     collapsed = collapse_curve(
         curve, x_col="fp_per_image", y_col="sensitivity", group_keys=group_keys
     )
-    if fp_range is None:
-        auc_expr = trapz_auc_expr(
-            x="fp_per_image", y="sensitivity", correction=correction
-        )
-    else:
-        auc_expr = partial_auc_expr(
-            x="fp_per_image",
-            y="sensitivity",
-            lo=fp_range[0],
-            hi=fp_range[1],
-            correction=correction,
-        )
+    auc_expr = partial_auc_expr(
+        x="fp_per_image",
+        y="sensitivity",
+        lo=fp_range[0],
+        hi=fp_range[1],
+        correction=correction,
+    )
 
     if group_keys:
         return collapsed.group_by(group_keys).agg(auc=auc_expr)

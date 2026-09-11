@@ -123,7 +123,8 @@ class TestFrocMetrics:
             "sensitivity",
         }
         assert curve.height >= 1
-        assert 0.0 <= froc_auc(table).collect().item() <= 10.0
+        # Normalized (default) mean sensitivity over a fixed FP window ∈ [0, 1].
+        assert 0.0 <= froc_auc(table, fp_range=(0.0, 8.0)).collect().item() <= 1.0
         sens = froc_sensitivity_at_fp(table, 1.0).collect()["sensitivity"].item()
         assert sens is None or 0.0 <= sens <= 1.0
 

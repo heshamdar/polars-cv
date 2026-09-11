@@ -75,7 +75,7 @@ def froc_auc_ci_lazy(
     seed: int | None = None,
     method: Literal["trapezoidal", "mann_whitney"] = "trapezoidal",
     fp_range: tuple[float, float] | None = None,
-    correction: CorrectionMethod = None,
+    correction: CorrectionMethod = "normalize",
     level: Literal["detection", "image"] = "detection",
     sample_col: str | None = None,
 ) -> pl.LazyFrame:
@@ -99,8 +99,10 @@ def froc_auc_ci_lazy(
         seed: Optional RNG seed. ``None`` maps to a fixed constant, so the bounds
             are deterministic even without an explicit seed.
         method: ``"trapezoidal"`` or ``"mann_whitney"``.
-        fp_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
-        correction: Partial-AUC correction (trapezoidal only).
+        fp_range: ``(lo, hi)`` FP-per-image window (**required** for
+            ``method="trapezoidal"`` — ``froc_auc`` raises without it).
+        correction: Partial-AUC correction (trapezoidal only); ``"normalize"``
+            (default) gives mean sensitivity over ``fp_range``.
         level: Mann-Whitney granularity — ``"detection"`` or ``"image"``.
         sample_col: Optional entity column (e.g. ``"case_id"``) to resample at the
             entity level within each group, expanding to images.
@@ -148,7 +150,7 @@ def lroc_auc_ci_lazy(
     variant: Literal["best_tp", "top_scoring"] = "best_tp",
     method: Literal["trapezoidal", "mann_whitney"] = "trapezoidal",
     fpf_range: tuple[float, float] | None = None,
-    correction: CorrectionMethod = None,
+    correction: CorrectionMethod = "normalize",
     level: Literal["detection", "image"] = "image",
     sample_col: str | None = None,
 ) -> pl.LazyFrame:
@@ -165,8 +167,10 @@ def lroc_auc_ci_lazy(
         seed: Optional RNG seed (``None`` → deterministic constant).
         variant: ``"best_tp"`` or ``"top_scoring"``.
         method: ``"trapezoidal"`` or ``"mann_whitney"``.
-        fpf_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
-        correction: Partial-AUC correction (trapezoidal only).
+        fpf_range: ``(lo, hi)`` FPF window (trapezoidal only); defaults to the
+            full ``(0.0, 1.0)`` LROC domain.
+        correction: Partial-AUC correction (trapezoidal only); ``"normalize"``
+            (default) gives mean sensitivity over the window.
         level: Mann-Whitney granularity — ``"image"`` or ``"detection"``.
         sample_col: Optional entity column to resample at the entity level.
 

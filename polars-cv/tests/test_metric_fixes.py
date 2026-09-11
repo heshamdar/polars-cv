@@ -6,7 +6,6 @@ Covers:
 - FROC iou_threshold propagation from DetectionTable
 - LROC lower-right endpoint addition
 - PR monotone-envelope AP vs raw trapezoidal AUC
-- partial_auc extrapolation warning
 - Partial-AUC normalize correction (McClish removed; see test_removed_surfaces)
 - Mann-Whitney U AUC for froc_auc / lroc_auc (via method="mann_whitney")
 - Mann-Whitney AUC bootstrap support
@@ -37,8 +36,11 @@ from polars_cv.metrics import (
     lroc_curve_lazy,
     precision_recall_curve,
 )
-from polars_cv.metrics._auc import partial_auc
-from polars_cv.metrics._auc_expr import collapse_scores, mann_whitney_auc_expr
+from polars_cv.metrics._auc_expr import (
+    collapse_scores,
+    mann_whitney_auc_expr,
+    partial_auc_expr,
+)
 from polars_cv.metrics._bootstrap import _bootstrap_table_with_draws
 from polars_cv.metrics._matching._contour import ContourMatcher, _detect_source_info
 from polars_cv.metrics._metrics._froc import _froc_curve_grouped
@@ -258,7 +260,9 @@ class TestFrocBootstrapRecomputesTotalTargets:
         self, simple_detection_table: DetectionTable
     ) -> None:
         """Bootstrap produces a valid CI over resampled replicates."""
-        ci = froc_auc_ci_lazy(simple_detection_table, n_bootstrap=10, seed=42).collect()
+        ci = froc_auc_ci_lazy(
+            simple_detection_table, n_bootstrap=10, seed=42, fp_range=(0.0, 1.0)
+        ).collect()
         assert ci.height == 1
         assert ci["ci_lower"].item() <= ci["auc"].item() <= ci["ci_upper"].item()
 
@@ -415,33 +419,6 @@ class TestPrApEnvelope:
 
 
 # ---------------------------------------------------------------------------
-# Partial AUC Warning
-# ---------------------------------------------------------------------------
-
-
-class TestPartialAucWarning:
-    """Verify partial_auc warns on significant left-boundary extrapolation."""
-
-    def test_warns_on_large_gap(self) -> None:
-        """Warning emitted when lo is far below curve minimum x."""
-        x = pl.Series("x", [0.5, 0.6, 0.7, 0.8, 1.0])
-        y = pl.Series("y", [0.2, 0.4, 0.6, 0.8, 1.0])
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            partial_auc(x, y, lo=0.0, hi=1.0)
-            assert any("partial_auc" in str(warning.message) for warning in w)
-
-    def test_no_warning_on_small_gap(self) -> None:
-        """No warning when lo is close to curve minimum x."""
-        x = pl.Series("x", [0.0, 0.5, 1.0])
-        y = pl.Series("y", [0.0, 0.5, 1.0])
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            partial_auc(x, y, lo=0.0, hi=1.0)
-            assert not any("partial_auc" in str(warning.message) for warning in w)
-
-
-# ---------------------------------------------------------------------------
 # Mann-Whitney U AUC
 # ---------------------------------------------------------------------------
 
@@ -569,7 +546,9 @@ class TestMannWhitneyBootstrap:
         self, simple_detection_table: DetectionTable
     ) -> None:
         """The public CI seam is lazy — it returns a LazyFrame, never a scalar."""
-        out = froc_auc_ci_lazy(simple_detection_table, n_bootstrap=5, seed=42)
+        out = froc_auc_ci_lazy(
+            simple_detection_table, n_bootstrap=5, seed=42, fp_range=(0.0, 1.0)
+        )
         assert isinstance(out, pl.LazyFrame)
         assert out.collect().columns == ["auc", "ci_lower", "ci_upper"]
 
@@ -621,6 +600,7 @@ class TestEntityLevelBootstrap:
             n_bootstrap=10,
             seed=42,
             sample_col="case_id",
+            fp_range=(0.0, 1.0),
         ).collect()
         assert ci.height == 1
         assert ci["ci_lower"].item() <= ci["ci_upper"].item()
@@ -1352,8 +1332,10 @@ class TestFrocBootstrapCiContainsPoint:
             }
         )
         table = DetectionTable.from_matched(det_df, meta_df)
-        point = froc_auc(table).collect().item()
-        ci = froc_auc_ci_lazy(table, n_bootstrap=200, seed=0).collect()
+        point = froc_auc(table, fp_range=(0.0, 1.0)).collect().item()
+        ci = froc_auc_ci_lazy(
+            table, fp_range=(0.0, 1.0), n_bootstrap=200, seed=0
+        ).collect()
         assert ci["ci_lower"].item() <= point <= ci["ci_upper"].item()
         assert ci["ci_upper"].item() <= 1.0 + 1e-9
 
@@ -1453,9 +1435,9 @@ class TestCurveOrderIsDeterministic:
 
     A FROC curve ties on ``fp_per_image`` constantly — every threshold bucket
     that adds only true positives leaves it unchanged — and Polars' ``sort``
-    defaults to ``maintain_order=False``. Sorting the curve on x alone
-    therefore leaves the y at each tie boundary unspecified, which is what
-    ``trapz_auc`` reads.
+    defaults to ``maintain_order=False``. Sorting the curve on x alone therefore
+    leaves the y at each tie boundary unspecified, which is what the integral
+    (``collapse_curve`` → ``trapz_auc_expr``, via ``MetricResult.auc``) reads.
     """
 
     @staticmethod
@@ -1532,7 +1514,12 @@ class TestCurveOrderIsDeterministic:
         """
         table = self._tied_table()
         curve = froc_curve_lazy(table).collect()
-        baseline = froc_auc(table).collect().item()
+        # Baseline is the un-shuffled curve integrated through the same lazy
+        # MetricResult.auc path; the invariant is that shuffling the curve's rows
+        # (auc() re-sorts by x) does not change the area.
+        baseline = MetricResult(curve=curve).auc(
+            x_col="fp_per_image", y_col="sensitivity"
+        )
         for seed in range(8):
             shuffled = curve.sample(fraction=1.0, shuffle=True, seed=seed)
             got = MetricResult(curve=shuffled).auc(
@@ -1721,26 +1708,27 @@ class TestFrocBootstrapDrawsAreDistinctUnits:
 
 
 class TestPartialAucIntegerBounds:
-    """partial_auc accepts integer bounds, the natural spelling of fp_range."""
+    """partial_auc_expr accepts integer bounds, the natural spelling of fp_range.
+
+    ``froc_auc(fp_range=(0, 8))`` — as written in the docs and the metrics
+    example — passes integer bounds straight through to ``partial_auc_expr``,
+    which must integrate rather than raise.
+    """
 
     def test_integer_hi_beyond_the_curve(self) -> None:
-        """`fp_range=(0, 8)` must integrate, not raise a SchemaError.
-
-        The boundary point appended at `hi` was built with an inferred dtype,
-        so an int bound produced an Int64 Series that would not concat onto
-        the Float64 curve — which is every `froc.auc(fp_range=(0, 8))` call in
-        the docs and the metrics example.
-        """
-        x = pl.Series("x", [0.0, 0.5, 1.0])
-        y = pl.Series("y", [0.0, 0.5, 0.9])
-        assert partial_auc(x, y, 0, 8, "normalize") == pytest.approx(
-            partial_auc(x, y, 0.0, 8.0, "normalize")
-        )
+        """`fp_range=(0, 8)` integer bounds match their float spelling."""
+        df = pl.DataFrame({"x": [0.0, 0.5, 1.0], "y": [0.0, 0.5, 0.9]})
+        got_int = df.select(
+            auc=partial_auc_expr(x="x", y="y", lo=0, hi=8, correction="normalize")
+        ).item()
+        got_float = df.select(
+            auc=partial_auc_expr(x="x", y="y", lo=0.0, hi=8.0, correction="normalize")
+        ).item()
+        assert got_int == pytest.approx(got_float)
 
     def test_integer_lo_below_the_curve(self) -> None:
-        """The prepended `lo` boundary has the same dtype requirement."""
-        x = pl.Series("x", [2.0, 3.0])
-        y = pl.Series("y", [0.4, 0.8])
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            assert partial_auc(x, y, 0, 4) == pytest.approx(partial_auc(x, y, 0.0, 4.0))
+        """A lo bound below the curve integrates the same for int and float."""
+        df = pl.DataFrame({"x": [2.0, 3.0], "y": [0.4, 0.8]})
+        got_int = df.select(auc=partial_auc_expr(x="x", y="y", lo=0, hi=4)).item()
+        got_float = df.select(auc=partial_auc_expr(x="x", y="y", lo=0.0, hi=4.0)).item()
+        assert got_int == pytest.approx(got_float)

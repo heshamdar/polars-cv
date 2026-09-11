@@ -19,7 +19,6 @@ from .._auc_expr import (
     interpolate_curve_lazy,
     mann_whitney_auc_expr,
     partial_auc_expr,
-    trapz_auc_expr,
 )
 from .._types import (
     COL_GT_LABEL,
@@ -234,7 +233,7 @@ def lroc_auc(
     variant: Literal["best_tp", "top_scoring"] = "best_tp",
     method: Literal["trapezoidal", "mann_whitney"] = "trapezoidal",
     fpf_range: tuple[float, float] | None = None,
-    correction: CorrectionMethod = None,
+    correction: CorrectionMethod = "normalize",
     level: Literal["detection", "image"] = "image",
     group_by: str | list[str] | None = None,
     weight_agg: WeightAgg = "first",
@@ -243,6 +242,15 @@ def lroc_auc(
 
     The single authority for the LROC integral. A scalar is
     ``lroc_auc(table).collect().item()``.
+
+    LROC's x-axis is the false-positive *fraction*, bounded to ``[0, 1]``, so the
+    trapezoidal method integrates the full ``[0, 1]`` domain by default (the
+    standard LROC figure of merit) and no range need be given — unlike
+    :func:`froc_auc`, whose unbounded FP/image axis has no reasonable default.
+    With the default ``correction="normalize"`` the result is the mean
+    sensitivity over the window; over the full ``[0, 1]`` domain that equals the
+    raw area, so the classic LROC AUC is preserved. Pass ``correction=None`` for
+    the raw partial area, or an explicit ``fpf_range`` for a narrower window.
 
     Both families are weighted by ``image_metadata.weight``: the trapezoidal path
     through the weighted curve, and Mann-Whitney through a weighted rank-sum
@@ -254,8 +262,11 @@ def lroc_auc(
         variant: ``"best_tp"`` or ``"top_scoring"`` (curve/image-MW only).
         method: ``"trapezoidal"`` integrates the curve; ``"mann_whitney"`` is
             the rank statistic.
-        fpf_range: Optional ``(lo, hi)`` partial-AUC range (trapezoidal only).
-        correction: Partial-AUC correction (trapezoidal only).
+        fpf_range: ``(lo, hi)`` FPF window (trapezoidal only). Defaults to the
+            full ``(0.0, 1.0)`` domain; rejected for ``method="mann_whitney"``.
+        correction: Partial-AUC correction (trapezoidal only). ``"normalize"``
+            (default) divides by ``hi - lo`` (mean sensitivity); ``None`` returns
+            the raw partial area.
         level: Mann-Whitney granularity — ``"image"`` (default) or
             ``"detection"``.
         group_by: Optional grouping column(s). ``None`` yields a single row.
@@ -264,15 +275,18 @@ def lroc_auc(
 
     Returns:
         A ``LazyFrame`` with ``[*group_by, auc]``.
+
+    Raises:
+        ValueError: If ``fpf_range`` is passed with ``method="mann_whitney"``.
     """
     group_keys = _normalize_group_by(group_by)
 
     if method == "mann_whitney":
-        if fpf_range is not None or correction is not None:
+        if fpf_range is not None:
             raise ValueError(
-                "fpf_range and correction are not supported with "
-                "method='mann_whitney'. Mann-Whitney computes a global rank "
-                "statistic, not a curve integral."
+                "fpf_range is not supported with method='mann_whitney'. "
+                "Mann-Whitney computes a global rank statistic, not a curve "
+                "integral over an FPF window."
             )
         if level == "detection":
             det = table.detections.with_columns(
@@ -351,22 +365,24 @@ def lroc_auc(
             f"Unknown method {method!r}. Expected 'trapezoidal' or 'mann_whitney'."
         )
 
+    # LROC's x-axis is the false-positive *fraction*, bounded to [0, 1], so the
+    # full domain is the natural integration window when the caller names none —
+    # unlike FROC, whose unbounded FP/image axis has no reasonable default.
+    lo, hi = (0.0, 1.0) if fpf_range is None else fpf_range
+
     curve = lroc_curve_lazy(
         table, variant=variant, group_by=group_by, weight_agg=weight_agg
     )
     collapsed = collapse_curve(
         curve, x_col="fpf", y_col="sensitivity", group_keys=group_keys
     )
-    if fpf_range is None:
-        auc_expr = trapz_auc_expr(x="fpf", y="sensitivity", correction=correction)
-    else:
-        auc_expr = partial_auc_expr(
-            x="fpf",
-            y="sensitivity",
-            lo=fpf_range[0],
-            hi=fpf_range[1],
-            correction=correction,
-        )
+    auc_expr = partial_auc_expr(
+        x="fpf",
+        y="sensitivity",
+        lo=lo,
+        hi=hi,
+        correction=correction,
+    )
     if group_keys:
         return collapsed.group_by(group_keys).agg(auc=auc_expr)
     return collapsed.select(auc=auc_expr)

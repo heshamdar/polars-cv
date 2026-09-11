@@ -14,7 +14,6 @@ import pytest
 from polars_cv.metrics import (
     DetectionTable,
     lroc_auc,
-    lroc_curve_lazy,
     lroc_sensitivity_at_fpf,
 )
 from polars_cv.metrics._types import (
@@ -114,18 +113,32 @@ def _v(lf: pl.LazyFrame) -> float:
 
 class TestLrocAucParity:
     @pytest.mark.parametrize("variant", ["best_tp", "top_scoring"])
-    def test_trapezoidal_raw(self, variant: str) -> None:
+    def test_default_integrates_the_full_fpf_domain(self, variant: str) -> None:
+        """No fpf_range ⇒ integrate the full [0, 1] FPF domain (normalized).
+
+        Over [0, 1] normalize divides by 1, so the default equals the raw area
+        across the full domain — the classic LROC AUC.
+        """
         table = _table()
         got = _v(lroc_auc(table, variant=variant))
-        want = ref_lroc_auc(table, variant=variant)
+        want = ref_lroc_auc(table, variant=variant, fpf_range=(0.0, 1.0))
         assert got == pytest.approx(want, abs=1e-9)
 
     @pytest.mark.parametrize("fpf_range", [(0.0, 0.5), (0.0, 1.0), (0.25, 1.0)])
-    def test_partial(self, fpf_range: tuple[float, float]) -> None:
+    def test_partial_raw(self, fpf_range: tuple[float, float]) -> None:
         table = _table()
-        got = _v(lroc_auc(table, fpf_range=fpf_range))
+        got = _v(lroc_auc(table, fpf_range=fpf_range, correction=None))
         want = ref_lroc_auc(table, fpf_range=fpf_range)
         assert got == pytest.approx(want, abs=1e-7)
+
+    @pytest.mark.parametrize("fpf_range", [(0.0, 0.5), (0.25, 1.0)])
+    def test_normalize_is_the_default(self, fpf_range: tuple[float, float]) -> None:
+        table = _table()
+        default = _v(lroc_auc(table, fpf_range=fpf_range))
+        explicit = _v(lroc_auc(table, fpf_range=fpf_range, correction="normalize"))
+        want = ref_lroc_auc(table, fpf_range=fpf_range, correction="normalize")
+        assert default == pytest.approx(explicit, abs=_TOL)
+        assert default == pytest.approx(want, abs=1e-7)
 
     def test_mann_whitney_image(self) -> None:
         table = _table()
@@ -140,28 +153,23 @@ class TestLrocAucParity:
         assert got == pytest.approx(want, abs=1e-9)
 
     @pytest.mark.parametrize("variant", ["best_tp", "top_scoring"])
-    def test_full_range_normalize_is_engine_stable(self, variant: str) -> None:
-        """Ungrouped full-range ``correction="normalize"`` is deterministic.
+    def test_normalize_is_engine_stable(self, variant: str) -> None:
+        """The normalized default is deterministic across engines.
 
-        LROC shares ``trapz_auc_expr`` with FROC, so it inherited the same
-        in-memory miscompilation of the ``pl.when`` zero-span guard (sorted
-        reduction in the predicate) — non-deterministic default ``.collect()``,
-        correct streaming. Pin determinism, engine parity, and the value
-        (raw area / observed FPF span). Watched failing against the pre-fix code.
+        The normalize path guards its zero-span case with a ``pl.when``; an
+        earlier form embedded a sorted reduction in the predicate that the
+        in-memory engine miscompiled into non-deterministic values while
+        streaming stayed correct. Pin determinism and engine parity at the entry
+        point.
         """
         table = _table()
-        expr = lroc_auc(table, variant=variant, correction="normalize")
+        expr = lroc_auc(table, variant=variant)
         in_memory = {
             round(expr.collect(engine="in-memory").item(), 12) for _ in range(12)
         }
         streaming = expr.collect(engine="streaming").item()
         assert len(in_memory) == 1, f"non-deterministic in-memory: {in_memory}"
         assert next(iter(in_memory)) == pytest.approx(streaming, abs=_TOL)
-
-        curve = lroc_curve_lazy(table, variant=variant).collect()
-        raw = lroc_auc(table, variant=variant).collect(engine="streaming").item()
-        span = curve["fpf"].max() - curve["fpf"].min()
-        assert streaming == pytest.approx(raw / span, abs=_TOL)
 
 
 class TestLrocAucGroupParity:
