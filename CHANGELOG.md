@@ -7,6 +7,28 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+
+- **Full-range `correction="normalize"` on `froc_auc`/`lroc_auc` no longer
+  returns non-deterministic garbage on the in-memory engine.** The trapezoidal
+  normalize branch guarded the zero-span case with
+  `pl.when(span > 0).then(raw / span).otherwise(0.0)`, reading `span` off the
+  **sorted** x (`x_sorted.max() - x_sorted.min()`). The in-memory engine
+  miscompiles a `pl.when` whose predicate embeds a sorted reduction next to a
+  `.then` that also embeds sorted reductions: an ungrouped
+  `froc_auc(table, correction="normalize").collect()` (the default engine)
+  returned values that changed run-to-run and were frequently negative, while
+  `engine="streaming"` and the `group_by().agg()` path compiled the same
+  expression correctly — which is why streaming users saw correct numbers and
+  the bug went unnoticed. `span` is now read off the unsorted column
+  (`x.max() - x.min()`, order-independent and numerically identical), so no sort
+  enters the predicate and the guard compiles correctly on every engine. Guarded
+  by `test_auc_expr.py::TestNormalizeEngineParity` and the full-range normalize
+  engine-stability tests in `test_froc_auc.py`/`test_lroc_auc.py`. Only the
+  full-range trapezoidal path was affected; the partial-AUC (`fp_range`/
+  `fpf_range`) normalize path computes its span from Python floats and was
+  always correct.
+
 ## [0.27.0] — 2026-09-10
 
 ### Removed

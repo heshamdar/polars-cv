@@ -14,6 +14,7 @@ import pytest
 from polars_cv.metrics import (
     DetectionTable,
     lroc_auc,
+    lroc_curve_lazy,
     lroc_sensitivity_at_fpf,
 )
 from polars_cv.metrics._types import (
@@ -137,6 +138,30 @@ class TestLrocAucParity:
         got = _v(lroc_auc(table, method="mann_whitney", level="detection"))
         want = ref_froc_mw_detection(table)  # same P(TP > FP) over detections
         assert got == pytest.approx(want, abs=1e-9)
+
+    @pytest.mark.parametrize("variant", ["best_tp", "top_scoring"])
+    def test_full_range_normalize_is_engine_stable(self, variant: str) -> None:
+        """Ungrouped full-range ``correction="normalize"`` is deterministic.
+
+        LROC shares ``trapz_auc_expr`` with FROC, so it inherited the same
+        in-memory miscompilation of the ``pl.when`` zero-span guard (sorted
+        reduction in the predicate) — non-deterministic default ``.collect()``,
+        correct streaming. Pin determinism, engine parity, and the value
+        (raw area / observed FPF span). Watched failing against the pre-fix code.
+        """
+        table = _table()
+        expr = lroc_auc(table, variant=variant, correction="normalize")
+        in_memory = {
+            round(expr.collect(engine="in-memory").item(), 12) for _ in range(12)
+        }
+        streaming = expr.collect(engine="streaming").item()
+        assert len(in_memory) == 1, f"non-deterministic in-memory: {in_memory}"
+        assert next(iter(in_memory)) == pytest.approx(streaming, abs=_TOL)
+
+        curve = lroc_curve_lazy(table, variant=variant).collect()
+        raw = lroc_auc(table, variant=variant).collect(engine="streaming").item()
+        span = curve["fpf"].max() - curve["fpf"].min()
+        assert streaming == pytest.approx(raw / span, abs=_TOL)
 
 
 class TestLrocAucGroupParity:
