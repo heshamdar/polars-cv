@@ -164,7 +164,9 @@ class TestFrocMetrics:
             gt_col="gt_mask",
             image_id_col="image_id",
         )
-        ci = froc_auc_ci_lazy(table, n_bootstrap=20, seed=42).collect()
+        ci = froc_auc_ci_lazy(
+            table, fp_range=(0.0, 8.0), n_bootstrap=20, seed=42
+        ).collect()
         assert ci.height == 1
         assert ci["ci_lower"].item() <= ci["ci_upper"].item()
 
