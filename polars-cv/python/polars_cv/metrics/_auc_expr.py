@@ -124,7 +124,18 @@ def trapz_auc_expr(
     raw = (dx * avg_y).sum()
 
     if correction == "normalize":
-        span = x_sorted.max() - x_sorted.min()
+        # Span is order-independent, so read it straight off `xc` with
+        # max()/min() rather than off `x_sorted`. This is not a stylistic
+        # choice: the in-memory engine miscompiles a `pl.when` whose *predicate*
+        # embeds a sorted reduction (`x_sorted.max() - x_sorted.min()`) sitting
+        # next to a `.then` that also embeds sorted reductions — it returns
+        # non-deterministic, sometimes negative garbage in an ungrouped
+        # `select` (streaming and the `group_by().agg()` path happen to compile
+        # it correctly, which is why it went unnoticed). `xc.max()`/`xc.min()`
+        # equal their sorted counterparts but carry no sort into the predicate,
+        # so the guard compiles correctly on every engine. See
+        # `test_auc_expr.py::TestNormalizeEngineParity`.
+        span = xc.max() - xc.min()
         return pl.when(span > 0.0).then(raw / span).otherwise(0.0)
     return raw
 

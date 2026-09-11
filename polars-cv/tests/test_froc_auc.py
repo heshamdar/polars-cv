@@ -137,6 +137,33 @@ class TestFrocAucParity:
         want = ref_froc_mw_detection(table)
         assert got == pytest.approx(want, abs=1e-9)
 
+    def test_full_range_normalize_is_engine_stable(self) -> None:
+        """Ungrouped full-range ``correction="normalize"`` is deterministic.
+
+        The full-range normalize path routes through ``trapz_auc_expr`` (not the
+        ``partial_auc_expr`` path that ``test_partial_corrections`` covers). Its
+        ``pl.when`` zero-span guard used to embed a sorted reduction in the
+        predicate, which the in-memory engine miscompiled: the default
+        ``.collect()`` returned non-deterministic, sometimes-negative values
+        while streaming was correct. Pin determinism, engine parity, and the
+        value (raw area / observed FP span). Watched failing against the pre-fix
+        code (in-memory drifted run-to-run; streaming did not).
+        """
+        table = _table(multiclass=False)
+        expr = froc_auc(table, correction="normalize")
+        in_memory = {
+            round(expr.collect(engine="in-memory").item(), 12) for _ in range(12)
+        }
+        streaming = expr.collect(engine="streaming").item()
+        assert len(in_memory) == 1, f"non-deterministic in-memory: {in_memory}"
+        assert next(iter(in_memory)) == pytest.approx(streaming, abs=_TOL)
+
+        # Value: normalize divides the raw area by the observed FP-per-image span.
+        curve = froc_curve_lazy(table).collect()
+        raw = froc_auc(table).collect(engine="streaming").item()
+        span = curve["fp_per_image"].max() - curve["fp_per_image"].min()
+        assert streaming == pytest.approx(raw / span, abs=_TOL)
+
 
 class TestFrocAucGroupParity:
     """Grouped AUC equals per-group AUC on the filtered sub-table."""

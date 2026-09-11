@@ -192,6 +192,65 @@ class TestMannWhitneyParity:
             assert got_map[gid] == pytest.approx(want, abs=_TOL)
 
 
+class TestNormalizeEngineParity:
+    """`trapz_auc_expr(correction="normalize")` is engine- and run-stable.
+
+    The normalize branch guards the zero-span case with
+    ``pl.when(span > 0).then(raw / span).otherwise(0.0)``. When ``span`` was read
+    off ``x_sorted`` (a sorted reduction) the in-memory engine miscompiled the
+    guard: an ungrouped ``select`` over a ``group_by``-sourced curve (whose row
+    order is not fixed) returned non-deterministic, sometimes-negative garbage,
+    while streaming and the ``group_by().agg()`` path compiled it correctly. The
+    fix reads ``span`` off the unsorted column, so no sort enters the predicate.
+
+    These reproduce the real trigger — a curve materialised through
+    :func:`collapse_curve` (a ``group_by``), then the ungrouped reduction — and
+    pin the result to the eager integral on both engines. Watched failing
+    against the pre-fix code: in-memory drifted run-to-run and diverged from the
+    streaming/eager value; the grouped variant did not, matching the report.
+    """
+
+    @staticmethod
+    def _curve_frame() -> pl.LazyFrame:
+        # Ties on x so collapse_curve does real grouping; the FROC origin adds a
+        # second point at x=0. Order is intentionally unsorted going in.
+        xs = [0.5, 0.0, 1.0, 0.5, 0.0, 0.25, 1.0, 0.75]
+        ys = [0.8, 0.2, 1.0, 0.6, 0.0, 0.4, 0.9, 0.85]
+        return collapse_curve(
+            pl.DataFrame({"x": xs, "y": ys}).lazy(), x_col="x", y_col="y"
+        )
+
+    def _eager_normalize(self) -> float:
+        collapsed = self._curve_frame().collect().sort("x")
+        return trapz_auc(collapsed["x"], collapsed["y"], "normalize")
+
+    @pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+    def test_matches_eager_on_each_engine(self, engine: str) -> None:
+        want = self._eager_normalize()
+        got = (
+            self._curve_frame()
+            .select(auc=trapz_auc_expr(x="x", y="y", correction="normalize"))
+            .collect(engine=engine)
+            .item()
+        )
+        assert got == pytest.approx(want, abs=_TOL)
+
+    def test_in_memory_is_deterministic_and_matches_streaming(self) -> None:
+        expr = trapz_auc_expr(x="x", y="y", correction="normalize")
+        results = {
+            round(
+                self._curve_frame().select(auc=expr).collect(engine="in-memory").item(),
+                12,
+            )
+            for _ in range(16)
+        }
+        streaming = (
+            self._curve_frame().select(auc=expr).collect(engine="streaming").item()
+        )
+        assert len(results) == 1, f"non-deterministic in-memory results: {results}"
+        assert next(iter(results)) == pytest.approx(streaming, abs=_TOL)
+
+
 class TestGroupAwareness:
     def test_trapz_per_group_equals_individual(self) -> None:
         rng = random.Random(5)
