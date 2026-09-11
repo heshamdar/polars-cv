@@ -2,10 +2,11 @@
 
 Builds ``DetectionTable``s from literal frames and asserts:
 
-* ``froc_auc(table).collect().item()`` matches an independent NumPy reference
-  (:mod:`tests._metric_refs`) for every method/range/correction, and
-* ``froc_auc(table, group_by="class_id")`` per class equals ``froc_auc`` on
-  ``table.filter_class(cid)`` — the property that replaces a per-group loop.
+* ``froc_auc(table, fp_range=...).collect().item()`` matches an independent
+  NumPy reference (:mod:`tests._metric_refs`) for every range/correction, and
+* ``froc_auc(table, group_by="class_id", fp_range=...)`` per class equals
+  ``froc_auc`` on ``table.filter_class(cid)`` — the property that replaces a
+  per-group loop.
 """
 
 from __future__ import annotations
@@ -111,25 +112,30 @@ def _auc_value(lf: pl.LazyFrame) -> float:
 class TestFrocAucParity:
     """froc_auc matches an independent NumPy reference for a pooled table."""
 
-    def test_trapezoidal_raw(self) -> None:
+    def test_trapezoidal_requires_fp_range(self) -> None:
+        """method='trapezoidal' with no fp_range raises, not silently degrades."""
         table = _table(multiclass=False)
-        got = _auc_value(froc_auc(table))
-        want = ref_froc_auc(table)
-        assert got == pytest.approx(want, abs=1e-9)
+        with pytest.raises(ValueError, match="requires an explicit fp_range"):
+            froc_auc(table)
 
     @pytest.mark.parametrize("fp_range", [(0.0, 1.0), (0.25, 2.0), (0.0, 8.0)])
-    def test_partial(self, fp_range: tuple[float, float]) -> None:
+    def test_partial_raw(self, fp_range: tuple[float, float]) -> None:
         table = _table(multiclass=False)
-        got = _auc_value(froc_auc(table, fp_range=fp_range))
+        got = _auc_value(froc_auc(table, fp_range=fp_range, correction=None))
         want = ref_froc_auc(table, fp_range=fp_range)
         assert got == pytest.approx(want, abs=1e-7)
 
-    @pytest.mark.parametrize("correction", ["normalize"])
-    def test_partial_corrections(self, correction: str) -> None:
+    @pytest.mark.parametrize("fp_range", [(0.0, 1.0), (0.25, 2.0), (0.0, 8.0)])
+    def test_normalize_is_the_default(self, fp_range: tuple[float, float]) -> None:
+        """The default correction is 'normalize' (mean sensitivity over fp_range)."""
         table = _table(multiclass=False)
-        got = _auc_value(froc_auc(table, fp_range=(0.25, 2.0), correction=correction))
-        want = ref_froc_auc(table, fp_range=(0.25, 2.0), correction=correction)
-        assert got == pytest.approx(want, abs=1e-7)
+        default = _auc_value(froc_auc(table, fp_range=fp_range))
+        explicit = _auc_value(
+            froc_auc(table, fp_range=fp_range, correction="normalize")
+        )
+        want = ref_froc_auc(table, fp_range=fp_range, correction="normalize")
+        assert default == pytest.approx(explicit, abs=_TOL)
+        assert default == pytest.approx(want, abs=1e-7)
 
     def test_mann_whitney_detection(self) -> None:
         table = _table(multiclass=False)
@@ -137,20 +143,18 @@ class TestFrocAucParity:
         want = ref_froc_mw_detection(table)
         assert got == pytest.approx(want, abs=1e-9)
 
-    def test_full_range_normalize_is_engine_stable(self) -> None:
-        """Ungrouped full-range ``correction="normalize"`` is deterministic.
+    def test_partial_normalize_is_engine_stable(self) -> None:
+        """Ungrouped normalized partial AUC is deterministic across engines.
 
-        The full-range normalize path routes through ``trapz_auc_expr`` (not the
-        ``partial_auc_expr`` path that ``test_partial_corrections`` covers). Its
-        ``pl.when`` zero-span guard used to embed a sorted reduction in the
-        predicate, which the in-memory engine miscompiled: the default
-        ``.collect()`` returned non-deterministic, sometimes-negative values
-        while streaming was correct. Pin determinism, engine parity, and the
-        value (raw area / observed FP span). Watched failing against the pre-fix
-        code (in-memory drifted run-to-run; streaming did not).
+        The normalize path guards its zero-span case with a ``pl.when``; an
+        earlier form embedded a sorted reduction in the predicate, which the
+        in-memory engine miscompiled into non-deterministic, sometimes-negative
+        values while streaming stayed correct. Pin determinism and engine parity
+        at the entry point. (The full-range trapezoidal path that first exposed
+        this was removed — trapezoidal now always integrates a partial window.)
         """
         table = _table(multiclass=False)
-        expr = froc_auc(table, correction="normalize")
+        expr = froc_auc(table, fp_range=(0.0, 8.0))
         in_memory = {
             round(expr.collect(engine="in-memory").item(), 12) for _ in range(12)
         }
@@ -158,23 +162,19 @@ class TestFrocAucParity:
         assert len(in_memory) == 1, f"non-deterministic in-memory: {in_memory}"
         assert next(iter(in_memory)) == pytest.approx(streaming, abs=_TOL)
 
-        # Value: normalize divides the raw area by the observed FP-per-image span.
-        curve = froc_curve_lazy(table).collect()
-        raw = froc_auc(table).collect(engine="streaming").item()
-        span = curve["fp_per_image"].max() - curve["fp_per_image"].min()
-        assert streaming == pytest.approx(raw / span, abs=_TOL)
-
 
 class TestFrocAucGroupParity:
     """Grouped AUC equals per-group AUC on the filtered sub-table."""
 
     def test_trapezoidal_group_by_class(self) -> None:
         table = _table(multiclass=True)
-        grouped = froc_auc(table, group_by="class_id").collect()
+        grouped = froc_auc(table, group_by="class_id", fp_range=(0.0, 8.0)).collect()
         got = dict(zip(grouped[COL_CLASS_ID].to_list(), grouped["auc"].to_list()))
 
         for cid in ("x", "y"):
-            want = froc_auc(table.filter_class(cid)).collect().item()
+            want = (
+                froc_auc(table.filter_class(cid), fp_range=(0.0, 8.0)).collect().item()
+            )
             assert got[cid] == pytest.approx(want, abs=_TOL)
 
     def test_mann_whitney_group_by_class(self) -> None:
@@ -192,7 +192,7 @@ class TestFrocAucGroupParity:
 
     def test_grouped_has_one_row_per_class(self) -> None:
         table = _table(multiclass=True)
-        grouped = froc_auc(table, group_by="class_id").collect()
+        grouped = froc_auc(table, group_by="class_id", fp_range=(0.0, 8.0)).collect()
         assert sorted(grouped[COL_CLASS_ID].to_list()) == ["x", "y"]
         assert grouped.height == 2
 
@@ -256,9 +256,12 @@ class TestFrocIsPureLazy:
     @pytest.mark.parametrize(
         "build",
         [
-            pytest.param(lambda t: froc_auc(t), id="trapezoidal"),
+            pytest.param(lambda t: froc_auc(t, fp_range=(0.0, 8.0)), id="trapezoidal"),
             pytest.param(lambda t: froc_auc(t, fp_range=(0.0, 2.0)), id="partial"),
-            pytest.param(lambda t: froc_auc(t, correction="normalize"), id="normalize"),
+            pytest.param(
+                lambda t: froc_auc(t, fp_range=(0.0, 8.0), correction="normalize"),
+                id="normalize",
+            ),
             pytest.param(
                 lambda t: froc_auc(t, method="mann_whitney", level="detection"),
                 id="mw-detection",
@@ -279,4 +282,9 @@ class TestFrocIsPureLazy:
 
     def test_grouped_froc_auc_builds_without_collecting(self) -> None:
         table = _table(multiclass=True)
-        assert self._collects_during(lambda: froc_auc(table, group_by="class_id")) == 0
+        assert (
+            self._collects_during(
+                lambda: froc_auc(table, group_by="class_id", fp_range=(0.0, 8.0))
+            )
+            == 0
+        )

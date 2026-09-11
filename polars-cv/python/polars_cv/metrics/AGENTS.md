@@ -18,10 +18,13 @@ Detection metrics built from polars-cv primitives and Polars lazy expressions:
 - **AUC integrals**: the single authority is `_auc_expr.py`
   (`trapz_auc_expr`, `partial_auc_expr`, `collapse_curve`; the weighted
   Mann-Whitney two-stage `collapse_scores` + `mann_whitney_auc_expr`; and the
-  lazy `interpolate_curve_lazy`); `_auc.py` keeps `trapz_auc`/`partial_auc`/
-  `_interp`/`validate_correction` for the eager PR-curve `MetricResult.auc` only
-  (partial-AUC range + `normalize` correction), which is the *only* method
-  `MetricResult` exposes. The `correction` vocabulary is `"normalize"` or `None`;
+  lazy `interpolate_curve_lazy`). Every AUC — `froc_auc`/`lroc_auc` and the
+  PR-curve `MetricResult.auc` (the *only* method `MetricResult` exposes) —
+  reduces through these lazy expressions and collects streaming; there is no
+  eager Series integral. `_auc.py` was gutted to just the `correction`
+  vocabulary (`CorrectionMethod` + `validate_correction`) once the eager
+  `trapz_auc`/`partial_auc` had no consumer left. The `correction` vocabulary is
+  `"normalize"` or `None`;
   `validate_correction` (in `_auc.py`, imported by `_auc_expr.py`) is its single
   authority and *rejects* anything else instead of degrading to the raw area.
   McClish's standardized ROC partial-AUC correction was removed — it standardizes
@@ -66,12 +69,19 @@ Supports IoU re-thresholding via `at_iou_threshold()`, class filtering via `filt
 ## AUC API
 
 - **FROC/LROC**: `froc_auc(table, *, method, fp_range, correction, level, group_by)`
-  → `pl.LazyFrame` (`[*group_by, auc]`). `method="trapezoidal"` (default) supports
-  `correction="normalize"` and `fp_range`/`fpf_range`; `method="mann_whitney"`
-  (`level="detection"|"image"`) is a global rank statistic (no range/correction).
-  A scalar is `froc_auc(table).collect().item()`; grouping is `group_by=`.
+  → `pl.LazyFrame` (`[*group_by, auc]`). `method="trapezoidal"` (default)
+  **requires** `fp_range` for FROC (its FP/image axis is unbounded, so there is no
+  reasonable default window — it raises without one) and defaults `fpf_range` to
+  the full `(0.0, 1.0)` FPF domain for LROC. `correction` defaults to
+  `"normalize"` (mean sensitivity over the window; pass `None` for the raw
+  partial area). `method="mann_whitney"` (`level="detection"|"image"`) is a
+  global rank statistic that rejects a range (correction is inert for it). A
+  scalar is `froc_auc(table, fp_range=(0.0, 8.0)).collect().item()`; grouping is
+  `group_by=`.
 - **PR**: `PrecisionRecallResult.auc(method=...)` — `"all_points"` (default, monotone
-  envelope), `"11_point"`, `"trapezoidal"`. PR still uses `_auc.trapz_auc`.
+  envelope), `"11_point"`, `"trapezoidal"`. All route through the lazy
+  `_auc_expr` integrals (`MetricResult.auc` + `_all_points_ap`), never an eager
+  Series integral.
 
 ## Bootstrap CIs
 
@@ -203,10 +213,10 @@ metrics/
   on the x-column: thresholds are unique so the order is total, while `fp_per_image`
   ties constantly and Polars' `sort` defaults to `maintain_order=False`, leaving
   the y at each tie boundary — and therefore the AUC — unspecified.
-- Every consumer of a curve's geometry goes through `MetricResult._curve_xy`,
+- Every consumer of a curve's geometry goes through `_auc_expr.collapse_curve`,
   which collapses tied x to the maximum y (the ROC upper envelope) before
-  integrating or interpolating. `auc()` and `interpolate()` must not sort for
-  themselves; a second sort is a second answer.
+  integrating or interpolating. `MetricResult.auc` and the FROC/LROC paths must
+  not sort for themselves; a second sort is a second answer.
 
 ### IoU re-thresholding
 - `at_iou_threshold()` only works reliably when *raising* the threshold. Lowering has no effect (unmatched detections lack stored IoU). A `UserWarning` is emitted.

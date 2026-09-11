@@ -1,23 +1,20 @@
-"""Parity tests: the AUC expressions reproduce the eager `_auc.py` integrals.
+"""Correctness tests for the lazy AUC expressions (the single integral authority).
 
-These are pure-expression tests (no compiled plugin) — they build curves as
-DataFrames and assert :mod:`polars_cv.metrics._auc_expr` matches the scalar
-functions in :mod:`polars_cv.metrics._auc` that it replaces. While both exist
-this is a direct cross-check; once the eager path is removed the same numbers
-are pinned by these curves.
+Pure-expression tests (no compiled plugin): they build curves as DataFrames and
+assert :mod:`polars_cv.metrics._auc_expr` matches an independent NumPy trapezoid
+reference (:func:`tests._metric_refs._collapse_and_trapz`). These once
+cross-checked the eager ``_auc.py`` integrals; those were removed in favour of
+the lazy path, so the same numbers are now pinned directly by the NumPy oracle.
 """
 
 from __future__ import annotations
 
 import random
 
+import numpy as np
 import polars as pl
 import pytest
 
-from polars_cv.metrics._auc import (
-    partial_auc,
-    trapz_auc,
-)
 from polars_cv.metrics._auc_expr import (
     collapse_curve,
     collapse_scores,
@@ -25,7 +22,11 @@ from polars_cv.metrics._auc_expr import (
     partial_auc_expr,
     trapz_auc_expr,
 )
-from tests._metric_refs import ref_mann_whitney, ref_weighted_mann_whitney
+from tests._metric_refs import (
+    _collapse_and_trapz,
+    ref_mann_whitney,
+    ref_weighted_mann_whitney,
+)
 
 _TOL = 1e-9
 
@@ -37,8 +38,25 @@ def _random_curve(rng: random.Random, n: int) -> tuple[list[float], list[float]]
     return xs, ys
 
 
-def _scalar_trapz(xs: list[float], ys: list[float], correction=None) -> float:
-    return trapz_auc(pl.Series("x", xs), pl.Series("y", ys), correction)
+def _ref_trapz(xs: list[float], ys: list[float], correction=None) -> float:
+    """NumPy trapezoid over the collapsed curve; ``normalize`` ÷ observed span."""
+    raw = _collapse_and_trapz(np.asarray(xs, float), np.asarray(ys, float))
+    if correction == "normalize":
+        span = max(xs) - min(xs)
+        return raw / span if span > 0 else 0.0
+    return raw
+
+
+def _ref_partial(
+    xs: list[float], ys: list[float], lo: float, hi: float, correction=None
+) -> float:
+    """NumPy clipped trapezoid over [lo, hi] with flat endpoint extension."""
+    if hi <= lo:
+        return 0.0
+    raw = _collapse_and_trapz(np.asarray(xs, float), np.asarray(ys, float), lo, hi)
+    if correction == "normalize":
+        return raw / (hi - lo)
+    return raw
 
 
 def _expr_trapz(xs: list[float], ys: list[float], correction=None) -> float:
@@ -47,18 +65,18 @@ def _expr_trapz(xs: list[float], ys: list[float], correction=None) -> float:
 
 
 class TestTrapzParity:
-    def test_matches_eager_trapz_over_random_curves(self) -> None:
+    def test_matches_numpy_trapz_over_random_curves(self) -> None:
         rng = random.Random(0)
         for _ in range(200):
             xs, ys = _random_curve(rng, rng.randint(2, 12))
-            assert _expr_trapz(xs, ys) == pytest.approx(_scalar_trapz(xs, ys), abs=_TOL)
+            assert _expr_trapz(xs, ys) == pytest.approx(_ref_trapz(xs, ys), abs=_TOL)
 
     def test_normalize_correction(self) -> None:
         rng = random.Random(1)
         for _ in range(100):
             xs, ys = _random_curve(rng, rng.randint(2, 12))
             assert _expr_trapz(xs, ys, "normalize") == pytest.approx(
-                _scalar_trapz(xs, ys, "normalize"), abs=_TOL
+                _ref_trapz(xs, ys, "normalize"), abs=_TOL
             )
 
     def test_single_point_is_zero(self) -> None:
@@ -66,26 +84,21 @@ class TestTrapzParity:
 
 
 class TestPartialParity:
-    @pytest.mark.filterwarnings("ignore::UserWarning")
-    def test_matches_eager_partial_over_random_curves_and_ranges(self) -> None:
-        # ``lo`` is bounded by the curve's max x. Beyond that the two definitions
-        # deliberately diverge — see ``test_out_of_range_right_extends_last_y``.
-        # Everywhere a real FROC range lands (lo >= xmin = 0 at the origin, hi
-        # possibly past xmax) they agree exactly, including left- and right-fill.
+    def test_matches_numpy_partial_over_random_curves_and_ranges(self) -> None:
+        # The lazy ``partial_auc_expr`` flat-extends the curve at both endpoints
+        # (fills [lo, x_min] at y_first and [x_max, hi] at y_last), which is
+        # exactly what the NumPy oracle's clamped interpolation does — so they
+        # agree over every range, including ones entirely off the curve.
         rng = random.Random(2)
         for _ in range(300):
             xs, ys = _random_curve(rng, rng.randint(2, 12))
             lo = round(rng.uniform(-1.0, xs[-1]), 3)
-            # Keep the range overlapping the curve's x-span (lo <= xmax already;
-            # force hi >= xmin) — the only regime where the two definitions
-            # agree, and the only one a FROC range reaches.
             hi = round(max(lo + rng.uniform(0.5, 6.0), xs[0] + 0.1), 3)
             df = pl.DataFrame({"x": xs, "y": ys})
             got = df.select(auc=partial_auc_expr(x="x", y="y", lo=lo, hi=hi)).item()
-            want = partial_auc(pl.Series("x", xs), pl.Series("y", ys), lo, hi)
+            want = _ref_partial(xs, ys, lo, hi)
             assert got == pytest.approx(want, abs=1e-7), (xs, ys, lo, hi)
 
-    @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.parametrize("correction", ["normalize"])
     def test_corrections(self, correction: str) -> None:
         rng = random.Random(3)
@@ -97,9 +110,7 @@ class TestPartialParity:
             got = df.select(
                 auc=partial_auc_expr(x="x", y="y", lo=lo, hi=hi, correction=correction)
             ).item()
-            want = partial_auc(
-                pl.Series("x", xs), pl.Series("y", ys), lo, hi, correction
-            )
+            want = _ref_partial(xs, ys, lo, hi, correction)
             assert got == pytest.approx(want, abs=1e-7)
 
     def test_degenerate_range_is_zero(self) -> None:
@@ -111,10 +122,8 @@ class TestPartialParity:
     def test_out_of_range_right_extends_last_y(self) -> None:
         # A range entirely to the right of the curve integrates the flat
         # extension of the rightmost operating point (sensitivity stays at its
-        # max beyond the observed FP range). This is the consistent
-        # generalization of the eager path's right-fill; the eager
-        # ``partial_auc`` instead fell back to y[0] at ``lo`` there, an
-        # asymmetry not worth reproducing.
+        # max beyond the observed FP range) — the symmetric counterpart of the
+        # left case below.
         df = pl.DataFrame({"x": [0.0, 2.0], "y": [0.3, 0.9]})
         got = df.select(auc=partial_auc_expr(x="x", y="y", lo=3.0, hi=5.0)).item()
         assert got == pytest.approx((5.0 - 3.0) * 0.9, abs=1e-9)
@@ -220,13 +229,15 @@ class TestNormalizeEngineParity:
             pl.DataFrame({"x": xs, "y": ys}).lazy(), x_col="x", y_col="y"
         )
 
-    def _eager_normalize(self) -> float:
+    def _ref_normalize(self) -> float:
         collapsed = self._curve_frame().collect().sort("x")
-        return trapz_auc(collapsed["x"], collapsed["y"], "normalize")
+        return _ref_trapz(
+            collapsed["x"].to_list(), collapsed["y"].to_list(), "normalize"
+        )
 
     @pytest.mark.parametrize("engine", ["in-memory", "streaming"])
-    def test_matches_eager_on_each_engine(self, engine: str) -> None:
-        want = self._eager_normalize()
+    def test_matches_reference_on_each_engine(self, engine: str) -> None:
+        want = self._ref_normalize()
         got = (
             self._curve_frame()
             .select(auc=trapz_auc_expr(x="x", y="y", correction="normalize"))
@@ -259,7 +270,7 @@ class TestGroupAwareness:
         for gid in ("a", "b", "c"):
             xs, ys = _random_curve(rng, rng.randint(3, 10))
             frames.append(pl.DataFrame({"g": gid, "x": xs, "y": ys}))
-            expected[gid] = _scalar_trapz(xs, ys)
+            expected[gid] = _ref_trapz(xs, ys)
         df = pl.concat(frames)
         got = (
             df.lazy()

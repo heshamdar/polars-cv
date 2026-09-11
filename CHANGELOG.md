@@ -7,27 +7,48 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+
+- **`froc_auc` now requires an explicit `fp_range`, and `froc_auc`/`lroc_auc`
+  normalize by default (breaking).** The trapezoidal AUC previously defaulted to
+  the raw area over the *observed* x-range, which for FROC is neither bounded nor
+  comparable across models (its false-positives-per-image axis is unbounded and
+  its observed maximum is model-dependent). Now:
+  - `froc_auc(method="trapezoidal")` **raises** without an `fp_range` — there is
+    no reasonable default window; pass e.g. `fp_range=(0.0, 8.0)`, or use
+    `froc_summary_table` / `method="mann_whitney"` for range-free summaries.
+  - `lroc_auc` defaults `fpf_range` to the full `(0.0, 1.0)` FPF domain (LROC's
+    axis is a bounded fraction), preserving the classic LROC AUC value.
+  - `correction` now defaults to `"normalize"` for both, so the result is the
+    mean sensitivity over the window (bounded, comparable); pass
+    `correction=None` for the raw partial area. `froc_auc_ci_lazy` /
+    `lroc_auc_ci_lazy` mirror these defaults.
+  - `method="mann_whitney"` is unchanged; it rejects a range and ignores
+    `correction` (a rank statistic integrates no curve).
+
+- **All AUC integrals are now lazy; the eager `_auc.py` integrals were removed.**
+  `trapz_auc`, `partial_auc` and `_interp` (Series-based reductions to a Python
+  float) are deleted. Every AUC — `froc_auc`/`lroc_auc`, `MetricResult.auc` and
+  all-points/trapezoidal AP — reduces through the single lazy authority in
+  `_auc_expr.py` (`collapse_curve` + `trapz_auc_expr` / `partial_auc_expr`) and
+  collects streaming. `_auc.py` keeps only the `correction` vocabulary
+  (`CorrectionMethod` + `validate_correction`). Consequence: `partial_auc`'s
+  below-curve `UserWarning` had no lazy equivalent and is gone.
+
 ### Fixed
 
-- **Full-range `correction="normalize"` on `froc_auc`/`lroc_auc` no longer
-  returns non-deterministic garbage on the in-memory engine.** The trapezoidal
-  normalize branch guarded the zero-span case with
+- **`correction="normalize"` no longer returns non-deterministic garbage on the
+  in-memory engine.** The normalize branch guarded the zero-span case with
   `pl.when(span > 0).then(raw / span).otherwise(0.0)`, reading `span` off the
-  **sorted** x (`x_sorted.max() - x_sorted.min()`). The in-memory engine
-  miscompiles a `pl.when` whose predicate embeds a sorted reduction next to a
-  `.then` that also embeds sorted reductions: an ungrouped
-  `froc_auc(table, correction="normalize").collect()` (the default engine)
-  returned values that changed run-to-run and were frequently negative, while
-  `engine="streaming"` and the `group_by().agg()` path compiled the same
-  expression correctly — which is why streaming users saw correct numbers and
-  the bug went unnoticed. `span` is now read off the unsorted column
-  (`x.max() - x.min()`, order-independent and numerically identical), so no sort
-  enters the predicate and the guard compiles correctly on every engine. Guarded
-  by `test_auc_expr.py::TestNormalizeEngineParity` and the full-range normalize
-  engine-stability tests in `test_froc_auc.py`/`test_lroc_auc.py`. Only the
-  full-range trapezoidal path was affected; the partial-AUC (`fp_range`/
-  `fpf_range`) normalize path computes its span from Python floats and was
-  always correct.
+  **sorted** x. The in-memory engine miscompiles a `pl.when` whose predicate
+  embeds a sorted reduction next to a `.then` that also embeds sorted reductions:
+  an ungrouped normalized `.collect()` (the default engine) returned values that
+  changed run-to-run and were frequently negative, while `engine="streaming"`
+  and the `group_by().agg()` path compiled the same expression correctly. `span`
+  is now read off the unsorted column (`x.max() - x.min()`, order-independent and
+  numerically identical), so no sort enters the predicate. Guarded by
+  `test_auc_expr.py::TestNormalizeEngineParity` and the engine-stability tests in
+  `test_froc_auc.py` / `test_lroc_auc.py`.
 
 ## [0.27.0] — 2026-09-10
 

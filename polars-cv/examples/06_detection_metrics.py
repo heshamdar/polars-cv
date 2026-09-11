@@ -114,9 +114,12 @@ def contour_matcher_section(df: pl.DataFrame, args: argparse.Namespace) -> objec
     print("\nContourMatcher metrics:")
     print("AP:", round(pr.auc(), 4))
     print(
-        "FROC AUC:",
-        round(froc_auc(contour_table).collect().item(), 4),
-        "\nFROC AUC normalized:",
+        "FROC AUC (raw partial area over 0–8 FP/image):",
+        round(
+            froc_auc(contour_table, fp_range=(0, 8), correction=None).collect().item(),
+            4,
+        ),
+        "\nFROC AUC normalized (mean sensitivity over 0–8):",
         round(
             froc_auc(contour_table, fp_range=(0, 8), correction="normalize")
             .collect()

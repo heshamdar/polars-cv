@@ -7,7 +7,8 @@ from typing import Any
 
 import polars as pl
 
-from ._auc import CorrectionMethod, partial_auc, trapz_auc
+from ._auc import CorrectionMethod
+from ._auc_expr import collapse_curve, partial_auc_expr, trapz_auc_expr
 
 
 @dataclass(frozen=True)
@@ -15,11 +16,12 @@ class MetricResult:
     """Base class for all detection metric results.
 
     Subclasses (e.g. ``PrecisionRecallResult``) add metric-specific convenience
-    methods with pre-bound column names. This base carries the eager PR-curve
-    ``auc`` (with optional partial-AUC range and correction). FROC/LROC curve
-    interpolation does **not** go through here — those helpers build on the lazy
-    ``_auc_expr.interpolate_curve_lazy`` authority directly (see
-    ``froc_sensitivity_at_fp`` / ``froc_summary_table``).
+    methods with pre-bound column names. This base carries the PR-curve ``auc``
+    (with optional partial-AUC range and correction), computed through the lazy
+    ``_auc_expr`` integral authority — never a second, eager implementation.
+    FROC/LROC curve interpolation does **not** go through here — those helpers
+    build on the lazy ``_auc_expr.interpolate_curve_lazy`` authority directly
+    (see ``froc_sensitivity_at_fp`` / ``froc_summary_table``).
 
     Attributes:
         curve: DataFrame containing the computed metric curve.
@@ -28,41 +30,6 @@ class MetricResult:
 
     curve: pl.DataFrame
     metadata: dict[str, Any] = field(default_factory=dict)
-
-    # ------------------------------------------------------------------
-    # Curve access
-    # ------------------------------------------------------------------
-
-    def _curve_xy(self, x_col: str, y_col: str) -> tuple[pl.Series, pl.Series]:
-        """Return the curve as strictly increasing x with the upper envelope y.
-
-        Every consumer of a curve's geometry goes through here — ``auc`` must
-        not sort for itself. A curve carries many rows
-        tied at one x (a FROC threshold bucket that adds only true positives
-        leaves ``fp_per_image`` unchanged), and Polars' ``sort`` defaults to
-        ``maintain_order=False``, so a sort on x alone leaves the y at each tie
-        boundary unspecified — the trapezoid there, and therefore the AUC,
-        would vary run to run. Collapsing each tie group to its maximum y is
-        both deterministic and the standard ROC/FROC convention: the operating
-        point reachable at that x is the best one, not an arbitrary one.
-
-        Args:
-            x_col: Column name for the x-axis.
-            y_col: Column name for the y-axis.
-
-        Returns:
-            ``(x, y)`` as Float64 Series, x strictly increasing.
-        """
-        collapsed = (
-            self.curve.select(
-                pl.col(x_col).cast(pl.Float64),
-                pl.col(y_col).fill_null(0.0).cast(pl.Float64),
-            )
-            .group_by(x_col)
-            .agg(pl.col(y_col).max())
-            .sort(x_col)
-        )
-        return collapsed[x_col], collapsed[y_col]
 
     # ------------------------------------------------------------------
     # AUC
@@ -78,6 +45,13 @@ class MetricResult:
     ) -> float:
         """Compute (partial) AUC under the curve.
 
+        Routes through the lazy ``_auc_expr`` authority: :func:`collapse_curve`
+        reduces the curve to strictly-increasing x with the upper-envelope y (a
+        curve carries many rows tied at one x — a run that changes only y leaves
+        x fixed — and collapsing each tie to its max y is deterministic and the
+        ROC/FROC convention), then :func:`trapz_auc_expr` / :func:`partial_auc_expr`
+        integrates it in one streaming collect.
+
         Args:
             x_col: Column name for the x-axis values.
             y_col: Column name for the y-axis values.
@@ -89,9 +63,17 @@ class MetricResult:
         Returns:
             Area under the curve (or partial area).
         """
-        x, y = self._curve_xy(x_col, y_col)
-        if x.len() == 0:
+        if self.curve.height == 0:
             return 0.0
+        collapsed = collapse_curve(self.curve.lazy(), x_col=x_col, y_col=y_col)
         if x_range is None:
-            return trapz_auc(x, y, correction)
-        return partial_auc(x, y, x_range[0], x_range[1], correction)
+            auc_expr = trapz_auc_expr(x=x_col, y=y_col, correction=correction)
+        else:
+            auc_expr = partial_auc_expr(
+                x=x_col,
+                y=y_col,
+                lo=x_range[0],
+                hi=x_range[1],
+                correction=correction,
+            )
+        return collapsed.select(auc=auc_expr).collect(engine="streaming").item()

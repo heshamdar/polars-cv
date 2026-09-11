@@ -607,7 +607,8 @@ def test_eager_froc_lroc_result_api_is_gone() -> None:
     ``_auc.py``. That was a second implementation of the integral the
     expression path now owns (``froc_auc``/``lroc_auc`` +
     ``metrics._auc_expr``), so a lazy plan could not carry an AUC and grouping
-    meant a Python loop. Callers use ``froc_auc(table).collect().item()`` (or
+    meant a Python loop. Callers use
+    ``froc_auc(table, fp_range=(0.0, 8.0)).collect().item()`` (or
     ``froc_sensitivity_at_fp`` / ``froc_summary_table`` for the curve helpers,
     ``froc_auc_ci_lazy`` / ``lroc_auc_ci_lazy`` for CIs).
 
@@ -637,6 +638,33 @@ def test_eager_froc_lroc_result_api_is_gone() -> None:
         assert hasattr(m, name), f"replacement {name!r} missing"
 
 
+def test_eager_auc_integrals_are_gone() -> None:
+    """The eager Series integrals ``trapz_auc`` / ``partial_auc`` must not return.
+
+    They reduced a ``pl.Series`` curve to a Python float eagerly — a second
+    implementation of the integral the lazy ``_auc_expr`` reductions
+    (``trapz_auc_expr`` / ``partial_auc_expr``) now own. Every consumer
+    (``MetricResult.auc``, all-points AP, FROC/LROC) routes through the lazy path
+    and collects streaming; re-adding an eager integral would recreate the split
+    authority. ``_auc.py`` keeps only the ``correction`` vocabulary
+    (``CorrectionMethod`` + ``validate_correction``). The removal also dropped
+    ``partial_auc``'s below-curve ``UserWarning``, which had no lazy equivalent.
+    """
+    from polars_cv.metrics import _auc
+
+    for name in ("trapz_auc", "partial_auc", "_interp"):
+        assert not hasattr(_auc, name), f"_auc still defines removed {name!r}"
+
+    # The lazy replacements are the single authority.
+    from polars_cv.metrics import _auc_expr
+
+    for name in ("trapz_auc_expr", "partial_auc_expr"):
+        assert hasattr(_auc_expr, name), f"lazy replacement {name!r} missing"
+
+    # The correction vocabulary stayed behind.
+    assert hasattr(_auc, "validate_correction"), "_auc.validate_correction removed"
+
+
 def test_metric_result_interpolate_and_summary_table_are_gone() -> None:
     """``MetricResult.interpolate`` / ``summary_table`` must not come back.
 
@@ -659,7 +687,8 @@ def test_metric_result_interpolate_and_summary_table_are_gone() -> None:
         )
         assert not hasattr(_MR, name), f"_result.MetricResult defines removed {name!r}"
 
-    # The eager AUC surface it kept is still present.
+    # The AUC surface it kept is still present (now routed through the lazy
+    # ``_auc_expr`` authority rather than an eager Series integral).
     assert hasattr(MetricResult, "auc"), "MetricResult.auc must remain"
 
 
@@ -882,15 +911,15 @@ def test_mcclish_partial_auc_correction_is_gone() -> None:
             f"{mod.__name__}.CorrectionMethod still spells 'mcclish'"
         )
 
-    # An unknown correction is rejected at the entry points, not silently
-    # treated as the raw area.
-    x = pl.Series("x", [0.0, 1.0, 2.0])
-    y = pl.Series("y", [0.0, 0.5, 0.8])
-    with pytest.raises(ValueError, match="mcclish|correction"):
-        _auc.partial_auc(x, y, 0.0, 2.0, correction="mcclish")  # type: ignore[arg-type]
+    # An unknown correction is rejected at the entry point (the lazy integral
+    # authority), not silently treated as the raw area.
     with pytest.raises(ValueError, match="mcclish|correction"):
         pl.LazyFrame({"x": [0.0, 1.0], "y": [0.0, 0.5]}).select(
             auc=_auc_expr.partial_auc_expr(
                 x="x", y="y", lo=0.0, hi=1.0, correction="mcclish"
             )
+        ).collect()
+    with pytest.raises(ValueError, match="mcclish|correction"):
+        pl.LazyFrame({"x": [0.0, 1.0], "y": [0.0, 0.5]}).select(
+            auc=_auc_expr.trapz_auc_expr(x="x", y="y", correction="mcclish")
         ).collect()

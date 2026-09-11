@@ -7,7 +7,6 @@ from typing import Literal
 
 import polars as pl
 
-from .._auc import trapz_auc
 from .._result import MetricResult
 from .._types import (
     COL_CLASS_ID,
@@ -417,11 +416,16 @@ def f1_at_threshold(
 
 
 def _all_points_ap(curve: pl.DataFrame) -> float:
-    """Compute AP using monotone-envelope interpolation.
+    """Compute AP using monotone-envelope interpolation — lazily.
 
     Applies the standard monotonically decreasing precision envelope
-    (right-to-left cumulative maximum) before trapezoidal integration.
-    This matches the COCO and scikit-learn AP definitions.
+    (right-to-left cumulative maximum) before trapezoidal integration, matching
+    the COCO and scikit-learn AP definitions. This is the ungrouped form of the
+    lazy authority :func:`all_points_ap_by_group`: the same envelope and the same
+    shift-based trapezoid anchored at recall = 0 (the first row's ``d_recall``
+    falls back to its own recall, so the leftmost block ``recall₀ · P₀`` is
+    counted, per COCO / scikit-learn ``Σ (Rₙ − Rₙ₋₁) · Pₙ`` with ``R₀ = 0``). No
+    eager Series integral is used.
 
     Args:
         curve: PR curve DataFrame with ``recall`` and ``precision``.
@@ -432,16 +436,29 @@ def _all_points_ap(curve: pl.DataFrame) -> float:
     if curve.height == 0:
         return 0.0
 
-    recall = curve["recall"].cast(pl.Float64)
-    precision = curve["precision"].cast(pl.Float64)
-
-    # Monotone decreasing envelope: reverse, cum_max, reverse back
-    envelope = precision.reverse().cum_max().reverse()
-    # Anchor at recall = 0 so the leftmost block (recall[0] × envelope[0])
-    # is included — matches COCO / scikit-learn Σ (Rₙ − Rₙ₋₁) · Pₙ with R₀ = 0.
-    recall = pl.concat([pl.Series([0.0]), recall])
-    envelope = pl.concat([pl.Series([envelope[0]]), envelope])
-    return float(trapz_auc(recall, envelope))
+    ap = (
+        curve.lazy()
+        .select(
+            pl.col("recall").cast(pl.Float64),
+            pl.col("precision").cast(pl.Float64),
+        )
+        # recall is non-decreasing in the score-descending curve; sort makes the
+        # envelope and the shift-based trapezoid order-stable across thread counts.
+        .sort("recall")
+        .with_columns(precision=pl.col("precision").reverse().cum_max().reverse())
+        .with_columns(
+            d_recall=(pl.col("recall") - pl.col("recall").shift(1)).fill_null(
+                pl.col("recall")
+            ),
+            avg_precision=(
+                (pl.col("precision") + pl.col("precision").shift(1)) / 2.0
+            ).fill_null(pl.col("precision")),
+        )
+        .select(ap=(pl.col("d_recall") * pl.col("avg_precision")).sum())
+        .collect(engine="streaming")
+        .item()
+    )
+    return float(ap)
 
 
 def _eleven_point_ap(curve: pl.DataFrame) -> float:

@@ -1,24 +1,24 @@
 """AUC integrals as Polars expressions — the single authority for curve→AUC.
 
-The eager scalar integrals in ``_auc.py`` reduced a curve to a Python ``float``.
-This module re-expresses the same math as ``pl.Expr`` reductions that run inside
+Every AUC in the package reduces through these ``pl.Expr`` reductions — inside
 ``group_by(group).agg(...)`` (one AUC per group, fully vectorized) *and* in a
 plain ``select`` over an ungrouped curve (a single scalar). A ``float`` is then
-``lf.select(...).collect().item()`` — never a second implementation of the
-integral.
+``lf.select(...).collect().item()``. There is no second, eager implementation:
+the Series-based ``trapz_auc`` / ``partial_auc`` that once lived in ``_auc.py``
+were removed once ``MetricResult.auc`` and the FROC/LROC/PR paths all routed
+through here.
 
-The two stages are kept separate, mirroring the eager path
-(``MetricResult._curve_xy`` then ``trapz_auc``):
+The two stages are kept separate:
 
 * :func:`collapse_curve` turns a raw curve into strictly-increasing ``x`` with
-  the upper-envelope ``y`` **per group** (the lazy replacement for
-  ``_curve_xy``). It changes the row count, so it is a ``LazyFrame`` transform.
-  :func:`collapse_scores` is its Mann-Whitney counterpart: one bucket per
-  ``(group, distinct score)`` carrying the positive/negative weight mass.
+  the upper-envelope ``y`` **per group**. It changes the row count, so it is a
+  ``LazyFrame`` transform. :func:`collapse_scores` is its Mann-Whitney
+  counterpart: one bucket per ``(group, distinct score)`` carrying the
+  positive/negative weight mass.
 * :func:`trapz_auc_expr` / :func:`partial_auc_expr` / :func:`mann_whitney_auc_expr`
   are the reductions. They assume each group's ``x`` (or score bucket) is already
-  unique (i.e. the curve/scores were collapsed), matching the eager helpers'
-  precondition.
+  unique (i.e. the curve/scores were collapsed) — call :func:`collapse_curve` or
+  :func:`collapse_scores` first.
 
 :func:`interpolate_curve_lazy` is the single lazy interpolation authority: it
 reads y at requested x operating points off a collapsed curve without collecting,
@@ -53,7 +53,8 @@ def collapse_curve(
 ) -> pl.LazyFrame:
     """Collapse a curve to strictly-increasing ``x`` with the upper-envelope ``y``.
 
-    This is the lazy, group-aware replacement for ``MetricResult._curve_xy``. A
+    The single curve-geometry authority for every AUC (``MetricResult.auc`` and
+    the FROC/LROC paths all call it). A
     curve carries many rows tied at one ``x`` (a FROC threshold bucket that adds
     only true positives leaves ``fp_per_image`` unchanged); collapsing each tie
     group to its maximum ``y`` is deterministic and is the ROC/FROC convention
