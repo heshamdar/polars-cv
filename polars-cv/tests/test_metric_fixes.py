@@ -58,6 +58,7 @@ from polars_cv.metrics._types import (
     COL_WEIGHT,
     DEFAULT_CLASS,
 )
+from tests._metric_refs import ref_froc_auc
 
 
 def _froc_curve_df(det_df: pl.DataFrame, meta_df: pl.DataFrame) -> pl.DataFrame:
@@ -1732,3 +1733,153 @@ class TestPartialAucIntegerBounds:
         got_int = df.select(auc=partial_auc_expr(x="x", y="y", lo=0, hi=4)).item()
         got_float = df.select(auc=partial_auc_expr(x="x", y="y", lo=0.0, hi=4.0)).item()
         assert got_int == pytest.approx(got_float)
+
+
+# ---------------------------------------------------------------------------
+# FROC weighted partial-AUC: weight-scale contamination + degenerate mass
+# ---------------------------------------------------------------------------
+
+
+def _subunit_weight_table(scale: float) -> DetectionTable:
+    """Single-class table whose weighted GT mass is < 1 at ``scale == 1``.
+
+    Two positive images (1 GT each) and one negative, with sub-unit weights that
+    sum to well under 1 over the frame — so ``_tw_gts = Sum(n_gts*weight) < 1`` and
+    the old ``max(_tw_gts, 1.0)`` floor fires. Scaling every weight leaves the
+    ``(fp_per_image, sensitivity)`` curve — a ratio of weighted sums — unchanged,
+    so the normalized partial AUC is weight-scale invariant once the floor is gone.
+    """
+    det_df = pl.DataFrame(
+        {
+            COL_IMAGE_ID: ["a", "b", "c"],
+            COL_CLASS_ID: [DEFAULT_CLASS] * 3,
+            COL_SCORE: [0.9, 0.8, 0.7],
+            COL_IS_TP: [True, False, False],
+            COL_GT_IDX: [0, None, None],
+            COL_IOU: [0.85, 0.0, 0.0],
+            COL_DET_IDX: [0, 0, 0],
+        },
+        schema={
+            COL_IMAGE_ID: pl.String,
+            COL_CLASS_ID: pl.String,
+            COL_SCORE: pl.Float64,
+            COL_IS_TP: pl.Boolean,
+            COL_GT_IDX: pl.UInt32,
+            COL_IOU: pl.Float64,
+            COL_DET_IDX: pl.UInt32,
+        },
+    )
+    meta_df = pl.DataFrame(
+        {
+            COL_IMAGE_ID: ["a", "b", "c"],
+            COL_CLASS_ID: [DEFAULT_CLASS] * 3,
+            COL_N_GTS: [1, 1, 0],
+            COL_WEIGHT: [0.2 * scale, 0.2 * scale, 0.1 * scale],
+            COL_GT_LABEL: [True, True, False],
+        }
+    )
+    return DetectionTable.from_matched(det_df, meta_df, matching_iou_threshold=0.5)
+
+
+class TestFrocWeightScaleInvariance:
+    """Partial FROC AUC must not depend on the *scale* of the weights.
+
+    Regression for the ``max(_tw_gts, 1.0)`` divide-by-zero floor: it assumed
+    unit-scale weights and, on normalized (sub-unit) weights, inflated the
+    denominator and roughly halved the partial AUC.
+    """
+
+    @pytest.mark.parametrize("fp_range", [(0.0, 1.0), (0.25, 2.0), (0.0, 8.0)])
+    def test_partial_auc_is_weight_scale_invariant(
+        self, fp_range: tuple[float, float]
+    ) -> None:
+        small = (
+            froc_auc(
+                _subunit_weight_table(1.0), fp_range=fp_range, correction="normalize"
+            )
+            .collect()
+            .item()
+        )
+        large = (
+            froc_auc(
+                _subunit_weight_table(1e6), fp_range=fp_range, correction="normalize"
+            )
+            .collect()
+            .item()
+        )
+        assert small == pytest.approx(large, rel=1e-6)
+
+    @pytest.mark.parametrize("fp_range", [(0.0, 1.0), (0.25, 2.0)])
+    def test_matches_reference_on_subunit_weights(
+        self, fp_range: tuple[float, float]
+    ) -> None:
+        """Both the source and the independent oracle must be clamp-free."""
+        table = _subunit_weight_table(1.0)
+        got = (
+            froc_auc(table, fp_range=fp_range, correction="normalize").collect().item()
+        )
+        want = ref_froc_auc(table, fp_range=fp_range, correction="normalize")
+        assert got == pytest.approx(want, abs=1e-7)
+
+
+class TestDegenerateWeightMassSurfacesNull:
+    """A zero weighted denominator yields null, not a fabricated substitute."""
+
+    def test_froc_no_ground_truth_yields_null_sensitivity(self) -> None:
+        # No ground truths anywhere => _tw_gts == 0 => sensitivity undefined.
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b"],
+                COL_SCORE: [0.9, 0.5],
+                COL_IS_TP: [False, False],
+            }
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b"],
+                COL_N_GTS: [0, 0],
+                COL_WEIGHT: [1.0, 1.0],
+            }
+        )
+        curve = _froc_curve_df(det_df, meta_df)
+        bucketed = curve.filter(pl.col("threshold").is_finite())
+        assert bucketed.height > 0
+        assert bucketed["sensitivity"].is_null().all()
+
+    def test_froc_all_zero_weights_yield_null_axes(self) -> None:
+        # Every weight zero => both weighted denominators zero => both axes null.
+        det_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b"],
+                COL_SCORE: [0.9, 0.5],
+                COL_IS_TP: [True, False],
+            }
+        )
+        meta_df = pl.DataFrame(
+            {
+                COL_IMAGE_ID: ["a", "b"],
+                COL_N_GTS: [1, 0],
+                COL_WEIGHT: [0.0, 0.0],
+            }
+        )
+        curve = _froc_curve_df(det_df, meta_df)
+        bucketed = curve.filter(pl.col("threshold").is_finite())
+        assert bucketed["sensitivity"].is_null().all()
+        assert bucketed["fp_per_image"].is_null().all()
+
+    def test_lroc_no_positive_mass_yields_null_sensitivity(self) -> None:
+        # Only negatives => _tw_pos == 0 => sensitivity undefined (previously 0
+        # via the unweighted-count fallback, which masked the degeneracy).
+        per_image = pl.DataFrame(
+            {
+                "image_id": ["n1", "n2"],
+                "gt_label": [False, False],
+                "weight": [1.0, 1.0],
+                "max_score": [0.9, 0.5],
+                "top_is_tp": [False, False],
+            }
+        )
+        curve = _lroc_curve_df(per_image)
+        scored = curve.filter(pl.col("threshold").is_finite())
+        assert scored.height > 0
+        assert scored["sensitivity"].is_null().all()
