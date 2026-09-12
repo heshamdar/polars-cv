@@ -2183,7 +2183,7 @@ class Pipeline:
         return self._append_op("ceil", lambda p: {})
 
     def round(self) -> "Pipeline":
-        """Round to nearest, ties away from zero. Domain: buffer → buffer."""
+        """Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer."""
         return self._append_op("round", lambda p: {})
 
     def trunc(self) -> "Pipeline":

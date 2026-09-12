@@ -1833,7 +1833,7 @@ fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
             }
             ScalarOp::Round => {
                 for x in data.iter_mut() {
-                    *x = x.round();
+                    *x = x.round_ties_even();
                 }
             }
             ScalarOp::Trunc => {
@@ -1993,23 +1993,24 @@ mod scalar_dual_path_tests {
         }
     }
 
-    /// `round` breaks ties away from zero (`f32::round`), *not* banker's
-    /// rounding like numpy/Python `round`. This is a deliberate, documented
-    /// choice; the test makes it load-bearing so a silent "align with numpy"
-    /// edit fails. Both arithmetic paths must agree.
+    /// `round` breaks ties to even (`round_ties_even`), matching Polars' and
+    /// numpy's `round` — verified against `pl.Series.round` at 1.42. The test
+    /// makes the tie-breaking load-bearing so a silent switch to away-from-zero
+    /// (`f32::round`) is caught. Both arithmetic paths must agree.
     #[test]
-    fn round_breaks_ties_away_from_zero() {
-        let xs: [f32; 6] = [0.5, 1.5, 2.5, -0.5, -1.5, -2.5];
+    fn round_breaks_ties_to_even() {
+        let xs: [f32; 7] = [0.5, 1.5, 2.5, 3.5, -0.5, -1.5, -2.5];
         let buf = ViewBuffer::from_vec_with_shape(xs.to_vec(), vec![xs.len()]);
         let kernel = FusedKernel {
             ops: vec![ScalarOp::Round],
             out_dtype: DType::F32,
         };
         let got = buf.apply_fused_kernel(&kernel);
-        // Away from zero: 2.5 -> 3 (banker's would give 2), -2.5 -> -3.
-        assert_eq!(got.as_slice::<f32>(), &[1.0, 2.0, 3.0, -1.0, -2.0, -3.0]);
+        // Ties to even: 2.5 -> 2 (away-from-zero would give 3), 3.5 -> 4.
+        // -0.0 compares equal to 0.0 under IEEE, so the first element holds.
+        assert_eq!(got.as_slice::<f32>(), &[0.0, 2.0, 2.0, 4.0, 0.0, -2.0, -2.0]);
         for &x in &xs {
-            assert_eq!(ScalarOp::Round.apply_f64(x as f64), (x as f64).round());
+            assert_eq!(ScalarOp::Round.apply_f64(x as f64), (x as f64).round_ties_even());
         }
     }
 }

@@ -181,8 +181,7 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
 /// through [`ScalarOp::apply_f64`] — the shared f64 arithmetic authority.
 fn apply_scalar_op_f64(buf: &ViewBuffer, op: &ScalarOp) -> ViewBuffer {
     let contig = buf.to_contiguous();
-    let count = contig.layout.num_elements();
-    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+    let src = contig.as_slice::<f64>();
     let new_data: Vec<f64> = src.iter().map(|&x| op.apply_f64(x)).collect();
     ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
 }
@@ -293,7 +292,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
     // Fallback: use contiguous buffer
     let contig = work_buf.to_contiguous();
     let count = contig.layout.num_elements();
-    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+    let src = contig.as_slice::<f32>();
 
     let new_data: Vec<f32> = match method {
         NormalizeMethod::MinMax => {
@@ -355,7 +354,7 @@ fn apply_adjust_contrast(buf: &ViewBuffer, factor: f32) -> ViewBuffer {
     if buf.dtype() == DType::F64 {
         let contig = buf.to_contiguous();
         let count = contig.layout.num_elements();
-        let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+        let src = contig.as_slice::<f64>();
         let mean: f64 = if count > 0 {
             src.iter().sum::<f64>() / count as f64
         } else {
@@ -372,7 +371,7 @@ fn apply_adjust_contrast(buf: &ViewBuffer, factor: f32) -> ViewBuffer {
     };
     let contig = work_buf.to_contiguous();
     let count = contig.layout.num_elements();
-    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+    let src = contig.as_slice::<f32>();
 
     let mean: f32 = if count > 0 {
         src.iter().map(|&x| x as f64).sum::<f64>() as f32 / count as f32
@@ -392,8 +391,7 @@ fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f32) -> ViewBuffer {
     let input_dtype = buf.dtype();
     if input_dtype == DType::F64 {
         let contig = buf.to_contiguous();
-        let count = contig.layout.num_elements();
-        let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+        let src = contig.as_slice::<f64>();
         let gamma = gamma as f64;
         let new_data: Vec<f64> = src.iter().map(|&x| x.clamp(0.0, 1.0).powf(gamma)).collect();
         return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
@@ -404,8 +402,7 @@ fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f32) -> ViewBuffer {
         buf.clone()
     };
     let contig = work_buf.to_contiguous();
-    let count = contig.layout.num_elements();
-    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+    let src = contig.as_slice::<f32>();
 
     // Normalize by the input dtype's value range (255 for u8, 65535 for
     // u16, ...; 1.0 for floats). A hardcoded 255 would clamp every u16+
@@ -427,27 +424,26 @@ fn apply_adjust_gamma(buf: &ViewBuffer, gamma: f32) -> ViewBuffer {
 /// For u8: `255 - pixel`. For float: `1.0 - pixel`. Preserves input dtype.
 fn apply_invert(buf: &ViewBuffer) -> ViewBuffer {
     let contig = buf.to_contiguous();
-    let count = contig.layout.num_elements();
     let shape = contig.shape().to_vec();
 
     match buf.dtype() {
         DType::U8 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), count) };
+            let src = contig.as_slice::<u8>();
             let new_data: Vec<u8> = src.iter().map(|&x| 255u8 - x).collect();
             ViewBuffer::from_vec_with_shape(new_data, shape)
         }
         DType::U16 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u16>(), count) };
+            let src = contig.as_slice::<u16>();
             let new_data: Vec<u16> = src.iter().map(|&x| 65535u16 - x).collect();
             ViewBuffer::from_vec_with_shape(new_data, shape)
         }
         DType::F32 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+            let src = contig.as_slice::<f32>();
             let new_data: Vec<f32> = src.iter().map(|&x| 1.0f32 - x).collect();
             ViewBuffer::from_vec_with_shape(new_data, shape)
         }
         DType::F64 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+            let src = contig.as_slice::<f64>();
             let new_data: Vec<f64> = src.iter().map(|&x| 1.0f64 - x).collect();
             ViewBuffer::from_vec_with_shape(new_data, shape)
         }
@@ -597,8 +593,7 @@ where
             }
         }
         let contig = buf.to_contiguous();
-        let count = contig.layout.num_elements();
-        let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+        let src = contig.as_slice::<f64>();
         let new_data: Vec<f64> = src.iter().map(|&x| op64(x)).collect();
         return ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec());
     }
@@ -622,8 +617,7 @@ where
 
     // Fallback: use contiguous buffer
     let contig = work_buf.to_contiguous();
-    let count = contig.layout.num_elements();
-    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+    let src = contig.as_slice::<f32>();
     let new_data: Vec<f32> = src.iter().map(|&x| op32(x)).collect();
     ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
 }
@@ -689,12 +683,11 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
     }
 
     let contig = buf.to_contiguous();
-    let count = contig.layout.num_elements();
     let shape = contig.shape().to_vec();
 
     match contig.dtype() {
         DType::F32 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f32>(), count) };
+            let src = contig.as_slice::<f32>();
             // Scale from [0.0, 1.0] to [0, 255], clamping values outside range
             let new_data: Vec<u8> = src
                 .iter()
@@ -703,7 +696,7 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
             ViewBuffer::from_vec(new_data).reshape(shape)
         }
         DType::F64 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+            let src = contig.as_slice::<f64>();
             let new_data: Vec<u8> = src
                 .iter()
                 .map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8)
@@ -711,28 +704,28 @@ fn convert_to_u8_for_image(buf: ViewBuffer) -> ViewBuffer {
             ViewBuffer::from_vec(new_data).reshape(shape)
         }
         DType::U16 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u16>(), count) };
+            let src = contig.as_slice::<u16>();
             // Scale from [0, 65535] to [0, 255]
             let new_data: Vec<u8> = src.iter().map(|&x| (x >> 8) as u8).collect();
             ViewBuffer::from_vec(new_data).reshape(shape)
         }
         DType::I16 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<i16>(), count) };
+            let src = contig.as_slice::<i16>();
             let new_data: Vec<u8> = src.iter().map(|&x| x.clamp(0, 255) as u8).collect();
             ViewBuffer::from_vec(new_data).reshape(shape)
         }
         DType::U32 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u32>(), count) };
+            let src = contig.as_slice::<u32>();
             let new_data: Vec<u8> = src.iter().map(|&x| (x.min(255)) as u8).collect();
             ViewBuffer::from_vec(new_data).reshape(shape)
         }
         DType::I32 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<i32>(), count) };
+            let src = contig.as_slice::<i32>();
             let new_data: Vec<u8> = src.iter().map(|&x| x.clamp(0, 255) as u8).collect();
             ViewBuffer::from_vec(new_data).reshape(shape)
         }
         DType::I8 => {
-            let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<i8>(), count) };
+            let src = contig.as_slice::<i8>();
             let new_data: Vec<u8> = src.iter().map(|&x| x.max(0) as u8).collect();
             ViewBuffer::from_vec(new_data).reshape(shape)
         }
@@ -1280,8 +1273,7 @@ fn threshold_generic(buf: ViewBuffer, thresh: f64) -> ViewBuffer {
         } else {
             buf.to_contiguous()
         };
-        let count = contig_buf.layout.num_elements();
-        let src_slice = unsafe { std::slice::from_raw_parts(contig_buf.as_ptr::<u8>(), count) };
+        let src_slice = contig_buf.as_slice::<u8>();
         let new_data = threshold_simd(src_slice, thresh_u8);
         return ViewBuffer::from_vec(new_data).reshape(contig_buf.shape().to_vec());
     }
@@ -2327,7 +2319,7 @@ fn apply_histogram_equalize(buf: ViewBuffer) -> ViewBuffer {
     let w = shape[1];
     let c = shape.get(2).copied().unwrap_or(1);
     let count = contig.layout.num_elements();
-    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<u8>(), count) };
+    let src = contig.as_slice::<u8>();
 
     let total_pixels = h * w;
     let mut output = vec![0u8; count];
