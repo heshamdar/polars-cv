@@ -7,6 +7,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-09-12
+
+### Added
+
+- **14 core elementwise-math `Pipeline` methods.** `neg`, `abs`, `sqrt`,
+  `square`, `reciprocal`, `sign`, `floor`, `ceil`, `round`, `trunc`,
+  `clamp_min`, `clamp_max`, `add_constant` and `subtract_constant` join the
+  pure-elementwise scalar-op vocabulary. Each promotes to float (integers → f32,
+  f64 preserved) like `scale`/`relu` and fuses automatically with adjacent
+  scalar ops into a single kernel pass, so a chain of them costs one pass rather
+  than one per op. `clamp_min`/`clamp_max`/`add_constant`/`subtract_constant`
+  take a bound that may be a per-row expression; `round` breaks ties to even
+  (banker's rounding, matching Polars/numpy). A cross-path guard pins the f32
+  bulk kernel and the f64 cold path to compute the same function for every
+  variant, so the fused and unfused results cannot diverge.
+
 ### Changed
 
 - **`froc_auc` now requires an explicit `fp_range`, and `froc_auc`/`lroc_auc`
@@ -36,6 +52,21 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   below-curve `UserWarning` had no lazy equivalent and is gone.
 
 ### Fixed
+
+- **Weighted FROC partial-AUC is weight-scale invariant again.**
+  `froc_curve_lazy` divided sensitivity and false-positives-per-image by
+  weighted denominators floored with `max(..., 1.0)`, which assumes unit-scale
+  weights: under normalized (sub-unit) weights the weighted ground-truth mass is
+  `< 1` and was clamped up to `1`, inflating the denominator and roughly halving
+  the partial AUC purely by rescaling the weights — a metric that should be
+  weight-scale invariant moved by rescaling alone. The division now guards
+  against the unclamped weighted mass (mirroring the LROC curve), and a zero
+  weighted denominator (no weighted ground truths, or all-zero weights) yields
+  `null`, surfacing the degenerate input rather than fabricating a value. LROC's
+  own zero-mass branch, which previously substituted the unweighted count and
+  silently masked the same degeneracy, now yields `null` too. Guarded by new
+  weight-scale-invariance and null-on-degenerate-mass regression tests for both
+  FROC and LROC.
 
 - **`correction="normalize"` no longer returns non-deterministic garbage on the
   in-memory engine.** The normalize branch guarded the zero-span case with

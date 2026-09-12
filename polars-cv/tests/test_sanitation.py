@@ -2553,6 +2553,53 @@ def test_the_precommit_hook_runs_the_structural_lane() -> None:
     )
 
 
+def test_the_precommit_hook_runs_the_ci_python_linters() -> None:
+    """The pre-commit hook must run the same ruff lint/format CI's lint job runs.
+
+    CI's ``lint`` job fails on ``uvx ruff check`` and ``uvx ruff format
+    --check``, and those are exactly the failures a commit-time hook can cheaply
+    prevent. The hook used to run ruff through the ``ruff-pre-commit`` mirror,
+    which pins its *own* ruff at a fixed rev — and that rev drifted from CI's
+    unpinned ``uvx ruff`` (the mirror sat at v0.9.2 while ``uvx`` resolved
+    0.15.x), so code the hook formatted locally still failed CI's format check.
+    Two ruff versions is the second authority this repo's ``CLAUDE.md`` forbids:
+    the fix is to run ruff through the same ``uvx ruff`` CI uses, so there is
+    one ruff and passing the hook means passing CI's lint job.
+
+    Read the required checks out of ``ci.yml`` so this guard cannot pin the hook
+    to a check CI has stopped running.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    config = (repo_root / ".pre-commit-config.yaml").read_text()
+    ci = (repo_root / ".github" / "workflows" / "ci.yml").read_text()
+
+    for fragment in ("ruff check", "ruff format --check"):
+        assert fragment in ci, (
+            f"CI's lint job no longer runs `{fragment}`; update this guard "
+            "rather than leaving it pinning the hook to a check that is gone."
+        )
+        assert fragment in config, (
+            f"the pre-commit hooks do not run `{fragment}`, so a commit can "
+            "pass the hook and still fail CI's lint job on it — the frequent "
+            "lint failure this hook exists to prevent."
+        )
+
+    # One ruff, not two: the hook must invoke the same `uvx ruff` CI resolves,
+    # never a second pinned ruff via the mirror that drifts from it. Key on the
+    # mirror's *repo path*, which is only present when it is actually configured
+    # as a `- repo:` entry — a prose mention of the name in a comment must not
+    # trip this (the comment above the hook explains why the mirror was dropped).
+    assert "astral-sh/ruff-pre-commit" not in config, (
+        "the ruff-pre-commit mirror pins its own ruff version, which drifts "
+        "from CI's `uvx ruff` and reintroduces the two-ruff skew this hook was "
+        "changed to remove; run ruff through `uvx` in a local hook instead."
+    )
+    assert "uvx ruff" in config, (
+        "the ruff hooks must invoke `uvx ruff`, the same resolution CI's lint "
+        "job uses, so the hook and CI cannot lint with different ruff versions."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Plugin-boundary structs stay closed
 # ---------------------------------------------------------------------------

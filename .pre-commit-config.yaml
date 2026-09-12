@@ -7,15 +7,36 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.2
-    hooks:
-      - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
-      - id: ruff-format
-
   - repo: local
     hooks:
+      # Python lint + format, run through the *same* `uvx ruff` CI's lint job
+      # uses (`.github/workflows/ci.yml`) rather than the `ruff-pre-commit`
+      # mirror, which pins its own ruff at a fixed rev. That pin drifted from
+      # CI's unpinned `uvx ruff` -- the mirror sat at v0.9.2 while `uvx`
+      # resolved 0.15.x -- so code the hook formatted locally still failed CI's
+      # `ruff format --check`. Two ruff versions is the second authority
+      # CLAUDE.md forbids; one `uvx ruff` means passing the hook is passing CI.
+      #
+      # The invocation and paths are byte-identical to `scripts/verify.sh` and
+      # CI's lint job, so `--check` (not autofix) gates exactly what CI gates;
+      # run `uvx ruff check --fix` / `uvx ruff format` by hand to fix in place.
+      # `test_the_precommit_hook_runs_the_ci_python_linters` pins this parity.
+      - id: ruff-check
+        name: ruff check
+        description: Lint Python (matches CI's `uvx ruff check`)
+        entry: uvx ruff check polars-cv/python polars-cv/tests polars-cv/benchmarks
+        language: system
+        files: \.py$
+        pass_filenames: false
+
+      - id: ruff-format
+        name: ruff format --check
+        description: Check Python formatting (matches CI's `uvx ruff format --check`)
+        entry: uvx ruff format --check polars-cv/python polars-cv/tests polars-cv/benchmarks
+        language: system
+        files: \.py$
+        pass_filenames: false
+
       - id: cargo-fmt
         name: cargo fmt
         description: Check Rust formatting

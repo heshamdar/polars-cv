@@ -174,6 +174,37 @@ Pipeline().source("image_bytes").invert()
 
 All intensity parameters accept Polars expressions for per-row dynamic values.
 
+### Elementwise Math
+
+Pure per-pixel math primitives. Each promotes to float (integers → `f32`, `f64`
+preserved) like `scale`/`relu`, and **fuses automatically** with adjacent scalar
+ops — a chain of them runs as a single kernel pass rather than one pass per op,
+with no fusion for you to manage.
+
+```python
+p = Pipeline().source("image_bytes", dtype="u8")
+p.neg()          # -x
+p.abs()          # |x|
+p.sqrt()         # sqrt(x)  (NaN for negative input)
+p.square()       # x * x
+p.reciprocal()   # 1 / x    (±inf at zero)
+p.sign()         # -1 / 0 / +1
+p.floor()        # round toward -inf
+p.ceil()         # round toward +inf
+p.round()        # round to nearest, ties to even (matches Polars/numpy)
+p.trunc()        # round toward zero (drop the fractional part)
+```
+
+`clamp_min`, `clamp_max`, `add_constant` and `subtract_constant` take a bound or
+constant that may be a literal **or** a per-row Polars expression:
+
+```python
+p.clamp_min(0.0)      # max(x, 0.0)   — one-sided floor
+p.clamp_max(255.0)    # min(x, 255.0) — one-sided cap
+p.add_constant(10)    # x + 10
+p.subtract_constant(pl.col("bias"))  # per-row subtrahend
+```
+
 ### Preserving the input dtype
 
 Intensity operations compute in `f32`, so by default an integer image is
