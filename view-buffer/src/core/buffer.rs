@@ -1930,3 +1930,86 @@ mod cast_round_tests {
         assert_eq!(out.as_slice::<u8>(), &[10, 250, 44]);
     }
 }
+
+#[cfg(test)]
+mod scalar_dual_path_tests {
+    //! The scalar arithmetic is written twice — the f32 bulk kernel
+    //! (`apply_fused_op_passes`) and `ScalarOp::apply_f64` (the f64 cold path).
+    //! These tests pin the two paths to each other so an edit to one that is
+    //! not mirrored in the other fails loudly.
+    use crate::ops::scalar::{FusedKernel, ScalarOp};
+    use crate::{DType, ViewBuffer};
+
+    /// Every `ScalarOp` computes the same function through the f32 bulk kernel
+    /// and through `apply_f64`. Referenced by name in `ScalarOp::apply_f64`'s
+    /// docstring — keep the name in sync if this moves.
+    #[test]
+    fn scalar_f64_matches_f32_kernel() {
+        let ops = [
+            ScalarOp::Add(1.5),
+            ScalarOp::Sub(1.5),
+            ScalarOp::Mul(2.0),
+            ScalarOp::Div(4.0),
+            ScalarOp::Pow(2.0),
+            ScalarOp::Neg,
+            ScalarOp::Abs,
+            ScalarOp::Sqrt,
+            ScalarOp::Square,
+            ScalarOp::Recip,
+            ScalarOp::Min(0.5),
+            ScalarOp::Max(0.5),
+            ScalarOp::Sign,
+            ScalarOp::Floor,
+            ScalarOp::Ceil,
+            ScalarOp::Round,
+            ScalarOp::Trunc,
+            ScalarOp::Relu,
+            ScalarOp::Clamp(0.0, 1.0),
+        ];
+        let xs: [f32; 8] = [-2.5, -1.0, -0.4, 0.0, 0.4, 1.0, 2.5, 4.0];
+        for op in ops {
+            let buf = ViewBuffer::from_vec_with_shape(xs.to_vec(), vec![xs.len()]);
+            let kernel = FusedKernel {
+                ops: vec![op.clone()],
+                out_dtype: DType::F32,
+            };
+            let out = buf.apply_fused_kernel(&kernel);
+            let got = out.as_slice::<f32>();
+            for (i, &x) in xs.iter().enumerate() {
+                let via_f64 = op.apply_f64(x as f64) as f32;
+                let via_f32 = got[i];
+                let ok = if via_f64.is_nan() {
+                    via_f32.is_nan()
+                } else if via_f64.is_infinite() {
+                    via_f32.is_infinite() && via_f32.signum() == via_f64.signum()
+                } else {
+                    (via_f32 - via_f64).abs() <= 1e-5 * (1.0 + via_f64.abs())
+                };
+                assert!(
+                    ok,
+                    "{op:?} on {x}: f32 kernel gave {via_f32}, apply_f64 gave {via_f64}"
+                );
+            }
+        }
+    }
+
+    /// `round` breaks ties away from zero (`f32::round`), *not* banker's
+    /// rounding like numpy/Python `round`. This is a deliberate, documented
+    /// choice; the test makes it load-bearing so a silent "align with numpy"
+    /// edit fails. Both arithmetic paths must agree.
+    #[test]
+    fn round_breaks_ties_away_from_zero() {
+        let xs: [f32; 6] = [0.5, 1.5, 2.5, -0.5, -1.5, -2.5];
+        let buf = ViewBuffer::from_vec_with_shape(xs.to_vec(), vec![xs.len()]);
+        let kernel = FusedKernel {
+            ops: vec![ScalarOp::Round],
+            out_dtype: DType::F32,
+        };
+        let got = buf.apply_fused_kernel(&kernel);
+        // Away from zero: 2.5 -> 3 (banker's would give 2), -2.5 -> -3.
+        assert_eq!(got.as_slice::<f32>(), &[1.0, 2.0, 3.0, -1.0, -2.0, -3.0]);
+        for &x in &xs {
+            assert_eq!(ScalarOp::Round.apply_f64(x as f64), (x as f64).round());
+        }
+    }
+}
