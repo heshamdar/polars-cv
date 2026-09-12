@@ -147,28 +147,15 @@ def _build_lroc_curve_grouped(
     keys: list[str],
 ) -> pl.LazyFrame:
     """Group-aware LROC curve over ``keys`` (non-empty; carries the dummy)."""
-    group_stats = (
-        per_image.group_by(keys)
-        .agg(
-            _tw_pos=(pl.col(COL_GT_LABEL).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
-            _tw_neg=(
-                (~pl.col(COL_GT_LABEL)).cast(pl.Float64) * pl.col(COL_WEIGHT)
-            ).sum(),
-            _n_pos=pl.col(COL_GT_LABEL).sum().cast(pl.Float64),
-            _n_neg=(~pl.col(COL_GT_LABEL)).sum().cast(pl.Float64),
-        )
-        .with_columns(
-            _n_pos_f=pl.max_horizontal(pl.col("_n_pos"), pl.lit(1.0)),
-            _n_neg_f=pl.max_horizontal(pl.col("_n_neg"), pl.lit(1.0)),
-        )
+    group_stats = per_image.group_by(keys).agg(
+        _tw_pos=(pl.col(COL_GT_LABEL).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
+        _tw_neg=((~pl.col(COL_GT_LABEL)).cast(pl.Float64) * pl.col(COL_WEIGHT)).sum(),
     )
 
     scored = per_image.filter(pl.col("max_score").is_not_null())
     bucketed = (
         scored.group_by(*keys, "max_score")
         .agg(
-            pos_detected=(pl.col(COL_GT_LABEL) & pl.col("top_is_tp")).sum(),
-            neg_detected=(~pl.col(COL_GT_LABEL)).sum(),
             weighted_pos_detected=(
                 (pl.col(COL_GT_LABEL) & pl.col("top_is_tp")).cast(pl.Float64)
                 * pl.col(COL_WEIGHT)
@@ -180,8 +167,6 @@ def _build_lroc_curve_grouped(
         .rename({"max_score": "threshold"})
         .sort(*keys, "threshold", descending=[False] * len(keys) + [True])
         .with_columns(
-            cum_pos_detected=pl.col("pos_detected").cum_sum().over(keys),
-            cum_neg_detected=pl.col("neg_detected").cum_sum().over(keys),
             cum_weighted_pos_detected=pl.col("weighted_pos_detected")
             .cum_sum()
             .over(keys),
@@ -191,12 +176,17 @@ def _build_lroc_curve_grouped(
         )
         .join(group_stats, on=keys, how="left")
         .with_columns(
+            # Divide by the *unclamped* weighted mass, guarding the zero case. A
+            # zero denominator (no positive / no negative weighted mass) leaves
+            # the axis null: the operating point is undefined, so surface that
+            # rather than substituting an unweighted count, which would silently
+            # ignore the degenerate weights. Matches the guard in `_froc.py`.
             sensitivity=pl.when(pl.col("_tw_pos") > 0.0)
             .then(pl.col("cum_weighted_pos_detected") / pl.col("_tw_pos"))
-            .otherwise(pl.col("cum_pos_detected") / pl.col("_n_pos_f")),
+            .otherwise(None),
             fpf=pl.when(pl.col("_tw_neg") > 0.0)
             .then(pl.col("cum_weighted_neg_detected") / pl.col("_tw_neg"))
-            .otherwise(pl.col("cum_neg_detected") / pl.col("_n_neg_f")),
+            .otherwise(None),
         )
         .select(*keys, "threshold", "fpf", "sensitivity")
     )

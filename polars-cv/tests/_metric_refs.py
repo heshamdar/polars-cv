@@ -50,10 +50,11 @@ def _collapse_and_trapz(
 
 def _froc_points(table: DetectionTable) -> tuple[np.ndarray, np.ndarray]:
     det, meta = table.collect()
-    twg = max(float((meta["n_gts"] * meta["weight"]).sum()), 1.0)
-    wsum = max(
-        float(meta.unique(subset=["image_id"], keep="first")["weight"].sum()), 1.0
-    )
+    # Divide by the *unclamped* weighted mass, guarding the zero case, exactly as
+    # the source does — a `max(..., 1.0)` floor here would re-introduce the
+    # weight-scale bug in the oracle and let it validate a clamped source.
+    twg = float((meta["n_gts"] * meta["weight"]).sum())
+    wsum = float(meta.unique(subset=["image_id"], keep="first")["weight"].sum())
     wmap = dict(zip(meta["image_id"].to_list(), meta["weight"].to_list()))
 
     d = det.filter(pl.col("score").is_not_null())
@@ -69,8 +70,8 @@ def _froc_points(table: DetectionTable) -> tuple[np.ndarray, np.ndarray]:
         m = scores == s
         cum_wtp += float((iw[m] * tp[m]).sum())
         cum_wfp += float((iw[m] * (~tp[m])).sum())
-        fps.append(cum_wfp / wsum)
-        sens.append(cum_wtp / twg)
+        fps.append(cum_wfp / wsum if wsum > 0 else float("nan"))
+        sens.append(cum_wtp / twg if twg > 0 else float("nan"))
     return np.array(fps), np.array(sens)
 
 
@@ -228,24 +229,22 @@ def _lroc_points(table: DetectionTable, variant: str) -> tuple[np.ndarray, np.nd
     rows = _lroc_per_image(table, variant)
     tw_pos = sum(r["w"] for r in rows if r["gt"])
     tw_neg = sum(r["w"] for r in rows if not r["gt"])
-    n_pos = max(sum(1 for r in rows if r["gt"]), 1)
-    n_neg = max(sum(1 for r in rows if not r["gt"]), 1)
 
     scored = [r for r in rows if r["max_score"] is not None]
     fpf = [0.0]
     sens = [0.0]
-    cum_wpos = cum_wneg = cum_pos = cum_neg = 0.0
+    cum_wpos = cum_wneg = 0.0
     max_sens = 0.0
     for s in sorted({r["max_score"] for r in scored}, reverse=True):
         for r in [r for r in scored if r["max_score"] == s]:
             if r["gt"] and r["top_is_tp"]:
-                cum_pos += 1
                 cum_wpos += r["w"]
             if not r["gt"]:
-                cum_neg += 1
                 cum_wneg += r["w"]
-        se = cum_wpos / tw_pos if tw_pos > 0 else cum_pos / n_pos
-        fp = cum_wneg / tw_neg if tw_neg > 0 else cum_neg / n_neg
+        # Guarded division against the unclamped weighted mass — mirrors the
+        # source; no unweighted-count fallback (that masked degenerate weights).
+        se = cum_wpos / tw_pos if tw_pos > 0 else float("nan")
+        fp = cum_wneg / tw_neg if tw_neg > 0 else float("nan")
         fpf.append(fp)
         sens.append(se)
         max_sens = max(max_sens, se)

@@ -156,10 +156,7 @@ def _froc_curve_grouped(
         .group_by(keys)
         .agg(_weight_sum=pl.col(COL_WEIGHT).sum())
     )
-    group_stats = gt_stats.join(weight_stats, on=keys, how="left").with_columns(
-        _tw_gts_f=pl.max_horizontal(pl.col("_tw_gts"), pl.lit(1.0)),
-        _weight_sum_f=pl.max_horizontal(pl.col("_weight_sum"), pl.lit(1.0)),
-    )
+    group_stats = gt_stats.join(weight_stats, on=keys, how="left")
 
     bucketed = (
         det_w.group_by(*keys, COL_SCORE)
@@ -183,8 +180,19 @@ def _froc_curve_grouped(
         .with_columns(
             total_gts=pl.col("total_targets"),
             fn=(pl.col("total_targets") - pl.col("tp")).clip(lower_bound=0),
-            sensitivity=pl.col("cum_weighted_tp") / pl.col("_tw_gts_f"),
-            fp_per_image=pl.col("cum_weighted_fp") / pl.col("_weight_sum_f"),
+            # Divide by the *unclamped* weighted mass, guarding the zero case
+            # rather than flooring the denominator — a floor of 1.0 assumes
+            # unit-scale weights and silently halves the curve under normalized
+            # (sub-unit) weights. A zero weighted denominator (no weighted GTs,
+            # or all-zero weights) leaves the axis null: the operating point is
+            # genuinely undefined, so surface that instead of fabricating a
+            # value. This mirrors the guarded division in `_lroc.py`.
+            sensitivity=pl.when(pl.col("_tw_gts") > 0.0)
+            .then(pl.col("cum_weighted_tp") / pl.col("_tw_gts"))
+            .otherwise(None),
+            fp_per_image=pl.when(pl.col("_weight_sum") > 0.0)
+            .then(pl.col("cum_weighted_fp") / pl.col("_weight_sum"))
+            .otherwise(None),
         )
         .select(
             *keys,
