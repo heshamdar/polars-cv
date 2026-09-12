@@ -10,6 +10,7 @@ use crate::core::dtype::DType;
 use crate::expr::ViewExpr;
 use crate::ops::affine::AffineParams;
 use crate::ops::dto::ViewDto;
+use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::Op;
 use crate::ops::{ComputeOp, ImageOp, ViewOp};
 
@@ -149,7 +150,41 @@ pub(crate) fn apply_compute_inner(buf: ViewBuffer, op: ComputeOp) -> ViewBuffer 
         ComputeOp::AdjustContrast(factor) => apply_adjust_contrast(&buf, factor),
         ComputeOp::AdjustGamma(gamma) => apply_adjust_gamma(&buf, gamma),
         ComputeOp::Invert => apply_invert(&buf),
+        ComputeOp::Scalar(op) => {
+            // Route through the fused kernel so a lone scalar op and a fused
+            // one share the identical f32 arithmetic (the "route through the
+            // kernel" design). f64 preserves precision on its own cold path
+            // (`PromoteToFloat` keeps f64; the kernel is f32-only), mirroring
+            // how the promote-family ops keep f64 unfused.
+            if buf.dtype() == DType::F64 {
+                apply_scalar_op_f64(&buf, &op)
+            } else {
+                let kernel = FusedKernel {
+                    ops: vec![op],
+                    out_dtype: DType::F32,
+                };
+                let mut buf = buf;
+                if buf.try_apply_fused_kernel_inplace(&kernel) {
+                    buf
+                } else {
+                    buf.apply_fused_kernel(&kernel)
+                }
+            }
+        }
     }
+}
+
+/// Apply a single scalar op to an `f64` buffer, computing in `f64`.
+///
+/// The unfused f64 cold path for [`ComputeOp::Scalar`]: `PromoteToFloat`
+/// preserves f64, but the bulk kernel computes in f32, so f64 evaluates here
+/// through [`ScalarOp::apply_f64`] — the shared f64 arithmetic authority.
+fn apply_scalar_op_f64(buf: &ViewBuffer, op: &ScalarOp) -> ViewBuffer {
+    let contig = buf.to_contiguous();
+    let count = contig.layout.num_elements();
+    let src = unsafe { std::slice::from_raw_parts(contig.as_ptr::<f64>(), count) };
+    let new_data: Vec<f64> = src.iter().map(|&x| op.apply_f64(x)).collect();
+    ViewBuffer::from_vec(new_data).reshape(contig.shape().to_vec())
 }
 
 /// Apply normalization and cast the f32 result to the configured output dtype.
