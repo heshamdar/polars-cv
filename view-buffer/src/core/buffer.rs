@@ -2008,9 +2008,15 @@ mod scalar_dual_path_tests {
         let got = buf.apply_fused_kernel(&kernel);
         // Ties to even: 2.5 -> 2 (away-from-zero would give 3), 3.5 -> 4.
         // -0.0 compares equal to 0.0 under IEEE, so the first element holds.
-        assert_eq!(got.as_slice::<f32>(), &[0.0, 2.0, 2.0, 4.0, 0.0, -2.0, -2.0]);
+        assert_eq!(
+            got.as_slice::<f32>(),
+            &[0.0, 2.0, 2.0, 4.0, 0.0, -2.0, -2.0]
+        );
         for &x in &xs {
-            assert_eq!(ScalarOp::Round.apply_f64(x as f64), (x as f64).round_ties_even());
+            assert_eq!(
+                ScalarOp::Round.apply_f64(x as f64),
+                (x as f64).round_ties_even()
+            );
         }
     }
 }
