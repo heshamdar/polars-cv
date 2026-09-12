@@ -892,7 +892,7 @@ mod scalar_op_tests {
             (ScalarOp::Sign, signum_numpy::<f32>),
             (ScalarOp::Floor, |x| x.floor()),
             (ScalarOp::Ceil, |x| x.ceil()),
-            (ScalarOp::Round, |x| x.round()),
+            (ScalarOp::Round, |x| x.round_ties_even()),
             (ScalarOp::Trunc, |x| x.trunc()),
             (ScalarOp::Relu, |x| x.max(0.0)),
             (ScalarOp::Clamp(0.0, 1.0), |x| x.clamp(0.0, 1.0)),

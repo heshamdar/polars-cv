@@ -39,7 +39,7 @@ pub enum ScalarOp {
     Floor,
     /// Round toward positive infinity.
     Ceil,
-    /// Round to nearest, ties away from zero (`f32::round`).
+    /// Round to nearest, ties to even (`f32::round_ties_even`; matches Polars/numpy).
     Round,
     /// Round toward zero (drop the fractional part).
     Trunc,
@@ -118,7 +118,7 @@ impl ScalarOp {
             ScalarOp::Sign => signum_numpy(x),
             ScalarOp::Floor => x.floor(),
             ScalarOp::Ceil => x.ceil(),
-            ScalarOp::Round => x.round(),
+            ScalarOp::Round => x.round_ties_even(),
             ScalarOp::Trunc => x.trunc(),
             ScalarOp::Relu => x.max(0.0),
             ScalarOp::Clamp(lo, hi) => x.clamp(*lo as f64, *hi as f64),
