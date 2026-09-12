@@ -39,7 +39,8 @@ pub use expr::ViewExpr;
 // Re-exports - Ops
 pub use ops::{
     apply_mask, BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType, ImageOp, ImageOpKind,
-    NormalizeMethod, Op, OutputChannelRule, OutputRankRule, ValidationError, ViewDto, ViewOp,
+    NormalizeMethod, Op, OutputChannelRule, OutputRankRule, ScalarOp, ValidationError, ViewDto,
+    ViewOp,
 };
 
 // Re-exports - Protocol

@@ -8,7 +8,7 @@ use polars::prelude::*;
 use view_buffer::{
     geometry::rasterize::rasterize, AffineParams, BinaryOp, ComputeOp, DType, FilterType,
     GeometryOp, ImageAdapter, ImageCodec, ImageOp, ImageOpKind, InterpolationType, NormalizeMethod,
-    PlannedDType, ViewBuffer, ViewDto, ViewOp,
+    PlannedDType, ScalarOp, ViewBuffer, ViewDto, ViewOp,
 };
 
 use crate::graph::step::GraphStep;
@@ -282,7 +282,9 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>
 /// direction (every entry resolves), and `unknown_op_is_rejected` guards that
 /// the catch-all still rejects names that are not arms.
 pub const KNOWN_OPS: &[&str] = &[
+    "abs",
     "add",
+    "add_constant",
     "adjust_contrast",
     "adjust_gamma",
     "apply_mask",
@@ -293,10 +295,13 @@ pub const KNOWN_OPS: &[&str] = &[
     "blur",
     "canny",
     "cast",
+    "ceil",
     "channel_merge",
     "channel_select",
     "channel_swap",
     "clamp",
+    "clamp_max",
+    "clamp_min",
     "contour_area",
     "contour_bounding_box",
     "contour_centroid",
@@ -315,6 +320,7 @@ pub const KNOWN_OPS: &[&str] = &[
     "extract_contours",
     "extract_shape",
     "flip",
+    "floor",
     "grayscale",
     "histogram",
     "invert",
@@ -324,12 +330,14 @@ pub const KNOWN_OPS: &[&str] = &[
     "minimum",
     "morphology_gradient",
     "multiply",
+    "neg",
     "normalize",
     "pad",
     "pad_to_size",
     "perceptual_hash",
     "rasterize",
     "ratio",
+    "reciprocal",
     "reduce_argmax",
     "reduce_argmin",
     "reduce_max",
@@ -348,10 +356,16 @@ pub const KNOWN_OPS: &[&str] = &[
     "resize_to_height",
     "resize_to_width",
     "rotate",
+    "round",
     "scale",
+    "sign",
+    "sqrt",
+    "square",
     "subtract",
+    "subtract_constant",
     "threshold",
     "transpose",
+    "trunc",
     "warp_affine",
 ];
 
@@ -527,6 +541,37 @@ fn resolve_op_inner(
             buffer_step(ViewDto::Compute(ComputeOp::Clamp { min, max }))
         }
         "relu" => buffer_step(ViewDto::Compute(ComputeOp::Relu)),
+
+        // Core math primitives: pure elementwise scalar ops that fuse into the
+        // kernel. Each resolves to one `ComputeOp::Scalar(ScalarOp)` (see the
+        // ScalarOp arithmetic authority in view-buffer). No-arg ops carry no
+        // params; the constant ops resolve their `value` per row like `scale`.
+        "neg" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Neg))),
+        "abs" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Abs))),
+        "sqrt" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Sqrt))),
+        "square" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Square))),
+        "reciprocal" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Recip))),
+        "sign" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Sign))),
+        "floor" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Floor))),
+        "ceil" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Ceil))),
+        "round" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Round))),
+        "trunc" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Trunc))),
+        "clamp_min" => {
+            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
+            buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Max(value))))
+        }
+        "clamp_max" => {
+            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
+            buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Min(value))))
+        }
+        "add_constant" => {
+            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
+            buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Add(value))))
+        }
+        "subtract_constant" => {
+            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
+            buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Sub(value))))
+        }
 
         // Image operations
         "resize" => {

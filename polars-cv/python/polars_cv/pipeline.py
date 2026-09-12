@@ -394,7 +394,9 @@ class Pipeline:
     # plan-time test lane deliberately does without.
     OP_NAMES: frozenset[str] = frozenset(
         {
+            "abs",
             "add",
+            "add_constant",
             "adjust_contrast",
             "adjust_gamma",
             "apply_mask",
@@ -405,10 +407,13 @@ class Pipeline:
             "blur",
             "canny",
             "cast",
+            "ceil",
             "channel_merge",
             "channel_select",
             "channel_swap",
             "clamp",
+            "clamp_max",
+            "clamp_min",
             "contour_area",
             "contour_bounding_box",
             "contour_centroid",
@@ -427,6 +432,7 @@ class Pipeline:
             "extract_contours",
             "extract_shape",
             "flip",
+            "floor",
             "grayscale",
             "histogram",
             "invert",
@@ -436,12 +442,14 @@ class Pipeline:
             "minimum",
             "morphology_gradient",
             "multiply",
+            "neg",
             "normalize",
             "pad",
             "pad_to_size",
             "perceptual_hash",
             "rasterize",
             "ratio",
+            "reciprocal",
             "reduce_argmax",
             "reduce_argmin",
             "reduce_max",
@@ -460,10 +468,16 @@ class Pipeline:
             "resize_to_height",
             "resize_to_width",
             "rotate",
+            "round",
             "scale",
+            "sign",
+            "sqrt",
+            "square",
             "subtract",
+            "subtract_constant",
             "threshold",
             "transpose",
+            "trunc",
             "warp_affine",
         }
     )
@@ -2129,6 +2143,92 @@ class Pipeline:
             ```
         """
         return self._append_op("relu", lambda p: {})
+
+    # --- Core math primitives ---
+    #
+    # Pure elementwise scalar ops. Each promotes to float (integers → f32, f64
+    # preserved) like ``scale``/``relu`` and fuses automatically with adjacent
+    # scalar ops into a single kernel pass — the user never manages fusion.
+
+    def neg(self) -> "Pipeline":
+        """Negate every value (``-x``). Domain: buffer → buffer."""
+        return self._append_op("neg", lambda p: {})
+
+    def abs(self) -> "Pipeline":
+        """Absolute value (``|x|``). Domain: buffer → buffer."""
+        return self._append_op("abs", lambda p: {})
+
+    def sqrt(self) -> "Pipeline":
+        """Square root (``sqrt(x)``; NaN for negative input). Domain: buffer → buffer."""
+        return self._append_op("sqrt", lambda p: {})
+
+    def square(self) -> "Pipeline":
+        """Square (``x * x``). Domain: buffer → buffer."""
+        return self._append_op("square", lambda p: {})
+
+    def reciprocal(self) -> "Pipeline":
+        """Reciprocal (``1 / x``; ±inf at zero). Domain: buffer → buffer."""
+        return self._append_op("reciprocal", lambda p: {})
+
+    def sign(self) -> "Pipeline":
+        """Sign: ``-1``/``0``/``+1`` (``0`` for ±0, NaN for NaN). Domain: buffer → buffer."""
+        return self._append_op("sign", lambda p: {})
+
+    def floor(self) -> "Pipeline":
+        """Round toward negative infinity. Domain: buffer → buffer."""
+        return self._append_op("floor", lambda p: {})
+
+    def ceil(self) -> "Pipeline":
+        """Round toward positive infinity. Domain: buffer → buffer."""
+        return self._append_op("ceil", lambda p: {})
+
+    def round(self) -> "Pipeline":
+        """Round to nearest, ties away from zero. Domain: buffer → buffer."""
+        return self._append_op("round", lambda p: {})
+
+    def trunc(self) -> "Pipeline":
+        """Round toward zero (drop the fractional part). Domain: buffer → buffer."""
+        return self._append_op("trunc", lambda p: {})
+
+    def clamp_min(self, value: FloatOrExpr) -> "Pipeline":
+        """
+        Floor values at ``value`` (``max(x, value)``); one-sided clamp.
+
+        Args:
+            value: Lower bound (literal or per-row expression).
+        """
+        return self._append_op("clamp_min", lambda p: {"value": p._track_expr(value)})
+
+    def clamp_max(self, value: FloatOrExpr) -> "Pipeline":
+        """
+        Cap values at ``value`` (``min(x, value)``); one-sided clamp.
+
+        Args:
+            value: Upper bound (literal or per-row expression).
+        """
+        return self._append_op("clamp_max", lambda p: {"value": p._track_expr(value)})
+
+    def add_constant(self, value: FloatOrExpr) -> "Pipeline":
+        """
+        Add a constant to every value (``x + value``).
+
+        Args:
+            value: Constant addend (literal or per-row expression).
+        """
+        return self._append_op(
+            "add_constant", lambda p: {"value": p._track_expr(value)}
+        )
+
+    def subtract_constant(self, value: FloatOrExpr) -> "Pipeline":
+        """
+        Subtract a constant from every value (``x - value``).
+
+        Args:
+            value: Constant subtrahend (literal or per-row expression).
+        """
+        return self._append_op(
+            "subtract_constant", lambda p: {"value": p._track_expr(value)}
+        )
 
     # --- Channel Operations ---
 

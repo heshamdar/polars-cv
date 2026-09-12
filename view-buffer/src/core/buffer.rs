@@ -1761,6 +1761,11 @@ fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
                     *x += *c;
                 }
             }
+            ScalarOp::Sub(c) => {
+                for x in data.iter_mut() {
+                    *x -= *c;
+                }
+            }
             ScalarOp::Mul(c) => {
                 for x in data.iter_mut() {
                     *x *= *c;
@@ -1774,6 +1779,66 @@ fn apply_fused_op_passes(data: &mut [f32], ops: &[ScalarOp]) {
             ScalarOp::Pow(c) => {
                 for x in data.iter_mut() {
                     *x = x.powf(*c);
+                }
+            }
+            ScalarOp::Neg => {
+                for x in data.iter_mut() {
+                    *x = -*x;
+                }
+            }
+            ScalarOp::Abs => {
+                for x in data.iter_mut() {
+                    *x = x.abs();
+                }
+            }
+            ScalarOp::Sqrt => {
+                for x in data.iter_mut() {
+                    *x = x.sqrt();
+                }
+            }
+            ScalarOp::Square => {
+                for x in data.iter_mut() {
+                    *x *= *x;
+                }
+            }
+            ScalarOp::Recip => {
+                for x in data.iter_mut() {
+                    *x = 1.0 / *x;
+                }
+            }
+            ScalarOp::Min(c) => {
+                for x in data.iter_mut() {
+                    *x = x.min(*c);
+                }
+            }
+            ScalarOp::Max(c) => {
+                for x in data.iter_mut() {
+                    *x = x.max(*c);
+                }
+            }
+            ScalarOp::Sign => {
+                for x in data.iter_mut() {
+                    *x = crate::ops::scalar::signum_numpy(*x);
+                }
+            }
+            ScalarOp::Floor => {
+                for x in data.iter_mut() {
+                    *x = x.floor();
+                }
+            }
+            ScalarOp::Ceil => {
+                for x in data.iter_mut() {
+                    *x = x.ceil();
+                }
+            }
+            ScalarOp::Round => {
+                for x in data.iter_mut() {
+                    *x = x.round();
+                }
+            }
+            ScalarOp::Trunc => {
+                for x in data.iter_mut() {
+                    *x = x.trunc();
                 }
             }
             ScalarOp::Relu => {

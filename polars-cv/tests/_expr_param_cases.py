@@ -287,6 +287,17 @@ CASES: list[ExprCase] = [
     ),
     # --- scalar arithmetic -------------------------------------------------
     ExprCase("scale", "factor", lambda v: rgb().scale(v), (0.5, 1.0, 2.0)),
+    ExprCase("clamp_min", "value", lambda v: rgb().clamp_min(v), (0.0, 0.5, 1.0)),
+    ExprCase("clamp_max", "value", lambda v: rgb().clamp_max(v), (0.0, 0.5, 1.0)),
+    ExprCase(
+        "add_constant", "value", lambda v: rgb().add_constant(v), (-1.0, 0.0, 2.0)
+    ),
+    ExprCase(
+        "subtract_constant",
+        "value",
+        lambda v: rgb().subtract_constant(v),
+        (-1.0, 0.0, 2.0),
+    ),
     ExprCase(
         "normalize",
         "mean",

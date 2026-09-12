@@ -105,6 +105,7 @@ impl ViewExpr {
                 ComputeOp::AdjustContrast(factor) => self.adjust_contrast(factor),
                 ComputeOp::AdjustGamma(gamma) => self.adjust_gamma(gamma),
                 ComputeOp::Invert => self.invert(),
+                s @ ComputeOp::Scalar(_) => self.compute_node(s),
                 r @ ComputeOp::RotateAffine { .. } => self.compute_node(r),
             },
             ViewDto::Image(img) => {
@@ -611,6 +612,13 @@ fn extract_ops(
             list.push(ScalarOp::Clamp(*min, *max));
             true
         }
+        // The core math primitives: each is already a single `ScalarOp`, so
+        // lowering is a direct push. f64 stays unfused (the kernel is f32),
+        // via the same promote-family gate as the ops above.
+        ComputeOp::Scalar(s) if promote_family_fusable => {
+            list.push(s.clone());
+            true
+        }
         // Gamma is scan-free and lowers exactly to its unfused formula:
         // `((x / max).clamp(0, 1)).powf(g) * max`, max = the input dtype's
         // value range for integers, 1 for float inputs (matching
@@ -836,6 +844,172 @@ mod dtype_contract_tests {
                 (0.0..=1.0).contains(&a),
                 "invert on normalized f32 produced {a}, expected [0, 1]"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod scalar_op_tests {
+    use super::*;
+    use crate::ops::scalar::signum_numpy;
+
+    /// numpy-style comparison tolerant of NaN/inf equality.
+    fn approx(got: f32, exp: f32) -> bool {
+        if exp.is_nan() {
+            got.is_nan()
+        } else if exp.is_infinite() {
+            got.is_infinite() && got.signum() == exp.signum()
+        } else {
+            (got - exp).abs() < 1e-6
+        }
+    }
+
+    fn src_f32(data: &[f32]) -> Arc<ViewExpr> {
+        ViewExpr::new_source(ViewBuffer::from_vec_with_shape(
+            data.to_vec(),
+            vec![data.len()],
+        ))
+    }
+
+    /// A scalar op paired with its reference f32 formula.
+    type ScalarCase = (ScalarOp, fn(f32) -> f32);
+
+    /// The full core-math set paired with its reference f32 formula.
+    fn cases() -> Vec<ScalarCase> {
+        vec![
+            (ScalarOp::Add(1.5), |x| x + 1.5),
+            (ScalarOp::Sub(1.5), |x| x - 1.5),
+            (ScalarOp::Mul(2.0), |x| x * 2.0),
+            (ScalarOp::Div(4.0), |x| x / 4.0),
+            (ScalarOp::Pow(2.0), |x| x.powf(2.0)),
+            (ScalarOp::Neg, |x| -x),
+            (ScalarOp::Abs, |x| x.abs()),
+            (ScalarOp::Sqrt, |x| x.sqrt()),
+            (ScalarOp::Square, |x| x * x),
+            (ScalarOp::Recip, |x| 1.0 / x),
+            (ScalarOp::Min(0.5), |x| x.min(0.5)),
+            (ScalarOp::Max(0.5), |x| x.max(0.5)),
+            (ScalarOp::Sign, signum_numpy::<f32>),
+            (ScalarOp::Floor, |x| x.floor()),
+            (ScalarOp::Ceil, |x| x.ceil()),
+            (ScalarOp::Round, |x| x.round()),
+            (ScalarOp::Trunc, |x| x.trunc()),
+            (ScalarOp::Relu, |x| x.max(0.0)),
+            (ScalarOp::Clamp(0.0, 1.0), |x| x.clamp(0.0, 1.0)),
+        ]
+    }
+
+    /// Each scalar op, executed as a lone `ComputeOp::Scalar`, matches its
+    /// reference formula. Pins every `apply_fused_op_passes` arm.
+    #[test]
+    fn scalar_op_matches_reference_f32() {
+        let data: Vec<f32> = vec![-2.5, -1.0, -0.4, 0.0, 0.4, 1.0, 2.5, 4.0];
+        for (op, reff) in cases() {
+            let out = src_f32(&data)
+                .apply_op(ViewDto::Compute(ComputeOp::Scalar(op.clone())))
+                .plan()
+                .execute();
+            assert_eq!(out.dtype(), DType::F32, "{op:?} must promote to f32");
+            let got = out.as_slice::<f32>();
+            for (i, &x) in data.iter().enumerate() {
+                assert!(
+                    approx(got[i], reff(x)),
+                    "{op:?} on {x}: got {}, expected {}",
+                    got[i],
+                    reff(x)
+                );
+            }
+        }
+    }
+
+    /// Adjacent scalar ops collapse into a single fused kernel (one Compute
+    /// step) and the fused result matches sequential reference application.
+    #[test]
+    fn scalar_chain_fuses_into_one_kernel() {
+        let data: Vec<f32> = vec![-4.0, -1.0, 0.0, 2.0, 9.0];
+        let expr = src_f32(&data)
+            .apply_op(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Mul(2.0))))
+            .apply_op(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Abs)))
+            .apply_op(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Sqrt)));
+
+        let compute_steps = expr
+            .plan()
+            .steps
+            .iter()
+            .filter(|s| matches!(s, PlanStep::Compute(_)))
+            .count();
+        assert_eq!(
+            compute_steps, 1,
+            "three adjacent scalar ops must fuse into one kernel"
+        );
+
+        let got = expr.plan().execute();
+        let got = got.as_slice::<f32>();
+        for (i, &x) in data.iter().enumerate() {
+            assert!(approx(got[i], (2.0 * x).abs().sqrt()));
+        }
+    }
+
+    /// f64 stays unfused (the kernel is f32) and computes in f64 via
+    /// `apply_f64`, preserving the `PromoteToFloat` f64 contract.
+    #[test]
+    fn scalar_f64_stays_unfused_and_computes_in_f64() {
+        let data: Vec<f64> = vec![-2.5, -0.4, 0.0, 0.4, 2.5, 9.0];
+        // A two-op f64 chain must NOT fuse.
+        let chain = ViewExpr::new_source(ViewBuffer::from_vec_with_shape(
+            data.clone(),
+            vec![data.len()],
+        ))
+        .apply_op(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Abs)))
+        .apply_op(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Sqrt)));
+        let compute_steps = chain
+            .plan()
+            .steps
+            .iter()
+            .filter(|s| matches!(s, PlanStep::Compute(_)))
+            .count();
+        assert_eq!(compute_steps, 2, "f64 scalar ops must not fuse");
+
+        for (op, _) in cases() {
+            let src = ViewExpr::new_source(ViewBuffer::from_vec_with_shape(
+                data.clone(),
+                vec![data.len()],
+            ));
+            let out = src
+                .apply_op(ViewDto::Compute(ComputeOp::Scalar(op.clone())))
+                .plan()
+                .execute();
+            assert_eq!(out.dtype(), DType::F64, "{op:?} must preserve f64");
+            let got = out.as_slice::<f64>();
+            for (i, &x) in data.iter().enumerate() {
+                let exp = op.apply_f64(x);
+                let ok = if exp.is_nan() {
+                    got[i].is_nan()
+                } else if exp.is_infinite() {
+                    got[i].is_infinite() && got[i].signum() == exp.signum()
+                } else {
+                    (got[i] - exp).abs() < 1e-12
+                };
+                assert!(ok, "{op:?} on {x} (f64): got {}, expected {}", got[i], exp);
+            }
+        }
+    }
+
+    /// Integer input promotes to f32 (matching `.scale()`), not the input dtype.
+    #[test]
+    fn scalar_promotes_integer_to_f32() {
+        let src = ViewExpr::new_source(ViewBuffer::from_vec_with_shape(
+            vec![1u8, 4, 9, 16],
+            vec![4],
+        ));
+        let out = src
+            .apply_op(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Sqrt)))
+            .plan()
+            .execute();
+        assert_eq!(out.dtype(), DType::F32);
+        let got = out.as_slice::<f32>();
+        for (g, e) in got.iter().zip([1.0, 2.0, 3.0, 4.0]) {
+            assert!((g - e).abs() < 1e-6);
         }
     }
 }

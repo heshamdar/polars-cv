@@ -2,7 +2,7 @@
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::affine::{AffineParams, InterpolationType};
-use crate::ops::scalar::FusedKernel;
+use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::{is_2d_like, ValidationError};
@@ -64,6 +64,16 @@ pub enum ComputeOp {
     Relu,
     /// Apply a fused kernel of scalar operations.
     Fused(FusedKernel),
+    /// A single pure-elementwise scalar op (`abs`, `sqrt`, `min(c)`, …).
+    ///
+    /// The user-facing bridge for the core math primitives: each such
+    /// `Pipeline` method resolves to one `ComputeOp::Scalar(ScalarOp)`. It
+    /// carries the same `PromoteToFloat` contract as `Scale`/`Relu`/`Clamp` and
+    /// lowers (via `extract_ops`) to its inner `ScalarOp`, so the fused and
+    /// unfused paths share one arithmetic authority. `ScalarOp` is the single
+    /// source of both the arithmetic and the op identity, so no per-op
+    /// `ComputeOp` variant is needed.
+    Scalar(ScalarOp),
     /// Normalize data - requires full buffer scan. Only supports 2D-like shapes (HW or HW1).
     ///
     /// Computation always happens in f32; the second field is the output dtype,
@@ -107,6 +117,7 @@ impl Op for ComputeOp {
             ComputeOp::AdjustGamma(_) => "AdjustGamma",
             ComputeOp::Invert => "Invert",
             ComputeOp::RotateAffine { .. } => "RotateAffine",
+            ComputeOp::Scalar(s) => s.name(),
         }
     }
 
@@ -150,6 +161,7 @@ impl Op for ComputeOp {
             ComputeOp::Scale(_) => MemoryEffect::StridePreserving,
             ComputeOp::Relu => MemoryEffect::StridePreserving,
             ComputeOp::Fused(_) => MemoryEffect::StridePreserving,
+            ComputeOp::Scalar(_) => MemoryEffect::StridePreserving,
             ComputeOp::Clamp { .. } => MemoryEffect::StridePreserving,
             ComputeOp::AdjustGamma(_) => MemoryEffect::StridePreserving,
             ComputeOp::Invert => MemoryEffect::StridePreserving,
@@ -242,6 +254,7 @@ impl Op for ComputeOp {
             ComputeOp::Affine(_) => DTypeCategory::Any,
             ComputeOp::RotateAffine { .. } => DTypeCategory::Any,
             ComputeOp::Fused(_) => DTypeCategory::Any,
+            ComputeOp::Scalar(_) => DTypeCategory::Numeric,
         }
     }
 
@@ -261,7 +274,10 @@ impl Op for ComputeOp {
             | ComputeOp::Cast(_)
             | ComputeOp::Affine(_)
             | ComputeOp::RotateAffine { .. }
-            | ComputeOp::Fused(_) => None,
+            | ComputeOp::Fused(_)
+            // The kernel reads any dtype and converts internally (like Fused),
+            // so there is no external working-dtype pre-cast.
+            | ComputeOp::Scalar(_) => None,
         }
     }
 
@@ -292,6 +308,7 @@ impl Op for ComputeOp {
             ComputeOp::Affine(_) => OutputDTypeRule::PreserveInput,
             ComputeOp::RotateAffine { .. } => OutputDTypeRule::PreserveInput,
             ComputeOp::Fused(k) => OutputDTypeRule::Fixed(k.out_dtype),
+            ComputeOp::Scalar(_) => OutputDTypeRule::PromoteToFloat,
         }
     }
 }
