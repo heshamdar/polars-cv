@@ -2,6 +2,7 @@
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::validation::ValidationError;
 
 /// What an operation needs from its input's memory layout.
@@ -73,6 +74,22 @@ pub trait Op {
     /// Required (no default): an op that allocates but claims `View` would be
     /// planned as zero-copy.
     fn memory_effect(&self) -> MemoryEffect;
+
+    /// Declares how this operation's output depends on the *spatial* extent of
+    /// its input — the plan-time authority for whether a spatial window (a crop
+    /// / ROI) may commute with the op.
+    ///
+    /// The structural, plan-time-inspectable counterpart to
+    /// [`infer_shape`](Op::infer_shape) for spatial locality, in the same spirit
+    /// as [`output_channel_rule`](Op::output_channel_rule) is for the channel
+    /// dimension. See [`SpatialDependency`] for the four closed variants.
+    ///
+    /// Required (no default): an op that omits it would silently inherit a
+    /// dependency it does not have. Unlike the rank/channel/dtype rules there is
+    /// no `infer_shape`-style authority to parity-check this against, so the
+    /// conservative, always-correct answer for any op whose dependence cannot be
+    /// reasoned about is [`SpatialDependency::Global`] (it permits no reorder).
+    fn spatial_dependency(&self) -> SpatialDependency;
 
     /// Infers output strides given input shape and strides.
     ///

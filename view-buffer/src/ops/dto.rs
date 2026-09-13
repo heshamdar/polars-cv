@@ -78,6 +78,11 @@ impl ViewDto {
         self.as_op().output_channel_rule()
     }
 
+    /// How this operation's output depends on the spatial extent of its input.
+    pub fn spatial_dependency(&self) -> crate::ops::spatial_rule::SpatialDependency {
+        self.as_op().spatial_dependency()
+    }
+
     /// Get the name of this operation for error messages.
     pub fn name(&self) -> &'static str {
         self.as_op().name()

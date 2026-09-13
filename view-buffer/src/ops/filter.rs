@@ -7,6 +7,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
@@ -56,6 +57,12 @@ impl Op for ConvolveOp {
 
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::RequiresContiguous
+    }
+
+    fn spatial_dependency(&self) -> SpatialDependency {
+        // A ksize×ksize kernel: output at (y, x) depends on input within
+        // ksize / 2 pixels of (y, x).
+        SpatialDependency::neighborhood(self.ksize / 2)
     }
 
     fn infer_strides(

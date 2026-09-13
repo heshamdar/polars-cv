@@ -21,6 +21,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 
@@ -512,6 +513,12 @@ impl Op for BinaryOp {
     fn memory_effect(&self) -> MemoryEffect {
         // Binary ops require contiguous input for efficient SIMD
         MemoryEffect::RequiresContiguous
+    }
+
+    fn spatial_dependency(&self) -> SpatialDependency {
+        // Element-wise combination of two aligned buffers: output at (y, x)
+        // depends only on both inputs at (y, x).
+        SpatialDependency::Pointwise
     }
 
     fn infer_strides(

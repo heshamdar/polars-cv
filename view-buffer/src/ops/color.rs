@@ -6,6 +6,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
@@ -122,6 +123,12 @@ impl Op for ColorConvertOp {
 
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::RequiresContiguous
+    }
+
+    fn spatial_dependency(&self) -> SpatialDependency {
+        // Color-space conversion maps each pixel's channels independently of
+        // any neighbor.
+        SpatialDependency::Pointwise
     }
 
     fn infer_strides(

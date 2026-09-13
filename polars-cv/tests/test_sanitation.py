@@ -796,11 +796,18 @@ def test_contract_exposes_rank_and_channel_rules(op_name):
 #: Exactly the keys ``op_contract`` publishes. Pinned as a set, in both
 #: directions, so the boundary cannot grow a second spelling of a fact it
 #: already carries.
+#:
+#: ``spatial_rule`` is the op's declared spatial dependency (pointwise /
+#: neighborhood / global / geometric) — a distinct structural fact, not a second
+#: spelling of dtype/rank/channel. It is surfaced for plan-time spatial-window
+#: reordering and introspection; its round-trip is pinned by
+#: ``test_spatial_rule.py``.
 _CONTRACT_KEYS = frozenset(
     {
         "dtype_rule",
         "rank_rule",
         "channel_rule",
+        "spatial_rule",
         "input_domains",
         "output_domain",
     }
