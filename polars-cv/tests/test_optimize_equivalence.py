@@ -297,6 +297,93 @@ class TestSourceRowNullVariety:
             assert other == outputs[0]
 
 
+# Pipelines where a crop follows a run of Pointwise ops — the pushdown moves the
+# crop to the front of the run. Each is bit-exact (Pointwise commutes with a
+# crop exactly), so every flag subset must be byte-identical.
+_POINTWISE_CROP_CASES: list[tuple[str, object]] = [
+    ("grayscale", lambda p: p.grayscale().crop(top=1, left=1, height=8, width=8)),
+    (
+        "cast_scale_invert",
+        lambda p: (
+            p.cast("f32").scale(0.5).invert().crop(top=2, left=2, height=8, width=8)
+        ),
+    ),
+    (
+        "convert_color",
+        lambda p: p.convert_color("rgb", "hsv").crop(top=0, left=0, height=8, width=8),
+    ),
+    (
+        "cast_clamp",
+        lambda p: (
+            p.cast("f32").clamp(0.0, 200.0).crop(top=1, left=0, height=8, width=8)
+        ),
+    ),
+    (
+        "adjust_gamma",
+        lambda p: p.adjust_gamma(gamma=2.2).crop(top=0, left=1, height=8, width=8),
+    ),
+]
+
+
+@plugin_required
+class TestSpatialPushdownEquivalence:
+    """Hoisting a crop past a Pointwise run is byte-exact — and actually fires.
+
+    Pointwise means output at (y, x) depends only on input at (y, x), so a crop
+    commutes to the front of the run with no change to a single byte. As with the
+    op-family guard this cannot assert *fired* from the output alone, so
+    ``test_pass_fires`` checks the physical op order changed.
+    """
+
+    @pytest.mark.parametrize(
+        ("case_id", "build"),
+        _POINTWISE_CROP_CASES,
+        ids=[c[0] for c in _POINTWISE_CROP_CASES],
+    )
+    def test_identical_across_all_flag_subsets(
+        self, sample_df: pl.DataFrame, case_id: str, build: object
+    ) -> None:
+        pipe = build(_src())  # type: ignore[operator]
+        outputs = [
+            _sink_output(sample_df, pipe, f, "numpy") for f in _all_flag_subsets()
+        ]
+        assert outputs[0] and outputs[0][0] is not None, (
+            f"{case_id}: produced an empty/null output"
+        )
+        for other in outputs[1:]:
+            assert other == outputs[0], f"{case_id}: output changed under a flag subset"
+
+    def test_pass_fires(self, sample_df: pl.DataFrame) -> None:
+        # With the pass on the crop leads the node; with it off it trails.
+        pipe = _src().grayscale().crop(top=1, left=1, height=8, width=8)
+
+        def ops(flag: bool) -> list[str]:
+            graph = (
+                pl.col("image")
+                .cv.pipe(pipe)
+                .sink(
+                    "numpy",
+                    return_expr=False,
+                    opt_flags=OptFlags(spatial_window_pushdown=flag),
+                )
+            )
+            (node,) = graph._nodes.values()
+            return [op.op for op in node.pipeline._ops]
+
+        assert ops(True) == ["crop", "grayscale"]
+        assert ops(False) == ["grayscale", "crop"]
+
+    def test_per_row_crop_param_is_identical(self, sample_df: pl.DataFrame) -> None:
+        # A per-row crop offset still commutes past a Pointwise op (Pointwise
+        # commutes with any window) and stays byte-identical across flag subsets.
+        df = sample_df.with_columns(t=pl.lit(3))
+        pipe = _src().grayscale().crop(top=pl.col("t"), left=0, height=8, width=8)
+        outputs = [_sink_output(df, pipe, f, "numpy") for f in _all_flag_subsets()]
+        assert outputs[0] and outputs[0][0] is not None
+        for other in outputs[1:]:
+            assert other == outputs[0]
+
+
 @plugin_required
 class TestDifferentialEquivalence:
     def test_every_flag_subset_is_identical_on_a_bit_exact_pipeline(

@@ -219,8 +219,21 @@ impl Op for GeometryOp {
         // image-space window: extraction reads the whole image, measures reduce
         // a whole contour, transforms and rasterization remap coordinates. None
         // admits a buffer-space crop commuting through it, so the conservative,
-        // reorder-blocking classification is Global for every variant.
-        SpatialDependency::Global
+        // reorder-blocking classification is Global for every variant. Matched
+        // exhaustively (not a blanket) so a new variant must reconfirm this
+        // rather than silently inherit Global.
+        match self {
+            GeometryOp::Area { .. }
+            | GeometryOp::Perimeter
+            | GeometryOp::Centroid
+            | GeometryOp::BoundingBox
+            | GeometryOp::Translate { .. }
+            | GeometryOp::Scale { .. }
+            | GeometryOp::Simplify { .. }
+            | GeometryOp::ConvexHull
+            | GeometryOp::Rasterize { .. }
+            | GeometryOp::ExtractContours { .. } => SpatialDependency::Global,
+        }
     }
 
     fn infer_strides(

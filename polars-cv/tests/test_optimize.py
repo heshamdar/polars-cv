@@ -296,6 +296,143 @@ class TestToExprRequiresOptimization:
         assert [op.op for op in only_node.pipeline._ops] == ["resize", "warp_affine"]
 
 
+def _crop_after_pointwise_pipe() -> Pipeline:
+    """A crop sitting after a run of pointwise ops — the pushdown candidate.
+
+    ``cast``/``scale``/``grayscale`` are all ``Pointwise`` (spatial radius 0),
+    so the crop commutes to the front of the run exactly (byte-identical).
+    """
+    return (
+        Pipeline()
+        .source("image_bytes")
+        .cast("f32")
+        .scale(0.5)
+        .grayscale()
+        .crop(top=1, left=1, height=8, width=8)
+    )
+
+
+class TestSpatialWindowPushdown:
+    """The crop-hoisting pass: a crop moves earlier past a ``Pointwise`` run.
+
+    The pass reads each op's ``SpatialDependency`` from the ``op_contract`` FFI
+    (``spatial_rule``) — the single authority — and moves a crop to the front of
+    the contiguous run of ``pointwise`` ops immediately preceding it, within one
+    node's op list. ``neighborhood``/``geometric``/``global`` ops and any
+    ``assert_shape`` boundary are barriers.
+    """
+
+    def test_pass_is_registered(self) -> None:
+        assert "spatial_window_pushdown" in PASS_NAMES
+        assert OptFlags().spatial_window_pushdown is True
+
+    def test_optimize_none_leaves_order(self) -> None:
+        graph = _graph_of(_crop_after_pointwise_pipe())
+        graph.optimize(OptFlags.none())
+        assert _node_ops(graph) == ["cast", "scale", "grayscale", "crop"]
+
+    def test_flag_hoists_crop_to_front_of_pointwise_run(self) -> None:
+        graph = _graph_of(_crop_after_pointwise_pipe())
+        graph.optimize(
+            OptFlags(
+                spatial_window_pushdown=True,
+                affine_fusion=False,
+                common_subexpression_elimination=False,
+            )
+        )
+        assert _node_ops(graph) == ["crop", "cast", "scale", "grayscale"]
+
+    def test_flag_off_leaves_order(self) -> None:
+        graph = _graph_of(_crop_after_pointwise_pipe())
+        graph.optimize(OptFlags(spatial_window_pushdown=False))
+        assert _node_ops(graph) == ["cast", "scale", "grayscale", "crop"]
+
+    def test_idempotent(self) -> None:
+        graph = _graph_of(_crop_after_pointwise_pipe())
+        graph.optimize(OptFlags.all())
+        first = _node_ops(graph)
+        graph.optimize(OptFlags.all())
+        assert _node_ops(graph) == first == ["crop", "cast", "scale", "grayscale"]
+
+    def test_does_not_mutate_caller(self) -> None:
+        pipe = _crop_after_pointwise_pipe()
+        graph = _graph_of(pipe)
+        graph.optimize(OptFlags.all())
+        assert [op.op for op in pipe._ops] == [
+            "cast",
+            "scale",
+            "grayscale",
+            "crop",
+        ]
+
+    def test_neighborhood_op_is_a_barrier(self) -> None:
+        # blur is Neighborhood: a crop may not cross it in this phase.
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .blur(1.0)
+            .crop(top=0, left=0, height=8, width=8)
+        )
+        graph = _graph_of(pipe)
+        graph.optimize(OptFlags.all())
+        assert _node_ops(graph) == ["grayscale", "blur", "crop"]
+
+    def test_geometric_op_is_a_barrier(self) -> None:
+        # resize is Geometric: a crop may not cross it in this phase.
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=32, width=32)
+            .crop(top=0, left=0, height=8, width=8)
+        )
+        graph = _graph_of(pipe)
+        graph.optimize(OptFlags.all())
+        assert _node_ops(graph) == ["resize", "crop"]
+
+    def test_hoist_stops_at_barrier_mid_run(self) -> None:
+        # [resize(geometric), grayscale(pointwise), crop] — the crop hoists past
+        # grayscale but stops at the resize barrier.
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=32, width=32)
+            .grayscale()
+            .crop(top=0, left=0, height=8, width=8)
+        )
+        graph = _graph_of(pipe)
+        graph.optimize(OptFlags.all())
+        assert _node_ops(graph) == ["resize", "crop", "grayscale"]
+
+    def test_assert_shape_is_a_barrier(self) -> None:
+        # A user shape assertion between the pointwise run and the crop pins the
+        # pre-crop shape; the crop must not move across it.
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .grayscale()
+            .assert_shape(height=96, width=96)
+            .crop(top=0, left=0, height=8, width=8)
+        )
+        graph = _graph_of(pipe)
+        graph.optimize(OptFlags.all())
+        assert _node_ops(graph) == ["grayscale", "crop"]
+
+    def test_crop_does_not_cross_node_boundary(self) -> None:
+        # .pipe() makes a new node; phase 1's barrier is the node boundary, so a
+        # crop in the downstream node is not hoisted into the pointwise upstream.
+        # This pins the boundary: enabling cross-node hoisting must update it.
+        graph = (
+            pl.col("img")
+            .cv.pipe(Pipeline().source("image_bytes").grayscale())
+            .pipe(Pipeline().crop(top=0, left=0, height=8, width=8))
+            .sink("numpy", return_expr=False, opt_flags=OptFlags.all())
+        )
+        op_lists = [[op.op for op in n.pipeline._ops] for n in graph._nodes.values()]
+        assert ["crop"] in op_lists
+        assert ["grayscale"] in op_lists
+
+
 class TestShapeSubpipelineStaging:
     """The contour-source shape sub-pipeline goes through the optimize phase.
 

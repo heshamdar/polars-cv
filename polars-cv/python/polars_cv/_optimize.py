@@ -64,6 +64,14 @@ LOGICAL_PASSES: tuple[PassSpec, ...] = (
         bit_exact=True,
     ),
     PassSpec(
+        name="spatial_window_pushdown",
+        summary=(
+            "Hoist a spatial window (a crop/ROI) earlier past ops it commutes "
+            "with, so upstream ops process fewer pixels."
+        ),
+        bit_exact=True,
+    ),
+    PassSpec(
         name="affine_fusion",
         summary=(
             "Collapse a run of static affine ops (warp_affine and non-90° "
@@ -88,6 +96,7 @@ class OptFlags:
     """
 
     common_subexpression_elimination: bool = True
+    spatial_window_pushdown: bool = True
     affine_fusion: bool = True
 
     @classmethod

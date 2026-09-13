@@ -517,8 +517,22 @@ impl Op for BinaryOp {
 
     fn spatial_dependency(&self) -> SpatialDependency {
         // Element-wise combination of two aligned buffers: output at (y, x)
-        // depends only on both inputs at (y, x).
-        SpatialDependency::Pointwise
+        // depends only on both inputs at (y, x). Matched exhaustively (not a
+        // blanket) so a new variant must reconfirm this rather than silently
+        // inherit Pointwise — the classification a spatial-window reorder trusts.
+        match self {
+            BinaryOp::Add
+            | BinaryOp::Subtract
+            | BinaryOp::Multiply
+            | BinaryOp::Blend
+            | BinaryOp::Divide
+            | BinaryOp::Ratio
+            | BinaryOp::Maximum
+            | BinaryOp::Minimum
+            | BinaryOp::BitwiseAnd
+            | BinaryOp::BitwiseOr
+            | BinaryOp::BitwiseXor => SpatialDependency::Pointwise,
+        }
     }
 
     fn infer_strides(
