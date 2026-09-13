@@ -375,7 +375,10 @@ def test_fused_and_unfused_affine_runs_agree() -> None:
     so the executed graph is not the graph the schema was computed from.
 
     This checks *schema* agreement across a fusible and a non-fusible chain;
-    :func:`test_fusion_does_not_change_the_pixels` checks the values.
+    :func:`test_a_fused_rotate_matches_the_engines_own_rotate` and
+    :func:`test_fused_lone_affine_matches_the_engines_own_execution` check the
+    values, and the differential-equivalence sweep in
+    ``test_optimize_equivalence.py`` checks output agreement across flag subsets.
     """
     df = _df("null_first")
     # Two adjacent static rotates: affine fusion declines a run of one, so
@@ -462,6 +465,88 @@ def test_a_fused_rotate_matches_the_engines_own_rotate() -> None:
         "a rotate fused into an identity warp produced different pixels from "
         "the same rotate executed by the engine — the matrix the planner baked "
         "in is not the one AffineParams::from_rotation defines"
+    )
+
+
+# Each case is one real affine op composed with an identity warp: fusion
+# collapses the pair into a single warp whose matrix must equal the lone op's,
+# so the fused execution must be byte-identical to the engine's own execution of
+# that op alone. This extends `test_a_fused_rotate_matches_the_engines_own_rotate`
+# across op kinds (rotate vs warp_affine), interpolations, and matrix shapes
+# (scale, shear) — the fusion machinery (compose-with-identity + execute) must be
+# a no-op on the transform for every one. Multi-real-op matrix correctness lives
+# in `test_affine_builder.py`; comparing a fused *multi*-op chain to the sequential
+# chain would be wrong (fusion trades several interpolation passes for one, so the
+# pixels legitimately differ), which is why every case here pairs one real op with
+# an identity warp.
+_IDENTITY_2x3 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+# (id, lone-op builder, interpolation). The identity warp appended to force
+# fusion must use the *same* interpolation as the lone op: fusing a nearest op
+# with a bilinear identity warp yields a single op that no longer resamples the
+# way the lone op did, so the pixels would (correctly) differ — a mismatch in
+# the test, not in the engine.
+_LONE_AFFINE_CASES = [
+    (
+        "rotate_bilinear",
+        lambda p: p.rotate(angle=30.0, interpolation="bilinear"),
+        "bilinear",
+    ),
+    (
+        "rotate_nearest",
+        lambda p: p.rotate(angle=30.0, interpolation="nearest"),
+        "nearest",
+    ),
+    (
+        "warp_scale",
+        lambda p: p.warp_affine([1.5, 0.0, 0.0, 0.0, 1.5, 0.0], (H, W)),
+        "bilinear",
+    ),
+    (
+        "warp_shear",
+        lambda p: p.warp_affine([1.0, 0.3, 0.0, 0.0, 1.0, 0.0], (H, W)),
+        "bilinear",
+    ),
+]
+
+
+@plugin_required
+@pytest.mark.parametrize(
+    ("case_id", "step", "interp"),
+    _LONE_AFFINE_CASES,
+    ids=[c[0] for c in _LONE_AFFINE_CASES],
+)
+def test_fused_lone_affine_matches_the_engines_own_execution(
+    case_id: str, step: object, interp: str
+) -> None:
+    """Fusing [affine, identity] must execute as the engine's own [affine].
+
+    The lone op establishes the reference (one interpolation pass, engine-owned
+    matrix); appending an identity warp with the *same* interpolation forces
+    fusion. If compose-with-identity drifted the matrix by even a ULP, or fused
+    execution differed from a plain op, the pixels would diverge here.
+    """
+    df = _df()
+    plain = step(_base().grayscale())  # type: ignore[operator]
+    fused = step(_base().grayscale()).warp_affine(  # type: ignore[operator]
+        _IDENTITY_2x3, (H, W), interpolation=interp
+    )
+
+    # Vacuity guard: the fixture must actually fuse (one warp_affine, no rotate
+    # and not two warps), or the comparison below proves nothing.
+    fused_check = fused._clone()
+    fused_check._fuse_affine_inplace()
+    fused_ops = [op["op"] for op in fused_check._to_spec_dict()["ops"]]
+    assert fused_ops.count("warp_affine") == 1 and "rotate" not in fused_ops, (
+        f"{case_id}: the fixture did not fuse to one warp_affine: {fused_ops}"
+    )
+
+    got = df.select(
+        plain=pl.col("img").cv.pipe(plain).sink("list"),
+        fused=pl.col("img").cv.pipe(fused).sink("list"),
+    )
+    assert got["plain"].to_list() == got["fused"].to_list(), (
+        f"{case_id}: fusing the op with an identity warp changed the pixels "
+        "versus the engine executing the op alone"
     )
 
 
