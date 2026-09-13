@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
@@ -211,6 +212,15 @@ impl Op for GeometryOp {
     fn memory_effect(&self) -> MemoryEffect {
         // Every geometry op materializes a fresh contour, measure or mask.
         MemoryEffect::RequiresContiguous
+    }
+
+    fn spatial_dependency(&self) -> SpatialDependency {
+        // Geometry ops work in the contour/measure/mask domains, not on an
+        // image-space window: extraction reads the whole image, measures reduce
+        // a whole contour, transforms and rasterization remap coordinates. None
+        // admits a buffer-space crop commuting through it, so the conservative,
+        // reorder-blocking classification is Global for every variant.
+        SpatialDependency::Global
     }
 
     fn infer_strides(

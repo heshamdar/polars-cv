@@ -4,6 +4,7 @@ use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::affine::{AffineParams, InterpolationType};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::{is_2d_like, ValidationError};
 
@@ -169,6 +170,24 @@ impl Op for ComputeOp {
             ComputeOp::RotateAffine { .. } => MemoryEffect::RequiresContiguous,
             ComputeOp::Normalize(..) => MemoryEffect::RequiresContiguous,
             ComputeOp::AdjustContrast(_) => MemoryEffect::RequiresContiguous,
+        }
+    }
+
+    fn spatial_dependency(&self) -> SpatialDependency {
+        match self {
+            // Per-element: output at (y, x) depends only on input at (y, x).
+            ComputeOp::Cast(_)
+            | ComputeOp::Scale(_)
+            | ComputeOp::Relu
+            | ComputeOp::Fused(_)
+            | ComputeOp::Scalar(_)
+            | ComputeOp::Clamp { .. }
+            | ComputeOp::AdjustGamma(_)
+            | ComputeOp::Invert => SpatialDependency::Pointwise,
+            // Read a global statistic (min/max/mean/std) over all pixels.
+            ComputeOp::Normalize(..) | ComputeOp::AdjustContrast(_) => SpatialDependency::Global,
+            // Resample onto a transformed coordinate grid.
+            ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } => SpatialDependency::geometric(),
         }
     }
 

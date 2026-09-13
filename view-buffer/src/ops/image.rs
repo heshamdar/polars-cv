@@ -1,6 +1,7 @@
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::pad::{PadMode, PadPosition};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
@@ -332,6 +333,47 @@ impl Op for ImageOp {
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Letterbox { .. }
             | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresContiguous,
+        }
+    }
+
+    fn spatial_dependency(&self) -> SpatialDependency {
+        match &self.kind {
+            // Per-element: threshold compares one pixel, grayscale combines the
+            // channels at one pixel, channel_swap reorders channels in place.
+            ImageOpKind::Threshold(_)
+            | ImageOpKind::Grayscale
+            | ImageOpKind::ChannelSwap { .. } => SpatialDependency::Pointwise,
+            // Separable Gaussian of radius ceil(3σ) — the radius
+            // `gaussian_kernel_1d` builds in the runner.
+            ImageOpKind::Blur { sigma } => {
+                SpatialDependency::neighborhood((sigma * 3.0).ceil() as usize)
+            }
+            // A ksize×ksize structuring element applied `iterations` times
+            // reaches (ksize / 2) * iterations pixels out.
+            ImageOpKind::Erode { ksize, iterations }
+            | ImageOpKind::Dilate { ksize, iterations } => {
+                SpatialDependency::neighborhood((*ksize as usize / 2) * *iterations as usize)
+            }
+            // Gradient = one dilate − one erode, each of half-extent ksize / 2.
+            ImageOpKind::MorphGradient { ksize } => {
+                SpatialDependency::neighborhood(*ksize as usize / 2)
+            }
+            // Canny's hysteresis links edges via connectivity that can span the
+            // whole image, so its support is not bounded — treat as global.
+            ImageOpKind::Canny { .. } => SpatialDependency::Global,
+            // Histogram equalization builds a global CDF over all pixels.
+            ImageOpKind::HistogramEqualize => SpatialDependency::Global,
+            // Every resize variant resamples, and pad/letterbox offset the
+            // content — all coordinate transforms.
+            ImageOpKind::Resize { .. }
+            | ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::Letterbox { .. } => SpatialDependency::geometric(),
         }
     }
 

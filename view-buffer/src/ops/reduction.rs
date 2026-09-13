@@ -6,6 +6,7 @@
 use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
@@ -602,6 +603,11 @@ impl Op for ReductionOp {
 
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::RequiresContiguous
+    }
+
+    fn spatial_dependency(&self) -> SpatialDependency {
+        // A reduction aggregates over the whole input (or a whole axis).
+        SpatialDependency::Global
     }
 
     fn infer_strides(

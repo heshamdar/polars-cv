@@ -125,6 +125,22 @@ fn channel_rule_name(rule: view_buffer::OutputChannelRule) -> String {
     }
 }
 
+/// Canonical string for a spatial-dependency rule.
+///
+/// The plan-time vocabulary the Python planner reads for spatial-window
+/// (crop/ROI) commutation: `pointwise`, `neighborhood:<radius>`, `global`,
+/// `geometric`. The neighborhood radius is emitted so the planner can size a
+/// halo without re-deriving it.
+fn spatial_rule_name(rule: view_buffer::SpatialDependency) -> String {
+    use view_buffer::SpatialDependency as S;
+    match rule {
+        S::Pointwise => "pointwise".to_string(),
+        S::Neighborhood(support) => format!("neighborhood:{}", support.radius),
+        S::Global => "global".to_string(),
+        S::Geometric(_) => "geometric".to_string(),
+    }
+}
+
 /// Resolve one serialized op spec to its `ViewDto`, mapping errors to Python.
 ///
 /// Shared by `op_schema` and `op_contract` so neither re-implements the
@@ -607,9 +623,9 @@ fn known_ops() -> Vec<String> {
 
 /// Return the full contract for a single serialized op spec.
 ///
-/// Returns a dict with the canonical `dtype_rule`, `rank_rule` and
-/// `channel_rule` plus `input_domains` and `output_domain` (from view-buffer's
-/// `Domain::name()`). This is the single authority the Python schema layer reads
+/// Returns a dict with the canonical `dtype_rule`, `rank_rule`, `channel_rule`
+/// and `spatial_rule` plus `input_domains` and `output_domain` (from
+/// view-buffer's `Domain::name()`). This is the single authority the Python schema layer reads
 /// instead of re-declaring, covering the dtype, dimensionality/channel and
 /// domain knowledge that previously lived in parallel Python tables
 /// (`OPERATION_CONTRACTS` and `_OPERATION_OUTPUT_DOMAIN`).
@@ -627,6 +643,7 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
     dict.set_item("dtype_rule", dtype_rule_name(dto.output_dtype_rule()))?;
     dict.set_item("rank_rule", rank_rule_name(dto.output_rank_rule()))?;
     dict.set_item("channel_rule", channel_rule_name(dto.output_channel_rule()))?;
+    dict.set_item("spatial_rule", spatial_rule_name(dto.spatial_dependency()))?;
     dict.set_item(
         "input_domains",
         dto.input_domains()

@@ -2,6 +2,7 @@
 
 use crate::core::dtype::OutputDTypeRule;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
+use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
@@ -117,6 +118,22 @@ impl Op for ViewOp {
 
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::View
+    }
+
+    fn spatial_dependency(&self) -> SpatialDependency {
+        match self {
+            // Picks a channel at the same (y, x) — spatially the identity.
+            ViewOp::ChannelSelect { .. } => SpatialDependency::Pointwise,
+            // Permute/reshape/flip/crop/rotate all remap coordinates (crop
+            // offsets the origin; transpose/reshape/rotate move axes).
+            ViewOp::Transpose(_)
+            | ViewOp::Reshape(_)
+            | ViewOp::Flip(_)
+            | ViewOp::Crop { .. }
+            | ViewOp::Rotate90
+            | ViewOp::Rotate180
+            | ViewOp::Rotate270 => SpatialDependency::geometric(),
+        }
     }
 
     fn infer_strides(&self, _input_shape: &[usize], input_strides: &[isize]) -> Option<Vec<isize>> {

@@ -15,7 +15,7 @@
 use view_buffer::core::dtype::OutputDTypeRule;
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::ops::phash::PerceptualHashOp;
-use view_buffer::ops::{Domain, OutputChannelRule, OutputRankRule};
+use view_buffer::ops::{Domain, OutputChannelRule, OutputRankRule, SpatialDependency};
 use view_buffer::ops::{HistogramOp, ReductionOp};
 use view_buffer::{BinaryOp, GeometryOp, Op, ViewDto};
 
@@ -170,6 +170,27 @@ impl GraphStep {
             GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => {
                 OutputChannelRule::NotApplicable
             }
+        }
+    }
+
+    /// How this step's output depends on the spatial extent of its input — the
+    /// plan-time authority for whether a spatial window may commute with it.
+    pub fn spatial_dependency(&self) -> SpatialDependency {
+        match self {
+            GraphStep::Buffer(dto) => dto.spatial_dependency(),
+            GraphStep::Geometry(op) => op.spatial_dependency(),
+            GraphStep::Binary { op, .. } => op.spatial_dependency(),
+            GraphStep::Reduction(op) => op.spatial_dependency(),
+            GraphStep::Histogram(op) => op.spatial_dependency(),
+            GraphStep::PerceptualHash(op) => op.spatial_dependency(),
+            // Mask blending and channel merge combine aligned buffers pixel for
+            // pixel — spatially per-element.
+            GraphStep::ApplyMask { .. } | GraphStep::ChannelMerge { .. } => {
+                SpatialDependency::Pointwise
+            }
+            // Dimension reads and region reductions aggregate over the whole
+            // input; neither admits a spatial-window reorder.
+            GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => SpatialDependency::Global,
         }
     }
 }
