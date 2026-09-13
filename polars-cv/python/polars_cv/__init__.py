@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 from ._dtype_names import SINK_NUMPY_NAMES
+from ._optimize import OptFlags
 from ._types import (
     IMAGENET_MEAN,
     IMAGENET_STD,
@@ -468,6 +469,7 @@ __all__ = [
     "Pipeline",
     "CvNamespace",
     "LazyPipelineExpr",
+    "OptFlags",
     # Types
     "CloudOptions",
     "ColorSpace",

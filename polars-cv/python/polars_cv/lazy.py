@@ -15,6 +15,7 @@ import polars as pl
 
 if TYPE_CHECKING:
     from polars_cv._graph import PipelineGraph
+    from polars_cv._optimize import OptFlags
     from polars_cv.pipeline import Pipeline
 
 
@@ -339,6 +340,7 @@ class LazyPipelineExpr:
         self,
         format: str | dict[str, str] = "native",
         return_expr: bool = True,
+        opt_flags: "OptFlags | bool | None" = None,
         **kwargs: Any,
     ) -> "pl.Expr | PipelineGraph":
         """
@@ -348,6 +350,12 @@ class LazyPipelineExpr:
             format: Output format string (e.g., "numpy", "png") or a dict
                     mapping aliases to formats for multi-output.
             return_expr: If True (default), return a pl.Expr. If False, return the PipelineGraph.
+            opt_flags: Which plan-time optimizations to apply. ``None`` (default)
+                    reads the ``POLARS_CV_OPTIMIZATIONS`` env var, falling back
+                    to all-on; ``True``/``False`` are all/none shorthands; an
+                    :class:`polars_cv.OptFlags` selects passes individually.
+                    Every pass is output-preserving, so this only changes the
+                    physical graph — see :mod:`polars_cv._optimize`.
             kwargs: Parameters for the sink. ``quality`` for the jpeg sink
                     (the other encoders take none); ``shape`` for the array
                     sink; ``dtype="f16"`` for the numpy/torch sink to downcast
@@ -444,6 +452,13 @@ class LazyPipelineExpr:
                         raise ValueError(msg)
 
             graph.set_output(self._node_id, format, **kwargs)
+
+        # The explicit optimization phase: rewrite the logical graph into its
+        # physical form before serialization. Both return paths see the same
+        # optimized graph.
+        from polars_cv._optimize import resolve_opt_flags
+
+        graph.optimize(resolve_opt_flags(opt_flags))
 
         if return_expr:
             # Register and return the fused expression
@@ -1196,6 +1211,10 @@ PIPELINE_ONLY_METHODS = frozenset(
         "current_domain",
         "output_dtype",
         "output_encoding",
+        # Introspection, not a chainable op: returns a str rendering, and
+        # optimization is a graph-level phase a single lazy expr cannot stand in
+        # for, so it is not forwarded onto LazyPipelineExpr.
+        "explain",
     }
 )
 

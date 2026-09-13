@@ -310,7 +310,7 @@ the same mixin unless `.cv` genuinely honours it.
 
 ### Affine Pipeline Fusion
 
-Consecutive affine-family operations are fused at serialization time via `_fuse_affine_ops()` (called in `_to_spec_dict()`). Matrix composition uses `_compose_affine_ops()` which performs standard 2×3 matrix multiplication. The fused operation uses the output dimensions from the **last** affine in the chain.
+Consecutive affine-family operations are fused by the `affine_fusion` Tier-1 optimization pass (`Pipeline._fuse_affine_inplace()`, driven by `PipelineGraph.optimize()` — see [`_optimize.py`](_optimize.py)), **not** at serialization time: `_to_spec_dict()` emits ops verbatim. Matrix composition uses `_compose_affine_ops()` which performs standard 2×3 matrix multiplication. The fused operation uses the output dimensions from the **last** affine in the chain. Affine fusion is output-preserving but not bit-exact (one interpolation pass replaces several), so it carries `bit_exact=False` in the pass registry.
 
 Fusible operations:
 - `warp_affine()` — always fusible

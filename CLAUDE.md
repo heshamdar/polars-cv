@@ -384,6 +384,7 @@ authority — do not open a side channel.
 | A `Pipeline`'s state, when copied | `_STATE_COPIERS` + `Pipeline._copy_state_from` — `_clone`, `_create_sub_pipeline` and CSE all inherit everything, then override | `test_pipeline_state_copy_is_complete` (table ↔ `__init__`, both directions) and `test_every_pipeline_field_survives_a_copy` |
 | Whether the compiled extension matches the sources | `POLARS_CV_SOURCE_HASH` from `build.rs`, recomputed by `build_info()` | `test_compiled_plugin_matches_the_rust_sources` — the version comparison cannot fire within a release cycle |
 | Dtype spellings on the Python side | `python/polars_cv/_dtype_names.py`, generated from `dtype_table!` by `scripts/gen_dtype_names.py` | `test_dtype_names_module_is_current` (regenerate-and-diff), `test_engine_dtype_names_match_the_generated_table` pins `_types.DType` to it without the plugin |
+| Which plan-time optimizations exist | `LOGICAL_PASSES` in `_optimize.py` (one `PassSpec` per pass) ↔ the `OptFlags` fields | `test_optimize.py::test_flags_match_registry_both_directions` — a pass without a flag or a flag without a pass fails. Optimization is one explicit phase (`PipelineGraph.optimize`); construction and serialization never optimize (`TestStaging`), and toggling a pass changes only the physical graph, never the output (`test_optimize_equivalence.py`) |
 
 One deliberate exception, documented at the site: `OpSpec` is *not*
 `deny_unknown_fields`, because its params ride on `#[serde(flatten)]`, which
