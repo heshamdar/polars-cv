@@ -291,6 +291,20 @@ class TestRotateAndScalePipelineBuilder:
         assert abs(matrix[4] - 2.0) < 1e-10
 
 
+def _fused_spec(pipe: "Pipeline") -> dict:
+    """Serialize a pipeline after the affine-fusion pass.
+
+    Affine fusion used to run inside ``_to_spec_dict`` at serialization; it is
+    now a Tier-1 optimization pass (``Pipeline._fuse_affine_inplace``, driven by
+    ``PipelineGraph.optimize``). These tests pin the fusion *output*, so they
+    invoke the pass through its new home and then serialize verbatim. The pass
+    is a no-op when nothing fuses, so the "not converted" cases pass through
+    unchanged and now exercise the pass's negative path too.
+    """
+    pipe._fuse_affine_inplace()
+    return pipe._to_spec_dict()
+
+
 class TestAffineFusion:
     """Tests for consecutive affine operation fusion."""
 
@@ -312,7 +326,7 @@ class TestAffineFusion:
         assert len(pipe._ops) == 2
 
         # After fusion (via _to_spec_dict), there should be 1 op
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         assert len(spec["ops"]) == 1
         fused = spec["ops"][0]
         assert fused["op"] == "warp_affine"
@@ -337,7 +351,7 @@ class TestAffineFusion:
                 output_size=(100, 100),
             )
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         # Should NOT fuse: affine, normalize, affine = 3 ops
         assert len(spec["ops"]) == 3
 
@@ -356,7 +370,7 @@ class TestAffineFusion:
                 output_size=(200, 200),
             )
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         assert len(spec["ops"]) == 1
 
     def test_fusion_preserves_output_dims(self) -> None:
@@ -373,7 +387,7 @@ class TestAffineFusion:
                 output_size=(224, 224),
             )
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         fused = spec["ops"][0]
         assert fused["output_height"]["value"] == 224
         assert fused["output_width"]["value"] == 224
@@ -438,7 +452,7 @@ class TestAffineFusionPositionalShape:
             .rotate(45)
             .warp_affine(matrix=IDENTITY, output_size=(50, 50))
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         # resize stays, rotate+warp_affine fuse into one
         assert [op["op"] for op in spec["ops"]] == ["resize", "warp_affine"]
         fused = spec["ops"][1]
@@ -459,7 +473,7 @@ class TestAffineFusionPositionalShape:
             .rotate(45, expand=True)
             .warp_affine(matrix=IDENTITY, output_size=(200, 200))
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         assert [op["op"] for op in spec["ops"]] == ["resize", "warp_affine"]
         fused = spec["ops"][1]
         expected_matrix, _, _ = _expected_rotate_affine(45, ih=100, iw=100, expand=True)
@@ -478,7 +492,7 @@ class TestAffineFusionPositionalShape:
             .rotate(30)
             .rotate(15)
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         assert [op["op"] for op in spec["ops"]] == ["resize", "warp_affine"]
         fused = spec["ops"][1]
         m1, _, _ = _expected_rotate_affine(30, ih=100, iw=100)
@@ -496,7 +510,7 @@ class TestAffineFusionPositionalShape:
             .rotate(45)
             .warp_affine(matrix=IDENTITY, output_size=(50, 50))
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         assert [op["op"] for op in spec["ops"]] == ["warp_affine"]
         fused = spec["ops"][0]
         expected_matrix, _, _ = _expected_rotate_affine(45, ih=80, iw=60)
@@ -518,7 +532,7 @@ class TestAffineFusionPositionalShape:
             .rotate(45)
             .grayscale()
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         assert [op["op"] for op in spec["ops"]] == ["resize", "rotate", "grayscale"]
 
     def test_rotate_followed_by_resize_is_not_converted(self) -> None:
@@ -530,7 +544,7 @@ class TestAffineFusionPositionalShape:
             .rotate(45)
             .resize(height=50, width=50)
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         assert [op["op"] for op in spec["ops"]] == ["resize", "rotate", "resize"]
 
     def test_unknown_input_shape_blocks_conversion(self) -> None:
@@ -543,7 +557,7 @@ class TestAffineFusionPositionalShape:
             .rotate(45)
             .warp_affine(matrix=IDENTITY, output_size=(50, 50))
         )
-        spec = pipe._to_spec_dict()
+        spec = _fused_spec(pipe)
         assert [op["op"] for op in spec["ops"]] == [
             "resize_scale",
             "rotate",

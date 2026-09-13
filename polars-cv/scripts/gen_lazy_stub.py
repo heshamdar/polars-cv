@@ -54,6 +54,7 @@ from typing import Any
 import polars as pl
 
 from polars_cv._graph import PipelineGraph
+from polars_cv._optimize import OptFlags
 from polars_cv._types import ({types_import})
 from polars_cv.pipeline import Pipeline
 

@@ -378,7 +378,7 @@ def test_fused_and_unfused_affine_runs_agree() -> None:
     :func:`test_fusion_does_not_change_the_pixels` checks the values.
     """
     df = _df("null_first")
-    # Two adjacent static rotates: `_fuse_affine_ops` declines a run of one, so
+    # Two adjacent static rotates: affine fusion declines a run of one, so
     # this must be a genuine run of two. The previous spelling was
     # `rotate(30.0).resize(...)` — `resize` is not affine-fusible, so the
     # variable named `fusable` was a run of one and this test, named for
@@ -394,23 +394,24 @@ def test_fused_and_unfused_affine_runs_agree() -> None:
 def test_fusion_is_actually_reached_by_the_pipeline_under_test() -> None:
     """The fusion sweep must exercise fusion.
 
-    ``_fuse_affine_ops`` keeps a run of one unchanged, so a chain whose affine
+    Affine fusion keeps a run of one unchanged, so a chain whose affine
     ops are separated by anything else is silently never fused. Pin that the
     fixture used above really does collapse, or the value comparison below
     proves nothing.
     """
-    fused_ops = [
-        op["op"] for op in _base().rotate(30.0).rotate(15.0)._to_spec_dict()["ops"]
-    ]
+    # Affine fusion is now a Tier-1 optimization pass, not something
+    # _to_spec_dict does, so invoke it through its home before serializing.
+    two = _base().rotate(30.0).rotate(15.0)
+    two._fuse_affine_inplace()
+    fused_ops = [op["op"] for op in two._to_spec_dict()["ops"]]
     assert fused_ops.count("warp_affine") == 1, (
         f"two adjacent static rotates did not fuse into one warp_affine: {fused_ops}"
     )
     assert "rotate" not in fused_ops, f"a rotate survived fusion: {fused_ops}"
 
-    split_ops = [
-        op["op"]
-        for op in _base().rotate(30.0).grayscale().rotate(15.0)._to_spec_dict()["ops"]
-    ]
+    split = _base().rotate(30.0).grayscale().rotate(15.0)
+    split._fuse_affine_inplace()
+    split_ops = [op["op"] for op in split._to_spec_dict()["ops"]]
     assert split_ops.count("rotate") == 2, (
         f"a fusion-breaking op between two rotates should leave both as "
         f"runtime rotates: {split_ops}"
@@ -443,7 +444,12 @@ def test_a_fused_rotate_matches_the_engines_own_rotate() -> None:
     plain = _base().grayscale().rotate(angle=30.0)
     fused = _base().grayscale().rotate(angle=30.0).warp_affine(identity, (H, W))
 
-    spec_ops = [op["op"] for op in fused._to_spec_dict()["ops"]]
+    # Serialization no longer fuses; apply the fusion pass (to a clone, so the
+    # `fused` pipeline stays intact for the execution comparison below, which
+    # fuses via `.sink()`'s own optimize phase) to confirm the fixture collapses.
+    fused_check = fused._clone()
+    fused_check._fuse_affine_inplace()
+    spec_ops = [op["op"] for op in fused_check._to_spec_dict()["ops"]]
     assert spec_ops.count("warp_affine") == 1 and "rotate" not in spec_ops, (
         f"the fixture did not fuse, so this compares nothing: {spec_ops}"
     )

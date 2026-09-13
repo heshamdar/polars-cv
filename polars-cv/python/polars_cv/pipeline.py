@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from polars_cv._graph import PipelineGraph
+    from polars_cv._optimize import OptFlags
     from polars_cv.lazy import LazyPipelineExpr
 
 
@@ -1501,10 +1502,17 @@ class Pipeline:
                     msg = "'shape' must be a LazyPipelineExpr"
                     raise TypeError(msg)
                 # Collect the graph from the shape expression
+                # The shape sub-pipeline is finalized into the source spec here
+                # (eagerly, and it is part of SourceSpec identity), before the
+                # graph-level optimize phase can reach it. Apply the affine-
+                # fusion pass to a clone now so the baked spec matches what
+                # optimize() does to every other node; serialization stays pure.
+                fused_shape = shape._pipeline._clone()
+                fused_shape._fuse_affine_inplace()
                 shape_pipeline_dict = {
                     "node_id": shape._node_id,
                     "column": str(shape._column),
-                    "pipeline": shape._pipeline._to_spec_dict(),
+                    "pipeline": fused_shape._to_spec_dict(),
                     "upstream": [u._node_id for u in shape._upstream],
                 }
                 # Referencing a node by id is not enough to get it executed:
@@ -4325,32 +4333,34 @@ class Pipeline:
             )
         )
 
-    def _fuse_affine_ops(self, ops: list[OpSpec]) -> list[OpSpec]:
+    def _compute_affine_fusion(
+        self, ops: list[OpSpec]
+    ) -> "tuple[list[OpSpec], dict[int, int]]":
         """Compose consecutive affine-compatible ops into a single ``warp_affine``.
 
-        Both ``warp_affine`` and ``rotate`` (with static, non-90/180/270
-        angles) participate in fusion.  Matrix composition uses 3x3
-        homogeneous multiplication so that ``rotate → translate → shear``
-        becomes one affine warp at execution time, avoiding redundant
-        interpolation passes.
+        Both ``warp_affine`` and ``rotate`` (with static, non-90/180/270 angles)
+        participate in fusion. Matrix composition uses 3x3 homogeneous
+        multiplication so that ``rotate → translate → shear`` becomes one affine
+        warp, avoiding redundant interpolation passes. ``rotate`` ops with
+        expression-based angles or zero-copy angles (90/180/270) are left as-is
+        and break a fusion run.
 
-        ``rotate`` ops with expression-based angles or zero-copy angles
-        (90/180/270) are left as-is and break a fusion run.
-
-        Args:
-            ops: The list of pipeline operations.
-
-        Returns:
-            Optimized list where runs of affine ops are collapsed.
+        The single source of truth for the affine-fusion algorithm, called by
+        :meth:`_fuse_affine_inplace` (the Tier-1 pass entry point). Returns the
+        new op list and an ``old index -> new index`` map; every old index that
+        fell in a fused run maps to the single op that replaced it, which
+        :meth:`_commit_optimized_ops` needs to move the index-keyed side tables.
         """
         if len(ops) < 2:
-            return ops
+            return list(ops), {i: i for i in range(len(ops))}
 
         result: list[OpSpec] = []
+        old_to_new: dict[int, int] = {}
         i = 0
         while i < len(ops):
             converted = self._try_convert_rotate_to_affine(ops[i], op_index=i)
             if converted is None:
+                old_to_new[i] = len(result)
                 result.append(ops[i])
                 i += 1
                 continue
@@ -4367,12 +4377,62 @@ class Pipeline:
                 # Run of one: nothing to fuse with. Keep the original op —
                 # a lone runtime rotate computes its matrix from the actual
                 # buffer dimensions, which beats baking in plan-time hints.
+                old_to_new[i] = len(result)
                 result.append(ops[i])
             else:
+                fused_idx = len(result)
+                for k in range(i, j):
+                    old_to_new[k] = fused_idx
                 result.append(acc)
             i = j
 
-        return result
+        return result, old_to_new
+
+    def _fuse_affine_inplace(self) -> None:
+        """Apply the affine-fusion pass to this pipeline's ops, in place.
+
+        The Tier-1 entry point for affine fusion (called by
+        ``PipelineGraph.optimize`` per node, and at shape-subpipeline
+        finalization). Commits through :meth:`_commit_optimized_ops` so every
+        table keyed by op index moves with the rewrite. A no-op when nothing
+        fuses, so it is safe to call unconditionally on an already-optimized or
+        fusion-free pipeline.
+        """
+        new_ops, old_to_new = self._compute_affine_fusion(self._ops)
+        if len(new_ops) == len(self._ops):
+            return
+        self._commit_optimized_ops(new_ops, old_to_new)
+
+    def _commit_optimized_ops(
+        self, ops: "list[OpSpec]", old_to_new: "dict[int, int]"
+    ) -> None:
+        """Replace ``_ops`` with an optimization rewrite, re-keying side tables.
+
+        The canonical sibling of :meth:`_set_ops_slice`: that handles a uniform
+        prefix/suffix ``shift`` (CSE splitting one pipeline across two nodes);
+        this handles an arbitrary ``old -> new`` index remap (an affine run
+        collapsing to one op). Both exist so no optimization assigns ``_ops``
+        directly and forgets which tables are keyed by op position.
+        """
+        self._ops = list(ops)
+        # Entering-hint snapshots: the fused op enters where the run's FIRST
+        # op entered, so a new index takes the lowest old index mapped to it.
+        new_to_first_old: dict[int, int] = {}
+        for old_i, new_i in old_to_new.items():
+            if new_i not in new_to_first_old or old_i < new_to_first_old[new_i]:
+                new_to_first_old[new_i] = old_i
+        self._hint_snapshots = {
+            new_i: self._hint_snapshots[old_i]
+            for new_i, old_i in new_to_first_old.items()
+            if old_i in self._hint_snapshots
+        }
+        # Assertions key on op-boundary positions (0..len). A boundary inside a
+        # fused run collapses onto that run's start; later boundaries shift left.
+        n_new = len(ops)
+        self._assertions = {
+            (old_to_new[p] if p in old_to_new else n_new): copy.deepcopy(a)
+            for p, a in self._assertions.items()
+        }
 
     def _try_convert_rotate_to_affine(self, op: OpSpec, op_index: int) -> OpSpec | None:
         """Convert an op to a ``warp_affine`` ``OpSpec`` if it is fusible.
@@ -4500,7 +4560,6 @@ class Pipeline:
         Convert pipeline to specification dictionary (without sink).
 
         Used for graph serialization where sink is handled separately.
-        Applies affine fusion optimization before serialization.
 
         The node-level ``domain``/``output_dtype`` are Python-side
         visualization metadata (consumed by ``_graph_viz.parse_logical_graph``
@@ -4508,6 +4567,11 @@ class Pipeline:
         supply). Rust's ``GraphNode`` declares but ignores them, computing its
         own schema from the ops; both are derived from the same ``op_schema``
         authority, so they cannot drift.
+
+        Serialization only serializes: it emits ``self._ops`` verbatim and runs
+        no optimization. Affine fusion (which used to happen here) is now a
+        Tier-1 pass applied by ``PipelineGraph.optimize`` before serialization —
+        see ``polars_cv._optimize``.
 
         Shape hints are deliberately *not* emitted: no Rust code ever read the
         key, and because ``graph_json`` is the compiled-graph cache key, two
@@ -4518,10 +4582,9 @@ class Pipeline:
         Returns:
             Dictionary with source, ops, domain, and output_dtype.
         """
-        optimized_ops = self._fuse_affine_ops(self._ops)
         spec: dict = {
             "source": self._source.to_dict() if self._source else None,
-            "ops": [op.to_dict() for op in optimized_ops],
+            "ops": [op.to_dict() for op in self._ops],
             "domain": self._current_domain,
             "output_dtype": self._output_dtype,
         }
@@ -4578,3 +4641,38 @@ class Pipeline:
             parts.append(f"{op.op}({params_str})")
 
         return f"Pipeline().{'.'.join(parts)}" if parts else "Pipeline()"
+
+    def explain(
+        self,
+        *,
+        optimized: bool = True,
+        opt_flags: "OptFlags | bool | None" = None,
+    ) -> str:
+        """Render the pipeline's op chain, logical or physical.
+
+        Mirrors Polars' ``.explain(optimized=...)``: the same pipeline can be
+        inspected before and after the plan-time optimization phase, so a user
+        sees the physical graph differ while the output stays identical.
+
+        Args:
+            optimized: When ``False``, render the op chain exactly as written
+                (the logical plan). When ``True`` (default), render it after the
+                optimization passes selected by ``opt_flags``.
+            opt_flags: Which passes to apply when ``optimized`` is ``True`` —
+                same coercion as :meth:`LazyPipelineExpr.sink` (``None`` reads
+                the env default). For a single ``Pipeline`` this means affine
+                fusion; cross-pipeline CSE only has an effect once sibling
+                pipelines share a source in a graph, so it is inert here.
+
+        Returns:
+            A one-line ``Pipeline().…`` rendering of the chain.
+        """
+        from polars_cv._optimize import resolve_opt_flags
+
+        if not optimized:
+            return repr(self)
+        flags = resolve_opt_flags(opt_flags)
+        physical = self._clone()
+        if flags.affine_fusion:
+            physical._fuse_affine_inplace()
+        return repr(physical)

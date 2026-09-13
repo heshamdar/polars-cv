@@ -12,6 +12,7 @@ from typing import Any
 import polars as pl
 
 from polars_cv._graph import PipelineGraph
+from polars_cv._optimize import OptFlags
 from polars_cv._types import (
     BoolOrExpr,
     FloatOrExpr,
@@ -47,7 +48,11 @@ class LazyPipelineExpr:
     def alias(self, name: str) -> "LazyPipelineExpr": ...
     def pipe(self, pipeline: "Pipeline") -> "LazyPipelineExpr": ...
     def sink(
-        self, format: str | dict[str, str] = ..., return_expr: bool = ..., **kwargs: Any
+        self,
+        format: str | dict[str, str] = ...,
+        return_expr: bool = ...,
+        opt_flags: "OptFlags | bool | None" = ...,
+        **kwargs: Any,
     ) -> "pl.Expr | PipelineGraph": ...
     def apply_mask(
         self, mask: "LazyPipelineExpr", *, invert: bool | pl.Expr = ...

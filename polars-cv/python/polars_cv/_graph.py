@@ -20,6 +20,7 @@ from polars_cv._graph_viz import get_graphviz_out
 if TYPE_CHECKING:
     import pydot
 
+    from polars_cv._optimize import OptFlags
     from polars_cv._types import OpSpec
     from polars_cv.pipeline import Pipeline
 
@@ -268,6 +269,37 @@ class PipelineGraph:
         """Check if the graph uses multi-output mode."""
         return self._multi_output is not None
 
+    # --- Optimization phase ---
+
+    def optimize(self, flags: "OptFlags") -> "PipelineGraph":
+        """Rewrite the logical graph into an equivalent physical graph.
+
+        The single optimization phase (see :mod:`polars_cv._optimize`).
+        Construction and serialization never optimize; this applies each
+        registered Tier-1 pass, gated by ``flags``, mutating the graph in place
+        and returning ``self`` for chaining. Passes run in a fixed order — CSE
+        before affine fusion, matching the order they previously ran in (CSE at
+        build, affine at serialize) — so the physical graph is deterministic.
+
+        Every pass is output-preserving; CSE is byte-identical while affine
+        fusion is the same transform with fewer interpolation passes (see
+        ``polars_cv._optimize.PassSpec.bit_exact``). Per-row engine lowering is
+        a separate tier that runs in Rust on this already-optimized graph.
+
+        The passes rewrite node pipelines in place, so the graph first takes its
+        own clone of each one: ``cv.pipe(p)`` holds the caller's ``Pipeline`` by
+        reference, and ``Pipeline`` is immutable from the caller's view — the
+        physical graph must own independent copies to mutate.
+        """
+        for node in self._nodes.values():
+            node.pipeline = node.pipeline._clone()
+        if flags.common_subexpression_elimination:
+            self._optimize_common_subexpressions()
+        if flags.affine_fusion:
+            for node in self._nodes.values():
+                node.pipeline._fuse_affine_inplace()
+        return self
+
     # --- CSE Optimization ---
 
     def _optimize_common_subexpressions(self) -> None:
@@ -481,8 +513,9 @@ class PipelineGraph:
                 "No output set. Call set_output() or set_multi_output() first."
             )
 
-        # Optimize: extract common operation prefixes into shared nodes
-        self._optimize_common_subexpressions()
+        # Serialization only serializes. Optimization (CSE, affine fusion) is
+        # the caller's explicit `optimize(flags)` phase — `.sink()` runs it
+        # before this. A graph handed here unoptimized is emitted verbatim.
 
         # Validate that root nodes have columns
         for node in self._nodes.values():

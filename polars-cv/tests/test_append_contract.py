@@ -65,7 +65,14 @@ pytestmark = pytest.mark.structural
 #: field including all the side tables, so there is no position bookkeeping for
 #: it to get wrong. It is the one place where assigning ``_ops`` carries no
 #: obligation.
-_OPS_MUTATORS = frozenset({"_push_op", "_set_ops_slice", "_clone"})
+#: ``_commit_optimized_ops`` is the canonical sibling of ``_set_ops_slice`` for
+#: the optimization phase: it replaces ``_ops`` with an affine-fusion rewrite and
+#: re-keys ``_hint_snapshots`` and ``_assertions`` by the arbitrary old->new index
+#: map (not the uniform shift ``_set_ops_slice`` handles), so assigning ``_ops``
+#: there carries the same bookkeeping obligation, met in one place.
+_OPS_MUTATORS = frozenset(
+    {"_push_op", "_set_ops_slice", "_clone", "_commit_optimized_ops"}
+)
 
 
 def _pipeline_ast() -> ast.ClassDef:
