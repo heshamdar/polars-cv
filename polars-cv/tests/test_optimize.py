@@ -22,6 +22,7 @@ from polars_cv._optimize import (
     PassSpec,
     resolve_opt_flags,
 )
+from tests.conftest import plugin_required
 
 
 def _two_rotate_pipe() -> Pipeline:
@@ -232,3 +233,144 @@ class TestExplain:
         pipe = _two_rotate_pipe()
         pipe.explain(optimized=True)
         assert [op.op for op in pipe._ops] == ["resize", "rotate", "rotate"]
+
+
+def _shape_ref() -> "pl.Expr":
+    """A shape sub-pipeline expression carrying a fusible affine run.
+
+    ``resize`` gives the two static rotates their plan-time H/W (so the
+    rotate→affine conversion fires), making ``[resize, rotate, rotate]`` a
+    genuine fusion candidate — the same fixture shape as ``_two_rotate_pipe``,
+    but delivered as a ``shape=`` reference for a contour source.
+    """
+    return pl.col("img").cv.pipe(
+        Pipeline()
+        .source("image_bytes")
+        .resize(width=40, height=40)
+        .rotate(30.0)
+        .rotate(15.0)
+    )
+
+
+def _shape_node_ops(graph: PipelineGraph, node_id: str) -> list[str]:
+    return [op.op for op in graph._nodes[node_id].pipeline._ops]
+
+
+class TestToExprRequiresOptimization:
+    """``to_expr`` refuses an un-optimized graph — optimization has one site.
+
+    Before the fix, the public ``Pipeline.to_graph(col).to_expr()`` route (which
+    never runs ``sink``) emitted an *unoptimized* graph: no CSE, no affine
+    fusion, pixel-divergent from ``sink()``. ``to_expr`` now raises unless the
+    optimize phase has run, so the low-level path cannot silently diverge.
+    """
+
+    def test_fresh_graph_is_not_marked_optimized(self) -> None:
+        assert _graph_of(_two_rotate_pipe())._optimized is False
+
+    def test_optimize_marks_the_graph(self) -> None:
+        graph = _graph_of(_two_rotate_pipe())
+        assert graph.optimize(OptFlags.all())._optimized is True
+
+    def test_to_expr_rejects_unoptimized_graph(self) -> None:
+        graph = _graph_of(_two_rotate_pipe())
+        graph.set_output("n", "numpy")
+        with pytest.raises(RuntimeError, match="optimization phase"):
+            graph.to_expr()
+
+    def test_to_expr_works_after_optimize(self) -> None:
+        graph = _graph_of(_two_rotate_pipe())
+        graph.set_output("n", "numpy")
+        graph.optimize(OptFlags.all())
+        # Does not raise; register_plugin_function builds the expr lazily and
+        # needs no compiled .so at construction time.
+        graph.to_expr()
+
+    def test_sink_return_graph_is_optimized(self) -> None:
+        graph = (
+            pl.col("img").cv.pipe(_two_rotate_pipe()).sink("numpy", return_expr=False)
+        )
+        assert graph._optimized is True
+        # sink() auto-generates the node id, so read the sole node generically.
+        (only_node,) = graph._nodes.values()
+        assert [op.op for op in only_node.pipeline._ops] == ["resize", "warp_affine"]
+
+
+class TestShapeSubpipelineStaging:
+    """The contour-source shape sub-pipeline goes through the optimize phase.
+
+    It used to be affine-fused at *construction* time, unconditionally — which
+    both broke the "construction never optimizes" staging contract and ignored
+    ``opt_flags``. The shape sub-pipeline is an ordinary graph node, so the
+    single ``optimize()`` phase fuses it like any other, honoring the flags.
+    """
+
+    def test_construction_leaves_shape_subpipeline_logical(self) -> None:
+        # No plugin: pure construction. The embedded shape spec must be the
+        # verbatim logical op chain, NOT a construction-time fusion.
+        pipe = Pipeline().source("contour", shape=_shape_ref())
+        embedded = pipe._source.shape_pipeline["pipeline"]["ops"]
+        assert [op["op"] for op in embedded] == ["resize", "rotate", "rotate"]
+
+    def test_shape_subpipeline_fusion_respects_opt_flags(self) -> None:
+        # No plugin: sink(return_expr=False) builds + optimizes the graph
+        # without registering the expr. The shape node id is the shape ref's own
+        # node id; inspect its ops under each flag.
+        shape = _shape_ref()
+        shape_id = shape._node_id
+        contour = Pipeline().source("contour", shape=shape)
+
+        on = (
+            pl.col("c")
+            .cv.pipe(contour)
+            .sink("numpy", return_expr=False, opt_flags=OptFlags.all())
+        )
+        assert _shape_node_ops(on, shape_id) == ["resize", "warp_affine"]
+
+        off = (
+            pl.col("c")
+            .cv.pipe(contour)
+            .sink("numpy", return_expr=False, opt_flags=OptFlags(affine_fusion=False))
+        )
+        assert _shape_node_ops(off, shape_id) == ["resize", "rotate", "rotate"]
+
+    @plugin_required
+    def test_shape_subpipeline_output_identical_under_flags(self) -> None:
+        # Plugin: the shape node's fusion changes pixels but not its H/W, and the
+        # contour source reads only the shape buffer's dimensions — so the mask
+        # is byte-identical whether or not the shape sub-pipeline was fused.
+        import io
+
+        import numpy as np
+        from PIL import Image
+
+        from polars_cv import numpy_from_struct
+        from polars_cv.geometry import CONTOUR_SCHEMA
+
+        buf = io.BytesIO()
+        Image.new("RGB", (48, 48), color=(20, 120, 200)).save(buf, format="PNG")
+        contour = {
+            "exterior": [
+                {"x": 5.0, "y": 5.0},
+                {"x": 30.0, "y": 5.0},
+                {"x": 30.0, "y": 30.0},
+                {"x": 5.0, "y": 30.0},
+            ],
+            "holes": [],
+            "is_closed": True,
+        }
+        df = pl.DataFrame(
+            {
+                "img": [buf.getvalue()],
+                "c": pl.Series([contour], dtype=CONTOUR_SCHEMA),
+            }
+        )
+        pipe = Pipeline().source("contour", shape=_shape_ref())
+
+        def run(flags: OptFlags) -> "np.ndarray":
+            out = df.select(m=pl.col("c").cv.pipe(pipe).sink("numpy", opt_flags=flags))[
+                "m"
+            ][0]
+            return numpy_from_struct(out)
+
+        assert np.array_equal(run(OptFlags.all()), run(OptFlags.none()))
