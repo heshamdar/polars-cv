@@ -70,8 +70,19 @@ pytestmark = pytest.mark.structural
 #: re-keys ``_hint_snapshots`` and ``_assertions`` by the arbitrary old->new index
 #: map (not the uniform shift ``_set_ops_slice`` handles), so assigning ``_ops``
 #: there carries the same bookkeeping obligation, met in one place.
+#: ``_commit_reordered_ops`` is the same for the spatial-window pushdown pass: it
+#: replaces ``_ops`` with a permutation rewrite and re-keys ``_hint_snapshots``
+#: (dropping moved ops' snapshots, keeping unmoved ops' exact ones) while
+#: ``_assertions`` need no move because the pass never permutes across an
+#: assertion boundary.
 _OPS_MUTATORS = frozenset(
-    {"_push_op", "_set_ops_slice", "_clone", "_commit_optimized_ops"}
+    {
+        "_push_op",
+        "_set_ops_slice",
+        "_clone",
+        "_commit_optimized_ops",
+        "_commit_reordered_ops",
+    }
 )
 
 

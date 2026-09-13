@@ -606,8 +606,21 @@ impl Op for ReductionOp {
     }
 
     fn spatial_dependency(&self) -> SpatialDependency {
-        // A reduction aggregates over the whole input (or a whole axis).
-        SpatialDependency::Global
+        // A reduction aggregates over the whole input (or a whole axis), so no
+        // output pixel maps to a bounded input window: a hard reorder barrier.
+        // Matched exhaustively (not a blanket) so a new variant must reconfirm
+        // this rather than silently inherit Global.
+        match self {
+            ReductionOp::Max { .. }
+            | ReductionOp::Min { .. }
+            | ReductionOp::Mean { .. }
+            | ReductionOp::Std { .. }
+            | ReductionOp::Sum { .. }
+            | ReductionOp::ArgMax { .. }
+            | ReductionOp::ArgMin { .. }
+            | ReductionOp::PopCount
+            | ReductionOp::Percentile { .. } => SpatialDependency::Global,
+        }
     }
 
     fn infer_strides(

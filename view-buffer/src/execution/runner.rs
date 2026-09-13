@@ -2495,3 +2495,42 @@ mod canny_direction_tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "image_interop"))]
+mod blur_radius_tests {
+    //! The blur op declares a `Neighborhood` radius that a spatial-window
+    //! reorder would dilate a crop by; if it understated the true kernel reach
+    //! the halo would be too small and the reorder would corrupt border pixels.
+    //! The declared radius (`ops/image.rs`) and the executed kernel
+    //! (`gaussian_kernel_1d`) each compute `ceil(3σ)` independently, so this
+    //! cross-checks the declaration against the kernel actually applied — the
+    //! second authority `SpatialDependency` otherwise lacks for the radius.
+
+    use super::gaussian_kernel_1d;
+    use crate::ops::image::{ImageOp, ImageOpKind};
+    use crate::ops::spatial_rule::SpatialDependency;
+    use crate::ops::traits::Op;
+
+    fn declared_radius(sigma: f32) -> usize {
+        let op = ImageOp {
+            kind: ImageOpKind::Blur { sigma },
+        };
+        match op.spatial_dependency() {
+            SpatialDependency::Neighborhood(support) => support.radius,
+            other => panic!("blur must be a Neighborhood dependency, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declared_radius_matches_the_executed_kernel() {
+        for sigma in [0.5f32, 1.0, 1.5, 2.0, 3.3, 5.0] {
+            let kernel_radius = gaussian_kernel_1d(sigma).len() / 2;
+            assert_eq!(
+                declared_radius(sigma),
+                kernel_radius,
+                "blur σ={sigma}: declared neighborhood radius must equal the \
+                 executed 1-D kernel's half-width"
+            );
+        }
+    }
+}

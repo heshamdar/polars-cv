@@ -208,6 +208,12 @@ def _op_contract_for(spec: "OpSpec") -> dict:
     return op_contract(json.dumps(spec.to_dict()))
 
 
+#: The spatial-window pushdown transfer function returns this when a window may
+#: not cross an op — a hard stop, distinct from "crosses unchanged" (the window
+#: itself). See :meth:`Pipeline._spatial_transfer`.
+_SPATIAL_BARRIER = object()
+
+
 def _literal_axes(axes: "Sequence[int]", label: str) -> "ParamValue":
     """Build an axis-list parameter, rejecting expressions element-wise.
 
@@ -4561,6 +4567,150 @@ class Pipeline:
             },
         )
 
+    # --- Spatial-window pushdown ---
+    #
+    # Structured as a pushdown, the way Polars' ``slice_pushdown`` carries a
+    # slice toward the source: a spatial window (a crop / ROI) moves earlier
+    # past each op it commutes with, the op's ``SpatialDependency`` (read from
+    # ``op_contract``'s ``spatial_rule``) deciding whether — and how — it passes.
+    # The three pieces are the transfer function (:meth:`_spatial_transfer`), the
+    # driver (:meth:`_compute_spatial_pushdown`), and the commit
+    # (:meth:`_commit_reordered_ops`); later spatial optimizations widen the
+    # transfer function's arms rather than adding a pass. Phase 1 moves a crop
+    # past a run of ``Pointwise`` ops within one node.
+
+    def _spatial_transfer(
+        self, window: "OpSpec", op: "OpSpec", contract: dict
+    ) -> "OpSpec | object":
+        """How a spatial ``window`` crosses one preceding ``op``.
+
+        Returns the window rewritten for crossing ``op`` — unchanged for a
+        ``Pointwise`` op, whose output at ``(y, x)`` depends only on its input at
+        ``(y, x)``, so a crop commutes exactly — or :data:`_SPATIAL_BARRIER` if
+        it may not cross.
+
+        The arms are exactly the ``SpatialDependency`` vocabulary
+        (``op_contract``'s ``spatial_rule``), so this is the honest consumer of
+        that single authority. Widening it — not adding a pass — is how later
+        spatial optimizations land: ``neighborhood:<r>`` would return the window
+        dilated by ``r`` (a halo, not bit-exact); ``geometric`` would return the
+        window mapped through the op's inverse transform (needs the
+        coordinate-remap descriptor ``GeometricEffect`` does not carry yet).
+        ``global`` is always a barrier.
+        """
+        rule = contract["spatial_rule"]
+        if rule == "pointwise":
+            return window
+        return _SPATIAL_BARRIER
+
+    @staticmethod
+    def _is_spatial_window(op: "OpSpec") -> bool:
+        """Whether ``op`` is a spatial window this pass hoists.
+
+        Only ``crop`` today. The ``crop`` builder exposes ``top``/``left``/
+        ``height``/``width`` and never slices the channel axis (the engine sets
+        the channel extent full), so a crop is H/W-only and commutes with a
+        channel-changing pointwise op (e.g. ``grayscale``). A crop op carrying no
+        channel parameter is guaranteed by the builder; assert defensively.
+        """
+        if op.op != "crop":
+            return False
+        assert "channel" not in op.params and "channels" not in op.params, (
+            "crop unexpectedly carries a channel parameter; the H/W-only "
+            "commutation assumption no longer holds"
+        )
+        return True
+
+    def _compute_spatial_pushdown(
+        self, ops: "list[OpSpec]"
+    ) -> "tuple[list[OpSpec], dict[int, int]]":
+        """Hoist each crop to the front of the ``Pointwise`` run before it.
+
+        Returns the new op list and an ``old index -> new index`` bijection.
+        A crop is moved to the start of the maximal contiguous run of ops
+        immediately preceding it that the transfer function lets it cross; the
+        run stops at the first barrier. An ``assert_shape`` op-boundary in the
+        run is also a barrier — a crop is never moved across a shape the user
+        pinned — and, to stay simple, a crop whose run contains such a boundary
+        is left in place.
+
+        Two crops never contend: a crop is itself a barrier (``Geometric``), so
+        one crop's pointwise run cannot reach across another. Processing crops
+        left to right therefore keeps the invariant that, when a crop at
+        original index ``i`` is reached, the entries already placed for original
+        indices ``j..i-1`` (its pointwise run) are the last ``i-j`` of
+        ``result`` — so slicing ``result[j:]`` picks out exactly that run.
+        """
+        assertion_boundaries = set(self._assertions.keys())
+        result: list[int] = []  # original indices, in new order
+        for i, op in enumerate(ops):
+            if not self._is_spatial_window(op):
+                result.append(i)
+                continue
+            # Extend the run leftward over ops the window crosses unchanged.
+            j = i
+            while j - 1 >= 0:
+                prev = ops[j - 1]
+                if (
+                    self._spatial_transfer(op, prev, _op_contract_for(prev))
+                    is _SPATIAL_BARRIER
+                ):
+                    break
+                j -= 1
+            # Moving the crop to boundary j changes the shape at every boundary
+            # in (j, i]; a user assertion on any of them would be violated, so
+            # leave the crop where it is when one is in the way.
+            if any(b in assertion_boundaries for b in range(j + 1, i + 1)):
+                result.append(i)
+                continue
+            run = result[j:]
+            result[j:] = [i, *run]
+        perm = {orig: pos for pos, orig in enumerate(result)}
+        new_ops = [ops[orig] for orig in result]
+        return new_ops, perm
+
+    def _commit_reordered_ops(
+        self, ops: "list[OpSpec]", perm: "dict[int, int]"
+    ) -> None:
+        """Replace ``_ops`` with a permutation rewrite, re-keying side tables.
+
+        The reorder sibling of :meth:`_commit_optimized_ops` (which handles an
+        affine run's many→one collapse) and :meth:`_set_ops_slice` (CSE's
+        prefix/suffix split). ``perm`` is an ``old index -> new index``
+        bijection.
+
+        ``_hint_snapshots`` (entering H/W per op, read by affine fusion for
+        ``rotate``/``warp_affine`` only): ops that did not move keep their exact
+        snapshot — including any affine op fusion will read, whose entering shape
+        is unchanged because a ``Pointwise`` reorder near it does not alter H/W.
+        Moved ops are ``Pointwise`` (never affine), so their snapshot is dropped
+        rather than carried stale; fusion never reads it. A future move that
+        changes an op's *entering* shape (cross-node, geometric) must recompute
+        snapshots, not drop them — see the pushdown design notes.
+
+        ``_assertions`` (keyed by op-boundary position): the reorder is a
+        permutation confined between two boundaries with no assertion boundary
+        inside it (:meth:`_compute_spatial_pushdown` leaves such a crop in
+        place), so every boundary's prefix op-set is unchanged and no assertion
+        key moves.
+        """
+        self._ops = list(ops)
+        self._hint_snapshots = {
+            i: v for i, v in self._hint_snapshots.items() if perm.get(i, i) == i
+        }
+
+    def _hoist_spatial_windows_inplace(self) -> None:
+        """Apply the spatial-window pushdown to this pipeline's ops, in place.
+
+        The Tier-1 entry point (called by ``PipelineGraph.optimize`` per node).
+        A no-op when nothing moves, so it is safe to call unconditionally on an
+        already-optimized or window-free pipeline.
+        """
+        new_ops, perm = self._compute_spatial_pushdown(self._ops)
+        if all(new == old for new, old in perm.items()):
+            return
+        self._commit_reordered_ops(new_ops, perm)
+
     def _to_spec_dict(self) -> dict:
         """
         Convert pipeline to specification dictionary (without sink).
@@ -4667,8 +4817,9 @@ class Pipeline:
             opt_flags: Which passes to apply when ``optimized`` is ``True`` —
                 same coercion as :meth:`LazyPipelineExpr.sink` (``None`` reads
                 the env default). For a single ``Pipeline`` this means affine
-                fusion; cross-pipeline CSE only has an effect once sibling
-                pipelines share a source in a graph, so it is inert here.
+                fusion and spatial-window pushdown; cross-pipeline CSE only has
+                an effect once sibling pipelines share a source in a graph, so it
+                is inert here.
 
         Returns:
             A one-line ``Pipeline().…`` rendering of the chain.
@@ -4679,6 +4830,8 @@ class Pipeline:
             return repr(self)
         flags = resolve_opt_flags(opt_flags)
         physical = self._clone()
+        if flags.spatial_window_pushdown:
+            physical._hoist_spatial_windows_inplace()
         if flags.affine_fusion:
             physical._fuse_affine_inplace()
         return repr(physical)

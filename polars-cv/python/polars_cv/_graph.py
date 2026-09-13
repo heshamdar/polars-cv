@@ -283,9 +283,12 @@ class PipelineGraph:
         The single optimization phase (see :mod:`polars_cv._optimize`).
         Construction and serialization never optimize; this applies each
         registered Tier-1 pass, gated by ``flags``, mutating the graph in place
-        and returning ``self`` for chaining. Passes run in a fixed order — CSE
-        before affine fusion, matching the order they previously ran in (CSE at
-        build, affine at serialize) — so the physical graph is deterministic.
+        and returning ``self`` for chaining. Passes run in a fixed order — CSE,
+        then spatial-window pushdown, then affine fusion — so the physical graph
+        is deterministic. Pushdown runs before fusion, but the two do not
+        interact: a crop is ``Geometric`` and never fuses with ``warp_affine``,
+        and pushdown moves a crop only past ``Pointwise`` ops, never an affine
+        op, so no affine op changes position.
 
         Every pass is output-preserving; CSE is byte-identical while affine
         fusion is the same transform with fewer interpolation passes (see
@@ -301,6 +304,9 @@ class PipelineGraph:
             node.pipeline = node.pipeline._clone()
         if flags.common_subexpression_elimination:
             self._optimize_common_subexpressions()
+        if flags.spatial_window_pushdown:
+            for node in self._nodes.values():
+                node.pipeline._hoist_spatial_windows_inplace()
         if flags.affine_fusion:
             for node in self._nodes.values():
                 node.pipeline._fuse_affine_inplace()

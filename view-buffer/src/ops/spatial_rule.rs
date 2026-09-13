@@ -39,14 +39,17 @@
 //! source of truth (no `infer_shape` analog) to parity-check against: it is a
 //! new primary declaration. Its correctness is therefore pinned by (1) the
 //! compiler — [`Op::spatial_dependency`](crate::ops::Op::spatial_dependency) is
-//! required with no default, so a new op cannot inherit a lie (it forces *a*
+//! required with no default, *and every impl matches its enum exhaustively
+//! rather than returning a blanket constant*, so a new op — or a new variant of
+//! an existing op — cannot silently inherit a classification; it forces *a*
 //! declaration, though not a correct one); (2) the expected-value coverage tests
-//! in this module, which pin the declared dependency of each op they enumerate —
-//! note these are hand-written expectations, so a *new* op added to the `Global`
-//! arm is not caught here, only by (3); and (3) downstream, the
+//! in this module, which pin the declared dependency of each op they enumerate;
+//! and (3) downstream, the
 //! differential equivalence tests of any optimization that consumes it (a pass
-//! gated on this rule must produce byte-identical output), which will expose a
-//! misclassification as a wrong result rather than a passing plan-time check.
+//! gated on this rule must produce byte-identical output), which is what turns a
+//! *wrong-but-compiling* classification into a visible wrong result rather than
+//! a passing plan-time check. The spatial-window pushdown pass is the first such
+//! consumer, and its equivalence sweep is (3) for the `Pointwise` arm.
 //!
 //! # Extensibility
 //!
@@ -139,11 +142,15 @@ mod tests {
     //! Expected-value coverage: pin the declared spatial dependency of each op
     //! enumerated here. There is no `infer_shape`-style authority to
     //! parity-check against (see the module docs), so these hand-written
-    //! expectations — together with the compiler's requiredness — are the guard
-    //! for the declarations themselves. Because the expectations are hand-listed,
-    //! they do not by themselves catch a *new* op lazily added to the `Global`
-    //! arm; the first consumer's differential-equivalence tests are what turn a
-    //! misclassification into a visible wrong result.
+    //! expectations — together with the compiler's requiredness and the
+    //! now-exhaustive matches in every `spatial_dependency` impl (no blanket
+    //! arm silently absorbs a new variant) — are the guard for the declarations
+    //! themselves. What the compiler still cannot judge is whether a forced
+    //! declaration is *correct*; a wrong-but-compiling classification is caught
+    //! by the first consumer's differential-equivalence tests (the
+    //! spatial-window pushdown pass). The blur radius, the one non-trivial
+    //! `Neighborhood` value, is additionally cross-checked against the executed
+    //! kernel in `execution::runner`'s `blur_radius_tests`.
 
     use super::*;
     use crate::ops::binary::BinaryOp;
