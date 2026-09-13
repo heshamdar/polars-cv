@@ -39,9 +39,11 @@
 //! source of truth (no `infer_shape` analog) to parity-check against: it is a
 //! new primary declaration. Its correctness is therefore pinned by (1) the
 //! compiler — [`Op::spatial_dependency`](crate::ops::Op::spatial_dependency) is
-//! required with no default, so a new op cannot inherit a lie; (2) the
-//! expected-value coverage tests in this module, which assert each op's declared
-//! dependency and that nothing is *silently* `Global`; and (3) downstream, the
+//! required with no default, so a new op cannot inherit a lie (it forces *a*
+//! declaration, though not a correct one); (2) the expected-value coverage tests
+//! in this module, which pin the declared dependency of each op they enumerate —
+//! note these are hand-written expectations, so a *new* op added to the `Global`
+//! arm is not caught here, only by (3); and (3) downstream, the
 //! differential equivalence tests of any optimization that consumes it (a pass
 //! gated on this rule must produce byte-identical output), which will expose a
 //! misclassification as a wrong result rather than a passing plan-time check.
@@ -134,11 +136,14 @@ impl SpatialDependency {
 
 #[cfg(test)]
 mod tests {
-    //! Expected-value coverage: pin each op's declared spatial dependency and
-    //! assert nothing is *silently* `Global`. There is no `infer_shape`-style
-    //! authority to parity-check against (see the module docs), so these
-    //! hand-written expectations — together with the compiler's requiredness —
-    //! are the guard for the declarations themselves.
+    //! Expected-value coverage: pin the declared spatial dependency of each op
+    //! enumerated here. There is no `infer_shape`-style authority to
+    //! parity-check against (see the module docs), so these hand-written
+    //! expectations — together with the compiler's requiredness — are the guard
+    //! for the declarations themselves. Because the expectations are hand-listed,
+    //! they do not by themselves catch a *new* op lazily added to the `Global`
+    //! arm; the first consumer's differential-equivalence tests are what turn a
+    //! misclassification into a visible wrong result.
 
     use super::*;
     use crate::ops::binary::BinaryOp;

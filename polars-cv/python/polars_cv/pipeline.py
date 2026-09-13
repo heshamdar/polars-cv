@@ -1501,18 +1501,19 @@ class Pipeline:
                 if not isinstance(shape, LazyPipelineExpr):
                     msg = "'shape' must be a LazyPipelineExpr"
                     raise TypeError(msg)
-                # Collect the graph from the shape expression
-                # The shape sub-pipeline is finalized into the source spec here
-                # (eagerly, and it is part of SourceSpec identity), before the
-                # graph-level optimize phase can reach it. Apply the affine-
-                # fusion pass to a clone now so the baked spec matches what
-                # optimize() does to every other node; serialization stays pure.
-                fused_shape = shape._pipeline._clone()
-                fused_shape._fuse_affine_inplace()
+                # Serialize the shape sub-pipeline's LOGICAL ops verbatim —
+                # construction never optimizes. This embedded dict only carries
+                # the shape node's `node_id`; Rust reads that and fetches the
+                # node's already-computed output (graph/compiled.rs), never these
+                # ops. The real shape node is a normal graph node (added via
+                # `_shape_refs` below), so `PipelineGraph.optimize()` fuses it
+                # like any other node, honoring `opt_flags`. Keeping the embedded
+                # spec logical also makes SourceSpec identity independent of
+                # fusion state.
                 shape_pipeline_dict = {
                     "node_id": shape._node_id,
                     "column": str(shape._column),
-                    "pipeline": fused_shape._to_spec_dict(),
+                    "pipeline": shape._pipeline._to_spec_dict(),
                     "upstream": [u._node_id for u in shape._upstream],
                 }
                 # Referencing a node by id is not enough to get it executed:
@@ -4202,10 +4203,15 @@ class Pipeline:
 
         Example:
             ```python
+            >>> from polars_cv import OptFlags
             >>> pipe = Pipeline().source("image_bytes").resize(height=100, width=200)
             >>> graph = pipe.to_graph(pl.col("image"))
-            >>> expr = graph.to_expr()
+            >>> expr = graph.optimize(OptFlags.all()).to_expr()
             ```
+
+            ``to_expr()`` requires the optimization phase to have run — call
+            ``graph.optimize(flags)`` first (or use the higher-level
+            ``LazyPipelineExpr.sink``, which does it for you).
         """
         from polars_cv._graph import PipelineGraph
 

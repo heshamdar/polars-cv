@@ -150,11 +150,12 @@ class PipelineGraph:
         >>> graph.add_node("img", img_pipeline, pl.col("image"), alias="original")
         >>> graph.add_node("mask", mask_pipeline, pl.col("contour"), upstream=["img"])
         >>> graph.set_output("mask", "numpy")  # Single output
-        >>> expr = graph.to_expr()  # Returns fused pl.Expr
+        >>> from polars_cv import OptFlags
+        >>> expr = graph.optimize(OptFlags.all()).to_expr()  # Returns fused pl.Expr
         >>>
         >>> # Or for multi-output:
         >>> graph.set_multi_output({"original": "png", "mask": "numpy"})
-        >>> expr = graph.to_expr()  # Returns Struct expression
+        >>> expr = graph.optimize(OptFlags.all()).to_expr()  # Struct expression
     """
 
     def __init__(self) -> None:
@@ -165,6 +166,11 @@ class PipelineGraph:
         self._column_bindings: dict[str, int] = {}
         # Mapping from alias names to node IDs
         self._alias_to_node: dict[str, str] = {}
+        # Set by ``optimize()``. Serialization (``to_expr``) refuses to run on a
+        # graph that has not passed through the optimization phase, so no exit
+        # can silently emit an unoptimized graph — optimization lives in exactly
+        # one place (``optimize()``, invoked by ``LazyPipelineExpr.sink``).
+        self._optimized: bool = False
 
     def add_node(
         self,
@@ -298,6 +304,7 @@ class PipelineGraph:
         if flags.affine_fusion:
             for node in self._nodes.values():
                 node.pipeline._fuse_affine_inplace()
+        self._optimized = True
         return self
 
     # --- CSE Optimization ---
@@ -505,6 +512,8 @@ class PipelineGraph:
 
         Raises:
             ValueError: If no output is set.
+            RuntimeError: If the graph has not been optimized. Call
+                ``optimize(flags)`` first (``.sink()`` does this).
         """
         from polars.plugins import register_plugin_function
 
@@ -514,8 +523,16 @@ class PipelineGraph:
             )
 
         # Serialization only serializes. Optimization (CSE, affine fusion) is
-        # the caller's explicit `optimize(flags)` phase — `.sink()` runs it
-        # before this. A graph handed here unoptimized is emitted verbatim.
+        # the explicit `optimize(flags)` phase — the single site, invoked by
+        # `.sink()`. `to_expr()` refuses an un-optimized graph rather than
+        # silently emitting one: that is how the sink-free `to_graph().to_expr()`
+        # route (which does not run `sink`) is kept from diverging from `sink()`.
+        if not self._optimized:
+            raise RuntimeError(
+                "PipelineGraph.to_expr() requires the optimization phase to run "
+                "first. Use `.sink(...)` (which optimizes with opt_flags), or "
+                "`graph.optimize(flags).to_expr()` for the low-level path."
+            )
 
         # Validate that root nodes have columns
         for node in self._nodes.values():
