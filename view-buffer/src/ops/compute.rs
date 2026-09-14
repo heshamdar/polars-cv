@@ -5,7 +5,7 @@ use crate::ops::affine::{AffineParams, InterpolationType};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
-use crate::ops::traits::{MemoryEffect, Op};
+use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::{is_2d_like, ValidationError};
 
 #[cfg(feature = "serde")]
@@ -170,6 +170,26 @@ impl Op for ComputeOp {
             ComputeOp::RotateAffine { .. } => MemoryEffect::RequiresContiguous,
             ComputeOp::Normalize(..) => MemoryEffect::RequiresContiguous,
             ComputeOp::AdjustContrast(_) => MemoryEffect::RequiresContiguous,
+        }
+    }
+
+    fn identity_rule(&self) -> IdentityRule {
+        match self {
+            // A same-dtype cast copies its input; any other target converts.
+            ComputeOp::Cast(_) => IdentityRule::WhenDtypePreserved,
+            // Every other compute op transforms pixel values (arithmetic ops
+            // also promote to float, so they are not even dtype-preserving).
+            ComputeOp::Affine(_)
+            | ComputeOp::Scale(_)
+            | ComputeOp::Relu
+            | ComputeOp::Fused(_)
+            | ComputeOp::Scalar(_)
+            | ComputeOp::Normalize(..)
+            | ComputeOp::Clamp { .. }
+            | ComputeOp::AdjustGamma(_)
+            | ComputeOp::Invert
+            | ComputeOp::AdjustContrast(_)
+            | ComputeOp::RotateAffine { .. } => IdentityRule::Never,
         }
     }
 

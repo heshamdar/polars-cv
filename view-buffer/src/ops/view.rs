@@ -3,7 +3,7 @@
 use crate::core::dtype::OutputDTypeRule;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
-use crate::ops::traits::{MemoryEffect, Op};
+use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -118,6 +118,25 @@ impl Op for ViewOp {
 
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::View
+    }
+
+    fn identity_rule(&self) -> IdentityRule {
+        match self {
+            // Pure views: when the output shape equals the input shape the op
+            // moved no data — a full-frame crop, a same-shape reshape. A partial
+            // crop or a real reshape changes shape, which the planner's shape
+            // check catches, so this stays sound.
+            ViewOp::Crop { .. } | ViewOp::Reshape(_) => IdentityRule::WhenShapePreserved,
+            // Flip/transpose/rotate/channel-select move pixels or drop an axis
+            // even when the shape is preserved (a square transpose, a 180°
+            // rotate), so none is ever a no-op.
+            ViewOp::Transpose(_)
+            | ViewOp::Flip(_)
+            | ViewOp::Rotate90
+            | ViewOp::Rotate180
+            | ViewOp::Rotate270
+            | ViewOp::ChannelSelect { .. } => IdentityRule::Never,
+        }
     }
 
     fn spatial_dependency(&self) -> SpatialDependency {

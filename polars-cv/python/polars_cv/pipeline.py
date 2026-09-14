@@ -208,6 +208,35 @@ def _op_contract_for(spec: "OpSpec") -> dict:
     return op_contract(json.dumps(spec.to_dict()))
 
 
+def _output_shape_equals_input(
+    out_dims: "Sequence[int | None]", entering_dims: "Sequence[int | None]"
+) -> bool:
+    """Whether an op's inferred output shape equals the shape entering it.
+
+    Used by identity elimination to decide a ``WhenShapePreserved`` op. Two
+    ``op_infer_shape`` conventions are folded in:
+
+    * a **negative** output dim is the engine's "fill this extent at runtime"
+      sentinel — a crop leaves the channel axis to the input — so it counts as
+      preserved and matches any entering size;
+    * a concrete output dim must equal the entering size exactly; an entering
+      size that is unknown (``None``) therefore cannot match a concrete output,
+      and an unknown output (``None``) is never treated as a match.
+
+    So a full-frame crop or a same-shape reshape returns ``True`` while a partial
+    crop or a real reshape returns ``False`` — and any unproven dimension keeps
+    the op (the pass removes only what it can prove is a no-op).
+    """
+    if len(out_dims) != len(entering_dims):
+        return False
+    for out, enter in zip(out_dims, entering_dims):
+        if out is not None and out < 0:
+            continue  # preserved sentinel — same as the input dim
+        if out is None or out != enter:
+            return False
+    return True
+
+
 #: The spatial-window pushdown transfer function returns this when a window may
 #: not cross an op — a hard stop, distinct from "crosses unchanged" (the window
 #: itself). See :meth:`Pipeline._spatial_transfer`.
@@ -4710,6 +4739,131 @@ class Pipeline:
         if all(new == old for new, old in perm.items()):
             return
         self._commit_reordered_ops(new_ops, perm)
+
+    # ---- Identity elimination (Tier-1) --------------------------------------
+    #
+    # Delete ops that are value-, dtype-, shape- and channel-preserving no-ops.
+    # Which ops *can* be a no-op is the Rust ``IdentityRule`` authority
+    # (``op_identity_rule``); the condition is evaluated here against the state
+    # entering each op, reconstructed from the planner's own fold
+    # (``_compute_output_domain_dtype_ndim`` for dtype/ndim, ``_hint_snapshots``
+    # for H/W). No shape/dtype math is re-implemented, and — unlike the
+    # crop-specific ``_is_spatial_window`` recogniser in the pushdown — no op
+    # name is matched: the classification lives entirely in the Rust contract.
+
+    def _eliminate_identities_inplace(self) -> None:
+        """Drop no-op ops from this pipeline's ops, in place.
+
+        The Tier-1 entry point (called by ``PipelineGraph.optimize`` per node).
+        A removed op is a no-op, so it changes no output byte and perturbs no
+        downstream entering state — elimination is output-preserving even inside
+        a dict-sink observed or multi-consumer node, and the entering states
+        computed once up front stay valid as ops drop out.
+
+        Conservative around user shape assertions: a node carrying any
+        ``assert_shape`` is left untouched, so no positional assertion key has to
+        be re-derived across a deletion. Assertions are rare; this keeps the pass
+        simple and never silently moves a pinned shape.
+        """
+        if not self._ops or self._assertions:
+            return
+        survivors = [
+            i for i, op in enumerate(self._ops) if not self._op_is_identity_at(i, op)
+        ]
+        if len(survivors) == len(self._ops):
+            return
+        self._commit_eliminated_ops(survivors)
+
+    def _op_is_identity_at(self, index: int, spec: "OpSpec") -> bool:
+        """Whether ``spec`` at ``index`` is a removable no-op.
+
+        Reads the op's ``IdentityRule`` and evaluates it against the state
+        entering the op. Any unknown — an ``auto`` dtype, an unknown dimension,
+        or an expression where a literal value is required — resolves to *not*
+        an identity: the pass removes an op only when it can prove it does
+        nothing.
+        """
+        from polars_cv._lib import op_identity_rule, op_infer_shape, op_schema
+
+        op_json = json.dumps(spec.to_dict())
+        rule = op_identity_rule(op_json)
+        if rule == "never":
+            return False
+        if rule == "always":
+            # ``Always`` already accounts for expression params: the FFI resolves
+            # an expression to a non-identity placeholder, so an op whose
+            # *identity-deciding* param is per-row (a ``pad`` amount) comes back
+            # ``never`` rather than ``always``. A remaining expression on an
+            # irrelevant param (a ``pad`` fill ``value`` behind zero amounts)
+            # leaves the op a genuine no-op, so nothing more to check here.
+            return True
+
+        # The contextual rules need the state entering this op. The prefix fold
+        # uses the same ``op_schema`` authority construction does, so it cannot
+        # disagree with the tracked state.
+        _, entering_dtype, entering_ndim = Pipeline._compute_output_domain_dtype_ndim(
+            self._ops[:index],
+            initial_dtype=self._initial_output_dtype,
+            initial_ndim=self._initial_expected_ndim,
+        )
+        if rule == "when_dtype_preserved":
+            if entering_dtype == "auto":
+                return False
+            _, out_dtype, _ = op_schema(
+                op_json, Domain.BUFFER.value, entering_dtype, entering_ndim
+            )
+            return out_dtype == entering_dtype
+        if rule == "when_shape_preserved":
+            entering_dims = self._entering_dims_at(index, entering_ndim)
+            if entering_dims is None:
+                return False
+            try:
+                out_dims = op_infer_shape(op_json, entering_dims)
+            except ValueError:
+                return False
+            return _output_shape_equals_input(out_dims, entering_dims)
+        return False
+
+    def _entering_dims_at(
+        self, index: int, ndim: "int | None"
+    ) -> "list[int | None] | None":
+        """The dimensions entering op ``index``, or ``None`` when rank is unknown.
+
+        Length ``ndim``; H/W come from ``_hint_snapshots[index]`` (the entering
+        shape ``_push_op`` recorded for every op), and every other axis is
+        reported ``None`` (unknown). That is enough for the WhenShapePreserved
+        ops, whose H/W is the only axis they resize.
+        """
+        if ndim is None:
+            return None
+        dims: "list[int | None]" = [None] * ndim
+        snap = self._hint_snapshots.get(index)
+        if snap is not None:
+            h, w = snap
+            if ndim >= 1 and h is not None and not h.is_expr:
+                dims[0] = int(h.value)
+            if ndim >= 2 and w is not None and not w.is_expr:
+                dims[1] = int(w.value)
+        return dims
+
+    def _commit_eliminated_ops(self, survivors: "list[int]") -> None:
+        """Replace ``_ops`` with the surviving subset, re-keying side tables.
+
+        The deletion sibling of :meth:`_commit_reordered_ops` (reorder) and
+        :meth:`_set_ops_slice` (CSE split). ``survivors`` is the sorted list of
+        surviving original op indices.
+
+        ``_hint_snapshots`` (entering H/W per op): every removed op is a no-op,
+        so a survivor's entering H/W is unchanged — its snapshot carries over
+        verbatim under the new index. ``_assertions`` need no re-keying: a node
+        carrying assertions is not eliminated from at all
+        (:meth:`_eliminate_identities_inplace`).
+        """
+        old_to_new = {old: new for new, old in enumerate(survivors)}
+        self._ops = [self._ops[o] for o in survivors]
+        self._hint_snapshots = {
+            old_to_new[o]: v for o, v in self._hint_snapshots.items() if o in old_to_new
+        }
 
     def _to_spec_dict(self) -> dict:
         """

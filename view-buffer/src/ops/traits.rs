@@ -25,6 +25,36 @@ pub enum MemoryEffect {
     RequiresContiguous,
 }
 
+/// Under what condition an operation is a no-op — value-, dtype-, shape- and
+/// channel-preserving, so a plan-time pass may delete it without changing any
+/// output byte.
+///
+/// This is the **algebraic-identity authority**, the counterpart to
+/// [`SpatialDependency`](crate::ops::spatial_rule::SpatialDependency) for
+/// "does this op do anything at all". Value-preservation is op-*semantic* and
+/// cannot be read off the shape/dtype rules — a `resize` to the same size still
+/// resamples, a `flip` of a square still flips — so each op declares the
+/// condition under which it collapses to a copy, and the planner evaluates that
+/// condition against the op's entering shape/dtype. The two contextual variants
+/// are strictly opt-in: an op that changes pixel positions must stay
+/// [`Never`](IdentityRule::Never) even when it happens to preserve shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityRule {
+    /// The op computes; it is never removable. The conservative answer for any
+    /// op that transforms its input.
+    Never,
+    /// The op is a no-op purely by its (literal) parameters, for any input —
+    /// e.g. `pad(0, 0, 0, 0)` or a Gaussian blur with `sigma == 0`.
+    Always,
+    /// The op is an identity exactly when its output shape equals its input
+    /// shape. Sound only for ops that move no pixels when shape is preserved —
+    /// a pure view (`crop`, `reshape`) or a pad that added nothing.
+    WhenShapePreserved,
+    /// The op is an identity exactly when its output dtype equals its input
+    /// dtype — the same-dtype `cast`, which copies rather than converts.
+    WhenDtypePreserved,
+}
+
 /// Trait for all operations in the pipeline.
 ///
 /// Operations must provide shape/dtype inference, their memory effect,
@@ -90,6 +120,17 @@ pub trait Op {
     /// conservative, always-correct answer for any op whose dependence cannot be
     /// reasoned about is [`SpatialDependency::Global`] (it permits no reorder).
     fn spatial_dependency(&self) -> SpatialDependency;
+
+    /// Declares under what condition this op is a no-op — the plan-time
+    /// authority for whether an identity-elimination pass may delete it.
+    ///
+    /// See [`IdentityRule`] for the four closed variants. Required (no default):
+    /// an op that omits it would silently inherit a claim it may not deserve.
+    /// The conservative, always-correct answer for any computing op is
+    /// [`IdentityRule::Never`]. The two contextual variants are value-semantic
+    /// opt-ins — an op must return them only when preserving the named property
+    /// genuinely means it copied its input unchanged.
+    fn identity_rule(&self) -> IdentityRule;
 
     /// Infers output strides given input shape and strides.
     ///

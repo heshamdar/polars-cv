@@ -7,7 +7,7 @@ use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule, ViewType};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
-use crate::ops::traits::{MemoryEffect, Op};
+use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
 
@@ -365,6 +365,11 @@ impl Op for HistogramOp {
 
     fn memory_effect(&self) -> MemoryEffect {
         MemoryEffect::RequiresContiguous
+    }
+
+    fn identity_rule(&self) -> IdentityRule {
+        // Computes / combines / reduces — never a removable no-op.
+        IdentityRule::Never
     }
 
     fn spatial_dependency(&self) -> SpatialDependency {

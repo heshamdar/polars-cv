@@ -75,6 +75,10 @@ pytestmark = pytest.mark.structural
 #: (dropping moved ops' snapshots, keeping unmoved ops' exact ones) while
 #: ``_assertions`` need no move because the pass never permutes across an
 #: assertion boundary.
+#: ``_commit_eliminated_ops`` is the same for the identity-elimination pass: it
+#: replaces ``_ops`` with the surviving subset and re-keys ``_hint_snapshots`` by
+#: the old->new index map. ``_assertions`` need no move because a node carrying
+#: any assertion is left untouched by that pass.
 _OPS_MUTATORS = frozenset(
     {
         "_push_op",
@@ -82,6 +86,7 @@ _OPS_MUTATORS = frozenset(
         "_clone",
         "_commit_optimized_ops",
         "_commit_reordered_ops",
+        "_commit_eliminated_ops",
     }
 )
 

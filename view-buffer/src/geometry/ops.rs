@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
-use crate::ops::traits::{MemoryEffect, Op};
+use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 use crate::ops::Domain;
 
@@ -212,6 +212,11 @@ impl Op for GeometryOp {
     fn memory_effect(&self) -> MemoryEffect {
         // Every geometry op materializes a fresh contour, measure or mask.
         MemoryEffect::RequiresContiguous
+    }
+
+    fn identity_rule(&self) -> IdentityRule {
+        // Computes / combines / reduces — never a removable no-op.
+        IdentityRule::Never
     }
 
     fn spatial_dependency(&self) -> SpatialDependency {

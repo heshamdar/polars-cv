@@ -2,7 +2,7 @@ use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::pad::{PadMode, PadPosition};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
-use crate::ops::traits::{MemoryEffect, Op};
+use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -333,6 +333,43 @@ impl Op for ImageOp {
             | ImageOpKind::PadToSize { .. }
             | ImageOpKind::Letterbox { .. }
             | ImageOpKind::ChannelSwap { .. } => MemoryEffect::RequiresContiguous,
+        }
+    }
+
+    fn identity_rule(&self) -> IdentityRule {
+        match &self.kind {
+            // Zero padding on every side copies the input unchanged.
+            ImageOpKind::Pad {
+                top: 0,
+                bottom: 0,
+                left: 0,
+                right: 0,
+                ..
+            } => IdentityRule::Always,
+            // Padding to the current size adds nothing: if the output shape is
+            // preserved, no pixels were added. (Letterbox resamples first, so
+            // shape preservation does *not* imply a no-op — it stays Never.)
+            ImageOpKind::PadToSize { .. } => IdentityRule::WhenShapePreserved,
+            // Everything else transforms values or coordinates: resamples,
+            // reduces/reorders channels, thresholds, filters, or smooths (a
+            // blur with sigma 0 is a degenerate NaN kernel, not an identity).
+            ImageOpKind::Pad { .. }
+            | ImageOpKind::Letterbox { .. }
+            | ImageOpKind::Resize { .. }
+            | ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Blur { .. }
+            | ImageOpKind::Threshold(_)
+            | ImageOpKind::Grayscale
+            | ImageOpKind::ChannelSwap { .. }
+            | ImageOpKind::Erode { .. }
+            | ImageOpKind::Dilate { .. }
+            | ImageOpKind::MorphGradient { .. }
+            | ImageOpKind::Canny { .. }
+            | ImageOpKind::HistogramEqualize => IdentityRule::Never,
         }
     }
 

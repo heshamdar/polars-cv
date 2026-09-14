@@ -43,6 +43,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
     m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
+    m.add_function(wrap_pyfunction!(op_identity_rule, m)?)?;
     m.add_function(wrap_pyfunction!(op_schema, m)?)?;
     m.add_function(wrap_pyfunction!(op_infer_shape, m)?)?;
     m.add_function(wrap_pyfunction!(op_output_channels, m)?)?;
@@ -138,6 +139,19 @@ fn spatial_rule_name(rule: view_buffer::SpatialDependency) -> String {
         S::Neighborhood(support) => format!("neighborhood:{}", support.radius),
         S::Global => "global".to_string(),
         S::Geometric(_) => "geometric".to_string(),
+    }
+}
+
+/// String spelling of an [`IdentityRule`](view_buffer::IdentityRule) crossing
+/// the FFI — a bespoke `_name` helper like `spatial_rule_name`, not the
+/// `named_variants!` registry, so nothing is owed to the parity machinery.
+fn identity_rule_name(rule: view_buffer::IdentityRule) -> String {
+    use view_buffer::IdentityRule as I;
+    match rule {
+        I::Never => "never".to_string(),
+        I::Always => "always".to_string(),
+        I::WhenShapePreserved => "when_shape_preserved".to_string(),
+        I::WhenDtypePreserved => "when_dtype_preserved".to_string(),
     }
 }
 
@@ -653,6 +667,34 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
     )?;
     dict.set_item("output_domain", dto.output_domain().name())?;
     Ok(dict.into())
+}
+
+/// The op's identity rule — under what condition an identity-elimination pass
+/// may delete it. See [`IdentityRule`](view_buffer::IdentityRule).
+///
+/// Deliberately **not** part of [`op_contract`], whose published contract is
+/// "structural, independent of any parameter value". The `Always` verdict *does*
+/// depend on literal parameter values (`pad(0, 0, 0, 0)`), so it lives in its
+/// own function.
+///
+/// Expression-parameter safety rests on one mechanism, not a caller's
+/// discipline: [`resolve_op_from_json`] neutralizes every per-row param to the
+/// placeholder `1` before the rule is read. The two contextual rules are
+/// param-value independent, so neutralization is irrelevant to them. `Always`
+/// is the only value-sensitive verdict, and an `Always` op whose *deciding*
+/// param is per-row therefore resolves at `1` — a non-identity value — and
+/// comes back `Never` (a `pad` with an expression amount is the live case). A
+/// remaining expression on an *irrelevant* param (a `pad` fill value behind
+/// zero amounts) correctly stays `Always`: the op is a no-op regardless.
+///
+/// Constraint on future `Always` ops: this holds only while the identity value
+/// differs from the placeholder `1` (`pad`'s is `0`). An op that is a no-op at
+/// a param value of `1` must guard its own expression params before returning
+/// `Always`, or the placeholder would spoof it.
+#[pyfunction]
+fn op_identity_rule(op_json: &str) -> PyResult<String> {
+    let step = resolve_op_from_json(op_json)?;
+    Ok(identity_rule_name(step.identity_rule()))
 }
 
 // ============================================================================

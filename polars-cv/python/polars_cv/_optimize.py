@@ -64,6 +64,14 @@ LOGICAL_PASSES: tuple[PassSpec, ...] = (
         bit_exact=True,
     ),
     PassSpec(
+        name="identity_elimination",
+        summary=(
+            "Delete no-op operations — a zero pad, a same-dtype cast, a "
+            "full-frame crop — that preserve their input byte for byte."
+        ),
+        bit_exact=True,
+    ),
+    PassSpec(
         name="spatial_window_pushdown",
         summary=(
             "Hoist a spatial window (a crop/ROI) earlier past ops it commutes "
@@ -96,6 +104,7 @@ class OptFlags:
     """
 
     common_subexpression_elimination: bool = True
+    identity_elimination: bool = True
     spatial_window_pushdown: bool = True
     affine_fusion: bool = True
 
