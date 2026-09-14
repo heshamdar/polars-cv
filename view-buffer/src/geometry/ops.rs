@@ -219,6 +219,12 @@ impl Op for GeometryOp {
         IdentityRule::Never
     }
 
+    fn is_spatial_window(&self) -> bool {
+        // Geometry ops work in the contour/measure/mask domains, not on an
+        // image-space H/W window.
+        false
+    }
+
     fn spatial_dependency(&self) -> SpatialDependency {
         // Geometry ops work in the contour/measure/mask domains, not on an
         // image-space window: extraction reads the whole image, measures reduce

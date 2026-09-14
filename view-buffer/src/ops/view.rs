@@ -139,6 +139,30 @@ impl Op for ViewOp {
         }
     }
 
+    fn is_spatial_window(&self) -> bool {
+        match self {
+            // A crop is a hoistable spatial window only when it narrows the H/W
+            // plane and leaves every further axis at full extent — axes 0/1 may
+            // shrink, but each channel/depth axis must keep `start == 0` and the
+            // `usize::MAX` full-extent end. That is exactly what the `crop`
+            // builder emits (`[top, left, 0] .. [_, _, usize::MAX]`); a crop that
+            // slices the channel axis would not commute with a channel-changing
+            // pointwise op and is not a window.
+            ViewOp::Crop { start, end } => {
+                start.iter().skip(2).all(|&s| s == 0)
+                    && end.iter().skip(2).all(|&e| e == usize::MAX)
+            }
+            // Reshape/transpose/flip/rotate/channel-select are not H/W crops.
+            ViewOp::Transpose(_)
+            | ViewOp::Reshape(_)
+            | ViewOp::Flip(_)
+            | ViewOp::Rotate90
+            | ViewOp::Rotate180
+            | ViewOp::Rotate270
+            | ViewOp::ChannelSelect { .. } => false,
+        }
+    }
+
     fn spatial_dependency(&self) -> SpatialDependency {
         match self {
             // Picks a channel at the same (y, x) — spatially the identity.

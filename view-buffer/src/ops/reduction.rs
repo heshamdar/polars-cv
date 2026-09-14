@@ -610,6 +610,10 @@ impl Op for ReductionOp {
         IdentityRule::Never
     }
 
+    fn is_spatial_window(&self) -> bool {
+        false // A reduction is not an H/W crop window.
+    }
+
     fn spatial_dependency(&self) -> SpatialDependency {
         // A reduction aggregates over the whole input (or a whole axis), so no
         // output pixel maps to a bounded input window: a hard reorder barrier.

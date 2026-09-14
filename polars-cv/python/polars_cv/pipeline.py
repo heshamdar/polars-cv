@@ -208,6 +208,21 @@ def _op_contract_for(spec: "OpSpec") -> dict:
     return op_contract(json.dumps(spec.to_dict()))
 
 
+def _op_reads_sibling_nodes(op: "OpSpec") -> bool:
+    """Whether ``op`` consumes another graph node's buffer.
+
+    A binary op (``apply_mask``, ``add``) or ``channel_merge`` combines this
+    node's buffer with a sibling node's at matching ``(y, x)``. Such an op is
+    spatially ``Pointwise``, but hoisting a crop earlier past it would shrink only
+    *this* operand and leave the sibling full-size, so a spatial window may not
+    cross it whatever its spatial rule. The sibling reference rides on the
+    ``other_node`` / ``other_nodes`` params, which are Python graph-construction
+    wiring (node ids), so this fact is owned here rather than in the engine
+    contract.
+    """
+    return "other_node" in op.params or "other_nodes" in op.params
+
+
 def _output_shape_equals_input(
     out_dims: "Sequence[int | None]", entering_dims: "Sequence[int | None]"
 ) -> bool:
@@ -241,6 +256,13 @@ def _output_shape_equals_input(
 #: not cross an op — a hard stop, distinct from "crosses unchanged" (the window
 #: itself). See :meth:`Pipeline._spatial_transfer`.
 _SPATIAL_BARRIER = object()
+
+#: Tolerance (degrees) for treating a static rotation angle as a cardinal
+#: (0/90/180/270) rotation in affine fusion. Deliberately more inclusive than the
+#: engine's exact-cardinal dispatch: a near-cardinal angle is left *unfused* (its
+#: lone rotate still executes correctly through the engine), so widening this only
+#: declines a fusion, never changes a result.
+_CARDINAL_ANGLE_EPS_DEG = 0.001
 
 
 def _literal_axes(axes: "Sequence[int]", label: str) -> "ParamValue":
@@ -4506,13 +4528,12 @@ class Pipeline:
         if norm < 0:
             norm += 360
 
-        eps = 0.001
         if (
-            abs(norm - 90) < eps
-            or abs(norm - 180) < eps
-            or abs(norm - 270) < eps
-            or abs(norm) < eps
-            or abs(norm - 360) < eps
+            abs(norm - 90) < _CARDINAL_ANGLE_EPS_DEG
+            or abs(norm - 180) < _CARDINAL_ANGLE_EPS_DEG
+            or abs(norm - 270) < _CARDINAL_ANGLE_EPS_DEG
+            or abs(norm) < _CARDINAL_ANGLE_EPS_DEG
+            or abs(norm - 360) < _CARDINAL_ANGLE_EPS_DEG
         ):
             return None
 
@@ -4539,18 +4560,18 @@ class Pipeline:
 
         matrix, new_h, new_w = rotate_affine_params(angle, ih, iw, expand)
 
-        interpolation = op.params.get("interpolation")
-        border_value = op.params.get("border_value")
-
+        # The `rotate` builder always emits `interpolation` and `border_value`
+        # (their defaults are the builder's, not this function's), so read them
+        # straight through — carrying the op's own values, never a default baked
+        # in here that could drift from the engine's.
         return OpSpec(
             op="warp_affine",
             params={
                 "matrix": _matrix_param_from_floats(matrix),
                 "output_height": ParamValue(is_expr=False, value=new_h),
                 "output_width": ParamValue(is_expr=False, value=new_w),
-                "interpolation": interpolation
-                or ParamValue(is_expr=False, value="bilinear"),
-                "border_value": border_value or ParamValue(is_expr=False, value=0.0),
+                "interpolation": op.params["interpolation"],
+                "border_value": op.params["border_value"],
             },
         )
 
@@ -4626,7 +4647,14 @@ class Pipeline:
         window mapped through the op's inverse transform (needs the
         coordinate-remap descriptor ``GeometricEffect`` does not carry yet).
         ``global`` is always a barrier.
+
+        A multi-input op (one reading a sibling node's buffer) is a hard barrier
+        regardless of its spatial rule: hoisting the window past it would crop
+        only this operand and leave the sibling full-size. See
+        :func:`_op_reads_sibling_nodes`.
         """
+        if _op_reads_sibling_nodes(op):
+            return _SPATIAL_BARRIER
         rule = contract["spatial_rule"]
         if rule == "pointwise":
             return window
@@ -4636,17 +4664,19 @@ class Pipeline:
     def _is_spatial_window(op: "OpSpec") -> bool:
         """Whether ``op`` is a spatial window this pass hoists.
 
-        Only ``crop`` today. The ``crop`` builder exposes ``top``/``left``/
-        ``height``/``width`` and never slices the channel axis (the engine sets
-        the channel extent full), so a crop is H/W-only and commutes with a
-        channel-changing pointwise op (e.g. ``grayscale``). A crop op carrying no
-        channel parameter is guaranteed by the builder; assert defensively.
+        Reads the Rust ``is_spatial_window`` authority (``op_contract``) rather
+        than matching an op name: "is a hoistable H/W crop/ROI" is an op-identity
+        fact the engine owns, the counterpart to the ``spatial_rule`` the transfer
+        function reads. Only an H/W-only crop qualifies today — the engine leaves
+        the channel axis at full extent — so a window commutes with a
+        channel-changing pointwise op (e.g. ``grayscale``). The assertion pins the
+        builder's guarantee that a recognised window carries no channel parameter.
         """
-        if op.op != "crop":
+        if not _op_contract_for(op)["is_spatial_window"]:
             return False
         assert "channel" not in op.params and "channels" not in op.params, (
-            "crop unexpectedly carries a channel parameter; the H/W-only "
-            "commutation assumption no longer holds"
+            "an is_spatial_window op unexpectedly carries a channel parameter; "
+            "the H/W-only commutation assumption no longer holds"
         )
         return True
 
@@ -4767,21 +4797,48 @@ class Pipeline:
         """
         if not self._ops or self._assertions:
             return
+        # Fold the entering (dtype, ndim) for every op in a single forward pass —
+        # the same ``op_schema`` authority construction uses — instead of
+        # re-folding the prefix inside each ``_op_is_identity_at`` (which was
+        # O(n²) FFI calls). A removed op is a no-op, so it perturbs no downstream
+        # entering state, and these snapshots stay valid as ops drop out.
+        from polars_cv._lib import op_schema
+
+        entering: "list[tuple[str, int | None]]" = []
+        domain, dtype, ndim = (
+            "buffer",
+            self._initial_output_dtype,
+            self._initial_expected_ndim,
+        )
+        for op in self._ops:
+            entering.append((dtype, ndim))
+            domain, dtype, ndim = op_schema(
+                json.dumps(op.to_dict()), domain, dtype, ndim
+            )
         survivors = [
-            i for i, op in enumerate(self._ops) if not self._op_is_identity_at(i, op)
+            i
+            for i, op in enumerate(self._ops)
+            if not self._op_is_identity_at(i, op, *entering[i])
         ]
         if len(survivors) == len(self._ops):
             return
         self._commit_eliminated_ops(survivors)
 
-    def _op_is_identity_at(self, index: int, spec: "OpSpec") -> bool:
+    def _op_is_identity_at(
+        self,
+        index: int,
+        spec: "OpSpec",
+        entering_dtype: str,
+        entering_ndim: "int | None",
+    ) -> bool:
         """Whether ``spec`` at ``index`` is a removable no-op.
 
         Reads the op's ``IdentityRule`` and evaluates it against the state
-        entering the op. Any unknown — an ``auto`` dtype, an unknown dimension,
-        or an expression where a literal value is required — resolves to *not*
-        an identity: the pass removes an op only when it can prove it does
-        nothing.
+        entering the op (``entering_dtype``/``entering_ndim``, folded once by
+        :meth:`_eliminate_identities_inplace`). Any unknown — an ``auto`` dtype,
+        an unknown dimension, or an expression where a literal value is required —
+        resolves to *not* an identity: the pass removes an op only when it can
+        prove it does nothing.
         """
         from polars_cv._lib import op_identity_rule, op_infer_shape, op_schema
 
@@ -4790,22 +4847,14 @@ class Pipeline:
         if rule == "never":
             return False
         if rule == "always":
-            # ``Always`` already accounts for expression params: the FFI resolves
-            # an expression to a non-identity placeholder, so an op whose
-            # *identity-deciding* param is per-row (a ``pad`` amount) comes back
-            # ``never`` rather than ``always``. A remaining expression on an
-            # irrelevant param (a ``pad`` fill ``value`` behind zero amounts)
-            # leaves the op a genuine no-op, so nothing more to check here.
+            # ``Always`` names its identity-deciding params, and the FFI forces
+            # ``never`` when any of them is per-row — so an op whose deciding
+            # param is an expression (a ``pad`` amount) never reaches here. A
+            # remaining expression on an irrelevant param (a ``pad`` fill
+            # ``value`` behind zero amounts) leaves the op a genuine no-op, so
+            # nothing more to check.
             return True
 
-        # The contextual rules need the state entering this op. The prefix fold
-        # uses the same ``op_schema`` authority construction does, so it cannot
-        # disagree with the tracked state.
-        _, entering_dtype, entering_ndim = Pipeline._compute_output_domain_dtype_ndim(
-            self._ops[:index],
-            initial_dtype=self._initial_output_dtype,
-            initial_ndim=self._initial_expected_ndim,
-        )
         if rule == "when_dtype_preserved":
             if entering_dtype == "auto":
                 return False
@@ -4970,22 +5019,29 @@ class Pipeline:
                 optimization passes selected by ``opt_flags``.
             opt_flags: Which passes to apply when ``optimized`` is ``True`` —
                 same coercion as :meth:`LazyPipelineExpr.sink` (``None`` reads
-                the env default). For a single ``Pipeline`` this means affine
-                fusion and spatial-window pushdown; cross-pipeline CSE only has
-                an effect once sibling pipelines share a source in a graph, so it
-                is inert here.
+                the env default). Every node-scope pass runs, in
+                :data:`polars_cv._optimize.LOGICAL_PASSES` order — identity
+                elimination, spatial-window pushdown, then affine fusion.
+                Graph-scope CSE is inert for a single ``Pipeline`` (it only shares
+                a prefix once sibling pipelines meet in a graph) and is skipped.
 
         Returns:
             A one-line ``Pipeline().…`` rendering of the chain.
         """
-        from polars_cv._optimize import resolve_opt_flags
+        from polars_cv._graph import PipelineGraph
+        from polars_cv._optimize import LOGICAL_PASSES, resolve_opt_flags
 
         if not optimized:
             return repr(self)
         flags = resolve_opt_flags(opt_flags)
         physical = self._clone()
-        if flags.spatial_window_pushdown:
-            physical._hoist_spatial_windows_inplace()
-        if flags.affine_fusion:
-            physical._fuse_affine_inplace()
+        # Drive the node passes from the one registry `optimize()` uses, so a new
+        # pass is applied here automatically and this never drifts from `.sink()`
+        # (which is exactly how identity elimination went missing when it was
+        # hand-listed). CSE is graph-scope and inert for a lone pipeline.
+        handlers = PipelineGraph._pass_handlers()
+        for spec in LOGICAL_PASSES:
+            scope, run = handlers[spec.name]
+            if scope == "node" and flags.enabled(spec.name):
+                run(physical)
         return repr(physical)

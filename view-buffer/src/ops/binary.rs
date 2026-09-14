@@ -520,6 +520,10 @@ impl Op for BinaryOp {
         IdentityRule::Never
     }
 
+    fn is_spatial_window(&self) -> bool {
+        false // A binary op combines two buffers, not an H/W crop window.
+    }
+
     fn spatial_dependency(&self) -> SpatialDependency {
         // Element-wise combination of two aligned buffers: output at (y, x)
         // depends only on both inputs at (y, x). Matched exhaustively (not a

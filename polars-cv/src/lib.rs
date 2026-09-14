@@ -149,7 +149,10 @@ fn identity_rule_name(rule: view_buffer::IdentityRule) -> String {
     use view_buffer::IdentityRule as I;
     match rule {
         I::Never => "never".to_string(),
-        I::Always => "always".to_string(),
+        // The deciding-param gate (an expression-bound deciding param forces
+        // `never`) is applied in `op_identity_rule`, which has the original spec;
+        // the bare variant spells as `always`.
+        I::Always { .. } => "always".to_string(),
         I::WhenShapePreserved => "when_shape_preserved".to_string(),
         I::WhenDtypePreserved => "when_dtype_preserved".to_string(),
     }
@@ -637,8 +640,9 @@ fn known_ops() -> Vec<String> {
 
 /// Return the full contract for a single serialized op spec.
 ///
-/// Returns a dict with the canonical `dtype_rule`, `rank_rule`, `channel_rule`
-/// and `spatial_rule` plus `input_domains` and `output_domain` (from
+/// Returns a dict with the canonical `dtype_rule`, `rank_rule`, `channel_rule`,
+/// `spatial_rule` and `is_spatial_window` plus `input_domains` and
+/// `output_domain` (from
 /// view-buffer's `Domain::name()`). This is the single authority the Python schema layer reads
 /// instead of re-declaring, covering the dtype, dimensionality/channel and
 /// domain knowledge that previously lived in parallel Python tables
@@ -658,6 +662,7 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
     dict.set_item("rank_rule", rank_rule_name(dto.output_rank_rule()))?;
     dict.set_item("channel_rule", channel_rule_name(dto.output_channel_rule()))?;
     dict.set_item("spatial_rule", spatial_rule_name(dto.spatial_dependency()))?;
+    dict.set_item("is_spatial_window", dto.is_spatial_window())?;
     dict.set_item(
         "input_domains",
         dto.input_domains()
@@ -677,23 +682,42 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
 /// depend on literal parameter values (`pad(0, 0, 0, 0)`), so it lives in its
 /// own function.
 ///
-/// Expression-parameter safety rests on one mechanism, not a caller's
-/// discipline: [`resolve_op_from_json`] neutralizes every per-row param to the
-/// placeholder `1` before the rule is read. The two contextual rules are
-/// param-value independent, so neutralization is irrelevant to them. `Always`
-/// is the only value-sensitive verdict, and an `Always` op whose *deciding*
-/// param is per-row therefore resolves at `1` — a non-identity value — and
-/// comes back `Never` (a `pad` with an expression amount is the live case). A
-/// remaining expression on an *irrelevant* param (a `pad` fill value behind
-/// zero amounts) correctly stays `Always`: the op is a no-op regardless.
+/// Expression-parameter safety is *structural*, resting on the op's declaration
+/// rather than on which placeholder value [`resolve_op_from_json`] happens to
+/// bind. The two contextual rules are param-value independent. `Always` is the
+/// only value-sensitive verdict, and it names the parameters whose literal values
+/// it read ([`IdentityRule::Always::deciding_params`](view_buffer::IdentityRule)):
+/// if any deciding param was expression-bound in the *original* spec, the op
+/// cannot be proven a no-op at plan time and comes back `never`, regardless of
+/// what the neutralized placeholder resolved to. An expression on an *irrelevant*
+/// param (a `pad` fill value behind zero amounts) is not a deciding param, so it
+/// correctly leaves the op `always`.
 ///
-/// Constraint on future `Always` ops: this holds only while the identity value
-/// differs from the placeholder `1` (`pad`'s is `0`). An op that is a no-op at
-/// a param value of `1` must guard its own expression params before returning
-/// `Always`, or the placeholder would spoof it.
+/// This removes the earlier coupling to the placeholder value: a future `Always`
+/// op that is a no-op at the placeholder can no longer be spoofed, because the
+/// gate keys on whether the deciding param was per-row, not on its value.
 #[pyfunction]
 fn op_identity_rule(op_json: &str) -> PyResult<String> {
+    // The names of parameters that are expression-bound in the *original* spec,
+    // before `resolve_op_from_json` neutralizes them to a placeholder.
+    let spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
+    let expr_params: std::collections::HashSet<&str> = spec
+        .params
+        .iter()
+        .filter(|(_, p)| matches!(p, crate::params::ParamValue::Expr { .. }))
+        .map(|(name, _)| name.as_str())
+        .collect();
+
     let step = resolve_op_from_json(op_json)?;
+    if let view_buffer::IdentityRule::Always { deciding_params } = step.identity_rule() {
+        // A per-row deciding param means the no-op condition cannot be proven at
+        // plan time: the op keeps computing on rows where the value is not the
+        // identity value, so it is not removable.
+        if deciding_params.iter().any(|p| expr_params.contains(p)) {
+            return Ok("never".to_string());
+        }
+    }
     Ok(identity_rule_name(step.identity_rule()))
 }
 

@@ -812,6 +812,7 @@ _CONTRACT_KEYS = frozenset(
         "rank_rule",
         "channel_rule",
         "spatial_rule",
+        "is_spatial_window",
         "input_domains",
         "output_domain",
     }

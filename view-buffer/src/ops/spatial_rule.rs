@@ -353,4 +353,40 @@ mod tests {
             geo
         );
     }
+
+    #[test]
+    fn spatial_window_is_only_an_hw_crop() {
+        // The `crop` builder emits `[top, left, 0] .. [_, _, usize::MAX]`: the
+        // channel axis is left at full extent, so it is a hoistable H/W window.
+        assert!(ViewOp::Crop {
+            start: vec![1, 1, 0],
+            end: vec![5, 5, usize::MAX],
+        }
+        .is_spatial_window());
+
+        // A crop that slices the channel axis (start != 0, or a bounded channel
+        // end) is not H/W-only and must not be hoistable.
+        assert!(!ViewOp::Crop {
+            start: vec![0, 0, 1],
+            end: vec![5, 5, usize::MAX],
+        }
+        .is_spatial_window());
+        assert!(!ViewOp::Crop {
+            start: vec![0, 0, 0],
+            end: vec![5, 5, 2],
+        }
+        .is_spatial_window());
+
+        // Nothing else is a window: geometric neighbours, pointwise ops, reduces.
+        assert!(!ViewOp::Flip(vec![0]).is_spatial_window());
+        assert!(!ViewOp::Reshape(vec![48]).is_spatial_window());
+        assert!(!img(ImageOpKind::Grayscale).is_spatial_window());
+        assert!(!img(ImageOpKind::Resize {
+            width: 8,
+            height: 8,
+            filter: FilterType::Nearest
+        })
+        .is_spatial_window());
+        assert!(!ReductionOp::Sum { axis: None }.is_spatial_window());
+    }
 }

@@ -193,6 +193,10 @@ impl Op for ComputeOp {
         }
     }
 
+    fn is_spatial_window(&self) -> bool {
+        false // Compute ops transform values, never an H/W crop window.
+    }
+
     fn spatial_dependency(&self) -> SpatialDependency {
         match self {
             // Per-element: output at (y, x) depends only on input at (y, x).

@@ -130,6 +130,10 @@ impl Op for ColorConvertOp {
         IdentityRule::Never
     }
 
+    fn is_spatial_window(&self) -> bool {
+        false // Colour conversion is not an H/W crop window.
+    }
+
     fn spatial_dependency(&self) -> SpatialDependency {
         // Color-space conversion maps each pixel's channels independently of
         // any neighbor.
