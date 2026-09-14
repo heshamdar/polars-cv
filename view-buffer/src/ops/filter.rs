@@ -64,6 +64,10 @@ impl Op for ConvolveOp {
         IdentityRule::Never
     }
 
+    fn is_spatial_window(&self) -> bool {
+        false // A convolution is not an H/W crop window.
+    }
+
     fn spatial_dependency(&self) -> SpatialDependency {
         // A ksize×ksize kernel: output at (y, x) depends on input within
         // ksize / 2 pixels of (y, x).

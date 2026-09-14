@@ -407,10 +407,15 @@ class PipelineGraph:
             if node.column is None:
                 continue
 
-            # Create a group key from column + source spec
+            # Create a group key from column + source spec. Key on the source's
+            # canonical serialization, not ``hash(source)``: a hash collision
+            # would bucket two *different* sources together and fuse a shared
+            # prefix node with the wrong source. String equality cannot collide.
             col_str = str(node.column)
             source = node.pipeline._source
-            source_key = hash(source) if source else "none"
+            source_key = (
+                json.dumps(source.to_dict(), sort_keys=True) if source else "none"
+            )
             group_key = f"{col_str}:{source_key}"
 
             if group_key not in groups:

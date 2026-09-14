@@ -244,6 +244,29 @@ class TestExplain:
         pipe.explain(optimized=True)
         assert [op.op for op in pipe._ops] == ["resize", "rotate", "rotate"]
 
+    @plugin_required
+    def test_optimized_reflects_identity_elimination(self) -> None:
+        # `.sink()` eliminates the full-frame crop and the redundant same-dtype
+        # cast; `explain(optimized=True)` must show that same physical chain, not
+        # a logical one still carrying them. (This is the divergence that arose
+        # when `explain` hand-listed its passes and missed identity elimination.)
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=64, width=64)
+            .crop(top=0, left=0, height=64, width=64)
+            .cast("u8")
+            .cast("u8")
+        )
+        text = pipe.explain(optimized=True)
+        assert "crop" not in text
+        assert text.count("cast(") == 1
+
+        # Gated off, the logical ops survive.
+        off = pipe.explain(opt_flags=OptFlags(identity_elimination=False))
+        assert "crop" in off
+        assert off.count("cast(") == 2
+
 
 def _shape_ref() -> "pl.Expr":
     """A shape sub-pipeline expression carrying a fusible affine run.
@@ -648,3 +671,55 @@ class TestIdentityElimination:
         )
         g.optimize(OptFlags.all())
         assert _node_ops(g) == ["resize", "crop"]
+
+    @plugin_required
+    def test_identity_gate_keys_on_deciding_params_not_placeholder(self) -> None:
+        # The `Always` verdict is structural: `op_identity_rule` forces "never"
+        # when a *deciding* param (a pad amount) is expression-bound, and keeps
+        # "always" when only an *irrelevant* param (the fill value behind zero
+        # amounts) is per-row — independent of the neutralization placeholder.
+        import json
+
+        from polars_cv._lib import op_identity_rule
+
+        per_row = Pipeline().source("image_bytes").pad(top=pl.col("t"))
+        assert op_identity_rule(json.dumps(per_row._ops[0].to_dict())) == "never"
+
+        zero = (
+            Pipeline()
+            .source("image_bytes")
+            .pad(top=0, bottom=0, left=0, right=0, value=pl.col("v"))
+        )
+        assert op_identity_rule(json.dumps(zero._ops[0].to_dict())) == "always"
+
+
+class TestSpatialPushdownGuard:
+    """A crop is never hoisted past an op that reads a sibling node's buffer.
+
+    A binary/merge op is spatially ``Pointwise``, but hoisting a crop earlier
+    would shrink only this operand and leave the sibling full-size. The pass must
+    treat such an op as a barrier regardless of its spatial rule.
+    """
+
+    @plugin_required
+    def test_crop_does_not_cross_apply_mask(self) -> None:
+        # Build a node whose ops are [grayscale, apply_mask, crop] directly —
+        # node-splitting keeps this shape off the public API, so this is the
+        # only way to exercise the barrier.
+        pipe = Pipeline().source("image_bytes").grayscale()
+        pipe._add_binary_op("apply_mask", "mask_node", invert=False)
+        pipe = pipe.crop(top=0, left=0, height=8, width=8)
+        assert [op.op for op in pipe._ops] == ["grayscale", "apply_mask", "crop"]
+
+        pipe._hoist_spatial_windows_inplace()
+        # The crop stays put: apply_mask reads a sibling node, so it is a barrier.
+        assert [op.op for op in pipe._ops] == ["grayscale", "apply_mask", "crop"]
+
+    @plugin_required
+    def test_control_crop_crosses_a_pointwise_run(self) -> None:
+        # Same shape without the sibling-reading op: the crop DOES move, proving
+        # the barrier above is what stopped it (not an inert pass).
+        pipe = Pipeline().source("image_bytes").grayscale().invert()
+        pipe = pipe.crop(top=1, left=1, height=8, width=8)
+        pipe._hoist_spatial_windows_inplace()
+        assert [op.op for op in pipe._ops] == ["crop", "grayscale", "invert"]

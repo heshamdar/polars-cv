@@ -88,6 +88,11 @@ impl ViewDto {
         self.as_op().identity_rule()
     }
 
+    /// Whether this operation is a hoistable H/W spatial window (a crop/ROI).
+    pub fn is_spatial_window(&self) -> bool {
+        self.as_op().is_spatial_window()
+    }
+
     /// Get the name of this operation for error messages.
     pub fn name(&self) -> &'static str {
         self.as_op().name()

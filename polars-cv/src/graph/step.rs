@@ -213,4 +213,24 @@ impl GraphStep {
             | GraphStep::LabelReduce { .. } => IdentityRule::Never,
         }
     }
+
+    /// Whether this step is a hoistable H/W spatial window (a crop/ROI) — the
+    /// plan-time authority the spatial-window pushdown reads.
+    pub fn is_spatial_window(&self) -> bool {
+        match self {
+            GraphStep::Buffer(dto) => dto.is_spatial_window(),
+            // Geometry, binary, reduction, histogram, perceptual-hash, mask,
+            // merge, dimension-read and region-reduction steps are never an
+            // H/W crop over a single buffer.
+            GraphStep::Geometry(_)
+            | GraphStep::Binary { .. }
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_)
+            | GraphStep::ApplyMask { .. }
+            | GraphStep::ChannelMerge { .. }
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => false,
+        }
+    }
 }

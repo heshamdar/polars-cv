@@ -345,7 +345,9 @@ impl Op for ImageOp {
                 left: 0,
                 right: 0,
                 ..
-            } => IdentityRule::Always,
+            } => IdentityRule::Always {
+                deciding_params: &["top", "bottom", "left", "right"],
+            },
             // Padding to the current size adds nothing: if the output shape is
             // preserved, no pixels were added. (Letterbox resamples first, so
             // shape preservation does *not* imply a no-op — it stays Never.)
@@ -371,6 +373,12 @@ impl Op for ImageOp {
             | ImageOpKind::Canny { .. }
             | ImageOpKind::HistogramEqualize => IdentityRule::Never,
         }
+    }
+
+    fn is_spatial_window(&self) -> bool {
+        // Image ops resample, pad, threshold or filter — none is an H/W crop.
+        // The only spatial window is `ViewOp::Crop`.
+        false
     }
 
     fn spatial_dependency(&self) -> SpatialDependency {

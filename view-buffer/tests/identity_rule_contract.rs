@@ -43,7 +43,9 @@ fn probes() -> Vec<(ViewDto, IdentityRule)> {
                     mode: PadMode::Constant,
                 },
             }),
-            IdentityRule::Always,
+            IdentityRule::Always {
+                deciding_params: &["top", "bottom", "left", "right"],
+            },
         ),
         // A non-zero pad is not a no-op.
         (
@@ -108,7 +110,7 @@ fn identity_rule_classification_is_pinned() {
 #[test]
 fn always_preserves_all_structure() {
     for (dto, rule) in probes() {
-        if rule != IdentityRule::Always {
+        if !matches!(rule, IdentityRule::Always { .. }) {
             continue;
         }
         let op = dto.as_op();

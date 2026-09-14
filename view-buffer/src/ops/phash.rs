@@ -211,6 +211,10 @@ impl Op for PerceptualHashOp {
         IdentityRule::Never
     }
 
+    fn is_spatial_window(&self) -> bool {
+        false // A perceptual hash is not an H/W crop window.
+    }
+
     fn spatial_dependency(&self) -> SpatialDependency {
         // The hash is a global fingerprint of the whole image (downscale + DCT).
         SpatialDependency::Global

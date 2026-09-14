@@ -38,14 +38,31 @@ pub enum MemoryEffect {
 /// condition against the op's entering shape/dtype. The two contextual variants
 /// are strictly opt-in: an op that changes pixel positions must stay
 /// [`Never`](IdentityRule::Never) even when it happens to preserve shape.
+///
+/// [`Always`](IdentityRule::Always) is decided by *literal* parameter values, so
+/// it names the parameters it inspected (`deciding_params`). That declaration is
+/// what makes the verdict structurally safe across the FFI: an op is resolved
+/// with every expression parameter neutralized to a placeholder, so an `Always`
+/// op whose deciding parameter is actually per-row would otherwise be spoofed by
+/// the placeholder happening to equal the identity value. `op_identity_rule`
+/// forces [`Never`](IdentityRule::Never) whenever any named deciding parameter
+/// was expression-bound, so soundness rests on the declaration rather than on
+/// which placeholder value the resolver used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityRule {
     /// The op computes; it is never removable. The conservative answer for any
     /// op that transforms its input.
     Never,
     /// The op is a no-op purely by its (literal) parameters, for any input —
-    /// e.g. `pad(0, 0, 0, 0)` or a Gaussian blur with `sigma == 0`.
-    Always,
+    /// e.g. `pad(0, 0, 0, 0)`. `deciding_params` names the parameters whose
+    /// literal values were read to reach this verdict (e.g. `pad`'s four
+    /// amounts); if any of them is per-row the op cannot be proven a no-op at
+    /// plan time and is treated as [`Never`](IdentityRule::Never). List every
+    /// parameter the identity condition inspects, and no others — a fill `value`
+    /// behind zero amounts is not a deciding param.
+    Always {
+        deciding_params: &'static [&'static str],
+    },
     /// The op is an identity exactly when its output shape equals its input
     /// shape. Sound only for ops that move no pixels when shape is preserved —
     /// a pure view (`crop`, `reshape`) or a pad that added nothing.
@@ -131,6 +148,20 @@ pub trait Op {
     /// opt-ins — an op must return them only when preserving the named property
     /// genuinely means it copied its input unchanged.
     fn identity_rule(&self) -> IdentityRule;
+
+    /// Whether this op is a *spatial window* — an axis-aligned crop/ROI over the
+    /// H/W plane that the spatial-window pushdown may hoist earlier past ops it
+    /// commutes with. The plan-time authority for "which op is a hoistable
+    /// window", the counterpart to [`spatial_dependency`](Op::spatial_dependency)
+    /// (which decides what a window may *cross*).
+    ///
+    /// Required (no default): "is a window" is an op-identity fact the pushdown
+    /// must not re-decide by name in the planner. Only an op that selects an
+    /// H/W sub-rectangle **without touching the channel axis** — so it commutes
+    /// with channel-changing pointwise ops — may return `true`; every other op,
+    /// including geometric resamplers and channel slicers, returns `false`. The
+    /// conservative answer is `false`.
+    fn is_spatial_window(&self) -> bool;
 
     /// Infers output strides given input shape and strides.
     ///

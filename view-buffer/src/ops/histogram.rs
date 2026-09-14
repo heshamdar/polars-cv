@@ -372,6 +372,10 @@ impl Op for HistogramOp {
         IdentityRule::Never
     }
 
+    fn is_spatial_window(&self) -> bool {
+        false // A histogram is not an H/W crop window.
+    }
+
     fn spatial_dependency(&self) -> SpatialDependency {
         // Binning aggregates over all pixels.
         SpatialDependency::Global

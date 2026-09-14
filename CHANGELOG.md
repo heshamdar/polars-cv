@@ -26,7 +26,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   op-semantic (a shape-preserving `resize` still resamples), so the two
   contextual variants are strictly opt-in. Surfaced to the planner by the new
   `op_identity_rule` FFI, which is deliberately separate from `op_contract`
-  because the `Always` verdict depends on literal parameter values.
+  because the `Always` verdict depends on literal parameter values. `Always`
+  names the parameters whose values it inspected (`deciding_params`), and
+  `op_identity_rule` forces `Never` whenever any of them is expression-bound —
+  so the verdict is sound structurally, not by relying on the neutralization
+  placeholder value.
+- **`is_spatial_window` op contract (view-buffer).** A new required, no-default
+  `Op::is_spatial_window` method is the single authority for "is this op a
+  hoistable H/W crop/ROI", the counterpart to `SpatialDependency` (which decides
+  what a window may *cross*). Only an H/W-only crop returns `true`; it is
+  surfaced on `op_contract` and read by the spatial-window pushdown, which no
+  longer matches an op name in Python.
 
 ### Changed
 
@@ -35,6 +45,28 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   per-pass handler map is pinned to the registry by
   `test_pass_handlers_cover_every_pass`. Adding a pass is a registry edit; the
   physical graph stays deterministic. No behaviour change to existing passes.
+
+### Fixed
+
+- **`Pipeline.explain(optimized=True)` now reflects every node-scope pass.** It
+  drove a hand-written list of passes and so omitted identity elimination,
+  showing ops that `.sink()` actually deletes. It now applies the node passes
+  from the same `LOGICAL_PASSES`/`_pass_handlers` registry `optimize()` uses, so
+  it cannot drift from execution again.
+- **Spatial-window pushdown no longer crosses a multi-input op.** A crop is now
+  barred from hoisting past an op that reads a sibling node's buffer
+  (`apply_mask`, `channel_merge`, binary ops); crossing one would have shrunk
+  only one operand. Node-splitting kept this off the public API today, but the
+  guard makes the pass correct rather than merely lucky.
+
+### Internal
+
+- The affine-fusion rotate→`warp_affine` conversion reads the op's own
+  `interpolation`/`border_value` instead of re-supplying baked-in defaults, and
+  the cardinal-angle tolerance is a named constant. Identity elimination folds
+  each op's entering state once (O(n), was O(n²) FFI calls). CSE groups nodes by
+  a canonical source serialization instead of `hash(source)`, so a hash
+  collision cannot fuse across different sources.
 
 ## [0.28.0] — 2026-09-12
 
