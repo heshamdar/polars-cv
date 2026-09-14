@@ -6,7 +6,7 @@ use crate::ops::compute::ComputeOp;
 use crate::ops::filter::ConvolveOp;
 use crate::ops::image::ImageOp;
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
-use crate::ops::traits::Op;
+use crate::ops::traits::{IdentityRule, Op};
 use crate::ops::view::ViewOp;
 use crate::ops::Domain;
 
@@ -81,6 +81,11 @@ impl ViewDto {
     /// How this operation's output depends on the spatial extent of its input.
     pub fn spatial_dependency(&self) -> crate::ops::spatial_rule::SpatialDependency {
         self.as_op().spatial_dependency()
+    }
+
+    /// Under what condition this operation is a removable no-op.
+    pub fn identity_rule(&self) -> IdentityRule {
+        self.as_op().identity_rule()
     }
 
     /// Get the name of this operation for error messages.

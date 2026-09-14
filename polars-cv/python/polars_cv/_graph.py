@@ -282,36 +282,70 @@ class PipelineGraph:
 
         The single optimization phase (see :mod:`polars_cv._optimize`).
         Construction and serialization never optimize; this applies each
-        registered Tier-1 pass, gated by ``flags``, mutating the graph in place
-        and returning ``self`` for chaining. Passes run in a fixed order — CSE,
-        then spatial-window pushdown, then affine fusion — so the physical graph
-        is deterministic. Pushdown runs before fusion, but the two do not
-        interact: a crop is ``Geometric`` and never fuses with ``warp_affine``,
-        and pushdown moves a crop only past ``Pointwise`` ops, never an affine
-        op, so no affine op changes position.
+        registered Tier-1 pass, gated by ``flags``, in :data:`LOGICAL_PASSES`
+        order — CSE, then identity elimination, then spatial-window pushdown,
+        then affine fusion — mutating the graph in place and returning ``self``
+        for chaining. The run order is *data* (that tuple's order), not
+        hand-wired here, so adding a pass is a registry edit; a fixed order
+        keeps the physical graph deterministic. The passes do not fight:
+        identity elimination only deletes no-ops (it can expose more of both
+        that follow), and pushdown moves a crop only past ``Pointwise`` ops,
+        never an affine op, so fusion sees the same affine positions.
 
-        Every pass is output-preserving; CSE is byte-identical while affine
-        fusion is the same transform with fewer interpolation passes (see
-        ``polars_cv._optimize.PassSpec.bit_exact``). Per-row engine lowering is
-        a separate tier that runs in Rust on this already-optimized graph.
+        Every pass is output-preserving; CSE and identity elimination are
+        byte-identical while affine fusion is the same transform with fewer
+        interpolation passes (see ``polars_cv._optimize.PassSpec.bit_exact``).
+        Per-row engine lowering is a separate tier that runs in Rust on this
+        already-optimized graph.
 
         The passes rewrite node pipelines in place, so the graph first takes its
         own clone of each one: ``cv.pipe(p)`` holds the caller's ``Pipeline`` by
         reference, and ``Pipeline`` is immutable from the caller's view — the
         physical graph must own independent copies to mutate.
         """
+        from polars_cv._optimize import LOGICAL_PASSES
+
         for node in self._nodes.values():
             node.pipeline = node.pipeline._clone()
-        if flags.common_subexpression_elimination:
-            self._optimize_common_subexpressions()
-        if flags.spatial_window_pushdown:
-            for node in self._nodes.values():
-                node.pipeline._hoist_spatial_windows_inplace()
-        if flags.affine_fusion:
-            for node in self._nodes.values():
-                node.pipeline._fuse_affine_inplace()
+        handlers = self._pass_handlers()
+        for spec in LOGICAL_PASSES:
+            if not flags.enabled(spec.name):
+                continue
+            scope, run = handlers[spec.name]
+            if scope == "graph":
+                run(self)
+            else:  # "node": rewrite each node's ops in place
+                for node in self._nodes.values():
+                    run(node.pipeline)
         self._optimized = True
         return self
+
+    @staticmethod
+    def _pass_handlers() -> "dict[str, tuple[str, Any]]":
+        """Each logical pass's applicator, keyed by name.
+
+        A ``"graph"`` handler takes the whole :class:`PipelineGraph` and may
+        rewrite topology (CSE splits siblings onto a shared prefix node); a
+        ``"node"`` handler takes one node :class:`Pipeline` and rewrites its ops
+        in place. This map's keys must equal :data:`PASS_NAMES` — a pass without
+        a handler (or a handler without a pass) fails
+        ``test_pass_handlers_cover_every_pass``, the same both-directions guard
+        ``OptFlags`` has.
+        """
+        from polars_cv.pipeline import Pipeline
+
+        return {
+            "common_subexpression_elimination": (
+                "graph",
+                PipelineGraph._optimize_common_subexpressions,
+            ),
+            "identity_elimination": ("node", Pipeline._eliminate_identities_inplace),
+            "spatial_window_pushdown": (
+                "node",
+                Pipeline._hoist_spatial_windows_inplace,
+            ),
+            "affine_fusion": ("node", Pipeline._fuse_affine_inplace),
+        }
 
     # --- CSE Optimization ---
 

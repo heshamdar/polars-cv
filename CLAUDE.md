@@ -44,9 +44,10 @@ The enforcement standard is stricter than "prefer the shared path":
   day someone adds Y. Make the sequence unskippable instead: one entry point
   that does the whole thing.
 - **No defaulted contract methods on op traits.** `Op::output_rank_rule`,
-  `output_channel_rule`, `output_dtype_rule` and `memory_effect` are required
-  with no default so a new op cannot inherit a lie. Adding a default to any of
-  them is a regression, however convenient.
+  `output_channel_rule`, `output_dtype_rule`, `memory_effect`,
+  `spatial_dependency` and `identity_rule` are required with no default so a new
+  op cannot inherit a lie. Adding a default to any of them is a regression,
+  however convenient.
 - **One authority per fact, named once.** A dtype's spellings live in
   `dtype_table!`; enum variant names live in `named_variants!` + the
   `naming::REGISTRY`; op names live in `KNOWN_OPS`; an op's input domain lives
@@ -366,7 +367,7 @@ authority — do not open a side channel.
 | Fact | Single authority | Rejection mechanism |
 |------|------------------|---------------------|
 | Appending an op to a `Pipeline` (domain check + `op_schema` fold + shape hints) | `Pipeline._push_op()` | `test_op_append_is_structurally_exclusive` — AST walk failing if anything but `_push_op`/`_set_ops_slice`/`_clone` touches `_ops` |
-| An op's rank / channel / dtype / memory contract | `Op` trait methods, **no defaults** | Compile error: a new op that omits one does not build |
+| An op's rank / channel / dtype / memory / spatial / identity contract | `Op` trait methods, **no defaults** | Compile error: a new op that omits one does not build |
 | An op's accepted input domains | `op_contract(...)["input_domains"]` (Rust `GraphStep::input_domains`, exhaustive — no catch-all arm) | `test_domain_vocabulary_declared_once` — `Pipeline` may not carry `DOMAIN_*` constants or a `_validate_domain`; execution reads the same contract via `step_buffer_operand` rather than restating it per arm |
 | An op's H/W effect | view-buffer `infer_shape`, read via `op_infer_shape` | No inferable shape ⇒ hints invalidated, never carried forward |
 | Which ops exist | Rust `KNOWN_OPS` ↔ Python `OP_NAMES` | `known_ops_all_resolve`, `resolve_op_arms_are_all_known_ops`, `test_op_names_matches_rust_known_ops_without_the_plugin` (works with no `.so`); guard arms in `resolve_op` must be listed in `KNOWN_GUARD_ARMS` |

@@ -7,6 +7,35 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **`identity_elimination` optimization pass (Tier-1, bit-exact).** A new
+  plan-time pass deletes operations that are provably no-ops, so they never
+  reach the engine: a zero pad (`pad(0, 0, 0, 0)`), a same-dtype `cast`, and a
+  full-frame `crop` (or a `pad_to_size` to the current size). It is on by
+  default, gated by the `identity_elimination` `OptFlags` field, and — being
+  output-preserving — is safe even inside dict-sink observed and multi-consumer
+  nodes. A node carrying an `assert_shape` is left untouched (conservative).
+- **`IdentityRule` op contract (view-buffer).** A new required, no-default
+  `Op::identity_rule` method is the single authority for whether an op is a
+  removable no-op — the algebraic-identity counterpart to `SpatialDependency`.
+  Its four variants (`Never`, `Always`, `WhenShapePreserved`,
+  `WhenDtypePreserved`) let the op declare *which* condition makes it an
+  identity while the planner evaluates that condition against the op's entering
+  shape/dtype, so no op name is matched in Python. Value preservation is
+  op-semantic (a shape-preserving `resize` still resamples), so the two
+  contextual variants are strictly opt-in. Surfaced to the planner by the new
+  `op_identity_rule` FFI, which is deliberately separate from `op_contract`
+  because the `Always` verdict depends on literal parameter values.
+
+### Changed
+
+- **`PipelineGraph.optimize` now drives its passes from `LOGICAL_PASSES`.** The
+  run order is the registry's tuple order (data), not hand-wired branches, and a
+  per-pass handler map is pinned to the registry by
+  `test_pass_handlers_cover_every_pass`. Adding a pass is a registry edit; the
+  physical graph stays deterministic. No behaviour change to existing passes.
+
 ## [0.28.0] — 2026-09-12
 
 ### Added

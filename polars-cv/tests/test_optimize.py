@@ -72,6 +72,16 @@ class TestRegistry:
         flag_fields = {f.name for f in dataclasses.fields(OptFlags)}
         assert flag_fields == set(PASS_NAMES)
 
+    def test_pass_handlers_cover_every_pass(self) -> None:
+        """Every registered pass has an ``optimize()`` handler and vice versa.
+
+        The applicator map in ``PipelineGraph.optimize`` is the third place a
+        pass must appear (with ``LOGICAL_PASSES`` and ``OptFlags``); this pins
+        it to ``PASS_NAMES`` so a pass cannot be registered without being
+        runnable, nor a handler survive a removed pass.
+        """
+        assert set(PipelineGraph._pass_handlers()) == set(PASS_NAMES)
+
     def test_every_flag_field_is_boolean_defaulting_on(self) -> None:
         defaults = OptFlags()
         for name in PASS_NAMES:
@@ -511,3 +521,130 @@ class TestShapeSubpipelineStaging:
             return numpy_from_struct(out)
 
         assert np.array_equal(run(OptFlags.all()), run(OptFlags.none()))
+
+
+class TestIdentityElimination:
+    """Staging for the identity-elimination pass.
+
+    Needs the compiled plugin: the pass reads ``op_identity_rule`` /
+    ``op_schema`` / ``op_infer_shape`` to classify each op and evaluate its
+    condition against the entering state.
+    """
+
+    @plugin_required
+    def test_zero_pad_is_removed(self) -> None:
+        g = _graph_of(
+            Pipeline()
+            .source("image_bytes")
+            .pad(top=0, bottom=0, left=0, right=0)
+            .grayscale()
+        )
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["grayscale"]
+
+    @plugin_required
+    def test_flag_gates_the_pass(self) -> None:
+        pipe = (
+            Pipeline()
+            .source("image_bytes")
+            .pad(top=0, bottom=0, left=0, right=0)
+            .grayscale()
+        )
+        off = _graph_of(pipe)
+        off.optimize(OptFlags(identity_elimination=False))
+        assert _node_ops(off) == ["pad", "grayscale"]
+
+        on = _graph_of(pipe)
+        on.optimize(OptFlags(identity_elimination=True))
+        assert _node_ops(on) == ["grayscale"]
+
+    @plugin_required
+    def test_promoting_scale_is_not_an_identity(self) -> None:
+        # scale(1.0) promotes u8 -> f32, so deleting it would change the output
+        # dtype: the indicator must report Never, and the op must survive.
+        g = _graph_of(Pipeline().source("image_bytes").scale(1.0))
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["scale"]
+
+    @plugin_required
+    def test_expression_amount_is_not_a_zero_pad(self) -> None:
+        # A per-row pad amount resolves to the neutralization placeholder (not
+        # zero), so the FFI reports "never" and the pad survives — no op is
+        # deleted on the strength of a spoofed placeholder value.
+        g = _graph_of(Pipeline().source("image_bytes").pad(top=pl.col("t")))
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["pad"]
+
+    @plugin_required
+    def test_zero_pad_with_expression_fill_is_still_removed(self) -> None:
+        # Amounts are literally zero, so no pixels are added and the fill value
+        # is never used: an expression on the irrelevant `value` param does not
+        # stop the elimination.
+        g = _graph_of(
+            Pipeline()
+            .source("image_bytes")
+            .pad(top=0, bottom=0, left=0, right=0, value=pl.col("v"))
+            .grayscale()
+        )
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["grayscale"]
+
+    @plugin_required
+    def test_redundant_cast_is_removed(self) -> None:
+        # The second cast(u8) enters u8, so it copies rather than converts.
+        g = _graph_of(Pipeline().source("image_bytes").cast("u8").cast("u8"))
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["cast"]
+
+    @plugin_required
+    def test_cast_to_a_new_dtype_is_kept(self) -> None:
+        g = _graph_of(Pipeline().source("image_bytes").cast("u8").cast("f32"))
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["cast", "cast"]
+
+    @plugin_required
+    def test_full_frame_crop_is_removed(self) -> None:
+        # resize fixes the entering H/W at 64x64; a 64x64 crop is a no-op view.
+        g = _graph_of(
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=64, width=64)
+            .crop(top=0, left=0, height=64, width=64)
+        )
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["resize"]
+
+    @plugin_required
+    def test_partial_crop_is_kept(self) -> None:
+        g = _graph_of(
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=64, width=64)
+            .crop(top=0, left=0, height=32, width=32)
+        )
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["resize", "crop"]
+
+    @plugin_required
+    def test_crop_with_unknown_entering_shape_is_kept(self) -> None:
+        # No prior resize: entering H/W is unknown, so a full-frame crop cannot
+        # be proven and the op is conservatively kept.
+        g = _graph_of(
+            Pipeline().source("image_bytes").crop(top=0, left=0, height=64, width=64)
+        )
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["crop"]
+
+    @plugin_required
+    def test_assertion_bearing_node_is_left_untouched(self) -> None:
+        # A node carrying an assert_shape is skipped wholesale so no positional
+        # assertion key is re-derived across a deletion — the no-op crop stays.
+        g = _graph_of(
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=64, width=64)
+            .crop(top=0, left=0, height=64, width=64)
+            .assert_shape(height=64, width=64)
+        )
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["resize", "crop"]

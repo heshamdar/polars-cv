@@ -17,7 +17,7 @@ use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::ops::phash::PerceptualHashOp;
 use view_buffer::ops::{Domain, OutputChannelRule, OutputRankRule, SpatialDependency};
 use view_buffer::ops::{HistogramOp, ReductionOp};
-use view_buffer::{BinaryOp, GeometryOp, Op, ViewDto};
+use view_buffer::{BinaryOp, GeometryOp, IdentityRule, Op, ViewDto};
 
 /// One resolved operation in a compiled graph node.
 #[derive(Debug, Clone)]
@@ -191,6 +191,26 @@ impl GraphStep {
             // Dimension reads and region reductions aggregate over the whole
             // input; neither admits a spatial-window reorder.
             GraphStep::ExtractShape | GraphStep::LabelReduce { .. } => SpatialDependency::Global,
+        }
+    }
+
+    /// Under what condition this step is a removable no-op — the plan-time
+    /// authority an identity-elimination pass reads.
+    pub fn identity_rule(&self) -> IdentityRule {
+        match self {
+            GraphStep::Buffer(dto) => dto.identity_rule(),
+            GraphStep::Geometry(op) => op.identity_rule(),
+            GraphStep::Binary { op, .. } => op.identity_rule(),
+            GraphStep::Reduction(op) => op.identity_rule(),
+            GraphStep::Histogram(op) => op.identity_rule(),
+            GraphStep::PerceptualHash(op) => op.identity_rule(),
+            // Mask blending, channel merge, dimension reads and region
+            // reductions all combine or derive from their inputs — never a
+            // no-op on a single buffer.
+            GraphStep::ApplyMask { .. }
+            | GraphStep::ChannelMerge { .. }
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => IdentityRule::Never,
         }
     }
 }

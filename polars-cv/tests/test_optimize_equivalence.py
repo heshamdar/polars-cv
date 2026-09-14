@@ -481,3 +481,44 @@ class TestDifferentialEquivalence:
             pl.col("image").cv.pipe(pipe).sink("numpy", opt_flags=OptFlags.none()),
         )
         assert np.array_equal(from_env, explicit)
+
+
+# Pipelines whose identity op the pass actually deletes, each byte-exact: the
+# deleted op is a runtime no-op, so removing it cannot change a single output
+# byte under any flag subset. This is the correctness guard for
+# identity_elimination — and, for the WhenShapePreserved arm, the *only* guard
+# (a wrongly-tagged flip/transpose would be deleted here and the bytes would
+# diverge, failing this test).
+_IDENTITY_ELIMINATION_CASES: list[tuple[str, object]] = [
+    ("zero_pad", lambda p: p.pad(top=0, bottom=0, left=0, right=0).grayscale()),
+    (
+        "full_frame_crop",
+        lambda p: p.resize(height=32, width=32).crop(
+            top=0, left=0, height=32, width=32
+        ),
+    ),
+    ("redundant_cast", lambda p: p.cast("u8").cast("u8")),
+]
+
+
+@plugin_required
+class TestIdentityEliminationByteExact:
+    """Deleting a no-op op changes no output byte, under every flag subset."""
+
+    @pytest.mark.parametrize(
+        ("case_id", "build"),
+        _IDENTITY_ELIMINATION_CASES,
+        ids=[c[0] for c in _IDENTITY_ELIMINATION_CASES],
+    )
+    def test_identity_elimination_is_byte_exact(
+        self, sample_df: pl.DataFrame, case_id: str, build: object
+    ) -> None:
+        pipe = build(_src())  # type: ignore[operator]
+        outputs = [
+            _sink_output(sample_df, pipe, f, "numpy") for f in _all_flag_subsets()
+        ]
+        assert outputs[0] and outputs[0][0] is not None, (
+            f"{case_id}: produced an empty/null output"
+        )
+        for other in outputs[1:]:
+            assert other == outputs[0], f"{case_id}: output changed under a flag subset"

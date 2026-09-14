@@ -58,7 +58,7 @@ pub use reduction::ReductionOp;
 pub use scalar::{FusedKernel, ScalarOp};
 pub use shape_rule::{OutputChannelRule, OutputRankRule};
 pub use spatial_rule::{GeometricEffect, NeighborhoodSupport, SpatialDependency};
-pub use traits::{MemoryEffect, Op};
+pub use traits::{IdentityRule, MemoryEffect, Op};
 pub use validation::ValidationError;
 pub use view::ViewOp;
 

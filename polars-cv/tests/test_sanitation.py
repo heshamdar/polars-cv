@@ -582,6 +582,10 @@ def test_registry_parity_no_dead_contracts():
 
 _REQUIRED_LIB_HOOKS = (
     "op_contract",
+    # The op's identity rule, read by the identity-elimination pass to decide
+    # whether an op is a removable no-op. Separate from `op_contract` because its
+    # `Always` verdict depends on literal parameter values.
+    "op_identity_rule",
     "op_schema",
     "op_infer_shape",
     "op_output_channels",

@@ -13,7 +13,7 @@ use crate::core::buffer::ViewBuffer;
 use crate::core::dtype::{DType, DTypeCategory, OutputDTypeRule};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
-use crate::ops::traits::{MemoryEffect, Op};
+use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
 use crate::ops::validation::ValidationError;
 
 #[cfg(feature = "serde")]
@@ -204,6 +204,11 @@ impl Op for PerceptualHashOp {
     fn memory_effect(&self) -> MemoryEffect {
         // Hashing requires the full image to be loaded
         MemoryEffect::RequiresContiguous
+    }
+
+    fn identity_rule(&self) -> IdentityRule {
+        // Computes / combines / reduces — never a removable no-op.
+        IdentityRule::Never
     }
 
     fn spatial_dependency(&self) -> SpatialDependency {
