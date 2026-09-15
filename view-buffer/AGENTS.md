@@ -153,7 +153,7 @@ The four rules marked as the quartet are the ones the Python planner reads over
 FFI, and **adding a default to any of them is a regression** — an op that
 declines to declare its dtype rule would silently inherit `PreserveInput` and
 publish a schema execution cannot produce. See the Canonical Paths table in the
-root `CLAUDE.md`.
+root `AGENTS.md`.
 
 ## Alpha Channel Support
 
