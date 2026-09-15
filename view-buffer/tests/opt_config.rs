@@ -63,7 +63,10 @@ fn cast_chain_widening_intermediate_collapses_but_preserves_output() {
         .cast(DType::U16)
         .cast(DType::F32);
 
-    assert_eq!(run(&expr, &OptConfig::default(), 4), vec![10.0, 20.0, 30.0, 40.0]);
+    assert_eq!(
+        run(&expr, &OptConfig::default(), 4),
+        vec![10.0, 20.0, 30.0, 40.0]
+    );
     assert_eq!(run(&expr, &all_off(), 4), vec![10.0, 20.0, 30.0, 40.0]);
     // The collapse fired: one fewer step than the unoptimized chain.
     assert!(
@@ -80,8 +83,14 @@ fn flip_involution_toggle_is_output_preserving() {
         .flip(vec![0])
         .flip(vec![0]);
 
-    assert_eq!(run(&expr, &OptConfig::default(), 4), run(&expr, &all_off(), 4));
-    assert_eq!(run(&expr, &OptConfig::default(), 4), vec![1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(
+        run(&expr, &OptConfig::default(), 4),
+        run(&expr, &all_off(), 4)
+    );
+    assert_eq!(
+        run(&expr, &OptConfig::default(), 4),
+        vec![1.0, 2.0, 3.0, 4.0]
+    );
     // With the toggle on the two flips cancel to nothing; off keeps them.
     assert!(steps(&expr, &OptConfig::default()) < steps(&expr, &all_off()));
 }
@@ -95,7 +104,10 @@ fn transpose_merge_toggle_is_output_preserving() {
         .transpose(vec![1, 0])
         .transpose(vec![1, 0]);
 
-    assert_eq!(run(&expr, &OptConfig::default(), 6), run(&expr, &all_off(), 6));
+    assert_eq!(
+        run(&expr, &OptConfig::default(), 6),
+        run(&expr, &all_off(), 6)
+    );
     assert_eq!(
         run(&expr, &OptConfig::default(), 6),
         vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
@@ -109,6 +121,12 @@ fn scalar_fusion_toggle_is_output_preserving() {
         .apply_op(ViewDto::Compute(ComputeOp::Scale(2.0)))
         .apply_op(ViewDto::Compute(ComputeOp::Relu));
 
-    assert_eq!(run(&expr, &OptConfig::default(), 4), run(&expr, &all_off(), 4));
-    assert_eq!(run(&expr, &OptConfig::default(), 4), vec![2.0, 0.0, 6.0, 8.0]);
+    assert_eq!(
+        run(&expr, &OptConfig::default(), 4),
+        run(&expr, &all_off(), 4)
+    );
+    assert_eq!(
+        run(&expr, &OptConfig::default(), 4),
+        vec![2.0, 0.0, 6.0, 8.0]
+    );
 }
