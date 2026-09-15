@@ -34,7 +34,7 @@ pub use execution::{
 };
 
 // Re-exports - Expression
-pub use expr::ViewExpr;
+pub use expr::{OptConfig, ViewExpr};
 
 // Re-exports - Ops
 pub use ops::{

@@ -6,18 +6,24 @@ serialization emits whatever graph it is handed and does nothing else; the one
 :meth:`PipelineGraph.optimize` call between them rewrites the logical graph into
 an equivalent physical graph.
 
-This module owns the **single authority** for which logical (Tier-1) passes
-exist — :data:`LOGICAL_PASSES` — and the control surface that toggles them,
-:class:`OptFlags`. Per-row engine lowering (scalar fusion, cast elimination,
-flip/transpose algebra) lives in the Rust engine and runs on the *already
-optimized* graph; it is not part of this tier and not toggled here.
+This module owns the **single authority** for which optimizations exist —
+:data:`OPTIMIZATION_PASSES` — and the control surface that toggles them,
+:class:`OptFlags`. It spans both tiers: the logical (Tier-1) passes applied in
+Python, and the per-row engine-lowering rewrites (scalar fusion, cast
+elimination, flip/transpose algebra) that run in the Rust engine on the
+*already optimized* graph. Each pass carries a ``tier`` saying how it is
+toggled; engine flags ride to Rust in the graph's ``opt`` object. Mandatory
+correctness lowering (materialization, the f64 fusion exclusion) is not an
+optimization and carries no toggle.
 
-Every pass is output-preserving, but not every pass is *bit*-exact: CSE shares
-an identical computation, so toggling it cannot change a single byte, whereas
-affine fusion replaces a run of warps with one composed warp — mathematically
-the same transform, but one interpolation pass instead of several, so the pixels
-can differ. :attr:`PassSpec.bit_exact` records that distinction so the
-differential-equivalence guard tests each pass against the right standard.
+Every pass is output-preserving, and every pass is also **byte-identical** when
+toggled: each rewrites or shares a computation without changing a single output
+byte. :attr:`PassSpec.bit_exact` records this (it is ``True`` for every current
+pass) so the differential-equivalence guard can hold each pass to byte-equality;
+the field exists so a future pass that only preserves output approximately (an
+interpolation-fusing pass, say) must declare itself and be tested within a
+tolerance rather than silently. An earlier ``affine_fusion`` pass was such a
+pass and was removed precisely because it changed pixels — see the CHANGELOG.
 """
 
 from __future__ import annotations
@@ -49,12 +55,31 @@ class PassSpec:
     name: str
     summary: str
     bit_exact: bool
+    tier: str
 
 
-#: The single authority: which logical optimizations exist. Adding a pass here
-#: and adding the matching :class:`OptFlags` field is one act — see the parity
-#: guard in ``tests/test_optimize.py``.
-LOGICAL_PASSES: tuple[PassSpec, ...] = (
+#: The single authority: which optimizations exist, across both tiers. Adding a
+#: pass here and adding the matching :class:`OptFlags` field is one act — see the
+#: parity guard in ``tests/test_optimize.py``.
+#:
+#: ``tier`` says *how* a pass is toggled:
+#:
+#: - ``"logical"`` passes are applied in Python by ``PipelineGraph.optimize``
+#:   (they rewrite the logical graph before serialization). When their flag is
+#:   off the pass simply is not applied.
+#: - ``"engine"`` passes are the per-row lowering rewrites in the Rust engine
+#:   (``ViewExpr::optimize_with``). Their flag is *serialized* into the graph's
+#:   ``opt`` object and gates the matching field of the Rust ``OptConfig`` — the
+#:   engine field name equals the pass name, so they cannot drift.
+#:
+#: Every pass is output-preserving and, at present, byte-identical when toggled;
+#: ``bit_exact`` records that so the equivalence guard holds each to byte-equality
+#: (and a future approximate pass must declare ``bit_exact=False``).
+#:
+#: Mandatory correctness lowering (contiguity materialization, stride-preserving
+#: views, the f64 fusion exclusion) is deliberately *not* here: it is not
+#: optional, so it carries no toggle.
+OPTIMIZATION_PASSES: tuple[PassSpec, ...] = (
     PassSpec(
         name="common_subexpression_elimination",
         summary=(
@@ -62,6 +87,7 @@ LOGICAL_PASSES: tuple[PassSpec, ...] = (
             "the same source column into one upstream node."
         ),
         bit_exact=True,
+        tier="logical",
     ),
     PassSpec(
         name="identity_elimination",
@@ -70,6 +96,7 @@ LOGICAL_PASSES: tuple[PassSpec, ...] = (
             "full-frame crop — that preserve their input byte for byte."
         ),
         bit_exact=True,
+        tier="logical",
     ),
     PassSpec(
         name="spatial_window_pushdown",
@@ -78,35 +105,82 @@ LOGICAL_PASSES: tuple[PassSpec, ...] = (
             "with, so upstream ops process fewer pixels."
         ),
         bit_exact=True,
+        tier="logical",
     ),
     PassSpec(
-        name="affine_fusion",
+        name="cast_chain_collapse",
         summary=(
-            "Collapse a run of static affine ops (warp_affine and non-90° "
-            "rotate) into a single composed warp_affine."
+            "Drop a redundant intermediate cast from a cast chain when the "
+            "intermediate dtype losslessly holds the input (a narrowing "
+            "intermediate is kept — it quantizes)."
         ),
-        bit_exact=False,
+        bit_exact=True,
+        tier="engine",
+    ),
+    PassSpec(
+        name="cast_identity",
+        summary="Drop a cast whose target dtype already equals its input dtype.",
+        bit_exact=True,
+        tier="engine",
+    ),
+    PassSpec(
+        name="view_flip_involution",
+        summary="Cancel two adjacent flips over the same axes (flip∘flip = id).",
+        bit_exact=True,
+        tier="engine",
+    ),
+    PassSpec(
+        name="view_transpose_merge",
+        summary="Merge two adjacent transposes into one (or into the identity).",
+        bit_exact=True,
+        tier="engine",
+    ),
+    PassSpec(
+        name="scalar_fusion",
+        summary=(
+            "Fuse adjacent scalar/compute ops into one kernel (f64 chains stay "
+            "unfused — a mandatory precision guard, not this toggle)."
+        ),
+        bit_exact=True,
+        tier="engine",
     ),
 )
 
-#: Pass names in declaration order.
-PASS_NAMES: tuple[str, ...] = tuple(p.name for p in LOGICAL_PASSES)
+#: Pass names in declaration order (both tiers).
+PASS_NAMES: tuple[str, ...] = tuple(p.name for p in OPTIMIZATION_PASSES)
+
+#: Engine-tier pass names — the fields of the Rust ``OptConfig`` serialized into
+#: the graph's ``opt`` object. Their names must equal the Rust field names.
+ENGINE_PASS_NAMES: tuple[str, ...] = tuple(
+    p.name for p in OPTIMIZATION_PASSES if p.tier == "engine"
+)
+
+#: Logical-tier pass names — applied in Python by ``PipelineGraph.optimize``.
+LOGICAL_PASS_NAMES: tuple[str, ...] = tuple(
+    p.name for p in OPTIMIZATION_PASSES if p.tier == "logical"
+)
 
 
 @dataclass(frozen=True)
 class OptFlags:
-    """Which logical optimization passes run, one boolean per pass.
+    """Which optimization passes run, one boolean per pass (both tiers).
 
-    Construct directly (``OptFlags(affine_fusion=False)``), with the
+    Construct directly (``OptFlags(scalar_fusion=False)``), with the
     :meth:`all`/:meth:`none` shorthands, or from the environment via
     :meth:`from_env`. Defaults are all-on, matching the always-on behaviour that
     predated the explicit phase.
     """
 
+    # Logical tier (applied in Python).
     common_subexpression_elimination: bool = True
     identity_elimination: bool = True
     spatial_window_pushdown: bool = True
-    affine_fusion: bool = True
+    # Engine tier (serialized to the graph's `opt` object; gates Rust OptConfig).
+    cast_chain_collapse: bool = True
+    cast_identity: bool = True
+    view_flip_involution: bool = True
+    view_transpose_merge: bool = True
+    scalar_fusion: bool = True
 
     @classmethod
     def all(cls) -> "OptFlags":
@@ -124,6 +198,14 @@ class OptFlags:
             msg = f"Unknown optimization pass: {name!r}. Known passes: {list(PASS_NAMES)}."
             raise KeyError(msg)
         return bool(getattr(self, name))
+
+    def engine_opt(self) -> "dict[str, bool]":
+        """The engine-tier toggles, keyed by their Rust ``OptConfig`` field name.
+
+        Serialized as the graph's ``opt`` object; the key set equals
+        :data:`ENGINE_PASS_NAMES`, which equals the Rust ``OptConfig`` fields.
+        """
+        return {name: bool(getattr(self, name)) for name in ENGINE_PASS_NAMES}
 
     @classmethod
     def from_env(cls) -> "OptFlags":
@@ -147,8 +229,8 @@ class OptFlags:
           base is all-off.
         - a bare pass name turns that pass on; ``-name`` turns it off.
 
-        Examples: ``"all"``, ``"none"``, ``"affine_fusion"`` (only that one on),
-        ``"all,-affine_fusion"`` (all but that one).
+        Examples: ``"all"``, ``"none"``, ``"scalar_fusion"`` (only that one on),
+        ``"all,-scalar_fusion"`` (all but that one).
 
         An unknown pass name raises ``ValueError`` rather than being silently
         ignored — an unrecognised flag is a bug, not a no-op.

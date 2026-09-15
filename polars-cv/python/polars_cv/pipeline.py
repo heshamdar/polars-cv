@@ -75,9 +75,7 @@ def _rotation_matrix(
 
     Any argument may be a Polars expression. Only the trigonometry needs to
     know the difference — the remaining arithmetic is written with plain
-    operators, which compose identically for floats and for ``pl.Expr``. With
-    all-literal inputs every element comes back a plain float, which is what
-    keeps plan-time affine fusion (``_literal_matrix_values``) working.
+    operators, which compose identically for floats and for ``pl.Expr``.
 
     Args:
         angle_deg: Rotation angle in degrees (positive = clockwise).
@@ -144,24 +142,6 @@ def _param_list(
         is_expr=False,
         value=[track(v).to_dict() for v in values],
     )
-
-
-def _literal_matrix_values(matrix_param: "ParamValue") -> "list[float] | None":
-    """Return the six literal floats of a ``warp_affine`` matrix param.
-
-    Returns ``None`` when any element is a per-row expression — such a matrix is
-    only resolvable at execution, so it cannot participate in plan-time affine
-    fusion (matrix composition needs concrete numbers).
-    """
-    elements = matrix_param.value
-    if not isinstance(elements, list):
-        return None
-    out: list[float] = []
-    for elem in elements:
-        if not isinstance(elem, dict) or elem.get("type") != "literal":
-            return None
-        out.append(float(elem["value"]))
-    return out
 
 
 #: view-buffer's identity domain (`Domain::Any`): a step declaring it accepts
@@ -256,13 +236,6 @@ def _output_shape_equals_input(
 #: not cross an op — a hard stop, distinct from "crosses unchanged" (the window
 #: itself). See :meth:`Pipeline._spatial_transfer`.
 _SPATIAL_BARRIER = object()
-
-#: Tolerance (degrees) for treating a static rotation angle as a cardinal
-#: (0/90/180/270) rotation in affine fusion. Deliberately more inclusive than the
-#: engine's exact-cardinal dispatch: a near-cardinal angle is left *unfused* (its
-#: lone rotate still executes correctly through the engine), so widening this only
-#: declines a fusion, never changes a result.
-_CARDINAL_ANGLE_EPS_DEG = 0.001
 
 
 def _literal_axes(axes: "Sequence[int]", label: str) -> "ParamValue":
@@ -1078,10 +1051,11 @@ class Pipeline:
                 every rank-changing op. ``None`` means the rank is genuinely
                 unknown, not "look it up".
         """
-        # Record the hints ENTERING this op (before the update below) so
-        # affine fusion can convert a rotate with the shape at its own
-        # position. Any assert_shape() between ops is naturally captured:
-        # it mutated _shape_hints before this append.
+        # Record the hints ENTERING this op (before the update below) so a
+        # plan-time pass can read an op's own entering H/W by position (identity
+        # elimination reads it for WhenShapePreserved ops; spatial-window
+        # pushdown keeps it for unmoved ops). Any assert_shape() between ops is
+        # naturally captured: it mutated _shape_hints before this append.
         # `_push_op` appends before calling, so there is always an op here.
         idx = len(self._ops) - 1
         self._hint_snapshots[idx] = (
@@ -3507,12 +3481,6 @@ class Pipeline:
         Returns:
             Self for chaining.
 
-        Note:
-            A matrix built from expressions cannot participate in plan-time
-            affine fusion, which needs concrete numbers to compose matrices;
-            such a call executes as its own warp instead of being folded into
-            a neighbouring one.
-
         Example:
             ```python
             >>> pipe = Pipeline().source("image_bytes").rotate_and_scale(
@@ -4318,8 +4286,8 @@ class Pipeline:
             # Non-root node: source is blob (receives from upstream)
             sub._source = SourceSpec(format=SourceFormat(source_format))
 
-        # The op slice carries its position-keyed side tables with it, so
-        # affine fusion in the sub-pipeline still sees per-position shapes.
+        # The op slice carries its position-keyed side tables with it, so a
+        # plan-time pass in the sub-pipeline still sees per-position shapes.
         sub._set_ops_slice(self._ops[start_op:end_op], shift=start_op)
 
         # Compute the correct domain and dtype for this subset of operations.
@@ -4394,227 +4362,6 @@ class Pipeline:
                     "other_nodes": ParamValue(is_expr=False, value=other_node_ids),
                 },
             )
-        )
-
-    def _compute_affine_fusion(
-        self, ops: list[OpSpec]
-    ) -> "tuple[list[OpSpec], dict[int, int]]":
-        """Compose consecutive affine-compatible ops into a single ``warp_affine``.
-
-        Both ``warp_affine`` and ``rotate`` (with static, non-90/180/270 angles)
-        participate in fusion. Matrix composition uses 3x3 homogeneous
-        multiplication so that ``rotate → translate → shear`` becomes one affine
-        warp, avoiding redundant interpolation passes. ``rotate`` ops with
-        expression-based angles or zero-copy angles (90/180/270) are left as-is
-        and break a fusion run.
-
-        The single source of truth for the affine-fusion algorithm, called by
-        :meth:`_fuse_affine_inplace` (the Tier-1 pass entry point). Returns the
-        new op list and an ``old index -> new index`` map; every old index that
-        fell in a fused run maps to the single op that replaced it, which
-        :meth:`_commit_optimized_ops` needs to move the index-keyed side tables.
-        """
-        if len(ops) < 2:
-            return list(ops), {i: i for i in range(len(ops))}
-
-        result: list[OpSpec] = []
-        old_to_new: dict[int, int] = {}
-        i = 0
-        while i < len(ops):
-            converted = self._try_convert_rotate_to_affine(ops[i], op_index=i)
-            if converted is None:
-                old_to_new[i] = len(result)
-                result.append(ops[i])
-                i += 1
-                continue
-
-            acc = converted
-            j = i + 1
-            while j < len(ops):
-                next_converted = self._try_convert_rotate_to_affine(ops[j], op_index=j)
-                if next_converted is None:
-                    break
-                acc = self._compose_affine_ops(acc, next_converted)
-                j += 1
-            if j == i + 1:
-                # Run of one: nothing to fuse with. Keep the original op —
-                # a lone runtime rotate computes its matrix from the actual
-                # buffer dimensions, which beats baking in plan-time hints.
-                old_to_new[i] = len(result)
-                result.append(ops[i])
-            else:
-                fused_idx = len(result)
-                for k in range(i, j):
-                    old_to_new[k] = fused_idx
-                result.append(acc)
-            i = j
-
-        return result, old_to_new
-
-    def _fuse_affine_inplace(self) -> None:
-        """Apply the affine-fusion pass to this pipeline's ops, in place.
-
-        The Tier-1 entry point for affine fusion (called by
-        ``PipelineGraph.optimize`` per node, and at shape-subpipeline
-        finalization). Commits through :meth:`_commit_optimized_ops` so every
-        table keyed by op index moves with the rewrite. A no-op when nothing
-        fuses, so it is safe to call unconditionally on an already-optimized or
-        fusion-free pipeline.
-        """
-        new_ops, old_to_new = self._compute_affine_fusion(self._ops)
-        if len(new_ops) == len(self._ops):
-            return
-        self._commit_optimized_ops(new_ops, old_to_new)
-
-    def _commit_optimized_ops(
-        self, ops: "list[OpSpec]", old_to_new: "dict[int, int]"
-    ) -> None:
-        """Replace ``_ops`` with an optimization rewrite, re-keying side tables.
-
-        The canonical sibling of :meth:`_set_ops_slice`: that handles a uniform
-        prefix/suffix ``shift`` (CSE splitting one pipeline across two nodes);
-        this handles an arbitrary ``old -> new`` index remap (an affine run
-        collapsing to one op). Both exist so no optimization assigns ``_ops``
-        directly and forgets which tables are keyed by op position.
-        """
-        self._ops = list(ops)
-        # Entering-hint snapshots: the fused op enters where the run's FIRST
-        # op entered, so a new index takes the lowest old index mapped to it.
-        new_to_first_old: dict[int, int] = {}
-        for old_i, new_i in old_to_new.items():
-            if new_i not in new_to_first_old or old_i < new_to_first_old[new_i]:
-                new_to_first_old[new_i] = old_i
-        self._hint_snapshots = {
-            new_i: self._hint_snapshots[old_i]
-            for new_i, old_i in new_to_first_old.items()
-            if old_i in self._hint_snapshots
-        }
-        # Assertions key on op-boundary positions (0..len). A boundary inside a
-        # fused run collapses onto that run's start; later boundaries shift left.
-        n_new = len(ops)
-        self._assertions = {
-            (old_to_new[p] if p in old_to_new else n_new): copy.deepcopy(a)
-            for p, a in self._assertions.items()
-        }
-
-    def _try_convert_rotate_to_affine(self, op: OpSpec, op_index: int) -> OpSpec | None:
-        """Convert an op to a ``warp_affine`` ``OpSpec`` if it is fusible.
-
-        Returns the op unchanged if it is already ``warp_affine``, converts
-        ``rotate`` with a static arbitrary angle to ``warp_affine``, or
-        returns ``None`` if the op is not affine-compatible.
-
-        The conversion bakes the rotation center and output size into the
-        matrix, so it uses the H/W hints ENTERING the op at ``op_index``
-        (recorded when the op was appended) — never the pipeline's final
-        hints, which reflect the shape after ALL ops.
-        """
-        if op.op == "warp_affine":
-            # A per-row (expression) matrix can't be composed at plan time, so it
-            # is not fusable — leave it to resolve per row at execution.
-            if _literal_matrix_values(op.params["matrix"]) is None:
-                return None
-            return op
-
-        if op.op != "rotate":
-            return None
-
-        angle_pv = op.params.get("angle")
-        if angle_pv is None or angle_pv.is_expr:
-            return None
-
-        angle = float(angle_pv.value)
-        norm = angle % 360
-        if norm < 0:
-            norm += 360
-
-        if (
-            abs(norm - 90) < _CARDINAL_ANGLE_EPS_DEG
-            or abs(norm - 180) < _CARDINAL_ANGLE_EPS_DEG
-            or abs(norm - 270) < _CARDINAL_ANGLE_EPS_DEG
-            or abs(norm) < _CARDINAL_ANGLE_EPS_DEG
-            or abs(norm - 360) < _CARDINAL_ANGLE_EPS_DEG
-        ):
-            return None
-
-        expand_pv = op.params.get("expand")
-        expand = bool(expand_pv and not expand_pv.is_expr and expand_pv.value)
-
-        h_pv, w_pv = self._hint_snapshots.get(op_index, (None, None))
-        if h_pv is None or w_pv is None or h_pv.is_expr or w_pv.is_expr:
-            return None
-
-        ih, iw = int(h_pv.value), int(w_pv.value)
-        # Read the matrix from the engine rather than recomputing it. This is
-        # the same `AffineParams::from_rotation` an *unfused* rotate executes
-        # through, so a rotate produces identical geometry whether or not a
-        # neighbouring op happened to make it fusible. Python used to
-        # transliterate that function line for line, and the two had already
-        # drifted: the angle was normalised here (`angle % 360`) and not there,
-        # and the expand bounding box was rounded half-to-even here against
-        # half-away-from-zero there.
-        #
-        # `angle`, not `norm`: the engine takes the raw angle, and passing it
-        # what it would have received unfused is the whole point.
-        from polars_cv._lib import rotate_affine_params
-
-        matrix, new_h, new_w = rotate_affine_params(angle, ih, iw, expand)
-
-        # The `rotate` builder always emits `interpolation` and `border_value`
-        # (their defaults are the builder's, not this function's), so read them
-        # straight through — carrying the op's own values, never a default baked
-        # in here that could drift from the engine's.
-        return OpSpec(
-            op="warp_affine",
-            params={
-                "matrix": _matrix_param_from_floats(matrix),
-                "output_height": ParamValue(is_expr=False, value=new_h),
-                "output_width": ParamValue(is_expr=False, value=new_w),
-                "interpolation": op.params["interpolation"],
-                "border_value": op.params["border_value"],
-            },
-        )
-
-    @staticmethod
-    def _compose_affine_ops(first: OpSpec, second: OpSpec) -> OpSpec:
-        """Compose two ``warp_affine`` ``OpSpec`` by matrix multiplication.
-
-        The composed matrix is ``second.matrix @ first.matrix`` (in
-        homogeneous 3x3 form).  Output dimensions, interpolation, and
-        border value are taken from *second*.
-
-        Args:
-            first: The earlier warp_affine op.
-            second: The later warp_affine op.
-
-        Returns:
-            A single fused ``OpSpec``.
-        """
-        # Both matrices are literal here: `_try_convert_rotate_to_affine` only
-        # admits an op for fusion when its matrix has no per-row expression.
-        m1 = _literal_matrix_values(first.params["matrix"])
-        m2 = _literal_matrix_values(second.params["matrix"])
-        assert m1 is not None and m2 is not None, "fusion requires literal matrices"
-        a1, b1, tx1, c1, d1, ty1 = m1
-        a2, b2, tx2, c2, d2, ty2 = m2
-
-        fused_matrix = [
-            a2 * a1 + b2 * c1,
-            a2 * b1 + b2 * d1,
-            a2 * tx1 + b2 * ty1 + tx2,
-            c2 * a1 + d2 * c1,
-            c2 * b1 + d2 * d1,
-            c2 * tx1 + d2 * ty1 + ty2,
-        ]
-        return OpSpec(
-            op="warp_affine",
-            params={
-                "matrix": _matrix_param_from_floats(fused_matrix),
-                "output_height": second.params["output_height"],
-                "output_width": second.params["output_width"],
-                "interpolation": second.params["interpolation"],
-                "border_value": second.params["border_value"],
-            },
         )
 
     # --- Spatial-window pushdown ---
@@ -4733,19 +4480,17 @@ class Pipeline:
     ) -> None:
         """Replace ``_ops`` with a permutation rewrite, re-keying side tables.
 
-        The reorder sibling of :meth:`_commit_optimized_ops` (which handles an
-        affine run's many→one collapse) and :meth:`_set_ops_slice` (CSE's
-        prefix/suffix split). ``perm`` is an ``old index -> new index``
-        bijection.
+        The reorder sibling of :meth:`_set_ops_slice` (CSE's prefix/suffix
+        split) and :meth:`_commit_eliminated_ops` (identity elimination's
+        deletion). ``perm`` is an ``old index -> new index`` bijection.
 
-        ``_hint_snapshots`` (entering H/W per op, read by affine fusion for
-        ``rotate``/``warp_affine`` only): ops that did not move keep their exact
-        snapshot — including any affine op fusion will read, whose entering shape
-        is unchanged because a ``Pointwise`` reorder near it does not alter H/W.
-        Moved ops are ``Pointwise`` (never affine), so their snapshot is dropped
-        rather than carried stale; fusion never reads it. A future move that
-        changes an op's *entering* shape (cross-node, geometric) must recompute
-        snapshots, not drop them — see the pushdown design notes.
+        ``_hint_snapshots`` (entering H/W per op): ops that did not move keep
+        their exact snapshot — their entering shape is unchanged because a
+        ``Pointwise`` reorder near them does not alter H/W. Moved ops are
+        ``Pointwise``, so their snapshot is dropped rather than carried stale. A
+        future move that changes an op's *entering* shape (cross-node,
+        geometric) must recompute snapshots, not drop them — see the pushdown
+        design notes.
 
         ``_assertions`` (keyed by op-boundary position): the reorder is a
         permutation confined between two boundaries with no assertion boundary
@@ -5019,17 +4764,19 @@ class Pipeline:
                 optimization passes selected by ``opt_flags``.
             opt_flags: Which passes to apply when ``optimized`` is ``True`` —
                 same coercion as :meth:`LazyPipelineExpr.sink` (``None`` reads
-                the env default). Every node-scope pass runs, in
-                :data:`polars_cv._optimize.LOGICAL_PASSES` order — identity
-                elimination, spatial-window pushdown, then affine fusion.
-                Graph-scope CSE is inert for a single ``Pipeline`` (it only shares
-                a prefix once sibling pipelines meet in a graph) and is skipped.
+                the env default). Every node-scope logical pass runs, in
+                :data:`polars_cv._optimize.OPTIMIZATION_PASSES` order — identity
+                elimination, then spatial-window pushdown. Graph-scope CSE is
+                inert for a single ``Pipeline`` (it only shares a prefix once
+                sibling pipelines meet in a graph), and engine-tier passes are
+                Rust lowering with no effect on the logical op chain; both are
+                skipped.
 
         Returns:
             A one-line ``Pipeline().…`` rendering of the chain.
         """
         from polars_cv._graph import PipelineGraph
-        from polars_cv._optimize import LOGICAL_PASSES, resolve_opt_flags
+        from polars_cv._optimize import OPTIMIZATION_PASSES, resolve_opt_flags
 
         if not optimized:
             return repr(self)
@@ -5038,9 +4785,13 @@ class Pipeline:
         # Drive the node passes from the one registry `optimize()` uses, so a new
         # pass is applied here automatically and this never drifts from `.sink()`
         # (which is exactly how identity elimination went missing when it was
-        # hand-listed). CSE is graph-scope and inert for a lone pipeline.
+        # hand-listed). Only logical, node-scope passes change the op chain this
+        # renders: CSE is graph-scope and inert for a lone pipeline, and
+        # engine-tier passes are Rust lowering with no effect on the logical ops.
         handlers = PipelineGraph._pass_handlers()
-        for spec in LOGICAL_PASSES:
+        for spec in OPTIMIZATION_PASSES:
+            if spec.tier != "logical":
+                continue
             scope, run = handlers[spec.name]
             if scope == "node" and flags.enabled(spec.name):
                 run(physical)

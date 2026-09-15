@@ -53,7 +53,6 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
-    m.add_function(wrap_pyfunction!(rotate_affine_params, m)?)?;
     m.add_function(wrap_pyfunction!(rotation_matrix_2d, m)?)?;
     Ok(())
 }
@@ -573,42 +572,6 @@ fn bbox_schema() -> Vec<String> {
 
 /// The affine parameters a `rotate` executes as, for a known input shape.
 ///
-/// Returns `(matrix, output_height, output_width)` straight out of
-/// `AffineParams::from_rotation` — **the** rotation-matrix authority, and the
-/// one an unfused `rotate` actually runs through (`ComputeOp::RotateAffine`).
-///
-/// It exists so the Python planner's affine fusion can *read* that matrix
-/// instead of recomputing it. It used to transliterate `from_rotation` line for
-/// line, which meant a `rotate()` produced its matrix from Rust when it stood
-/// alone and from Python when a neighbouring op made it fusible — two
-/// implementations of one formula, differing already in angle normalisation
-/// (`angle % 360` in Python, raw in Rust) and in rounding (Python's `round` is
-/// half-to-even, Rust's is half-away-from-zero). Nothing compared them; the
-/// test that looked like it did compared Python against a third copy of itself.
-#[pyfunction]
-fn rotate_affine_params(
-    angle_deg: f32,
-    input_height: u32,
-    input_width: u32,
-    expand: bool,
-) -> PyResult<(Vec<f64>, u32, u32)> {
-    let params = view_buffer::ops::affine::AffineParams::from_rotation(
-        angle_deg,
-        input_height,
-        input_width,
-        expand,
-        // Neither affects the matrix or the output size; the caller keeps the
-        // op's own values for these and only wants the geometry.
-        view_buffer::ops::affine::InterpolationType::Bilinear,
-        0.0,
-    );
-    Ok((
-        params.matrix.to_vec(),
-        params.output_height,
-        params.output_width,
-    ))
-}
-
 /// The 2x3 rotation+scale matrix about `(cx, cy)` — the same authority
 /// (`AffineParams::rotation_matrix_2d`) that `from_rotation` builds on.
 ///

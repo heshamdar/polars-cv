@@ -2,17 +2,16 @@
 
 The core guarantee: toggling optimization passes changes only the *physical*
 graph, never the result the user sees. This executes representative pipelines
-under many flag subsets and asserts the outputs agree — byte-identical for
-bit-exact passes (per ``PassSpec.bit_exact``), structurally identical for the
-one pass that trades interpolation passes for speed (affine fusion), which the
-matrix-composition guards in ``test_affine_builder`` / ``test_schema_parity_
-chains`` already pin at the pixel level.
+under a representative set of flag combinations and asserts the outputs agree
+byte-for-byte. Every current optimization is byte-exact (``PassSpec.bit_exact``
+is ``True`` for all of them); ``TestEveryOptimizationOnOffEquivalence`` pins a
+dedicated on/off differential for each registered pass so none can be added
+without one.
 """
 
 from __future__ import annotations
 
 import io
-import itertools
 
 import numpy as np
 import polars as pl
@@ -37,11 +36,21 @@ def sample_df() -> pl.DataFrame:
 
 
 def _all_flag_subsets() -> list[OptFlags]:
-    """Every combination of pass on/off."""
-    return [
-        OptFlags(**dict(zip(PASS_NAMES, bits)))
-        for bits in itertools.product([False, True], repeat=len(PASS_NAMES))
-    ]
+    """A representative set of flag combinations.
+
+    All-off and all-on, plus each pass individually toggled from both baselines
+    (one-on-from-none and one-off-from-all). This is linear in the number of
+    passes rather than the 2^N full power set — which, with both tiers now in the
+    registry, would be hundreds of combinations per case — while still exercising
+    every pass on its own and against the fully-optimized graph.
+    """
+    subsets = [OptFlags.none(), OptFlags.all()]
+    for name in PASS_NAMES:
+        all_on = {n: True for n in PASS_NAMES}
+        all_off = {n: False for n in PASS_NAMES}
+        subsets.append(OptFlags(**{**all_on, name: False}))
+        subsets.append(OptFlags(**{**all_off, name: True}))
+    return subsets
 
 
 def _arr(df: pl.DataFrame, expr: pl.Expr) -> np.ndarray:
@@ -65,12 +74,11 @@ def _src() -> Pipeline:
     return Pipeline().source("image_bytes")
 
 
-# One representative pipeline per op family, each **bit-exact** under both passes:
-# none contains an adjacent affine run (a lone rotate is a run-of-one, so it does
-# not fuse), and a single pipeline has no CSE sibling — so toggling any pass must
-# leave the output byte-for-byte identical. A future pass that reordered or
-# dropped one of these ops would break the invariant here. `fmt` is the op's
-# natural sink (buffer ops → numpy; scalar/vector ops → native).
+# One representative pipeline per op family, each **bit-exact**: a single
+# pipeline has no CSE sibling, so toggling any pass must leave the output
+# byte-for-byte identical. A future pass that reordered or dropped one of these
+# ops would break the invariant here. `fmt` is the op's natural sink (buffer ops
+# → numpy; scalar/vector ops → native).
 _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
     ("resize", lambda p: p.resize(height=32, width=32), "numpy"),
     ("grayscale", lambda p: p.grayscale(), "numpy"),
@@ -102,11 +110,11 @@ _OP_FAMILY_CASES: list[tuple[str, object, str]] = [
 class TestOpFamilyByteExact:
     """Optimization preserves every op family's output, byte for byte.
 
-    Each pipeline is bit-exact under both passes (no CSE sibling, no adjacent
-    affine run), so toggling any flag subset must not change a single byte. This
-    is the breadth guard: a future pass that reordered or dropped one of these
-    ops would fail here. (It cannot assert a pass *fired* — none does on a lone
-    bit-exact pipeline; the fired guards live in the CSE and affine tests.)
+    Each pipeline is bit-exact (no CSE sibling), so toggling any flag combination
+    must not change a single byte. This is the breadth guard: a future pass that
+    reordered or dropped one of these ops would fail here. (It cannot assert a
+    pass *fired* — none does on a lone bit-exact pipeline; the fired guards live
+    in the CSE and per-optimization tests.)
     """
 
     @pytest.mark.parametrize(
@@ -168,8 +176,8 @@ class TestCseEquivalence:
 
     Each case also asserts CSE *fired* (fewer total ops with CSE on than off), so
     a disconnected optimizer fails here rather than passing vacuously. Only the
-    CSE flag is toggled; affine fusion is held on, so any affine run behaves the
-    same on both sides and the comparison isolates CSE.
+    CSE flag is toggled; every other pass is held on, so the comparison isolates
+    CSE.
     """
 
     def _shared(self) -> dict[str, Pipeline]:
@@ -202,28 +210,20 @@ class TestCseEquivalence:
         pipes = {"a": base, "b": base.threshold(100)}
         self._assert_equivalent_and_fired(df, pipes)
 
-    def test_cse_and_affine_run_together(self, sample_df: pl.DataFrame) -> None:
-        # Shared prefix ends in an affine run: both passes act. Toggling only CSE
-        # (affine held on) must stay byte-identical, and CSE must still fire.
-        base = (
-            Pipeline()
-            .source("image_bytes")
-            .resize(width=64, height=64)
-            .rotate(30.0)
-            .rotate(15.0)
-        )
-        pipes = {"a": base, "b": base.grayscale()}
-        self._assert_equivalent_and_fired(sample_df, pipes, affine=True)
+    def test_cse_with_other_passes_on(self, sample_df: pl.DataFrame) -> None:
+        # Shared prefix, with all other passes held on: toggling only CSE must
+        # stay byte-identical, and CSE must still fire.
+        base = Pipeline().source("image_bytes").resize(width=64, height=64).grayscale()
+        pipes = {"a": base, "b": base.threshold(120)}
+        self._assert_equivalent_and_fired(sample_df, pipes)
 
     def _assert_equivalent_and_fired(
         self,
         df: pl.DataFrame,
         pipes: dict[str, Pipeline],
-        *,
-        affine: bool = True,
     ) -> None:
-        on = OptFlags(common_subexpression_elimination=True, affine_fusion=affine)
-        off = OptFlags(common_subexpression_elimination=False, affine_fusion=affine)
+        on = OptFlags(common_subexpression_elimination=True)
+        off = OptFlags(common_subexpression_elimination=False)
         out_on = _run_multi(df, pipes, on)
         out_off = _run_multi(df, pipes, off)
         for alias in pipes:
@@ -244,9 +244,9 @@ def _png(color: tuple[int, int, int], size: int = 64) -> bytes:
 class TestSourceRowNullVariety:
     """Equivalence holds beyond a single image_bytes row.
 
-    Multiple rows, a null row (which rides the node-skip path CSE and fusion must
+    Multiple rows, a null row (which rides the node-skip path the passes must
     preserve), and a non-image source. All cases use bit-exact pipelines so every
-    flag subset must be byte-identical.
+    flag combination must be byte-identical.
     """
 
     def test_multiple_rows(self) -> None:
@@ -389,9 +389,9 @@ class TestDifferentialEquivalence:
     def test_every_flag_subset_is_identical_on_a_bit_exact_pipeline(
         self, sample_df: pl.DataFrame
     ) -> None:
-        """A pipeline with no affine run: output is byte-identical under every
-        flag subset. CSE and affine fusion are both no-ops here, so this pins
-        the baseline 'optimization never changes a bit-exact result'."""
+        """A single bit-exact pipeline: output is byte-identical under every
+        flag combination, pinning the baseline 'optimization never changes a
+        bit-exact result'."""
         pipe = (
             Pipeline()
             .source("image_bytes")
@@ -438,34 +438,6 @@ class TestDifferentialEquivalence:
         assert np.array_equal(on_gray, off_gray)
         assert np.array_equal(on_thresh, off_thresh)
 
-    def test_affine_fusion_preserves_structure_and_changes_the_graph(
-        self, sample_df: pl.DataFrame
-    ) -> None:
-        """Affine fusion is not bit-exact (one interpolation pass instead of
-        two), so the guarantee here is structural: same shape and dtype, and the
-        physical graph demonstrably changed. Pixel-level correctness of the
-        composed matrix is pinned by the affine-builder / schema-parity tests."""
-        pipe = (
-            Pipeline()
-            .source("image_bytes")
-            .resize(width=64, height=64)
-            .rotate(30.0)
-            .rotate(15.0)
-        )
-        fused = _arr(
-            sample_df,
-            pl.col("image").cv.pipe(pipe).sink("numpy", opt_flags=OptFlags.all()),
-        )
-        unfused = _arr(
-            sample_df,
-            pl.col("image").cv.pipe(pipe).sink("numpy", opt_flags=OptFlags.none()),
-        )
-        assert fused.shape == unfused.shape
-        assert fused.dtype == unfused.dtype
-        # The physical graph must differ even though the intent is the same.
-        assert "warp_affine" in pipe.explain(optimized=True)
-        assert pipe.explain(optimized=True) != pipe.explain(optimized=False)
-
     def test_env_default_drives_sink_when_flags_omitted(
         self, sample_df: pl.DataFrame, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -498,6 +470,14 @@ _IDENTITY_ELIMINATION_CASES: list[tuple[str, object]] = [
         ),
     ),
     ("redundant_cast", lambda p: p.cast("u8").cast("u8")),
+    (
+        "same_shape_reshape",
+        lambda p: p.resize(height=32, width=32).reshape([32, 32, 3]),
+    ),
+    (
+        "pad_to_size_same",
+        lambda p: p.resize(height=32, width=32).pad_to_size(height=32, width=32),
+    ),
 ]
 
 
@@ -522,3 +502,78 @@ class TestIdentityEliminationByteExact:
         )
         for other in outputs[1:]:
             assert other == outputs[0], f"{case_id}: output changed under a flag subset"
+
+
+# One representative pipeline per optimization that toggling it exercises. Each
+# is byte-exact, so enabling the pass (all others off) must not change a byte of
+# the output. CSE needs sibling pipelines, so it is covered by
+# ``TestCseEquivalence`` and mapped in the coverage guard below rather than here.
+_PER_OPT_CASES: list[tuple[str, object, str]] = [
+    (
+        "identity_elimination",
+        lambda p: p.resize(height=32, width=32).crop(
+            top=0, left=0, height=32, width=32
+        ),
+        "numpy",
+    ),
+    (
+        "spatial_window_pushdown",
+        lambda p: p.grayscale().crop(top=1, left=1, height=16, width=16),
+        "numpy",
+    ),
+    ("cast_chain_collapse", lambda p: p.cast("u16").cast("f32"), "numpy"),
+    ("cast_identity", lambda p: p.cast("u8"), "numpy"),
+    (
+        "view_flip_involution",
+        lambda p: p.flip(axes=[0]).flip(axes=[0]),
+        "numpy",
+    ),
+    (
+        "view_transpose_merge",
+        lambda p: p.transpose(axes=[1, 0, 2]).transpose(axes=[1, 0, 2]),
+        "numpy",
+    ),
+    ("scalar_fusion", lambda p: p.cast("f32").scale(0.5).invert(), "numpy"),
+]
+
+#: The one pass not expressible as a single-pipeline case; covered elsewhere.
+_DIFFERENTIAL_COVERED_ELSEWHERE = {"common_subexpression_elimination"}
+
+
+def test_every_optimization_has_an_on_off_differential() -> None:
+    """Every registered pass has a dedicated on/off differential test.
+
+    Pins the mandate that no optimization ships without a test proving it does
+    not change output — a new pass with no case (here or, for CSE, in
+    ``TestCseEquivalence``) fails this guard. Needs no plugin.
+    """
+    covered = {c[0] for c in _PER_OPT_CASES} | _DIFFERENTIAL_COVERED_ELSEWHERE
+    assert covered == set(PASS_NAMES), (
+        "optimizations without an on/off differential: "
+        f"{sorted(set(PASS_NAMES) - covered)}"
+    )
+
+
+@plugin_required
+class TestEveryOptimizationOnOffEquivalence:
+    """Toggling any single optimization on preserves the output byte-for-byte.
+
+    Baseline is all-off; enabling just the one pass must match. This is the
+    literal 'output with the optimization is the same as without' guarantee, one
+    parametrization per registered (single-pipeline) pass.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "build", "fmt"),
+        _PER_OPT_CASES,
+        ids=[c[0] for c in _PER_OPT_CASES],
+    )
+    def test_toggling_one_optimization_preserves_output(
+        self, sample_df: pl.DataFrame, name: str, build: object, fmt: str
+    ) -> None:
+        pipe_off = build(_src())  # type: ignore[operator]
+        pipe_on = build(_src())  # type: ignore[operator]
+        off = _sink_output(sample_df, pipe_off, OptFlags.none(), fmt)
+        on = _sink_output(sample_df, pipe_on, OptFlags(**{name: True}), fmt)
+        assert off and off[0] is not None, f"{name}: produced an empty/null output"
+        assert on == off, f"{name}: output changed when the optimization was enabled"

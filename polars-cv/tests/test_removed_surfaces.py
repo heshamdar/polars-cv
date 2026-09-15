@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import re
 from pathlib import Path
 
 import polars as pl
@@ -499,39 +498,22 @@ def test_the_contour_kwargs_wire_field_is_gone() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_planner_does_not_recompute_the_rotation_matrix() -> None:
-    """``pipeline.py`` must read the rotate matrix from Rust, never derive it.
+def test_the_rotate_and_scale_builder_reads_the_matrix_ffi() -> None:
+    """``_rotation_matrix`` must read the rotate matrix from Rust, never derive it.
 
-    ``AffineParams::from_rotation`` is the authority, and it is what an
-    *unfused* rotate executes through. The planner's affine fusion used to
-    transliterate it line for line — same variable names, same matrix layout —
-    so which implementation produced a user's rotation depended on whether a
-    neighbouring op happened to be affine-fusible. The two had already drifted
-    (Python normalised ``angle % 360``, Rust did not; Python's ``round`` is
-    half-to-even, Rust's is half-away-from-zero), and nothing compared them:
-    the test that looked like a cross-check compared Python against a *third*
-    copy of the same arithmetic living in ``test_affine_builder.py``.
+    ``rotation_matrix_2d`` is the single authority. ``_rotation_matrix`` (used by
+    ``rotate_and_scale``) must call that FFI for its all-literal case rather than
+    recomputing the trig; only the ``pl.Expr`` branch keeps its own arithmetic,
+    because the engine cannot evaluate an expression at plan time — the one
+    sanctioned copy.
 
-    A pixel-level test cannot replace this. It pins the values for the angles
-    it happens to sweep, whereas the property is that there is only one
-    implementation to disagree with.
+    (An earlier affine-fusion pass carried a *second* transliteration of the
+    rotation matrix, which had already drifted from the engine's; that pass, and
+    the ``rotate_affine_params`` FFI it read, were removed — see
+    ``test_removed_surfaces``' affine-fusion entry.)
     """
     source = (Path(polars_cv.__file__).resolve().parent / "pipeline.py").read_text()
 
-    fusion_start = source.index("def _try_convert_rotate_to_affine")
-    fusion_end = source.index("def _to_spec_dict")
-    fusion = source[fusion_start:fusion_end]
-    assert "rotate_affine_params" in fusion, (
-        "affine fusion no longer calls rotate_affine_params -- if it derives "
-        "the matrix itself again, a fused rotate and an unfused one can "
-        "silently disagree."
-    )
-
-    # `_rotation_matrix` (used by `rotate_and_scale`) must read the same Rust
-    # authority for its all-literal case: its fast path calls the
-    # `rotation_matrix_2d` FFI rather than recomputing the trig. Only the
-    # `pl.Expr` branch keeps its own arithmetic, because the engine cannot
-    # evaluate an expression at plan time -- the one sanctioned copy.
     rot_start = source.index("def _rotation_matrix")
     rot_end = source.index("def ", rot_start + 1)
     rotation_matrix = source[rot_start:rot_end]
@@ -541,26 +523,60 @@ def test_the_planner_does_not_recompute_the_rotation_matrix() -> None:
         "second implementation of the formula the FFI already owns."
     )
 
-    # The trig that builds a rotation matrix, in the fusion helper. Scope this
-    # to the helper rather than the whole module: `_rotation_matrix`'s `pl.Expr`
-    # branch (asserted above to defer to the FFI for literals) legitimately
-    # keeps its own trig for the expression case.
-    #
-    # Matched on the bare names as well as the `math.` attribute form: a
-    # `from math import cos, sin` inside the helper reintroduces exactly the
-    # second implementation this rejects, and an attribute-only scan reads
-    # green through it.
-    tokens = ("cos", "sin", "radians", "atan2", "hypot")
-    offenders = sorted(
-        token
-        for token in tokens
-        if re.search(rf"(?<![\w.]){token}\s*\(", fusion) or f"math.{token}" in fusion
+
+# ---------------------------------------------------------------------------
+# affine_fusion: an optimization pass that changed pixels
+# ---------------------------------------------------------------------------
+
+
+def test_affine_fusion_pass_is_gone() -> None:
+    """Affine fusion was removed and must not return.
+
+    Fusing a run of warps into one collapses several interpolation passes into
+    one (and drops the intermediate clip of an ``expand=False`` rotate), so it
+    changed pixels by up to ~185/255 — it could not satisfy the on/off output
+    equivalence every optimization now carries. See the CHANGELOG.
+
+    This pins the whole surface: the registry/flag, the Pipeline methods, and
+    the ``_CARDINAL_ANGLE_EPS_DEG``/``_literal_matrix_values`` helpers that only
+    served it. The ``rotate_affine_params`` FFI it read is guarded separately
+    (it needs the compiled plugin to observe its absence).
+    """
+    from polars_cv import OptFlags
+    from polars_cv._optimize import PASS_NAMES
+
+    assert "affine_fusion" not in PASS_NAMES, "affine_fusion re-entered the registry"
+    assert not hasattr(OptFlags(), "affine_fusion"), "OptFlags.affine_fusion restored"
+
+    source = (Path(polars_cv.__file__).resolve().parent / "pipeline.py").read_text()
+    for gone in (
+        "_fuse_affine_inplace",
+        "_compute_affine_fusion",
+        "_try_convert_rotate_to_affine",
+        "_compose_affine_ops",
+        "_commit_optimized_ops",
+        "_literal_matrix_values",
+        "_CARDINAL_ANGLE_EPS_DEG",
+    ):
+        assert gone not in source, (
+            f"{gone} was restored -- affine fusion is removed; if a new "
+            f"interpolation-fusing pass is added it must declare bit_exact=False "
+            f"and be tested within a tolerance, not silently."
+        )
+
+
+@plugin_required
+def test_rotate_affine_params_ffi_is_gone() -> None:
+    """The ``rotate_affine_params`` FFI existed only for affine fusion; with the
+    pass removed it is dead and was deleted. ``rotation_matrix_2d`` (used by the
+    surviving ``rotate_and_scale`` builder) stays."""
+    import polars_cv._lib as _lib
+
+    assert not hasattr(_lib, "rotate_affine_params"), (
+        "rotate_affine_params FFI restored -- it served only affine fusion"
     )
-    assert not offenders, (
-        f"affine fusion computes {offenders} again. The rotation matrix has "
-        f"one authority (AffineParams::from_rotation, via the "
-        f"rotate_affine_params FFI); a second one is what this guard exists "
-        f"to reject."
+    assert hasattr(_lib, "rotation_matrix_2d"), (
+        "rotation_matrix_2d FFI missing -- rotate_and_scale still needs it"
     )
 
 

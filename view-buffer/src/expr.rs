@@ -12,6 +12,44 @@ use crate::ops::{
     ViewDto, ViewOp,
 };
 
+/// Which engine-tier (Tier-2) optimizations [`ViewExpr::optimize_with`] applies.
+///
+/// Each field toggles one output-preserving rewrite so it can be A/B differential
+/// tested (output-on == output-off). Every field defaults to `true`, and the
+/// struct is `#[serde(default)]`, so a direct view-buffer caller, an older graph
+/// spec, or a spec omitting individual keys gets the full set enabled — the
+/// historical behavior. Mandatory correctness lowering (materialization,
+/// stride-preserving views, the f64 fusion exclusion) is *not* represented here:
+/// it is not optional, so it has no toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct OptConfig {
+    /// Cancel `flip(a) ∘ flip(a)` (involution).
+    pub view_flip_involution: bool,
+    /// Merge `transpose(p1) ∘ transpose(p2)` into one (or identity).
+    pub view_transpose_merge: bool,
+    /// Drop a `cast(T)` whose child is already dtype `T`.
+    pub cast_identity: bool,
+    /// Collapse `cast(inner) ∘ cast(target)` when `inner` losslessly contains the
+    /// grandchild dtype (a narrowing intermediate is kept — see the bug fix).
+    pub cast_chain_collapse: bool,
+    /// Fuse adjacent scalar/compute ops into a single kernel.
+    pub scalar_fusion: bool,
+}
+
+impl Default for OptConfig {
+    fn default() -> Self {
+        Self {
+            view_flip_involution: true,
+            view_transpose_merge: true,
+            cast_identity: true,
+            cast_chain_collapse: true,
+            scalar_fusion: true,
+        }
+    }
+}
+
 /// A node in the expression graph.
 #[derive(Debug, Clone)]
 pub enum ExprNode {
@@ -408,41 +446,55 @@ impl ViewExpr {
 
     // --- Optimization ---
 
+    /// Apply the engine-tier rewrites with every toggle enabled — the
+    /// convenience entry point for direct view-buffer callers and tests. See
+    /// [`optimize_with`](Self::optimize_with) for the toggled form.
     pub fn optimize(self: &Arc<Self>) -> Arc<Self> {
+        self.optimize_with(&OptConfig::default())
+    }
+
+    /// Apply the engine-tier rewrites gated by `cfg`, each toggle guarding one
+    /// output-preserving rewrite so it can be A/B differential tested. Recurses
+    /// with the same `cfg`.
+    pub fn optimize_with(self: &Arc<Self>, cfg: &OptConfig) -> Arc<Self> {
         let optimized_node = match &self.node {
             ExprNode::Source(_) => return self.clone(),
-            ExprNode::View(op, child) => ExprNode::View(op.clone(), child.optimize()),
-            ExprNode::Compute(op, child) => ExprNode::Compute(op.clone(), child.optimize()),
-            ExprNode::Image(op, child) => ExprNode::Image(op.clone(), child.optimize()),
-            ExprNode::Color(op, child) => ExprNode::Color(op.clone(), child.optimize()),
-            ExprNode::Filter(op, child) => ExprNode::Filter(op.clone(), child.optimize()),
+            ExprNode::View(op, child) => ExprNode::View(op.clone(), child.optimize_with(cfg)),
+            ExprNode::Compute(op, child) => ExprNode::Compute(op.clone(), child.optimize_with(cfg)),
+            ExprNode::Image(op, child) => ExprNode::Image(op.clone(), child.optimize_with(cfg)),
+            ExprNode::Color(op, child) => ExprNode::Color(op.clone(), child.optimize_with(cfg)),
+            ExprNode::Filter(op, child) => ExprNode::Filter(op.clone(), child.optimize_with(cfg)),
         };
 
         match optimized_node {
             ExprNode::View(ViewOp::Flip(axes1), child) => {
-                if let ExprNode::View(ViewOp::Flip(ref axes2), ref grandchild) = &child.node {
-                    if axes1 == *axes2 {
-                        return grandchild.clone();
+                if cfg.view_flip_involution {
+                    if let ExprNode::View(ViewOp::Flip(ref axes2), ref grandchild) = &child.node {
+                        if axes1 == *axes2 {
+                            return grandchild.clone();
+                        }
                     }
                 }
                 self.rebuild(ExprNode::View(ViewOp::Flip(axes1), child))
             }
 
             ExprNode::View(ViewOp::Transpose(p1), child) => {
-                if let ExprNode::View(ViewOp::Transpose(ref p2), ref grandchild) = &child.node {
-                    // Compose the two permutations: applying `p1` after `p2` is a
-                    // single transpose by `merged[i] = p2[p1[i]]`.
-                    let merged: Vec<usize> = p1.iter().map(|&i| p2[i]).collect();
-                    let is_identity = merged.iter().enumerate().all(|(i, &x)| i == x);
-                    if is_identity {
-                        return grandchild.clone();
+                if cfg.view_transpose_merge {
+                    if let ExprNode::View(ViewOp::Transpose(ref p2), ref grandchild) = &child.node {
+                        // Compose the two permutations: applying `p1` after `p2` is a
+                        // single transpose by `merged[i] = p2[p1[i]]`.
+                        let merged: Vec<usize> = p1.iter().map(|&i| p2[i]).collect();
+                        let is_identity = merged.iter().enumerate().all(|(i, &x)| i == x);
+                        if is_identity {
+                            return grandchild.clone();
+                        }
+                        // Build the merged transpose through the canonical `transpose`
+                        // builder so its shape/strides are recomputed from the
+                        // grandchild's real layout, rather than copied from `self`
+                        // (whose strides described the two-transpose chain and need
+                        // not match the fused node's).
+                        return grandchild.transpose(merged);
                     }
-                    // Build the merged transpose through the canonical `transpose`
-                    // builder so its shape/strides are recomputed from the
-                    // grandchild's real layout, rather than copied from `self`
-                    // (whose strides described the two-transpose chain and need
-                    // not match the fused node's).
-                    return grandchild.transpose(merged);
                 }
                 self.rebuild(ExprNode::View(ViewOp::Transpose(p1), child))
             }
@@ -453,43 +505,56 @@ impl ViewExpr {
                     // Optimization 1: Identity cast (cast to same dtype as child)
                     // Example: u8 input -> cast(u8) -> output
                     // Result: eliminate the cast entirely
-                    if child.dtype == *target_dtype {
+                    if cfg.cast_identity && child.dtype == *target_dtype {
                         return child.clone();
                     }
 
-                    // Optimization 2: Consecutive casts (cast(A) -> cast(B) -> cast(A))
-                    // Example: cast(f32) -> cast(u8) -> cast(f32)
-                    // Result: just cast(f32)
-                    if let ExprNode::Compute(ComputeOp::Cast(_), ref grandchild) = &child.node {
-                        // Skip the intermediate cast, cast directly from grandchild
-                        return Arc::new(Self {
-                            node: ExprNode::Compute(
-                                ComputeOp::Cast(*target_dtype),
-                                grandchild.clone(),
-                            ),
-                            shape: self.shape.clone(),
-                            strides: self.strides.clone(),
-                            dtype: *target_dtype,
-                        });
+                    // Optimization 2: Consecutive casts. Dropping the intermediate
+                    // `cast(inner)` is valid only when `inner` losslessly holds the
+                    // grandchild's dtype — otherwise the intermediate quantizes and
+                    // must run (e.g. `f32 -> cast(u8) -> cast(f32)` must keep the u8
+                    // step: 0.5 -> 1 -> 1.0, not 0.5). A narrowing intermediate is
+                    // therefore preserved; scalar fusion also refuses to fuse across
+                    // a non-f32 mid-chain cast, so both casts execute.
+                    if cfg.cast_chain_collapse {
+                        if let ExprNode::Compute(ComputeOp::Cast(inner), ref grandchild) =
+                            &child.node
+                        {
+                            if inner.losslessly_contains(grandchild.dtype) {
+                                // Skip the (lossless) intermediate cast, cast directly
+                                // from grandchild.
+                                return Arc::new(Self {
+                                    node: ExprNode::Compute(
+                                        ComputeOp::Cast(*target_dtype),
+                                        grandchild.clone(),
+                                    ),
+                                    shape: self.shape.clone(),
+                                    strides: self.strides.clone(),
+                                    dtype: *target_dtype,
+                                });
+                            }
+                        }
                     }
                 }
 
                 // Try fusing scalar operations
-                if let ExprNode::Compute(ref op2, ref grandchild) = &child.node {
-                    // Each op's lowering may depend on the dtype it would have
-                    // received unfused; the kernel's output is pinned to the
-                    // chain's planned dtype.
-                    let inner_input_dtype = grandchild.dtype;
-                    let outer_input_dtype = child.dtype;
-                    if let Some(fused) =
-                        try_fuse(&op1, op2, inner_input_dtype, outer_input_dtype, self.dtype)
-                    {
-                        return Arc::new(Self {
-                            node: ExprNode::Compute(fused, grandchild.clone()),
-                            shape: self.shape.clone(),
-                            strides: self.strides.clone(),
-                            dtype: self.dtype,
-                        });
+                if cfg.scalar_fusion {
+                    if let ExprNode::Compute(ref op2, ref grandchild) = &child.node {
+                        // Each op's lowering may depend on the dtype it would have
+                        // received unfused; the kernel's output is pinned to the
+                        // chain's planned dtype.
+                        let inner_input_dtype = grandchild.dtype;
+                        let outer_input_dtype = child.dtype;
+                        if let Some(fused) =
+                            try_fuse(&op1, op2, inner_input_dtype, outer_input_dtype, self.dtype)
+                        {
+                            return Arc::new(Self {
+                                node: ExprNode::Compute(fused, grandchild.clone()),
+                                shape: self.shape.clone(),
+                                strides: self.strides.clone(),
+                                dtype: self.dtype,
+                            });
+                        }
                     }
                 }
                 self.rebuild(ExprNode::Compute(op1, child))
@@ -510,9 +575,17 @@ impl ViewExpr {
 
     // --- Execution Planning ---
 
-    /// Builds and returns an execution plan from the expression graph.
+    /// Builds and returns an execution plan from the expression graph, with all
+    /// engine-tier optimizations enabled. See [`plan_with`](Self::plan_with).
     pub fn plan(self: &Arc<Self>) -> ExecutionPlan {
-        let optimized_expr = self.optimize();
+        self.plan_with(&OptConfig::default())
+    }
+
+    /// Builds an execution plan, applying only the engine-tier optimizations
+    /// `cfg` enables — the entry point the plugin uses to honor per-query
+    /// `opt_flags`.
+    pub fn plan_with(self: &Arc<Self>, cfg: &OptConfig) -> ExecutionPlan {
+        let optimized_expr = self.optimize_with(cfg);
         optimized_expr.build_plan()
     }
 
