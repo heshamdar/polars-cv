@@ -171,6 +171,10 @@ class PipelineGraph:
         # can silently emit an unoptimized graph — optimization lives in exactly
         # one place (``optimize()``, invoked by ``LazyPipelineExpr.sink``).
         self._optimized: bool = False
+        # Engine-tier optimization toggles, set by ``optimize()`` from the
+        # ``OptFlags`` and serialized in the graph's ``opt`` object for Rust.
+        # Empty until optimized; an empty/absent object means all-on in Rust.
+        self._opt_config: dict[str, bool] = {}
 
     def add_node(
         self,
@@ -282,33 +286,40 @@ class PipelineGraph:
 
         The single optimization phase (see :mod:`polars_cv._optimize`).
         Construction and serialization never optimize; this applies each
-        registered Tier-1 pass, gated by ``flags``, in :data:`LOGICAL_PASSES`
-        order — CSE, then identity elimination, then spatial-window pushdown,
-        then affine fusion — mutating the graph in place and returning ``self``
-        for chaining. The run order is *data* (that tuple's order), not
-        hand-wired here, so adding a pass is a registry edit; a fixed order
-        keeps the physical graph deterministic. The passes do not fight:
-        identity elimination only deletes no-ops (it can expose more of both
-        that follow), and pushdown moves a crop only past ``Pointwise`` ops,
-        never an affine op, so fusion sees the same affine positions.
+        registered pass, gated by ``flags``, in :data:`OPTIMIZATION_PASSES`
+        order, mutating the graph in place and returning ``self`` for chaining.
 
-        Every pass is output-preserving; CSE and identity elimination are
-        byte-identical while affine fusion is the same transform with fewer
-        interpolation passes (see ``polars_cv._optimize.PassSpec.bit_exact``).
-        Per-row engine lowering is a separate tier that runs in Rust on this
-        already-optimized graph.
+        The two tiers are handled differently, by each pass's ``tier``:
+
+        - **logical** passes (CSE, identity elimination, spatial-window
+          pushdown) are applied here, rewriting node pipelines.
+        - **engine** passes are per-row lowering that runs later in Rust; their
+          flags are captured into :attr:`_opt_config` and serialized in the
+          graph's ``opt`` object (see :meth:`_to_dict`), gating the Rust
+          ``OptConfig``. Nothing is rewritten here for them.
+
+        The run order is *data* (the tuple's order), not hand-wired here, so
+        adding a pass is a registry edit; a fixed order keeps the physical graph
+        deterministic. The logical passes do not fight: identity elimination only
+        deletes no-ops (it can expose more that follows), and pushdown moves a
+        crop only past ``Pointwise`` ops.
+
+        Every pass is output-preserving and byte-identical when toggled (see
+        ``polars_cv._optimize.PassSpec.bit_exact``).
 
         The passes rewrite node pipelines in place, so the graph first takes its
         own clone of each one: ``cv.pipe(p)`` holds the caller's ``Pipeline`` by
         reference, and ``Pipeline`` is immutable from the caller's view — the
         physical graph must own independent copies to mutate.
         """
-        from polars_cv._optimize import LOGICAL_PASSES
+        from polars_cv._optimize import OPTIMIZATION_PASSES
 
         for node in self._nodes.values():
             node.pipeline = node.pipeline._clone()
         handlers = self._pass_handlers()
-        for spec in LOGICAL_PASSES:
+        for spec in OPTIMIZATION_PASSES:
+            if spec.tier != "logical":
+                continue
             if not flags.enabled(spec.name):
                 continue
             scope, run = handlers[spec.name]
@@ -317,20 +328,23 @@ class PipelineGraph:
             else:  # "node": rewrite each node's ops in place
                 for node in self._nodes.values():
                     run(node.pipeline)
+        # Engine-tier flags do not rewrite the Python graph; they ride to Rust in
+        # the serialized `opt` object, keyed by the Rust `OptConfig` field names.
+        self._opt_config = flags.engine_opt()
         self._optimized = True
         return self
 
     @staticmethod
     def _pass_handlers() -> "dict[str, tuple[str, Any]]":
-        """Each logical pass's applicator, keyed by name.
+        """Each **logical**-tier pass's applicator, keyed by name.
 
         A ``"graph"`` handler takes the whole :class:`PipelineGraph` and may
         rewrite topology (CSE splits siblings onto a shared prefix node); a
         ``"node"`` handler takes one node :class:`Pipeline` and rewrites its ops
-        in place. This map's keys must equal :data:`PASS_NAMES` — a pass without
-        a handler (or a handler without a pass) fails
-        ``test_pass_handlers_cover_every_pass``, the same both-directions guard
-        ``OptFlags`` has.
+        in place. This map's keys must equal :data:`LOGICAL_PASS_NAMES` (engine
+        passes have no Python handler) — a logical pass without a handler, or a
+        handler without a logical pass, fails
+        ``test_pass_handlers_cover_every_logical_pass``.
         """
         from polars_cv.pipeline import Pipeline
 
@@ -344,7 +358,6 @@ class PipelineGraph:
                 "node",
                 Pipeline._hoist_spatial_windows_inplace,
             ),
-            "affine_fusion": ("node", Pipeline._fuse_affine_inplace),
         }
 
     # --- CSE Optimization ---
@@ -747,6 +760,11 @@ class PipelineGraph:
             "nodes": nodes_dict,
             "outputs": outputs_spec,
             "column_bindings": self._column_bindings,
+            # Engine-tier optimization toggles → Rust `OptConfig`. Keys are the
+            # `OptConfig` field names; missing keys default on. Distinct opt
+            # settings key distinct compiled-graph cache entries, so a per-query
+            # toggle actually re-executes.
+            "opt": self._opt_config,
         }
 
         # Both per-row policies are graph-level settings collected from the

@@ -303,6 +303,61 @@ impl DType {
         }
     }
 
+    /// Whether every value representable in `other` is exactly representable in
+    /// `self` — i.e. casting `other` → `self` loses no information.
+    ///
+    /// The plan-time authority for when an intermediate cast may be dropped from
+    /// a cast chain: `grandchild → cast(inner) → cast(target)` collapses to
+    /// `grandchild → cast(target)` only when `inner.losslessly_contains(grandchild)`,
+    /// so the dropped intermediate cast provably changed no value. A narrowing
+    /// intermediate (e.g. `f32 → cast(u8) → cast(f32)`, which quantizes) is not
+    /// contained and must not be dropped.
+    pub fn losslessly_contains(self, other: DType) -> bool {
+        use DType::*;
+        if self == other {
+            return true;
+        }
+        // (is_signed, bit_width) for integer dtypes; None for floats.
+        fn int_info(d: DType) -> Option<(bool, u32)> {
+            match d {
+                U8 => Some((false, 8)),
+                U16 => Some((false, 16)),
+                U32 => Some((false, 32)),
+                U64 => Some((false, 64)),
+                I8 => Some((true, 8)),
+                I16 => Some((true, 16)),
+                I32 => Some((true, 32)),
+                I64 => Some((true, 64)),
+                F32 | F64 => None,
+            }
+        }
+        // Integers are exactly representable up to 2^mantissa; None for ints.
+        fn mantissa(d: DType) -> Option<u32> {
+            match d {
+                F32 => Some(24),
+                F64 => Some(53),
+                _ => None,
+            }
+        }
+        match (int_info(self), int_info(other)) {
+            // integer → integer
+            (Some((s_signed, s_bits)), Some((o_signed, o_bits))) => match (s_signed, o_signed) {
+                (false, false) | (true, true) => s_bits >= o_bits,
+                (true, false) => s_bits > o_bits, // signed needs one extra bit for the sign
+                (false, true) => false,           // unsigned cannot hold negatives
+            },
+            // float destination, integer source: exact iff the magnitude fits the mantissa.
+            (None, Some((o_signed, o_bits))) => {
+                let need = if o_signed { o_bits - 1 } else { o_bits };
+                need <= mantissa(self).expect("self is a float in this arm")
+            }
+            // float → float: the wider mantissa contains the narrower.
+            (None, None) => mantissa(self).unwrap() >= mantissa(other).unwrap(),
+            // integer destination, float source: never (fractionals / NaN / inf).
+            (Some(_), None) => false,
+        }
+    }
+
     /// The normalization ceiling range-mapping ops (gamma) use for this
     /// dtype: the maximum representable value for integers (as f32,
     /// approximate for the 64-bit types), 1.0 for floats.
@@ -345,6 +400,46 @@ impl_view_type!(f32, DType::F32);
 impl_view_type!(f64, DType::F64);
 impl_view_type!(u64, DType::U64);
 impl_view_type!(i64, DType::I64);
+
+#[cfg(test)]
+mod losslessly_contains_tests {
+    use super::DType::*;
+
+    #[test]
+    fn reflexive() {
+        for d in super::DType::ALL {
+            assert!(d.losslessly_contains(*d));
+        }
+    }
+
+    #[test]
+    fn integer_widening() {
+        assert!(U16.losslessly_contains(U8));
+        assert!(I16.losslessly_contains(U8)); // signed needs one extra bit
+        assert!(!I8.losslessly_contains(U8)); // 255 > i8::MAX
+        assert!(!U8.losslessly_contains(I8)); // unsigned can't hold negatives
+        assert!(I32.losslessly_contains(I16));
+        assert!(!U8.losslessly_contains(U16));
+    }
+
+    #[test]
+    fn integer_to_float() {
+        assert!(F32.losslessly_contains(U16)); // 16 <= 24 mantissa bits
+        assert!(F32.losslessly_contains(I16));
+        assert!(!F32.losslessly_contains(U32)); // 32 > 24
+        assert!(F64.losslessly_contains(U32)); // 32 <= 53
+        assert!(!F64.losslessly_contains(U64)); // 64 > 53
+    }
+
+    #[test]
+    fn float_lattice_and_float_to_int() {
+        assert!(F64.losslessly_contains(F32));
+        assert!(!F32.losslessly_contains(F64));
+        // A float source is never losslessly held by an integer (fractionals).
+        assert!(!U8.losslessly_contains(F32));
+        assert!(!I64.losslessly_contains(F64));
+    }
+}
 
 #[cfg(test)]
 mod planned_dtype_tests {

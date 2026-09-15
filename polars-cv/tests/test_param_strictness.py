@@ -663,29 +663,6 @@ class TestRotateAndScaleAcceptsExpressions:
         )
         assert out["a"].to_list() == out["b"].to_list()
 
-    def test_expression_matrix_drops_out_of_affine_fusion(self) -> None:
-        """Fusion needs concrete numbers to compose matrices.
-
-        An expression matrix must fall back to executing as its own warp
-        rather than being folded into a neighbouring affine.
-        """
-        from polars_cv.pipeline import _literal_matrix_values
-
-        dyn = (
-            Pipeline()
-            .source("image_bytes")
-            .rotate_and_scale(angle=pl.col("a"), center=(8, 8), output_size=(16, 16))
-        )
-        matrix_param = dyn._ops[-1].params["matrix"]
-        assert _literal_matrix_values(matrix_param) is None
-
-        lit = (
-            Pipeline()
-            .source("image_bytes")
-            .rotate_and_scale(angle=30.0, center=(8, 8), output_size=(16, 16))
-        )
-        assert _literal_matrix_values(lit._ops[-1].params["matrix"]) is not None
-
 
 @plugin_required
 class TestContourSourceFillAcceptsExpressions:

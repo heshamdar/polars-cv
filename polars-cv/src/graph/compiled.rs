@@ -800,10 +800,13 @@ impl CompiledGraph {
                         }
                     }
                     let mut current_output = input;
-                    fn flush_buffer_ops(
-                        output: NodeOutput,
-                        pending_ops: &mut Vec<ViewDto>,
-                    ) -> Result<NodeOutput, String> {
+                    // Engine-tier optimization toggles for this graph (Tier-2).
+                    // `OptConfig` is `Copy`, so the closure captures a value and
+                    // does not borrow `self`.
+                    let opt_cfg = self.graph.opt;
+                    let flush_buffer_ops = |output: NodeOutput,
+                                            pending_ops: &mut Vec<ViewDto>|
+                     -> Result<NodeOutput, String> {
                         if pending_ops.is_empty() {
                             return Ok(output);
                         }
@@ -814,9 +817,9 @@ impl CompiledGraph {
                         for op in pending_ops.drain(..) {
                             expr = expr.apply_op(op);
                         }
-                        let result = expr.plan().execute();
+                        let result = expr.plan_with(&opt_cfg).execute();
                         Ok(NodeOutput::from_buffer(result))
-                    }
+                    };
                     let mut pending_buffer_ops: Vec<ViewDto> = Vec::new();
                     for step in dto_scratch.iter() {
                         let graph_step = match step {

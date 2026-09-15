@@ -37,22 +37,48 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   what a window may *cross*). Only an H/W-only crop returns `true`; it is
   surfaced on `op_contract` and read by the spatial-window pushdown, which no
   longer matches an op name in Python.
+- **Per-optimization on/off toggles for the engine-lowering rewrites.** The
+  Tier-2 view-buffer rewrites (`scalar_fusion`, `cast_chain_collapse`,
+  `cast_identity`, `view_flip_involution`, `view_transpose_merge`) that used to
+  run unconditionally now each have an `OptFlags` toggle, serialized to the graph
+  as an `opt` object and gating the matching Rust `OptConfig` field. One registry
+  (`OPTIMIZATION_PASSES`, each `PassSpec` carrying a `tier`) now describes **every**
+  optimization across both tiers, and `test_optimize_equivalence.py` pins a
+  dedicated on/off differential for each — enabling any single optimization
+  leaves the output byte-identical.
 
 ### Changed
 
-- **`PipelineGraph.optimize` now drives its passes from `LOGICAL_PASSES`.** The
-  run order is the registry's tuple order (data), not hand-wired branches, and a
-  per-pass handler map is pinned to the registry by
-  `test_pass_handlers_cover_every_pass`. Adding a pass is a registry edit; the
-  physical graph stays deterministic. No behaviour change to existing passes.
+- **`PipelineGraph.optimize` drives all passes from one registry
+  (`OPTIMIZATION_PASSES`).** Each `PassSpec` carries a `tier` (`logical` = applied
+  in Python; `engine` = a flag serialized to Rust). Run order is the registry's
+  tuple order (data), not hand-wired branches; parity guards pin flags↔registry
+  and the logical-handler map. No behaviour change to existing passes.
+
+### Removed
+
+- **The `affine_fusion` optimization pass, and the `rotate_affine_params` FFI it
+  used.** Collapsing a run of warps into one composed warp folds several
+  interpolation passes into one (and drops the intermediate clip of an
+  `expand=False` rotate), which changes pixels by as much as ~185/255 — so it
+  could not satisfy the on/off output-equivalence guarantee every optimization
+  now carries. `rotate`/`warp_affine`/`rotate_and_scale` ops are unchanged and
+  still execute (unfused); only the plan-time fusion of adjacent affine ops is
+  gone. Guarded by `test_removed_surfaces.py`.
 
 ### Fixed
 
+- **`cast(A)→cast(B)` no longer drops a narrowing intermediate cast.** The engine
+  collapsed consecutive casts unconditionally, discarding the intermediate even
+  when it quantized — a fractional-`f32` `.cast("u8").cast("f32")` returned `0.5`
+  instead of the correct `1.0`. It now collapses only when the intermediate dtype
+  losslessly holds the input (`DType::losslessly_contains`); a narrowing
+  intermediate is kept and executes.
 - **`Pipeline.explain(optimized=True)` now reflects every node-scope pass.** It
   drove a hand-written list of passes and so omitted identity elimination,
   showing ops that `.sink()` actually deletes. It now applies the node passes
-  from the same `LOGICAL_PASSES`/`_pass_handlers` registry `optimize()` uses, so
-  it cannot drift from execution again.
+  from the same registry `optimize()` uses, so it cannot drift from execution
+  again.
 - **Spatial-window pushdown no longer crosses a multi-input op.** A crop is now
   barred from hoisting past an op that reads a sibling node's buffer
   (`apply_mask`, `channel_merge`, binary ops); crossing one would have shrunk
@@ -61,12 +87,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
-- The affine-fusion rotate→`warp_affine` conversion reads the op's own
-  `interpolation`/`border_value` instead of re-supplying baked-in defaults, and
-  the cardinal-angle tolerance is a named constant. Identity elimination folds
-  each op's entering state once (O(n), was O(n²) FFI calls). CSE groups nodes by
-  a canonical source serialization instead of `hash(source)`, so a hash
-  collision cannot fuse across different sources.
+- Identity elimination folds each op's entering state once (O(n), was O(n²) FFI
+  calls). CSE groups nodes by a canonical source serialization instead of
+  `hash(source)`, so a hash collision cannot fuse across different sources.
 
 ## [0.28.0] — 2026-09-12
 

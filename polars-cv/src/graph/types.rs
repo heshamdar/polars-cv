@@ -161,6 +161,12 @@ pub struct UnifiedGraph {
     /// yields a null result without weakening error reporting for anything else.
     #[serde(default)]
     pub on_null_param: NullParamPolicy,
+    /// Which engine-tier (Tier-2) optimizations to apply when executing buffer-op
+    /// chains. Absent (older specs) or partially specified means all enabled, via
+    /// [`OptConfig`](view_buffer::OptConfig)'s serde default — the historical
+    /// behavior. The Python planner emits it from the engine-tier `OptFlags`.
+    #[serde(default)]
+    pub opt: view_buffer::OptConfig,
     /// Named nodes in the graph.
     pub nodes: HashMap<String, GraphNode>,
     /// Output specifications (alias -> spec).

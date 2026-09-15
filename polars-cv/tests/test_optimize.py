@@ -15,8 +15,10 @@ import pytest
 from polars_cv import Pipeline
 from polars_cv._graph import PipelineGraph
 from polars_cv._optimize import (
-    LOGICAL_PASSES,
+    ENGINE_PASS_NAMES,
+    LOGICAL_PASS_NAMES,
     OPT_ENV_VAR,
+    OPTIMIZATION_PASSES,
     PASS_NAMES,
     OptFlags,
     PassSpec,
@@ -25,20 +27,20 @@ from polars_cv._optimize import (
 from tests.conftest import plugin_required
 
 
-def _two_rotate_pipe() -> Pipeline:
-    """A pipeline with a fusible run: two adjacent static rotates.
+def _removable_op_pipe() -> Pipeline:
+    """A pipeline with a removable no-op: a full-frame crop after a resize.
 
-    The leading ``resize`` establishes the plan-time H/W the rotate→affine
-    conversion needs; without known input dims a rotate cannot convert and the
-    run does not fuse. Fusion therefore collapses the two rotates into one
-    ``warp_affine`` while ``resize`` stays, giving ``[resize, warp_affine]``.
+    The leading ``resize`` fixes the plan-time H/W at 64x64, so the 64x64 crop
+    is provably a no-op and identity elimination deletes it, leaving ``[resize]``
+    while ``resize`` stays. A logical (unoptimized) view still shows the crop.
+    (Substitutes for the old affine-fusion fixture, removed with that pass — it
+    likewise exercises a logical node pass that rewrites the op chain.)
     """
     return (
         Pipeline()
         .source("image_bytes")
         .resize(height=64, width=64)
-        .rotate(30.0)
-        .rotate(15.0)
+        .crop(top=0, left=0, height=64, width=64)
     )
 
 
@@ -56,36 +58,66 @@ class TestRegistry:
     def test_pass_names_are_unique(self) -> None:
         assert len(PASS_NAMES) == len(set(PASS_NAMES))
 
-    def test_every_pass_declares_its_equivalence_class(self) -> None:
-        # bit_exact is required (no default) so a new pass cannot omit it.
-        for spec in LOGICAL_PASSES:
+    def test_every_pass_declares_its_equivalence_class_and_tier(self) -> None:
+        # bit_exact and tier are required (no default) so a new pass cannot omit
+        # them; tier must be one of the two known values.
+        for spec in OPTIMIZATION_PASSES:
             assert isinstance(spec, PassSpec)
             assert isinstance(spec.bit_exact, bool)
             assert spec.summary
+            assert spec.tier in ("logical", "engine")
+
+    def test_tier_partitions_the_registry(self) -> None:
+        assert set(LOGICAL_PASS_NAMES) | set(ENGINE_PASS_NAMES) == set(PASS_NAMES)
+        assert set(LOGICAL_PASS_NAMES).isdisjoint(ENGINE_PASS_NAMES)
 
     def test_flags_match_registry_both_directions(self) -> None:
         """Every registered pass has an OptFlags field and vice versa.
 
-        The canonical-path guard for this tier: a pass without a switch, or a
-        switch without a pass, fails here rather than silently diverging.
+        The canonical-path guard: a pass without a switch, or a switch without a
+        pass, fails here rather than silently diverging. Covers both tiers.
         """
         flag_fields = {f.name for f in dataclasses.fields(OptFlags)}
         assert flag_fields == set(PASS_NAMES)
 
-    def test_pass_handlers_cover_every_pass(self) -> None:
-        """Every registered pass has an ``optimize()`` handler and vice versa.
+    def test_pass_handlers_cover_every_logical_pass(self) -> None:
+        """Every **logical** pass has an ``optimize()`` handler and vice versa.
 
-        The applicator map in ``PipelineGraph.optimize`` is the third place a
-        pass must appear (with ``LOGICAL_PASSES`` and ``OptFlags``); this pins
-        it to ``PASS_NAMES`` so a pass cannot be registered without being
-        runnable, nor a handler survive a removed pass.
+        Engine passes have no Python handler (they ride to Rust as flags), so the
+        handler map is pinned to ``LOGICAL_PASS_NAMES`` — a logical pass without a
+        handler, or a handler without a logical pass, fails here.
         """
-        assert set(PipelineGraph._pass_handlers()) == set(PASS_NAMES)
+        assert set(PipelineGraph._pass_handlers()) == set(LOGICAL_PASS_NAMES)
 
     def test_every_flag_field_is_boolean_defaulting_on(self) -> None:
         defaults = OptFlags()
         for name in PASS_NAMES:
             assert getattr(defaults, name) is True
+
+    def test_engine_flags_round_trip_into_graph_opt(self) -> None:
+        """Each engine flag surfaces in the serialized ``opt`` object.
+
+        This is the toggle's only path to Rust, so a missing/renamed key would
+        silently disable the switch. Logical passes are left off so no compiled
+        plugin is needed.
+        """
+        import json
+
+        # Engine on, logical off.
+        flags_on = OptFlags(**{n: (n in ENGINE_PASS_NAMES) for n in PASS_NAMES})
+        g = _graph_of(Pipeline().source("image_bytes").grayscale())
+        g.set_output("n", "numpy")
+        g.optimize(flags_on)
+        opt = json.loads(g._to_json())["opt"]
+        assert set(opt) == set(ENGINE_PASS_NAMES)
+        assert all(opt[n] is True for n in ENGINE_PASS_NAMES)
+
+        # Everything off → every engine flag serializes False.
+        g2 = _graph_of(Pipeline().source("image_bytes").grayscale())
+        g2.set_output("n", "numpy")
+        g2.optimize(OptFlags.none())
+        opt2 = json.loads(g2._to_json())["opt"]
+        assert all(opt2[n] is False for n in ENGINE_PASS_NAMES)
 
 
 class TestShorthands:
@@ -106,7 +138,7 @@ class TestShorthands:
 
     def test_is_frozen(self) -> None:
         with pytest.raises(dataclasses.FrozenInstanceError):
-            OptFlags().affine_fusion = False  # type: ignore[misc]
+            OptFlags().scalar_fusion = False  # type: ignore[misc]
 
 
 class TestParse:
@@ -117,18 +149,18 @@ class TestParse:
         assert OptFlags.parse("none") == OptFlags.none()
 
     def test_bare_name_turns_only_that_on(self) -> None:
-        flags = OptFlags.parse("affine_fusion")
-        assert flags.enabled("affine_fusion")
+        flags = OptFlags.parse("scalar_fusion")
+        assert flags.enabled("scalar_fusion")
         assert not flags.enabled("common_subexpression_elimination")
 
     def test_all_minus_one(self) -> None:
-        flags = OptFlags.parse("all,-affine_fusion")
-        assert not flags.enabled("affine_fusion")
+        flags = OptFlags.parse("all,-scalar_fusion")
+        assert not flags.enabled("scalar_fusion")
         assert flags.enabled("common_subexpression_elimination")
 
     def test_whitespace_is_tolerated(self) -> None:
-        assert OptFlags.parse("  all , -affine_fusion ") == OptFlags.parse(
-            "all,-affine_fusion"
+        assert OptFlags.parse("  all , -scalar_fusion ") == OptFlags.parse(
+            "all,-scalar_fusion"
         )
 
     def test_unknown_pass_raises_not_ignored(self) -> None:
@@ -150,10 +182,10 @@ class TestFromEnv:
         assert OptFlags.from_env() == OptFlags.none()
 
     def test_subset_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(OPT_ENV_VAR, "all,-affine_fusion")
+        monkeypatch.setenv(OPT_ENV_VAR, "all,-scalar_fusion")
         flags = OptFlags.from_env()
         assert flags.enabled("common_subexpression_elimination")
-        assert not flags.enabled("affine_fusion")
+        assert not flags.enabled("scalar_fusion")
 
 
 class TestResolve:
@@ -168,7 +200,7 @@ class TestResolve:
         assert resolve_opt_flags(False) == OptFlags.none()
 
     def test_optflags_passes_through(self) -> None:
-        flags = OptFlags(affine_fusion=False)
+        flags = OptFlags(scalar_fusion=False)
         assert resolve_opt_flags(flags) is flags
 
     def test_bad_type_raises(self) -> None:
@@ -184,65 +216,71 @@ class TestStaging:
     """
 
     def test_serialization_is_verbatim(self) -> None:
-        # _to_spec_dict used to fuse affine runs; now it serializes as written.
-        spec = _two_rotate_pipe()._to_spec_dict()
-        assert [op["op"] for op in spec["ops"]] == ["resize", "rotate", "rotate"]
+        # _to_spec_dict never optimizes; it serializes the ops as written.
+        spec = _removable_op_pipe()._to_spec_dict()
+        assert [op["op"] for op in spec["ops"]] == ["resize", "crop"]
 
     def test_optimize_none_changes_nothing(self) -> None:
-        graph = _graph_of(_two_rotate_pipe())
+        graph = _graph_of(_removable_op_pipe())
         graph.optimize(OptFlags.none())
-        assert _node_ops(graph) == ["resize", "rotate", "rotate"]
+        assert _node_ops(graph) == ["resize", "crop"]
 
-    def test_affine_fusion_flag_gates_the_pass(self) -> None:
-        off = _graph_of(_two_rotate_pipe())
-        off.optimize(OptFlags(affine_fusion=False))
-        assert _node_ops(off) == ["resize", "rotate", "rotate"]
+    @plugin_required
+    def test_identity_elimination_flag_gates_the_pass(self) -> None:
+        off = _graph_of(_removable_op_pipe())
+        off.optimize(OptFlags(identity_elimination=False))
+        assert _node_ops(off) == ["resize", "crop"]
 
-        on = _graph_of(_two_rotate_pipe())
-        on.optimize(OptFlags(affine_fusion=True))
-        assert _node_ops(on) == ["resize", "warp_affine"]
+        on = _graph_of(_removable_op_pipe())
+        on.optimize(OptFlags(identity_elimination=True))
+        assert _node_ops(on) == ["resize"]
 
+    @plugin_required
     def test_optimize_is_idempotent(self) -> None:
-        graph = _graph_of(_two_rotate_pipe())
+        graph = _graph_of(_removable_op_pipe())
         graph.optimize(OptFlags.all())
         first = _node_ops(graph)
         graph.optimize(OptFlags.all())
-        assert _node_ops(graph) == first == ["resize", "warp_affine"]
+        assert _node_ops(graph) == first == ["resize"]
 
 
+@plugin_required
 class TestImmutability:
     """Optimization must not mutate the caller's Pipeline (it is immutable)."""
 
     def test_optimize_does_not_touch_the_source_pipeline(self) -> None:
-        pipe = _two_rotate_pipe()
+        pipe = _removable_op_pipe()
         graph = _graph_of(pipe)
         graph.optimize(OptFlags.all())
-        # The graph fused its own copy; the caller's pipeline is untouched.
-        assert [op.op for op in pipe._ops] == ["resize", "rotate", "rotate"]
-        assert _node_ops(graph) == ["resize", "warp_affine"]
+        # The graph optimized its own copy; the caller's pipeline is untouched.
+        assert [op.op for op in pipe._ops] == ["resize", "crop"]
+        assert _node_ops(graph) == ["resize"]
 
 
 class TestExplain:
     """Pipeline.explain surfaces the logical vs physical op chain."""
 
-    def test_logical_shows_unfused(self) -> None:
-        text = _two_rotate_pipe().explain(optimized=False)
-        assert text.count("rotate") == 2
-        assert "warp_affine" not in text
+    @plugin_required
+    def test_logical_shows_unoptimized(self) -> None:
+        text = _removable_op_pipe().explain(optimized=False)
+        assert "crop" in text
 
-    def test_optimized_shows_fused(self) -> None:
-        text = _two_rotate_pipe().explain(optimized=True)
-        assert "warp_affine" in text
-        assert "rotate(" not in text
+    @plugin_required
+    def test_optimized_shows_eliminated(self) -> None:
+        text = _removable_op_pipe().explain(optimized=True)
+        assert "crop" not in text
 
+    @plugin_required
     def test_optimized_respects_flags(self) -> None:
-        text = _two_rotate_pipe().explain(opt_flags=OptFlags(affine_fusion=False))
-        assert text.count("rotate") == 2
+        text = _removable_op_pipe().explain(
+            opt_flags=OptFlags(identity_elimination=False)
+        )
+        assert "crop" in text
 
     def test_explain_does_not_mutate(self) -> None:
-        pipe = _two_rotate_pipe()
-        pipe.explain(optimized=True)
-        assert [op.op for op in pipe._ops] == ["resize", "rotate", "rotate"]
+        pipe = _removable_op_pipe()
+        pipe.explain(optimized=False)
+        assert [op.op for op in pipe._ops] == ["resize", "crop"]
 
     @plugin_required
     def test_optimized_reflects_identity_elimination(self) -> None:
@@ -269,19 +307,18 @@ class TestExplain:
 
 
 def _shape_ref() -> "pl.Expr":
-    """A shape sub-pipeline expression carrying a fusible affine run.
+    """A shape sub-pipeline expression carrying a removable no-op.
 
-    ``resize`` gives the two static rotates their plan-time H/W (so the
-    rotate→affine conversion fires), making ``[resize, rotate, rotate]`` a
-    genuine fusion candidate — the same fixture shape as ``_two_rotate_pipe``,
-    but delivered as a ``shape=`` reference for a contour source.
+    ``resize`` fixes the plan-time H/W at 40x40, so the 40x40 crop is a provable
+    no-op that identity elimination deletes — the same fixture shape as
+    ``_removable_op_pipe``, but delivered as a ``shape=`` reference for a contour
+    source, so it exercises optimization of an embedded shape node.
     """
     return pl.col("img").cv.pipe(
         Pipeline()
         .source("image_bytes")
         .resize(width=40, height=40)
-        .rotate(30.0)
-        .rotate(15.0)
+        .crop(top=0, left=0, height=40, width=40)
     )
 
 
@@ -293,40 +330,43 @@ class TestToExprRequiresOptimization:
     """``to_expr`` refuses an un-optimized graph — optimization has one site.
 
     Before the fix, the public ``Pipeline.to_graph(col).to_expr()`` route (which
-    never runs ``sink``) emitted an *unoptimized* graph: no CSE, no affine
-    fusion, pixel-divergent from ``sink()``. ``to_expr`` now raises unless the
-    optimize phase has run, so the low-level path cannot silently diverge.
+    never runs ``sink``) emitted an *unoptimized* graph, divergent from
+    ``sink()``. ``to_expr`` now raises unless the optimize phase has run, so the
+    low-level path cannot silently diverge.
     """
 
     def test_fresh_graph_is_not_marked_optimized(self) -> None:
-        assert _graph_of(_two_rotate_pipe())._optimized is False
+        assert _graph_of(_removable_op_pipe())._optimized is False
 
+    @plugin_required
     def test_optimize_marks_the_graph(self) -> None:
-        graph = _graph_of(_two_rotate_pipe())
+        graph = _graph_of(_removable_op_pipe())
         assert graph.optimize(OptFlags.all())._optimized is True
 
     def test_to_expr_rejects_unoptimized_graph(self) -> None:
-        graph = _graph_of(_two_rotate_pipe())
+        graph = _graph_of(_removable_op_pipe())
         graph.set_output("n", "numpy")
         with pytest.raises(RuntimeError, match="optimization phase"):
             graph.to_expr()
 
+    @plugin_required
     def test_to_expr_works_after_optimize(self) -> None:
-        graph = _graph_of(_two_rotate_pipe())
+        graph = _graph_of(_removable_op_pipe())
         graph.set_output("n", "numpy")
         graph.optimize(OptFlags.all())
         # Does not raise; register_plugin_function builds the expr lazily and
         # needs no compiled .so at construction time.
         graph.to_expr()
 
+    @plugin_required
     def test_sink_return_graph_is_optimized(self) -> None:
         graph = (
-            pl.col("img").cv.pipe(_two_rotate_pipe()).sink("numpy", return_expr=False)
+            pl.col("img").cv.pipe(_removable_op_pipe()).sink("numpy", return_expr=False)
         )
         assert graph._optimized is True
         # sink() auto-generates the node id, so read the sole node generically.
         (only_node,) = graph._nodes.values()
-        assert [op.op for op in only_node.pipeline._ops] == ["resize", "warp_affine"]
+        assert [op.op for op in only_node.pipeline._ops] == ["resize"]
 
 
 def _crop_after_pointwise_pipe() -> Pipeline:
@@ -369,7 +409,7 @@ class TestSpatialWindowPushdown:
         graph.optimize(
             OptFlags(
                 spatial_window_pushdown=True,
-                affine_fusion=False,
+                identity_elimination=False,
                 common_subexpression_elimination=False,
             )
         )
@@ -469,23 +509,24 @@ class TestSpatialWindowPushdown:
 class TestShapeSubpipelineStaging:
     """The contour-source shape sub-pipeline goes through the optimize phase.
 
-    It used to be affine-fused at *construction* time, unconditionally — which
-    both broke the "construction never optimizes" staging contract and ignored
+    It used to be optimized at *construction* time, unconditionally — which both
+    broke the "construction never optimizes" staging contract and ignored
     ``opt_flags``. The shape sub-pipeline is an ordinary graph node, so the
-    single ``optimize()`` phase fuses it like any other, honoring the flags.
+    single ``optimize()`` phase rewrites it like any other, honoring the flags.
     """
 
     def test_construction_leaves_shape_subpipeline_logical(self) -> None:
         # No plugin: pure construction. The embedded shape spec must be the
-        # verbatim logical op chain, NOT a construction-time fusion.
+        # verbatim logical op chain, NOT a construction-time rewrite.
         pipe = Pipeline().source("contour", shape=_shape_ref())
         embedded = pipe._source.shape_pipeline["pipeline"]["ops"]
-        assert [op["op"] for op in embedded] == ["resize", "rotate", "rotate"]
+        assert [op["op"] for op in embedded] == ["resize", "crop"]
 
-    def test_shape_subpipeline_fusion_respects_opt_flags(self) -> None:
-        # No plugin: sink(return_expr=False) builds + optimizes the graph
-        # without registering the expr. The shape node id is the shape ref's own
-        # node id; inspect its ops under each flag.
+    @plugin_required
+    def test_shape_subpipeline_optimization_respects_opt_flags(self) -> None:
+        # sink(return_expr=False) builds + optimizes the graph without
+        # registering the expr. The shape node id is the shape ref's own node id;
+        # inspect its ops under each flag.
         shape = _shape_ref()
         shape_id = shape._node_id
         contour = Pipeline().source("contour", shape=shape)
@@ -495,20 +536,25 @@ class TestShapeSubpipelineStaging:
             .cv.pipe(contour)
             .sink("numpy", return_expr=False, opt_flags=OptFlags.all())
         )
-        assert _shape_node_ops(on, shape_id) == ["resize", "warp_affine"]
+        assert _shape_node_ops(on, shape_id) == ["resize"]
 
         off = (
             pl.col("c")
             .cv.pipe(contour)
-            .sink("numpy", return_expr=False, opt_flags=OptFlags(affine_fusion=False))
+            .sink(
+                "numpy",
+                return_expr=False,
+                opt_flags=OptFlags(identity_elimination=False),
+            )
         )
-        assert _shape_node_ops(off, shape_id) == ["resize", "rotate", "rotate"]
+        assert _shape_node_ops(off, shape_id) == ["resize", "crop"]
 
     @plugin_required
     def test_shape_subpipeline_output_identical_under_flags(self) -> None:
-        # Plugin: the shape node's fusion changes pixels but not its H/W, and the
-        # contour source reads only the shape buffer's dimensions — so the mask
-        # is byte-identical whether or not the shape sub-pipeline was fused.
+        # Plugin: optimizing the shape node preserves its H/W (and output), and
+        # the contour source reads only the shape buffer's dimensions — so the
+        # mask is byte-identical whether or not the shape sub-pipeline was
+        # optimized.
         import io
 
         import numpy as np
