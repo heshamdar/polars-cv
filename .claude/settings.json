@@ -1,4 +1,7 @@
 {
+  "env": {
+    "POLARS_CV_REQUIRE_PLUGIN": "1"
+  },
   "hooks": {
     "SessionStart": [
       {
