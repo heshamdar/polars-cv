@@ -37,7 +37,20 @@ fi
 
 # 2. Python dev dependencies (includes pre-commit and maturin). The uv project
 #    lives under polars-cv/.
-uv sync --group dev --directory polars-cv
+#
+#    `--no-install-project` is load-bearing, not a micro-optimization. Because
+#    polars-cv uses the maturin build backend, a plain `uv sync` *builds and
+#    installs the project itself* as an editable wheel — and that build runs
+#    under the workspace `[profile.release]` (lto = "fat", codegen-units = 1,
+#    opt-level = 3), the slowest possible full-LTO compile of the whole polars
+#    stack. On a fresh container (cold cache, every web session) that is a
+#    10+ minute blocking compile that step 3 then *throws away*, because the
+#    debug `maturin develop` build overwrites the release `_lib.abi3.so`. A
+#    synchronous SessionStart hook doing that reads to the user as "the session
+#    hangs after initialization". So sync only the dependency groups here and
+#    let step 3 own the single (debug) build — matching the repo rule that the
+#    dev loop never builds `--release`.
+uv sync --group dev --no-install-project --directory polars-cv
 
 # 3. Build the plugin (debug — what CI and scripts/verify.sh use). Needed for
 #    @plugin_required tests and the structural pre-commit hook.
