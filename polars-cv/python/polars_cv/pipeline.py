@@ -362,6 +362,26 @@ _STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
 }
 
 
+#: The :class:`Pipeline` fields keyed by op *position*, so every wholesale
+#: rewrite of ``_ops`` must supply a re-keyed replacement for each of them or the
+#: plan-time schema desyncs from what executes. ``_hint_snapshots`` is keyed by
+#: op index; ``_assertions`` by op-boundary position.
+#:
+#: This is the op-index counterpart to :data:`_STATE_COPIERS`: the single
+#: authority for "what is position-keyed", read only by
+#: :meth:`Pipeline._rewrite_ops`, which refuses to run unless a caller addresses
+#: exactly this set. A field added here becomes a hard failure at *every* rewrite
+#: caller at once, rather than the silent omission that once let CSE re-key
+#: ``_hint_snapshots`` but forget ``_assertions``. The re-key *arithmetic*
+#: legitimately differs per rewrite (a slice shifts, a reorder drops moved
+#: entries, an elimination compacts — and the two tables even use different index
+#: domains), so it stays in each caller; only the *enumeration* is centralized.
+#:
+#: A name added here that is not a real field fails
+#: ``test_position_keyed_fields_are_real_pipeline_state``.
+_POSITION_KEYED_FIELDS: "tuple[str, ...]" = ("_hint_snapshots", "_assertions")
+
+
 class Pipeline:
     """
     Modular pipeline builder for image and array operations.
@@ -920,36 +940,87 @@ class Pipeline:
         )
         raise ValueError(msg)
 
+    def _rewrite_ops(
+        self, new_ops: "list[OpSpec]", *, position_keyed: "dict[str, Any]"
+    ) -> None:
+        """Replace ``_ops`` wholesale and re-key every position-keyed side table.
+
+        The single, unskippable op-index rewrite primitive — the op-position
+        counterpart to :meth:`_copy_state_from` (which is driven by
+        :data:`_STATE_COPIERS`). It is the *only* place ``_ops`` is reassigned
+        for a rewrite, and it enforces that the caller supplies a re-keyed
+        replacement for **exactly** the fields in :data:`_POSITION_KEYED_FIELDS`
+        — no more, no fewer — so a new position-keyed field cannot be silently
+        forgotten by one rewrite while handled by another (the class of bug that
+        let CSE re-key ``_hint_snapshots`` but not ``_assertions``).
+
+        The primitive does not *compute* the re-key: the three rewrites (CSE
+        slice, pushdown reorder, identity elimination) transform the indices in
+        genuinely different ways, so each caller builds its own replacement and
+        passes it here. This method owns only the assignment and the coverage
+        check.
+
+        Args:
+            new_ops: The new op list.
+            position_keyed: One entry per field in
+                :data:`_POSITION_KEYED_FIELDS`, mapping the field name to its
+                already-re-keyed replacement value.
+        """
+        supplied = set(position_keyed)
+        required = set(_POSITION_KEYED_FIELDS)
+        if supplied != required:
+            missing = sorted(required - supplied)
+            extra = sorted(supplied - required)
+            msg = (
+                "_rewrite_ops must be given a re-keyed value for exactly the "
+                f"position-keyed fields {list(_POSITION_KEYED_FIELDS)}."
+            )
+            if missing:
+                msg += f" Missing: {missing}."
+            if extra:
+                msg += f" Unknown: {extra}."
+            raise ValueError(msg)
+        self._ops = list(new_ops)
+        for name, value in position_keyed.items():
+            setattr(self, name, value)
+
     def _set_ops_slice(self, ops: "list[OpSpec]", *, shift: int) -> None:
-        """Replace the whole op list, re-keying everything keyed by op index.
+        """Replace the whole op list for CSE, re-keying the position-keyed tables.
 
-        The sanctioned wholesale replacement, for CSE (``_graph.py``), which
-        splits one pipeline's ops across a shared prefix node and a suffix
-        node. Distinct from :meth:`_push_op`, which appends a single op and
-        advances the tracked state; here the state is supplied by the caller
-        and only the index-keyed side tables move.
+        The wholesale replacement for CSE (``_graph.py``), which splits one
+        pipeline's ops across a shared prefix node and a suffix node. Distinct
+        from :meth:`_push_op`, which appends a single op and advances the tracked
+        state; here the state is supplied by the caller and only the index-keyed
+        side tables move. The actual ``_ops`` assignment and the position-keyed
+        coverage check are delegated to :meth:`_rewrite_ops`.
 
-        It exists so no code outside this module has to assign ``_ops``
-        directly — every such assignment has to remember which side tables are
-        keyed by op position, and the CSE path had already forgotten
-        ``_assertions``.
+        ``_hint_snapshots`` (op-index keyed) keeps the ``[shift, shift+len)``
+        window shifted down; ``_assertions`` (op-*boundary* keyed) keeps the
+        inclusive ``[shift, shift+len]`` window — the two index domains differ,
+        which is exactly why the re-key stays here rather than in the primitive.
 
         Args:
             ops: The new op list.
             shift: How far each surviving op moved left (``prefix_len`` for a
                 suffix node, ``0`` when keeping a prefix).
         """
-        self._ops = list(ops)
-        self._hint_snapshots = {
+        new_hint_snapshots = {
             i - shift: v
             for i, v in self._hint_snapshots.items()
             if shift <= i < shift + len(ops)
         }
-        self._assertions = {
+        new_assertions = {
             i - shift: copy.deepcopy(a)
             for i, a in self._assertions.items()
             if shift <= i <= shift + len(ops)
         }
+        self._rewrite_ops(
+            ops,
+            position_keyed={
+                "_hint_snapshots": new_hint_snapshots,
+                "_assertions": new_assertions,
+            },
+        )
 
     def _require_axes_within_rank(self, axes: "Sequence[int]", label: str) -> None:
         """Reject an axis list that does not address the tracked rank.
@@ -4496,12 +4567,18 @@ class Pipeline:
         permutation confined between two boundaries with no assertion boundary
         inside it (:meth:`_compute_spatial_pushdown` leaves such a crop in
         place), so every boundary's prefix op-set is unchanged and no assertion
-        key moves.
+        key moves — it is passed to :meth:`_rewrite_ops` unchanged.
         """
-        self._ops = list(ops)
-        self._hint_snapshots = {
+        new_hint_snapshots = {
             i: v for i, v in self._hint_snapshots.items() if perm.get(i, i) == i
         }
+        self._rewrite_ops(
+            ops,
+            position_keyed={
+                "_hint_snapshots": new_hint_snapshots,
+                "_assertions": self._assertions,
+            },
+        )
 
     def _hoist_spatial_windows_inplace(self) -> None:
         """Apply the spatial-window pushdown to this pipeline's ops, in place.
@@ -4651,13 +4728,21 @@ class Pipeline:
         so a survivor's entering H/W is unchanged — its snapshot carries over
         verbatim under the new index. ``_assertions`` need no re-keying: a node
         carrying assertions is not eliminated from at all
-        (:meth:`_eliminate_identities_inplace`).
+        (:meth:`_eliminate_identities_inplace`), so it is passed to
+        :meth:`_rewrite_ops` unchanged.
         """
         old_to_new = {old: new for new, old in enumerate(survivors)}
-        self._ops = [self._ops[o] for o in survivors]
-        self._hint_snapshots = {
+        new_ops = [self._ops[o] for o in survivors]
+        new_hint_snapshots = {
             old_to_new[o]: v for o, v in self._hint_snapshots.items() if o in old_to_new
         }
+        self._rewrite_ops(
+            new_ops,
+            position_keyed={
+                "_hint_snapshots": new_hint_snapshots,
+                "_assertions": self._assertions,
+            },
+        )
 
     def _to_spec_dict(self) -> dict:
         """
