@@ -54,34 +54,29 @@ pytestmark = pytest.mark.structural
 
 #: The only functions permitted to touch ``Pipeline._ops``.
 #:
-#: ``_push_op`` appends one op and advances the tracked state; ``_set_ops_slice``
-#: replaces the list wholesale for CSE and re-keys everything keyed by op index.
-#: Both live in ``pipeline.py`` next to the state they maintain. Anything else
-#: assigning ``_ops`` has to remember which side tables are position-keyed —
-#: which is how the CSE path came to re-key ``_hint_snapshots`` but not
-#: ``_assertions``.
+#: There are exactly two ways ``_ops`` is assigned, and both maintain the state
+#: that rides alongside it:
+#:
+#: * ``_push_op`` appends one op at the end and advances the tracked state.
+#:   Appending never disturbs existing op indices, so it re-keys nothing.
+#: * ``_rewrite_ops`` is the single wholesale-rewrite primitive. It is the *only*
+#:   place ``_ops`` is reassigned for a rewrite, and it refuses to run unless the
+#:   caller supplies a re-keyed replacement for every field in
+#:   ``_POSITION_KEYED_FIELDS``. The three rewrite passes (CSE's
+#:   ``_set_ops_slice``, the pushdown's ``_commit_reordered_ops``, identity
+#:   elimination's ``_commit_eliminated_ops``) each compute their own re-key and
+#:   route through it — so none of them touches ``_ops`` directly, and none can
+#:   forget a position-keyed table the way the CSE path once forgot
+#:   ``_assertions``.
 #:
 #: ``_clone`` is listed because it is the copy constructor: it duplicates every
-#: field including all the side tables, so there is no position bookkeeping for
-#: it to get wrong. It is the one place where assigning ``_ops`` carries no
-#: obligation.
-#: ``_commit_reordered_ops`` is the canonical sibling of ``_set_ops_slice`` for
-#: the spatial-window pushdown pass: it
-#: replaces ``_ops`` with a permutation rewrite and re-keys ``_hint_snapshots``
-#: (dropping moved ops' snapshots, keeping unmoved ops' exact ones) while
-#: ``_assertions`` need no move because the pass never permutes across an
-#: assertion boundary.
-#: ``_commit_eliminated_ops`` is the same for the identity-elimination pass: it
-#: replaces ``_ops`` with the surviving subset and re-keys ``_hint_snapshots`` by
-#: the old->new index map. ``_assertions`` need no move because a node carrying
-#: any assertion is left untouched by that pass.
+#: field including all the side tables (via ``_copy_state_from`` /
+#: ``_STATE_COPIERS``), so there is no position bookkeeping for it to get wrong.
 _OPS_MUTATORS = frozenset(
     {
         "_push_op",
-        "_set_ops_slice",
+        "_rewrite_ops",
         "_clone",
-        "_commit_reordered_ops",
-        "_commit_eliminated_ops",
     }
 )
 
@@ -153,9 +148,10 @@ def test_op_append_is_structurally_exclusive() -> None:
                 offenders.append(f"{module.name}:{fn.name}")
     assert not offenders, (
         f"only {sorted(_OPS_MUTATORS)} may touch Pipeline._ops, but these also "
-        f"do: {sorted(set(offenders))}. Route them through _append_op() / "
-        f"_push_op() / _set_ops_slice() so the plan-time state and the "
-        f"position-keyed side tables cannot be updated by halves."
+        f"do: {sorted(set(offenders))}. Route appends through _append_op() / "
+        f"_push_op() and wholesale rewrites through _rewrite_ops() so the "
+        f"plan-time state and the position-keyed side tables cannot be updated "
+        f"by halves."
     )
 
 
@@ -249,6 +245,60 @@ def test_every_pipeline_field_survives_a_copy() -> None:
         f"{aliased}. Mutating the clone would mutate the pipeline it came "
         f"from; `Pipeline` is immutable by contract."
     )
+
+
+def test_position_keyed_fields_are_real_pipeline_state() -> None:
+    """``_POSITION_KEYED_FIELDS`` must name actual ``Pipeline`` fields.
+
+    The registry is the single authority for "which fields are keyed by op
+    position and so must be re-keyed on every ``_ops`` rewrite". A typo'd or
+    stale name would make ``_rewrite_ops`` demand a key no rewrite can sensibly
+    supply, or (worse) let a real position-keyed field slip out of the set. Every
+    entry must be a genuine field, which is exactly the set ``_STATE_COPIERS``
+    enumerates.
+    """
+    from polars_cv.pipeline import _POSITION_KEYED_FIELDS, _STATE_COPIERS
+
+    unknown = set(_POSITION_KEYED_FIELDS) - set(_STATE_COPIERS)
+    assert not unknown, (
+        f"_POSITION_KEYED_FIELDS names fields that are not Pipeline state: "
+        f"{sorted(unknown)}"
+    )
+
+
+def test_rewrite_ops_enforces_exact_position_keyed_coverage() -> None:
+    """``_rewrite_ops`` is the unskippable op-index rewrite primitive.
+
+    It is the op-index counterpart to ``_STATE_COPIERS`` +
+    ``test_pipeline_state_copy_is_complete``: the *only* place ``_ops`` is
+    reassigned for a rewrite, and it refuses to run unless the caller supplies a
+    re-keyed replacement for **every** position-keyed field and no others. That
+    is what makes a new position-keyed field a hard failure at every rewrite
+    caller at once, instead of the silent omission that let CSE re-key
+    ``_hint_snapshots`` but forget ``_assertions``.
+    """
+    from polars_cv.pipeline import _POSITION_KEYED_FIELDS
+
+    full = {name: {} for name in _POSITION_KEYED_FIELDS}
+
+    # Missing a required field -> raise (the drift this guard exists to prevent).
+    for missing in _POSITION_KEYED_FIELDS:
+        partial = {k: v for k, v in full.items() if k != missing}
+        with pytest.raises(ValueError, match=missing):
+            Pipeline()._rewrite_ops([], position_keyed=partial)
+
+    # An unknown field -> raise (a stale/typo'd remap must not pass silently).
+    with pytest.raises(ValueError, match="_not_a_field"):
+        Pipeline()._rewrite_ops([], position_keyed={**full, "_not_a_field": {}})
+
+    # Exact coverage -> the ops and every position-keyed field are replaced.
+    p = Pipeline()
+    new_ops = ["sentinel-op"]
+    keyed = {name: {7: object()} for name in _POSITION_KEYED_FIELDS}
+    p._rewrite_ops(new_ops, position_keyed=keyed)
+    assert p._ops == new_ops
+    for name, value in keyed.items():
+        assert getattr(p, name) is value
 
 
 def test_push_op_updates_dtype_and_hints_unconditionally() -> None:
