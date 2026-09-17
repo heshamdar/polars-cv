@@ -13,3 +13,16 @@ codegen-units = 1
 # to be caught and converted to Python exceptions instead of crashing.
 panic = "unwind"
 strip = true
+
+# Dev profile — this is what `maturin develop`, `cargo test`, clippy and
+# `scripts/verify.sh` build, i.e. the one build the whole dev loop pays for. It
+# is tuned for iteration speed and disk footprint, never runtime speed (that is
+# `--release`, benchmarks only).
+[profile.dev]
+# Line-table debuginfo only. Backtraces keep file:line, but the polars stack's
+# full `debug = 2` DWARF — the single largest contributor to target/debug — is
+# dropped. Smaller artifacts, faster codegen.
+debug = 1
+# Keep debuginfo in sidecar files instead of the object/cdylib, so the final
+# link of the large plugin .so does not have to copy it every rebuild.
+split-debuginfo = "unpacked"

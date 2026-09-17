@@ -16,9 +16,18 @@
 # Cleared in CI/wheel builds via `RUSTFLAGS=""` (see .github/workflows/ci.yml
 # and publish.yml) so wheels stay portable. An empty CARGO_BUILD_RUSTFLAGS is
 # treated as unset and falls back to this file — use RUSTFLAGS.
+#
+# `-fuse-ld=lld` (linux-gnu only): linking the plugin cdylib means linking the
+# whole polars stack — hundreds of MB of objects — and the default `ld.bfd` is
+# the slowest single step of the `maturin develop` dev loop. lld cuts that
+# final link from tens of seconds to a few, and re-links every iteration. It is
+# scoped to this one triple on purpose: the web/remote container and most Linux
+# dev boxes ship `lld` (else `apt install lld`), but a mac/windows dev may not,
+# and gcc/cc errors rather than degrades when `-fuse-ld=lld` finds no lld. Like
+# `target-cpu`, `RUSTFLAGS=""` clears it in CI/wheels.
 
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=x86-64-v3"]
+rustflags = ["-C", "target-cpu=x86-64-v3", "-C", "link-arg=-fuse-ld=lld"]
 
 [target.x86_64-unknown-linux-musl]
 rustflags = ["-C", "target-cpu=x86-64-v3"]

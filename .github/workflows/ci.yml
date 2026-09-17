@@ -99,7 +99,13 @@ jobs:
       - name: Install dependencies
         working-directory: ${{ steps.package_dir.outputs.dir }}
         run: |
-          uv sync --group dev
+          # --no-install-project: a plain `uv sync` builds+installs polars-cv
+          # via its maturin backend at the workspace release profile (fat LTO) —
+          # a multi-minute compile of the whole polars stack that the
+          # `maturin develop` (debug) step below immediately overwrites. Sync
+          # only the dependency groups; the debug build is the single source of
+          # the extension, matching scripts/verify.sh and the dev loop.
+          uv sync --group dev --no-install-project
 
       - name: Build and Test (Rust & Python)
         working-directory: ${{ steps.package_dir.outputs.dir }}
@@ -201,8 +207,12 @@ jobs:
       - name: Build MkDocs site (strict)
         run: |
           if [ -d "polars-cv" ]; then cd polars-cv; fi
-          uv sync --group docs
-          uv run mkdocs build --strict
+          # --no-install-project: the docs build imports nothing from the
+          # compiled extension — mkdocstrings reads the Python source statically
+          # (`paths: [python]`, griffe). Building+installing the project here
+          # would compile the whole release-LTO extension for a docs-only job.
+          uv sync --group docs --no-install-project
+          uv run --no-sync mkdocs build --strict
 
   slow-tests:
     name: Slow / OOC tests
@@ -251,7 +261,9 @@ jobs:
       - name: Install dependencies
         working-directory: ${{ steps.package_dir.outputs.dir }}
         run: |
-          uv sync --group dev
+          # See the test job: skip the discarded release-LTO project build; the
+          # `maturin develop` (debug) step below is the only extension build.
+          uv sync --group dev --no-install-project
 
       - name: Build extension and run slow tests
         working-directory: ${{ steps.package_dir.outputs.dir }}

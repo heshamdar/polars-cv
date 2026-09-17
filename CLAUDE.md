@@ -171,10 +171,30 @@ All commands should be run from the `polars-cv/` subdirectory unless noted other
 ### Build
 
 ```bash
-uv sync --group dev              # Install Python dev dependencies
-maturin develop                  # Compile Rust plugin (debug) and install into .venv
-maturin build --release          # Build distributable wheels
+uv sync --group dev --no-install-project   # Python dev deps only (see below)
+maturin develop                            # Compile Rust plugin (debug) — THE dev build
+maturin build --release                    # Build distributable wheels (rarely; CI does this)
+scripts/dev-clean.sh                        # Reclaim disk: drop target/release + wheels, keep debug
 ```
+
+**There is exactly one build for development: `maturin develop` (debug).**
+Everything else is either CI/wheels (`--release`) or a mistake. Two traps put a
+second, slow build into the loop, and both are now closed — keep them closed:
+
+- **`uv sync` without `--no-install-project` builds the project at release LTO.**
+  Because polars-cv uses the maturin backend, a plain `uv sync` compiles and
+  installs the whole polars stack under `[profile.release]` (fat LTO,
+  `codegen-units = 1`) — minutes of work that `maturin develop` then overwrites.
+  Always pass `--no-install-project` and let `maturin develop` be the only
+  extension build. CI and the SessionStart hook do this; `test_build_efficiency.py`
+  guards it.
+- **Release artifacts fill the container.** A full `--release` tree is ~2 GB the
+  dev loop never uses. The SessionStart hook clears a stale one on entry, and
+  `scripts/dev-clean.sh` reclaims it on demand (`--all` also drops `target/debug`
+  for a cold rebuild). Dev builds are further shrunk by root `Cargo.toml`'s
+  `[profile.dev]` (`debug = 1`, `split-debuginfo = "unpacked"`), and linked with
+  `lld` on x86_64-linux via `.cargo/config.toml` — the single biggest per-build
+  speedup.
 
 **Check the Rust toolchain first — it is the common reason a build fails.** Both
 crates set `rust-version = "1.96"` (MSRV) in their `Cargo.toml`, so cargo
