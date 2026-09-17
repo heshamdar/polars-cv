@@ -49,7 +49,12 @@ jobs:
       - name: Install docs dependencies
         working-directory: ${{ steps.package_dir.outputs.dir }}
         run: |
-          uv sync --frozen --group docs
+          # --no-install-project: the docs build reads the Python source
+          # statically (mkdocstrings/griffe, `paths: [python]`) and imports
+          # nothing from the compiled extension, so building+installing the
+          # project here would compile the whole release-LTO extension for
+          # nothing. Matches the docs job in ci.yml.
+          uv sync --frozen --group docs --no-install-project
 
       - name: Build MkDocs site
         working-directory: ${{ steps.package_dir.outputs.dir }}
@@ -58,7 +63,7 @@ jobs:
         # a fresh checkout but harmless, and explicit about the directory being
         # rebuilt from scratch.
         run: |
-          uv run mkdocs build --clean --strict
+          uv run --no-sync mkdocs build --clean --strict
 
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5

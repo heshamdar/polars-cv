@@ -67,7 +67,11 @@ jobs:
 
       - name: Install dependencies
         working-directory: ${{ steps.package_dir.outputs.dir }}
-        run: uv sync --group dev
+        # --no-install-project: skip uv's implicit project build; the explicit
+        # `maturin develop --release` step below is the one build this job wants
+        # (benchmarks need the optimized extension). A plain `uv sync` would
+        # compile the release stack once here only to rebuild it there.
+        run: uv sync --group dev --no-install-project
 
       - name: Build extension (release)
         working-directory: ${{ steps.package_dir.outputs.dir }}

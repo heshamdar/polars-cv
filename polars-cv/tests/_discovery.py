@@ -258,3 +258,17 @@ def repo_file(relative: str) -> Path:
             f"that reads it; if it was deleted, delete the guard."
         )
     return path
+
+
+def workflow_files() -> list[Path]:
+    """Every GitHub Actions workflow under ``.github/workflows/``.
+
+    The build-efficiency guards read these to assert no job triggers the
+    release-LTO project build. An empty result would mean the workflow
+    directory moved and the guard is checking nothing, so route it through
+    :func:`discovered` to raise rather than pass vacuously.
+    """
+    return discovered(
+        sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")),
+        "GitHub Actions workflows",
+    )

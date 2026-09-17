@@ -81,3 +81,7 @@ polars-cv/examples/outputs/*
 polars-cv/.cache/*
 .vscode/*
 dist/
+
+# SessionStart hook runtime artifacts (see .claude/hooks/session-start.sh)
+.claude/hooks/.session-start.log
+.claude/hooks/.session-start.done
