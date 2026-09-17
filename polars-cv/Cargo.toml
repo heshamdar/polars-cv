@@ -30,6 +30,11 @@ view-buffer = { path = "../view-buffer", default-features = false, features = [
 polars = { version = "0.54", default-features = false, features = [
     "dtype-array",
     "dtype-struct",
+    # SPIKE (plugin design review): Arrow extension types for geometry. Enables
+    # `DataType::Extension`, `register_extension_type`, `Series::ext()` /
+    # `into_extension`. Forwards to polars-core/expr/lazy/ops/plan. Throwaway
+    # until the migrate-or-drop decision — see the spike plan.
+    "dtype-extension",
     "dtype-i8",
     "dtype-u8",
     "dtype-i16",
@@ -117,4 +122,4 @@ pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py39"]
 
 [dev-dependencies]
 # For testing
-polars = { version = "0.54", features = ["dtype-array", "dtype-struct", "lazy", "object", "strings", "dtype-datetime"] }
+polars = { version = "0.54", features = ["dtype-array", "dtype-struct", "dtype-extension", "lazy", "object", "strings", "dtype-datetime"] }
