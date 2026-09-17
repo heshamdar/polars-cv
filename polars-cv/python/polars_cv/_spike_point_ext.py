@@ -5,10 +5,11 @@ Feasibility probe for the Polars-plugin design review. Registers
 constructor, and a thin wrapper over the ``point_ext_translate`` plugin op.
 
 This is NOT part of the public API and is not exported from ``polars_cv``.
-The Rust copy of polars-core is registered separately in the ``_lib`` module
-init (``src/ext_point.rs``); both registrations must agree on the name/storage
-or an incoming tagged column decays to its ``{x, y}`` storage. Delete after the
-migrate-or-drop decision.
+Registration is lazy (see ``_spike_ext``): the host type is recorded at import
+via ``register_lazy`` and both copies of polars-core are registered on first use
+by ``ensure_registered`` — so importing this module does not load the compiled
+``.so``. Both registrations must agree on the name/storage or an incoming tagged
+column decays to its ``{x, y}`` storage. Delete after the migrate-or-drop decision.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from polars._typing import IntoExpr
 from polars.plugins import register_plugin_function
 
 from polars_cv._namespace import _LIB_PATH
+from polars_cv._spike_ext import ensure_registered, register_lazy
 from polars_cv.geometry.schemas import POINT_SCHEMA
 
 POINT_EXT_NAME = "polars_cv.point"
@@ -34,39 +36,7 @@ class PointXY(pl.datatypes.BaseExtension):
         return "point[xy]"
 
 
-def _register_host() -> None:
-    """Register on the host copy of polars, idempotently.
-
-    Module import runs this once; guard against a duplicate-name error if the
-    type was already registered (e.g. by a re-import in the same interpreter).
-    """
-    try:
-        pl.register_extension_type(POINT_EXT_NAME, PointXY)
-    except Exception:  # pragma: no cover - registry rejects a duplicate name
-        pass
-
-
-def _register_plugin() -> None:
-    """Trigger the *Rust*-side registration on the plugin's copy of polars-core.
-
-    SPIKE FINDING: polars loads the ``.so`` as a plain dynamic library to
-    resolve an expression symbol, which does NOT run the ``#[pymodule]`` init
-    where ``ext_point::register()`` lives. So the plugin registry stays empty
-    unless something imports the extension *module*. Without this, an incoming
-    ``polars_cv.point`` column decays to a generic extension inside the plugin
-    and the type downcast fails. A real migration must run this registration
-    before any query using the type resolves its schema (e.g. from the package
-    ``__init__``), which couples geometry import to plugin presence — a design
-    tension to weigh in the migrate-or-drop decision.
-    """
-    try:
-        import polars_cv._lib  # noqa: F401  (import for its module-init side effect)
-    except ImportError:  # pragma: no cover - plugin not built
-        pass
-
-
-_register_host()
-_register_plugin()
+register_lazy(POINT_EXT_NAME, PointXY)
 
 
 def point_ext(x: IntoExpr, y: IntoExpr) -> pl.Expr:
@@ -76,6 +46,7 @@ def point_ext(x: IntoExpr, y: IntoExpr) -> pl.Expr:
     ``{x: Float64, y: Float64}`` storage, so we cast into it first. Contrast with
     the dict-building ``geometry.schemas.contour_from_points`` constructor.
     """
+    ensure_registered()
 
     def _coord(v: IntoExpr) -> pl.Expr:
         expr = pl.col(v) if isinstance(v, str) else pl.lit(v)
@@ -89,6 +60,7 @@ def point_ext(x: IntoExpr, y: IntoExpr) -> pl.Expr:
 
 def point_ext_translate(expr: IntoExpr, dx: float, dy: float) -> pl.Expr:
     """Translate a ``polars_cv.point`` column by ``(dx, dy)``, keeping the tag."""
+    ensure_registered()
     return register_plugin_function(
         plugin_path=_LIB_PATH,
         function_name="point_ext_translate",

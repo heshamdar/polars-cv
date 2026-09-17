@@ -8,7 +8,9 @@ mod cloud_auth;
 mod contour;
 mod engine_warning;
 mod execute;
-// SPIKE (plugin design review): Arrow extension type for `polars_cv.point`.
+// SPIKE (plugin design review): Arrow extension types for `polars_cv.point`
+// (geometry) and `polars_cv.ndarray` (the numpy/torch sink struct).
+mod ext_ndarray;
 mod ext_point;
 mod fetch;
 mod geom_arity;
@@ -56,14 +58,17 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
     m.add_function(wrap_pyfunction!(rotation_matrix_2d, m)?)?;
-    // SPIKE (plugin design review): register `polars_cv.point` on the plugin's
-    // copy of polars-core. The host copy is registered from Python
-    // (`_spike_point_ext.py`); both must agree or the tag decays to storage.
-    ext_point::register().map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "failed to register polars_cv extension types: {e}"
-        ))
-    })?;
+    // SPIKE (plugin design review): register the spike extension types on the
+    // plugin's copy of polars-core. The host copy is registered from Python
+    // (lazily, via `_spike_ext.ensure_registered`); both must agree or the tag
+    // decays to storage. One registration site per type.
+    ext_point::register()
+        .and_then(|()| ext_ndarray::register())
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "failed to register polars_cv extension types: {e}"
+            ))
+        })?;
     Ok(())
 }
 
