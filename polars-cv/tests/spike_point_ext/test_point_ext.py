@@ -22,6 +22,18 @@ import pytest
 
 pytest.importorskip("polars_cv._lib", reason="requires the compiled plugin")
 
+from polars_cv._spike_bbox_ext import (  # noqa: E402
+    BBOX_EXT_NAME,
+    BBox,
+    bbox_ext,
+    bbox_ext_identity,
+)
+from polars_cv._spike_contour_ext import (  # noqa: E402
+    CONTOUR_EXT_NAME,
+    Contour,
+    contour_ext,
+    contour_ext_identity,
+)
 from polars_cv._spike_ext import is_extension_named  # noqa: E402
 from polars_cv._spike_ndarray_ext import (  # noqa: E402
     NDARRAY_EXT_NAME,
@@ -146,3 +158,97 @@ def test_ndarray_host_type_identity() -> None:
     t = NdArray()
     assert t.ext_name() == NDARRAY_EXT_NAME
     assert t.ext_storage() == NUMPY_OUTPUT_SCHEMA
+
+
+# --- Geometry family: contour + bbox ---
+
+
+def test_bbox_roundtrip_and_op_keep_tag() -> None:
+    """A tagged bbox column round-trips and survives the identity op still tagged."""
+    df = pl.DataFrame({"x": [1.0], "y": [2.0], "w": [3.0], "h": [4.0]})
+    out = df.select(b=bbox_ext("x", "y", "w", "h"))
+    assert is_extension_named(out.schema["b"], BBOX_EXT_NAME), out.schema["b"]
+    assert df.select(
+        s=bbox_ext("x", "y", "w", "h").ext.storage()
+    ).to_series().to_list() == [{"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}]
+
+    passed = df.select(same=bbox_ext_identity(bbox_ext("x", "y", "w", "h")))
+    assert is_extension_named(passed.schema["same"], BBOX_EXT_NAME), passed.schema[
+        "same"
+    ]
+
+
+def test_bbox_host_type_identity() -> None:
+    from polars_cv.geometry.schemas import BBOX_SCHEMA
+
+    t = BBox()
+    assert t.ext_name() == BBOX_EXT_NAME
+    assert t.ext_storage() == BBOX_SCHEMA
+
+
+def test_contour_roundtrip_and_op_keep_tag() -> None:
+    """A tagged contour column round-trips (nested storage intact) and survives the op."""
+    s = contour_ext([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)])
+    assert is_extension_named(s.dtype, CONTOUR_EXT_NAME), s.dtype
+
+    storage = s.ext.storage()
+    row = storage.struct.unnest().row(0, named=True)
+    assert row["exterior"] == [
+        {"x": 0.0, "y": 0.0},
+        {"x": 10.0, "y": 0.0},
+        {"x": 10.0, "y": 10.0},
+        {"x": 0.0, "y": 10.0},
+    ]
+    assert row["holes"] == []
+
+    df = pl.DataFrame({"c": s})
+    out = df.select(same=contour_ext_identity(pl.col("c")))
+    assert is_extension_named(out.schema["same"], CONTOUR_EXT_NAME), out.schema["same"]
+
+
+def test_contour_host_type_identity() -> None:
+    from polars_cv.geometry.schemas import CONTOUR_SCHEMA
+
+    t = Contour()
+    assert t.ext_name() == CONTOUR_EXT_NAME
+    assert t.ext_storage() == CONTOUR_SCHEMA
+
+
+# --- Persistence: what survives a Parquet round trip ---
+
+
+def test_parquet_persistence(tmp_path) -> None:
+    """A tagged column persisted to Parquet keeps its tag when read back by a
+    process that has the type registered, and its storage data is intact even for
+    a reader that does not — documenting the Parquet/Iceberg persistence behavior."""
+    df = pl.DataFrame({"a": [1.0, 3.0], "b": [2.0, 4.0]}).select(kp=point_ext("a", "b"))
+    path = tmp_path / "kp.parquet"
+    df.write_parquet(path)
+
+    # Reader WITH the type registered (this process): tag reconstructed.
+    back = pl.read_parquet(path)
+    assert is_extension_named(back.schema["kp"], POINT_EXT_NAME), back.schema["kp"]
+    assert back.select(pl.col("kp").ext.storage()).to_series().to_list() == [
+        {"x": 1.0, "y": 2.0},
+        {"x": 3.0, "y": 4.0},
+    ]
+
+    # Reader WITHOUT polars_cv imported (subprocess): storage data must be intact.
+    # Whether the tag survives as a generic extension or decays to the struct is
+    # recorded (printed) rather than asserted — it is the documented degradation.
+    code = textwrap.dedent(
+        f"""
+        import polars as pl
+        s = pl.read_parquet(r"{path}")["kp"]
+        name = getattr(s.dtype, "ext_name", None)
+        tagged = callable(name)
+        storage = s.ext.storage() if tagged else s
+        print("DTYPE", repr(s.dtype))
+        print("VALUES", storage.to_list())
+        assert storage.to_list() == [{{"x": 1.0, "y": 2.0}}, {{"x": 3.0, "y": 4.0}}]
+        print("OK")
+        """
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout

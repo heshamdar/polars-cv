@@ -8,8 +8,11 @@ mod cloud_auth;
 mod contour;
 mod engine_warning;
 mod execute;
-// SPIKE (plugin design review): Arrow extension types for `polars_cv.point`
-// (geometry) and `polars_cv.ndarray` (the numpy/torch sink struct).
+// SPIKE (plugin design review): Arrow extension types for the geometry family
+// (`polars_cv.point` / `.contour` / `.bbox`) and `polars_cv.ndarray` (the
+// numpy/torch sink struct).
+mod ext_bbox;
+mod ext_contour;
 mod ext_ndarray;
 mod ext_point;
 mod fetch;
@@ -63,6 +66,8 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // (lazily, via `_spike_ext.ensure_registered`); both must agree or the tag
     // decays to storage. One registration site per type.
     ext_point::register()
+        .and_then(|()| ext_contour::register())
+        .and_then(|()| ext_bbox::register())
         .and_then(|()| ext_ndarray::register())
         .map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
