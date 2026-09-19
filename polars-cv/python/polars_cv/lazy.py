@@ -195,6 +195,15 @@ class LazyPipelineExpr:
         >>> expr = img.sink("numpy")
     """
 
+    # The private instance state, declared once here so it is a single authority:
+    # `gen_lazy_stub.py` reads these annotations to emit the `.pyi` (other modules
+    # read a node's `_node_id` / `_pipeline` / ... across the package boundary).
+    _column: pl.Expr
+    _pipeline: Pipeline
+    _node_id: str
+    _upstream: list[LazyPipelineExpr]
+    _alias: str | None
+
     def __init__(
         self,
         column: pl.Expr,
@@ -216,8 +225,8 @@ class LazyPipelineExpr:
         self._column = column
         self._pipeline = pipeline
         self._node_id = node_id or _generate_node_id()
-        self._upstream: list[LazyPipelineExpr] = upstream or []
-        self._alias: str | None = alias
+        self._upstream = upstream or []
+        self._alias = alias
 
     @property
     def node_id(self) -> str:

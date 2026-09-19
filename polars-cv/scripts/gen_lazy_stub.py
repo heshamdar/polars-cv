@@ -157,23 +157,25 @@ def _render_member(name: str, member: object) -> str | None:
     return None
 
 
-# The private instance attributes set in ``LazyPipelineExpr.__init__``. They are
-# read across module boundaries (``pipeline.py`` builds ``rasterize(shape=)`` /
-# ``apply_mask`` specs from another node's ``_node_id`` / ``_pipeline`` / ...), so
-# a type checker reading this stub for those importers needs them declared — the
-# generator only sees class-level members, never ``self.`` assignments. Kept in
-# sync with ``__init__`` by ``test_lazy_stub_is_current`` (regenerate-and-diff).
-_INSTANCE_ATTRS = """\
-    _column: pl.Expr
-    _pipeline: Pipeline
-    _node_id: str
-    _upstream: list[LazyPipelineExpr]
-    _alias: str | None
-"""
+def _instance_attrs() -> str:
+    """The class's private instance attributes, read from its own annotations.
+
+    ``LazyPipelineExpr`` declares them as class-level annotations (the single
+    authority); they must be in the stub because other modules read a node's
+    ``_node_id`` / ``_pipeline`` / ... across the package boundary and a type
+    checker resolves those against this ``.pyi``. Derived here rather than
+    restated, so adding one to the class flows through without a second edit.
+    ``from __future__ import annotations`` makes each value the annotation's
+    source text, ready to emit verbatim.
+    """
+    return "".join(
+        f"    {name}: {annotation}\n"
+        for name, annotation in LazyPipelineExpr.__annotations__.items()
+    )
 
 
 def generate_stub() -> str:
-    body: list[str] = [_INSTANCE_ATTRS]
+    body: list[str] = [_instance_attrs()]
     for name, member in vars(LazyPipelineExpr).items():
         if name.startswith("__") and name not in ("__init__", "__repr__", "__str__"):
             continue
