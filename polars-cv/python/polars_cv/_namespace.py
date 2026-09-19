@@ -151,11 +151,16 @@ class _ArgBinder:
     def add_param(
         self,
         name: str,
-        value: float | int | pl.Expr | None,
+        value: str | float | int | bool | pl.Expr | None,
         *,
         cast: Callable[[Any], Any] = float,
     ) -> None:
-        """Register a parameter as either a per-row input or a scalar kwarg."""
+        """Register a parameter as either a per-row input or a scalar kwarg.
+
+        A scalar rides in ``_kwargs`` under ``cast`` (``float`` by default, but
+        ``str`` / ``int`` / ``bool`` for enum and flag parameters); a ``pl.Expr``
+        becomes a per-row input.
+        """
         if value is None:
             return
         if isinstance(value, pl.Expr):
@@ -179,6 +184,6 @@ class _ArgBinder:
                 "input_slots": self._slots,
                 # Injected centrally so no geometry method has to declare it;
                 # Rust reads it in `GeomParams::new`.
-                "on_null": namespace._on_null,
+                "on_null": namespace._on_null,  # ty: ignore[unresolved-attribute]
             },
         )

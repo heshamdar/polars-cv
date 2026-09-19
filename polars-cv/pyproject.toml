@@ -38,6 +38,8 @@ dev = [
     "ruff>=0.9.0",
     "maturin>=1.7,<2.0",
     "pre-commit>=4.5.1",
+    "pytest-cov>=5.0",
+    "hypothesis>=6.100",
     # Ten of the thirteen runnable examples plot their results, and
     # `test_examples_run` executes all thirteen. Without this they would not
     # skip, they would fail: the runner asserts exit 0.
@@ -76,6 +78,62 @@ markers = [
     "slow: mark a test as slow (excluded from default CI run)",
     "structural: mark a guard that checks codebase shape rather than runtime behaviour (needs no compiled extension, so pre-commit can run it)",
 ]
+
+# Coverage is *not* enabled in addopts on purpose: the fail-under gate below
+# must apply only to the full behavioural lane, not to the structural-only
+# subset the pre-commit hook runs (which cannot reach 95% by design) nor to the
+# slow lane run alone. scripts/verify.sh and CI pass `--cov=polars_cv
+# --cov-fail-under=95` on the streaming fast lane specifically.
+[tool.coverage.run]
+source_pkgs = ["polars_cv"]
+omit = [
+    # Pure visual-output glue with no headless assertion surface: notebook image
+    # rendering (`show_images`) and DAG visualisation through the optional
+    # networkx/graphviz/pydot backends. Both are exercised by hand and by the
+    # docs, not by the behavioural suite; measuring them would gate the build on
+    # rendering code that produces pictures, not values.
+    "*/polars_cv/display.py",
+    "*/polars_cv/_graph_viz.py",
+]
+
+[tool.coverage.paths]
+# Unify the editable checkout (python/polars_cv, what `maturin develop` installs)
+# with any site-packages copy, so the report reads as one tree in every install.
+polars_cv = ["python/polars_cv", "*/site-packages/polars_cv"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "if __name__ == .__main__.:",
+    "^\\s*\\.\\.\\.$",
+]
+fail_under = 95
+show_missing = true
+
+[tool.ty]
+# Scoped to the shipped, py.typed package surface. Tests are intentionally out
+# of scope for the first gate: they lean on the dynamically registered `.cv` /
+# `.point` / `.contour` expression namespaces, which a static checker cannot see
+# without namespace stubs. Widen to `tests` once those exist.
+#
+# Pre-existing findings are baselined with inline `# ty: ignore[<rule>]` comments
+# (ty 0.0.82 is strict about polars' own stub overloads, the dynamically
+# registered expression namespaces, and `sink()`'s `Expr | PipelineGraph` union
+# return — all runtime-correct here). The gate therefore enforces *no new* type
+# errors; whittle the baselined ignores down over time.
+[tool.ty.src]
+include = ["python/polars_cv"]
+# lazy.py builds LazyPipelineExpr's chainable API by setattr at import time, so
+# its type surface lives in the generated lazy.pyi (kept in sync by
+# test_lazy_stub_is_current). Checking the .py *and* its sibling .pyi makes ty
+# treat the two as distinct nominal classes; the stub is the checked contract,
+# so exclude the implementation and let importers resolve against the stub.
+exclude = ["python/polars_cv/lazy.py"]
+
+[tool.ty.environment]
+python-version = "3.10"
 
 [tool.ruff]
 target-version = "py310"

@@ -862,4 +862,4 @@ class PipelineGraph:
 
     def show_graph(self) -> pydot.Dot:
         """Build dot representation of graph."""
-        return get_graphviz_out(self)
+        return get_graphviz_out(self)  # ty: ignore[invalid-return-type]

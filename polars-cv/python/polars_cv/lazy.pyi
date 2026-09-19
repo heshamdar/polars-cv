@@ -29,6 +29,12 @@ def _chainable_pipeline_ops() -> list[str]: ...
 def _generate_node_id() -> str: ...
 
 class LazyPipelineExpr:
+    _column: pl.Expr
+    _pipeline: Pipeline
+    _node_id: str
+    _upstream: list[LazyPipelineExpr]
+    _alias: str | None
+
     def __init__(
         self,
         column: pl.Expr,

@@ -37,7 +37,7 @@ class PrecisionRecallResult(MetricResult):
         self,
         *,
         method: Literal["all_points", "11_point", "trapezoidal"] = "all_points",
-    ) -> float:
+    ) -> float:  # ty: ignore[invalid-method-override]
         """Compute Average Precision (AUC of the PR curve).
 
         Args:
@@ -246,7 +246,7 @@ def mean_average_precision(
 
     if not ap_values:
         return 0.0
-    return float(pl.Series("ap", ap_values).mean())  # type: ignore[arg-type]
+    return float(pl.Series("ap", ap_values).mean())  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 def _mean_average_precision_all_points(

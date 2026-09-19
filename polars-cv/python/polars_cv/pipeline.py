@@ -95,7 +95,7 @@ def _rotation_matrix(
         from polars_cv._lib import rotation_matrix_2d
 
         return list(
-            rotation_matrix_2d(float(angle_deg), float(cx), float(cy), float(scale))
+            rotation_matrix_2d(float(angle_deg), float(cx), float(cy), float(scale))  # ty: ignore[invalid-argument-type]
         )
     if isinstance(angle_deg, pl.Expr):
         rad = angle_deg.radians()
@@ -1302,7 +1302,7 @@ class Pipeline:
 
         def _dim(i: int) -> "ParamValue | None":
             if i < len(out) and out[i] is not None:
-                return ParamValue(is_expr=False, value=int(out[i]))
+                return ParamValue(is_expr=False, value=int(out[i]))  # ty: ignore[invalid-argument-type]
             return None
 
         self._shape_hints.height = _dim(0)
@@ -1362,13 +1362,13 @@ class Pipeline:
         params: dict[str, ParamValue] = {
             "fill_value": source.fill_value,
             "background": source.background,
-        }
+        }  # ty: ignore[invalid-assignment]
         if shape is not None:
             params["shape_ref"] = ParamValue(is_expr=False, value=shape._node_id)
         else:
             # Both are present together; the builder rejected a lone one above.
-            params["width"] = source.width
-            params["height"] = source.height
+            params["width"] = source.width  # ty: ignore[invalid-assignment]
+            params["height"] = source.height  # ty: ignore[invalid-assignment]
         spec = OpSpec(op="rasterize", params=params)
         contract = _op_contract_for(spec)
 
@@ -1777,6 +1777,7 @@ class Pipeline:
             raise ValueError(msg)
 
         new = self._clone()
+        assert new._source is not None  # guaranteed: self._source.format read above
         new._source = dataclasses.replace(new._source, decode_max_size=max_size)
         return new
 
@@ -2644,8 +2645,8 @@ class Pipeline:
             msg = f"Only ksize=3 is currently supported for Sobel, got {ksize}"
             raise ValueError(msg)
 
-        sobel_x_3 = [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0]
-        sobel_y_3 = [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0]
+        sobel_x_3: list[FloatOrExpr] = [-1.0, 0.0, 1.0, -2.0, 0.0, 2.0, -1.0, 0.0, 1.0]
+        sobel_y_3: list[FloatOrExpr] = [-1.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 1.0]
         kernel = sobel_x_3 if axis == "x" else sobel_y_3
         return self.convolve2d(kernel, ksize, normalize=False)
 

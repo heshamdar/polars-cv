@@ -36,7 +36,7 @@ from ._types import (
 )
 
 if TYPE_CHECKING:
-    from .._auc import CorrectionMethod
+    from ._auc import CorrectionMethod
     from ._types import DetectionTable
 
 # Internal slot column carrying a globally-unique, deterministic per-draw id.
