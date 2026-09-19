@@ -157,8 +157,23 @@ def _render_member(name: str, member: object) -> str | None:
     return None
 
 
+# The private instance attributes set in ``LazyPipelineExpr.__init__``. They are
+# read across module boundaries (``pipeline.py`` builds ``rasterize(shape=)`` /
+# ``apply_mask`` specs from another node's ``_node_id`` / ``_pipeline`` / ...), so
+# a type checker reading this stub for those importers needs them declared — the
+# generator only sees class-level members, never ``self.`` assignments. Kept in
+# sync with ``__init__`` by ``test_lazy_stub_is_current`` (regenerate-and-diff).
+_INSTANCE_ATTRS = """\
+    _column: pl.Expr
+    _pipeline: Pipeline
+    _node_id: str
+    _upstream: list[LazyPipelineExpr]
+    _alias: str | None
+"""
+
+
 def generate_stub() -> str:
-    body: list[str] = []
+    body: list[str] = [_INSTANCE_ATTRS]
     for name, member in vars(LazyPipelineExpr).items():
         if name.startswith("__") and name not in ("__init__", "__repr__", "__str__"):
             continue

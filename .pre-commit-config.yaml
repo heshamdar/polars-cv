@@ -37,6 +37,18 @@ repos:
         files: \.py$
         pass_filenames: false
 
+      # Static type check of the shipped package, the same `uvx ty check` CI's
+      # typing job and scripts/verify.sh run (config in polars-cv/pyproject.toml
+      # under [tool.ty]). Reads source + the committed .pyi stubs; needs the dev
+      # deps synced but no compiled extension.
+      - id: ty-check
+        name: ty check
+        description: Type-check the package (matches CI's `uvx ty check`)
+        entry: uvx ty check --project polars-cv
+        language: system
+        files: \.pyi?$
+        pass_filenames: false
+
       - id: cargo-fmt
         name: cargo fmt
         description: Check Rust formatting

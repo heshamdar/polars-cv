@@ -48,7 +48,7 @@ DETECTION_SCHEMA: dict[str, pl.DataType] = {
     COL_GT_IDX: pl.UInt32,
     COL_IOU: pl.Float64,
     COL_DET_IDX: pl.UInt32,
-}
+}  # ty: ignore[invalid-assignment]
 
 #: The per-image metadata frame every matcher produces. ``group_id`` is absent
 #: on purpose: it is added by :meth:`DetectionTable.with_group` and by the
@@ -59,7 +59,7 @@ IMAGE_META_SCHEMA: dict[str, pl.DataType] = {
     COL_N_GTS: pl.Int64,
     COL_WEIGHT: pl.Float64,
     COL_GT_LABEL: pl.Boolean,
-}
+}  # ty: ignore[invalid-assignment]
 
 
 def _validate_schema(
@@ -318,7 +318,8 @@ class DetectionTable:
             Tuple of ``(detections_df, image_meta_df)``.
         """
         det_df, meta_df = pl.collect_all(
-            [self._detections, self._image_meta], engine=engine
+            [self._detections, self._image_meta],
+            engine=engine,  # ty: ignore[invalid-argument-type]
         )
         return det_df, meta_df
 

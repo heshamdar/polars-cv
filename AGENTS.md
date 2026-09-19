@@ -44,6 +44,8 @@ This is a **pre-release, largely AI-developed project**. Fix inconsistencies whe
 
 6. **Python for planning, Rust for execution.** Keep Python focused on pipeline specification, validation, and graph construction. Reserve Rust for performance-critical execution-time work. If something can be done purely in Python (schema inference, validation, utilities), do it there.
 
+7. **Priorities, in order: correctness, ergonomics, maintainability, performance.** Performance is last on purpose — the plugin runs over frames the engine already carries, so a clear, obviously-correct formula beats a fast one. Reject a design on performance grounds only when it is clearly suboptimal (an unnecessary per-row allocation, an O(n) pass where O(1) exists), never to shave constants at the cost of the three above it.
+
 ## Architecture
 
 ```

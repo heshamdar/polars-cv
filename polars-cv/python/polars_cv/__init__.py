@@ -90,14 +90,14 @@ def _source_hash_from_tree() -> str | None:
     """
     root = Path(__file__).resolve().parents[3]
     if not (root / "polars-cv" / "Cargo.toml").is_file():
-        return None
+        return None  # pragma: no cover  # installed wheel, not a source checkout
 
     contents: dict[str, bytes] = {}
 
     def _push(path: Path, key: str) -> None:
         try:
             contents[key] = path.read_bytes()
-        except OSError:
+        except OSError:  # pragma: no cover  # unreadable source file; defensive
             pass
 
     for crate in ("polars-cv", "view-buffer"):
@@ -163,13 +163,13 @@ def build_info() -> dict[str, str | None]:
 
         plugin_version = getattr(_lib, "__version__", None)
         plugin_source_hash = getattr(_lib, "__source_hash__", None)
-    except ImportError:
+    except ImportError:  # pragma: no cover  # extension always built in CI/dev
         plugin_version = None
         plugin_source_hash = None
 
     try:
         dist_version = _dist_version("polars-cv")
-    except PackageNotFoundError:
+    except PackageNotFoundError:  # pragma: no cover  # package always installed
         dist_version = None
 
     return {
@@ -256,7 +256,7 @@ def numpy_from_struct(
     if isinstance(shape_list, pl.Series):
         shape = tuple(int(x) for x in shape_list.to_list())
     else:
-        shape = tuple(int(x) for x in shape_list)
+        shape = tuple(int(x) for x in shape_list)  # ty: ignore[not-iterable]
 
     # Convert strides to tuple (if present)
     strides: tuple[int, ...] | None = None
@@ -264,13 +264,13 @@ def numpy_from_struct(
         if isinstance(strides_list, pl.Series):
             strides = tuple(int(x) for x in strides_list.to_list())
         else:
-            strides = tuple(int(x) for x in strides_list)
+            strides = tuple(int(x) for x in strides_list)  # ty: ignore[not-iterable]
 
     # Convert offset
     if offset is None:
         offset = 0
     else:
-        offset = int(offset)
+        offset = int(offset)  # ty: ignore[invalid-argument-type]
 
     # The sink writes `DType::numpy_name()` into the struct, so those ten names
     # are exactly what can legitimately arrive. Generated from `dtype_table!`
@@ -295,12 +295,12 @@ def numpy_from_struct(
         # No stride metadata (older/dict callers): assume C-contiguous.
         if copy:
             return (
-                np.frombuffer(bytes(data), dtype=dtype, offset=offset)
+                np.frombuffer(bytes(data), dtype=dtype, offset=offset)  # ty: ignore[invalid-argument-type]
                 .copy()
                 .reshape(shape)
             )
         buf = _as_buffer(data)
-        return np.frombuffer(buf, dtype=dtype, offset=offset).reshape(shape)
+        return np.frombuffer(buf, dtype=dtype, offset=offset).reshape(shape)  # ty: ignore[no-matching-overload]
 
     itemsize = dtype.itemsize
     if offset % itemsize != 0:
@@ -319,7 +319,7 @@ def numpy_from_struct(
     # not bounds-check, but the sink returns the full backing buffer, so every
     # accessed byte (including backwards for negative strides) lies within it.
     backing = _as_buffer(data)
-    base = np.frombuffer(backing, dtype=dtype)
+    base = np.frombuffer(backing, dtype=dtype)  # ty: ignore[no-matching-overload]
     start = base[offset // itemsize :]
     view = np.lib.stride_tricks.as_strided(start, shape=shape, strides=strides)
     # copy=False returns the zero-copy view (kept alive by the backing buffer
@@ -343,10 +343,10 @@ def _as_buffer(data: object) -> object:
         return data
     # Try memoryview for objects that support the buffer protocol
     try:
-        return memoryview(data)  # type: ignore[arg-type]
-    except TypeError:
+        return memoryview(data)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    except TypeError:  # pragma: no cover  # non-buffer input; defensive fallback
         # Fallback: copy into bytes
-        return bytes(data)  # type: ignore[arg-type]
+        return bytes(data)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 def mask_iou(
@@ -379,8 +379,8 @@ def mask_iou(
     )
 
     # Compute IoU using Polars scalar operations
-    intersection_sum = result.struct.field("_iou_intersection")
-    union_sum = result.struct.field("_iou_union")
+    intersection_sum = result.struct.field("_iou_intersection")  # ty: ignore[unresolved-attribute]
+    union_sum = result.struct.field("_iou_union")  # ty: ignore[unresolved-attribute]
 
     return intersection_sum / (union_sum + epsilon)
 
@@ -400,7 +400,7 @@ def hamming_distance(
     xor_result = hash1.bitwise_xor(hash2).pipe(Pipeline().reduce_popcount())
 
     # Sink as native scalar (Float64)
-    return xor_result.sink("native")
+    return xor_result.sink("native")  # ty: ignore[invalid-return-type]
 
 
 def hash_similarity(
@@ -424,7 +424,7 @@ def hash_similarity(
     distance = xor_popcount.sink("native")
 
     # Compute similarity: (1 - distance / total_bits) * 100
-    return (1.0 - distance / hash_bits) * 100.0
+    return (1.0 - distance / hash_bits) * 100.0  # ty: ignore[unsupported-operator]
 
 
 def mask_dice(
@@ -459,8 +459,8 @@ def mask_dice(
     )
 
     # Compute Dice using Polars scalar operations
-    inter = result.struct.field("_dice_intersection")
-    total = result.struct.field("_dice_pred") + result.struct.field("_dice_target")
+    inter = result.struct.field("_dice_intersection")  # ty: ignore[unresolved-attribute]
+    total = result.struct.field("_dice_pred") + result.struct.field("_dice_target")  # ty: ignore[unresolved-attribute]
 
     return (2.0 * inter) / (total + epsilon)
 

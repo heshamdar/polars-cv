@@ -5,19 +5,38 @@ Pytest configuration and fixtures for polars-cv tests.
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
+import polars as pl
 import pytest
 
 # Add the python source to the path for testing without installation
 python_src = Path(__file__).parent.parent / "python"
 sys.path.insert(0, str(python_src))
 
+# Streaming is the project's default execution engine (see
+# docs/user-guide/concepts/streaming.md): the plugin only runs multi-threaded
+# when the streaming engine slices input into morsels, and the two engines chunk
+# a plugin's inputs differently, so bugs at chunk boundaries hide under whichever
+# engine a bare `.collect()` happens to pick. Default every bare `.collect()` in
+# the suite to streaming so it is the path exercised by default, and run a second
+# CI lane under `in-memory` for the dual-path guarantee.
+#
+# `setdefault` lets a lane that exports POLARS_ENGINE_AFFINITY explicitly win
+# (the in-memory lane sets it before pytest starts), and `set_engine_affinity`
+# reloads polars' cached view of the variable in case polars was imported before
+# this ran. Tests that pass `engine=` explicitly (the streaming-vs-eager
+# equivalence checks) are unaffected — the variable only changes the *default*.
+_ENGINE_AFFINITY = os.environ.setdefault("POLARS_ENGINE_AFFINITY", "streaming")
+if hasattr(pl.Config, "set_engine_affinity"):  # absent on the oldest supported polars
+    pl.Config.set_engine_affinity(_ENGINE_AFFINITY)  # type: ignore[arg-type]
+
 if TYPE_CHECKING:
-    pass
+    from collections.abc import Iterator
 
 
 def _plugin_available() -> bool:
@@ -34,6 +53,29 @@ plugin_required = pytest.mark.skipif(
     not _plugin_available(),
     reason="Requires compiled plugin (run maturin develop first)",
 )
+
+
+@pytest.fixture
+def in_memory_engine() -> Iterator[None]:
+    """Pin the default engine to ``in-memory`` for the duration of one test.
+
+    For a test whose assertion is only well-defined under the in-memory engine —
+    an error that names the *absolute* row index of an offending parameter. A
+    per-row plugin under the streaming engine sees one morsel at a time and
+    cannot know its global offset, so it reports a morsel-local row number
+    instead. The suite defaults to streaming (see the affinity set above), so a
+    test asserting the absolute index must opt back into in-memory explicitly;
+    this mirrors the explicit ``engine=`` legs of the streaming-vs-eager
+    equivalence tests.
+    """
+    previous = os.environ.get("POLARS_ENGINE_AFFINITY")
+    if hasattr(pl.Config, "set_engine_affinity"):
+        pl.Config.set_engine_affinity("in-memory")
+    try:
+        yield
+    finally:
+        if hasattr(pl.Config, "set_engine_affinity"):
+            pl.Config.set_engine_affinity(previous)  # type: ignore[arg-type]  # None clears it
 
 
 def make_test_png(

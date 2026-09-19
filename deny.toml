@@ -1,0 +1,54 @@
+# Supply-chain and license policy for the Rust workspace, enforced by
+# `cargo deny check` (CI's cargo-deny job and scripts/verify.sh). cargo-deny
+# resolves the real feature graph, so a crate that only appears in Cargo.lock
+# behind a feature this workspace does not enable is never flagged.
+
+[advisories]
+# Every security advisory is an error by default, so the gate fails on any NEW
+# one. The entries below are pre-existing, transitive, and have no upgrade path
+# this workspace controls (the fixable ones were already resolved by bumping
+# Cargo.lock: anyhow, bytes, crossbeam-epoch, h2, rustls, rustls-webpki).
+# Re-check each on every dependency bump and drop it once a fix is reachable.
+ignore = [
+    # Unmaintained-only, no vulnerability, no safe upgrade. Transitive.
+    { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained; via polars, no fix published" },
+    { id = "RUSTSEC-2026-0105", reason = "core2 unmaintained/yanked; via image->rav1e->ravif, no fix" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive, no fix published" },
+    # Blocked by a pinned major dependency this workspace does not own the bump for.
+    { id = "RUSTSEC-2026-0176", reason = "pyo3 <0.29; pinned by pyo3-polars 0.27 (pyo3 0.28) — needs a coordinated pyo3-polars upgrade" },
+    { id = "RUSTSEC-2026-0177", reason = "pyo3 <0.29; pinned by pyo3-polars 0.27 (pyo3 0.28) — needs a coordinated pyo3-polars upgrade" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml <0.41; held by object_store 0.13 — needs an object_store bump" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml <0.41; held by object_store 0.13 — needs an object_store bump" },
+]
+
+[licenses]
+# Explicit allow-list. The workspace itself is MIT OR Apache-2.0; everything it
+# pulls in must be a permissive or weak-copyleft license compatible with that.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "NCSA",     # llvm-derived crate, permissive (BSD-like)
+    "CC0-1.0",  # public-domain dedication (e.g. tiny_keccak, notify)
+    "BSL-1.0",  # Boost Software License, permissive
+]
+confidence-threshold = 0.8
+
+[bans]
+# Duplicate versions are common and benign in a large transitive graph (the
+# polars stack pulls several); warn rather than fail so the gate stays about
+# advisories and licenses, not dependency de-duplication.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

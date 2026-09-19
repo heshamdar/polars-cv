@@ -2087,6 +2087,8 @@ def test_verify_script_covers_every_ci_check() -> None:
         ('-m "structural and not slow"', '-m "structural and not slow"'),
         ("ruff check", "ruff check"),
         ("ruff format --check", "ruff format --check"),
+        ("ty check", "ty check"),
+        ("cargo deny", "cargo deny"),
         ("mkdocs build --strict", "mkdocs build --strict"),
     ]
     missing = [
@@ -2126,10 +2128,12 @@ _CI_COMMAND_CLASSIFICATION: "dict[str, str | None]" = {
     "cargo fmt": "cargo fmt",
     "cargo clippy": "cargo clippy",
     "cargo test": "cargo test",
+    "cargo deny": "cargo deny",
     "maturin develop": "maturin develop",
     "pytest": "pytest",
     "uvx ruff check": "ruff check",
     "uvx ruff format": "ruff format",
+    "uvx ty": "ty check",
     "uv run mkdocs": "mkdocs build",
     "uv run pytest": "pytest",
     # Setup: installs and environment, nothing a code change can break.
@@ -2737,7 +2741,6 @@ class TestPointSchemaHasOneDeclaration:
     def test_point_schema_matches_the_rust_declaration(self) -> None:
         """Both directions, so neither side can add or drop a field alone."""
         from polars_cv._lib import point_schema
-
         from polars_cv.geometry.schemas import POINT_SCHEMA
 
         rust_names = list(point_schema())
@@ -2791,7 +2794,6 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
         `test_geometry_schemas.py::TestContourSchema`; this pins the names.
         """
         from polars_cv._lib import contour_schema
-
         from polars_cv.geometry.schemas import CONTOUR_SCHEMA
 
         rust_names = list(contour_schema())
@@ -2807,7 +2809,6 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
     def test_bbox_schema_matches_the_rust_declaration(self) -> None:
         """BBOX_SCHEMA field names, held to the Rust authority both ways."""
         from polars_cv._lib import bbox_schema
-
         from polars_cv.geometry.schemas import BBOX_SCHEMA
 
         rust_names = list(bbox_schema())
