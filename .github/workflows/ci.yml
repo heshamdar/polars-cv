@@ -239,10 +239,11 @@ jobs:
           enable-cache: true
 
       - name: ty check
+        # `--project polars-cv` is the same invocation scripts/verify.sh and the
+        # pre-commit hook use (one spelling of the gate, run from the repo root).
         run: |
-          if [ -d "polars-cv" ]; then cd polars-cv; fi
-          uv sync --group dev --no-install-project
-          uvx ty check
+          uv sync --directory polars-cv --group dev --no-install-project
+          uvx ty check --project polars-cv
 
   cargo-deny:
     name: cargo-deny (advisories + licenses)

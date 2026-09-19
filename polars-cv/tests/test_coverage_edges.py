@@ -245,7 +245,10 @@ class TestBBoxMatcherOptionalColumns:
         assert table is not None
 
 
+@plugin_required
 def test_build_info_reports_agreeing_versions() -> None:
+    # Without the extension, plugin_version is None and filtered out, making the
+    # assertion vacuously true — so this needs the built plugin to mean anything.
     info = build_info()
     assert info["version"] is not None
     # In a built checkout the plugin and distribution versions agree with __version__.

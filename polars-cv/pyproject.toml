@@ -84,8 +84,9 @@ markers = [
 # Coverage is *not* enabled in addopts on purpose: the fail-under gate below
 # must apply only to the full behavioural lane, not to the structural-only
 # subset the pre-commit hook runs (which cannot reach 95% by design) nor to the
-# slow lane run alone. scripts/verify.sh and CI pass `--cov=polars_cv
-# --cov-fail-under=95` on the streaming fast lane specifically.
+# slow lane run alone. scripts/verify.sh and CI pass `--cov=polars_cv` on the
+# streaming fast lane specifically; the 95% floor itself is enforced by
+# `fail_under` in [tool.coverage.report] below, not by a CLI flag.
 [tool.coverage.run]
 source_pkgs = ["polars_cv"]
 omit = [
