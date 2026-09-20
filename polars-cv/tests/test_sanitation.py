@@ -1447,34 +1447,21 @@ def test_reshape_rank_tracked_eagerly() -> None:
     assert dyn._expected_ndim == 2
 
 
-def test_op_append_ratchet_moved_to_the_append_contract_suite() -> None:
-    """The per-call ratchet has been replaced by a structural guard.
-
-    This test used to assert that every builder appending an OpSpec also
-    called ``_update_output_dtype`` — one of the *two* updates an append
-    requires. Its own docstring named the failure mode it was meant to stop
-    ("the eager/lazy drift class of bug"), and the ops that skipped the other
-    update (``_update_shape_hints``) shipped a plan/exec divergence underneath
-    it: enumerating required calls only guards the calls you enumerated.
-
-    ``tests/test_append_contract.py`` now forbids anything but
-    ``Pipeline._push_op`` from mutating ``_ops`` at all, which makes the whole
-    sequence unskippable rather than checked. Kept as a pointer so the weaker
-    form is not reintroduced.
-    """
-    from tests import test_append_contract
-
-    assert hasattr(test_append_contract, "test_op_append_is_structurally_exclusive")
-
-
 def test_histogram_schema_declared_once() -> None:
-    """Ratchet: histogram's mode->dtype mapping lives in Rust only. The
-    Python builder must not re-declare the u32/u64 result dtypes."""
-    from pathlib import Path
+    """Ratchet: histogram's mode->dtype mapping lives in Rust only. The Python
+    ``histogram`` builder must not re-declare the u32/u64 result dtypes.
 
-    import polars_cv.pipeline as pipeline_mod
+    Scoped to ``Pipeline.histogram``'s own source, not the whole module: banning
+    the literals ``"u32"``/``"u64"`` across all of ``pipeline.py`` false-fails on
+    any unrelated future use of those strings elsewhere in the file, while
+    proving nothing more about this op than the method's own body does.
+    """
+    import inspect
 
-    source = Path(pipeline_mod.__file__).read_text()
+    source = inspect.getsource(Pipeline.histogram)
+    assert "def histogram" in source, (
+        "Pipeline.histogram source not found; this ratchet is scanning nothing"
+    )
     assert '"u32"' not in source, "histogram quantized dtype re-declared in Python"
     assert '"u64"' not in source, "histogram counts dtype re-declared in Python"
 
