@@ -316,6 +316,10 @@ class LazyPipelineExpr:
             new_pipeline._initial_output_dtype = upstream_dtype
             new_pipeline._initial_expected_ndim = upstream_ndim
             new_pipeline._assertions = _copy.deepcopy(pipeline._assertions)
+            # The seeded hints may carry the upstream's declared H/W while its
+            # assertions stay behind, so the "a declaration reached here" fact
+            # must travel with them (see `Pipeline._shape_declared`).
+            new_pipeline._shape_declared = self._pipeline._shape_declared
             # An assert_shape() written before the first op has no preceding
             # append to apply it; every later position is applied by the
             # `_push_op` that lands on it, so the replay is just the append

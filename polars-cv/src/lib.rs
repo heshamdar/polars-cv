@@ -152,7 +152,7 @@ fn identity_rule_name(rule: view_buffer::IdentityRule) -> String {
         // `never`) is applied in `op_identity_rule`, which has the original spec;
         // the bare variant spells as `always`.
         I::Always { .. } => "always".to_string(),
-        I::WhenShapePreserved => "when_shape_preserved".to_string(),
+        I::WhenShapePreserved { .. } => "when_shape_preserved".to_string(),
         I::WhenDtypePreserved => "when_dtype_preserved".to_string(),
     }
 }
@@ -647,18 +647,19 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
 ///
 /// Expression-parameter safety is *structural*, resting on the op's declaration
 /// rather than on which placeholder value [`resolve_op_from_json`] happens to
-/// bind. The two contextual rules are param-value independent. `Always` is the
-/// only value-sensitive verdict, and it names the parameters whose literal values
-/// it read ([`IdentityRule::Always::deciding_params`](view_buffer::IdentityRule)):
+/// bind. A value-sensitive verdict — `Always`, or a `WhenShapePreserved` whose
+/// candidacy rests on a literal (a crop's `(0, 0)` origin) — names the parameters
+/// whose literal values it read
+/// ([`IdentityRule::deciding_params`](view_buffer::IdentityRule::deciding_params)):
 /// if any deciding param was expression-bound in the *original* spec, the op
 /// cannot be proven a no-op at plan time and comes back `never`, regardless of
 /// what the neutralized placeholder resolved to. An expression on an *irrelevant*
 /// param (a `pad` fill value behind zero amounts) is not a deciding param, so it
 /// correctly leaves the op `always`.
 ///
-/// This removes the earlier coupling to the placeholder value: a future `Always`
-/// op that is a no-op at the placeholder can no longer be spoofed, because the
-/// gate keys on whether the deciding param was per-row, not on its value.
+/// This removes the coupling to the placeholder value: an op that is a no-op at
+/// the placeholder can no longer be spoofed, because the gate keys on whether
+/// the deciding param was per-row, not on its value.
 #[pyfunction]
 fn op_identity_rule(op_json: &str) -> PyResult<String> {
     // The names of parameters that are expression-bound in the *original* spec,
@@ -672,16 +673,19 @@ fn op_identity_rule(op_json: &str) -> PyResult<String> {
         .map(|(name, _)| name.as_str())
         .collect();
 
-    let step = resolve_op_from_json(op_json)?;
-    if let view_buffer::IdentityRule::Always { deciding_params } = step.identity_rule() {
-        // A per-row deciding param means the no-op condition cannot be proven at
-        // plan time: the op keeps computing on rows where the value is not the
-        // identity value, so it is not removable.
-        if deciding_params.iter().any(|p| expr_params.contains(p)) {
-            return Ok("never".to_string());
-        }
+    let rule = resolve_op_from_json(op_json)?.identity_rule();
+    // A per-row deciding param means the no-op condition cannot be proven at
+    // plan time: the op keeps computing on rows where the value is not the
+    // identity value, so it is not removable. Read through the one accessor so
+    // every variant that names deciding params is gated, not just `Always`.
+    if rule
+        .deciding_params()
+        .iter()
+        .any(|p| expr_params.contains(p))
+    {
+        return Ok("never".to_string());
     }
-    Ok(identity_rule_name(step.identity_rule()))
+    Ok(identity_rule_name(rule))
 }
 
 // ============================================================================

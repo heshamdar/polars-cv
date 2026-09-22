@@ -577,3 +577,88 @@ class TestEveryOptimizationOnOffEquivalence:
         on = _sink_output(sample_df, pipe_on, OptFlags(**{name: True}), fmt)
         assert off and off[0] is not None, f"{name}: produced an empty/null output"
         assert on == off, f"{name}: output changed when the optimization was enabled"
+
+
+# Regressions: inputs where an optimization once changed the result. Each case is
+# asserted at the user-facing entry point (`.sink()`) across every flag subset,
+# so a fix that only patched a helper would still fail here.
+
+#: (source dtype, values) that an int -> float -> int cast chain maps differently
+#: from a direct int -> int cast: the float path saturates, the int path wraps.
+_INT_THROUGH_FLOAT_CHAINS: list[tuple[str, "pl.DataType", list[int]]] = [
+    ("u16", pl.UInt16, [300, 1000, 40000, 7]),
+    ("i16", pl.Int16, [-5, 300, -300, 7]),
+]
+
+
+@plugin_required
+class TestOptimizationRegressions:
+    """Inputs that an optimization once silently changed the output for."""
+
+    @pytest.mark.parametrize(
+        ("dtype", "pl_dtype", "values"),
+        _INT_THROUGH_FLOAT_CHAINS,
+        ids=[c[0] for c in _INT_THROUGH_FLOAT_CHAINS],
+    )
+    def test_int_through_float_cast_chain_saturates(
+        self, dtype: str, pl_dtype: "pl.DataType", values: list[int]
+    ) -> None:
+        # f32 holds every u16/i16 exactly, so the intermediate cast is lossless —
+        # but dropping it turns the saturating float -> u8 conversion into a
+        # wrapping int -> u8 one (300 -> 44 instead of 255).
+        df = pl.DataFrame({"a": [values]}, schema={"a": pl.List(pl_dtype)})
+        pipe = Pipeline().source("list", dtype=dtype).cast("f32").cast("u8")
+        outputs = [_sink_output(df, pipe, f, "list", "a") for f in _all_flag_subsets()]
+        assert outputs[0] == [[min(max(v, 0), 255) for v in values]]
+        for other in outputs[1:]:
+            assert other == outputs[0], "a cast-chain optimization changed the output"
+
+    def test_offset_crop_with_full_extent_is_not_eliminated(
+        self, sample_df: pl.DataFrame
+    ) -> None:
+        # A crop whose extent equals the input's but whose origin is not (0, 0)
+        # preserves the *planned* shape while running past the edge; the engine
+        # clamps it to a smaller window, so it is not a no-op.
+        pipe = (
+            _src().resize(height=20, width=20).crop(top=5, left=5, height=20, width=20)
+        )
+        outputs = [
+            _sink_output(sample_df, pipe, f, "numpy") for f in _all_flag_subsets()
+        ]
+        for other in outputs[1:]:
+            assert other == outputs[0], "identity elimination deleted an offset crop"
+
+    def test_declared_shape_reaching_a_cse_suffix_is_not_trusted(
+        self, sample_df: pl.DataFrame
+    ) -> None:
+        # CSE moves the assert_shape into the shared prefix node; the suffix keeps
+        # the H/W it implied but not the assertion. That H/W is a declaration, not
+        # a fact, so it must not license deleting the crop as "full-frame".
+        pipes = {
+            "a": _src()
+            .assert_shape(height=10, width=10)
+            .grayscale()
+            .crop(top=0, left=0, height=10, width=10),
+            "b": _src().grayscale().threshold(128),
+        }
+        off = _run_multi(sample_df, pipes, OptFlags.none())
+        for flags in _all_flag_subsets():
+            assert _run_multi(sample_df, pipes, flags) == off, (
+                f"output changed under {flags}"
+            )
+
+    def test_declared_shape_reaching_a_lazy_continuation_is_not_trusted(
+        self, sample_df: pl.DataFrame
+    ) -> None:
+        # The continuation inherits the upstream node's asserted H/W as a hint but
+        # none of its assertions — the same declaration-as-fact hole as CSE.
+        upstream = pl.col("image").cv.pipe(_src().assert_shape(height=10, width=10))
+        cont = upstream.pipe(
+            Pipeline().grayscale().crop(top=0, left=0, height=10, width=10)
+        )
+        off = sample_df.select(o=cont.sink("numpy", opt_flags=OptFlags.none()))
+        for flags in _all_flag_subsets():
+            on = sample_df.select(o=cont.sink("numpy", opt_flags=flags))
+            assert on["o"].to_list() == off["o"].to_list(), (
+                f"output changed under {flags}"
+            )

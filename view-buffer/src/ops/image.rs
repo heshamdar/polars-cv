@@ -351,7 +351,9 @@ impl Op for ImageOp {
             // Padding to the current size adds nothing: if the output shape is
             // preserved, no pixels were added. (Letterbox resamples first, so
             // shape preservation does *not* imply a no-op — it stays Never.)
-            ImageOpKind::PadToSize { .. } => IdentityRule::WhenShapePreserved,
+            ImageOpKind::PadToSize { .. } => IdentityRule::WhenShapePreserved {
+                deciding_params: &[],
+            },
             // Everything else transforms values or coordinates: resamples,
             // reduces/reorders channels, thresholds, filters, or smooths (a
             // blur with sigma 0 is a degenerate NaN kernel, not an identity).

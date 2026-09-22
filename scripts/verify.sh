@@ -29,6 +29,18 @@ cd "$REPO_ROOT"
 # and it did: it pinned 1.96 while the manifest says `stable`, so a local run
 # silently checked a different compiler than CI, downloading it to do so.
 
+# Every cargo step below runs under the PyO3 environment `maturin develop` sets.
+# Without it, cargo and maturin invalidate each other's builds (pyo3's build
+# script reruns on those variables), so an unchanged tree paid ~2 minutes of
+# rebuilds per run: clippy rebuilt after the last maturin, then maturin rebuilt
+# after clippy. With it, an up-to-date tree compiles nothing. The derivation and
+# the reason live in the script; the `pyo3 env` check below proves it still
+# matches maturin.
+if ! source "$REPO_ROOT/scripts/with-pyo3-env.sh"; then
+    echo "FAIL — could not set up the PyO3 build environment (see above)"
+    exit 1
+fi
+
 FAST=0
 [[ "${1:-}" == "--fast" ]] && FAST=1
 
@@ -70,6 +82,12 @@ run_check "cargo deny"               cargo deny check
 # install is editable, so Python sources are always current while the .so stays
 # at its last build -- a stale .so silently turns plugin tests into skips.
 run_check "maturin develop (debug)"  uv run --no-sync --directory polars-cv maturin develop
+
+# Right after `maturin develop`, cargo under this script's PyO3 environment must
+# find maturin's build fresh. If maturin's spelling of that environment ever
+# drifts from `with-pyo3-env.sh`'s derivation, this fails rather than the
+# per-run rebuild quietly coming back.
+run_check "pyo3 env matches maturin (no rebuild)" "$REPO_ROOT/scripts/with-pyo3-env.sh" --check
 
 # `maturin develop` just built the extension, so from here a *missing* `_lib`
 # is a real failure, not a not-yet-built skip. This flag makes

@@ -98,6 +98,11 @@ and the guard that enforces each one.
   `polars-cv/` subdirectory** — invoke it as `scripts/verify.sh` from the root
   (or by absolute path from anywhere; it `cd`s to the root itself). From the
   `polars-cv/` working directory the path is `../scripts/verify.sh`.
+- Run ad-hoc cargo commands as `scripts/with-pyo3-env.sh cargo …` (or
+  `source` it once per shell). A bare `cargo clippy`/`cargo test` lacks the PyO3
+  environment `maturin develop` sets, so the two keep invalidating each other
+  and the next `maturin develop` rebuilds the polars stack (~80s) for nothing.
+  `verify.sh` and the pre-commit clippy hook already go through it.
 - **Never read a filtered view of a check and call it green.** `grep | head`
   cuts the failing suite below the fold; `maturin ... | tail` reports tail's
   exit code, not maturin's. Both have produced false "all green" reports here.

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::core::buffer::ViewBuffer;
-use crate::core::dtype::DType;
+use crate::core::dtype::{DType, DTypeCategory};
 use crate::core::layout::Layout;
 use crate::execution::{ExecutionPlan, PlanStep};
 use crate::ops::affine::AffineParams;
@@ -32,7 +32,9 @@ pub struct OptConfig {
     /// Drop a `cast(T)` whose child is already dtype `T`.
     pub cast_identity: bool,
     /// Collapse `cast(inner) ∘ cast(target)` when `inner` losslessly contains the
-    /// grandchild dtype (a narrowing intermediate is kept — see the bug fix).
+    /// grandchild dtype and dropping it keeps the final cast on the same
+    /// conversion path (a narrowing intermediate, or a float intermediate between
+    /// integer input and integer target, is kept).
     pub cast_chain_collapse: bool,
     /// Fuse adjacent scalar/compute ops into a single kernel.
     pub scalar_fusion: bool,
@@ -516,11 +518,25 @@ impl ViewExpr {
                     // step: 0.5 -> 1 -> 1.0, not 0.5). A narrowing intermediate is
                     // therefore preserved; scalar fusion also refuses to fuse across
                     // a non-f32 mid-chain cast, so both casts execute.
+                    //
+                    // Lossless is not sufficient on its own: the final cast's
+                    // conversion depends on its *source* kind — int -> int wraps
+                    // (`as`), float -> int rounds and saturates. Dropping a float
+                    // intermediate between an integer input and an integer target
+                    // would switch the final cast from the saturating path to the
+                    // wrapping one (u16 300 -> f32 -> u8 is 255, u16 300 -> u8 is
+                    // 44), so that shape is kept too.
                     if cfg.cast_chain_collapse {
                         if let ExprNode::Compute(ComputeOp::Cast(inner), ref grandchild) =
                             &child.node
                         {
-                            if inner.losslessly_contains(grandchild.dtype) {
+                            let switches_int_conversion = DTypeCategory::Integer
+                                .accepts(grandchild.dtype)
+                                && DTypeCategory::Float.accepts(*inner)
+                                && DTypeCategory::Integer.accepts(*target_dtype);
+                            if inner.losslessly_contains(grandchild.dtype)
+                                && !switches_int_conversion
+                            {
                                 // Skip the (lossless) intermediate cast, cast directly
                                 // from grandchild.
                                 return Arc::new(Self {
