@@ -308,6 +308,26 @@ def measure_memory(
     )
 
 
+def result_from_dict(payload: dict) -> BenchmarkResult:
+    """Rebuild a record from its own serialised form.
+
+    The authority owns both directions. Deserialising does not compute a
+    statistic, so it is safe — but routing it through here keeps
+    `BenchmarkResult(...)` un-callable elsewhere, which is what stops a module
+    hand-building a dict and "deserialising" it into a record that never went
+    through :func:`to_result`.
+
+    `image_size` round-trips through JSON as a list; it is restored to the
+    tuple the result key hashes on.
+    """
+    from benchmarks.frameworks.base import BenchmarkResult
+
+    fields = dict(payload)
+    if "image_size" in fields and fields["image_size"] is not None:
+        fields["image_size"] = tuple(fields["image_size"])
+    return BenchmarkResult(**fields)
+
+
 def to_result(
     stats: TimingStats,
     *,

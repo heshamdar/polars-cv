@@ -15,6 +15,17 @@ from dataclasses import dataclass, field
 # only ever run these two adapters — never the external frameworks.
 POLARS_CV_ADAPTERS: list[str] = ["polars-cv-eager", "polars-cv-streaming"]
 
+#: Results-file format version.
+#:
+#: v1 was a bare JSON array with a `.meta.json` sidecar that `compare.py` never
+#: read. v2 is an envelope — `{"schema_version", "meta", "results"}` — so a
+#: results file cannot exist without the provenance needed to decide whether it
+#: may be compared to another. The committed `reports/**` baselines stay v1 and
+#: stay readable as archives; `compare.py` refuses to compare across versions
+#: rather than coercing, because runs from machines that no longer exist are
+#: not comparable to new ones regardless of format.
+SCHEMA_VERSION = 2
+
 # All scenarios the suite knows how to run. "zero_copy" and "remote" are opt-in
 # (each has its own matrix and its own result shape); the others share the
 # (counts, sizes, warmup, iterations) signature.
@@ -38,6 +49,51 @@ ALL_SCENARIOS: tuple[str, ...] = (
 DEFAULT_SCENARIOS: tuple[str, ...] = ("pipelines",)
 
 
+#: Thread specification meaning "whatever the machine offers".
+AUTO = "auto"
+
+
+@dataclass(frozen=True)
+class Cell:
+    """One (engine, thread-count) point of the matrix.
+
+    Each runs in its own process — `POLARS_MAX_THREADS` sizes the pool at the
+    first polars import and is inert afterwards, so one interpreter cannot host
+    two thread counts. See `benchmarks/regression/cell.py`.
+    """
+
+    engine: str  # "eager" | "streaming"
+    threads: int | str  # an int, or AUTO
+
+    @property
+    def name(self) -> str:
+        return f"{self.engine}@{self.threads}"
+
+
+#: The matrix. Each cell catches something no other cell can.
+#:
+#: The plugin does not parallelise within a call — `CompiledGraph::execute` is
+#: a sequential `for row_idx in 0..len` loop with no rayon anywhere — so all
+#: multi-core execution comes from the streaming engine's morsel concurrency.
+#: That fact is what selects these three, and what excludes a fourth:
+#:
+#: - eager@1      the row loop, per-row re-planning, decode/encode, and the
+#:                buffering of every row result before the column is built.
+#: - streaming@1  per-call fixed cost isolated from parallelism: the
+#:                compiled-graph cache lookup and the per-morsel source
+#:                resolution, which eager amortises over a whole column.
+#: - streaming@N  morsel scaling, and the only cell that runs the concurrent
+#:                path through the global compiled-graph cache Mutex.
+#:
+#: **eager@N is deliberately absent**: with a sequential row loop it is
+#: byte-for-byte eager@1, so running it would buy a duplicate.
+DEFAULT_CELLS: tuple[Cell, ...] = (
+    Cell("eager", 1),
+    Cell("streaming", 1),
+    Cell("streaming", AUTO),
+)
+
+
 @dataclass(frozen=True)
 class SuiteConfig:
     """A frozen, reproducible benchmark matrix.
@@ -53,14 +109,12 @@ class SuiteConfig:
     image_sizes: list[tuple[int, int]] = field(default_factory=lambda: [(256, 256)])
     warmup_iterations: int = 3
     benchmark_iterations: int = 10
-    # Whole-suite repeats. The underlying scenarios report the *mean* over
-    # benchmark_iterations, so repeating the entire suite and taking the
-    # best-of per result is the only lever we have for noise rejection.
+    # Whole-suite repeats, kept as the coarse noise-rejection lever for a local
+    # before/after comparison. The paired A/B driver forces this to 1 and uses
+    # interleaved rounds instead, which is a stronger design on a shared runner.
     suite_repeats: int = 3
     scenarios: tuple[str, ...] = DEFAULT_SCENARIOS
-    # Pin the thread count so eager/streaming numbers are comparable between
-    # runs and not at the mercy of whatever else the machine is doing.
-    num_threads: int = 1
+    cells: tuple[Cell, ...] = DEFAULT_CELLS
 
 
 DEFAULT = SuiteConfig()

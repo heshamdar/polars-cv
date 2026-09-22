@@ -12,16 +12,20 @@ extension.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 from benchmarks.regression.compare import (
+    LoadedRun,
     Status,
     UnmeasuredMemory,
     _pct,
+    check_comparable,
     classify,
     compare,
     load_results,
+    load_run,
 )
 
 pytestmark = pytest.mark.structural
@@ -165,8 +169,99 @@ class TestCompare:
 
 
 class TestLoadResults:
-    def test_a_non_list_payload_is_refused(self, tmp_path: Any) -> None:
+    """v1 and v2 both load; anything else is refused.
+
+    The previous version of this test asserted `{"results": []}` was rejected.
+    That was correct for v1, where a results file *was* a bare array — and it
+    is now the v2 envelope, so the assertion was updated rather than kept.
+    """
+
+    def test_a_bare_array_loads_as_v1(self, tmp_path: Any) -> None:
+        path = tmp_path / "v1.json"
+        path.write_text(json.dumps([_record(throughput=100.0)]))
+        run = load_run(path)
+        assert run.schema_version == 1
+        assert run.meta is None
+        assert len(run.results) == 1
+
+    def test_an_envelope_loads_as_v2_with_its_meta(self, tmp_path: Any) -> None:
+        path = tmp_path / "v2.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "meta": {"build_profile": "release"},
+                    "results": [_record(throughput=100.0)],
+                }
+            )
+        )
+        run = load_run(path)
+        assert run.schema_version == 2
+        assert run.meta == {"build_profile": "release"}
+        assert len(run.results) == 1
+
+    def test_a_payload_that_is_neither_is_refused(self, tmp_path: Any) -> None:
         path = tmp_path / "bad.json"
-        path.write_text('{"results": []}')
+        path.write_text('{"rows": []}')
         with pytest.raises(ValueError, match="expected a JSON array"):
             load_results(path)
+
+
+class TestComparability:
+    """The check that was missing entirely, and what it refuses."""
+
+    def _run(self, **meta: Any) -> LoadedRun:
+        base = {
+            "build_profile": "release",
+            "polars_cv_optimizations": None,
+            "polars_version": "1.42.0",
+            "cells": {"streaming@auto": {"thread_pool_size": 4}},
+            "config": {
+                "image_counts": [300],
+                "image_sizes": [[256, 256]],
+                "scenarios": ["pipelines"],
+            },
+        }
+        base.update(meta)
+        return LoadedRun({}, base, 2, "run.json")
+
+    def test_identical_provenance_is_comparable(self) -> None:
+        assert check_comparable(self._run(), self._run()) == []
+
+    def test_a_debug_build_is_not_comparable_to_a_release_one(self) -> None:
+        problems = check_comparable(self._run(build_profile="debug"), self._run())
+        assert any("build_profile" in p for p in problems)
+
+    def test_different_thread_pools_are_not_comparable(self) -> None:
+        """The case that silently printed PASS before.
+
+        A four-thread streaming run is several times faster than a one-thread
+        one, so comparing them reports a spectacular improvement that is
+        entirely an artefact of the machine.
+        """
+        two_core = self._run(cells={"streaming@auto": {"thread_pool_size": 2}})
+        problems = check_comparable(two_core, self._run())
+        assert any("cells" in p for p in problems)
+
+    def test_different_optimizations_are_not_comparable(self) -> None:
+        problems = check_comparable(
+            self._run(polars_cv_optimizations="scalar_fusion=0"), self._run()
+        )
+        assert any("polars_cv_optimizations" in p for p in problems)
+
+    def test_a_different_matrix_is_not_comparable(self) -> None:
+        other = self._run(
+            config={
+                "image_counts": [50],
+                "image_sizes": [[256, 256]],
+                "scenarios": ["pipelines"],
+            }
+        )
+        problems = check_comparable(other, self._run())
+        assert any("image_counts" in p for p in problems)
+
+    def test_v1_against_v2_is_refused_before_anything_else(self) -> None:
+        v1 = LoadedRun({}, None, 1, "old.json")
+        problems = check_comparable(v1, self._run())
+        assert len(problems) == 1
+        assert "schema_version" in problems[0]

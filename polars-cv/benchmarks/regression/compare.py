@@ -67,13 +67,122 @@ def _key(d: dict[str, Any]) -> ResultKey:
     )
 
 
+@dataclass
+class LoadedRun:
+    """One results file: its records, its provenance, and its format version.
+
+    v1 files are a bare JSON array with no provenance at all (it lived in a
+    `.meta.json` sidecar this module never read). They still load, because the
+    committed `reports/**` baselines are v1 and remain useful as archives —
+    but `meta` is None for them, and :func:`check_comparable` treats comparing
+    across versions as a hard mismatch rather than guessing.
+    """
+
+    results: dict[ResultKey, dict[str, Any]]
+    meta: dict[str, Any] | None
+    schema_version: int
+    path: str
+
+
 def load_results(path: str | Path) -> dict[ResultKey, dict[str, Any]]:
-    """Load a results JSON (a list of BenchmarkResult dicts) keyed by result."""
+    """Load a results file and return just its records, keyed by result."""
+    return load_run(path).results
+
+
+def load_run(path: str | Path) -> LoadedRun:
+    """Load a results file in either format."""
     raw = json.loads(Path(path).read_text())
-    if not isinstance(raw, list):
-        msg = f"{path}: expected a JSON array of results, got {type(raw).__name__}"
+
+    if isinstance(raw, list):
+        # v1: a bare array, no provenance.
+        return LoadedRun({_key(d): d for d in raw}, None, 1, str(path))
+
+    if not isinstance(raw, dict) or "results" not in raw:
+        msg = (
+            f"{path}: expected a JSON array (v1) or an object with a 'results' "
+            f"key (v2), got {type(raw).__name__}"
+        )
         raise ValueError(msg)
-    return {_key(d): d for d in raw}
+
+    version = int(raw.get("schema_version", 2))
+    return LoadedRun(
+        {_key(d): d for d in raw["results"]},
+        raw.get("meta"),
+        version,
+        str(path),
+    )
+
+
+#: Fields whose disagreement makes two runs incomparable, with why.
+#:
+#: Each of these has silently produced a meaningless PASS or FAIL: a debug
+#: extension is several times slower than a release one, a four-thread
+#: streaming run is several times faster than a one-thread one, and
+#: `POLARS_CV_OPTIMIZATIONS` changes the physical graph outright.
+HARD_META_FIELDS: dict[str, str] = {
+    "build_profile": "a debug build is several times slower than a release one",
+    "polars_cv_optimizations": "changes the physical graph and the cache key",
+    "polars_version": "the engine under test is different",
+}
+
+
+def check_comparable(base: LoadedRun, cand: LoadedRun) -> list[str]:
+    """Reasons these two runs must not be compared, if any.
+
+    Returns an empty list when they may be. This is the check that was missing
+    entirely: `run_suite` wrote provenance to a sidecar and this module never
+    opened it, so nothing stopped a one-thread baseline being compared against
+    a four-thread candidate, or a debug build against a release one.
+    """
+    problems: list[str] = []
+
+    if base.schema_version != cand.schema_version:
+        problems.append(
+            f"schema_version: {base.path} is v{base.schema_version}, "
+            f"{cand.path} is v{cand.schema_version}. A v1 file carries no "
+            f"provenance, so there is no way to establish the two runs are "
+            f"comparable — and v1 baselines came from machines that no longer "
+            f"exist. Re-measure the baseline rather than comparing across."
+        )
+        return problems
+
+    if base.meta is None or cand.meta is None:
+        problems.append(
+            "provenance is absent from at least one run (v1 format), so "
+            "comparability cannot be established."
+        )
+        return problems
+
+    for field, why in HARD_META_FIELDS.items():
+        a, b = base.meta.get(field), cand.meta.get(field)
+        if a != b:
+            problems.append(f"{field}: {a!r} vs {b!r} — {why}")
+
+    # Cells are compared by the pool each one actually got, not by what it
+    # requested: `streaming@auto` is 4 threads on this runner and 2 on another.
+    a_cells = {
+        k: v.get("thread_pool_size") for k, v in (base.meta.get("cells") or {}).items()
+    }
+    b_cells = {
+        k: v.get("thread_pool_size") for k, v in (cand.meta.get("cells") or {}).items()
+    }
+    if a_cells != b_cells:
+        problems.append(
+            f"cells: {a_cells} vs {b_cells} — the two runs did not measure the "
+            f"same engine/thread points, so per-key deltas mix different "
+            f"execution modes."
+        )
+
+    a_cfg = base.meta.get("config") or {}
+    b_cfg = cand.meta.get("config") or {}
+    for field in ("image_counts", "image_sizes", "scenarios"):
+        if a_cfg.get(field) != b_cfg.get(field):
+            problems.append(
+                f"config.{field}: {a_cfg.get(field)!r} vs {b_cfg.get(field)!r} "
+                f"— a different matrix was measured."
+            )
+
+    return problems
 
 
 def _pct(base: float | None, cand: float | None) -> float | None:
@@ -249,12 +358,40 @@ def main(argv: list[str] | None = None) -> int:
         help="treat memory regressions as failures (advisory by default)",
     )
     parser.add_argument(
+        "--allow-mismatch",
+        help=(
+            "comma-separated provenance fields to compare across anyway "
+            "(e.g. 'polars_version'). Each one you name is a way the numbers "
+            "can differ for a reason that is not the change under test."
+        ),
+    )
+    parser.add_argument(
         "--json", action="store_true", help="also print a machine-readable summary"
     )
     args = parser.parse_args(argv)
 
-    baseline = load_results(args.baseline)
-    candidate = load_results(args.candidate)
+    base_run = load_run(args.baseline)
+    cand_run = load_run(args.candidate)
+
+    problems = check_comparable(base_run, cand_run)
+    allowed = {f.strip() for f in (args.allow_mismatch or "").split(",") if f.strip()}
+    blocking = [p for p in problems if p.split(":", 1)[0] not in allowed]
+    if blocking:
+        print("ERROR: these runs are not comparable:", file=sys.stderr)
+        for problem in blocking:
+            print(f"  - {problem}", file=sys.stderr)
+        print(
+            "\nRe-measure so both runs share these, or pass "
+            "--allow-mismatch FIELD[,FIELD] to compare anyway and own the "
+            "result.",
+            file=sys.stderr,
+        )
+        return 2
+    for problem in problems:
+        print(f"WARNING (allowed): {problem}", file=sys.stderr)
+
+    baseline = base_run.results
+    candidate = cand_run.results
     try:
         deltas = compare(
             baseline,

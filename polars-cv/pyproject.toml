@@ -46,6 +46,15 @@ dev = [
     # `test_examples_run` executes all thirteen. Without this they would not
     # skip, they would fail: the runner asserts exit 0.
     "matplotlib>=3.9.4",
+    # The regression harness imports these directly (`benchmarks/utils/
+    # memory.py`, `benchmarks/utils/results.py`), and `--group dev` is the only
+    # group verify.sh and benchmark.yml install. psutil was previously reached
+    # only by accident, four hops through jupyterlab-execute-time -> jupyterlab
+    # -> ipykernel; dropping that Jupyter plugin would have turned every memory
+    # measurement into "unavailable" with nothing failing.
+    # `tests/test_benchmark_deps.py` pins this.
+    "psutil>=5.9",
+    "rich>=13.0",
 ]
 bench = [
     "opencv-python>=4.8",

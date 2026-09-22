@@ -166,6 +166,22 @@ def benchmark_modules() -> list[Path]:
     )
 
 
+def regression_harness_modules() -> list[Path]:
+    """The modules `--group dev` must be able to import.
+
+    Scoped to `benchmarks/regression/` and `benchmarks/utils/` rather than all
+    of `benchmarks/`: the scenarios and cross-framework adapters legitimately
+    import the heavy `bench` group (torch, torchvision, cv2), which the people
+    running the competitive sweep install deliberately and by hand.
+    """
+    benchmarks = REPO_ROOT / "polars-cv" / "benchmarks"
+    return discovered(
+        sorted((benchmarks / "regression").rglob("*.py"))
+        + sorted((benchmarks / "utils").rglob("*.py")),
+        "regression-harness modules",
+    )
+
+
 def suite_files() -> list[Path]:
     """Every ``.py`` file under ``tests/``, this module and ``conftest`` included.
 
