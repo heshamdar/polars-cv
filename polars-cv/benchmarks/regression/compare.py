@@ -29,6 +29,11 @@ DEFAULT_THROUGHPUT_PCT = 7.0
 DEFAULT_LATENCY_PCT = 7.0
 DEFAULT_MEMORY_PCT = 20.0
 
+# Stdlib-only, so importing it keeps this module usable where polars-cv is
+# not built - which is the property the duplicated constants above claim to
+# protect and do not actually need to.
+from benchmarks.regression.config import result_key  # noqa: E402
+
 ResultKey = tuple[str, str, tuple[int, ...], int, Any]
 
 
@@ -56,15 +61,13 @@ class Delta:
 
 
 def _key(d: dict[str, Any]) -> ResultKey:
-    # image_size serializes to a JSON array -> loads as list; normalize to a
-    # tuple so it is hashable and keys line up between runs.
-    return (
-        d["framework"],
-        d["operation"],
-        tuple(d["image_size"]),
-        d["image_count"],
-        d.get("gpu_mode"),
-    )
+    """Read the identity from its one authority in `config`.
+
+    This used to be a second, shorter definition that omitted `engine` and
+    `thread_pool_size`. The matrix's three cells therefore collided on one key
+    and silently dropped two thirds of the measurements.
+    """
+    return result_key(d)
 
 
 @dataclass
@@ -425,3 +428,43 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def scaling_efficiency(results: dict[ResultKey, dict[str, Any]]) -> dict[str, float]:
+    """Per-operation morsel-scaling efficiency, derived from the matrix.
+
+    ``efficiency = throughput(streaming@N) / (N * throughput(streaming@1))``
+
+    A ratio of ratios, so it is insensitive to absolute machine speed and to a
+    2-vCPU runner versus a 4-vCPU one. 1.0 is perfect linear scaling.
+
+    This is the number no single cell can produce, and the reason the matrix
+    exists: a change that leaves every individual throughput inside its noise
+    band can still have serialised the concurrent path through the global
+    compiled-graph cache `Mutex`, and this is where that shows up.
+
+    Operations without both a ``streaming@1`` and a multi-thread ``streaming``
+    measurement are omitted rather than defaulted — there is no efficiency to
+    report for a matrix that did not measure scaling.
+    """
+    single: dict[str, float] = {}
+    multi: dict[str, tuple[int, float]] = {}
+
+    for record in results.values():
+        if record.get("engine") != "streaming":
+            continue
+        pool = record.get("thread_pool_size")
+        op = record["operation"]
+        throughput = record["throughput_images_per_second"]
+        if pool == 1:
+            single[op] = throughput
+        elif isinstance(pool, int) and pool > 1:
+            # Keep the widest measurement if several exist.
+            if op not in multi or pool > multi[op][0]:
+                multi[op] = (pool, throughput)
+
+    return {
+        op: throughput / (pool * single[op])
+        for op, (pool, throughput) in multi.items()
+        if op in single and single[op] > 0
+    }

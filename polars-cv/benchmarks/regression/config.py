@@ -139,3 +139,29 @@ class Thresholds:
 
 
 DEFAULT_THRESHOLDS = Thresholds()
+
+
+def result_key(record: dict) -> tuple:
+    """The identity of one measurement, from its serialised form.
+
+    THE definition, read by `run_suite` when aggregating repeats and by
+    `compare` when matching a baseline to a candidate. It lived in both, and
+    they disagreed: `compare`'s copy omitted `engine` and `thread_pool_size`,
+    so `streaming@1` and `streaming@4` hashed to the same key and one silently
+    overwrote the other — the matrix collapsed to a third of its measurements
+    with no error anywhere.
+
+    `engine` and `thread_pool_size` are part of the identity because a
+    measurement is of an execution mode, not just of an operation: eager and
+    streaming are different code paths, and a four-thread streaming run is
+    several times faster than a one-thread one.
+    """
+    return (
+        record["framework"],
+        record.get("engine"),
+        record.get("thread_pool_size"),
+        record["operation"],
+        tuple(record["image_size"]),
+        record["image_count"],
+        record.get("gpu_mode"),
+    )

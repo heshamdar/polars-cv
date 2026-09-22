@@ -26,6 +26,8 @@ from benchmarks.regression.compare import (
     compare,
     load_results,
     load_run,
+    result_key,
+    scaling_efficiency,
 )
 
 pytestmark = pytest.mark.structural
@@ -265,3 +267,73 @@ class TestComparability:
         problems = check_comparable(v1, self._run())
         assert len(problems) == 1
         assert "schema_version" in problems[0]
+
+
+class TestResultKey:
+    """The identity of a measurement has one definition, and includes the cell."""
+
+    def test_the_cell_is_part_of_the_identity(self) -> None:
+        """Watched failing: the two streaming cells used to collide.
+
+        `compare.py` had its own shorter key omitting `engine` and
+        `thread_pool_size`, so `streaming@1` and `streaming@4` hashed the same
+        and one silently overwrote the other — the matrix lost two thirds of
+        its measurements with no error anywhere.
+        """
+        one = _record(throughput=100.0)
+        one["thread_pool_size"] = 1
+        four = _record(throughput=380.0)
+        four["engine"] = "streaming"
+        four["thread_pool_size"] = 4
+
+        assert result_key(one) != result_key(four)
+
+    def test_eager_and_streaming_do_not_collide(self) -> None:
+        eager = _record(throughput=100.0)
+        streaming = _record(throughput=100.0)
+        streaming["engine"] = "streaming"
+        assert result_key(eager) != result_key(streaming)
+
+    def test_compare_uses_the_config_definition(self) -> None:
+        """One authority, not two that happen to agree today."""
+        from benchmarks.regression import compare as compare_module
+
+        assert compare_module.result_key is result_key
+
+
+class TestScalingEfficiency:
+    """The number no single cell can produce."""
+
+    def _streaming(self, op: str, pool: int, throughput: float) -> dict[str, Any]:
+        rec = _record(throughput=throughput, operation=op)
+        rec["engine"] = "streaming"
+        rec["thread_pool_size"] = pool
+        return rec
+
+    def test_perfect_linear_scaling_is_one(self) -> None:
+        records = [
+            self._streaming("resize", 1, 100.0),
+            self._streaming("resize", 4, 400.0),
+        ]
+        keyed = {result_key(r): r for r in records}
+        assert scaling_efficiency(keyed)["resize"] == pytest.approx(1.0)
+
+    def test_no_scaling_at_all_is_one_over_n(self) -> None:
+        records = [
+            self._streaming("resize", 1, 100.0),
+            self._streaming("resize", 4, 100.0),
+        ]
+        keyed = {result_key(r): r for r in records}
+        assert scaling_efficiency(keyed)["resize"] == pytest.approx(0.25)
+
+    def test_an_operation_without_both_cells_is_omitted_not_defaulted(self) -> None:
+        """There is no efficiency for a matrix that did not measure scaling."""
+        keyed = {result_key(r): r for r in [self._streaming("resize", 4, 400.0)]}
+        assert scaling_efficiency(keyed) == {}
+
+    def test_eager_records_are_ignored(self) -> None:
+        """eager@N does not exist; an eager record must not stand in for one."""
+        eager = _record(throughput=100.0, operation="resize")
+        records = [eager, self._streaming("resize", 4, 400.0)]
+        keyed = {result_key(r): r for r in records}
+        assert scaling_efficiency(keyed) == {}

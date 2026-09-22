@@ -42,6 +42,7 @@ from benchmarks.regression.config import (
     SCHEMA_VERSION,
     Cell,
     SuiteConfig,
+    result_key,
 )
 
 
@@ -158,21 +159,10 @@ def run_scenarios(
 
 
 def _result_key(r: BenchmarkResult) -> tuple:
-    """The identity of a measurement.
+    """The identity of a measurement, via the one definition in `config`."""
+    from dataclasses import asdict
 
-    `engine` and `thread_pool_size` are part of it. Without them an eager and a
-    streaming measurement of the same op collide, and a one-thread run compares
-    against a four-thread one as though they were the same thing.
-    """
-    return (
-        r.framework,
-        r.engine,
-        r.thread_pool_size,
-        r.operation,
-        tuple(r.image_size),
-        r.image_count,
-        r.gpu_mode,
-    )
+    return result_key(asdict(r))
 
 
 def _aggregate_best(runs: list[list[BenchmarkResult]]) -> list[BenchmarkResult]:
