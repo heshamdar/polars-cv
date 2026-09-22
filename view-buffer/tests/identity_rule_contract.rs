@@ -67,11 +67,25 @@ fn probes() -> Vec<(ViewDto, IdentityRule)> {
                 start: vec![0, 0, 0],
                 end: vec![4, 4, 3],
             }),
-            IdentityRule::WhenShapePreserved,
+            IdentityRule::WhenShapePreserved {
+                deciding_params: &["top", "left"],
+            },
+        ),
+        // A crop with a non-zero origin is never a no-op, even when its extent
+        // equals the input's: it can only preserve shape by running past the
+        // edge, where the engine clamps it to a smaller window.
+        (
+            ViewDto::View(ViewOp::Crop {
+                start: vec![2, 2, 0],
+                end: vec![6, 6, usize::MAX],
+            }),
+            IdentityRule::Never,
         ),
         (
             ViewDto::View(ViewOp::Reshape(vec![4, 4, 3])),
-            IdentityRule::WhenShapePreserved,
+            IdentityRule::WhenShapePreserved {
+                deciding_params: &[],
+            },
         ),
         (
             ViewDto::Image(ImageOp {
@@ -82,7 +96,9 @@ fn probes() -> Vec<(ViewDto, IdentityRule)> {
                     value: 0.0,
                 },
             }),
-            IdentityRule::WhenShapePreserved,
+            IdentityRule::WhenShapePreserved {
+                deciding_params: &[],
+            },
         ),
         // WhenDtypePreserved: a cast copies when the target equals the input.
         (

@@ -111,8 +111,10 @@ OPTIMIZATION_PASSES: tuple[PassSpec, ...] = (
         name="cast_chain_collapse",
         summary=(
             "Drop a redundant intermediate cast from a cast chain when the "
-            "intermediate dtype losslessly holds the input (a narrowing "
-            "intermediate is kept — it quantizes)."
+            "intermediate dtype losslessly holds the input and dropping it keeps "
+            "the final cast's conversion (a narrowing intermediate quantizes, and "
+            "a float between an integer input and an integer target saturates, "
+            "so both are kept)."
         ),
         bit_exact=True,
         tier="engine",

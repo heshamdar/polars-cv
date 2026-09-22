@@ -15,7 +15,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   full-frame `crop` (or a `pad_to_size` to the current size). It is on by
   default, gated by the `identity_elimination` `OptFlags` field, and — being
   output-preserving — is safe even inside dict-sink observed and multi-consumer
-  nodes. A node carrying an `assert_shape` is left untouched (conservative).
+  nodes. A node carrying an `assert_shape` is left untouched (conservative), and
+  a shape-preserving op is never proven a no-op from a *declared* H/W — one that
+  reached the node from an `assert_shape` via a CSE split or a lazy
+  continuation — since a wrong declaration would then change the output. A crop
+  is a candidate only with a literal `(0, 0)` origin: an offset crop whose
+  extent equals the input's runs past the edge and is clamped, so it is not a
+  no-op.
 - **`IdentityRule` op contract (view-buffer).** A new required, no-default
   `Op::identity_rule` method is the single authority for whether an op is a
   removable no-op — the algebraic-identity counterpart to `SpatialDependency`.
@@ -26,9 +32,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   op-semantic (a shape-preserving `resize` still resamples), so the two
   contextual variants are strictly opt-in. Surfaced to the planner by the new
   `op_identity_rule` FFI, which is deliberately separate from `op_contract`
-  because the `Always` verdict depends on literal parameter values. `Always`
-  names the parameters whose values it inspected (`deciding_params`), and
-  `op_identity_rule` forces `Never` whenever any of them is expression-bound —
+  because the `Always` verdict depends on literal parameter values. `Always` and
+  `WhenShapePreserved` name the parameters whose values they inspected
+  (`deciding_params` — a crop's `top`/`left`), and `op_identity_rule` forces
+  `Never` whenever any of them is expression-bound —
   so the verdict is sound structurally, not by relying on the neutralization
   placeholder value.
 - **`is_spatial_window` op contract (view-buffer).** A new required, no-default
@@ -73,7 +80,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   when it quantized — a fractional-`f32` `.cast("u8").cast("f32")` returned `0.5`
   instead of the correct `1.0`. It now collapses only when the intermediate dtype
   losslessly holds the input (`DType::losslessly_contains`); a narrowing
-  intermediate is kept and executes.
+  intermediate is kept and executes. A float intermediate between an integer
+  input and an integer target is kept too, although it is lossless: float → int
+  saturates where int → int wraps, so collapsing `u16 → cast("f32") → cast("u8")`
+  turned 300 into 44 instead of 255.
 - **`Pipeline.explain(optimized=True)` now reflects every node-scope pass.** It
   drove a hand-written list of passes and so omitted identity elimination,
   showing ops that `.sink()` actually deletes. It now applies the node passes
@@ -86,6 +96,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   guard makes the pass correct rather than merely lucky.
 
 ### Internal
+
+- `scripts/verify.sh` and the pre-commit clippy hook run cargo under the PyO3
+  environment `maturin develop` sets (`scripts/with-pyo3-env.sh`). Without it the
+  two invalidated each other's builds, costing ~2 minutes of polars-stack
+  rebuilds per `verify.sh` run on an unchanged tree; `verify.sh` now also checks
+  that cargo finds maturin's build fresh, so a drift fails instead of slowing.
 
 - Identity elimination folds each op's entering state once (O(n), was O(n²) FFI
   calls). CSE groups nodes by a canonical source serialization instead of

@@ -122,11 +122,24 @@ impl Op for ViewOp {
 
     fn identity_rule(&self) -> IdentityRule {
         match self {
-            // Pure views: when the output shape equals the input shape the op
-            // moved no data — a full-frame crop, a same-shape reshape. A partial
-            // crop or a real reshape changes shape, which the planner's shape
-            // check catches, so this stays sound.
-            ViewOp::Crop { .. } | ViewOp::Reshape(_) => IdentityRule::WhenShapePreserved,
+            // A crop anchored at the origin moved no data when its output shape
+            // equals the input shape (a full-frame crop). The origin must be
+            // literal zero: a crop's inferred shape ignores `top`/`left`, so an
+            // offset crop with a full extent "preserves shape" at plan time
+            // while running past the edge, where the engine clamps it to a
+            // smaller window. `top`/`left` are therefore deciding params — a
+            // per-row origin resolves to a placeholder and proves nothing.
+            ViewOp::Crop { start, .. } if start.iter().all(|&s| s == 0) => {
+                IdentityRule::WhenShapePreserved {
+                    deciding_params: &["top", "left"],
+                }
+            }
+            ViewOp::Crop { .. } => IdentityRule::Never,
+            // A same-shape reshape is a row-major no-op. A real reshape changes
+            // shape, which the planner's shape check catches.
+            ViewOp::Reshape(_) => IdentityRule::WhenShapePreserved {
+                deciding_params: &[],
+            },
             // Flip/transpose/rotate/channel-select move pixels or drop an axis
             // even when the shape is preserved (a square transpose, a 180°
             // rotate), so none is ever a no-op.

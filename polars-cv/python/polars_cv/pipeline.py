@@ -348,6 +348,7 @@ _STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
     "_initial_expected_ndim": _same,
     "_on_error": _same,
     "_on_null_param": _same,
+    "_shape_declared": _same,
     # Containers: copied so the clone cannot mutate its origin.
     "_ops": list,
     "_expr_refs": list,
@@ -568,6 +569,14 @@ class Pipeline:
         # `shape_asserted` so a plan/exec divergence is attributed to whoever
         # actually made the claim.
         self._asserted_dims: set[str] = set()
+        # Sticky: has any shape declaration (an assert_shape, or a shape_ref
+        # canvas) been applied anywhere in this pipeline's lineage? Unlike
+        # `_asserted_dims` it is never cleared by the schema fold, because a
+        # declared H/W stays a *claim* after flowing through a shape-preserving
+        # op. Identity elimination reads it to refuse proving a shape-preserving
+        # no-op from hints that may rest on a claim rather than a fact. Carried
+        # into lazy continuations, whose hints are seeded from the upstream node.
+        self._shape_declared: bool = False
         # Per-row error policy for the executed graph ("raise" by default).
         self._on_error: str = "raise"
         # What a null in a per-row expression parameter means ("raise" by
@@ -872,6 +881,7 @@ class Pipeline:
         assertion = self._assertions.get(position)
         if assertion is None:
             return
+        self._shape_declared = True
         if assertion.ndim is not None:
             self._require_ndim_is_consistent(assertion)
             self._expected_ndim = assertion.ndim
@@ -4705,8 +4715,14 @@ class Pipeline:
         shape ``_push_op`` recorded for every op), and every other axis is
         reported ``None`` (unknown). That is enough for the WhenShapePreserved
         ops, whose H/W is the only axis they resize.
+
+        ``None`` too when a shape declaration reached this pipeline
+        (``_shape_declared``): the snapshots may then carry a *claimed* H/W —
+        via a CSE suffix that kept the hints but not the assertion, or a lazy
+        continuation seeded from an asserting upstream — and deleting an op on
+        the strength of a claim changes the output whenever the claim is wrong.
         """
-        if ndim is None:
+        if ndim is None or self._shape_declared:
             return None
         dims: "list[int | None]" = [None] * ndim
         snap = self._hint_snapshots.get(index)

@@ -738,6 +738,71 @@ class TestIdentityElimination:
         )
         assert op_identity_rule(json.dumps(zero._ops[0].to_dict())) == "always"
 
+    @plugin_required
+    def test_crop_identity_is_gated_on_its_origin(self) -> None:
+        # A crop is a candidate no-op only with a literal (0, 0) origin: a
+        # non-zero origin with a full extent runs past the edge (the engine
+        # clamps it), and a per-row origin cannot be proven zero at plan time.
+        import json
+
+        from polars_cv._lib import op_identity_rule
+
+        def rule(**origin: object) -> str:
+            pipe = Pipeline().source("image_bytes").crop(height=8, width=8, **origin)
+            return op_identity_rule(json.dumps(pipe._ops[0].to_dict()))
+
+        assert rule(top=0, left=0) == "when_shape_preserved"
+        assert rule(top=5, left=0) == "never"
+        assert rule(top=0, left=5) == "never"
+        assert rule(top=pl.col("t"), left=0) == "never"
+        assert rule(top=0, left=pl.col("l")) == "never"
+
+    @plugin_required
+    def test_offset_crop_with_full_extent_is_kept(self) -> None:
+        g = _graph_of(
+            Pipeline()
+            .source("image_bytes")
+            .resize(height=20, width=20)
+            .crop(top=5, left=5, height=20, width=20)
+        )
+        g.optimize(OptFlags.all())
+        assert _node_ops(g) == ["resize", "crop"]
+
+    @plugin_required
+    def test_declared_shape_in_the_lineage_blocks_shape_based_elimination(
+        self,
+    ) -> None:
+        # A continuation inherits its upstream's asserted H/W as a plain hint and
+        # none of its assertions. That H/W is a claim, not a fact, so a
+        # shape-preserving crop cannot be proven a no-op — while a zero pad (a
+        # no-op by its literal params alone, whatever the shape) still goes.
+        upstream = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").assert_shape(height=10, width=10)
+        )
+        graph = upstream.pipe(
+            Pipeline()
+            .pad(top=0, bottom=0, left=0, right=0)
+            .crop(top=0, left=0, height=10, width=10)
+        ).sink("numpy", return_expr=False, opt_flags=OptFlags.all())
+        ops = [[o.op for o in n.pipeline._ops] for n in graph._nodes.values()]
+        assert ["crop"] in ops
+
+    @plugin_required
+    def test_undeclared_continuation_still_eliminates_a_full_frame_crop(
+        self,
+    ) -> None:
+        # Control for the test above: a continuation whose H/W an upstream op
+        # *computed* (resize) is a proven shape, so the no-op crop is removed —
+        # the guard keys on declarations, not on being a continuation.
+        upstream = pl.col("image").cv.pipe(
+            Pipeline().source("image_bytes").resize(height=10, width=10)
+        )
+        graph = upstream.pipe(Pipeline().crop(top=0, left=0, height=10, width=10)).sink(
+            "numpy", return_expr=False, opt_flags=OptFlags.all()
+        )
+        ops = [[o.op for o in n.pipeline._ops] for n in graph._nodes.values()]
+        assert ["resize"] in ops and ["crop"] not in ops
+
 
 class TestSpatialPushdownGuard:
     """A crop is never hoisted past an op that reads a sibling node's buffer.

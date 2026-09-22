@@ -60,7 +60,10 @@ repos:
       - id: cargo-clippy
         name: cargo clippy
         description: Run clippy on Rust code
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+        # Under maturin's PyO3 environment (scripts/with-pyo3-env.sh): a bare
+        # `cargo clippy` invalidates the `maturin develop` build, making the
+        # next develop rebuild the polars stack (~78s) after every commit.
+        entry: scripts/with-pyo3-env.sh cargo clippy --all-targets --all-features -- -D warnings
         language: system
         files: \.rs$
         pass_filenames: false
