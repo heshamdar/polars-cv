@@ -151,6 +151,21 @@ def package_modules() -> list[Path]:
     )
 
 
+def benchmark_modules() -> list[Path]:
+    """Every ``.py`` module under ``polars-cv/benchmarks/``, ``reports/`` included.
+
+    The timing-authority ratchet scans all of them. ``reports/`` is deliberately
+    *not* filtered out: the committed analysis scripts there read clocks too,
+    and an exemption list for them would be a second authority on which code
+    may time things. A report script that needs a stopwatch uses the same one
+    as everything else.
+    """
+    return discovered(
+        sorted((REPO_ROOT / "polars-cv" / "benchmarks").rglob("*.py")),
+        "benchmark modules",
+    )
+
+
 def suite_files() -> list[Path]:
     """Every ``.py`` file under ``tests/``, this module and ``conftest`` included.
 

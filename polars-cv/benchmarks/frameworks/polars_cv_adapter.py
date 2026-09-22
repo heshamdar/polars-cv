@@ -40,7 +40,8 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             streaming: If True, use streaming execution (engine='streaming').
         """
         self.streaming = streaming
-        self.name = f"polars-cv-{'streaming' if streaming else 'eager'}"
+        self.engine = "streaming" if streaming else "eager"
+        self.name = f"polars-cv-{self.engine}"
         self._pipeline_module: Any = None
         self._expressions_module: Any = None
 
@@ -58,6 +59,24 @@ class PolarsCVAdapter(BaseFrameworkAdapter):
             return True
         except ImportError:
             return False
+
+    @property
+    def thread_pool_size(self) -> int:
+        """Polars' actual thread-pool size, not the requested one.
+
+        Read from polars rather than from ``POLARS_MAX_THREADS`` because the
+        env var is a *request* made before import and the pool size is the
+        *fact*. They diverge silently whenever pinning runs too late.
+
+        Note this is the pool the **streaming** engine spreads morsels across.
+        The eager path issues one plugin call and runs the whole column in a
+        sequential row loop, so its throughput does not move with this number —
+        which is exactly why the number has to be recorded rather than assumed
+        from the thread count the suite was launched with.
+        """
+        import polars as pl
+
+        return pl.thread_pool_size()
 
     def _get_pipeline_class(self) -> type:
         """Get the Pipeline class from polars_cv."""

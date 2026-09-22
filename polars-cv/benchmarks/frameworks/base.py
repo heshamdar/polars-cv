@@ -79,26 +79,52 @@ class OperationParams:
 
 @dataclass
 class BenchmarkResult:
-    """Result of a single benchmark run."""
+    """Result of a single benchmark run.
+
+    Built only by ``benchmarks.utils.timing.to_result`` — ``tests/
+    test_timing_authority.py`` rejects any other construction site, so that the
+    statistic behind ``total_time_seconds`` has exactly one definition.
+
+    Every field below is required. There are no defaults except ``gpu_mode``
+    (genuinely absent on CPU), because a default on a provenance field is how a
+    record arrives without the thing that makes it comparable. ``engine`` and
+    ``thread_pool_size`` in particular used to exist only inside ``framework``'s
+    *name string*, which is why nothing downstream could normalise per core or
+    refuse to compare a one-thread run against a four-thread one.
+    """
 
     framework: str
+    engine: str  # "eager" | "streaming" | "n/a" for non-polars-cv frameworks
     operation: str
     image_count: int
     image_size: tuple[int, int]
-    total_time_seconds: float
+    total_time_seconds: float  # the median over iterations, not the mean
     throughput_images_per_second: float
     latency_ms_per_image: float
-    peak_memory_mb: float
+    thread_pool_size: int
+    # The full TimingStats.as_dict(): samples plus min/median/mean/MAD/IQR. The
+    # comparator reads `relative_mad` to size a per-key noise band instead of
+    # applying one invented threshold to keys with unequal variance.
+    timing: dict[str, Any]
+    # `None`, never 0.0, when unmeasured: a zero reads as "measured, and it was
+    # nothing", which is how an unmeasured memory column compared as NEUTRAL.
+    peak_memory_mb: float | None
+    peak_memory_delta_mb: float | None
+    memory_status: str
     gpu_mode: str | None = None  # "cold", "warm", or None for CPU
 
     def __repr__(self) -> str:
         """Return string representation."""
         gpu_suffix = f" [{self.gpu_mode}]" if self.gpu_mode else ""
+        mem = (
+            f"{self.peak_memory_delta_mb:+.1f} MB"
+            if self.peak_memory_delta_mb is not None
+            else self.memory_status
+        )
         return (
-            f"BenchmarkResult({self.framework}{gpu_suffix}: "
+            f"BenchmarkResult({self.framework}/{self.engine}{gpu_suffix}: "
             f"{self.throughput_images_per_second:.1f} img/s, "
-            f"{self.latency_ms_per_image:.2f} ms/img, "
-            f"{self.peak_memory_mb:.1f} MB)"
+            f"{self.latency_ms_per_image:.2f} ms/img, {mem})"
         )
 
 
@@ -111,13 +137,30 @@ class BaseFrameworkAdapter(ABC):
 
     Attributes:
         name: Human-readable name of the framework.
+        engine: Execution engine driven, for the result record.
         supports_gpu: Whether this framework supports GPU acceleration.
         gpu_device: The GPU device identifier (e.g., "mps", "cuda:0").
     """
 
     name: str
+    # polars-cv adapters override this. Every other framework here runs a
+    # single-threaded Python loop over images, which is neither engine — and
+    # saying so in a field is what lets a reader see that a streaming number
+    # spread over N cores is not comparable to it without normalising.
+    engine: str = "n/a"
     supports_gpu: bool = False
     gpu_device: str | None = None
+
+    @property
+    def thread_pool_size(self) -> int:
+        """Threads this adapter's work can actually spread across.
+
+        One for the Python-loop adapters. The polars-cv adapters report the
+        real pool size, because for the streaming engine it is the single most
+        important number for interpreting a throughput figure and it was
+        previously recorded nowhere.
+        """
+        return 1
 
     @abstractmethod
     def is_available(self) -> bool:

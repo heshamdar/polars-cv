@@ -16,10 +16,10 @@ import io
 import json
 import os
 import sys
-import time
 
 import numpy as np
 import polars as pl
+from benchmarks.utils.timing import measure
 from PIL import Image
 
 import polars_cv.expressions  # noqa: F401
@@ -46,15 +46,27 @@ def to_blob_df(pngs: list[bytes]) -> pl.DataFrame:
 
 
 def bench(df: pl.DataFrame, expr: pl.Expr, streaming: bool, reps: int = REPS) -> float:
-    times = []
-    for _ in range(reps + 1):
-        t = time.perf_counter()
+    """Best-of-`reps` seconds, warmup excluded — routed through the authority.
+
+    Kept reporting the *minimum* rather than the median so this script's
+    numbers stay comparable with the ones already committed in this report
+    directory. New measurements should gate on the median; see
+    `benchmarks/utils/timing.py`.
+    """
+
+    def call() -> None:
         if streaming:
             df.lazy().with_columns(out=expr).collect(engine="streaming")
         else:
             df.with_columns(out=expr)
-        times.append(time.perf_counter() - t)
-    return min(times[1:])  # drop warmup, take best
+
+    return measure(
+        call,
+        warmup_fn=call,
+        warmup=1,
+        iterations=reps,
+        label="streaming" if streaming else "eager",
+    ).min_s
 
 
 results = []

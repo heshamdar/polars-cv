@@ -19,15 +19,15 @@ Run with:
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import polars as pl
 from PIL import Image
 
+from benchmarks.utils.timing import TimingStats, measure, to_result
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:
@@ -55,6 +55,11 @@ class IngestionResult:
     total_time_ms: float
     per_row_us: float
     throughput_rows_per_sec: float
+    #: The samples these three were derived from. Carried so
+    #: :func:`to_suite_results` can hand the suite a real statistic instead of
+    #: re-deriving one, and so the comparator sees this scenario's dispersion
+    #: like every other scenario's.
+    stats: TimingStats
 
 
 def create_test_images(
@@ -96,6 +101,43 @@ def create_list_data(n_rows: int, shape: tuple[int, int] = (64, 64)) -> pl.DataF
     return df.cast({"arr": pl.List(pl.List(pl.UInt8))})
 
 
+DEFAULT_ITERATIONS = 7
+"""Timed runs per ingestion benchmark.
+
+Each of these used to be a *single* un-repeated span after a 5-row warmup —
+one sample, no dispersion, and no way to tell a real change from a scheduler
+hiccup. Seven is enough for a median that one outlier cannot move, and these
+benchmarks are cheap enough to afford it.
+"""
+
+
+def _measure_ingestion(
+    name: str,
+    call: Callable[[], object],
+    *,
+    rows: int,
+    size: tuple[int, int],
+    iterations: int = DEFAULT_ITERATIONS,
+) -> IngestionResult:
+    """Time *call* through the timing authority and shape this module's record.
+
+    The warmup is the same callable over the same data, not a 5-row head: a
+    head-warmed run pays first-touch allocation on the rest of the column
+    inside iteration one.
+    """
+    stats = measure(call, warmup_fn=call, warmup=1, iterations=iterations, label=name)
+    median = stats.median_s
+    return IngestionResult(
+        name=name,
+        rows=rows,
+        size=size,
+        total_time_ms=median * 1000,
+        per_row_us=(median * 1_000_000) / rows,
+        throughput_rows_per_sec=rows / median,
+        stats=stats,
+    )
+
+
 def benchmark_image_bytes_source(
     n_rows: int = 100, size: tuple[int, int] = (256, 256)
 ) -> IngestionResult:
@@ -105,27 +147,11 @@ def benchmark_image_bytes_source(
 
     pipeline = Pipeline().source("image_bytes")
 
-    # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
+    def run() -> object:
+        result = df.select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
+        return result["img"].to_list()  # Force evaluation
 
-    # Benchmark
-    start = time.perf_counter()
-    result = df.select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
-    _ = result["img"].to_list()  # Force evaluation
-    elapsed = time.perf_counter() - start
-
-    elapsed_ms = elapsed * 1000
-    per_row_us = (elapsed * 1_000_000) / n_rows
-    throughput = n_rows / elapsed
-
-    return IngestionResult(
-        size=size,
-        name="image_bytes",
-        rows=n_rows,
-        total_time_ms=elapsed_ms,
-        per_row_us=per_row_us,
-        throughput_rows_per_sec=throughput,
-    )
+    return _measure_ingestion("image_bytes", run, rows=n_rows, size=size)
 
 
 def benchmark_blob_source(
@@ -137,27 +163,11 @@ def benchmark_blob_source(
 
     pipeline = Pipeline().source("blob")
 
-    # Warmup
-    _ = df.head(5).select(pl.col("blob").cv.pipe(pipeline).sink("numpy"))
+    def run() -> object:
+        result = df.select(pl.col("blob").cv.pipe(pipeline).sink("numpy"))
+        return result["blob"].to_list()  # Force evaluation
 
-    # Benchmark
-    start = time.perf_counter()
-    result = df.select(pl.col("blob").cv.pipe(pipeline).sink("numpy"))
-    _ = result["blob"].to_list()  # Force evaluation
-    elapsed = time.perf_counter() - start
-
-    elapsed_ms = elapsed * 1000
-    per_row_us = (elapsed * 1_000_000) / n_rows
-    throughput = n_rows / elapsed
-
-    return IngestionResult(
-        size=size,
-        name="blob",
-        rows=n_rows,
-        total_time_ms=elapsed_ms,
-        per_row_us=per_row_us,
-        throughput_rows_per_sec=throughput,
-    )
+    return _measure_ingestion("blob", run, rows=n_rows, size=size)
 
 
 def benchmark_list_source_explicit_dtype(
@@ -168,27 +178,11 @@ def benchmark_list_source_explicit_dtype(
 
     pipeline = Pipeline().source("list", dtype="u8")
 
-    # Warmup
-    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
+    def run() -> object:
+        result = df.select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
+        return result["arr"].to_list()  # Force evaluation
 
-    # Benchmark
-    start = time.perf_counter()
-    result = df.select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
-    _ = result["arr"].to_list()  # Force evaluation
-    elapsed = time.perf_counter() - start
-
-    elapsed_ms = elapsed * 1000
-    per_row_us = (elapsed * 1_000_000) / n_rows
-    throughput = n_rows / elapsed
-
-    return IngestionResult(
-        size=size,
-        name="list_explicit_dtype",
-        rows=n_rows,
-        total_time_ms=elapsed_ms,
-        per_row_us=per_row_us,
-        throughput_rows_per_sec=throughput,
-    )
+    return _measure_ingestion("list_explicit_dtype", run, rows=n_rows, size=size)
 
 
 def benchmark_list_source_auto_dtype(
@@ -200,27 +194,11 @@ def benchmark_list_source_auto_dtype(
     # No explicit dtype - will be inferred
     pipeline = Pipeline().source("list")
 
-    # Warmup
-    _ = df.head(5).select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
+    def run() -> object:
+        result = df.select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
+        return result["arr"].to_list()  # Force evaluation
 
-    # Benchmark
-    start = time.perf_counter()
-    result = df.select(pl.col("arr").cv.pipe(pipeline).sink("numpy"))
-    _ = result["arr"].to_list()  # Force evaluation
-    elapsed = time.perf_counter() - start
-
-    elapsed_ms = elapsed * 1000
-    per_row_us = (elapsed * 1_000_000) / n_rows
-    throughput = n_rows / elapsed
-
-    return IngestionResult(
-        size=size,
-        name="list_auto_dtype",
-        rows=n_rows,
-        total_time_ms=elapsed_ms,
-        per_row_us=per_row_us,
-        throughput_rows_per_sec=throughput,
-    )
+    return _measure_ingestion("list_auto_dtype", run, rows=n_rows, size=size)
 
 
 def benchmark_numpy_output(
@@ -232,28 +210,12 @@ def benchmark_numpy_output(
 
     pipeline = Pipeline().source("image_bytes")
 
-    # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("numpy"))
+    def run() -> object:
+        result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("numpy"))
+        # Access all struct values to force evaluation
+        return result["output"].to_list()
 
-    # Benchmark
-    start = time.perf_counter()
-    result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("numpy"))
-    # Access all struct values to force evaluation
-    _ = result["output"].to_list()
-    elapsed = time.perf_counter() - start
-
-    elapsed_ms = elapsed * 1000
-    per_row_us = (elapsed * 1_000_000) / n_rows
-    throughput = n_rows / elapsed
-
-    return IngestionResult(
-        size=size,
-        name="numpy_output",
-        rows=n_rows,
-        total_time_ms=elapsed_ms,
-        per_row_us=per_row_us,
-        throughput_rows_per_sec=throughput,
-    )
+    return _measure_ingestion("numpy_output", run, rows=n_rows, size=size)
 
 
 def benchmark_png_output(
@@ -265,27 +227,11 @@ def benchmark_png_output(
 
     pipeline = Pipeline().source("image_bytes")
 
-    # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("png"))
+    def run() -> object:
+        result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("png"))
+        return result["output"].to_list()  # Force evaluation
 
-    # Benchmark
-    start = time.perf_counter()
-    result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("png"))
-    _ = result["output"].to_list()  # Force evaluation
-    elapsed = time.perf_counter() - start
-
-    elapsed_ms = elapsed * 1000
-    per_row_us = (elapsed * 1_000_000) / n_rows
-    throughput = n_rows / elapsed
-
-    return IngestionResult(
-        size=size,
-        name="png_output",
-        rows=n_rows,
-        total_time_ms=elapsed_ms,
-        per_row_us=per_row_us,
-        throughput_rows_per_sec=throughput,
-    )
+    return _measure_ingestion("png_output", run, rows=n_rows, size=size)
 
 
 def benchmark_blob_output(
@@ -297,27 +243,11 @@ def benchmark_blob_output(
 
     pipeline = Pipeline().source("image_bytes")
 
-    # Warmup
-    _ = df.head(5).select(pl.col("img").cv.pipe(pipeline).sink("blob"))
+    def run() -> object:
+        result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("blob"))
+        return result["output"].to_list()  # Force evaluation
 
-    # Benchmark
-    start = time.perf_counter()
-    result = df.select(output=pl.col("img").cv.pipe(pipeline).sink("blob"))
-    _ = result["output"].to_list()  # Force evaluation
-    elapsed = time.perf_counter() - start
-
-    elapsed_ms = elapsed * 1000
-    per_row_us = (elapsed * 1_000_000) / n_rows
-    throughput = n_rows / elapsed
-
-    return IngestionResult(
-        size=size,
-        name="blob_output",
-        rows=n_rows,
-        total_time_ms=elapsed_ms,
-        per_row_us=per_row_us,
-        throughput_rows_per_sec=throughput,
-    )
+    return _measure_ingestion("blob_output", run, rows=n_rows, size=size)
 
 
 def run_ingestion_benchmarks() -> list[IngestionResult]:
@@ -380,23 +310,23 @@ def to_suite_results(results: list[IngestionResult]) -> "list[BenchmarkResult]":
     polars-cv here, and these benchmarks all run eager, so ``framework`` is
     fixed rather than measured.
 
-    ``peak_memory_mb`` is 0.0 because this module does not measure memory.
-    That compares as NEUTRAL (``compare._pct`` maps 0 → 0 to 0%), and memory is
-    advisory rather than gated, so a missing measurement cannot manufacture a
-    regression — but it is a hole in the results, not a zero reading.
+    Memory is reported as unmeasured rather than as ``0.0``. It used to be the
+    latter, which ``compare._pct`` mapped 0 → 0 to 0% and classified NEUTRAL —
+    a hole in the results that read as a clean bill of health. ``memory=None``
+    now carries a status string saying so.
     """
-    from benchmarks.frameworks import BenchmarkResult
+    import polars as pl
 
     return [
-        BenchmarkResult(
+        to_result(
+            r.stats,
             framework="polars-cv-eager",
+            engine="eager",
             operation=f"zero_copy_{r.name}",
             image_count=r.rows,
             image_size=r.size,
-            total_time_seconds=r.total_time_ms / 1000.0,
-            throughput_images_per_second=r.throughput_rows_per_sec,
-            latency_ms_per_image=r.per_row_us / 1000.0,
-            peak_memory_mb=0.0,
+            thread_pool_size=pl.thread_pool_size(),
+            memory=None,
         )
         for r in results
     ]

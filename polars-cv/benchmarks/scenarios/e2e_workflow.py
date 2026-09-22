@@ -7,7 +7,6 @@ to processed output in memory, simulating real-world usage patterns.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,7 +18,7 @@ from benchmarks.frameworks import (
     OperationType,
 )
 from benchmarks.utils.data_gen import temporary_image_set
-from benchmarks.utils.memory import run_timed_with_memory
+from benchmarks.utils.timing import measure, measure_memory, to_result
 
 if TYPE_CHECKING:
     pass
@@ -120,37 +119,29 @@ def run_e2e_workflow_standard(
             results.append(adapter.to_numpy(img))
         return results
 
-    # Warmup
-    for _ in range(warmup_iterations):
-        run_workflow()
-
-    # Benchmark
-    total_time = 0.0
-    peak_memory = 0.0
-
-    for _ in range(benchmark_iterations):
-        _, elapsed, mem_stats = run_timed_with_memory(run_workflow)
-        total_time += elapsed
-        peak_memory = max(peak_memory, mem_stats.peak_memory_mb)
-
-    avg_time = total_time / benchmark_iterations
-    throughput = image_count / avg_time
-    latency_ms = (avg_time / image_count) * 1000
+    stats = measure(
+        run_workflow,
+        warmup_fn=run_workflow,
+        warmup=warmup_iterations,
+        iterations=benchmark_iterations,
+        label=f"e2e_{workflow.name}",
+    )
+    memory = measure_memory(run_workflow)
 
     # Get image size from first file
     first_img = adapter.load_from_file(file_paths[0])
     arr = adapter.to_numpy(first_img)
     image_size = (arr.shape[1], arr.shape[0])  # (width, height)
 
-    return BenchmarkResult(
+    return to_result(
+        stats,
         framework=adapter.name,
+        engine=adapter.engine,
         operation=f"e2e_{workflow.name}",
         image_count=image_count,
         image_size=image_size,
-        total_time_seconds=avg_time,
-        throughput_images_per_second=throughput,
-        latency_ms_per_image=latency_ms,
-        peak_memory_mb=peak_memory,
+        thread_pool_size=adapter.thread_pool_size,
+        memory=memory,
     )
 
 
@@ -185,22 +176,14 @@ def run_e2e_workflow_polars(
     def run_workflow() -> list[Any]:
         return adapter.run_pipeline_batch(image_bytes, workflow.operations)
 
-    # Warmup
-    for _ in range(warmup_iterations):
-        run_workflow()
-
-    # Benchmark
-    total_time = 0.0
-    peak_memory = 0.0
-
-    for _ in range(benchmark_iterations):
-        _, elapsed, mem_stats = run_timed_with_memory(run_workflow)
-        total_time += elapsed
-        peak_memory = max(peak_memory, mem_stats.peak_memory_mb)
-
-    avg_time = total_time / benchmark_iterations
-    throughput = image_count / avg_time
-    latency_ms = (avg_time / image_count) * 1000
+    stats = measure(
+        run_workflow,
+        warmup_fn=run_workflow,
+        warmup=warmup_iterations,
+        iterations=benchmark_iterations,
+        label=f"e2e_{workflow.name}",
+    )
+    memory = measure_memory(run_workflow)
 
     # Determine image size from file
     from PIL import Image
@@ -208,15 +191,15 @@ def run_e2e_workflow_polars(
     with Image.open(file_paths[0]) as img:
         image_size = img.size  # (width, height)
 
-    return BenchmarkResult(
+    return to_result(
+        stats,
         framework=adapter.name,
+        engine=adapter.engine,
         operation=f"e2e_{workflow.name}",
         image_count=image_count,
         image_size=image_size,
-        total_time_seconds=avg_time,
-        throughput_images_per_second=throughput,
-        latency_ms_per_image=latency_ms,
-        peak_memory_mb=peak_memory,
+        thread_pool_size=adapter.thread_pool_size,
+        memory=memory,
     )
 
 
@@ -245,24 +228,20 @@ def run_e2e_workflow_gpu(
     # Read image bytes
     image_bytes = [p.read_bytes() for p in file_paths]
 
-    # Warmup
-    for _ in range(warmup_iterations):
-        adapter.run_pipeline_batch(image_bytes[:10], workflow.operations)
+    def run_cold() -> object:
+        result = adapter.run_pipeline_batch(image_bytes, workflow.operations)
+        # Inside the timed region deliberately: without the sync the GPU call
+        # is asynchronous and the measurement is of queue submission.
         adapter.synchronize()
+        return result
 
-    # Cold start (load + process)
-    cold_total_time = 0.0
-
-    for _ in range(benchmark_iterations):
-        start = time.perf_counter()
-        adapter.run_pipeline_batch(image_bytes, workflow.operations)
-        adapter.synchronize()
-        elapsed = time.perf_counter() - start
-        cold_total_time += elapsed
-
-    cold_avg_time = cold_total_time / benchmark_iterations
-    cold_throughput = image_count / cold_avg_time
-    cold_latency_ms = (cold_avg_time / image_count) * 1000
+    cold_stats = measure(
+        run_cold,
+        warmup_fn=run_cold,
+        warmup=warmup_iterations,
+        iterations=benchmark_iterations,
+        label=f"e2e_{workflow.name}[cold]",
+    )
 
     # Determine image size
     from PIL import Image
@@ -270,15 +249,17 @@ def run_e2e_workflow_gpu(
     with Image.open(file_paths[0]) as img:
         image_size = img.size
 
-    cold_result = BenchmarkResult(
+    cold_result = to_result(
+        cold_stats,
         framework=adapter.name,
+        engine=adapter.engine,
         operation=f"e2e_{workflow.name}",
         image_count=image_count,
         image_size=image_size,
-        total_time_seconds=cold_avg_time,
-        throughput_images_per_second=cold_throughput,
-        latency_ms_per_image=cold_latency_ms,
-        peak_memory_mb=0.0,
+        thread_pool_size=adapter.thread_pool_size,
+        # Device memory is not tracked; `None` says so, where 0.0 claimed a
+        # measurement of nothing.
+        memory=None,
         gpu_mode="cold",
     )
 
@@ -286,28 +267,27 @@ def run_e2e_workflow_gpu(
     preloaded = adapter.preload_to_device(image_bytes)
     adapter.synchronize()
 
-    warm_total_time = 0.0
-
-    for _ in range(benchmark_iterations):
-        start = time.perf_counter()
-        adapter.run_pipeline_batch_warm(preloaded, workflow.operations)
+    def run_warm() -> object:
+        result = adapter.run_pipeline_batch_warm(preloaded, workflow.operations)
         adapter.synchronize()
-        elapsed = time.perf_counter() - start
-        warm_total_time += elapsed
+        return result
 
-    warm_avg_time = warm_total_time / benchmark_iterations
-    warm_throughput = image_count / warm_avg_time
-    warm_latency_ms = (warm_avg_time / image_count) * 1000
-
-    warm_result = BenchmarkResult(
+    warm_stats = measure(
+        run_warm,
+        warmup_fn=run_warm,
+        warmup=warmup_iterations,
+        iterations=benchmark_iterations,
+        label=f"e2e_{workflow.name}[warm]",
+    )
+    warm_result = to_result(
+        warm_stats,
         framework=adapter.name,
+        engine=adapter.engine,
         operation=f"e2e_{workflow.name}",
         image_count=image_count,
         image_size=image_size,
-        total_time_seconds=warm_avg_time,
-        throughput_images_per_second=warm_throughput,
-        latency_ms_per_image=warm_latency_ms,
-        peak_memory_mb=0.0,
+        thread_pool_size=adapter.thread_pool_size,
+        memory=None,
         gpu_mode="warm",
     )
 

@@ -18,14 +18,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import gc
-import statistics
-import time
 
 import numpy as np
 import polars as pl
 
 import polars_cv.expressions  # noqa: F401  (registers the `.cv` namespace)
+from benchmarks.utils.timing import TimingStats, measure
 from polars_cv import Pipeline
 
 
@@ -76,15 +74,33 @@ def _build_pipeline(ops: list[str], size: int) -> Pipeline:
     return pipe
 
 
-def _run(df: pl.DataFrame, expr: pl.Expr, streaming: bool) -> float:
-    """Return wall-clock seconds for one full collect over the batch."""
-    gc.collect()
-    start = time.perf_counter()
+def _collect(df: pl.DataFrame, expr: pl.Expr, streaming: bool) -> None:
+    """One full collect over the batch — the thing being timed."""
     if streaming:
         df.lazy().select(out=expr).collect(engine="streaming")
     else:
         df.select(out=expr)
-    return time.perf_counter() - start
+
+
+def _run(df: pl.DataFrame, expr: pl.Expr, streaming: bool, repeats: int) -> TimingStats:
+    """Time *repeats* collects through the timing authority.
+
+    The previous version called `gc.collect()` *inside* the timed span, so
+    every sample carried a full collection the workload would not otherwise
+    have paid at that moment. `measure` collects once before the loop instead
+    and leaves GC enabled during it — see its module docstring.
+    """
+
+    def call() -> None:
+        _collect(df, expr, streaming)
+
+    return measure(
+        call,
+        warmup_fn=call,
+        warmup=1,
+        iterations=repeats,
+        label="streaming" if streaming else "eager",
+    )
 
 
 def main() -> None:
@@ -108,15 +124,13 @@ def main() -> None:
     rss_before = _peak_rss_mb()
     for streaming in (False, True):
         expr = pl.col("blob").cv.pipe(pipe).sink("blob")
-        # Warm-up (build/registration, allocator warm).
-        _run(df, expr, streaming)
-        times = [_run(df, expr, streaming) for _ in range(args.repeats)]
-        best = min(times)
-        med = statistics.median(times)
+        # `measure` does the warm-up (build/registration, allocator) itself.
+        stats = _run(df, expr, streaming, args.repeats)
         mode = "streaming" if streaming else "eager"
         print(
-            f"  {mode:>9}: {args.count / best:10.1f} rows/s "
-            f"(best {best * 1e3:7.2f} ms, median {med * 1e3:7.2f} ms)"
+            f"  {mode:>9}: {args.count / stats.median_s:10.1f} rows/s "
+            f"(median {stats.median_s * 1e3:7.2f} ms, best "
+            f"{stats.min_s * 1e3:7.2f} ms, MAD {stats.mad_s * 1e3:5.2f} ms)"
         )
     rss_after = _peak_rss_mb()
     print(f"  peak RSS: {rss_after:.1f} MiB (Δ {rss_after - rss_before:+.1f} MiB)")

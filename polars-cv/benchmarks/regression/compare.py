@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -29,6 +30,10 @@ DEFAULT_LATENCY_PCT = 7.0
 DEFAULT_MEMORY_PCT = 20.0
 
 ResultKey = tuple[str, str, tuple[int, ...], int, Any]
+
+
+class UnmeasuredMemory(RuntimeError):
+    """`--gate-memory` was requested for a result that carries no measurement."""
 
 
 class Status(str, Enum):
@@ -44,7 +49,8 @@ class Delta:
     key: ResultKey
     throughput_pct: float
     latency_pct: float
-    memory_pct: float
+    #: None when either run did not measure memory. Never 0.0 for "unknown".
+    memory_pct: float | None
     status: Status
     reason: str
 
@@ -70,8 +76,16 @@ def load_results(path: str | Path) -> dict[ResultKey, dict[str, Any]]:
     return {_key(d): d for d in raw}
 
 
-def _pct(base: float, cand: float) -> float:
-    """Signed percent change from base to cand. +inf if base is 0 and cand > 0."""
+def _pct(base: float | None, cand: float | None) -> float | None:
+    """Signed percent change from base to cand, or None if either is unmeasured.
+
+    ``None`` propagates rather than collapsing to ``0.0``. An unmeasured value
+    used to arrive as ``0.0``, and ``0 -> 0`` is a 0% change, so a whole column
+    that was never measured classified as NEUTRAL — a hole in the results
+    reading as a clean bill of health.
+    """
+    if base is None or cand is None:
+        return None
     if base == 0:
         return 0.0 if cand == 0 else float("inf")
     return (cand - base) / base * 100.0
@@ -85,7 +99,7 @@ def classify(
     latency_pct: float,
     memory_pct: float,
     gate_memory: bool,
-) -> tuple[Status, str, float, float, float]:
+) -> tuple[Status, str, float, float, float | None]:
     tp = _pct(
         base["throughput_images_per_second"], cand["throughput_images_per_second"]
     )
@@ -100,8 +114,20 @@ def classify(
     # Regression gate: throughput dropped past the band.
     if tp <= -throughput_pct:
         return (Status.REGRESSED, "throughput regression", tp, lat, mem)
-    if gate_memory and mem >= memory_pct:
-        return (Status.REGRESSED, "memory regression", tp, lat, mem)
+    if gate_memory:
+        if mem is None:
+            # Refuse rather than pass. `--gate-memory` on an unmeasured column
+            # would otherwise report "no memory regressions" about nothing.
+            msg = (
+                f"--gate-memory was requested but this result has no memory "
+                f"measurement (base status="
+                f"{base.get('memory_status', 'unknown')!r}, cand status="
+                f"{cand.get('memory_status', 'unknown')!r}). Install psutil or "
+                f"drop --gate-memory; do not gate on an absent number."
+            )
+            raise UnmeasuredMemory(msg)
+        if mem >= memory_pct:
+            return (Status.REGRESSED, "memory regression", tp, lat, mem)
     if tp >= throughput_pct:
         return (Status.IMPROVED, "throughput improvement", tp, lat, mem)
     return (Status.NEUTRAL, "within threshold", tp, lat, mem)
@@ -121,11 +147,11 @@ def compare(
         base = baseline.get(key)
         cand = candidate.get(key)
         if base is None:
-            deltas.append(Delta(key, 0.0, 0.0, 0.0, Status.NEW, "new in candidate"))
+            deltas.append(Delta(key, 0.0, 0.0, None, Status.NEW, "new in candidate"))
             continue
         if cand is None:
             deltas.append(
-                Delta(key, 0.0, 0.0, 0.0, Status.MISSING, "missing from candidate")
+                Delta(key, 0.0, 0.0, None, Status.MISSING, "missing from candidate")
             )
             continue
         status, reason, tp, lat, mem = classify(
@@ -140,7 +166,9 @@ def compare(
     return deltas
 
 
-def _fmt_pct(v: float) -> str:
+def _fmt_pct(v: float | None) -> str:
+    if v is None:
+        return "   n/a"
     if v == float("inf"):
         return "  +inf"
     if v == float("-inf"):
@@ -227,14 +255,18 @@ def main(argv: list[str] | None = None) -> int:
 
     baseline = load_results(args.baseline)
     candidate = load_results(args.candidate)
-    deltas = compare(
-        baseline,
-        candidate,
-        throughput_pct=args.throughput_threshold,
-        latency_pct=args.latency_threshold,
-        memory_pct=args.memory_threshold,
-        gate_memory=args.gate_memory,
-    )
+    try:
+        deltas = compare(
+            baseline,
+            candidate,
+            throughput_pct=args.throughput_threshold,
+            latency_pct=args.latency_threshold,
+            memory_pct=args.memory_threshold,
+            gate_memory=args.gate_memory,
+        )
+    except UnmeasuredMemory as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     print_table(deltas)
     summary = summarize(deltas)

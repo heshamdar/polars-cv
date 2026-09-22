@@ -7,7 +7,6 @@ This module provides benchmarks for chained image processing operations
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +17,7 @@ from benchmarks.frameworks import (
     OperationType,
 )
 from benchmarks.utils.data_gen import generate_image_set
-from benchmarks.utils.memory import run_timed_with_memory
+from benchmarks.utils.timing import measure, measure_memory, to_result
 
 if TYPE_CHECKING:
     pass
@@ -189,38 +188,28 @@ def run_pipeline_benchmark(
 
     # Pre-decode images to native format (removes decode overhead from timing)
     decoded_images = adapter.prepare_decoded_images(image_set.image_bytes)
-    warmup_decoded = adapter.prepare_decoded_images(image_set.image_bytes[:10])
 
-    # Warmup
-    for _ in range(warmup_iterations):
-        adapter.run_pipeline_on_decoded(warmup_decoded, benchmark.operations)
+    def run() -> object:
+        return adapter.run_pipeline_on_decoded(decoded_images, benchmark.operations)
 
-    # Benchmark (using pre-decoded images for fair comparison)
-    total_time = 0.0
-    peak_memory = 0.0
+    stats = measure(
+        run,
+        warmup_fn=run,
+        warmup=warmup_iterations,
+        iterations=benchmark_iterations,
+        label=benchmark.name,
+    )
+    memory = measure_memory(run)
 
-    for _ in range(benchmark_iterations):
-        _, elapsed, mem_stats = run_timed_with_memory(
-            lambda: adapter.run_pipeline_on_decoded(
-                decoded_images, benchmark.operations
-            )
-        )
-        total_time += elapsed
-        peak_memory = max(peak_memory, mem_stats.peak_memory_mb)
-
-    avg_time = total_time / benchmark_iterations
-    throughput = image_count / avg_time
-    latency_ms = (avg_time / image_count) * 1000
-
-    return BenchmarkResult(
+    return to_result(
+        stats,
         framework=adapter.name,
+        engine=adapter.engine,
         operation=benchmark.name,
         image_count=image_count,
         image_size=image_size,
-        total_time_seconds=avg_time,
-        throughput_images_per_second=throughput,
-        latency_ms_per_image=latency_ms,
-        peak_memory_mb=peak_memory,
+        thread_pool_size=adapter.thread_pool_size,
+        memory=memory,
     )
 
 
@@ -264,36 +253,32 @@ def run_pipeline_benchmark_gpu(
 
     # Pre-decode images to native format (removes PNG decode overhead)
     decoded_images = adapter.prepare_decoded_images(image_set.image_bytes)
-    warmup_decoded = adapter.prepare_decoded_images(image_set.image_bytes[:10])
 
-    # Warmup
-    for _ in range(warmup_iterations):
-        adapter.run_pipeline_on_decoded(warmup_decoded, benchmark.operations)
+    def run_cold() -> object:
+        result = adapter.run_pipeline_on_decoded(decoded_images, benchmark.operations)
+        # Inside the timed region deliberately: without the sync the GPU call
+        # is asynchronous and the measurement is of queue submission.
         adapter.synchronize()
+        return result
 
-    # Cold start benchmark (pre-decoded but includes transfer to GPU)
-    cold_total_time = 0.0
-
-    for _ in range(benchmark_iterations):
-        start = time.perf_counter()
-        adapter.run_pipeline_on_decoded(decoded_images, benchmark.operations)
-        adapter.synchronize()
-        elapsed = time.perf_counter() - start
-        cold_total_time += elapsed
-
-    cold_avg_time = cold_total_time / benchmark_iterations
-    cold_throughput = image_count / cold_avg_time
-    cold_latency_ms = (cold_avg_time / image_count) * 1000
-
-    cold_result = BenchmarkResult(
+    cold_stats = measure(
+        run_cold,
+        warmup_fn=run_cold,
+        warmup=warmup_iterations,
+        iterations=benchmark_iterations,
+        label=f"{benchmark.name}[cold]",
+    )
+    cold_result = to_result(
+        cold_stats,
         framework=adapter.name,
+        engine=adapter.engine,
         operation=benchmark.name,
         image_count=image_count,
         image_size=image_size,
-        total_time_seconds=cold_avg_time,
-        throughput_images_per_second=cold_throughput,
-        latency_ms_per_image=cold_latency_ms,
-        peak_memory_mb=0.0,  # GPU memory not tracked
+        thread_pool_size=adapter.thread_pool_size,
+        # Device memory is not tracked; `None` says so, where 0.0 claimed a
+        # measurement of nothing.
+        memory=None,
         gpu_mode="cold",
     )
 
@@ -301,28 +286,27 @@ def run_pipeline_benchmark_gpu(
     preloaded = adapter.preload_to_device(image_set.image_bytes)
     adapter.synchronize()
 
-    warm_total_time = 0.0
-
-    for _ in range(benchmark_iterations):
-        start = time.perf_counter()
-        adapter.run_pipeline_batch_warm(preloaded, benchmark.operations)
+    def run_warm() -> object:
+        result = adapter.run_pipeline_batch_warm(preloaded, benchmark.operations)
         adapter.synchronize()
-        elapsed = time.perf_counter() - start
-        warm_total_time += elapsed
+        return result
 
-    warm_avg_time = warm_total_time / benchmark_iterations
-    warm_throughput = image_count / warm_avg_time
-    warm_latency_ms = (warm_avg_time / image_count) * 1000
-
-    warm_result = BenchmarkResult(
+    warm_stats = measure(
+        run_warm,
+        warmup_fn=run_warm,
+        warmup=warmup_iterations,
+        iterations=benchmark_iterations,
+        label=f"{benchmark.name}[warm]",
+    )
+    warm_result = to_result(
+        warm_stats,
         framework=adapter.name,
+        engine=adapter.engine,
         operation=benchmark.name,
         image_count=image_count,
         image_size=image_size,
-        total_time_seconds=warm_avg_time,
-        throughput_images_per_second=warm_throughput,
-        latency_ms_per_image=warm_latency_ms,
-        peak_memory_mb=0.0,
+        thread_pool_size=adapter.thread_pool_size,
+        memory=None,
         gpu_mode="warm",
     )
 

@@ -52,7 +52,7 @@ import polars as pl
 
 from benchmarks.frameworks import BenchmarkResult
 from benchmarks.utils.data_gen import temporary_image_set
-from benchmarks.utils.memory import run_timed_with_memory
+from benchmarks.utils.timing import measure, measure_memory, to_result
 from polars_cv import Pipeline
 
 if TYPE_CHECKING:
@@ -205,27 +205,33 @@ def _timed(
     warmup_iterations: int,
     benchmark_iterations: int,
 ) -> BenchmarkResult:
-    """Run *call* warmup+timed times and shape the result like every scenario."""
-    for _ in range(warmup_iterations):
-        call()
+    """Run *call* warmup+timed times and shape the result like every scenario.
 
-    total_time = 0.0
-    peak_memory = 0.0
-    for _ in range(benchmark_iterations):
-        _, elapsed, mem_stats = run_timed_with_memory(call)
-        total_time += elapsed
-        peak_memory = max(peak_memory, mem_stats.peak_memory_mb)
+    This function used to be the closest thing the suite had to a shared timing
+    helper — and it was private to this one scenario, so the other five each
+    grew their own. It is now a thin call into `benchmarks.utils.timing`, which
+    is the shared one.
+    """
+    import polars as pl
 
-    avg_time = total_time / benchmark_iterations
-    return BenchmarkResult(
+    stats = measure(
+        call,
+        warmup_fn=call,
+        warmup=warmup_iterations,
+        iterations=benchmark_iterations,
+        label=label,
+    )
+    memory = measure_memory(call)
+
+    return to_result(
+        stats,
         framework="polars-cv-eager",
+        engine="eager",
         operation=label,
         image_count=image_count,
         image_size=image_size,
-        total_time_seconds=avg_time,
-        throughput_images_per_second=image_count / avg_time,
-        latency_ms_per_image=(avg_time / image_count) * 1000,
-        peak_memory_mb=peak_memory,
+        thread_pool_size=pl.thread_pool_size(),
+        memory=memory,
     )
 
 

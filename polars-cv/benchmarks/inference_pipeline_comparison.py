@@ -31,13 +31,14 @@ Options:
 from __future__ import annotations
 
 import argparse
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
+
+from benchmarks.utils.timing import stopwatch
 
 if TYPE_CHECKING:
     pass
@@ -77,8 +78,18 @@ def log_timing(operation: str, duration: float) -> None:
 
 
 @dataclass
-class BenchmarkResult:
-    """Result from a single benchmark run."""
+class InferenceComparisonResult:
+    """One end-to-end inference-pipeline comparison.
+
+    Deliberately *not* named ``BenchmarkResult``. It was, shadowing
+    ``benchmarks.frameworks.BenchmarkResult`` — a different record with
+    entirely different fields. That exact shadowing is what made the
+    ``zero_copy`` scenario die in aggregation with ``'BenchmarkResult' object
+    has no attribute 'framework'``; the rename was applied there and not here,
+    leaving the identical trap set in this module. This module is not wired
+    into ``regression.ALL_SCENARIOS``, so it never sprang — but the next
+    scenario added from this file would have found it.
+    """
 
     name: str
     batch_preprocessing_time_s: float
@@ -88,15 +99,19 @@ class BenchmarkResult:
     memory_mb: float | None = None
 
 
-def get_memory_usage_mb() -> float:
-    """Get current process memory usage in MB."""
+def get_memory_usage_mb() -> float | None:
+    """Current process RSS in MB, or None when psutil is not installed.
+
+    ``None``, not ``0.0``: a zero reads as "measured, and it was nothing",
+    which is indistinguishable from a real reading for any consumer that
+    compares numbers.
+    """
     try:
         import psutil
-
-        process = psutil.Process()
-        return process.memory_info().rss / 1024 / 1024
     except ImportError:
-        return 0.0
+        return None
+
+    return psutil.Process().memory_info().rss / 1024 / 1024
 
 
 def benchmark_huggingface_pipeline(
@@ -104,7 +119,7 @@ def benchmark_huggingface_pipeline(
     batch_size: int = 32,
     num_workers: int = 4,
     num_epochs: int = 1,
-) -> BenchmarkResult:
+) -> InferenceComparisonResult:
     """
     Benchmark HuggingFace + torchvision pipeline with upfront preprocessing.
 
@@ -118,7 +133,7 @@ def benchmark_huggingface_pipeline(
         num_epochs: Number of epochs to iterate.
 
     Returns:
-        BenchmarkResult with timing information.
+        InferenceComparisonResult with timing information.
     """
     import torch
     from datasets import load_dataset
@@ -147,7 +162,7 @@ def benchmark_huggingface_pipeline(
     # Load dataset and preprocess ALL images upfront with .map()
     # This is the fair comparison to polars-cv's batch preprocessing
     log(f"Loading and preprocessing dataset from {images_dir}...")
-    preprocess_start = time.perf_counter()
+    preprocess_start = stopwatch("preprocess_start")
     dataset = load_dataset("imagefolder", data_dir=str(images_dir), split="train")
     # Use batched=True with num_proc for parallel preprocessing
     dataset = dataset.map(
@@ -157,7 +172,7 @@ def benchmark_huggingface_pipeline(
         remove_columns=["image"],  # Remove original PIL images to save memory
     )
     dataset.set_format("torch")
-    preprocessing_time = time.perf_counter() - preprocess_start
+    preprocessing_time = preprocess_start.elapsed()
     log_timing("Batch preprocessing", preprocessing_time)
     log(f"  Preprocessed {len(dataset)} images")
     log(f"  Rate: {len(dataset) / preprocessing_time:.1f} images/sec")
@@ -180,9 +195,9 @@ def benchmark_huggingface_pipeline(
 
     # Measure first batch latency
     log("Measuring first batch latency...")
-    first_batch_start = time.perf_counter()
+    first_batch_start = stopwatch("first_batch_start")
     first_batch = next(iter(dataloader))
-    first_batch_latency = time.perf_counter() - first_batch_start
+    first_batch_latency = first_batch_start.elapsed()
     log_timing("First batch", first_batch_latency)
     log(f"  Batch shape: {first_batch[0].shape}")
     del first_batch
@@ -191,22 +206,22 @@ def benchmark_huggingface_pipeline(
     log(f"Measuring DataLoader throughput over {num_epochs} epoch(s)...")
     total_images = 0
     total_batches = 0
-    throughput_start = time.perf_counter()
+    throughput_start = stopwatch("throughput_start")
 
     for epoch in range(num_epochs):
-        epoch_start = time.perf_counter()
+        epoch_start = stopwatch("epoch_start")
         epoch_images = 0
         for batch_images, batch_labels in dataloader:
             total_images += batch_images.shape[0]
             epoch_images += batch_images.shape[0]
             total_batches += 1
-        epoch_time = time.perf_counter() - epoch_start
+        epoch_time = epoch_start.elapsed()
         log(
             f"  Epoch {epoch + 1}: {epoch_images} images in {epoch_time:.2f}s "
             f"({epoch_images / epoch_time:.1f} img/s)"
         )
 
-    throughput_time = time.perf_counter() - throughput_start
+    throughput_time = throughput_start.elapsed()
     throughput = total_images / throughput_time if throughput_time > 0 else 0
     log_timing(f"Total throughput ({total_batches} batches)", throughput_time)
     log(f"  Average: {throughput:.1f} images/sec")
@@ -214,7 +229,7 @@ def benchmark_huggingface_pipeline(
     memory_mb = get_memory_usage_mb()
     log(f"  Memory usage: {memory_mb:.1f} MB")
 
-    return BenchmarkResult(
+    return InferenceComparisonResult(
         name="HuggingFace + torchvision",
         batch_preprocessing_time_s=preprocessing_time,
         dataloader_throughput_img_per_s=throughput,
@@ -230,7 +245,7 @@ def benchmark_polars_cv_pipeline(
     num_workers: int = 4,
     num_epochs: int = 1,
     use_streaming: bool = False,
-) -> BenchmarkResult:
+) -> InferenceComparisonResult:
     """
     Benchmark polars-cv batch preprocessing pipeline.
 
@@ -245,7 +260,7 @@ def benchmark_polars_cv_pipeline(
         use_streaming: Use Polars streaming engine.
 
     Returns:
-        BenchmarkResult with timing information.
+        InferenceComparisonResult with timing information.
     """
     import torch
     from torch.utils.data import DataLoader, Dataset
@@ -273,7 +288,7 @@ def benchmark_polars_cv_pipeline(
 
     # Preprocess all images
     log("Preprocessing all images with polars-cv...")
-    preprocess_start = time.perf_counter()
+    preprocess_start = stopwatch("preprocess_start")
 
     if use_streaming:
         log("  Using streaming engine...")
@@ -286,7 +301,7 @@ def benchmark_polars_cv_pipeline(
         log("  Using eager engine...")
         processed_df = df.with_columns(tensor=pl.col("path").cv.pipe(preprocess_pipe))
 
-    preprocessing_time = time.perf_counter() - preprocess_start
+    preprocessing_time = preprocess_start.elapsed()
     log_timing("Batch preprocessing", preprocessing_time)
     log(f"  Preprocessed {len(processed_df)} images")
     log(f"  Rate: {len(processed_df) / preprocessing_time:.1f} images/sec")
@@ -320,9 +335,9 @@ def benchmark_polars_cv_pipeline(
 
     # Measure first batch latency
     log("Measuring first batch latency...")
-    first_batch_start = time.perf_counter()
+    first_batch_start = stopwatch("first_batch_start")
     first_batch = next(iter(dataloader))
-    first_batch_latency = time.perf_counter() - first_batch_start
+    first_batch_latency = first_batch_start.elapsed()
     log_timing("First batch", first_batch_latency)
     log(f"  Batch shape: {first_batch[0].shape}")
     del first_batch
@@ -331,22 +346,22 @@ def benchmark_polars_cv_pipeline(
     log(f"Measuring DataLoader throughput over {num_epochs} epoch(s)...")
     total_images = 0
     total_batches = 0
-    throughput_start = time.perf_counter()
+    throughput_start = stopwatch("throughput_start")
 
     for epoch in range(num_epochs):
-        epoch_start = time.perf_counter()
+        epoch_start = stopwatch("epoch_start")
         epoch_images = 0
         for batch_images, batch_labels in dataloader:
             total_images += batch_images.shape[0]
             epoch_images += batch_images.shape[0]
             total_batches += 1
-        epoch_time = time.perf_counter() - epoch_start
+        epoch_time = epoch_start.elapsed()
         log(
             f"  Epoch {epoch + 1}: {epoch_images} images in {epoch_time:.2f}s "
             f"({epoch_images / epoch_time:.1f} img/s)"
         )
 
-    throughput_time = time.perf_counter() - throughput_start
+    throughput_time = throughput_start.elapsed()
     throughput = total_images / throughput_time if throughput_time > 0 else 0
     log_timing(f"Total throughput ({total_batches} batches)", throughput_time)
     log(f"  Average: {throughput:.1f} images/sec")
@@ -356,7 +371,7 @@ def benchmark_polars_cv_pipeline(
 
     name = f"polars-cv ({mode})"
 
-    return BenchmarkResult(
+    return InferenceComparisonResult(
         name=name,
         batch_preprocessing_time_s=preprocessing_time,
         dataloader_throughput_img_per_s=throughput,
@@ -518,7 +533,7 @@ def run_inference_serving(
         return examples
 
     log("Loading and preprocessing HuggingFace dataset...")
-    preprocess_start = time.perf_counter()
+    preprocess_start = stopwatch("preprocess_start")
     hf_dataset = load_dataset("imagefolder", data_dir=str(images_dir), split="train")
     hf_dataset = hf_dataset.map(
         apply_transform,
@@ -527,7 +542,7 @@ def run_inference_serving(
         remove_columns=["image"],
     )
     hf_dataset.set_format("torch")
-    hf_preprocess_time = time.perf_counter() - preprocess_start
+    hf_preprocess_time = preprocess_start.elapsed()
     log_timing("Batch preprocessing", hf_preprocess_time)
     log(f"  Preprocessed {len(hf_dataset)} images")
 
@@ -550,11 +565,11 @@ def run_inference_serving(
 
     log("Starting inference...")
     total_samples = 0
-    start_time = time.perf_counter()
+    start_time = stopwatch("start_time")
 
     with torch.no_grad():
         for epoch in range(num_epochs):
-            epoch_start = time.perf_counter()
+            epoch_start = stopwatch("epoch_start")
             epoch_samples = 0
 
             for images, labels in hf_loader:
@@ -563,14 +578,14 @@ def run_inference_serving(
                 total_samples += images.shape[0]
                 epoch_samples += images.shape[0]
 
-            epoch_time = time.perf_counter() - epoch_start
+            epoch_time = epoch_start.elapsed()
             log(
                 f"  Pass {epoch + 1}: {epoch_samples} samples, "
                 f"time={epoch_time:.2f}s, "
                 f"throughput={epoch_samples / epoch_time:.1f} samples/sec"
             )
 
-    hf_time = time.perf_counter() - start_time
+    hf_time = start_time.elapsed()
     results["huggingface"] = total_samples / hf_time
     log_timing("Total inference time", hf_time)
     log(f"  Final throughput: {results['huggingface']:.1f} samples/sec")
@@ -589,10 +604,10 @@ def run_inference_serving(
     )
 
     log("Loading and preprocessing with polars-cv...")
-    preprocess_start = time.perf_counter()
+    preprocess_start = stopwatch("preprocess_start")
     df = pl.read_parquet(metadata_path)
     processed_df = df.with_columns(tensor=pl.col("path").cv.pipe(pv_pipe))
-    pv_preprocess_time = time.perf_counter() - preprocess_start
+    pv_preprocess_time = preprocess_start.elapsed()
     log_timing("Batch preprocessing", pv_preprocess_time)
     log(f"  Preprocessed {len(processed_df)} images")
 
@@ -623,11 +638,11 @@ def run_inference_serving(
 
     log("Starting inference...")
     total_samples = 0
-    start_time = time.perf_counter()
+    start_time = stopwatch("start_time")
 
     with torch.no_grad():
         for epoch in range(num_epochs):
-            epoch_start = time.perf_counter()
+            epoch_start = stopwatch("epoch_start")
             epoch_samples = 0
 
             for images, labels in pv_loader:
@@ -636,14 +651,14 @@ def run_inference_serving(
                 total_samples += images.shape[0]
                 epoch_samples += images.shape[0]
 
-            epoch_time = time.perf_counter() - epoch_start
+            epoch_time = epoch_start.elapsed()
             log(
                 f"  Pass {epoch + 1}: {epoch_samples} samples, "
                 f"time={epoch_time:.2f}s, "
                 f"throughput={epoch_samples / epoch_time:.1f} samples/sec"
             )
 
-    pv_time = time.perf_counter() - start_time
+    pv_time = start_time.elapsed()
     results["polars_cv"] = total_samples / pv_time
     log_timing("Total inference time", pv_time)
     log(f"  Final throughput: {results['polars_cv']:.1f} samples/sec")
@@ -651,7 +666,7 @@ def run_inference_serving(
     return results
 
 
-def print_results(results: list[BenchmarkResult]) -> None:
+def print_results(results: list[InferenceComparisonResult]) -> None:
     """Print benchmark results in a formatted table."""
     print()
     print("=" * 95)
@@ -740,7 +755,7 @@ def main() -> None:
     from benchmarks.utils.data_gen import generate_imagefolder_dataset
 
     log_step("GENERATING SYNTHETIC DATASET")
-    gen_start = time.perf_counter()
+    gen_start = stopwatch("gen_start")
     dataset = generate_imagefolder_dataset(
         output_dir="./benchmark_data",
         num_images=args.num_images,
@@ -749,7 +764,7 @@ def main() -> None:
         width=args.image_size,
         pattern="mixed",
     )
-    gen_time = time.perf_counter() - gen_start
+    gen_time = gen_start.elapsed()
     log_timing("Dataset generation", gen_time)
     log(f"  Created {dataset.image_count} images")
     log(f"  Images directory: {dataset.images_dir}")
@@ -763,7 +778,7 @@ def main() -> None:
         )
 
         # Run benchmarks
-        results: list[BenchmarkResult] = []
+        results: list[InferenceComparisonResult] = []
 
         log_step("BENCHMARK: HuggingFace + torchvision (batch preprocessing)")
         hf_result = benchmark_huggingface_pipeline(

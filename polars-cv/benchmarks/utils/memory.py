@@ -12,7 +12,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Iterator, TypeVar
+from typing import TYPE_CHECKING, Iterator, TypeVar
 
 if TYPE_CHECKING:
     pass
@@ -161,71 +161,6 @@ def track_memory(sample_interval_ms: float = 10.0) -> Iterator[MemoryTracker]:
     finally:
         if tracker._running:
             tracker.stop()
-
-
-@dataclass
-class TimedResult(MemoryStats):
-    """Result of a timed and memory-tracked operation."""
-
-    elapsed_seconds: float = 0.0
-    result: object = None
-
-    def __repr__(self) -> str:
-        """Return string representation."""
-        return (
-            f"TimedResult(time={self.elapsed_seconds:.3f}s, "
-            f"peak={self.peak_memory_mb:.1f}MB)"
-        )
-
-
-def run_with_memory_tracking(
-    func: Callable[[], T],
-    sample_interval_ms: float = 10.0,
-) -> tuple[T, MemoryStats]:
-    """
-    Run a function while tracking memory usage.
-
-    Args:
-        func: Function to run (takes no arguments).
-        sample_interval_ms: Time between memory samples.
-
-    Returns:
-        Tuple of (function result, memory stats).
-    """
-    tracker = MemoryTracker(sample_interval_ms)
-    tracker.start()
-    try:
-        result = func()
-    finally:
-        stats = tracker.stop()
-
-    return result, stats
-
-
-def run_timed_with_memory(
-    func: Callable[[], T],
-    sample_interval_ms: float = 10.0,
-) -> tuple[T, float, MemoryStats]:
-    """
-    Run a function while tracking both time and memory.
-
-    Args:
-        func: Function to run (takes no arguments).
-        sample_interval_ms: Time between memory samples.
-
-    Returns:
-        Tuple of (function result, elapsed seconds, memory stats).
-    """
-    tracker = MemoryTracker(sample_interval_ms)
-    tracker.start()
-    start_time = time.perf_counter()
-    try:
-        result = func()
-    finally:
-        elapsed = time.perf_counter() - start_time
-        stats = tracker.stop()
-
-    return result, elapsed, stats
 
 
 def measure_baseline_memory() -> float:

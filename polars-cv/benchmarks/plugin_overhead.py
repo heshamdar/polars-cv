@@ -19,12 +19,11 @@ Reports eager and streaming-engine timings for:
 from __future__ import annotations
 
 import argparse
-import statistics
-import time
 
 import numpy as np
 import polars as pl
 
+from benchmarks.utils.timing import measure
 from polars_cv import Pipeline
 
 
@@ -44,12 +43,15 @@ def _make_df(rows: int) -> pl.DataFrame:
 
 
 def _time(fn, repeat: int) -> tuple[float, float]:
-    times = []
-    for _ in range(repeat):
-        t0 = time.perf_counter()
-        fn()
-        times.append(time.perf_counter() - t0)
-    return min(times), statistics.median(times)
+    """Return (min, median) seconds over *repeat* timed calls.
+
+    Routed through the timing authority rather than a local loop. This module
+    and `batch_throughput` reported min/median while every scenario reported
+    the mean — one suite, two answers to "what is the number". The authority
+    now computes both from the same samples.
+    """
+    stats = measure(fn, warmup_fn=fn, warmup=1, iterations=repeat, label="overhead")
+    return stats.min_s, stats.median_s
 
 
 def main() -> None:
