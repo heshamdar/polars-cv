@@ -58,7 +58,8 @@ benchmarks/
 │   ├── results.py                  # Result formatting and comparison
 │   └── validation.py               # Cross-framework result validation
 ├── regression/                     # Performance-regression harness (commit-to-commit)
-│   ├── run_suite.py                # Run the regression suite
+│   ├── cell.py                     # One (engine, threads) cell, in its own process
+│   ├── run_suite.py                # Run the regression matrix
 │   ├── compare.py                  # Compare runs / flag regressions
 │   ├── config.py                   # Regression thresholds + config
 │   └── README.md                   # Regression framework docs
@@ -116,6 +117,24 @@ Each framework implements `BaseFrameworkAdapter` (in `frameworks/base.py`) which
 - End-to-end workflows (decode → process → encode)
 
 New operations (rotate, erode, dilate, invert, contrast, brightness, sharpen, pad, histogram_equalize, canny, sobel) have default implementations that raise `NotImplementedError`. Adapters implement what their underlying framework supports; the benchmark runner catches errors for unsupported operations.
+
+### The timing authority
+
+`benchmarks/utils/timing.py` is the **only** module in this tree that may read a
+clock or construct a `BenchmarkResult`. `tests/test_timing_authority.py`
+rejects any other, and `tests/test_timing_authority_fixtures.py` pins the
+checker itself against committed known-bad and known-good snippets.
+
+Both halves are guarded on purpose. Banning `perf_counter` stops a hand-rolled
+*timer*; banning the record constructor stops a hand-rolled *statistic* — six
+scenarios each used to reduce their own samples, and two other modules reported
+min/median while every scenario reported the mean.
+
+Use `measure()` for anything repeatable, `measure_phase()`/`stopwatch()` for a
+genuinely one-shot phase, and `to_result()` to build the record. The headline
+statistic is the **median**; `min` is recorded but does not gate, and MAD/IQR
+plus the raw samples travel into the record so the comparator can size a
+per-key noise band.
 
 ### BenchmarkConfig
 

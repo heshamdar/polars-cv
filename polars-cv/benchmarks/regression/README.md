@@ -20,12 +20,51 @@ they belong to `benchmarks.run_benchmarks` for competitive context.
   NEUTRAL / MISSING / NEW, prints a table, and **exits non-zero on any
   regression or missing result** so it can gate.
 
-## Defaults (and why they're what they are)
+## The matrix (and why it is what it is)
+
+Three cells, each run in **its own subprocess** — `POLARS_MAX_THREADS` sizes the
+pool at the first polars import and is inert afterwards, so one interpreter
+cannot host two thread counts.
+
+| cell | what only this cell can catch |
+|---|---|
+| `eager@1` | The sequential row loop, per-row `ViewExpr` re-planning, decode/encode, and the `Vec::with_capacity(n_rows)` buffering of every row result before the output column is built. Blind to anything concurrent. |
+| `streaming@1` | Per-call fixed cost with parallelism held out: the compiled-graph cache lookup and the per-morsel source resolution, which eager amortises over a whole column. |
+| `streaming@auto` | **Morsel scaling**, and the only cell that runs the concurrent path through the global compiled-graph cache `Mutex`. |
+
+This follows from one fact about the engine: **the plugin does not parallelise
+within a call.** `CompiledGraph::execute` is a plain sequential
+`for row_idx in 0..len` loop, and there is no rayon anywhere in either Rust
+crate. All multi-core execution comes from the polars **streaming** engine
+slicing the input into morsels and invoking the plugin concurrently.
+
+Two consequences worth stating plainly:
+
+- **`POLARS_MAX_THREADS` does nothing to eager.** Pinning the whole suite to one
+  thread — which is what this harness used to do — compared eager (unaffected)
+  against streaming crippled to one morsel at a time, so no regression in
+  scaling was detectable at all.
+- **`eager@N` does not exist.** With a sequential row loop it is byte-for-byte
+  `eager@1`, so `--cells eager@4` is rejected with that reason rather than
+  quietly measured and read as a scaling result.
+
+The derived gate metric is
+
+```
+scaling_efficiency = throughput(streaming@N) / (N × throughput(streaming@1))
+```
+
+a ratio of ratios, so it is insensitive to absolute machine speed and to a
+2-vCPU runner versus a 4-vCPU one. A change can leave every individual
+throughput inside its noise band and still have serialised the concurrent path;
+this is where that shows up.
+
+## Defaults
 
 The default matrix runs the **`pipelines`** scenario at **count=300**, 256×256,
-3 warmup + 10 timed iterations, **3 whole-suite repeats** (best-of), pinned to
-1 thread. Pipelines exercise the full decode → multi-op → encode hot path
-(light / medium / heavy / imagenet / medical) and run in ~3.5 min/run.
+3 warmup + 10 timed iterations, **3 whole-suite repeats** (best-of). Pipelines
+exercise the full decode → multi-op → encode hot path (light / medium / heavy /
+imagenet / medical).
 
 These defaults are **empirical**, from same-binary self-checks:
 
@@ -71,10 +110,34 @@ python -m benchmarks.scenarios.remote_source --count 300
 python -m benchmarks.scenarios.remote_source --count 300 --latency-ms 20  # model a WAN link
 ```
 
+## Results format
+
+A results file is an envelope:
+
+```json
+{"schema_version": 2, "meta": {...}, "results": [...]}
+```
+
+`meta` carries `build_info()`, the detected build profile, the polars version,
+`POLARS_CV_OPTIMIZATIONS`, the CPU model, the usable core count, and each
+cell's *actual* thread-pool size and peak RSS. It rides inside the file rather
+than in a `.meta.json` sidecar, because a sidecar can be renamed, lost or
+dropped by a partial copy — and the one that existed was never read.
+
+`compare` checks that provenance **before** comparing anything and exits 2 on a
+mismatch in build profile, optimizations, polars version, the cells' actual
+pools, or the measured matrix. Each of those silently produced a meaningless
+PASS or FAIL before. `--allow-mismatch` is the explicit override.
+
+v1 files (a bare array) still load, so the committed `reports/**` baselines
+remain readable as archives — but v1-against-v2 is refused rather than coerced.
+Those runs came from machines that no longer exist, so they are not comparable
+regardless of format.
+
 ## Workflow
 
-Use a **release build** for both runs, on the **same machine**, with the
-**same `--threads`**. Close other heavy processes.
+Use a **release build** for both runs, on the **same machine**. Close other
+heavy processes.
 
 ```bash
 cd polars-cv
@@ -111,12 +174,15 @@ python -m benchmarks.regression.compare a.json b.json   # expect all NEUTRAL, ex
 ## Options
 
 `run_suite`: `--out` (required), `--scenarios single_ops,pipelines,e2e[,zero_copy][,remote]`,
-`--counts`, `--sizes`, `--threads`, `--repeats`, `--warmup`, `--iterations`,
-`--quiet`.
+`--counts`, `--sizes`, `--cells` (e.g. `streaming@1,streaming@auto`),
+`--repeats`, `--warmup`, `--iterations`, `--quiet`.
 
-`compare`: `baseline candidate`, `--throughput-threshold` (default 5),
-`--latency-threshold` (5), `--memory-threshold` (15), `--gate-memory`
-(memory is advisory unless set), `--json` (machine-readable summary).
+`compare`: `baseline candidate`, `--throughput-threshold`,
+`--memory-threshold`, `--gate-memory` (memory is advisory unless set),
+`--allow-mismatch FIELD[,FIELD]`, `--json`. Defaults come from `Thresholds` in
+`config.py` — run `compare --help` to see them rather than trusting a number
+written down here, which is how the previously documented 5/5/15 drifted from
+the real 7/7/20.
 
 ## CI (manual, advisory)
 
