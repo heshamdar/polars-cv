@@ -37,6 +37,18 @@ repos:
         files: \.py$
         pass_filenames: false
 
+      # Static type check of the shipped package, the same `uvx ty check` CI's
+      # typing job and scripts/verify.sh run (config in polars-cv/pyproject.toml
+      # under [tool.ty]). Reads source + the committed .pyi stubs; needs the dev
+      # deps synced but no compiled extension.
+      - id: ty-check
+        name: ty check
+        description: Type-check the package (matches CI's `uvx ty check`)
+        entry: uvx ty check --project polars-cv
+        language: system
+        files: \.pyi?$
+        pass_filenames: false
+
       - id: cargo-fmt
         name: cargo fmt
         description: Check Rust formatting
@@ -48,7 +60,10 @@ repos:
       - id: cargo-clippy
         name: cargo clippy
         description: Run clippy on Rust code
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+        # Under maturin's PyO3 environment (scripts/with-pyo3-env.sh): a bare
+        # `cargo clippy` invalidates the `maturin develop` build, making the
+        # next develop rebuild the polars stack (~78s) after every commit.
+        entry: scripts/with-pyo3-env.sh cargo clippy --all-targets --all-features -- -D warnings
         language: system
         files: \.rs$
         pass_filenames: false

@@ -60,7 +60,7 @@ class _SourceInfo:
 def _leaf_dtype(dtype: pl.DataType) -> pl.DataType:
     """Unwrap nested List/Array to reach the leaf element type."""
     while isinstance(dtype, (pl.List, pl.Array)):
-        dtype = dtype.inner  # type: ignore[union-attr]
+        dtype = dtype.inner  # type: ignore[union-attr]  # ty: ignore[invalid-assignment]
     return dtype
 
 
@@ -157,7 +157,7 @@ class _SourceHandle:
         """
         if self._expr is not None:
             return self._expr.pipe(build_ops(Pipeline()))
-        return pl.col(self._column).cv.pipe(
+        return pl.col(self._column).cv.pipe(  # ty: ignore[invalid-argument-type, unresolved-attribute]
             build_ops(Pipeline().source("auto", **(self._kwargs or {})))
         )
 
@@ -192,8 +192,8 @@ def _add_gt_shape_columns(
     if isinstance(gt_dtype, pl.List):
         col = gt_handle.column
         return lf.with_columns(
-            _gt_h=pl.col(col).list.len().cast(pl.Int64),
-            _gt_w=pl.col(col).list.first().list.len().cast(pl.Int64),
+            _gt_h=pl.col(col).list.len().cast(pl.Int64),  # ty: ignore[invalid-argument-type]
+            _gt_w=pl.col(col).list.first().list.len().cast(pl.Int64),  # ty: ignore[invalid-argument-type]
         )
 
     if isinstance(gt_dtype, pl.Array):
@@ -207,7 +207,7 @@ def _add_gt_shape_columns(
 
     shape_expr = gt_handle.apply(lambda p: p.extract_shape()).sink("native")
     return (
-        lf.with_columns(_gt_shape=shape_expr)
+        lf.with_columns(_gt_shape=shape_expr)  # ty: ignore[invalid-argument-type]
         .with_columns(
             _gt_h=pl.col("_gt_shape").list.get(0).cast(pl.Int64),
             _gt_w=pl.col("_gt_shape").list.get(1).cast(pl.Int64),
@@ -264,7 +264,7 @@ def _extract_with_fused_resize(
     # Multi-output sink returns a Struct column; unnest to get
     # individual columns, then rename to internal names.
     return (
-        lf.with_columns(_fused_out=multi_out)
+        lf.with_columns(_fused_out=multi_out)  # ty: ignore[invalid-argument-type]
         .unnest("_fused_out")
         .with_columns(
             _pred_contours=pl.col("extracted_contours").cast(CONTOUR_SET_SCHEMA),
@@ -306,7 +306,7 @@ def _extract_contours_via(
     return lf.with_columns(
         handle.apply(build_ops)
         .sink("native")
-        .cast(CONTOUR_SET_SCHEMA)
+        .cast(CONTOUR_SET_SCHEMA)  # ty: ignore[unresolved-attribute]
         .alias(output_col)
     )
 
@@ -336,7 +336,7 @@ def _score_contours_via(
             )
         )
         .sink("native")
-        .alias(output_col)
+        .alias(output_col)  # ty: ignore[unresolved-attribute]
     )
 
 
@@ -651,7 +651,7 @@ class ContourMatcher:
         # Pair predictions with GT contours. The order is ours to choose;
         # `correspond` only knows about overlap.
         prepared = prepared.with_columns(
-            _match=pl.col("_pred_contours").contour.correspond(
+            _match=pl.col("_pred_contours").contour.correspond(  # ty: ignore[unresolved-attribute]
                 pl.col("_gt_contours"),
                 threshold=self._iou_threshold,
                 order=_confidence_order("_pred_scores"),

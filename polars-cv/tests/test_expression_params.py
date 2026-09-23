@@ -252,7 +252,8 @@ class TestDetectionMatchingThreshold:
         assert out[0]["right_idx"] == [0]
         assert out[1]["right_idx"] == [None]
 
-    def test_out_of_range_threshold_names_the_row(self) -> None:
+    def test_out_of_range_threshold_names_the_row(self, in_memory_engine: None) -> None:
+        # Absolute row index in the message is an in-memory-engine guarantee.
         pred, gt = self._boxes()
         df = _two_rows(p=[pred, pred], g=[gt, gt], thr=[0.5, 1.5])
         with pytest.raises(Exception, match=r"threshold must be in \[0, 1\].*row 1"):

@@ -459,7 +459,7 @@ def _validate_enum(value: str, enum_cls: type, label: str):
     try:
         return enum_cls(value)
     except ValueError as e:
-        valid = [v.value for v in enum_cls]
+        valid = [v.value for v in enum_cls]  # ty: ignore[not-iterable]
         msg = f"Invalid {label} '{value}'. Valid: {valid}"
         raise ValueError(msg) from e
 

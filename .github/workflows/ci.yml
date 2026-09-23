@@ -34,7 +34,11 @@ jobs:
             && fromJSON('["ubuntu-latest", "macos-latest"]')
             || fromJSON('["ubuntu-latest"]')
           }}
-        python-version: ["3.13"]
+        # Full supported range: the package advertises 3.10-3.13 but CI used to
+        # test only 3.13. abi3 means the matrix is a test-only cost, not extra
+        # wheels. The behavioural lane here runs under the default (streaming)
+        # engine; the dual-engine and coverage gates live in dedicated jobs below.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -213,6 +217,120 @@ jobs:
           # would compile the whole release-LTO extension for a docs-only job.
           uv sync --group docs --no-install-project
           uv run --no-sync mkdocs build --strict
+
+  typing:
+    name: Typing (ty)
+    # Static type check of the shipped, py.typed package (config in
+    # polars-cv/pyproject.toml under [tool.ty]). ty reads the source and the
+    # committed .pyi stubs, so it needs the dev deps synced (polars/numpy import
+    # resolution) but no compiled extension.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: ty check
+        # `--project polars-cv` is the same invocation scripts/verify.sh and the
+        # pre-commit hook use (one spelling of the gate, run from the repo root).
+        run: |
+          uv sync --directory polars-cv --group dev --no-install-project
+          uvx ty check --project polars-cv
+
+  cargo-deny:
+    name: cargo-deny (advisories + licenses)
+    # Supply-chain / license gate over the whole dependency graph (the cloud
+    # transports pull in a large tree). Config in deny.toml at the repo root.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # A `uses:` step, deliberately not `run: cargo install`: an install line
+      # would be an unclassified command the verify-script parity guard rejects.
+      - uses: taiki-e/install-action@cargo-deny
+      - name: cargo deny check
+        run: cargo deny check
+
+  dual-engine-and-coverage:
+    name: Dual engine + coverage
+    # The behavioural suite under BOTH query engines (they chunk a plugin's
+    # inputs differently, so a chunk-boundary bug hides under one), plus the 95%
+    # coverage gate on the streaming lane. The `test` matrix above already runs
+    # streaming across every Python; this pins the in-memory half and the gate.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Python
+        id: setup_python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: py-${{ steps.setup_python.outputs.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Determine package directory
+        id: package_dir
+        shell: bash
+        run: |
+          if [ -d "polars-cv" ]; then
+            echo "dir=polars-cv" >> $GITHUB_OUTPUT
+          else
+            echo "dir=." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        run: uv sync --group dev --no-install-project
+
+      - name: Build extension
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          maturin develop
+
+      - name: Streaming lane + coverage gate
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        shell: bash
+        env:
+          POLARS_CV_REQUIRE_PLUGIN: "1"
+        # Streaming is the default engine (conftest sets POLARS_ENGINE_AFFINITY);
+        # --cov enforces the 95% floor (fail_under in pyproject).
+        run: |
+          source .venv/bin/activate
+          pytest tests/ -q -m "not network and not slow" --cov=polars_cv
+
+      - name: In-memory lane
+        working-directory: ${{ steps.package_dir.outputs.dir }}
+        shell: bash
+        env:
+          POLARS_CV_REQUIRE_PLUGIN: "1"
+          POLARS_ENGINE_AFFINITY: in-memory
+        run: |
+          source .venv/bin/activate
+          pytest tests/ -q -m "not network and not slow"
 
   slow-tests:
     name: Slow / OOC tests

@@ -28,8 +28,70 @@ fn run(expr: &Arc<ViewExpr>, cfg: &OptConfig, n: usize) -> Vec<f32> {
     unsafe { std::slice::from_raw_parts(ptr as *const f32, n) }.to_vec()
 }
 
+/// Execute `expr` under `cfg` and read the first `n` elements as u8.
+fn run_u8(expr: &Arc<ViewExpr>, cfg: &OptConfig, n: usize) -> Vec<u8> {
+    let out = expr.plan_with(cfg).execute();
+    let (ptr, _, _, _) = out.as_raw_parts();
+    unsafe { std::slice::from_raw_parts(ptr, n) }.to_vec()
+}
+
 fn steps(expr: &Arc<ViewExpr>, cfg: &OptConfig) -> usize {
     expr.plan_with(cfg).steps.len()
+}
+
+#[test]
+fn cast_chain_int_through_float_to_int_is_preserved() {
+    // u16 -> cast(f32) -> cast(u8): f32 holds every u16 exactly, so the
+    // intermediate is lossless — but float -> int *saturates* while int -> int
+    // *wraps*, so dropping it changes the final cast's semantics (300 -> 44
+    // instead of 255). The intermediate must run.
+    let expr = ViewExpr::new_source(ViewBuffer::from_vec(vec![300u16, 1000, 40000, 7]))
+        .cast(DType::F32)
+        .cast(DType::U8);
+    assert_eq!(run_u8(&expr, &all_off(), 4), vec![255, 255, 255, 7]);
+    assert_eq!(
+        run_u8(&expr, &OptConfig::default(), 4),
+        run_u8(&expr, &all_off(), 4),
+        "cast_chain_collapse changed u16 -> f32 -> u8"
+    );
+
+    // Signed source: negatives saturate to 0 through the float, wrap without it.
+    let expr = ViewExpr::new_source(ViewBuffer::from_vec(vec![-5i16, 300, -300, 7]))
+        .cast(DType::F32)
+        .cast(DType::U8);
+    assert_eq!(run_u8(&expr, &all_off(), 4), vec![0, 255, 0, 7]);
+    assert_eq!(
+        run_u8(&expr, &OptConfig::default(), 4),
+        run_u8(&expr, &all_off(), 4),
+        "cast_chain_collapse changed i16 -> f32 -> u8"
+    );
+}
+
+#[test]
+fn cast_chain_collapse_still_fires_where_the_final_cast_is_unchanged() {
+    // Control for the test above: the collapse is only barred when the dropped
+    // intermediate would switch the final cast between the int and float
+    // conversion paths. A float target (u16 -> f32 -> f64) and a float-to-float
+    // intermediate (f32 -> f64 -> u8) stay on one path and must still collapse.
+    let int_to_float = ViewExpr::new_source(ViewBuffer::from_vec(vec![300u16, 7, 40000, 1]))
+        .cast(DType::F32)
+        .cast(DType::F64);
+    assert!(
+        steps(&int_to_float, &OptConfig::default()) < steps(&int_to_float, &all_off()),
+        "u16 -> f32 -> f64 did not collapse"
+    );
+
+    let float_to_int = ViewExpr::new_source(ViewBuffer::from_vec(vec![0.4f32, 2.6, 300.0, -3.0]))
+        .cast(DType::F64)
+        .cast(DType::U8);
+    assert_eq!(
+        run_u8(&float_to_int, &OptConfig::default(), 4),
+        run_u8(&float_to_int, &all_off(), 4)
+    );
+    assert!(
+        steps(&float_to_int, &OptConfig::default()) < steps(&float_to_int, &all_off()),
+        "f32 -> f64 -> u8 did not collapse"
+    );
 }
 
 #[test]

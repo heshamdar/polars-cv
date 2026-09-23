@@ -206,6 +206,7 @@ def test_every_pipeline_field_survives_a_copy() -> None:
         "_initial_expected_ndim": 5,
         "_on_error": "null",
         "_on_null_param": "null",
+        "_shape_declared": True,
         "_ops": ["sentinel-op"],
         "_expr_refs": ["sentinel-expr"],
         "_asserted_dims": {"height"},

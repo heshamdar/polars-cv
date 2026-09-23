@@ -980,7 +980,7 @@ class TestContourEnumParamsResolvePerRow:
             )
 
     def test_a_null_in_the_parameter_column_follows_on_null(
-        self, ccw_square: dict
+        self, ccw_square: dict, in_memory_engine: None
     ) -> None:
         """Routing through `_ArgBinder` also buys the shared null-param policy.
 

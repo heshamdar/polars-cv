@@ -98,6 +98,12 @@ and the guard that enforces each one.
   `polars-cv/` subdirectory** — invoke it as `scripts/verify.sh` from the root
   (or by absolute path from anywhere; it `cd`s to the root itself). From the
   `polars-cv/` working directory the path is `../scripts/verify.sh`.
+- Run ad-hoc cargo commands as `scripts/with-pyo3-env.sh cargo …` (or
+  `source` it once per shell). A bare `cargo clippy`/`cargo test` lacks the PyO3
+  environment `maturin develop` sets, so the two keep invalidating each other
+  and the next `maturin develop` rebuilds the polars stack (~80s) for nothing.
+  `verify.sh` and the pre-commit clippy hook already go through it, and on the
+  web the SessionStart hook exports it into every session shell.
 - **Never read a filtered view of a check and call it green.** `grep | head`
   cuts the failing suite below the fold; `maturin ... | tail` reports tail's
   exit code, not maturin's. Both have produced false "all green" reports here.
@@ -196,6 +202,16 @@ second, slow build into the loop, and both are now closed — keep them closed:
   `lld` on x86_64-linux via `.cargo/config.toml` — the single biggest per-build
   speedup.
 
+**Web sessions are provisioned by the SessionStart hook**
+(`.claude/hooks/session-start.sh`, async): it updates the Rust toolchain, syncs
+the `dev` and `docs` groups (`--no-install-project`), exports the PyO3 env to the
+session, runs `maturin develop`, installs the pre-commit hook and, if missing,
+`cargo install`s `cargo-deny` — everything `scripts/verify.sh` needs.
+`.claude/hooks/.session-start.done` appears once it has finished; until then
+plugin tests self-skip. `test_build_efficiency.py` pins what the hook must do.
+Note that any `uv sync --no-install-project` uninstalls the editable project, so
+re-run `maturin develop` after one.
+
 **Check the Rust toolchain first — it is the common reason a build fails.** Both
 crates set `rust-version = "1.96"` (MSRV) in their `Cargo.toml`, so cargo
 *refuses to compile* on anything older, erroring before it starts:
@@ -239,10 +255,12 @@ Tests are marked with `network` (needs network access) and `slow` (excluded from
 the default lane). CI runs `pytest -m "not network and not slow"` on every push
 and a separate `-m "slow and not network"` lane on a schedule.
 
-Rust unit tests (run from the workspace root or with `-p` flag):
+Rust unit tests (run from the workspace root or with `-p` flag), through
+`scripts/with-pyo3-env.sh` so they do not invalidate the `maturin develop` build
+(see [Verification](#verification); web sessions already have the env exported):
 ```bash
-cargo test -p view-buffer --all-features   # view-buffer engine tests
-cargo test -p polars-cv                    # Rust plugin tests
+scripts/with-pyo3-env.sh cargo test -p view-buffer --all-features   # view-buffer engine tests
+scripts/with-pyo3-env.sh cargo test -p polars-cv                    # Rust plugin tests
 ```
 
 ### Lint & Format
@@ -251,7 +269,7 @@ cargo test -p polars-cv                    # Rust plugin tests
 uvx ruff check python tests benchmarks         # Python lint (matches CI)
 uvx ruff format python tests benchmarks        # Python format
 cargo fmt --all -- --check       # Rust format check
-cargo clippy --all-targets --all-features -- -D warnings  # Rust lint
+../scripts/with-pyo3-env.sh cargo clippy --all-targets --all-features -- -D warnings  # Rust lint
 ```
 
 A [pre-commit](https://pre-commit.com/) config wires these up;

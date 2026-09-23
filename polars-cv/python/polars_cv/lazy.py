@@ -195,6 +195,15 @@ class LazyPipelineExpr:
         >>> expr = img.sink("numpy")
     """
 
+    # The private instance state, declared once here so it is a single authority:
+    # `gen_lazy_stub.py` reads these annotations to emit the `.pyi` (other modules
+    # read a node's `_node_id` / `_pipeline` / ... across the package boundary).
+    _column: pl.Expr
+    _pipeline: Pipeline
+    _node_id: str
+    _upstream: list[LazyPipelineExpr]
+    _alias: str | None
+
     def __init__(
         self,
         column: pl.Expr,
@@ -216,8 +225,8 @@ class LazyPipelineExpr:
         self._column = column
         self._pipeline = pipeline
         self._node_id = node_id or _generate_node_id()
-        self._upstream: list[LazyPipelineExpr] = upstream or []
-        self._alias: str | None = alias
+        self._upstream = upstream or []
+        self._alias = alias
 
     @property
     def node_id(self) -> str:
@@ -307,6 +316,10 @@ class LazyPipelineExpr:
             new_pipeline._initial_output_dtype = upstream_dtype
             new_pipeline._initial_expected_ndim = upstream_ndim
             new_pipeline._assertions = _copy.deepcopy(pipeline._assertions)
+            # The seeded hints may carry the upstream's declared H/W while its
+            # assertions stay behind, so the "a declaration reached here" fact
+            # must travel with them (see `Pipeline._shape_declared`).
+            new_pipeline._shape_declared = self._pipeline._shape_declared
             # An assert_shape() written before the first op has no preceding
             # append to apply it; every later position is applied by the
             # `_push_op` that lands on it, so the replay is just the append

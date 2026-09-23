@@ -494,7 +494,7 @@ class PipelineGraph:
         shared_pipeline = Pipeline()
         shared_pipeline._copy_state_from(template_node.pipeline)
         # The prefix ops keep their original indices, so everything keyed by
-        # op position carries over unshifted (affine fusion reads the
+        # op position carries over unshifted (identity elimination reads the
         # entering-hints snapshots).
         shared_pipeline._set_ops_slice(prefix_ops, shift=0)
 
@@ -580,7 +580,7 @@ class PipelineGraph:
                 "No output set. Call set_output() or set_multi_output() first."
             )
 
-        # Serialization only serializes. Optimization (CSE, affine fusion) is
+        # Serialization only serializes. Optimization (every logical pass) is
         # the explicit `optimize(flags)` phase — the single site, invoked by
         # `.sink()`. `to_expr()` refuses an un-optimized graph rather than
         # silently emitting one: that is how the sink-free `to_graph().to_expr()`
@@ -862,4 +862,4 @@ class PipelineGraph:
 
     def show_graph(self) -> pydot.Dot:
         """Build dot representation of graph."""
-        return get_graphviz_out(self)
+        return get_graphviz_out(self)  # ty: ignore[invalid-return-type]

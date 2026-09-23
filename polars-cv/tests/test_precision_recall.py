@@ -537,3 +537,23 @@ class TestConfusionAtThreshold:
         # Derived metrics: precision = 2/3, recall = 2/3.
         assert result.precision == 2 / 3
         assert result.recall == 2 / 3
+
+
+class TestPrecisionRecallResultAtThreshold:
+    """The result object's `precision_at` / `recall_at`, including empty filters."""
+
+    def test_precision_and_recall_at_a_reachable_threshold(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        result = precision_recall_curve(simple_detection_table)
+        assert 0.0 <= result.precision_at(0.5) <= 1.0
+        assert 0.0 <= result.recall_at(0.5) <= 1.0
+
+    def test_threshold_above_every_score_returns_the_empty_defaults(
+        self, simple_detection_table: DetectionTable
+    ) -> None:
+        # No detection scores >= 2.0, so the filtered curve is empty: precision
+        # defaults to 1.0 (nothing predicted, nothing wrong) and recall to 0.0.
+        result = precision_recall_curve(simple_detection_table)
+        assert result.precision_at(2.0) == 1.0
+        assert result.recall_at(2.0) == 0.0

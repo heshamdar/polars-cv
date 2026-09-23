@@ -128,9 +128,9 @@ Consecutive compute operations (scalar element-wise: scale, relu, clamp, cast) a
 
 ### Op Trait
 
-`Op` (`src/ops/traits.rs`) declares twelve methods, **seven with no default**.
-The seven are what a new op cannot skip — it does not compile until it answers
-each one:
+`Op` (`src/ops/traits.rs`) declares the plan-time contract every op must
+answer. Six rule methods carry **no default**, so a new op does not compile
+until it states each one — it cannot inherit a lie:
 
 ```rust
 pub trait Op {
@@ -138,22 +138,38 @@ pub trait Op {
     fn infer_shape(&self, inputs: &[&[usize]]) -> Vec<usize>;
     fn infer_strides(&self, shape: &[usize], strides: &[isize]) -> Option<Vec<isize>>;
 
-    // The plan-time contract quartet: rank, channels, dtype, memory.
+    // The plan-time contract — six required rules, no defaults.
     fn output_rank_rule(&self) -> OutputRankRule;
     fn output_channel_rule(&self) -> OutputChannelRule;
     fn output_dtype_rule(&self) -> OutputDTypeRule;
     fn memory_effect(&self) -> MemoryEffect; // View, StridePreserving, RequiresContiguous
+    fn spatial_dependency(&self) -> SpatialDependency; // Global is the safe answer
+    fn identity_rule(&self) -> IdentityRule;           // Never is the safe answer
+
+    // Also required (no default): whether this op is a hoistable H/W window,
+    // read by the spatial-window pushdown.
+    fn is_spatial_window(&self) -> bool;
 }
 ```
 
-The remaining five carry defaults: `validate()`, `accepted_input_dtypes()`,
-`working_dtype()`, `resolve_output_dtype()` and `validate_output_dtype()`.
+`identity_rule` answers *under what condition* the op is a removable no-op
+(`Never`, `Always`, `WhenShapePreserved`, `WhenDtypePreserved`); the Python
+planner evaluates the condition. A verdict that also rests on a literal
+parameter value names it in `deciding_params` (a zero `pad`'s four amounts, a
+crop's `top`/`left` — a crop is a candidate only at a `(0, 0)` origin), and
+`op_identity_rule` forces `never` when any of them is per-row. Shape
+preservation alone never proves a no-op for an op whose shape rule ignores a
+parameter that moves pixels.
 
-The four rules marked as the quartet are the ones the Python planner reads over
-FFI, and **adding a default to any of them is a regression** — an op that
-declines to declare its dtype rule would silently inherit `PreserveInput` and
-publish a schema execution cannot produce. See the Canonical Paths table in the
-root `AGENTS.md`.
+The dtype methods that *do* carry defaults are `validate()`,
+`accepted_input_dtypes()`, `working_dtype()`, `resolve_output_dtype()` and
+`validate_output_dtype()`.
+
+The six rule methods are the ones the Python planner reads over FFI, and
+**adding a default to any of them is a regression** — an op that declines to
+declare its dtype rule would silently inherit `PreserveInput` and publish a
+schema execution cannot produce. This matches the required-no-default list in
+the root `CLAUDE.md` and the Canonical Paths table in the root `AGENTS.md`.
 
 ## Alpha Channel Support
 

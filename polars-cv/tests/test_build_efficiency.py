@@ -157,6 +157,43 @@ def test_session_start_hook_builds_debug_only() -> None:
     )
 
 
+def test_session_start_hook_provisions_every_verify_lane() -> None:
+    """The hook installs what ``scripts/verify.sh`` needs beyond dev deps.
+
+    verify.sh treats a missing tool as a FAIL (no false green), so a hook that
+    skips one leaves every fresh web session unable to pass verify.sh on a
+    correct tree: that is how the mkdocs lane (docs dependency group) and the
+    cargo-deny lane (a separately installed binary) failed in every session.
+    """
+    hook = _hook()
+    assert "--group docs" in hook, (
+        "the hook must sync the docs dependency group, or verify.sh's "
+        "`mkdocs build --strict` lane fails with a missing module"
+    )
+    assert "cargo install --locked cargo-deny" in hook, (
+        "the hook must install cargo-deny, or verify.sh's `cargo deny` lane fails "
+        "with `no such command: deny`"
+    )
+
+
+def test_session_start_hook_exports_the_pyo3_env_to_the_session() -> None:
+    """Session shells get maturin's PyO3 env, so ad-hoc cargo does not thrash.
+
+    A bare ``cargo test`` in a session shell otherwise lacks the variables
+    ``maturin develop`` sets, and the next ``maturin develop`` rebuilds the
+    polars stack. The values come from ``scripts/with-pyo3-env.sh`` (the one
+    authority) and reach every later Bash call through ``$CLAUDE_ENV_FILE``.
+    """
+    hook = _hook()
+    assert "scripts/with-pyo3-env.sh" in hook, (
+        "the hook must derive the PyO3 env from scripts/with-pyo3-env.sh, not "
+        "restate it"
+    )
+    assert "CLAUDE_ENV_FILE" in hook, (
+        "the hook must persist the PyO3 env for the session via $CLAUDE_ENV_FILE"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The knobs that make `maturin develop` fast and small
 # ---------------------------------------------------------------------------

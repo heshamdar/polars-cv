@@ -57,6 +57,11 @@ polars-cv/site/**
 polars-cv/benchmark_data
 polars-cv/notebooks/wiki/*
 
+# Coverage artifacts (pytest-cov / coverage.py)
+.coverage
+.coverage.*
+htmlcov/
+
 
 polars-cv/notebooks/**/*.jpg
 polars-cv/notebooks/**/*.jpeg

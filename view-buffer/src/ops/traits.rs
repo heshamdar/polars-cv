@@ -65,11 +65,29 @@ pub enum IdentityRule {
     },
     /// The op is an identity exactly when its output shape equals its input
     /// shape. Sound only for ops that move no pixels when shape is preserved —
-    /// a pure view (`crop`, `reshape`) or a pad that added nothing.
-    WhenShapePreserved,
+    /// a pure view (`reshape`, a crop anchored at the origin) or a pad that
+    /// added nothing. An op whose candidacy also rests on a literal parameter
+    /// value (a crop's origin being `(0, 0)`) names those parameters in
+    /// `deciding_params`, gated exactly as for [`Always`](IdentityRule::Always).
+    WhenShapePreserved {
+        deciding_params: &'static [&'static str],
+    },
     /// The op is an identity exactly when its output dtype equals its input
     /// dtype — the same-dtype `cast`, which copies rather than converts.
     WhenDtypePreserved,
+}
+
+impl IdentityRule {
+    /// The parameters whose literal values this verdict was decided by. A
+    /// planner must treat the op as [`Never`](IdentityRule::Never) when any of
+    /// them is per-row: the verdict was reached against a placeholder.
+    pub fn deciding_params(&self) -> &'static [&'static str] {
+        match self {
+            IdentityRule::Always { deciding_params }
+            | IdentityRule::WhenShapePreserved { deciding_params } => deciding_params,
+            IdentityRule::Never | IdentityRule::WhenDtypePreserved => &[],
+        }
+    }
 }
 
 /// Trait for all operations in the pipeline.

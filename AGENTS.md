@@ -44,6 +44,8 @@ This is a **pre-release, largely AI-developed project**. Fix inconsistencies whe
 
 6. **Python for planning, Rust for execution.** Keep Python focused on pipeline specification, validation, and graph construction. Reserve Rust for performance-critical execution-time work. If something can be done purely in Python (schema inference, validation, utilities), do it there.
 
+7. **Priorities, in order: correctness, ergonomics, maintainability, performance.** Performance is last on purpose — the plugin runs over frames the engine already carries, so a clear, obviously-correct formula beats a fast one. Reject a design on performance grounds only when it is clearly suboptimal (an unnecessary per-row allocation, an O(n) pass where O(1) exists), never to shave constants at the cost of the three above it.
+
 ## Architecture
 
 ```
@@ -163,8 +165,13 @@ cd polars-cv
 maturin develop                    # Build Rust plugin (debug) into .venv
 uv run pytest tests/               # Run tests
 uv run ruff check python/ tests/   # Lint Python
-cargo clippy --workspace           # Lint Rust
+../scripts/with-pyo3-env.sh cargo clippy --workspace   # Lint Rust
 ```
+
+Run cargo through `scripts/with-pyo3-env.sh` (or `source` it): it supplies the
+PyO3 environment `maturin develop` sets, without which cargo and maturin
+invalidate each other's builds and every switch rebuilds the polars stack. On
+the web, the SessionStart hook exports it into every session shell.
 
 Local x86_64 builds pick up `target-cpu=x86-64-v3` from [`.cargo/config.toml`](.cargo/config.toml)
 (per-triple, not `[build].rustflags` — a global flag breaks aarch64 Darwin/`ring`).
@@ -263,7 +270,7 @@ side channel.
 | A `Pipeline`'s state, when copied | `_STATE_COPIERS` + `Pipeline._copy_state_from` — `_clone`, `_create_sub_pipeline` and CSE all inherit everything, then override | `test_pipeline_state_copy_is_complete` (table ↔ `__init__`, both directions) and `test_every_pipeline_field_survives_a_copy` |
 | Whether the compiled extension matches the sources | `POLARS_CV_SOURCE_HASH` from `build.rs`, recomputed by `build_info()` | `test_compiled_plugin_matches_the_rust_sources` — the version comparison cannot fire within a release cycle |
 | Dtype spellings on the Python side | `python/polars_cv/_dtype_names.py`, generated from `dtype_table!` by `scripts/gen_dtype_names.py` | `test_dtype_names_module_is_current` (regenerate-and-diff), `test_engine_dtype_names_match_the_generated_table` pins `_types.DType` to it without the plugin |
-| Which plan-time optimizations exist | `LOGICAL_PASSES` in `_optimize.py` (one `PassSpec` per pass) ↔ the `OptFlags` fields | `test_optimize.py::test_flags_match_registry_both_directions` — a pass without a flag or a flag without a pass fails. Optimization is one explicit phase (`PipelineGraph.optimize`); construction and serialization never optimize (`TestStaging`), and toggling a pass changes only the physical graph, never the output (`test_optimize_equivalence.py`) |
+| Which plan-time optimizations exist | `OPTIMIZATION_PASSES` in `_optimize.py` (one `PassSpec` per pass, both tiers) ↔ the `OptFlags` fields | `test_optimize.py::test_flags_match_registry_both_directions` — a pass without a flag or a flag without a pass fails. Optimization is one explicit phase (`PipelineGraph.optimize`); construction and serialization never optimize (`TestStaging`), and toggling a pass changes only the physical graph, never the output (`test_optimize_equivalence.py`) |
 
 One deliberate exception, documented at the site: `OpSpec` is *not*
 `deny_unknown_fields`, because its params ride on `#[serde(flatten)]`, which

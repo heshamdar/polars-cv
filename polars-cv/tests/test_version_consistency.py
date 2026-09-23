@@ -16,7 +16,11 @@ import sys
 from pathlib import Path
 
 import pytest
-import tomllib
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # Python 3.10: `tomllib` is 3.11+ stdlib; `tomli` is its exact predecessor.
+    import tomli as tomllib
 
 import polars_cv
 from tests._discovery import CHECKOUT_MARKERS, requires_checkout

@@ -92,7 +92,9 @@ class TestDefaultRaises:
         with pytest.raises(pl.exceptions.ComputeError, match="has a null value at row"):
             df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
-    def test_error_names_the_column_and_row(self) -> None:
+    def test_error_names_the_column_and_row(self, in_memory_engine: None) -> None:
+        # The absolute row index in the message is an in-memory-engine guarantee;
+        # under streaming the plugin sees a morsel and reports a local index.
         pipe = (
             Pipeline()
             .source("image_bytes")
