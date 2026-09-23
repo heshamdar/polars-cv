@@ -152,6 +152,15 @@ pub trait Op {
 }
 ```
 
+`identity_rule` answers *under what condition* the op is a removable no-op
+(`Never`, `Always`, `WhenShapePreserved`, `WhenDtypePreserved`); the Python
+planner evaluates the condition. A verdict that also rests on a literal
+parameter value names it in `deciding_params` (a zero `pad`'s four amounts, a
+crop's `top`/`left` — a crop is a candidate only at a `(0, 0)` origin), and
+`op_identity_rule` forces `never` when any of them is per-row. Shape
+preservation alone never proves a no-op for an op whose shape rule ignores a
+parameter that moves pixels.
+
 The dtype methods that *do* carry defaults are `validate()`,
 `accepted_input_dtypes()`, `working_dtype()`, `resolve_output_dtype()` and
 `validate_output_dtype()`.

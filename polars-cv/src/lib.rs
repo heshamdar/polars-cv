@@ -570,8 +570,6 @@ fn bbox_schema() -> Vec<String> {
         .collect()
 }
 
-/// The affine parameters a `rotate` executes as, for a known input shape.
-///
 /// The 2x3 rotation+scale matrix about `(cx, cy)` — the same authority
 /// (`AffineParams::rotation_matrix_2d`) that `from_rotation` builds on.
 ///
@@ -582,7 +580,7 @@ fn bbox_schema() -> Vec<String> {
 /// plan time — which is the one remaining, guard-sanctioned copy.
 ///
 /// `angle_deg` is `f64` so the returned matrix matches Python's f64 arithmetic
-/// exactly (the planner feeds these straight into literal affine fusion).
+/// exactly (the planner feeds these straight into a literal `warp_affine`).
 #[pyfunction]
 fn rotation_matrix_2d(angle_deg: f64, cx: f64, cy: f64, scale: f64) -> Vec<f64> {
     view_buffer::ops::affine::AffineParams::rotation_matrix_2d(angle_deg, cx, cy, scale).to_vec()
