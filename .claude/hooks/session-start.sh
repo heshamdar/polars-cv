@@ -62,8 +62,9 @@ if command -v rustup >/dev/null 2>&1; then
   echo "session-start: rust toolchain -> $(rustc --version 2>/dev/null || echo 'unknown')"
 fi
 
-# 2. Python dev dependencies (includes pre-commit and maturin). The uv project
-#    lives under polars-cv/.
+# 2. Python dependencies: the dev group (includes pre-commit and maturin) and
+#    the docs group (mkdocs, for verify.sh's `mkdocs build --strict` lane). The
+#    uv project lives under polars-cv/.
 #
 #    `--no-install-project` is load-bearing, not a micro-optimization. Because
 #    polars-cv uses the maturin build backend, a plain `uv sync` *builds and
@@ -74,7 +75,21 @@ fi
 #    so the release build is pure waste. Sync only the dependency groups here
 #    and let step 3 own the single (debug) build — the one way this repo builds
 #    for development.
-uv sync --group dev --no-install-project --directory polars-cv
+uv sync --group dev --group docs --no-install-project --directory polars-cv
+
+# 2b. Give every later shell in this session the PyO3 build environment
+#     `maturin develop` sets, so an ad-hoc `cargo test`/`cargo clippy` does not
+#     invalidate the extension build (the next `maturin develop` would rebuild
+#     the polars stack, ~80s). Values come from scripts/with-pyo3-env.sh, the
+#     single authority; it needs the venv interpreter, hence after the sync.
+#     Written early so it is in place well before the slow build below finishes.
+if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  (
+    source scripts/with-pyo3-env.sh
+    printf 'export PYO3_PYTHON=%q\nexport PYO3_ENVIRONMENT_SIGNATURE=%q\n' \
+      "$PYO3_PYTHON" "$PYO3_ENVIRONMENT_SIGNATURE"
+  ) >> "$CLAUDE_ENV_FILE"
+fi
 
 # 3. Build the plugin (debug — the one canonical dev build, what CI and
 #    scripts/verify.sh use). Needed for @plugin_required tests and the
@@ -85,6 +100,17 @@ uv run --no-sync --directory polars-cv maturin develop
 #    clippy / the structural guards before they land. Hook installation lives in
 #    `.git/hooks` (not tracked), so it must be re-done in every fresh container.
 uv run --no-sync --directory polars-cv pre-commit install
+
+# 5. cargo-deny, for verify.sh's supply-chain lane (CI installs it with an
+#    action; there is no crate dependency on it). Prebuilt release binaries live
+#    on GitHub, which the web container's network policy may block, so build it
+#    from crates.io (~2.5 min, cached with the container afterwards). Last,
+#    because nothing but that one lane needs it; best-effort, since a failure
+#    here shows up as a clear `cargo deny` FAIL in verify.sh anyway.
+if ! command -v cargo-deny >/dev/null 2>&1; then
+  cargo install --locked cargo-deny \
+    || echo "session-start: 'cargo install cargo-deny' failed; verify.sh's cargo deny lane will fail" >&2
+fi
 
 echo "session-start: environment ready"
 touch "$DONE"

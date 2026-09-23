@@ -308,16 +308,19 @@ the same mixin unless `.cv` genuinely honours it.
    (buffer ops wrap a view-buffer `ViewDto`; graph-level steps get their own
    variant) — see [`polars-cv/src/AGENTS.md`](../../src/AGENTS.md)
 
-### Affine Pipeline Fusion
+### Affine Operations (not fused)
 
-Consecutive affine-family operations are fused by the `affine_fusion` Tier-1 optimization pass (`Pipeline._fuse_affine_inplace()`, driven by `PipelineGraph.optimize()` — see [`_optimize.py`](_optimize.py)), **not** at serialization time: `_to_spec_dict()` emits ops verbatim. Matrix composition uses `_compose_affine_ops()` which performs standard 2×3 matrix multiplication. The fused operation uses the output dimensions from the **last** affine in the chain. Affine fusion is output-preserving but not bit-exact (one interpolation pass replaces several), so it carries `bit_exact=False` in the pass registry.
-
-Fusible operations:
-- `warp_affine()` — always fusible
-- `shear()` and `rotate_and_scale()` — construct matrices and delegate to `warp_affine()`, so they fuse automatically
-- `rotate()` with a **static, non-fast-path angle** (not 90/180/270) and **known input dimensions** — converted to `warp_affine` via `_try_convert_rotate_to_affine()` at planning time
-
-**Not fusible:** `rotate()` with an expression-based angle, or with a fast-path angle (90/180/270 use zero-copy `ViewOp` and cannot be represented as an affine matrix).
+`warp_affine()`, `shear()`, `rotate_and_scale()` and `rotate()` each execute as
+their own op: there is **no plan-time fusion** of adjacent affine ops. An
+`affine_fusion` Tier-1 pass used to compose runs of them into one warp, and was
+removed because folding several interpolation passes into one (and dropping the
+intermediate clip of an `expand=False` rotate) changed pixels by up to ~185/255,
+breaking the byte-for-byte on/off guarantee every optimization carries (see
+[`_optimize.py`](_optimize.py) and the CHANGELOG). `test_removed_surfaces.py`
+pins the deleted `_fuse_affine_inplace`/`_compose_affine_ops`, so do not restore
+them. `shear()` and `rotate_and_scale()` build their matrix (the literal
+rotation matrix via the `rotation_matrix_2d` FFI) and delegate to
+`warp_affine()`; `_to_spec_dict()` emits ops verbatim.
 
 ### Shape Hints (single authority: view-buffer `infer_shape`)
 

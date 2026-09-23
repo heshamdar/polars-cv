@@ -553,8 +553,8 @@ class Pipeline:
         self._initial_output_dtype: str = "auto"
         self._initial_expected_ndim: int | None = None
         # Height/width hints as they were ENTERING each op, keyed by op
-        # index. Affine fusion reads these so a rotate converts with the
-        # shape at its own position, not the pipeline's final shape.
+        # index. Identity elimination reads these so a shape-preserving op is
+        # judged against the shape at its own position, not the final shape.
         self._hint_snapshots: dict[
             int, tuple[ParamValue | None, ParamValue | None]
         ] = {}
@@ -4775,9 +4775,8 @@ class Pipeline:
         authority, so they cannot drift.
 
         Serialization only serializes: it emits ``self._ops`` verbatim and runs
-        no optimization. Affine fusion (which used to happen here) is now a
-        Tier-1 pass applied by ``PipelineGraph.optimize`` before serialization —
-        see ``polars_cv._optimize``.
+        no optimization — every pass is applied by ``PipelineGraph.optimize``
+        before serialization (see ``polars_cv._optimize``).
 
         Shape hints are deliberately *not* emitted: no Rust code ever read the
         key, and because ``graph_json`` is the compiled-graph cache key, two
