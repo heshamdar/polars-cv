@@ -110,6 +110,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`sink("list")` and `sink("array")` no longer fall onto a per-element slow
+  path.** A `list` sink of rank 2 or more, or an `array` sink with even one null
+  row, built one `AnyValue` per element and ran ~34-40x slower than
+  `sink("numpy")`. For example, a single decode failure under `on_error="null"`
+  made the whole column 40x slower. Both sinks are now built straight into
+  Arrow from one flat values buffer, cost about what the numpy sink costs,
+  and copy each value once instead of up to three times. Rows that break the
+  plan are now errors, where some used to be accepted: a row whose dtype
+  differs from the planned one was silently cast (only the first row was
+  checked), and an `array` row with the wrong element count was accepted (CR-33).
 - **Distinct expression parameters no longer collapse into one.** An
   expression parameter was identified by its display text, `str(expr)`, which
   is not unique: every `pl.lit(pl.Series("f", ...))` prints `Series[f]`, and
