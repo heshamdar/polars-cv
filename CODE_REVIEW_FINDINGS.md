@@ -603,8 +603,10 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
 > (~90k points): contour sink overhead ~31 → ~3 ms, and `.contour.translate`
 > 39 → 6.2 ms. `contour_to_anyvalue` is now test-only, as the oracle for
 > `encode.rs::contour_sink_tests` and `geom_arity.rs::contour_output_tests`.
-> Unchanged, and noted: the graph sink publishes an *empty* contour set as
-> null, while the `.contour` transforms publish it as an empty list.
+> Follow-up: the graph sink published an *empty* contour set as null, while
+> the `.contour` transforms kept `[]`. It now publishes `[]`, and null means
+> only a null input or a failed row (`tests/test_contour_empty_set.py`,
+> watched failing).
 
 > **Measured (debug, streaming, 64 masks of 256², ~1,400 points/row):**
 > `extract_contours → area` 47 ms; the same extraction with contours as the

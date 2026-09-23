@@ -81,6 +81,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **An image with no contours yields `[]`, not null.** `extract_contours()`
+  published an empty contour set as null, the same as a null input or a failed
+  row, so `list.len()` read null instead of 0 and the `.contour` transforms
+  (which keep `[]`) disagreed with it. Null now means only "no value"
+  (a null input, or a row failed under `on_error("null")`).
 - **The single-thread warning is based on time, not rows.** It fired when one
   plugin call carried 50 000 rows, which image workloads rarely reach even
   when a run takes tens of seconds on one core. It now fires once when a single

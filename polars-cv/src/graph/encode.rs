@@ -534,9 +534,10 @@ pub(crate) fn encode_node_output(
 /// A `List[Contour]` column, one contour set per row, built straight into Arrow
 /// (see [`crate::geom_schema::contour_array`]).
 ///
-/// A null row and an empty contour set are both published as null, which is
-/// what the former `AnyValue` construction did (an empty set became
-/// `AnyValue::Null`).
+/// A null row (no input, or a failed row) is null; a row whose image simply
+/// contains no contours is the empty set `[]`. The two used to be collapsed
+/// into null, which made `list.len()` read null for "found nothing" and
+/// disagreed with the `.contour` transforms, which keep `[]`.
 pub(super) fn contour_set_series(
     name: PlSmallStr,
     rows: &[Option<Vec<Contour>>],
@@ -544,15 +545,14 @@ pub(super) fn contour_set_series(
     use polars_arrow::array::ListArray;
     use polars_arrow::offset::Offsets;
 
-    let present = |r: &Option<Vec<Contour>>| r.as_ref().is_some_and(|c| !c.is_empty());
     let all: Vec<&Contour> = rows.iter().flatten().flatten().collect();
     let values = crate::geom_schema::contour_array(all.iter().copied())?;
     let lengths = rows.iter().map(|r| r.as_ref().map_or(0, Vec::len));
     let offsets = Offsets::<i64>::try_from_lengths(lengths)?;
     let validity = rows
         .iter()
-        .any(|r| !present(r))
-        .then(|| rows.iter().map(present).collect());
+        .any(Option::is_none)
+        .then(|| rows.iter().map(Option::is_some).collect());
     let dtype = ListArray::<i64>::default_datatype(values.dtype().clone());
     let array = ListArray::<i64>::try_new(dtype, offsets.into(), values, validity)?;
     Series::from_arrow(name, array.boxed())
@@ -1035,13 +1035,14 @@ mod contour_sink_tests {
         ]
     }
 
-    /// The former construction, kept here as the oracle.
+    /// The per-value construction, kept here as the oracle. An empty set is
+    /// `[]` and only a null row is null.
     fn oracle(rows: &[Option<Vec<Contour>>]) -> Series {
         let element = DataType::Struct(crate::geom_schema::contour_fields());
         let values: Vec<AnyValue<'static>> = rows
             .iter()
             .map(|row| match row {
-                Some(contours) if !contours.is_empty() => {
+                Some(contours) => {
                     let items: Vec<AnyValue<'static>> = contours
                         .iter()
                         .map(crate::contour::contour_to_anyvalue)
@@ -1056,7 +1057,7 @@ mod contour_sink_tests {
                         .unwrap(),
                     )
                 }
-                _ => AnyValue::Null,
+                None => AnyValue::Null,
             })
             .collect();
         Series::from_any_values_and_dtype(
@@ -1081,7 +1082,7 @@ mod contour_sink_tests {
         );
         assert_eq!(
             got.is_null().iter().collect::<Vec<_>>(),
-            vec![Some(false), Some(true), Some(true), Some(false)]
+            vec![Some(false), Some(true), Some(false), Some(false)]
         );
     }
 }
