@@ -71,6 +71,7 @@ If you use `sink("list")` or `sink("array")`, dtype must be known at planning ti
 |--------|------------|-------------|
 | `numpy` | Struct | NumPy-compatible zero-copy struct (`{data, dtype, shape, strides, offset}`); `dtype="f16"` downcasts |
 | `torch` | Struct | PyTorch-compatible zero-copy struct; `dtype="f16"` downcasts |
+| `ndarray` | `polars_cv.ndarray` | The `numpy` struct tagged with an [extension type](extension-types.md); `dtype="f16"` downcasts |
 | `png` | Binary | PNG bytes; preserves bit depth (`u8` → 8-bit, `u16` → 16-bit) |
 | `jpeg` | Binary | JPEG bytes; 8-bit only, requires `u8` |
 | `webp` | Binary | WebP bytes; 8-bit only, requires `u8` |

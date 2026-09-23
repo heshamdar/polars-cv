@@ -9,6 +9,31 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **Arrow extension types: `polars_cv.ndarray`, `.point`, `.contour`, `.bbox`.**
+  `NdArrayType`, `PointType`, `ContourType` and `BBoxType` (in
+  `polars_cv.extension_types`, re-exported from `polars_cv`) tag the structs
+  polars-cv already emits, so a column is identified by its type rather than by
+  sniffing field names, and keeps that identity through Parquet/IPC. They are
+  registered at `import polars_cv` (pure Python — importing still loads no
+  compiled code), so a tagged column read from Parquet keeps its tag. An
+  instance of one of these classes always has the canonical storage: a column
+  carrying the name over any other storage (or with metadata) reconstructs as
+  polars' generic `Extension` instead. The names and storages are declared once
+  in Rust (`ext_types::ExtType`) and held to the Python classes by a parity test
+  over the new `extension_types` FFI. Polars documents its extension-type API
+  as unstable; polars-cv uses it only in `extension_types.py` and
+  `src/ext_types.rs`.
+- **`sink("ndarray")`.** The numpy sink struct, tagged `polars_cv.ndarray` —
+  same rows, bytes, strides and `dtype="f16"` downcast. `numpy_from_struct` and
+  `show_images` (under `format="auto"`) read it. `sink("numpy")` is unchanged:
+  polars' struct operations (`.struct.field`, `unnest`, casts, `concat` with a
+  plain struct) do not see through a tag, so tagging the existing sink would
+  break code that uses them. Use `.ext.storage()` for those on a tagged column.
+- **Every expression accepts tagged inputs.** Each `.cv` / `.point` /
+  `.contour` / `.bbox` accessor and every `vb_graph` source (e.g.
+  `source("contour")`) takes a tagged column wherever it takes the plain struct,
+  and computes exactly the same result. Geometry outputs stay plain structs.
+
 - **`identity_elimination` optimization pass (Tier-1, bit-exact).** A new
   plan-time pass deletes operations that are provably no-ops, so they never
   reach the engine: a zero pad (`pad(0, 0, 0, 0)`), a same-dtype `cast`, and a
@@ -55,6 +80,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   leaves the output byte-identical.
 
 ### Changed
+
+- **One way into the compiled plugin.** `polars_cv._plugin.call` now builds
+  every plugin expression. It resolves the extension file the import system
+  loads and passes that to polars; before, polars was handed the package
+  directory and took the first `.so` `iterdir()` returned, which beside a stale
+  second build (`_lib.abi3.so` next to `_lib.cpython-3xx-*.so`) could be a
+  different library from the one the planner had just read. It also passes each
+  argument as `.ext.storage()`, which is how tagged inputs are accepted without
+  any Rust input path knowing about extension types. `_graph.LIB_PATH` and
+  `_namespace._LIB_PATH` are removed (guarded in `test_removed_surfaces.py`).
 
 - **`PipelineGraph.optimize` drives all passes from one registry
   (`OPTIMIZATION_PASSES`).** Each `PassSpec` carries a `tier` (`logical` = applied

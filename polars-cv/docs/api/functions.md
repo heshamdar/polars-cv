@@ -6,12 +6,17 @@ Utility functions for working with polars-cv outputs.
 
 ### numpy_from_struct
 
-Convert numpy/torch sink output (struct) to NumPy array.
+Convert numpy/torch/ndarray sink output (struct) to NumPy array.
 
-The numpy and torch sinks return a Polars Struct with three fields:
+The numpy and torch sinks return a Polars Struct (`NUMPY_OUTPUT_SCHEMA`):
 - `data`: Binary - raw bytes of the array
-- `dtype`: String - NumPy dtype code (e.g., "f4" for float32)
+- `dtype`: String - NumPy dtype name (e.g., "float32")
 - `shape`: List[UInt64] - shape of the array
+- `strides`: List[Int64] - byte strides, so non-contiguous outputs keep their layout
+- `offset`: UInt64 - byte offset into `data`
+
+The ndarray sink returns the same struct tagged `polars_cv.ndarray`
+(`NdArrayType`); `numpy_from_struct` reads both.
 
 ```python
 from polars_cv import numpy_from_struct
@@ -23,6 +28,18 @@ print(f"Shape: {arr.shape}, dtype: {arr.dtype}")
 # Or pass a Series directly (takes first element)
 arr = numpy_from_struct(result["tensor"])
 ```
+
+## Extension Types
+
+::: polars_cv.extension_types
+    options:
+      members:
+        - NdArrayType
+        - PointType
+        - ContourType
+        - BBoxType
+        - EXTENSION_TYPES
+        - register_extension_types
 
 ## Mask Metrics
 

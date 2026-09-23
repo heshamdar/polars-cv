@@ -314,7 +314,7 @@ Rust: view-buffer (the engine)
 ### Data Flow
 
 1. User builds a `Pipeline` in Python → internally creates a `PipelineGraph` (DAG of `GraphNode`s).
-2. `.sink(...)` on a `LazyPipelineExpr` serializes the graph to JSON and calls `register_plugin_function("vb_graph", ...)`.
+2. `.sink(...)` on a `LazyPipelineExpr` serializes the graph to JSON and calls `_plugin.call("vb_graph", ...)` — the only route to `register_plugin_function`, which pins the exact `.so` and hands the plugin storage rather than extension types.
 3. Polars calls the Rust `vb_graph` expression function with the JSON and any per-row expression parameters.
 4. Rust deserializes into a `UnifiedGraph` and compiles it once into a process-wide cache (`graph/compiled.rs`: parsed spec, topological order, slot-bound params); repeat calls (e.g. per streaming morsel) pay only a hash lookup. It then executes topologically per-row: decode source → apply operations → encode sink.
 5. Returns a Polars `Series` (dtype depends on sink: Binary, Float64, Struct, List, Array).
@@ -329,6 +329,8 @@ Rust: view-buffer (the engine)
 | `_types.py` | Core type definitions: `OpSpec`, `ParamValue`, `SourceSpec`, `Domain`, `DType`, and the source/sink parameter-applicability tables |
 | `_graph.py` | `PipelineGraph` / `GraphNode` — DAG construction, JSON serialization, CSE, plugin registration |
 | `_namespace.py` | Shared base for the `.cv`/`.point`/`.contour`/`.bbox` expression namespaces (plugin-registration boilerplate) |
+| `_plugin.py` | `call()` — the one way into the compiled plugin: pins polars to the imported `.so`, passes every argument as `.ext.storage()` |
+| `extension_types.py` | `NdArrayType`/`PointType`/`ContourType`/`BBoxType` Arrow extension types, registered at import; `NUMPY_OUTPUT_SCHEMA` |
 | `display.py` | `show_images()` — notebook rendering of image columns |
 | `_graph_viz.py` | Graph visualization (networkx/graphviz/pydot) |
 | `geometry/` | Point/contour/bbox schemas and Polars expression namespaces |
@@ -347,6 +349,7 @@ Rust: view-buffer (the engine)
 - `read_bytes.rs` — `read_file_bytes` plugin function (`.cv.read_bytes()`) — `fetch.rs` with the decode omitted, for byte-identical passthrough
 - `image_metadata.rs` — header-only metadata plugin functions (`.cv.width()`/`height()`/`channels()`/`image_dtype()`)
 - `output.rs` — zero-copy numpy/torch struct output encoding
+- `ext_types.rs` — `ExtType`, the polars-cv extension types (`polars_cv.ndarray`/`point`/`contour`/`bbox`); builds tagged outputs such as `sink("ndarray")`, published over FFI by `extension_types`
 - `engine_warning.rs` — one-time single-threaded-batch warning (points users to `engine="streaming"`)
 - `contour.rs`, `point.rs` — standalone plugin functions for geometry namespaces
 - `geom_params.rs` — `GeomParams`: per-row parameter resolution for those standalone functions, reading expression params off the extra inputs the Python `_ArgBinder` appends and names in `input_slots`

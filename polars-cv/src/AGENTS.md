@@ -45,6 +45,7 @@ several minutes. Reach for `--release` only when benchmarking.
 | `pipeline.rs` | `SourceSpec`, `SinkSpec`, `OpSpec` serde types for JSON deserialization |
 | `params.rs` | `ParamValue` — literal vs expression parameter resolution (`resolve_*` numerics, `resolve_str`/`resolve_bool` for non-structural enums and flags, `req_*_literal` for structural ones). `ParamCtx::probe` marks the plan-time shape probe, where every expression param is bound to an integer placeholder and the enum/flag accessors fall back to their default; real execution stays strict |
 | `output.rs` | Numpy/torch zero-copy struct output (`NumpyRowOutput`, `build_numpy_series`) |
+| `ext_types.rs` | `ExtType`: the polars-cv Arrow extension types. Builds tagged *outputs* only (`ExtType::tag` / `dtype`, e.g. `SinkKind::NdArray`); inputs never arrive tagged because `polars_cv._plugin.call` passes `.ext.storage()`, so nothing registers with polars-core's extension registry |
 | `cloud.rs` | Cloud storage and HTTP file reads via `object_store` + `reqwest` |
 | `cloud_auth.rs` | Bearer-token sourcing for the OAuth backends (GCS/Azure): federated ADC delegation to `gcloud`, `token_command`, expiry-aware caching |
 | `contour.rs` | Contour namespace plugin functions (IoU, matching, label_reduce, bbox variants) |
