@@ -196,7 +196,7 @@ metrics/
   method is one lazy plan with a single collect.
 
 ### Null and edge-case handling
-- Contour extraction returns `null` (not empty list) when no contours found. All matchers use `.fill_null(0)` on `list.len()` for `n_gts`.
+- Contour extraction returns an empty list when an image has no contours, and `null` only for a null input or a failed row. Matchers keep `.fill_null(0)` on `list.len()` for `n_gts`, which now only affects those null rows.
 - Zero-score contours are filtered *before* matching via `_filter_zero_score_detections` to prevent them from claiming GT objects.
 - `label_reduce` with `region_mode="interior"` falls back to centroid sampling when no interior pixels exist.
 
