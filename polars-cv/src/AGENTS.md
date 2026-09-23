@@ -39,7 +39,7 @@ several minutes. Reach for `--release` only when benchmarking.
 | `graph/compiled.rs` | `CompiledGraph` — process-wide compiled-graph cache (parsed spec, topo order, slot-bound params) |
 | `graph/decode.rs` | Source decoding, `dtype_for_output` schema inference, reflect/symmetric padding |
 | `graph/encode.rs` | Output encoding, geometry op execution |
-| `engine_warning.rs` | One-time single-threaded-batch warning pointing users to `engine="streaming"` (env: `POLARS_CV_SILENCE_ENGINE_WARNING`, `POLARS_CV_ENGINE_WARN_ROWS`) |
+| `engine_warning.rs` | One-time warning when one call runs longer than a threshold with no other call overlapping it; points users to `engine="streaming"` (env: `POLARS_CV_SILENCE_ENGINE_WARNING`, `POLARS_CV_ENGINE_WARN_SECONDS`) |
 | `execute.rs` | `resolve_op()` (op-spec to `GraphStep`), decode/encode helpers shared by graph execution |
 | `graph/step.rs` | `GraphStep` — the plugin-level step vocabulary: `Buffer(ViewDto)` plus graph-only steps (binary, mask, merge, geometry, reduction, histogram, perceptual_hash, extract_shape, label_reduce); contract methods read by the FFI |
 | `pipeline.rs` | `SourceSpec`, `SinkSpec`, `OpSpec` serde types for JSON deserialization |

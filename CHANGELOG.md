@@ -81,6 +81,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **The single-thread warning is based on time, not rows.** It fired when one
+  plugin call carried 50 000 rows, which image workloads rarely reach even
+  when a run takes tens of seconds on one core. It now fires once when a single
+  call runs longer than `POLARS_CV_ENGINE_WARN_SECONDS` (default 2) with no
+  other call alongside it. `POLARS_CV_ENGINE_WARN_ROWS` is no longer read, and
+  setting it prints a notice naming its replacement. The streaming docs now say
+  that the in-memory engine parallelises across chunks and only a single-chunk
+  column runs on one thread (CR-32).
 - **A null row of `sink("numpy")`/`"torch"`/`"ndarray"` is now a null value.**
   It used to be a struct whose five fields were all null, so `is_null()` was
   `False` and `drop_nulls()`/`null_count()` did not see it, unlike every other

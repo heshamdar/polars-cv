@@ -735,11 +735,9 @@ pub struct GraphKwargs {
 /// happens inside `CompiledGraph::execute` per call.
 fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series> {
     let compiled = crate::graph::get_or_compile(&kwargs.graph_json, &kwargs.expr_column_names)?;
-    // Held for the duration of the call so concurrent morsel invocations are
-    // observed; warns once if a large batch runs single-threaded (in-memory
-    // engine). See `engine_warning`.
-    let _call_guard =
-        crate::engine_warning::CallGuard::enter(inputs.first().map(|s| s.len()).unwrap_or(0));
+    // Held for the duration of the call so overlapping calls are observed;
+    // warns once if a long call ran alone on one thread. See `engine_warning`.
+    let _call_guard = crate::engine_warning::CallGuard::enter();
     compiled.execute(inputs)
 }
 
