@@ -32,6 +32,77 @@ pub enum ViewOp {
 }
 
 impl Op for ViewOp {
+    fn validate(
+        &self,
+        input_shapes: &[&[usize]],
+        _input_dtypes: &[crate::DType],
+    ) -> Result<(), crate::ops::validation::ValidationError> {
+        use crate::ops::validation::{require_axes, ValidationError};
+        let shape = input_shapes[0];
+        match self {
+            ViewOp::Transpose(perm) => {
+                let mut seen = vec![false; shape.len()];
+                let is_permutation = perm.len() == shape.len()
+                    && perm
+                        .iter()
+                        .all(|&a| a < seen.len() && !std::mem::replace(&mut seen[a], true));
+                if is_permutation {
+                    Ok(())
+                } else {
+                    Err(ValidationError::InvalidParameter {
+                        param: "axes".to_string(),
+                        reason: format!(
+                            "{perm:?} is not a permutation of the {} axes of {shape:?}",
+                            shape.len()
+                        ),
+                    })
+                }
+            }
+            // A reshape that changes the element count would describe memory
+            // the buffer does not own.
+            ViewOp::Reshape(new) => {
+                let (have, want) = (
+                    shape.iter().product::<usize>(),
+                    new.iter().product::<usize>(),
+                );
+                if have == want {
+                    Ok(())
+                } else {
+                    Err(ValidationError::InvalidParameter {
+                        param: "shape".to_string(),
+                        reason: format!(
+                            "cannot reshape {shape:?} ({have} elements) to {new:?} ({want} elements)"
+                        ),
+                    })
+                }
+            }
+            ViewOp::Flip(axes) => require_axes(shape, axes),
+            ViewOp::Crop { start, end } => {
+                if start.len() >= shape.len() && end.len() >= shape.len() {
+                    Ok(())
+                } else {
+                    Err(ValidationError::ShapeRequirement {
+                        requirement: "crop bounds for every axis of the input",
+                        got: shape.to_vec(),
+                    })
+                }
+            }
+            // Image rotations: a [H, W] or [H, W, C] buffer. Anything else was
+            // returned unchanged or rotated over the wrong axes.
+            ViewOp::Rotate90 | ViewOp::Rotate180 | ViewOp::Rotate270 => {
+                crate::ops::validation::require_hw_or_hwc(shape)
+            }
+            ViewOp::ChannelSelect { index } => match shape {
+                [_, _, c] if index < c => Ok(()),
+                [_, _] if *index == 0 => Ok(()),
+                _ => Err(ValidationError::InvalidParameter {
+                    param: "index".to_string(),
+                    reason: format!("channel {index} of a buffer of shape {shape:?}"),
+                }),
+            },
+        }
+    }
+
     fn name(&self) -> &'static str {
         match self {
             ViewOp::Transpose(_) => "Transpose",
@@ -51,9 +122,23 @@ impl Op for ViewOp {
             ViewOp::Transpose(perm) => perm.iter().map(|&i| input_shape[i]).collect(),
             ViewOp::Reshape(new_shape) => new_shape.clone(),
             ViewOp::Flip(_) => input_shape.to_vec(),
-            ViewOp::Crop { start, end } => {
-                start.iter().zip(end.iter()).map(|(s, e)| e - s).collect()
-            }
+            // One entry per input axis, as `ViewBuffer::slice` produces. An
+            // `end` of `usize::MAX` is the crop builder's "to the end of this
+            // axis" sentinel and resolves to the axis length; it used to be
+            // subtracted as a number, so a tracked channel count came out as
+            // `usize::MAX` and the tracked rank followed `start.len()` rather
+            // than the input. Explicit extents keep their planned meaning.
+            ViewOp::Crop { start, end } => input_shape
+                .iter()
+                .enumerate()
+                .map(|(i, &dim)| {
+                    let s = start.get(i).copied().unwrap_or(0);
+                    match end.get(i).copied().unwrap_or(usize::MAX) {
+                        usize::MAX => dim.saturating_sub(s),
+                        e => e.saturating_sub(s),
+                    }
+                })
+                .collect(),
             ViewOp::Rotate90 | ViewOp::Rotate270 => {
                 // For 2D images [H, W] or [H, W, C], swap H and W
                 if input_shape.len() >= 2 {

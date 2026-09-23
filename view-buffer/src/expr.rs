@@ -95,6 +95,35 @@ impl ViewExpr {
         })
     }
 
+    /// Validate `op` against this expression's tracked shape and dtype, then
+    /// apply it — the executor's only way to build a chain (CR-34).
+    ///
+    /// The planner checks shapes it knows; a source that carries its shape per
+    /// row (a blob, a list) reaches the engine with shapes the plan never saw.
+    /// Checking here turns what used to be an index-out-of-bounds panic inside
+    /// a kernel into an error the row policy can handle. [`Self::apply_op`]
+    /// stays for callers that construct chains they know to be valid.
+    pub fn try_apply_op(
+        self: &Arc<Self>,
+        op: ViewDto,
+    ) -> Result<Arc<Self>, crate::ops::validation::ValidationError> {
+        op.as_op().validate(&[&self.shape], &[self.dtype])?;
+        if let ViewDto::View(ViewOp::Reshape(_)) = &op {
+            if let Some(strides) = &self.strides {
+                let facts =
+                    crate::core::layout::LayoutFacts::new(&self.shape, strides, self.dtype, 0);
+                if !facts.is_contiguous() {
+                    return Err(crate::ops::validation::ValidationError::Generic {
+                        message: "cannot reshape a non-contiguous view (after a transpose, \
+                                  flip or crop); the elements are not in reshape order"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        Ok(self.apply_op(op))
+    }
+
     /// Entry point for applying a serializable operation DTO (from JSON/Plugins).
     ///
     /// This is the single construction authority: it computes the new node's

@@ -567,9 +567,11 @@ impl Op for BinaryOp {
 
         // Check shapes are broadcastable
         if broadcast_shapes(input_shapes[0], input_shapes[1]).is_none() {
-            return Err(ValidationError::ShapeMismatch {
-                expected: input_shapes[0].to_vec(),
-                got: input_shapes[1].to_vec(),
+            return Err(ValidationError::Generic {
+                message: format!(
+                    "shapes {:?} and {:?} cannot be broadcast together",
+                    input_shapes[0], input_shapes[1]
+                ),
             });
         }
 

@@ -46,6 +46,14 @@ pub struct ConvolveOp {
 }
 
 impl Op for ConvolveOp {
+    fn validate(
+        &self,
+        input_shapes: &[&[usize]],
+        _input_dtypes: &[DType],
+    ) -> Result<(), crate::ops::validation::ValidationError> {
+        crate::ops::validation::require_hw_or_hwc(input_shapes[0])
+    }
+
     fn name(&self) -> &'static str {
         "Convolve2D"
     }

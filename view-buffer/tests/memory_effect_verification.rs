@@ -248,9 +248,14 @@ fn test_normalize_validation_accepts_hw1() {
     assert!(result.is_ok(), "Normalize should accept HW1 F32 buffer");
 }
 
+/// MinMax/ZScore are global statistics over every element, as documented on
+/// `Pipeline.normalize`, so a multi-channel buffer is valid input. This test
+/// used to assert the opposite, pinning a `validate` rule nothing enforced
+/// (execution never called `validate`); once execution did (CR-34), that rule
+/// would have rejected every minmax normalize of an RGB image. Only the
+/// per-channel `Preset` method constrains the channel count.
 #[test]
-fn test_normalize_validation_rejects_hwc() {
-    // Create HWC buffer with C=3
+fn test_normalize_validation_channel_rules() {
     let data: Vec<f32> = (0..300).map(|i| i as f32).collect();
     let buf = ViewBuffer::from_vec(data);
     let buf_hwc = ViewExpr::new_source(buf)
@@ -258,11 +263,23 @@ fn test_normalize_validation_rejects_hwc() {
         .plan()
         .execute();
 
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
-    let result = op.validate(&[buf_hwc.shape()], &[buf_hwc.dtype()]);
+    for method in [NormalizeMethod::MinMax, NormalizeMethod::ZScore] {
+        let op = ComputeOp::Normalize(method, DType::F32);
+        assert!(op.validate(&[buf_hwc.shape()], &[buf_hwc.dtype()]).is_ok());
+    }
+
+    let mismatched = ComputeOp::Normalize(
+        NormalizeMethod::Preset {
+            mean: vec![0.5, 0.5],
+            std: vec![0.2, 0.2],
+        },
+        DType::F32,
+    );
     assert!(
-        result.is_err(),
-        "Normalize should reject HWC buffer with C>1"
+        mismatched
+            .validate(&[buf_hwc.shape()], &[buf_hwc.dtype()])
+            .is_err(),
+        "a preset with 2 means cannot normalize 3 channels"
     );
 }
 

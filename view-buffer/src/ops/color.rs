@@ -105,6 +105,20 @@ impl ColorConvertOp {
 }
 
 impl Op for ColorConvertOp {
+    fn validate(
+        &self,
+        input_shapes: &[&[usize]],
+        _input_dtypes: &[DType],
+    ) -> Result<(), crate::ops::validation::ValidationError> {
+        let shape = input_shapes[0];
+        crate::ops::validation::require_hw_or_hwc(shape)?;
+        crate::ops::validation::require_channels_at_least(
+            shape,
+            self.from.channels(),
+            "[H, W, C] with at least the source color space's channels",
+        )
+    }
+
     fn name(&self) -> &'static str {
         "ColorConvert"
     }

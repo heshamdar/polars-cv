@@ -191,14 +191,17 @@ pub trait Op {
     ///
     /// Returns Ok(()) if the operation is valid for the given inputs,
     /// or Err with a description of why validation failed.
+    ///
+    /// **Required, with no default** (CR-34): the executor calls this against
+    /// the concrete input before running the op, so a shape the plan could not
+    /// see becomes a row error instead of an index-out-of-bounds panic. An op
+    /// that accepts anything says so with an explicit `Ok(())`; a new op cannot
+    /// inherit "accepts anything" by omission.
     fn validate(
         &self,
-        _input_shapes: &[&[usize]],
-        _input_dtypes: &[DType],
-    ) -> Result<(), ValidationError> {
-        // Default: no validation requirements
-        Ok(())
-    }
+        input_shapes: &[&[usize]],
+        input_dtypes: &[DType],
+    ) -> Result<(), ValidationError>;
 
     // --- Dtype Contract Methods ---
 

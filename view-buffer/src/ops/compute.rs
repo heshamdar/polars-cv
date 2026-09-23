@@ -6,7 +6,7 @@ use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::shape_rule::{OutputChannelRule, OutputRankRule};
 use crate::ops::spatial_rule::SpatialDependency;
 use crate::ops::traits::{IdentityRule, MemoryEffect, Op};
-use crate::ops::validation::{is_2d_like, ValidationError};
+use crate::ops::validation::ValidationError;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -247,14 +247,8 @@ impl Op for ComputeOp {
                 let shape = input_shapes[0];
 
                 match method {
-                    NormalizeMethod::MinMax | NormalizeMethod::ZScore => {
-                        if !is_2d_like(shape) {
-                            return Err(ValidationError::ShapeRequirement {
-                                requirement: "2D (HW) or single-channel (HW1)",
-                                got: shape.to_vec(),
-                            });
-                        }
-                    }
+                    // Global statistics over every element: any shape.
+                    NormalizeMethod::MinMax | NormalizeMethod::ZScore => {}
                     NormalizeMethod::Preset { mean, std } => {
                         if shape.len() < 2 || shape.len() > 3 {
                             return Err(ValidationError::ShapeRequirement {
@@ -279,6 +273,9 @@ impl Op for ComputeOp {
                     });
                 }
                 Ok(())
+            }
+            ComputeOp::Affine(_) | ComputeOp::RotateAffine { .. } => {
+                crate::ops::validation::require_hw_or_hwc(input_shapes[0])
             }
             _ => Ok(()),
         }

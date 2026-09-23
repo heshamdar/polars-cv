@@ -73,6 +73,70 @@ pub fn is_image_like(shape: &[usize]) -> bool {
     shape.len() == 3 && matches!(shape[2], 1 | 3 | 4)
 }
 
+/// `[H, W]` or `[H, W, C]`: the layout the image kernels index directly.
+pub fn require_hw_or_hwc(shape: &[usize]) -> Result<(), ValidationError> {
+    if matches!(shape.len(), 2 | 3) {
+        Ok(())
+    } else {
+        Err(ValidationError::ShapeRequirement {
+            requirement: "a [H, W] or [H, W, C] buffer",
+            got: shape.to_vec(),
+        })
+    }
+}
+
+/// At least `[H, W]`: kernels that read the first two axes as height and width.
+pub fn require_spatial(shape: &[usize]) -> Result<(), ValidationError> {
+    if shape.len() >= 2 {
+        Ok(())
+    } else {
+        Err(ValidationError::ShapeRequirement {
+            requirement: "at least two dimensions [H, W, ...]",
+            got: shape.to_vec(),
+        })
+    }
+}
+
+/// `[H, W]` or `[H, W, 1]`: kernels defined on one channel.
+pub fn require_single_channel(shape: &[usize]) -> Result<(), ValidationError> {
+    if is_2d_like(shape) {
+        Ok(())
+    } else {
+        Err(ValidationError::ShapeRequirement {
+            requirement: "single-channel input [H, W] or [H, W, 1]; \
+                          use .grayscale() or .channel_select() first",
+            got: shape.to_vec(),
+        })
+    }
+}
+
+/// At least `[H, W, C]` with `C >= min_channels` in axis 2.
+pub fn require_channels_at_least(
+    shape: &[usize],
+    min_channels: usize,
+    requirement: &'static str,
+) -> Result<(), ValidationError> {
+    if shape.len() >= 3 && shape[2] >= min_channels {
+        Ok(())
+    } else {
+        Err(ValidationError::ShapeRequirement {
+            requirement,
+            got: shape.to_vec(),
+        })
+    }
+}
+
+/// Every index in `axes` names an axis of `shape`.
+pub fn require_axes(shape: &[usize], axes: &[usize]) -> Result<(), ValidationError> {
+    match axes.iter().find(|&&a| a >= shape.len()) {
+        Some(&axis) => Err(ValidationError::InvalidAxis {
+            axis,
+            ndim: shape.len(),
+        }),
+        None => Ok(()),
+    }
+}
+
 // --- DType Predicates ---
 
 /// Checks if dtype is a floating-point type.

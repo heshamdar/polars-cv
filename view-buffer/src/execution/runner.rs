@@ -506,6 +506,34 @@ pub fn apply_channel_swap(buf: &ViewBuffer, order: &[usize]) -> ViewBuffer {
     }
 }
 
+/// Whether [`apply_channel_merge`] can merge buffers of these shapes and dtypes
+/// (CR-34): at least one input, every input `[H, W]` with the same H and W,
+/// and all of one dtype (each is read as the first input's element type).
+pub fn validate_channel_merge(
+    shapes: &[&[usize]],
+    dtypes: &[DType],
+) -> Result<(), crate::ops::validation::ValidationError> {
+    use crate::ops::validation::ValidationError;
+    let Some(first) = shapes.first() else {
+        return Err(ValidationError::InsufficientInputs {
+            expected: 1,
+            got: 0,
+        });
+    };
+    if first.len() != 2 || shapes.iter().any(|s| s != first) {
+        return Err(ValidationError::ShapeRequirement {
+            requirement: "every channel_merge input [H, W] with the same H and W",
+            got: shapes.iter().flat_map(|s| s.iter().copied()).collect(),
+        });
+    }
+    if dtypes.iter().any(|d| *d != dtypes[0]) {
+        return Err(ValidationError::Generic {
+            message: format!("channel_merge inputs must share one dtype, got {dtypes:?}"),
+        });
+    }
+    Ok(())
+}
+
 /// Merge multiple single-channel [H, W] buffers into a [H, W, C] buffer.
 pub fn apply_channel_merge(buffers: &[&ViewBuffer]) -> ViewBuffer {
     assert!(

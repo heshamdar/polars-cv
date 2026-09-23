@@ -1,5 +1,14 @@
 # Panic audit — input-reachable `panic!`/`unwrap`/`expect` in the execution path
 
+> **Status: the recommended fix below is implemented (CR-34).** `Op::validate`
+> is a required contract method (no default), every op implements it, and the
+> executor calls it before every step — buffer segments through
+> `ViewExpr::try_apply_op`, and binary/mask/merge/reduction/histogram/phash/
+> geometry steps directly. `tests/test_engine_no_panics.py` runs every buffer
+> op and every two-operand op over a matrix of ranks, channel counts and dtypes
+> and fails on any panic. A panic that still occurs is an engine bug; it is
+> caught per row and reported as "internal error: the engine panicked".
+
 Scope: find `panic!` / `unreachable!` / `unwrap()` / `expect()` / unchecked
 indexing that a **user can trigger with ordinary inputs** (bad params, malformed
 source bytes, unexpected shapes/dtypes) — as opposed to internal invariants or

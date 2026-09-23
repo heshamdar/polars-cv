@@ -16,6 +16,25 @@ use crate::ops::binary::BinaryOp;
 ///
 /// A 2-D `[H, W]` mask applied to a 3-D `[H, W, C]` buffer is expanded across
 /// the channel dimension. `invert` flips the mask (`255 - m` / `1.0 - m`).
+/// Whether [`apply_mask`] can combine a buffer of `buffer_shape` with a mask of
+/// `mask_shape` (CR-34).
+///
+/// Reads the same two facts `apply_mask` acts on: a 2-D mask over a 3-D buffer
+/// is first expanded to the buffer's channel count, and the result is then
+/// blended with the buffer, so it must broadcast against it. Stated through
+/// `BinaryOp::Blend`'s own `validate` so the two cannot drift.
+pub fn validate_mask(
+    buffer_shape: &[usize],
+    mask_shape: &[usize],
+) -> Result<(), crate::ops::validation::ValidationError> {
+    use crate::ops::Op;
+    let effective: Vec<usize> = match (mask_shape, buffer_shape) {
+        ([h, w], [_, _, c]) => vec![*h, *w, *c],
+        _ => mask_shape.to_vec(),
+    };
+    BinaryOp::Blend.validate(&[buffer_shape, &effective], &[DType::F32, DType::F32])
+}
+
 pub fn apply_mask(buffer: &ViewBuffer, mask: &ViewBuffer, invert: bool) -> ViewBuffer {
     let buf_shape = buffer.shape();
     let mask_shape = mask.shape();

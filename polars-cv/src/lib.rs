@@ -279,9 +279,36 @@ fn op_infer_shape(op_json: &str, input_dims: Vec<Option<i64>>) -> PyResult<Vec<O
     Ok((0..first.len())
         .map(|i| {
             let v = first[i];
-            runs.iter().all(|r| r[i] == v).then_some(v)
+            if runs.iter().all(|r| r[i] == v) {
+                return Some(v);
+            }
+            // An unknown input axis the op carries through unchanged: every
+            // probe's output equals that probe's own input. Its size is still
+            // unknown, but it is provably *the input's* size, which is what
+            // the identity-elimination pass needs to prove a full-frame crop is
+            // a no-op. Reported as `PRESERVED_DIM`; callers that want a size
+            // treat it as unknown. (This used to arrive by accident: a crop's
+            // `usize::MAX` "to the end" extent, cast to i64, was -1.)
+            let unknown_input = matches!(input_dims.get(i), Some(None));
+            let carried = PROBES
+                .iter()
+                .zip(&runs)
+                .all(|(&probe, r)| r[i] == unknown_dim_probe(probe));
+            (unknown_input && carried).then_some(PRESERVED_DIM)
         })
         .collect())
+}
+
+/// `op_infer_shape`'s "this output axis is the unknown input axis, unchanged".
+const PRESERVED_DIM: i64 = -1;
+
+/// The value an unknown input dim takes in one probe run.
+///
+/// Distinct from the value expression params take in the same run (`probe`),
+/// so an output that merely equals a per-row parameter — `resize(height=
+/// pl.col("h"))` — cannot pass for an input axis carried through unchanged.
+fn unknown_dim_probe(probe: i64) -> i64 {
+    2 * probe + 1
 }
 
 /// Plan-time output channel count for a single op — the single authority the
@@ -331,7 +358,7 @@ fn infer_shape_probe(op_json: &str, input_dims: &[Option<i64>], probe: i64) -> P
     };
     let input_shape: Vec<usize> = input_dims
         .iter()
-        .map(|d| d.unwrap_or(probe).max(1) as usize)
+        .map(|d| d.unwrap_or_else(|| unknown_dim_probe(probe)).max(1) as usize)
         .collect();
     // `infer_shape` implementations index their input shape directly, so an
     // op whose parameters disagree with the input rank (a transpose carrying

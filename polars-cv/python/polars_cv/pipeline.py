@@ -212,9 +212,10 @@ def _output_shape_equals_input(
     Used by identity elimination to decide a ``WhenShapePreserved`` op. Two
     ``op_infer_shape`` conventions are folded in:
 
-    * a **negative** output dim is the engine's "fill this extent at runtime"
-      sentinel — a crop leaves the channel axis to the input — so it counts as
-      preserved and matches any entering size;
+    * a **negative** output dim is ``op_infer_shape``'s "this is the unknown
+      input axis, carried through unchanged" (e.g. a crop leaving the channel
+      axis to the input), so it counts as preserved and matches any entering
+      size;
     * a concrete output dim must equal the entering size exactly; an entering
       size that is unknown (``None``) therefore cannot match a concrete output,
       and an unknown output (``None``) is never treated as a match.
@@ -1312,8 +1313,11 @@ class Pipeline:
             return
 
         def _dim(i: int) -> "ParamValue | None":
-            if i < len(out) and out[i] is not None:
-                return ParamValue(is_expr=False, value=int(out[i]))  # ty: ignore[invalid-argument-type]
+            # A negative dim is "the (unknown) input axis, unchanged": still
+            # unknown as a size.
+            dim = out[i] if i < len(out) else None
+            if dim is not None and dim >= 0:
+                return ParamValue(is_expr=False, value=int(dim))
             return None
 
         self._shape_hints.height = _dim(0)
