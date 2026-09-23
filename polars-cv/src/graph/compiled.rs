@@ -31,7 +31,7 @@ use view_buffer::{PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
 use crate::execute::{
-    decode_contour_source, decode_contour_source_with_dims, decode_source, resolve_op,
+    decode_contour_source, decode_contour_source_with_dims, decode_image_bytes, resolve_op,
 };
 use crate::params::{ParamCtx, ParamValue};
 use crate::pipeline::OpSpec;
@@ -80,6 +80,8 @@ struct NodePlan {
     id: String,
     /// The node's source spec (its ops are compiled into `resolvers`).
     source: crate::pipeline::SourceSpec,
+    /// The source's decode path, parsed from `source.format`.
+    format: SourceFormat,
     /// Input column, for a root node.
     column: Option<usize>,
     /// Position in `plan` of the node this one reads, for a non-root node.
@@ -137,7 +139,7 @@ struct ExecState<'a> {
     /// is constant across rows, so this avoids re-resolving per row; a
     /// resolution error is stored and surfaced at its row so the usual error
     /// policies apply. Non-auto nodes are absent.
-    resolved_auto_formats: Vec<Option<Result<&'static str, String>>>,
+    resolved_auto_formats: Vec<Option<Result<SourceFormat, String>>>,
     /// Position in `plan` of each resolved output's node (aligned with
     /// `resolved_outputs`).
     output_nodes: Vec<Option<usize>>,
@@ -247,6 +249,11 @@ impl CompiledGraph {
                     .unwrap_or_default(),
                 resolvers,
                 source: node.source.clone(),
+                // `validate_graph_structure` has already refused an unknown name.
+                format: SourceFormat::parse(&node.source.format).ok_or_else(|| {
+                    polars_err!(ComputeError:
+                        "Node '{}': unknown source format '{}'", node_id, node.source.format)
+                })?,
             });
         }
 
@@ -386,6 +393,14 @@ impl CompiledGraph {
         // Allocated once and reused across rows/nodes to avoid per-row churn.
         let mut node_outputs: Vec<Option<NodeOutput>> = vec![None; self.plan.len()];
         let mut dto_scratch: Vec<ResolvedStep<'_>> = Vec::new();
+        // Planned steps of each static buffer-op segment, per node and
+        // segment start, reused while the source layout repeats (CR-37).
+        // Per call, so it needs no synchronisation across morsels.
+        let mut plan_cache: Vec<Vec<Option<CachedPlan>>> = self
+            .plan
+            .iter()
+            .map(|np| (0..np.resolvers.len()).map(|_| None).collect())
+            .collect();
         for row_idx in 0..len {
             node_outputs.iter_mut().for_each(|output| *output = None);
             // Panics are caught per row, so they reach the row policy like any
@@ -398,7 +413,14 @@ impl CompiledGraph {
             // null policies truncate `results` back to `row_idx`), so nothing a
             // panicking row half-wrote survives it.
             let row_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.execute_one_row(state, row_idx, &mut node_outputs, &mut dto_scratch, results)
+                self.execute_one_row(
+                    state,
+                    row_idx,
+                    &mut node_outputs,
+                    &mut dto_scratch,
+                    &mut plan_cache,
+                    results,
+                )
             }))
             .unwrap_or_else(|payload| Err(panic_message(payload.as_ref())));
             match row_result {
@@ -435,9 +457,10 @@ impl CompiledGraph {
         row_idx: usize,
         node_outputs: &mut [Option<NodeOutput>],
         dto_scratch: &mut Vec<ResolvedStep<'g>>,
+        plan_cache: &mut [Vec<Option<CachedPlan>>],
         results: &mut [Vec<RowResult>],
     ) -> Result<(), String> {
-        self.run_row_nodes(state, row_idx, node_outputs, dto_scratch)?;
+        self.run_row_nodes(state, row_idx, node_outputs, dto_scratch, plan_cache)?;
         for (((alias, spec), node), rows) in state
             .resolved_outputs
             .iter()
@@ -591,6 +614,7 @@ impl CompiledGraph {
         row_idx: usize,
         node_outputs: &mut [Option<NodeOutput>],
         dto_scratch: &mut Vec<ResolvedStep<'g>>,
+        plan_cache: &mut [Vec<Option<CachedPlan>>],
     ) -> Result<(), String> {
         let inputs = state.inputs;
         let ctx = &state.ctx;
@@ -614,16 +638,21 @@ impl CompiledGraph {
                         // An `"auto"` source was resolved to a concrete decode
                         // path once per batch (see `resolve_auto_source_formats`);
                         // reuse that result here.
-                        let source_format = if source.format == "auto" {
-                            match state.resolved_auto_formats[idx].as_ref() {
+                        let source_format = match np.format {
+                            SourceFormat::Auto => match state.resolved_auto_formats[idx].as_ref() {
                                 Some(Ok(fmt)) => *fmt,
                                 Some(Err(e)) => return Err(e.clone()),
-                                None => source.format.as_str(),
-                            }
-                        } else {
-                            source.format.as_str()
+                                // Resolved for every bound auto node; bounds were
+                                // checked in `execute()`.
+                                None => {
+                                    return Err(format!(
+                                        "internal: auto source '{node_id}' was not resolved"
+                                    ))
+                                }
+                            },
+                            fmt => fmt,
                         };
-                        if source_format == "contour" {
+                        if source_format == SourceFormat::Contour {
                             match input_series.get(row_idx) {
                                 Ok(value) if !value.is_null() => {
                                     if let Some(ref shape_pipeline) = source.shape_pipeline {
@@ -689,7 +718,7 @@ impl CompiledGraph {
                         // `file_path` is fetch + decode: `crate::fetch` reads the
                         // bytes the path names (applying its `PathPolicy`
                         // sandbox), then they decode as image bytes.
-                        } else if source_format == "file_path" {
+                        } else if source_format == SourceFormat::FilePath {
                             if input_series.dtype() == &DataType::Null {
                                 Ok(None)
                             } else {
@@ -723,9 +752,7 @@ impl CompiledGraph {
                                         )?;
                                         // Stage 2: file_path contents decode like
                                         // image bytes.
-                                        let mut source = source.clone();
-                                        source.format = "image_bytes".to_string();
-                                        match decode_source(&bytes, &source) {
+                                        match decode_image_bytes(&bytes, source) {
                                             Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
                                             Err(e) => {
                                                 Err(format!("Decode error for file '{path}': {e}"))
@@ -735,7 +762,8 @@ impl CompiledGraph {
                                     None => Ok(None),
                                 }
                             }
-                        } else if source_format == "list" || source_format == "array" {
+                        } else if matches!(source_format, SourceFormat::List | SourceFormat::Array)
+                        {
                             if input_series.dtype() == &DataType::Null {
                                 Ok(None)
                             } else {
@@ -764,7 +792,7 @@ impl CompiledGraph {
                                     ));
                                 }
                             };
-                            if source_format == "blob" || source_format == "raw" {
+                            if matches!(source_format, SourceFormat::Blob | SourceFormat::Raw) {
                                 if let Some((buffer, offset, len)) =
                                     get_binary_row_buffer(input_ca, row_idx)
                                 {
@@ -772,7 +800,7 @@ impl CompiledGraph {
                                         buffer,
                                         offset,
                                         len,
-                                        source_format,
+                                        source_format.name(),
                                         source.dtype.as_deref(),
                                     ) {
                                         Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
@@ -782,23 +810,19 @@ impl CompiledGraph {
                                     Ok(None)
                                 }
                             } else {
+                                // Every other format has been dispatched above;
+                                // only encoded image bytes remain.
+                                if source_format != SourceFormat::ImageBytes {
+                                    return Err(format!(
+                                        "internal: source format '{}' reached the image decoder",
+                                        source_format.name()
+                                    ));
+                                }
                                 match input_ca.get(row_idx) {
-                                    Some(bytes) => {
-                                        // `source_format` may have been resolved
-                                        // from `"auto"`; decode with the concrete
-                                        // format so `decode_source` routes it.
-                                        let decode_spec = if source.format == "auto" {
-                                            let mut s = source.clone();
-                                            s.format = source_format.to_string();
-                                            std::borrow::Cow::Owned(s)
-                                        } else {
-                                            std::borrow::Cow::Borrowed(source)
-                                        };
-                                        match decode_source(bytes, &decode_spec) {
-                                            Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
-                                            Err(e) => Err(format!("Decode error: {e}")),
-                                        }
-                                    }
+                                    Some(bytes) => match decode_image_bytes(bytes, source) {
+                                        Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
+                                        Err(e) => Err(format!("Decode error: {e}")),
+                                    },
                                     None => Ok(None),
                                 }
                             }
@@ -852,24 +876,20 @@ impl CompiledGraph {
                     // `OptConfig` is `Copy`, so the closure captures a value and
                     // does not borrow `self`.
                     let opt_cfg = self.graph.opt;
-                    let flush_buffer_ops = |output: NodeOutput,
-                                            pending_ops: &mut Vec<ViewDto>|
+                    let node_cache = &mut plan_cache[idx];
+                    let mut flush_buffer_ops = |output: NodeOutput,
+                                                pending: &mut PendingSegment<'_>|
                      -> Result<NodeOutput, String> {
-                        if pending_ops.is_empty() {
-                            return Ok(output);
-                        }
-                        let buf = output.as_buffer().ok_or_else(|| {
-                            format!("Expected Buffer for pending ops, got {:?}", output.domain())
-                        })?;
-                        let mut expr = ViewExpr::new_source((**buf).clone());
-                        for op in pending_ops.drain(..) {
-                            expr = expr.apply_op(op);
-                        }
-                        let result = expr.plan_with(&opt_cfg).execute();
-                        Ok(NodeOutput::from_buffer(result))
+                        let slot = match pending.start {
+                            Some(start) if pending.cacheable => Some(&mut node_cache[start]),
+                            _ => None,
+                        };
+                        let result = run_segment(output, &pending.ops, slot, &opt_cfg);
+                        pending.clear();
+                        result
                     };
-                    let mut pending_buffer_ops: Vec<ViewDto> = Vec::new();
-                    for step in dto_scratch.iter() {
+                    let mut pending_buffer_ops = PendingSegment::default();
+                    for (step_idx, step) in dto_scratch.iter().enumerate() {
                         let graph_step = match step {
                             ResolvedStep::RasterizeShapeRef { spec, shape_node } => {
                                 // Dimensions come from the referenced node's
@@ -1120,7 +1140,9 @@ impl CompiledGraph {
                             // Fusable single-buffer engine ops accumulate and
                             // run as one ViewExpr chain at the next flush.
                             GraphStep::Buffer(dto) => {
-                                pending_buffer_ops.push(dto.clone());
+                                let is_static =
+                                    matches!(step, ResolvedStep::Step(Cow::Borrowed(_)));
+                                pending_buffer_ops.push(step_idx, dto, is_static);
                             }
                         }
                     }
@@ -1143,11 +1165,11 @@ impl CompiledGraph {
     fn resolve_auto_source_formats(
         &self,
         inputs: &[Series],
-    ) -> Vec<Option<Result<&'static str, String>>> {
+    ) -> Vec<Option<Result<SourceFormat, String>>> {
         self.plan
             .iter()
             .map(|np| {
-                if np.source.format != "auto" {
+                if np.format != SourceFormat::Auto {
                     return None;
                 }
                 let series = inputs.get(np.column?)?;
@@ -1172,8 +1194,7 @@ impl CompiledGraph {
         self.plan
             .iter()
             .map(|np| {
-                let format = np.source.format.as_str();
-                if format != "file_path" && format != "auto" {
+                if !matches!(np.format, SourceFormat::FilePath | SourceFormat::Auto) {
                     return None;
                 }
                 let ca = inputs.get(np.column?)?.str().ok()?;
@@ -1188,7 +1209,7 @@ impl CompiledGraph {
 }
 
 /// Source formats the executor can decode. Kept in sync with the row loop's
-/// source dispatch and `decode_source`.
+/// source dispatch through [`SourceFormat`].
 ///
 /// The other half of this vocabulary is Python's `SourceFormat` enum
 /// (`python/polars_cv/_types.py`), which is what a user actually names. The two
@@ -1207,6 +1228,158 @@ const KNOWN_SOURCE_FORMATS: &[&str] = &[
     "raw",
 ];
 
+/// A source's decode path: its wire name from [`KNOWN_SOURCE_FORMATS`], parsed
+/// once at compile time (and, for `Auto`, resolved once per batch) so the row
+/// loop dispatches on a value instead of comparing strings (CR-37).
+///
+/// `source_format_names_match_the_vocabulary` holds [`SourceFormat::ALL`] and
+/// the literal list equal, so neither can gain a name the other lacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceFormat {
+    Array,
+    Auto,
+    Blob,
+    Contour,
+    FilePath,
+    ImageBytes,
+    List,
+    Raw,
+}
+
+impl SourceFormat {
+    const ALL: [SourceFormat; 8] = [
+        SourceFormat::Array,
+        SourceFormat::Auto,
+        SourceFormat::Blob,
+        SourceFormat::Contour,
+        SourceFormat::FilePath,
+        SourceFormat::ImageBytes,
+        SourceFormat::List,
+        SourceFormat::Raw,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            SourceFormat::Array => "array",
+            SourceFormat::Auto => "auto",
+            SourceFormat::Blob => "blob",
+            SourceFormat::Contour => "contour",
+            SourceFormat::FilePath => "file_path",
+            SourceFormat::ImageBytes => "image_bytes",
+            SourceFormat::List => "list",
+            SourceFormat::Raw => "raw",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.name() == name)
+    }
+}
+
+/// A run of consecutive single-buffer engine ops awaiting one fused
+/// `ViewExpr` execution.
+#[derive(Default)]
+struct PendingSegment<'s> {
+    /// The ops, borrowed from the row's resolved steps; cloned only when the
+    /// segment has to be planned.
+    ops: Vec<&'s ViewDto>,
+    /// Index of the segment's first op in the node's op list: its cache slot.
+    start: Option<usize>,
+    /// Every op is static (all-literal), so its plan is the same for every
+    /// row with the same source layout.
+    cacheable: bool,
+}
+
+impl<'s> PendingSegment<'s> {
+    fn push(&mut self, step_idx: usize, op: &'s ViewDto, is_static: bool) {
+        if self.ops.is_empty() {
+            self.start = Some(step_idx);
+            self.cacheable = true;
+        }
+        self.cacheable &= is_static;
+        self.ops.push(op);
+    }
+
+    fn clear(&mut self) {
+        self.ops.clear();
+        self.start = None;
+        self.cacheable = false;
+    }
+}
+
+/// The planned steps of a static op segment, valid for sources of exactly
+/// this dtype, shape and strides.
+///
+/// Those are the only facts about the source that planning reads:
+/// `ViewExpr::new_source` records them, and `build_plan` consults the source
+/// only for contiguity, which they determine. Data and offset are never read,
+/// so replaying the steps on another buffer with the same three facts yields
+/// the plan planning it afresh would.
+struct CachedPlan {
+    dtype: view_buffer::DType,
+    shape: Vec<usize>,
+    strides: Vec<isize>,
+    steps: Vec<view_buffer::execution::PlanStep>,
+}
+
+/// Plan (or replay the cached plan of) one op segment and execute it.
+fn run_segment(
+    output: NodeOutput,
+    ops: &[&ViewDto],
+    cache: Option<&mut Option<CachedPlan>>,
+    cfg: &view_buffer::OptConfig,
+) -> Result<NodeOutput, String> {
+    if ops.is_empty() {
+        return Ok(output);
+    }
+    let buf = output
+        .as_buffer()
+        .ok_or_else(|| format!("Expected Buffer for pending ops, got {:?}", output.domain()))?;
+    let source = (**buf).clone();
+    let matches = |c: &CachedPlan| {
+        c.dtype == source.dtype()
+            && c.shape == source.shape()
+            && c.strides == source.strides_bytes()
+    };
+    let result = match cache {
+        Some(Some(cached)) if matches(cached) => view_buffer::execution::ExecutionPlan {
+            source,
+            steps: cached.steps.clone(),
+        }
+        .execute(),
+        slot => {
+            let key = (
+                source.dtype(),
+                source.shape().to_vec(),
+                source.strides_bytes().to_vec(),
+            );
+            let mut expr = ViewExpr::new_source(source);
+            for op in ops {
+                expr = expr.apply_op((*op).clone());
+            }
+            #[cfg(test)]
+            PLAN_BUILDS.with(|n| n.set(n.get() + 1));
+            let plan = expr.plan_with(cfg);
+            if let Some(slot) = slot {
+                *slot = Some(CachedPlan {
+                    dtype: key.0,
+                    shape: key.1,
+                    strides: key.2,
+                    steps: plan.steps.clone(),
+                });
+            }
+            plan.execute()
+        }
+    };
+    Ok(NodeOutput::from_buffer(result))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times a buffer-op segment was planned (test instrumentation).
+    static PLAN_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The message a caught panic carried.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
@@ -1224,26 +1397,26 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// to tell self-describing blobs apart from encoded image bytes (the image
 /// decoder auto-detects PNG/JPEG/TIFF internally, so `"image_bytes"` covers all
 /// non-VIEW binary).
-fn resolve_auto_format(series: &Series) -> Result<&'static str, String> {
+fn resolve_auto_format(series: &Series) -> Result<SourceFormat, String> {
     match series.dtype() {
-        DataType::String => Ok("file_path"),
-        DataType::List(_) => Ok("list"),
-        DataType::Array(_, _) => Ok("array"),
+        DataType::String => Ok(SourceFormat::FilePath),
+        DataType::List(_) => Ok(SourceFormat::List),
+        DataType::Array(_, _) => Ok(SourceFormat::Array),
         DataType::Binary => {
             // Inspect the first present row: blobs carry the magic, images don't.
             if let Ok(ca) = series.binary() {
                 for i in 0..ca.len() {
                     if let Some(bytes) = ca.get(i) {
                         return if bytes.starts_with(&view_buffer::protocol::MAGIC_BYTES) {
-                            Ok("blob")
+                            Ok(SourceFormat::Blob)
                         } else {
-                            Ok("image_bytes")
+                            Ok(SourceFormat::ImageBytes)
                         };
                     }
                 }
             }
             // All-null column: default to image bytes (decode yields null rows).
-            Ok("image_bytes")
+            Ok(SourceFormat::ImageBytes)
         }
         other => Err(format!(
             "auto source cannot infer a decode path for column dtype {other:?}; \
@@ -1261,7 +1434,7 @@ fn resolve_auto_format(series: &Series) -> Result<&'static str, String> {
 /// errors. Compile-time rejection gives one clear error instead.
 fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
     for (node_id, node) in &graph.nodes {
-        if !KNOWN_SOURCE_FORMATS.contains(&node.source.format.as_str()) {
+        if SourceFormat::parse(&node.source.format).is_none() {
             polars_bail!(ComputeError:
                 "Node '{}': unknown source format '{}' (expected one of {:?})",
                 node_id, node.source.format, KNOWN_SOURCE_FORMATS
@@ -1771,7 +1944,7 @@ mod tests {
 
     /// Pin the live decode path for `blob` and `raw` sources: both are decoded
     /// by the zero-copy branch in `run_row_nodes` (`decode_binary_zero_copy`),
-    /// NOT by `execute::decode_source` — its blob/raw arms are deliberately
+    /// NOT by `execute::decode_image_bytes` — its blob/raw arms are deliberately
     /// absent. This end-to-end test must keep passing when those dead arms are
     /// deleted.
     #[test]
@@ -2227,6 +2400,91 @@ mod tests {
             !Arc::ptr_eq(&a, &b),
             "same JSON with different expr columns must compile separately"
         );
+    }
+
+    const RAW_CHAIN_GRAPH: &str = r#"{
+        "nodes": {
+            "n0": {
+                "source": {"format": "raw", "dtype": "u8"},
+                "ops": [{"op": "invert"}, {"op": "scale", "factor": {"type": "literal", "value": 2.0}}]
+            }
+        },
+        "outputs": {
+            "_output": {"node": "n0", "sink": {"format": "blob"}}
+        },
+        "column_bindings": {"n0": 0}
+    }"#;
+
+    fn plans_during(f: impl FnOnce()) -> usize {
+        let before = PLAN_BUILDS.with(|n| n.get());
+        f();
+        PLAN_BUILDS.with(|n| n.get()) - before
+    }
+
+    /// A static op segment is planned once per source dtype/shape/strides in a
+    /// call, not once per row (CR-37), and replanned when any of them changes.
+    #[test]
+    fn static_segments_plan_once_per_source_layout() {
+        let rows: Vec<Vec<u8>> = vec![
+            vec![0, 10, 20, 30],
+            vec![1, 11, 21, 31],
+            vec![2, 12, 22, 32],
+            vec![5, 6, 7, 8, 9, 10],
+        ];
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH, &[]).unwrap();
+        let input = Series::new("r".into(), &rows);
+        let mut out = None;
+        let plans = plans_during(|| out = Some(compiled.execute(&[input]).unwrap()));
+        assert_eq!(
+            plans, 2,
+            "three [4] rows share one plan, the [6] row needs its own"
+        );
+
+        // Each row equals the same row executed alone.
+        let out = out.unwrap();
+        for (i, row) in rows.iter().enumerate() {
+            let alone = compiled
+                .execute(&[Series::new("r".into(), std::slice::from_ref(row))])
+                .unwrap();
+            assert_eq!(
+                out.binary().unwrap().get(i),
+                alone.binary().unwrap().get(0),
+                "row {i}"
+            );
+        }
+    }
+
+    /// A segment with a per-row parameter is planned every row.
+    #[test]
+    fn dynamic_segments_are_not_cached() {
+        let compiled = CompiledGraph::compile(DYNAMIC_GRAPH, &["f".to_string()]).unwrap();
+        let buf = ViewBuffer::from_vec_with_shape(vec![1.0f32, 2.0], vec![2]);
+        let blobs = Series::new("b".into(), &[buf.to_blob(), buf.to_blob(), buf.to_blob()]);
+        let factors = Series::new("f".into(), &[1.0f64, 2.0, 3.0]);
+        let mut out = None;
+        let plans = plans_during(|| out = Some(compiled.execute(&[blobs, factors]).unwrap()));
+        assert_eq!(plans, 3);
+        let out = out.unwrap();
+        let third = ViewBuffer::from_blob(out.binary().unwrap().get(2).unwrap()).unwrap();
+        assert_eq!(third.as_slice::<f32>(), &[3.0, 6.0]);
+    }
+
+    /// The enum the row loop dispatches on and the wire vocabulary the planner
+    /// and Python are pinned to are the same set of names.
+    #[test]
+    fn source_format_names_match_the_vocabulary() {
+        let mut from_enum: Vec<&str> = SourceFormat::ALL.iter().map(|f| f.name()).collect();
+        let mut from_list: Vec<&str> = KNOWN_SOURCE_FORMATS.to_vec();
+        from_enum.sort_unstable();
+        from_list.sort_unstable();
+        assert_eq!(from_enum, from_list);
+        for name in KNOWN_SOURCE_FORMATS {
+            assert_eq!(
+                SourceFormat::parse(name).map(SourceFormat::name),
+                Some(*name)
+            );
+        }
+        assert_eq!(SourceFormat::parse("image-bytes"), None);
     }
 
     #[test]

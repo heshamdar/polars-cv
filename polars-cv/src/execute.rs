@@ -198,38 +198,36 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
     }
 }
 
-/// Decode image-format source bytes into a ViewBuffer.
+/// Decode encoded image bytes (PNG/JPEG/TIFF/…) into a ViewBuffer, honouring
+/// the source's decode-scale and dtype settings.
 ///
-/// Only `image_bytes` is handled here (`file_path` sources are rewritten to
-/// `image_bytes` after the file is read). `blob`/`raw` sources never reach
-/// this function: the graph executor decodes them zero-copy via
-/// `graph::decode::decode_binary_zero_copy` (pinned by the
-/// `blob_and_raw_sources_decode_via_zero_copy` test).
-pub fn decode_source(bytes: &[u8], source: &SourceSpec) -> PolarsResult<ViewBuffer> {
-    match source.format.as_str() {
-        "image_bytes" => {
-            // An explicit decode-scale assertion lets JPEG decode skip work
-            // via IDCT scaling; other formats fall through to a full decode.
-            let scaled = source
-                .decode_max_size
-                .and_then(|max_size| decode_jpeg_scaled(bytes, max_size));
-            let buf = match scaled {
-                Some(buf) => buf,
-                None => ImageAdapter::decode(bytes)
-                    .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?,
-            };
-            // If source spec declares an expected dtype, cast to it.
-            // This is a no-op when the decoded dtype already matches.
-            if let Some(ref dtype_str) = source.dtype {
-                let target = parse_dtype(dtype_str)?;
-                if buf.dtype() != target {
-                    return Ok(buf.cast(target));
-                }
-            }
-            Ok(buf)
+/// Reached for `image_bytes` sources, `file_path` sources once their bytes are
+/// read, and `auto` sources that resolved to image bytes. The executor
+/// dispatches on its `SourceFormat` before calling, so this takes no format.
+/// It used to take one, which made `file_path` and `auto` rows clone their
+/// whole `SourceSpec` to overwrite the format string first (CR-37). `blob`/`raw`
+/// sources never reach it: they decode zero-copy via
+/// `graph::decode::decode_binary_zero_copy`.
+pub fn decode_image_bytes(bytes: &[u8], source: &SourceSpec) -> PolarsResult<ViewBuffer> {
+    // An explicit decode-scale assertion lets JPEG decode skip work via IDCT
+    // scaling; other formats fall through to a full decode.
+    let scaled = source
+        .decode_max_size
+        .and_then(|max_size| decode_jpeg_scaled(bytes, max_size));
+    let buf = match scaled {
+        Some(buf) => buf,
+        None => ImageAdapter::decode(bytes)
+            .map_err(|e| polars_err!(ComputeError: "Failed to decode image: {:?}", e))?,
+    };
+    // If source spec declares an expected dtype, cast to it.
+    // This is a no-op when the decoded dtype already matches.
+    if let Some(ref dtype_str) = source.dtype {
+        let target = parse_dtype(dtype_str)?;
+        if buf.dtype() != target {
+            return Ok(buf.cast(target));
         }
-        other => Err(polars_err!(ComputeError: "Unknown source format: {}", other)),
     }
+    Ok(buf)
 }
 
 /// Encode the result buffer to a binary sink format.

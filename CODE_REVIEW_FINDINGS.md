@@ -626,7 +626,23 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   coordinate buffers). Before changing anything, add a benchmark in
   `benchmarks/regression/` to confirm the cost.
 
-### CR-37 — Per-row executor overhead from stringly-typed dispatch · `Partially resolved` · Low
+### CR-37 — Per-row executor overhead from stringly-typed dispatch · `Resolved` · Low
+
+> **Remainder resolved.**
+>
+> - **Plan cache.** A run of static (all-literal) buffer ops is planned once
+>   per source dtype/shape/strides per call, and its `PlanStep`s are replayed
+>   on later rows (`CachedPlan`, `run_segment`). Those three facts are the
+>   only things planning reads from the source. Segments with a per-row
+>   parameter are planned every row. Pending ops are borrowed and cloned only
+>   on a miss. Guarded by `static_segments_plan_once_per_source_layout`
+>   (watched failing: 4 plans vs 2) and `dynamic_segments_are_not_cached`.
+>   A 4-op chain went from 2.62 to ~1.85 µs/row (debug).
+> - **Source dispatch.** `SourceFormat` is parsed at compile time, and `auto`
+>   is resolved per batch to the enum. `decode_source` became
+>   `decode_image_bytes`, which takes no format, so `file_path` and `auto` rows
+>   no longer clone their `SourceSpec` to overwrite a string. Guarded by
+>   `source_format_names_match_the_vocabulary`, watched failing.
 
 > **Id-keyed maps removed from the row loop.** Profiling showed `SipHash` over
 > node-id `String`s at about a third of the executor's per-row instructions.
