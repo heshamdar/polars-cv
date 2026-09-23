@@ -961,3 +961,30 @@ def test_no_module_carries_its_own_plugin_path() -> None:
 
     assert not hasattr(_graph, "LIB_PATH"), "_graph.LIB_PATH is back"
     assert not hasattr(_namespace, "_LIB_PATH"), "_namespace._LIB_PATH is back"
+
+
+# ---------------------------------------------------------------------------
+# POLARS_CV_ENGINE_WARN_ROWS: a row threshold for a cost that is not row-shaped
+# ---------------------------------------------------------------------------
+
+
+def test_the_engine_warning_reads_no_row_threshold() -> None:
+    """The single-thread warning must not go back to counting rows (CR-32).
+
+    ``POLARS_CV_ENGINE_WARN_ROWS`` fired at 50 000 rows in one call, but an
+    image row costs milliseconds, so a single-threaded run could take tens of
+    seconds without firing. The warning is now based on how long one call ran
+    with no other call alongside it (``POLARS_CV_ENGINE_WARN_SECONDS``). The
+    old name survives only in the notice telling a user who still sets it that
+    it is no longer read.
+    """
+    source = next(p for p in rust_sources() if p.name == "engine_warning.rs")
+    text = source.read_text()
+    assert "POLARS_CV_ENGINE_WARN_SECONDS" in text, (
+        "probe is broken: engine_warning.rs no longer reads the seconds "
+        "threshold, so the absence check below proves nothing"
+    )
+    assert 'var("POLARS_CV_ENGINE_WARN_ROWS")' not in text, (
+        "the row threshold is being read again"
+    )
+    assert "DEFAULT_WARN_ROWS" not in text, "the row threshold constant is back"

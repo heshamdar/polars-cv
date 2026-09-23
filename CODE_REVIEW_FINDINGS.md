@@ -447,7 +447,18 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   readable name only for error messages. Guard with the repro above as a
   regression test, watched failing first.
 
-### CR-32 — Multi-core execution depends on how Polars happens to chunk the input · `Re-scoped` · Low
+### CR-32 — Multi-core execution depends on how Polars happens to chunk the input · `Resolved (re-scoped)` · Low
+
+> **Resolved.** `engine_warning.rs` now decides when each call finishes. It
+> warns once if that call ran longer than `POLARS_CV_ENGINE_WARN_SECONDS`
+> (default 2 s) and no other plugin call overlapped it. Overlap is tracked per
+> call with a global counter of overlapping starts, so one overlap earlier in
+> the process no longer silences the warning for good.
+> `POLARS_CV_ENGINE_WARN_ROWS` is no longer read; setting it, or an unusable
+> seconds value, prints a one-time notice. Streaming runs with a 50 ms
+> threshold did not warn in three trials. Guarded by
+> `tests/test_engine_warning.py` (subprocess cases, watched failing) and
+> `test_removed_surfaces.py::test_the_engine_warning_reads_no_row_threshold`.
 
 > **Re-scoped (2026-09-23).** The plugin's standard regime is lazy + streaming,
 > and there the morsels already spread the work across cores (3.5–3.8× on 4

@@ -129,7 +129,7 @@ result = df.with_columns(
 ```
 
 !!! tip
-    A plain `with_columns`/`.select` runs the plugin single-threaded. For large
+    A plain `with_columns`/`.select` on a single-chunk column runs the plugin on one thread. For large
     workloads, run through the streaming engine — see
     [Streaming & Scaling](../user-guide/concepts/streaming.md).
 

@@ -4,20 +4,24 @@ The `.cv.pipe(...)` expression is an ordinary elementwise Polars plugin, so the
 **parallelism comes from the Polars engine, not from inside the plugin**. This has
 one important consequence for large workloads.
 
-## Why eager runs single-threaded
+## Why eager can run single-threaded
 
-On a plain `DataFrame.with_columns(...)` / `.select(...)` call (the eager,
-in-memory engine), the whole column is processed on a single thread:
+The plugin does not split work inside one call. Its parallelism comes from the
+engine calling it for several batches at once. The in-memory engine behind a
+plain `DataFrame.with_columns(...)` / `.select(...)` makes one call per
+*chunk*, so a single-chunk column (anything built in one piece or rechunked)
+runs on one thread:
 
 ```python
-# Eager: single-threaded over the whole column
+# Eager: one call per chunk -- a single-chunk column uses one core
 result = df.with_columns(
     processed=pl.col("image").cv.pipe(pipe).sink("numpy")
 )
 ```
 
-This is fine for small or interactive use. For anything larger, polars-cv emits a
-one-time warning pointing you here (see [Silencing the warning](#silencing-the-warning)).
+This is fine for small or interactive use. When a call runs for a while on
+one thread with nothing alongside it, polars-cv prints a one-time warning
+pointing you here (see [Silencing the warning](#silencing-the-warning)).
 
 ## Use the streaming engine for scale
 
@@ -44,13 +48,17 @@ execution with no extra plumbing.
 
 ## Silencing the warning
 
-A large batch run under the eager engine prints a one-time notice. Control it with
-environment variables:
+A single plugin call that runs longer than a threshold (default 2 seconds) with
+no other call running alongside it prints a one-time notice. Streaming runs,
+whose morsels overlap, do not trigger it. Control it with environment variables:
 
 | Variable | Effect |
 | --- | --- |
 | `POLARS_CV_SILENCE_ENGINE_WARNING=1` | Suppress the warning entirely |
-| `POLARS_CV_ENGINE_WARN_ROWS=<n>` | Row-count threshold above which the warning fires |
+| `POLARS_CV_ENGINE_WARN_SECONDS=<s>` | How long one call may run alone before the warning fires |
+
+`POLARS_CV_ENGINE_WARN_ROWS` (a row-count threshold) is no longer read; setting
+it prints a notice naming its replacement.
 
 ## Cheaper decoding for curation passes
 

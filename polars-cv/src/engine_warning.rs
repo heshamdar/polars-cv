@@ -1,59 +1,79 @@
-//! One-time "running single-threaded" warning for the graph plugin.
+//! One-time "this call ran on one thread" warning for the graph plugin.
 //!
-//! The plugin does not parallelize *within* a call — all multi-core execution
-//! comes from the Polars **streaming** engine slicing the input into morsels and
-//! invoking the plugin concurrently. Under the default in-memory engine a single
-//! `collect` therefore runs the whole column on one thread, and nothing signals
-//! it. This module emits a single, actionable warning when it sees a large batch
-//! go through a single call without the engine ever running two calls at once.
+//! The plugin does not parallelize *within* a call. Its multi-core execution
+//! comes from the engine invoking it several times at once: the streaming engine
+//! once per morsel, the in-memory engine once per chunk. A single-chunk column
+//! under the default in-memory engine is therefore one call on one core, and
+//! nothing signals it. This module emits one actionable warning when that
+//! happens *and it cost something*.
 //!
-//! Two signals combine (both per-process, evaluated per call — never a
-//! cumulative counter across queries, which would false-positive on many small
-//! collects):
-//! - **Per-call row count.** A single call carrying a very large number of rows
-//!   is almost certainly the in-memory engine handing over the whole column;
-//!   streaming morsels are far smaller.
-//! - **Observed concurrency.** A [`CallGuard`] tracks how many calls run at once.
-//!   Once two are ever seen concurrently the engine is parallelizing, and the
-//!   warning is suppressed for the rest of the process (the user clearly knows
-//!   about streaming).
+//! The decision is made when a call **finishes**, from two facts about that
+//! call alone (CR-32):
+//! - **Elapsed time.** A call that ran longer than the threshold (default
+//!   [`DEFAULT_WARN_SECONDS`]) was worth parallelizing. Time, not row count: an
+//!   image row costs milliseconds, so a row threshold (the former 50 000)
+//!   let a single-threaded run take tens of seconds without ever firing.
+//! - **Overlap.** If any other plugin call ran at any point during this one,
+//!   the engine was already running calls in parallel, and this call was not
+//!   the bottleneck. This is per call: one overlap earlier in the process no
+//!   longer silences the warning for good.
 //!
-//! Escape hatches:
+//! Environment:
 //! - `POLARS_CV_SILENCE_ENGINE_WARNING=1` — never warn.
-//! - `POLARS_CV_ENGINE_WARN_ROWS=<n>` — override the per-call row threshold.
+//! - `POLARS_CV_ENGINE_WARN_SECONDS=<s>` — override the per-call time threshold.
+//!   A value that is not a positive number is reported once and the default
+//!   is used.
+//! - `POLARS_CV_ENGINE_WARN_ROWS` — the former row threshold. It is no longer
+//!   read, and setting it is reported once rather than silently ignored.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 /// Plugin calls currently executing (RAII-tracked by [`CallGuard`]).
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
-/// Maximum number of plugin calls ever seen executing at the same instant.
-static MAX_CONCURRENCY: AtomicUsize = AtomicUsize::new(0);
+/// Number of times a call started while another was already running. A call
+/// that sees this change between its start and its end was overlapped.
+static OVERLAPS: AtomicU64 = AtomicU64::new(0);
 /// Whether the one-time warning has already fired.
 static WARNED: AtomicBool = AtomicBool::new(false);
 
-/// Rows in a *single* call above which we treat the call as an in-memory
-/// whole-column handover. Chosen well above a typical streaming morsel.
-const DEFAULT_WARN_ROWS: u64 = 50_000;
+/// A single call running this long on one thread is worth telling the user
+/// about. Chosen so interactive use (a handful of images) never trips it.
+pub const DEFAULT_WARN_SECONDS: f64 = 2.0;
 
-/// RAII guard: bump the in-flight counter for the duration of one plugin call so
-/// concurrent calls are actually observed, and check the warning condition on
-/// entry.
-pub struct CallGuard;
+/// RAII guard: tracks one plugin call from start to finish, and on drop decides
+/// whether that call is the one worth warning about.
+pub struct CallGuard {
+    start: Instant,
+    overlaps_at_start: u64,
+    overlapped_at_start: bool,
+}
 
 impl CallGuard {
-    /// Enter a plugin call processing `n_rows` rows.
-    pub fn enter(n_rows: usize) -> Self {
+    /// Enter a plugin call.
+    pub fn enter() -> Self {
+        let _ = threshold();
         let now = IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
-        // Record the high-water mark of concurrent calls.
-        MAX_CONCURRENCY.fetch_max(now, Ordering::SeqCst);
-        maybe_warn(n_rows as u64);
-        CallGuard
+        let overlapped_at_start = now >= 2;
+        if overlapped_at_start {
+            OVERLAPS.fetch_add(1, Ordering::SeqCst);
+        }
+        CallGuard {
+            start: Instant::now(),
+            // Read after our own increment, so our own start is not an overlap.
+            overlaps_at_start: OVERLAPS.load(Ordering::SeqCst),
+            overlapped_at_start,
+        }
     }
 }
 
 impl Drop for CallGuard {
     fn drop(&mut self) {
+        let overlapped =
+            self.overlapped_at_start || OVERLAPS.load(Ordering::SeqCst) != self.overlaps_at_start;
         IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        maybe_warn(self.start.elapsed(), overlapped);
     }
 }
 
@@ -62,19 +82,18 @@ impl Drop for CallGuard {
 fn should_warn(
     already_warned: bool,
     silenced: bool,
-    max_concurrency: usize,
+    overlapped: bool,
     parallelism: usize,
-    call_rows: u64,
-    threshold: u64,
+    elapsed: Duration,
+    threshold: Duration,
 ) -> bool {
     !already_warned
         && !silenced
-        // The engine has parallelized across morsels at least once — no footgun.
-        && max_concurrency < 2
+        // Another call ran alongside this one: the engine was parallelizing.
+        && !overlapped
         // Nothing to gain on a single-core machine (or an explicit 1-thread cap).
         && parallelism > 1
-        // A single call this large is an in-memory whole-column handover.
-        && call_rows >= threshold
+        && elapsed >= threshold
 }
 
 /// Available parallelism, honoring `POLARS_MAX_THREADS` when set.
@@ -89,22 +108,50 @@ fn available_parallelism() -> usize {
         .unwrap_or(1)
 }
 
-fn warn_row_threshold() -> u64 {
-    std::env::var("POLARS_CV_ENGINE_WARN_ROWS")
+/// Parse a threshold setting: a positive, finite number of seconds.
+fn parse_seconds(raw: &str) -> Option<Duration> {
+    raw.trim()
+        .parse::<f64>()
         .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(DEFAULT_WARN_ROWS)
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .map(Duration::from_secs_f64)
 }
 
-fn maybe_warn(call_rows: u64) {
+/// The per-call time threshold, read once. Any configuration problem —
+/// an unusable value, or the removed row setting — is reported here, once,
+/// rather than silently ignored.
+fn threshold() -> Duration {
+    static THRESHOLD: OnceLock<Duration> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        if std::env::var_os("POLARS_CV_ENGINE_WARN_ROWS").is_some() {
+            eprintln!(
+                "polars-cv: POLARS_CV_ENGINE_WARN_ROWS is no longer read. The \
+                 single-thread warning is based on how long a call runs; set \
+                 POLARS_CV_ENGINE_WARN_SECONDS instead."
+            );
+        }
+        let default = Duration::from_secs_f64(DEFAULT_WARN_SECONDS);
+        match std::env::var("POLARS_CV_ENGINE_WARN_SECONDS") {
+            Err(_) => default,
+            Ok(raw) => parse_seconds(&raw).unwrap_or_else(|| {
+                eprintln!(
+                    "polars-cv: POLARS_CV_ENGINE_WARN_SECONDS={raw:?} is not a \
+                     positive number of seconds; using {DEFAULT_WARN_SECONDS}."
+                );
+                default
+            }),
+        }
+    })
+}
+
+fn maybe_warn(elapsed: Duration, overlapped: bool) {
     let decided = should_warn(
         WARNED.load(Ordering::Relaxed),
-        std::env::var("POLARS_CV_SILENCE_ENGINE_WARNING").is_ok(),
-        MAX_CONCURRENCY.load(Ordering::SeqCst),
+        std::env::var_os("POLARS_CV_SILENCE_ENGINE_WARNING").is_some(),
+        overlapped,
         available_parallelism(),
-        call_rows,
-        warn_row_threshold(),
+        elapsed,
+        threshold(),
     );
     if !decided {
         return;
@@ -115,44 +162,54 @@ fn maybe_warn(call_rows: u64) {
         .is_ok()
     {
         eprintln!(
-            "polars-cv: cv.pipe processed a large batch in a single call, which \
-             means it ran single-threaded — the plugin only runs multi-core under \
-             the Polars streaming engine, and the default in-memory `collect` runs \
-             it on one thread. For multi-core throughput use \
-             `.collect(engine=\"streaming\")` (or `scan_*` + streaming). Silence \
-             this with POLARS_CV_SILENCE_ENGINE_WARNING=1."
+            "polars-cv: a cv.pipe call ran on one thread for {:.1}s with no other \
+             call alongside it. The plugin runs multi-core when the engine calls \
+             it for several batches at once. Use `.collect(engine=\"streaming\")` \
+             (or `scan_*` + streaming) for multi-core throughput. Silence this with \
+             POLARS_CV_SILENCE_ENGINE_WARNING=1.",
+            elapsed.as_secs_f64()
         );
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::should_warn;
+    use super::{parse_seconds, should_warn};
+    use std::time::Duration;
 
-    const T: u64 = 50_000;
+    const T: Duration = Duration::from_secs(2);
+    const LONG: Duration = Duration::from_secs(3);
+    const SHORT: Duration = Duration::from_millis(100);
 
     #[test]
-    fn warns_on_large_single_threaded_call() {
-        // Large single call, no observed concurrency, multi-core, not silenced.
-        assert!(should_warn(false, false, 1, 8, T, T));
-        assert!(should_warn(false, false, 1, 8, T + 1, T));
+    fn warns_on_a_long_lone_call() {
+        assert!(should_warn(false, false, false, 8, LONG, T));
+        assert!(should_warn(false, false, false, 8, T, T));
     }
 
     #[test]
     fn suppressed_when_already_warned_or_silenced() {
-        assert!(!should_warn(true, false, 1, 8, T, T));
-        assert!(!should_warn(false, true, 1, 8, T, T));
+        assert!(!should_warn(true, false, false, 8, LONG, T));
+        assert!(!should_warn(false, true, false, 8, LONG, T));
     }
 
     #[test]
-    fn suppressed_once_concurrency_observed() {
-        // Streaming ran two calls at once — no footgun even for a huge call.
-        assert!(!should_warn(false, false, 2, 8, 10 * T, T));
+    fn suppressed_when_another_call_overlapped() {
+        assert!(!should_warn(false, false, true, 8, 10 * LONG, T));
     }
 
     #[test]
-    fn suppressed_on_single_core_or_small_call() {
-        assert!(!should_warn(false, false, 1, 1, 10 * T, T)); // single core
-        assert!(!should_warn(false, false, 1, 8, T - 1, T)); // below threshold
+    fn suppressed_on_single_core_or_short_call() {
+        assert!(!should_warn(false, false, false, 1, 10 * LONG, T));
+        assert!(!should_warn(false, false, false, 8, SHORT, T));
+    }
+
+    #[test]
+    fn thresholds_must_be_positive_finite_seconds() {
+        assert_eq!(parse_seconds("1.5"), Some(Duration::from_millis(1500)));
+        assert_eq!(parse_seconds(" 3 "), Some(Duration::from_secs(3)));
+        for bad in ["0", "-1", "abc", "inf", "NaN", ""] {
+            assert_eq!(parse_seconds(bad), None, "{bad:?}");
+        }
     }
 }
