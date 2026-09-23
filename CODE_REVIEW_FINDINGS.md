@@ -28,6 +28,8 @@ CR-21 (Batch F1), CR-30 — and with it CR-06's divergence — (Batch F2),
 CR-10/CR-12/CR-22 (Batch B), and CR-17/18/19/20/23 (Batch A). The only
 substantive item still **Open** is **CR-11** (no non-network CI coverage for
 `cloud.rs`/`cloud_auth.rs`); **CR-09** stays *Won't fix (premise corrected)*.
+The 2026-09-23 performance & streaming review opened **CR-31–CR-38** (see
+that section); CR-31 is a silent wrong-answer bug and should go first.
 
 ---
 
@@ -408,6 +410,152 @@ substantive item still **Open** is **CR-11** (no non-network CI coverage for
   on tied-score inputs (documented in `CHANGELOG.md`); `TestAllPointsAPAuthority`
   is rewritten from pinning the divergence to pinning the agreement. The two
   functions remain separate but now genuinely agree (the guard pins it).
+
+---
+
+## Performance & streaming review (2026-09-23)
+
+A second pass aimed at the plugin's two headline promises — high performance and
+correct behaviour under Polars' lazy/streaming engines — rather than contract
+drift. Timings are from the **debug** build on a 4-core container, so only the
+*ratios* are meaningful; each was measured through the user-facing
+`df.lazy().select(...).collect(engine=...)` entry point.
+
+### CR-31 — Expression params are identified by `str(expr)`, which is not an identity · `Open` · High
+
+- **Location:** `python/polars_cv/_graph.py` `_get_expr_columns` (and
+  `_build_column_bindings` / `_get_ordered_columns` for root columns);
+  `_types.py` `ParamValue.to_dict` keys the slot by the same `str(expr)`.
+- **What's wrong:** two *different* expressions whose `repr` is equal are
+  deduplicated into one plugin input slot, so the second op silently reads the
+  first op's values. Polars' `str(expr)` is a display form and truncates — e.g.
+  every `pl.lit(pl.Series("f", ...))` prints as `Series[f]`.
+- **Evidence (empirical):** on a `[4,4,3]` image of 10s,
+  `cast("f32").scale(pl.lit(s1)).scale(pl.lit(s2))` with `s1 = 1.0`, `s2 = 3.0`
+  per row returns **10.0**; the correct answer is 30.0. No error, no warning.
+- **Proposed fix:** identify an expression by `expr.meta.serialize()` (or a hash
+  of it) — or simply assign slots positionally and never dedupe by text. Keep a
+  readable name only for error messages. Guard with the repro above as a
+  regression test, watched failing first.
+
+### CR-32 — Multi-core execution depends on how Polars happens to chunk the input · `Open` · High
+
+- **Location:** `graph/compiled.rs` `execute_rows` (a sequential `for row_idx in
+  0..len`); `engine_warning.rs`. No `rayon`/`POOL` use anywhere in either crate.
+- **What's wrong:** the plugin never parallelises within a call, so it only uses
+  more than one core if the engine happens to invoke it more than once at the
+  same time. The in-memory engine does that per *chunk*, and the streaming
+  engine per *morsel*. A single-chunk frame (anything rechunked, or read as one
+  batch) on the default engine therefore runs on one core.
+- **Evidence (empirical, resize 128 + blur, 64×64 PNGs):**
+  | input | in-memory | streaming |
+  |---|---|---|
+  | 1024 rows, 1 chunk | 12.39 s | 3.30 s (3.8×) |
+  | 256 rows, 8 chunks | 1.05 s | 0.86 s |
+  | 256 rows, 1 chunk | 3.10 s | 0.95 s |
+
+  The same data runs 3× faster or slower depending only on `n_chunks()`.
+  The warning cannot catch this: its threshold is **50 000 rows per call**, but
+  image rows cost milliseconds each, so the 12 s single-threaded run above never
+  triggers it. Its "concurrency seen ⇒ user knows" suppression also fires as soon
+  as two chunks or two `with_columns` expressions run together.
+- **Proposed fix:** parallelise over row ranges inside `CompiledGraph::execute`
+  on Polars' own thread pool (`polars_core::POOL`, so it nests correctly with
+  the engine rather than oversubscribing). Give each worker its own
+  `node_outputs`/scratch, and concatenate the per-range `RowResult`s in order.
+  Row semantics are already per-row, so this is behaviour-preserving. Once it
+  lands, delete the engine warning instead of tuning its threshold.
+
+### CR-33 — `list` sinks of rank ≥ 2, and `array` sinks with any null row, build one `AnyValue` per element · `Open` · High (perf)
+
+- **Location:** `graph/encode.rs`
+  `build_typed_nested_list_series_from_rows_with_dtype` /
+  `build_typed_nested_list_value`, and the fallback in
+  `build_typed_array_series_from_rows_with_dtype` (taken whenever
+  `try_build_array_series_flat` sees a single null row).
+- **Evidence (empirical, 64 rows of 64×64×3 u8):** `sink("numpy")` 11.6 ms;
+  `sink("array")` 10.1 ms; `sink("list")` **392.9 ms (≈34×)**; `sink("array")`
+  with one null row **409.6 ms (≈40×)**. So one null (e.g. a single decode
+  failure under `on_error="null"`) makes the whole column 40× slower.
+- **Also:** the list/array paths copy each row three times: `to_contiguous()`,
+  then `TypedBufferData::from_contiguous_buffer` (`to_vec`), then the
+  concatenation into the flat builder.
+- **Proposed fix:** build the Arrow arrays directly. For a list sink, one flat
+  values buffer plus offsets per nesting level (the shapes are known per row).
+  For an array sink, a `FixedSizeListArray` whose null rows are a validity bit
+  over a zeroed slot. Write each row straight into the flat buffer so it is
+  copied once. Delete the `AnyValue` fallbacks rather than keeping them as a
+  "slow path".
+
+### CR-34 — Panics are the engine's error channel, so `on_error` cannot cover them · `Open` · Medium
+
+- **Location:** `view-buffer` has roughly 80 `panic!`/`unwrap`/`expect`/`assert!`
+  sites outside tests (29 in `execution/runner.rs`, 19 in `core/buffer.rs`). The
+  only catch is the batch-level `catch_unwind` in `CompiledGraph::execute`.
+- **What's wrong:** a panic on one row fails the whole call regardless of
+  `on_error="null"`, which is documented in `src/AGENTS.md` but not visible to
+  users. Under streaming the call is a morsel, so how much of the query a bad
+  row takes down depends on the morsel size. It also forces `panic = "unwind"`
+  onto the release profile.
+- **Proposed fix:** convert the op implementations to return `Result` (start with
+  `runner.rs`). As an interim, run `catch_unwind` per row so a panic becomes a
+  row error that the row policy then handles.
+
+### CR-35 — Published wheels ship without the SIMD code paths · `Open` · Medium
+
+- **Location:** `.cargo/config.toml` enables `x86-64-v3` for dev builds only;
+  `ci.yml`, `publish.yml` and `benchmark.yml` all clear it with `RUSTFLAGS=""`.
+- **What's wrong:** the AVX2/FMA auto-vectorisation that the config's comment
+  credits for `grayscale_u8`, `threshold_simd`, `FusedKernel` and the blur loops
+  is only present in local builds. Users get baseline SSE2 wheels, and the
+  regression benchmarks also measure baseline, so nothing reports the gap.
+- **Proposed fix:** dispatch at runtime in the hot kernels
+  (`is_x86_feature_detected!` + `#[target_feature(enable = "avx2,fma")]`, or the
+  `multiversion` crate). The alternative is to publish a v3 wheel variant, as
+  Polars does with `polars` / `polars-lts-cpu`.
+
+### CR-36 — Geometry I/O goes point by point through `AnyValue` · `Open` · Medium (inferred from code, not measured)
+
+- **Location:** `src/contour.rs` (89 `AnyValue` uses: `parse_contour_list` →
+  `series.get(i)` per contour and per point), contour encoding in
+  `graph/encode.rs`, and the `contour` source / `LabelReduce` reads in
+  `graph/compiled.rs` (`input_series.get(row_idx)`, `get_any`).
+- **What's wrong:** this is the same pattern as CR-33, applied to the
+  `List[Struct{x, y}]` geometry columns. Every point becomes an enum value, and
+  every row goes through a sub-`Series` allocation.
+- **Proposed fix:** read the `ListArray` offsets and the struct's `x`/`y`
+  `Float64` buffers directly, and write outputs the same way (offsets plus flat
+  coordinate buffers). Before changing anything, add a benchmark in
+  `benchmarks/regression/` to confirm the cost.
+
+### CR-37 — Per-row executor overhead from stringly-typed dispatch · `Open` · Low
+
+- **Location:** `graph/compiled.rs` `run_row_nodes`.
+- **What's wrong:** every row, for every node:
+  - `node_outputs: HashMap<String, _>` is populated with `node_id.clone()`;
+  - the source format is dispatched by comparing strings (`"contour"`,
+    `"file_path"`, ...);
+  - `node.source.clone()` runs for `file_path` and `"auto"` sources;
+  - the static op chain is re-optimised and re-planned (`ViewExpr::plan_with`),
+    even when nothing in it is per-row.
+
+  Decode cost hides all of this for encoded images. It matters for
+  `blob`/`raw`/`list` sources feeding cheap ops, which is the plugin's zero-copy
+  fast path.
+- **Proposed fix:** at compile time, resolve node ids to indices
+  (`Vec<Option<NodeOutput>>`) and the source format to an enum. Cache the
+  planned `ExecutionPlan` step list per (static chain, input dtype, rank).
+
+### CR-38 — Row/sink kind mismatch silently becomes a null row · `Open` · Low
+
+- **Location:** `graph/decode.rs` `build_series_from_spec`. Every arm maps
+  unexpected `RowResult` variants with `_ => None`.
+- **What's wrong:** if `encode_node_output` and `SinkKind` ever disagree, the row
+  is published as null rather than raising an error. That is the "degrade, not
+  fail" pattern `CLAUDE.md` rejects.
+- **Proposed fix:** return an internal error on a variant mismatch. Better still,
+  make `RowResult` generic over, or indexed by, `SinkKind` so the mismatch
+  cannot be constructed at all.
 
 ---
 
