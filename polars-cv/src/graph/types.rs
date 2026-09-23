@@ -102,8 +102,8 @@ impl RowResult {
 /// Per-row error policy for graph execution.
 ///
 /// Applies to `Result`-level errors while producing a row (source decode,
-/// op resolution/execution, output encode). Panics are not covered — they
-/// abort the batch via the executor's `catch_unwind` backstop.
+/// op resolution/execution, output encode), including engine panics, which the
+/// executor catches per row and treats as that row's error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RowErrorPolicy {
