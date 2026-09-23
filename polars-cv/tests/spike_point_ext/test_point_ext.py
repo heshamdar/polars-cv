@@ -4,9 +4,11 @@ Covers the three feasibility questions for ``polars_cv.point``, lazy first-use
 registration, and a second isolated type (``polars_cv.ndarray``) that tags the
 numpy sink struct.
 
-Not part of the guarded suite — the extension-type API is documented as
-unstable and this path is a throwaway probe. Run explicitly:
+The spike is opt-in at build time: its Rust side compiles only under the
+``spike-ext-types`` Cargo feature, so the shipped wheel carries none of it. These
+tests skip unless the extension was built with that feature:
 
+    maturin develop --features pyo3-extension,spike-ext-types
     uv run pytest tests/spike_point_ext/
 """
 
@@ -15,39 +17,49 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import numpy as np
 import polars as pl
 import pytest
 
-pytest.importorskip("polars_cv._lib", reason="requires the compiled plugin")
+_lib = pytest.importorskip("polars_cv._lib", reason="requires the compiled plugin")
+if not getattr(_lib, "__spike_ext_types__", False):
+    pytest.skip(
+        "extension built without the `spike-ext-types` feature; rebuild with "
+        "`maturin develop --features pyo3-extension,spike-ext-types`",
+        allow_module_level=True,
+    )
 
-from polars_cv._spike_bbox_ext import (  # noqa: E402
+from tests.spike_point_ext._bbox_ext import (  # noqa: E402
     BBOX_EXT_NAME,
     BBox,
     bbox_ext,
     bbox_ext_identity,
 )
-from polars_cv._spike_contour_ext import (  # noqa: E402
+from tests.spike_point_ext._contour_ext import (  # noqa: E402
     CONTOUR_EXT_NAME,
     Contour,
     contour_ext,
     contour_ext_identity,
 )
-from polars_cv._spike_ext import is_extension_named  # noqa: E402
-from polars_cv._spike_ndarray_ext import (  # noqa: E402
+from tests.spike_point_ext._ext import is_extension_named  # noqa: E402
+from tests.spike_point_ext._ndarray_ext import (  # noqa: E402
     NDARRAY_EXT_NAME,
     NdArray,
     ndarray_ext,
     ndarray_ext_identity,
     numpy_from_ext,
 )
-from polars_cv._spike_point_ext import (  # noqa: E402
+from tests.spike_point_ext._point_ext import (  # noqa: E402
     POINT_EXT_NAME,
     PointXY,
     point_ext,
     point_ext_translate,
 )
+
+# The polars-cv project dir, so a subprocess can import the ``tests`` package.
+_PROJECT = Path(__file__).resolve().parents[2]
 
 
 def _is_point_ext(dtype: pl.DataType) -> bool:
@@ -111,14 +123,16 @@ def test_import_is_lazy() -> None:
     code = textwrap.dedent(
         """
         import sys
-        import polars_cv._spike_point_ext as m
+        import tests.spike_point_ext._point_ext as m
         assert "polars_cv._lib" not in sys.modules, "import eagerly loaded _lib"
         m.point_ext("a", "b")  # first use -> ensure_registered -> _lib import
         assert "polars_cv._lib" in sys.modules, "first use did not load _lib"
         print("LAZY_OK")
         """
     )
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=_PROJECT
+    )
     assert r.returncode == 0, r.stderr
     assert "LAZY_OK" in r.stdout
 
@@ -252,3 +266,60 @@ def test_parquet_persistence(tmp_path) -> None:
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert "OK" in r.stdout
+
+
+# --- Storage is validated against the canonical layout, not just the tag ---
+
+
+def _tagged(name: str, storage: dict[str, pl.Expr]) -> pl.Expr:
+    """A column carrying extension ``name`` over arbitrary ``storage`` fields.
+
+    Uses the generic ``pl.Extension`` (as a Parquet file written elsewhere would
+    arrive), which accepts any storage — the registered host classes do not.
+    """
+    struct = pl.struct(*(e.alias(k) for k, e in storage.items()))
+    dtype = pl.Struct({k: pl.select(e).to_series().dtype for k, e in storage.items()})
+    return struct.ext.to(pl.Extension(name, dtype))
+
+
+@pytest.mark.parametrize(
+    ("op", "name", "storage"),
+    [
+        pytest.param(
+            lambda e: point_ext_translate(e, dx=1.0, dy=1.0),
+            POINT_EXT_NAME,
+            {"x": pl.lit(1.0, pl.Float32), "y": pl.lit(2.0, pl.Float32)},
+            id="point-f32-coords",
+        ),
+        pytest.param(
+            bbox_ext_identity,
+            BBOX_EXT_NAME,
+            {"x": pl.lit(1.0), "y": pl.lit(2.0), "width": pl.lit(3.0)},
+            id="bbox-missing-height",
+        ),
+        pytest.param(
+            contour_ext_identity,
+            CONTOUR_EXT_NAME,
+            {"exterior": pl.lit(1.0), "holes": pl.lit(1.0), "is_closed": pl.lit(True)},
+            id="contour-flat-rings",
+        ),
+        pytest.param(
+            ndarray_ext_identity,
+            NDARRAY_EXT_NAME,
+            {"data": pl.lit(b"\x00"), "dtype": pl.lit("uint8")},
+            id="ndarray-missing-layout",
+        ),
+    ],
+)
+def test_wrong_storage_is_rejected_at_schema_resolution(
+    op, name: str, storage: dict[str, pl.Expr]
+) -> None:
+    """A column tagged with a spike type but carrying the wrong storage layout
+    fails when the schema resolves, naming the storage — not mid-execution with
+    a child-column dtype error, and not silently accepted."""
+    lf = pl.LazyFrame({"_": [0]}).select(out=op(_tagged(name, storage)))
+
+    # `collect_schema()` resolves the plan without executing it; polars reports a
+    # plugin's output-type error as a ComputeError wrapping the plugin message.
+    with pytest.raises(pl.exceptions.ComputeError, match="expected storage"):
+        lf.collect_schema()

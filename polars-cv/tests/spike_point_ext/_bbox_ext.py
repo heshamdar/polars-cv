@@ -3,7 +3,7 @@
 Part of the design-review extension-type spike, rounding out the geometry family.
 Tags the ``{x, y, width, height}`` struct so a consumer identifies a bbox by its
 type tag, not by field-name inspection. Isolated: not wired into the ``.bbox``
-namespace. Registration is lazy (see ``_spike_ext``). Delete after the
+namespace. Registration is lazy (see ``_ext``). Delete after the
 migrate-or-drop decision.
 """
 
@@ -14,8 +14,8 @@ from polars._typing import IntoExpr
 from polars.plugins import register_plugin_function
 
 from polars_cv._namespace import _LIB_PATH
-from polars_cv._spike_ext import ensure_registered, register_lazy
 from polars_cv.geometry.schemas import BBOX_SCHEMA
+from tests.spike_point_ext._ext import ensure_registered, register_lazy
 
 BBOX_EXT_NAME = "polars_cv.bbox"
 

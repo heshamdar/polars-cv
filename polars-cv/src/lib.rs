@@ -11,9 +11,17 @@ mod execute;
 // SPIKE (plugin design review): Arrow extension types for the geometry family
 // (`polars_cv.point` / `.contour` / `.bbox`) and `polars_cv.ndarray` (the
 // numpy/torch sink struct).
+// Compiled only under the opt-in `spike-ext-types` feature, so release wheels
+// (built with the maturin features, which exclude it) carry none of it.
+#[cfg(feature = "spike-ext-types")]
 mod ext_bbox;
+#[cfg(feature = "spike-ext-types")]
+mod ext_check;
+#[cfg(feature = "spike-ext-types")]
 mod ext_contour;
+#[cfg(feature = "spike-ext-types")]
 mod ext_ndarray;
+#[cfg(feature = "spike-ext-types")]
 mod ext_point;
 mod fetch;
 mod geom_arity;
@@ -63,8 +71,13 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rotation_matrix_2d, m)?)?;
     // SPIKE (plugin design review): register the spike extension types on the
     // plugin's copy of polars-core. The host copy is registered from Python
-    // (lazily, via `_spike_ext.ensure_registered`); both must agree or the tag
-    // decays to storage. One registration site per type.
+    // (lazily, via `tests/spike_point_ext/_ext.ensure_registered`); both must
+    // agree or the tag decays to storage. One registration site per type.
+    // `__spike_ext_types__` is how that helper tells a build with the feature
+    // from one without it, and refuses the latter rather than degrading.
+    #[cfg(feature = "spike-ext-types")]
+    m.add("__spike_ext_types__", true)?;
+    #[cfg(feature = "spike-ext-types")]
     ext_point::register()
         .and_then(|()| ext_contour::register())
         .and_then(|()| ext_bbox::register())

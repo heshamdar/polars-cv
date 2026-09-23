@@ -13,9 +13,10 @@
 //!   3. passing a non-point column to a point op fails at schema resolution.
 //!
 //! It is deliberately NOT wired into the `.point` namespace, `geom_schema`'s
-//! parity guards, or the FFI schema publishing. Storage is reused from
-//! [`crate::geom_schema::point_struct_dtype`] so the `{x, y}` layout still has a
-//! single authority. Delete after the migrate-or-drop decision.
+//! parity guards, or the FFI schema publishing. Storage is checked against
+//! [`crate::geom_schema::point_struct_dtype`] at schema resolution (see
+//! [`crate::ext_check`]), so the `{x, y}` layout keeps a single authority.
+//! Delete after the migrate-or-drop decision.
 
 use std::any::Any;
 use std::borrow::Cow;
@@ -100,21 +101,15 @@ fn point_instance() -> ExtensionTypeInstance {
 }
 
 /// Echo the point extension field so the output keeps its `polars_cv.point`
-/// tag, and reject a non-point input *at schema resolution* — the improved
-/// failure mode the spike is testing for (vs. a query-time struct-parse error).
+/// tag, and reject a non-point input or wrong storage *at schema resolution* —
+/// the improved failure mode the spike is testing for (vs. a query-time
+/// struct-parse error).
 fn point_ext_output(input_fields: &[Field]) -> PolarsResult<Field> {
-    let field = &input_fields[0];
-    let DataType::Extension(typ, _) = field.dtype() else {
-        polars_bail!(
-            SchemaMismatch: "expected a `polars_cv.point` column, got: {}", field.dtype()
-        );
-    };
-    if (&*typ.0 as &dyn Any).downcast_ref::<PointXY>().is_none() {
-        polars_bail!(
-            SchemaMismatch: "expected a `polars_cv.point` column, got extension: {}", typ.name()
-        );
-    }
-    Ok(field.clone())
+    crate::ext_check::expect_ext::<PointXY>(
+        &input_fields[0],
+        POINT_EXT_NAME,
+        &crate::geom_schema::point_struct_dtype(),
+    )
 }
 
 #[derive(Deserialize)]

@@ -6,9 +6,10 @@
 //! consumer identify a tensor by its type tag instead of sniffing struct fields.
 //!
 //! Isolated and additive: this does NOT change the production `.sink("numpy")`
-//! path — its output stays a plain, untagged struct. Storage is reused from
-//! [`crate::output::numpy_output_dtype`] so the 5-field layout keeps one
-//! authority. Delete after the migrate-or-drop decision.
+//! path — its output stays a plain, untagged struct. Storage is checked against
+//! [`crate::output::numpy_output_dtype`] at schema resolution (see
+//! [`crate::ext_check`]), so the 5-field layout keeps one authority. Delete
+//! after the migrate-or-drop decision.
 
 use std::any::Any;
 use std::borrow::Cow;
@@ -89,20 +90,13 @@ fn ndarray_instance() -> ExtensionTypeInstance {
 }
 
 /// Echo the ndarray extension field so the output keeps its `polars_cv.ndarray`
-/// tag, and reject a non-ndarray input at schema resolution.
+/// tag, and reject a non-ndarray input or wrong storage at schema resolution.
 fn ndarray_ext_output(input_fields: &[Field]) -> PolarsResult<Field> {
-    let field = &input_fields[0];
-    let DataType::Extension(typ, _) = field.dtype() else {
-        polars_bail!(
-            SchemaMismatch: "expected a `polars_cv.ndarray` column, got: {}", field.dtype()
-        );
-    };
-    if (&*typ.0 as &dyn Any).downcast_ref::<NdArray>().is_none() {
-        polars_bail!(
-            SchemaMismatch: "expected a `polars_cv.ndarray` column, got extension: {}", typ.name()
-        );
-    }
-    Ok(field.clone())
+    crate::ext_check::expect_ext::<NdArray>(
+        &input_fields[0],
+        NDARRAY_EXT_NAME,
+        &crate::output::numpy_output_dtype(),
+    )
 }
 
 /// Identity op over a `polars_cv.ndarray` column: recover the struct storage via
