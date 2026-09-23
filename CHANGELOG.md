@@ -144,6 +144,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`blur()` uses AVX2 when the CPU has it, in the published wheels too.**
+  The wheels target baseline x86-64; blur now dispatches at runtime to an AVX2
+  build (1.2–1.3x faster), with bit-identical output on every CPU (CR-35).
 - **Contour outputs are built straight into Arrow.** The contour sink and every
   `.contour` transform built one `AnyValue` per point and a sub-`Series` per
   ring. The contour sink's encode overhead drops ~10x and `.contour.translate()`
