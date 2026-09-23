@@ -50,6 +50,7 @@ from polars_cv._types import (
     StrOrExpr,
     _reject_expr,
     _validate_enum,
+    expr_key,
     is_supplied,
     normalize_cloud_options,
     reject_inapplicable_params,
@@ -629,8 +630,8 @@ class Pipeline:
         param = ParamValue.from_arg(value)
         if param.is_expr and isinstance(value, pl.Expr):
             # Check if we already track this expression
-            expr_str = str(value)
-            if not any(str(e) == expr_str for e in self._expr_refs):
+            key = expr_key(value)
+            if not any(expr_key(e) == key for e in self._expr_refs):
                 self._expr_refs.append(value)
         return param
 

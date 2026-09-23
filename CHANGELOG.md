@@ -110,6 +110,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Distinct expression parameters no longer collapse into one.** An
+  expression parameter was identified by its display text, `str(expr)`, which
+  is not unique: every `pl.lit(pl.Series("f", ...))` prints `Series[f]`, and
+  every Python UDF prints `python_udf`. Two such parameters in one pipeline
+  shared a plugin input, so the second op silently read the first op's values —
+  `.scale(pl.lit(s1)).scale(pl.lit(s2))` applied `s1` twice. The same text
+  identity decided CSE merges and root-column deduplication, so two such root
+  columns were read as one. Identity now has a single authority,
+  `_types.expr_key`, which keeps the readable text as the key while it is
+  unambiguous and disambiguates by `Expr.meta.eq` when it is not (CR-31).
 - **`cast(A)→cast(B)` no longer drops a narrowing intermediate cast.** The engine
   collapsed consecutive casts unconditionally, discarding the intermediate even
   when it quantized — a fractional-`f32` `.cast("u8").cast("f32")` returned `0.5`

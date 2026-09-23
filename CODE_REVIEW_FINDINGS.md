@@ -421,7 +421,16 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
 *ratios* are meaningful; each was measured through the user-facing
 `df.lazy().select(...).collect(engine=...)` entry point.
 
-### CR-31 — Expression params are identified by `str(expr)`, which is not an identity · `Open` · High
+### CR-31 — Expression params are identified by `str(expr)`, which is not an identity · `Resolved` · High
+
+> **Resolved.** `_types.expr_key` is the single identity authority, read by
+> `ParamValue.__eq__`/`__hash__`/`to_dict`, `Pipeline._track_expr`, and the
+> graph's expression-slot and root-column deduplication. It keeps the display
+> text as the key while unambiguous and disambiguates by `Expr.meta.eq`
+> (`text#n`), interning via weak references. `meta.serialize` was rejected as
+> the key because it raises for Python UDFs without `cloudpickle`. Guarded by
+> `tests/test_expr_param_identity.py`: all eight collision tests were watched
+> failing first (e.g. `40.0 == 60.0`, root column `20.0 == 30.0`).
 
 - **Location:** `python/polars_cv/_graph.py` `_get_expr_columns` (and
   `_build_column_bindings` / `_get_ordered_columns` for root columns);

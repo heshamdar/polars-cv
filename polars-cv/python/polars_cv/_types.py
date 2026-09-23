@@ -7,6 +7,8 @@ including ParamValue for handling literal vs expression parameters.
 
 from __future__ import annotations
 
+import threading
+import weakref
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Union
@@ -487,6 +489,60 @@ def _enum_or_expr(value: "Any", enum_cls: type, label: str) -> "Any":
     return _validate_enum(value, enum_cls, label).value
 
 
+#: Expressions that have been given a key, bucketed by display text:
+#: ``text -> [(weakref to expr, key)]``. Weak so a long-lived process that
+#: builds many pipelines does not keep their (possibly large ``lit(Series)``)
+#: expressions alive; a bucket is dropped once all its expressions have died.
+_EXPR_KEYS: dict[str, list[tuple[weakref.ref[pl.Expr], str]]] = {}
+_EXPR_KEYS_LOCK = threading.Lock()
+
+
+def expr_key(expr: pl.Expr) -> str:
+    """The identity of an expression parameter: the one authority for it.
+
+    Everything that asks "is this the same expression?" reads this key — the
+    plugin input slot an expression binds to (``ParamValue.to_dict`` and
+    ``PipelineGraph._get_expr_columns``), ``ParamValue`` equality and hashing
+    (and therefore CSE), and root-column deduplication.
+
+    ``str(expr)`` alone is not an identity: it is a display form, so every
+    ``pl.lit(pl.Series("f", ...))`` prints ``Series[f]`` and two different
+    Python UDFs print the same ``python_udf`` text. Using it made distinct
+    expressions share one plugin slot, silently (CR-31).
+
+    The key is the display text while that is unambiguous, which keeps the
+    graph JSON readable (``col("h")``). An expression whose text matches a
+    *different* live expression (by ``Expr.meta.eq``) gets ``text#n`` instead.
+    ``meta.serialize`` would be a context-free alternative but raises for
+    Python UDFs without ``cloudpickle``.
+
+    Limits: keys are unique among expressions alive at the same time, which is
+    what a graph needs — every expression a pipeline references is held by it
+    until serialization. After an expression dies its key may be reused; that
+    is harmless because a compiled graph binds slots by position and holds no
+    data. Expressions that are ``meta.eq``-equal but print differently get
+    different keys (a missed deduplication, never a wrong merge).
+    """
+    text = str(expr)
+    with _EXPR_KEYS_LOCK:
+        live = [
+            (ref, key) for ref, key in _EXPR_KEYS.get(text, []) if ref() is not None
+        ]
+        for ref, key in live:
+            other = ref()
+            if other is expr or (other is not None and other.meta.eq(expr)):
+                _EXPR_KEYS[text] = live
+                return key
+        taken = {key for _, key in live}
+        key, n = text, 0
+        while key in taken:
+            n += 1
+            key = f"{text}#{n}"
+        live.append((weakref.ref(expr), key))
+        _EXPR_KEYS[text] = live
+        return key
+
+
 @dataclass
 class ParamValue:
     """
@@ -521,15 +577,13 @@ class ParamValue:
         if self.is_expr != other.is_expr:
             return False
         if self.is_expr:
-            # Compare expressions by their string representation
-            return str(self.value) == str(other.value)
+            return expr_key(self.value) == expr_key(other.value)
         return self.value == other.value
 
     def __hash__(self) -> int:
         """Hash for use in sets and dicts."""
         if self.is_expr:
-            # Hash expression by string representation
-            return hash((True, str(self.value)))
+            return hash((True, expr_key(self.value)))
         # For literals, hash the value directly (works for immutable types)
         try:
             return hash((False, self.value))
@@ -570,9 +624,7 @@ class ParamValue:
             # Use the expression's string representation as a unique identifier.
             # This avoids collisions when multiple expressions share the same root
             # (e.g., height_expr.max() and width_expr.max() from the same source).
-            expr = self.value
-            expr_str = str(expr)
-            return {"type": "expr", "col": expr_str}
+            return {"type": "expr", "col": expr_key(self.value)}
         return {"type": "literal", "value": self.value}
 
     @classmethod
