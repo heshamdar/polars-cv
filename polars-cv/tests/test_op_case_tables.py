@@ -80,6 +80,7 @@ def test_color_spaces_are_the_whole_enum() -> None:
 NON_CODEC_SINKS: dict[str, str] = {
     "numpy": "zero-copy struct, no re-encode",
     "torch": "zero-copy struct, no re-encode",
+    "ndarray": "the numpy struct tagged polars_cv.ndarray, no re-encode",
     "blob": "the self-describing VIEW protocol, no codec preconditions",
     "array": "Polars Array, fixed shape",
     "list": "Polars nested List",

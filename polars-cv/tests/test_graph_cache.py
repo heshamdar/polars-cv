@@ -283,14 +283,10 @@ class TestGraphVersionField:
         graph.set_output("n0", "numpy")
         spec = json.loads(graph._to_json())
         spec["version"] = 999
+        from polars_cv import _plugin
 
-        from polars.plugins import register_plugin_function
-
-        from polars_cv._graph import LIB_PATH
-
-        expr = register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="vb_graph",
+        expr = _plugin.call(
+            "vb_graph",
             args=[pl.col("img")],
             kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
             is_elementwise=True,
@@ -307,9 +303,8 @@ class TestGraphStructureValidation:
     def _run_doctored(self, mutate):
         import json
 
-        from polars.plugins import register_plugin_function
-
-        from polars_cv._graph import LIB_PATH, PipelineGraph
+        from polars_cv import _plugin
+        from polars_cv._graph import PipelineGraph
 
         graph = PipelineGraph()
         pipe = Pipeline().source("image_bytes").grayscale()
@@ -319,9 +314,8 @@ class TestGraphStructureValidation:
         # _to_json() alone doesn't run to_expr()'s column binding pass.
         spec["column_bindings"] = {"n0": 0}
         mutate(spec)
-        expr = register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="vb_graph",
+        expr = _plugin.call(
+            "vb_graph",
             args=[pl.col("img")],
             kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
             is_elementwise=True,

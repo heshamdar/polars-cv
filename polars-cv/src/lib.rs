@@ -8,21 +8,7 @@ mod cloud_auth;
 mod contour;
 mod engine_warning;
 mod execute;
-// SPIKE (plugin design review): Arrow extension types for the geometry family
-// (`polars_cv.point` / `.contour` / `.bbox`) and `polars_cv.ndarray` (the
-// numpy/torch sink struct).
-// Compiled only under the opt-in `spike-ext-types` feature, so release wheels
-// (built with the maturin features, which exclude it) carry none of it.
-#[cfg(feature = "spike-ext-types")]
-mod ext_bbox;
-#[cfg(feature = "spike-ext-types")]
-mod ext_check;
-#[cfg(feature = "spike-ext-types")]
-mod ext_contour;
-#[cfg(feature = "spike-ext-types")]
-mod ext_ndarray;
-#[cfg(feature = "spike-ext-types")]
-mod ext_point;
+mod ext_types;
 mod fetch;
 mod geom_arity;
 mod geom_params;
@@ -68,25 +54,8 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(extension_types, m)?)?;
     m.add_function(wrap_pyfunction!(rotation_matrix_2d, m)?)?;
-    // SPIKE (plugin design review): register the spike extension types on the
-    // plugin's copy of polars-core. The host copy is registered from Python
-    // (lazily, via `tests/spike_point_ext/_ext.ensure_registered`); both must
-    // agree or the tag decays to storage. One registration site per type.
-    // `__spike_ext_types__` is how that helper tells a build with the feature
-    // from one without it, and refuses the latter rather than degrading.
-    #[cfg(feature = "spike-ext-types")]
-    m.add("__spike_ext_types__", true)?;
-    #[cfg(feature = "spike-ext-types")]
-    ext_point::register()
-        .and_then(|()| ext_contour::register())
-        .and_then(|()| ext_bbox::register())
-        .and_then(|()| ext_ndarray::register())
-        .map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "failed to register polars_cv extension types: {e}"
-            ))
-        })?;
     Ok(())
 }
 
@@ -600,6 +569,25 @@ fn bbox_schema() -> Vec<String> {
     crate::geom_schema::BBOX_FIELD_NAMES
         .iter()
         .map(|s| (*s).to_string())
+        .collect()
+}
+
+/// Every polars-cv extension type as `(name, empty storage Series)`, in
+/// [`ext_types::ExtType::ALL`] order.
+///
+/// Read by `test_python_types_match_the_rust_declaration`, which holds
+/// `polars_cv.extension_types.EXTENSION_TYPES` to this in both directions. The
+/// storage crosses as a zero-length Series rather than field names so the whole
+/// dtype — nesting, element types, field order — is compared, not just the
+/// top-level names `point_schema` and its siblings publish.
+#[pyfunction]
+fn extension_types() -> Vec<(&'static str, pyo3_polars::PySeries)> {
+    ext_types::ExtType::ALL
+        .iter()
+        .map(|t| {
+            let empty = Series::new_empty(PlSmallStr::from_static(t.name()), &t.storage());
+            (t.name(), pyo3_polars::PySeries(empty))
+        })
         .collect()
 }
 

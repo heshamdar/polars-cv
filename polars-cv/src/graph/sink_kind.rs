@@ -40,6 +40,13 @@ use super::types::OutputSpec;
 pub(crate) enum SinkKind {
     /// `buffer` × `numpy`/`torch` — the zero-copy struct.
     NumpyStruct,
+    /// `buffer` × `ndarray` — the same struct, tagged `polars_cv.ndarray`.
+    ///
+    /// Its own kind rather than a flag on `NumpyStruct` because it publishes a
+    /// different dtype: every half has to answer for it, and the compiler says
+    /// so. The rows and the assembled struct are `NumpyStruct`'s exactly; only
+    /// the finished column is relabelled ([`crate::ext_types::ExtType::tag`]).
+    NdArray,
     /// `buffer` × `png`/`jpeg`/`webp`/`tiff` — re-encoded through an image codec.
     EncodedImage,
     /// `buffer` × `blob` — the self-describing VIEW protocol, no precondition.
@@ -79,6 +86,7 @@ impl SinkKind {
         let format = spec.sink.format.as_str();
         match (domain, format) {
             ("buffer", "numpy" | "torch") => Ok(Self::NumpyStruct),
+            ("buffer", "ndarray") => Ok(Self::NdArray),
             ("buffer", "png" | "jpeg" | "webp" | "tiff") => Ok(Self::EncodedImage),
             ("buffer", "blob") => Ok(Self::Blob),
             ("buffer", "list") => Ok(Self::BufferList),
@@ -141,6 +149,7 @@ mod tests {
     const PAIRS: &[(&str, &str, SinkKind)] = &[
         ("buffer", "numpy", SinkKind::NumpyStruct),
         ("buffer", "torch", SinkKind::NumpyStruct),
+        ("buffer", "ndarray", SinkKind::NdArray),
         ("buffer", "png", SinkKind::EncodedImage),
         ("buffer", "jpeg", SinkKind::EncodedImage),
         ("buffer", "webp", SinkKind::EncodedImage),
@@ -175,6 +184,7 @@ mod tests {
     fn kind_name(kind: SinkKind) -> &'static str {
         match kind {
             SinkKind::NumpyStruct => "NumpyStruct",
+            SinkKind::NdArray => "NdArray",
             SinkKind::EncodedImage => "EncodedImage",
             SinkKind::Blob => "Blob",
             SinkKind::BufferList => "BufferList",
@@ -211,7 +221,7 @@ mod tests {
             .map(str::to_string)
             .collect();
         assert!(
-            names.len() >= 10,
+            names.len() >= 11,
             "parsed {} arms from kind_name; the scan is out of date",
             names.len()
         );

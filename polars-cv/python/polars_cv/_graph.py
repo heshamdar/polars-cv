@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -23,9 +22,6 @@ if TYPE_CHECKING:
     from polars_cv._optimize import OptFlags
     from polars_cv._types import OpSpec
     from polars_cv.pipeline import Pipeline
-
-# Path to the compiled Rust library
-LIB_PATH = Path(__file__).parent
 
 
 @dataclass
@@ -573,7 +569,7 @@ class PipelineGraph:
             RuntimeError: If the graph has not been optimized. Call
                 ``optimize(flags)`` first (``.sink()`` does this).
         """
-        from polars.plugins import register_plugin_function
+        from polars_cv import _plugin
 
         if self._output is None and self._multi_output is None:
             raise ValueError(
@@ -617,9 +613,8 @@ class PipelineGraph:
         graph_json = self._to_json()
 
         # Unified graph execution handles both single and multi-output
-        return register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="vb_graph",
+        return _plugin.call(
+            "vb_graph",
             args=all_args,
             kwargs={
                 "graph_json": graph_json,

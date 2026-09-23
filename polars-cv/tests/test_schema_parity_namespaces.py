@@ -22,6 +22,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from polars_cv import BBoxType, ContourType, PointType
 from polars_cv.expressions import CvNamespace
 from polars_cv.geometry.bbox import BBoxNamespace
 from polars_cv.geometry.contours import ContourNamespace
@@ -415,3 +416,69 @@ def test_null_first_is_not_special_for_the_accessors() -> None:
             f"{expr_name}: leading-null column planned {first}, "
             f"leading-value column planned {second}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tagged inputs: every accessor accepts a polars-cv extension type
+# ---------------------------------------------------------------------------
+
+#: The struct columns of ``_contour_df`` and the extension type each one tags.
+#: The set columns stay plain: a tag names one contour/point/box, not a list.
+_TAGGED_COLUMNS = {
+    "a": ContourType,
+    "b": ContourType,
+    "pa": PointType,
+    "pb": PointType,
+    "ba": BBoxType,
+    "bb": BBoxType,
+}
+
+_GEOMETRY_CASES = {
+    **{f".contour.{k}": v for k, v in CONTOUR_CASES.items()},
+    **{f".point.{k}": v for k, v in POINT_CASES.items()},
+    **{f".bbox.{k}": v for k, v in BBOX_CASES.items()},
+}
+
+
+def _tagged_contour_df() -> pl.DataFrame:
+    df = _contour_df()
+    return df.with_columns(
+        pl.col(name).ext.to(cls()) for name, cls in _TAGGED_COLUMNS.items()
+    )
+
+
+def test_tagged_fixture_really_is_tagged() -> None:
+    """Guard the guard: a fixture that silently lost its tags would make the
+    sweep below compare plain input with plain input."""
+    schema = _tagged_contour_df().schema
+    for name, cls in _TAGGED_COLUMNS.items():
+        assert isinstance(schema[name], cls), (name, schema[name])
+
+
+@plugin_required
+@pytest.mark.parametrize("name", sorted(_GEOMETRY_CASES))
+def test_accessors_accept_tagged_inputs(name: str) -> None:
+    """A tagged column computes exactly what its plain struct computes.
+
+    Driven from the same case tables the completeness check pins, so a new
+    accessor is swept with tagged inputs the moment it gets its parity case.
+    Outputs are plain structs either way: tags are accepted on input, and
+    only ``sink("ndarray")`` emits one.
+    """
+    build = _GEOMETRY_CASES[name]
+    tagged = assert_plan_equals_exec(_tagged_contour_df(), build())
+    plain = assert_plan_equals_exec(_contour_df(), build())
+    assert tagged.dtype == plain.dtype
+    assert tagged.to_list() == plain.to_list()
+
+
+@plugin_required
+def test_a_tagged_contour_is_a_pipeline_source() -> None:
+    """``source("contour")`` rasterizes a tagged contour like the plain one."""
+    from polars_cv import Pipeline
+
+    pipe = Pipeline().source("contour", width=16, height=16)
+    expr = pl.col("a").cv.pipe(pipe).sink("list")
+    tagged = assert_plan_equals_exec(_tagged_contour_df(), expr)
+    plain = assert_plan_equals_exec(_contour_df(), expr)
+    assert tagged.to_list() == plain.to_list()

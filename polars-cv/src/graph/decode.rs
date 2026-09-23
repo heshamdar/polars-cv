@@ -681,6 +681,7 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
     match SinkKind::resolve(spec)? {
         SinkKind::HistogramBuckets => Ok(DataType::List(Box::new(histogram_struct_dtype()))),
         SinkKind::NumpyStruct => Ok(crate::output::numpy_output_dtype()),
+        SinkKind::NdArray => Ok(crate::ext_types::ExtType::NdArray.dtype()),
         // A VIEW blob is self-describing, so it carries no codec precondition.
         SinkKind::Blob => Ok(DataType::Binary),
         kind @ SinkKind::EncodedImage => {
@@ -816,7 +817,7 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowRes
     let kind = SinkKind::resolve(spec)?;
     Ok(match kind {
         SinkKind::HistogramBuckets => RowResult::HistogramBuckets(None),
-        SinkKind::NumpyStruct => RowResult::NumpyStruct(None),
+        SinkKind::NumpyStruct | SinkKind::NdArray => RowResult::NumpyStruct(None),
         SinkKind::EncodedImage | SinkKind::Blob => RowResult::Binary(None),
         SinkKind::BufferList | SinkKind::VectorList => RowResult::TypedList(None),
         SinkKind::BufferArray | SinkKind::VectorArray => RowResult::TypedArray(None),
@@ -853,7 +854,7 @@ pub(crate) fn build_series_from_spec(
         // Every arm below is keyed on the resolved kind, so a new one is a
         // compile error here rather than a row that quietly becomes Binary.
         SinkKind::HistogramBuckets => unreachable!("handled above"),
-        SinkKind::NumpyStruct => {
+        SinkKind::NumpyStruct | SinkKind::NdArray => {
             // Move the buffers in so each is the sole Arc owner: that lets
             // `into_polars_buffer_strided` take the zero-copy *strided* branch
             // for non-contiguous (transposed/flipped/rotated) outputs. The
@@ -868,7 +869,12 @@ pub(crate) fn build_series_from_spec(
                     _ => None,
                 })
                 .collect();
-            crate::output::build_numpy_series(name, buffers, spec.sink.out_dtype.as_deref())
+            let series =
+                crate::output::build_numpy_series(name, buffers, spec.sink.out_dtype.as_deref())?;
+            match kind {
+                SinkKind::NdArray => crate::ext_types::ExtType::NdArray.tag(series),
+                _ => Ok(series),
+            }
         }
         SinkKind::EncodedImage | SinkKind::Blob => {
             // Register each row's already-materialised bytes as a BinaryView

@@ -4,23 +4,19 @@ The ``.cv``, ``.point``, ``.contour`` and ``.bbox`` accessors all wrap the same
 compiled extension and previously each re-declared ``LIB_PATH``, an identical
 ``__init__(self, expr)`` and the same ``register_plugin_function(...)`` call
 shape. ``_PluginNamespace`` centralises that plumbing so each namespace method
-collapses to a single ``self._plugin(...)`` call.
+collapses to a single ``self._plugin(...)`` call, which goes through
+:func:`polars_cv._plugin.call` like every other way into the plugin.
 """
 
 from __future__ import annotations
 
 import copy
-from pathlib import Path
 from typing import Any, Callable
 
 import polars as pl
-from polars.plugins import register_plugin_function
 
+from polars_cv import _plugin
 from polars_cv._types import NullParamPolicy
-
-# The compiled extension lives alongside this module in the ``polars_cv``
-# package directory. Every namespace resolves to this same path.
-_LIB_PATH = Path(__file__).parent
 
 #: Accepted ``on_null(...)`` values, read from the Rust enum's Python mirror
 #: rather than spelled here. ``NullParamPolicy`` is registered in
@@ -33,8 +29,8 @@ class _PluginNamespace:
     """Base class for ``@pl.api.register_expr_namespace`` accessors.
 
     Stores the wrapped expression and exposes :meth:`_plugin`, which forwards
-    to :func:`polars.plugins.register_plugin_function` with the wrapped
-    expression supplied as the first plugin argument.
+    to :func:`polars_cv._plugin.call` with the wrapped expression supplied as
+    the first plugin argument.
     """
 
     def __init__(self, expr: pl.Expr) -> None:
@@ -56,9 +52,8 @@ class _PluginNamespace:
             kwargs: Static keyword arguments passed to the plugin.
             is_elementwise: Whether the function is elementwise.
         """
-        return register_plugin_function(
-            plugin_path=_LIB_PATH,
-            function_name=function_name,
+        return _plugin.call(
+            function_name,
             args=[self._expr, *(args or [])],
             kwargs=kwargs,
             is_elementwise=is_elementwise,

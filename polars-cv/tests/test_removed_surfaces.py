@@ -939,3 +939,25 @@ def test_mcclish_partial_auc_correction_is_gone() -> None:
         pl.LazyFrame({"x": [0.0, 1.0], "y": [0.0, 0.5]}).select(
             auc=_auc_expr.trapz_auc_expr(x="x", y="y", correction="mcclish")
         ).collect()
+
+
+# ---------------------------------------------------------------------------
+# LIB_PATH / _LIB_PATH: two plugin-path authorities that picked an arbitrary .so
+# ---------------------------------------------------------------------------
+
+
+def test_no_module_carries_its_own_plugin_path() -> None:
+    """``_graph.LIB_PATH`` and ``_namespace._LIB_PATH`` must not come back.
+
+    Each was the package *directory*, handed to ``register_plugin_function``,
+    which then loads the first ``.so`` that ``iterdir()`` returns — beside a
+    stale second build, an arbitrary one of the two, not necessarily the one
+    whose FFI the planner had just read. Two constants also meant two answers
+    to one question. ``polars_cv._plugin.plugin_path()`` resolves the file the
+    import system loads, and ``_plugin.call`` is the only way in (pinned by
+    ``test_only_the_plugin_module_registers_plugin_functions``).
+    """
+    from polars_cv import _graph, _namespace
+
+    assert not hasattr(_graph, "LIB_PATH"), "_graph.LIB_PATH is back"
+    assert not hasattr(_namespace, "_LIB_PATH"), "_namespace._LIB_PATH is back"
