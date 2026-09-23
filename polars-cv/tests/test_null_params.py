@@ -121,7 +121,7 @@ class TestOnNullParamNull:
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
         assert list(numpy_from_struct(out["out"][0]).shape) == [4, 4, 3]
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
         assert list(numpy_from_struct(out["out"][2]).shape) == [16, 16, 3]
 
     def test_matches_the_equivalent_literal_pipeline(self) -> None:
@@ -157,7 +157,7 @@ class TestOnNullParamNull:
         )
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_null_flag_param(self) -> None:
         kernel = [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
@@ -173,7 +173,7 @@ class TestOnNullParamNull:
         )
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_null_list_element_param(self) -> None:
         # The list *length* stays structural; a null in one element still goes
@@ -190,7 +190,7 @@ class TestOnNullParamNull:
         df = pl.DataFrame({"img": [_png(), _png()], "center": [1.0, None]})
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_broadcast_null_nulls_every_row(self) -> None:
         # A length-1 parameter series (an aggregation) applies to every row, so
@@ -241,7 +241,7 @@ class TestOnNullParamNull:
         lf = lf.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         collected = lf.collect()
         assert lf.collect_schema()["out"] == collected["out"].dtype
-        assert collected["out"][1]["data"] is None
+        assert collected["out"][1] is None
 
 
 @plugin_required
@@ -268,7 +268,7 @@ class TestScopedToTheAffectedOutput:
         assert base_field[0]["data"] is not None
         assert base_field[1]["data"] is not None
         assert resized_field[0]["data"] is not None
-        assert resized_field[1]["data"] is None
+        assert resized_field[1] is None
 
 
 @plugin_required
@@ -293,7 +293,7 @@ class TestIndependentOfOnError:
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
         assert out["out"].struct.field("_error")[1] is None
-        assert out["out"].struct.field("_output")[1]["data"] is None
+        assert out["out"].struct.field("_output")[1] is None
 
     def test_does_not_swallow_an_invalid_non_null_param(self) -> None:
         # The discriminator for over-swallowing: a *present but invalid* value
@@ -340,7 +340,7 @@ class TestIndependentOfOnError:
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]})
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
 
 @plugin_required
@@ -383,7 +383,7 @@ class TestComposition:
         df = pl.DataFrame({"img": [_png(), _png()], "h": [4, None]})
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
 
 @plugin_required
@@ -479,7 +479,7 @@ class TestNullOperandPropagation:
         )
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_null_param_in_a_merge_operand(self) -> None:
         left = pl.col("a").cv.pipe(
@@ -498,7 +498,7 @@ class TestNullOperandPropagation:
         )
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_null_bytes_in_an_apply_mask_operand(self) -> None:
         img = pl.col("a").cv.pipe(Pipeline().source("image_bytes"))
@@ -511,7 +511,7 @@ class TestNullOperandPropagation:
         )
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_null_bytes_in_a_channel_merge_operand(self) -> None:
         # channel_select yields [H, W]; grayscale would yield [H, W, 1], which
@@ -528,7 +528,7 @@ class TestNullOperandPropagation:
         )
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_one_nulled_node_feeding_two_consumers(self) -> None:
         # Both consumers must go null, and an independent branch must not.
@@ -556,7 +556,7 @@ class TestNullOperandPropagation:
         for alias in ("left", "right"):
             field = out["outs"].struct.field(alias)
             assert field[0]["data"] is not None
-            assert field[1]["data"] is None
+            assert field[1] is None
         independent = out["outs"].struct.field("other")
         assert independent[0]["data"] is not None
         assert independent[1]["data"] is not None
@@ -586,7 +586,7 @@ class TestContourSourceShapeReference:
         )
         out = df.with_columns(out=mask.sink("numpy"))
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_shape_ref_only_null_param(self) -> None:
         img = pl.col("img").cv.pipe(
@@ -604,7 +604,7 @@ class TestContourSourceShapeReference:
         )
         out = df.with_columns(out=mask.sink("numpy"))
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_null_bytes_in_the_shape_branch(self) -> None:
         img = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
@@ -617,7 +617,7 @@ class TestContourSourceShapeReference:
         )
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_null_param_in_the_shape_branch(self) -> None:
         img = pl.col("img").cv.pipe(
@@ -636,7 +636,7 @@ class TestContourSourceShapeReference:
         )
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
 
 @plugin_required
@@ -659,7 +659,7 @@ class TestSourceAndSinkParamSites:
         )
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
     def test_out_of_range_contour_source_fill_value(self) -> None:
         # Range validation for a source parameter shares the op parameters'
@@ -698,7 +698,7 @@ class TestSourceAndSinkParamSites:
         )
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
 
 
 class TestCvNamespaceHasNoOnNull:

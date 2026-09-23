@@ -110,7 +110,7 @@ class TestCacheNullSafety:
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
         assert out["out"][2]["data"] is not None
 
     def test_all_null_then_all_valid_batches(self) -> None:
@@ -249,7 +249,7 @@ class TestCacheStreaming:
         )
         for i in range(90):
             if i % 3 == 0:
-                assert out["out"][i]["data"] is None
+                assert out["out"][i] is None
             else:
                 assert out["out"][i]["data"] is not None
 

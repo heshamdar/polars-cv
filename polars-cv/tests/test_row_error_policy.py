@@ -69,7 +69,7 @@ class TestOnErrorNull:
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
         assert list(numpy_from_struct(out["out"][2]).shape) == [4, 4, 1]
 
     def test_op_stage_error_becomes_null(self) -> None:
@@ -85,7 +85,7 @@ class TestOnErrorNull:
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
 
         assert list(numpy_from_struct(out["out"][0]).shape) == [8, 8, 3]
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
         assert list(numpy_from_struct(out["out"][2]).shape) == [4, 4, 3]
 
     def test_null_input_rows_still_null(self) -> None:
@@ -95,8 +95,8 @@ class TestOnErrorNull:
         )
         out = df.with_columns(out=pl.col("img").cv.pipe(pipe).sink("numpy"))
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
-        assert out["out"][2]["data"] is None
+        assert out["out"][1] is None
+        assert out["out"][2] is None
 
     def test_streaming_engine(self) -> None:
         pipe = Pipeline().source("image_bytes").grayscale().on_error("null")
@@ -125,7 +125,7 @@ class TestOnErrorNull:
         for alias in ("base", "gray"):
             field = out["outs"].struct.field(alias)
             assert field[0]["data"] is not None
-            assert field[1]["data"] is None
+            assert field[1] is None
 
 
 @plugin_required
@@ -144,7 +144,7 @@ class TestOnErrorNullWithMessage:
 
         value = out["out"].struct.field("_output")
         assert value[0]["data"] is not None
-        assert value[1]["data"] is None
+        assert value[1] is None
 
     def test_plan_schema_matches_execution(self) -> None:
         # The `_error` field must appear identically in the planned schema
@@ -185,4 +185,4 @@ class TestOnErrorComposition:
         df = pl.DataFrame({"img": [_png(), _corrupt_png()]})
         out = df.with_columns(out=expr)
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None

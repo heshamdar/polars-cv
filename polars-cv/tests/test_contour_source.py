@@ -304,8 +304,8 @@ class TestContourSourceNullHandling:
 
         # First and third rows should have data
         assert result["mask"][0].get("data") is not None
-        # Second row should have null fields
-        assert result["mask"][1].get("data") is None
+        # Second row is a null row
+        assert result["mask"][1] is None
         # Third row should have data
         assert result["mask"][2].get("data") is not None
 
@@ -446,7 +446,7 @@ class TestContourSetSource:
         )
 
         assert result["m"][0].get("data") is not None
-        assert result["m"][1].get("data") is None
+        assert result["m"][1] is None
 
     def test_a_bare_ring_of_points_is_still_one_contour(self) -> None:
         """`List[{x, y}]` keeps meaning a single contour, not a set.

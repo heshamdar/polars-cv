@@ -265,7 +265,7 @@ class TestSourceRowNullVariety:
         outputs = [_sink_output(df, pipe, f, "numpy") for f in _all_flag_subsets()]
         # The null input row stays null in the output (numpy sink represents a
         # null row as a struct with no buffer), under every flag subset.
-        assert outputs[0][1]["data"] is None
+        assert outputs[0][1] is None
         for other in outputs[1:]:
             assert other == outputs[0]
 
@@ -280,7 +280,7 @@ class TestSourceRowNullVariety:
         out_on, out_off = _run_multi(df, pipes, on), _run_multi(df, pipes, off)
         for alias in pipes:
             assert out_on[alias] == out_off[alias]
-            assert out_on[alias][1]["data"] is None  # null row preserved
+            assert out_on[alias][1] is None  # null row preserved
 
     def test_non_image_list_source(self) -> None:
         img = [[[float(r * 4 + c)] for c in range(4)] for r in range(4)]

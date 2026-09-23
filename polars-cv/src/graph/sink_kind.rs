@@ -198,27 +198,7 @@ mod tests {
             let null = null_row_result_for_spec(&spec).unwrap();
             let series = build_series_from_spec("o".into(), &spec, vec![null])
                 .unwrap_or_else(|e| panic!("({domain}, {format}) null row failed: {e}"));
-            // The numpy/ndarray struct marks a null row by null *fields*
-            // rather than a null struct (CR-39), so read its `data` field.
-            let nulls = match kind {
-                SinkKind::NumpyStruct => series
-                    .struct_()
-                    .unwrap()
-                    .field_by_name("data")
-                    .unwrap()
-                    .null_count(),
-                SinkKind::NdArray => series
-                    .ext()
-                    .unwrap()
-                    .storage()
-                    .struct_()
-                    .unwrap()
-                    .field_by_name("data")
-                    .unwrap()
-                    .null_count(),
-                _ => series.null_count(),
-            };
-            assert_eq!(nulls, 1, "({domain}, {format})");
+            assert_eq!(series.null_count(), 1, "({domain}, {format})");
         }
     }
 

@@ -654,7 +654,15 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   make `RowResult` generic over, or indexed by, `SinkKind` so the mismatch
   cannot be constructed at all.
 
-### CR-39 — A null row in the numpy/ndarray sink is a struct of nulls, not a null · `Open` · Low
+### CR-39 — A null row in the numpy/ndarray sink is a struct of nulls, not a null · `Resolved` · Low
+
+> **Resolved.** `build_numpy_series` sets the outer struct validity as well as
+> the field nulls, so a null row of `numpy`/`torch`/`ndarray` is a null value.
+> `numpy_from_struct(None)` raises a clear `ValueError`. Guarded by
+> `tests/test_numpy_sink_nulls.py` (10 cases, watched failing). 36 existing
+> assertions of the form `row["data"] is None` pinned the removed
+> representation. They were rewritten to `row is None`, which is strictly
+> stronger, as was `test_on_error.py::test_numpy_sink_with_on_error`.
 
 - **Location:** `src/output.rs` `build_numpy_series`. The validity bitmap is
   applied to the struct's *fields*.

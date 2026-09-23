@@ -212,6 +212,11 @@ def numpy_from_struct(
     """
     import numpy as np
 
+    if row is None:
+        # A null row of the numpy/torch/ndarray sink is a null value.
+        msg = "row is null (a null input or a failed row); it has no array"
+        raise ValueError(msg)
+
     # Extract fields from struct
     if isinstance(row, dict):
         data = row.get("data")

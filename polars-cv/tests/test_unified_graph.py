@@ -339,7 +339,7 @@ class TestGraphEdgeCases:
         # With struct output, null rows have null 'data' field
         data_nulls = result["processed"].struct.field("data").null_count()
         assert data_nulls == 1
-        assert result["processed"][1].get("data") is None
+        assert result["processed"][1] is None
 
     def test_identity_pipeline(self, synthetic_image_df: pl.DataFrame) -> None:
         """Test pipeline with no operations (identity)."""

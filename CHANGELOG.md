@@ -81,6 +81,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **A null row of `sink("numpy")`/`"torch"`/`"ndarray"` is now a null value.**
+  It used to be a struct whose five fields were all null, so `is_null()` was
+  `False` and `drop_nulls()`/`null_count()` did not see it, unlike every other
+  sink. Code that tested `row["data"] is None` should test `row is None`.
+  `numpy_from_struct(None)` raises `ValueError` (CR-39).
 - **One way into the compiled plugin.** `polars_cv._plugin.call` now builds
   every plugin expression. It resolves the extension file the import system
   loads and passes that to polars; before, polars was handed the package
