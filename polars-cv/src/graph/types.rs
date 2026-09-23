@@ -306,13 +306,6 @@ impl TypedBufferData {
             view_buffer::DType::F64 => TypedBufferData::F64(buf.as_slice::<f64>().to_vec()),
         }
     }
-    /// Get the Polars DataType for this typed data.
-    ///
-    /// Reads the single `DType`→`DataType` authority (`decode::polars_dtype_for`)
-    /// rather than re-enumerating the mapping.
-    pub(crate) fn polars_dtype(&self) -> DataType {
-        crate::graph::decode::polars_dtype_for(self.dtype())
-    }
     /// The view-buffer dtype this variant holds.
     pub(crate) fn dtype(&self) -> view_buffer::DType {
         use view_buffer::DType;

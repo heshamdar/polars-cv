@@ -475,7 +475,22 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   Row semantics are already per-row, so this is behaviour-preserving. Once it
   lands, delete the engine warning instead of tuning its threshold.
 
-### CR-33 — `list` sinks of rank ≥ 2, and `array` sinks with any null row, build one `AnyValue` per element · `Open` · High (perf)
+### CR-33 — `list` sinks of rank ≥ 2, and `array` sinks with any null row, build one `AnyValue` per element · `Resolved` · High (perf)
+
+> **Resolved.** `graph/encode.rs` builds both sinks directly into Arrow: one
+> flat primitive buffer (`flat_values`), then one `ListArray` offsets level or
+> `FixedSizeListArray` level per dimension, with row nulls as the outer
+> validity. The `AnyValue` builders, the typed `ListPrimitiveChunkedBuilder`
+> family, `extract_as_*`, `slice_typed_data`, the flat "fast path" and the
+> now-unused `TypedBufferData::polars_dtype` are deleted. A later row of the
+> wrong dtype was silently cast, an `array` row of the wrong element count was
+> accepted, and an unrecognised dtype string fell back to the first row's.
+> All three are now errors. Guarded by `encode.rs::tensor_sink_tests` (the
+> strictness cases were watched failing) and the slow-lane
+> `tests/test_sink_cost_ratio.py`, which fails at 23–27× on the old code and
+> bounds each sink at 5× the numpy sink. After the fix, with streaming: numpy
+> 4.3 ms, rank-3 list 5.3 ms, array with a null row 3.7 ms. The
+> `to_contiguous` + `to_vec` copy in `typed_list_of`/`typed_array_of` remains.
 
 - **Location:** `graph/encode.rs`
   `build_typed_nested_list_series_from_rows_with_dtype` /

@@ -6,11 +6,10 @@
 //! - Building typed list/array series from row data
 //! - Converting contours to Polars representations
 
-use polars::chunked_array::builder::ListPrimitiveChunkedBuilder;
 use polars::prelude::*;
 use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Contour};
 use view_buffer::ops::NodeOutput;
-use view_buffer::{GeometryOp, Op, PlannedDType, ViewBuffer};
+use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
 
 use crate::contour::contour_to_anyvalue;
 
@@ -159,86 +158,108 @@ pub(crate) fn execute_geometry_op(
 }
 /// Helper type for list row data: (TypedBufferData, shape)
 pub(crate) type TypedListRow = Option<(TypedBufferData, Vec<usize>)>;
-macro_rules! impl_typed_list_builder {
-    ($name:ident, $polars_type:ty, $extract:expr) => {
-        fn $name(name: PlSmallStr, rows: &[TypedListRow]) -> PolarsResult<Series> {
-            let mut builder = ListPrimitiveChunkedBuilder::<$polars_type>::new(
-                name,
-                rows.len(),
-                64,
-                <$polars_type>::get_static_dtype(),
-            );
-            for row in rows.iter() {
-                if let Some((typed_data, _shape)) = row {
-                    let vals = $extract(typed_data);
-                    builder.append_slice(&vals);
-                } else {
-                    builder.append_null();
+
+// The tensor sinks (`list`, `array`) are built straight into Arrow: one flat
+// primitive values buffer holding every row, wrapped in one offsets (list) or
+// fixed-size (array) level per dimension, with the row nulls as the outermost
+// validity. Each value is copied once, from the row into the flat buffer.
+//
+// They used to build one `AnyValue` per *element* whenever the column was not
+// perfectly regular — every rank >= 2 list sink, and any array sink with a single
+// null row — which made those sinks ~34-40x slower than the numpy sink (CR-33).
+// There is no slow path to fall back to: an irregular row is either
+// representable here (ragged list rows, null rows) or an error.
+
+/// The element dtype a tensor sink column is built with.
+///
+/// The planner's dtype when it declared one; only for `"auto"` — which
+/// `dtype_for_output` refuses for a planned typed sink, so only direct callers
+/// of the executor reach it — the first row's. Every row must then carry
+/// exactly this dtype (see [`flat_values`]).
+fn element_dtype(rows: &[TypedListRow], dtype_str: &str) -> PolarsResult<DType> {
+    let first_row = || rows.iter().find_map(|r| r.as_ref()).map(|(d, _)| d.dtype());
+    match PlannedDType::parse(dtype_str) {
+        Some(PlannedDType::Known(dtype)) => Ok(dtype),
+        Some(PlannedDType::Unknown | PlannedDType::SomeFloat) if first_row().is_some() => {
+            Ok(first_row().unwrap())
+        }
+        // An unrecognised spelling, or a sentinel with no row to resolve it:
+        // `dtype_str_to_polars` owns the explanation, and errors for both.
+        _ => Err(dtype_str_to_polars(dtype_str)
+            .err()
+            .unwrap_or_else(|| polars_err!(ComputeError: "unresolvable dtype '{dtype_str}'"))),
+    }
+}
+
+/// Concatenate every row's values into one primitive Arrow array.
+///
+/// `null_fill` is the number of placeholder elements a null row occupies:
+/// `None` for a list (a null row is a zero-length slot), the fixed element
+/// count for an array (every slot has the same size, so a null row is a
+/// validity bit over zeroed values).
+///
+/// A row whose values are not `dtype` is an error, never a cast: the column's
+/// dtype is the plan's promise, and a row that breaks it is a contract bug.
+fn flat_values(
+    rows: &[TypedListRow],
+    dtype: DType,
+    null_fill: Option<usize>,
+) -> PolarsResult<Box<dyn polars_arrow::array::Array>> {
+    use polars_arrow::array::PrimitiveArray;
+    let total: usize = rows
+        .iter()
+        .map(|r| match r {
+            Some((data, _)) => data.len(),
+            None => null_fill.unwrap_or(0),
+        })
+        .sum();
+    macro_rules! flat {
+        ($variant:ident, $t:ty) => {{
+            let mut flat: Vec<$t> = Vec::with_capacity(total);
+            for (i, row) in rows.iter().enumerate() {
+                match row {
+                    Some((TypedBufferData::$variant(values), _)) => flat.extend_from_slice(values),
+                    Some((other, _)) => polars_bail!(ComputeError:
+                        "row {} produced {} but the column was planned as {}. The \
+                         planner's dtype contract disagrees with the Rust implementation.",
+                        i, other.dtype_str(), dtype.short_name()
+                    ),
+                    None => flat.resize(flat.len() + null_fill.unwrap_or(0), <$t>::default()),
                 }
             }
-            Ok(builder.finish().into_series())
-        }
-    };
-}
-macro_rules! impl_extract_as {
-    ($name:ident, $target:ty, $variant:ident) => {
-        #[allow(unreachable_patterns)]
-        fn $name(data: &TypedBufferData) -> Vec<$target> {
-            match data {
-                TypedBufferData::$variant(v) => v.clone(),
-                TypedBufferData::U8(v) => v.iter().map(|&x| x as $target).collect(),
-                TypedBufferData::I8(v) => v.iter().map(|&x| x as $target).collect(),
-                TypedBufferData::U16(v) => v.iter().map(|&x| x as $target).collect(),
-                TypedBufferData::I16(v) => v.iter().map(|&x| x as $target).collect(),
-                TypedBufferData::U32(v) => v.iter().map(|&x| x as $target).collect(),
-                TypedBufferData::I32(v) => v.iter().map(|&x| x as $target).collect(),
-                TypedBufferData::U64(v) => v.iter().map(|&x| x as $target).collect(),
-                TypedBufferData::I64(v) => v.iter().map(|&x| x as $target).collect(),
-                TypedBufferData::F32(v) => v.iter().map(|&x| x as $target).collect(),
-                TypedBufferData::F64(v) => v.iter().map(|&x| x as $target).collect(),
-            }
-        }
-    };
-}
-impl_extract_as!(extract_as_u8, u8, U8);
-impl_extract_as!(extract_as_i8, i8, I8);
-impl_extract_as!(extract_as_u16, u16, U16);
-impl_extract_as!(extract_as_i16, i16, I16);
-impl_extract_as!(extract_as_u32, u32, U32);
-impl_extract_as!(extract_as_i32, i32, I32);
-impl_extract_as!(extract_as_u64, u64, U64);
-impl_extract_as!(extract_as_i64, i64, I64);
-impl_extract_as!(extract_as_f32, f32, F32);
-impl_extract_as!(extract_as_f64, f64, F64);
-fn build_typed_list_u8(name: PlSmallStr, rows: &[TypedListRow]) -> PolarsResult<Series> {
-    let mut builder =
-        ListPrimitiveChunkedBuilder::<UInt8Type>::new(name, rows.len(), 64, DataType::UInt8);
-    for row in rows.iter() {
-        if let Some((typed_data, _shape)) = row {
-            let vals = extract_as_u8(typed_data);
-            builder.append_slice(&vals);
-        } else {
-            builder.append_null();
-        }
+            Box::new(PrimitiveArray::<$t>::from_vec(flat)) as Box<dyn polars_arrow::array::Array>
+        }};
     }
-    Ok(builder.finish().into_series())
+    Ok(match dtype {
+        DType::U8 => flat!(U8, u8),
+        DType::I8 => flat!(I8, i8),
+        DType::U16 => flat!(U16, u16),
+        DType::I16 => flat!(I16, i16),
+        DType::U32 => flat!(U32, u32),
+        DType::I32 => flat!(I32, i32),
+        DType::U64 => flat!(U64, u64),
+        DType::I64 => flat!(I64, i64),
+        DType::F32 => flat!(F32, f32),
+        DType::F64 => flat!(F64, f64),
+    })
 }
-impl_typed_list_builder!(build_typed_list_i8, Int8Type, extract_as_i8);
-impl_typed_list_builder!(build_typed_list_u16, UInt16Type, extract_as_u16);
-impl_typed_list_builder!(build_typed_list_i16, Int16Type, extract_as_i16);
-impl_typed_list_builder!(build_typed_list_u32, UInt32Type, extract_as_u32);
-impl_typed_list_builder!(build_typed_list_i32, Int32Type, extract_as_i32);
-impl_typed_list_builder!(build_typed_list_u64, UInt64Type, extract_as_u64);
-impl_typed_list_builder!(build_typed_list_i64, Int64Type, extract_as_i64);
-impl_typed_list_builder!(build_typed_list_f32, Float32Type, extract_as_f32);
-impl_typed_list_builder!(build_typed_list_f64, Float64Type, extract_as_f64);
+
+/// Row validity as a bitmap, or `None` when no row is null.
+fn row_validity(rows: &[TypedListRow]) -> Option<polars_arrow::bitmap::Bitmap> {
+    if rows.iter().all(Option::is_some) {
+        return None;
+    }
+    Some(rows.iter().map(Option::is_some).collect())
+}
+
 /// Build a typed list series from the planner's declared dtype and rank.
 ///
 /// The `_with_dtype` suffix is historical: it distinguished this from a
 /// sibling that inferred the dtype from the data, and that sibling is gone.
 /// Nothing here infers anything — the element dtype and the nesting depth both
 /// come from the `OutputSpec` the lazy schema was published from, which is the
-/// only way the produced column can be guaranteed to match it.
+/// only way the produced column can be guaranteed to match it. Rows may be
+/// ragged (each carries its own shape) but every row must have the planned rank.
 pub(super) fn build_typed_list_series_from_rows_with_dtype(
     name: PlSmallStr,
     rows: &[TypedListRow],
@@ -246,174 +267,61 @@ pub(super) fn build_typed_list_series_from_rows_with_dtype(
     expected_shape: Option<&Vec<usize>>,
     expected_ndim: Option<usize>,
 ) -> PolarsResult<Series> {
-    // The *spec* is the authority here, not the data.
-    //
-    // This function used to take the element dtype and the nesting depth from
-    // the first non-null row, falling back to the spec only when every row was
-    // null. That inverts the contract: `dtype_str`, `expected_shape` and
-    // `expected_ndim` are what the planner already published in the lazy
-    // schema, and a column built to match the data instead is exactly how a
-    // query comes to collect to something other than what `collect_schema()`
-    // promised. It also made the outcome depend on *where the nulls fall* —
-    // an all-null column honoured the plan while the same pipeline with one
-    // value in it did not.
-    //
-    // A row whose data contradicts the spec is a bug to surface, not to
-    // follow, so the disagreement is an error rather than a silent
-    // reinterpretation.
-    let first_row = rows.iter().find_map(|r| r.as_ref());
+    use polars_arrow::array::ListArray;
+    use polars_arrow::offset::{Offsets, OffsetsBuffer};
 
-    // `"auto"` means the planner declared no element dtype, so there is no
-    // promise here to violate and the data is the only thing to go on. That is
-    // not the loophole it looks like: `dtype_for_output` refuses `"auto"` for
-    // the typed list and array sinks, so a *planned* query never arrives here
-    // with it — only direct callers of the graph executor do, such as the
-    // hand-written JSON graphs in the unit tests. `validate_output_schema`
-    // draws the line in the same place and for the same reason.
-    let dtype_str = if !PlannedDType::parse(dtype_str).is_some_and(|d| d.is_concrete()) {
-        first_row
-            .map(|(data, _)| data.dtype_str())
-            .unwrap_or(dtype_str)
-    } else {
-        if let Some((data, _)) = first_row {
-            if data.dtype_str() != dtype_str {
-                return Err(polars_err!(
-                    ComputeError:
-                    "planned element dtype {} but execution produced {}. The planner's \
-                     dtype contract disagrees with the Rust implementation.",
-                    dtype_str,
-                    data.dtype_str()
-                ));
-            }
-        }
-        dtype_str
-    };
-
+    let dtype = element_dtype(rows, dtype_str)?;
+    // `dtype_for_output` refuses a list sink whose rank it cannot name, so a
+    // planned query always reaches here with one. The row fallback keeps a
+    // direct (unplanned) caller working; only a genuinely rankless call fails.
     let ndim = expected_shape
         .map(|shape| shape.len())
         .or(expected_ndim)
-        .or_else(|| first_row.map(|(_, s)| s.len()));
-    // `dtype_for_output` refuses a list sink whose rank it cannot name, so a
-    // planned query always reaches here with one. The row fallback above keeps
-    // any non-graph caller working; only a genuinely rankless call fails.
-    let Some(ndim) = ndim else {
-        return Err(polars_err!(
-            ComputeError: "cannot build a list series without a known output rank"
-        ));
+        .or_else(|| rows.iter().find_map(|r| r.as_ref()).map(|(_, s)| s.len()));
+    let Some(ndim) = ndim.filter(|&n| n > 0) else {
+        polars_bail!(ComputeError: "cannot build a list series without a known output rank");
     };
+    for (i, row) in rows.iter().enumerate() {
+        if let Some((data, shape)) = row {
+            polars_ensure!(
+                shape.len() == ndim && shape.iter().product::<usize>() == data.len(),
+                ComputeError:
+                "row {} has shape {:?} ({} values) but the list column was planned with rank {}",
+                i, shape, data.len(), ndim
+            );
+        }
+    }
 
-    if ndim > 1 {
-        // The nested builder uses shape.len() for recursion depth; the actual
-        // sizes only matter for non-null rows, which carry their own shape.
-        let effective_shape = expected_shape
-            .cloned()
-            .or_else(|| first_row.map(|(_, s)| s.clone()))
-            .unwrap_or_else(|| vec![0; ndim]);
-        return build_typed_nested_list_series_from_rows_with_dtype(
-            name,
-            rows,
-            dtype_str,
-            &effective_shape,
-        );
-    }
-    match dtype_str {
-        "u8" => build_typed_list_u8(name, rows),
-        "i8" => build_typed_list_i8(name, rows),
-        "u16" => build_typed_list_u16(name, rows),
-        "i16" => build_typed_list_i16(name, rows),
-        "u32" => build_typed_list_u32(name, rows),
-        "i32" => build_typed_list_i32(name, rows),
-        "u64" => build_typed_list_u64(name, rows),
-        "i64" => build_typed_list_i64(name, rows),
-        "f32" => build_typed_list_f32(name, rows),
-        "f64" => build_typed_list_f64(name, rows),
-        // Not a fallback: building a u8 list for an unrecognised dtype would
-        // reinterpret every element and hand back a plausible-looking wrong
-        // answer. The dtype string is produced upstream by `dtype_table!`, so
-        // reaching this arm means the two have drifted.
-        other => Err(polars_err!(
-            ComputeError: "unknown dtype {} when building a list series", other
-        )),
-    }
-}
-/// Build a nested List series preserving multi-dimensional shape.
-///
-/// This function creates nested List types (List[List[...]]) that match
-/// the buffer's shape dimensions, preserving the structure of multi-dimensional data.
-fn build_typed_nested_list_series_from_rows_with_dtype(
-    name: PlSmallStr,
-    rows: &[TypedListRow],
-    dtype_str: &str,
-    shape: &[usize],
-) -> PolarsResult<Series> {
-    let inner_dtype = dtype_str_to_polars(dtype_str)?;
-    let mut dtype = inner_dtype.clone();
-    for _dim in shape.iter().rev() {
-        dtype = DataType::List(Box::new(dtype));
-    }
-    let values: PolarsResult<Vec<AnyValue<'static>>> = rows
-        .iter()
-        .map(|r| {
-            if let Some((typed_data, row_shape)) = r {
-                build_typed_nested_list_value(typed_data, row_shape)
-            } else {
-                Ok(AnyValue::Null)
+    // Innermost level first: level `k` holds, for every row, prod(shape[..k])
+    // lists of length shape[k]. Level 0 is one list per row and carries the
+    // row nulls.
+    let mut array = flat_values(rows, dtype, None)?;
+    for level in (0..ndim).rev() {
+        let mut lengths: Vec<usize> = Vec::new();
+        for row in rows {
+            match row {
+                Some((_, shape)) => {
+                    let repeats: usize = shape[..level].iter().product();
+                    lengths.extend(std::iter::repeat_n(shape[level], repeats));
+                }
+                None if level == 0 => lengths.push(0),
+                None => {}
             }
-        })
-        .collect();
-    let values = values?;
-    Series::from_any_values_and_dtype(name, &values, &dtype, true)
+        }
+        let offsets: OffsetsBuffer<i64> =
+            Offsets::<i64>::try_from_lengths(lengths.into_iter())?.into();
+        let validity = if level == 0 { row_validity(rows) } else { None };
+        let arrow_dtype = ListArray::<i64>::default_datatype(array.dtype().clone());
+        array = Box::new(ListArray::<i64>::try_new(
+            arrow_dtype,
+            offsets,
+            array,
+            validity,
+        )?);
+    }
+    Series::from_arrow(name, array)
 }
-/// Build a nested List AnyValue from typed data and shape.
-///
-/// Recursively builds nested List structures matching the shape dimensions.
-/// Similar to `build_typed_nested_array_value` but creates variable-length
-/// List types instead of fixed-size Array types.
-fn build_typed_nested_list_value(
-    data: &TypedBufferData,
-    shape: &[usize],
-) -> PolarsResult<AnyValue<'static>> {
-    if shape.is_empty() {
-        return Ok(AnyValue::Null);
-    }
-    if shape.len() == 1 {
-        let inner_dtype = data.polars_dtype();
-        let values: Vec<AnyValue<'static>> = match data {
-            TypedBufferData::U8(vals) => vals.iter().map(|&v| AnyValue::UInt8(v)).collect(),
-            TypedBufferData::I8(vals) => vals.iter().map(|&v| AnyValue::Int8(v)).collect(),
-            TypedBufferData::U16(vals) => vals.iter().map(|&v| AnyValue::UInt16(v)).collect(),
-            TypedBufferData::I16(vals) => vals.iter().map(|&v| AnyValue::Int16(v)).collect(),
-            TypedBufferData::U32(vals) => vals.iter().map(|&v| AnyValue::UInt32(v)).collect(),
-            TypedBufferData::I32(vals) => vals.iter().map(|&v| AnyValue::Int32(v)).collect(),
-            TypedBufferData::U64(vals) => vals.iter().map(|&v| AnyValue::UInt64(v)).collect(),
-            TypedBufferData::I64(vals) => vals.iter().map(|&v| AnyValue::Int64(v)).collect(),
-            TypedBufferData::F32(vals) => vals.iter().map(|&v| AnyValue::Float32(v)).collect(),
-            TypedBufferData::F64(vals) => vals.iter().map(|&v| AnyValue::Float64(v)).collect(),
-        };
-        let series =
-            Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &values, &inner_dtype, true)?;
-        return Ok(AnyValue::List(series));
-    }
-    let outer_dim = shape[0];
-    let inner_shape = &shape[1..];
-    let inner_size: usize = inner_shape.iter().product();
-    let mut inner_values: Vec<AnyValue<'static>> = Vec::with_capacity(outer_dim);
-    for i in 0..outer_dim {
-        let start = i * inner_size;
-        let end = start + inner_size;
-        let inner_data = slice_typed_data(data, start, end);
-        let inner_val = build_typed_nested_list_value(&inner_data, inner_shape)?;
-        inner_values.push(inner_val);
-    }
-    let base_dtype = data.polars_dtype();
-    let mut inner_dtype = base_dtype;
-    for _dim in inner_shape.iter().rev() {
-        inner_dtype = DataType::List(Box::new(inner_dtype));
-    }
-    let series =
-        Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &inner_values, &inner_dtype, true)?;
-    Ok(AnyValue::List(series))
-}
+
 /// Build a typed fixed-size array series from the planner's dtype and shape.
 ///
 /// As above, the `_with_dtype` suffix names a distinction that no longer
@@ -427,176 +335,55 @@ pub(super) fn build_typed_array_series_from_rows_with_dtype(
     sink_shape: &Option<Vec<usize>>,
     expected_shape: Option<&Vec<usize>>,
 ) -> PolarsResult<Series> {
+    use polars_arrow::array::FixedSizeListArray;
+
     // Spec first, and no data fallback: an `array` sink's whole point is a
     // fixed shape published at plan time. Taking it from the first non-null row
     // would make the column's dtype depend on which row happened to arrive
     // first — and `dtype_for_output` has already refused any array sink whose
     // shape it could not name, so a planned query always supplies one here.
     let shape = sink_shape.clone().or_else(|| expected_shape.cloned());
-    let Some(shape) = shape else {
+    let Some(shape) = shape.filter(|s| !s.is_empty()) else {
         // Not user-facing advice: `dtype_for_output` reads the same two fields
         // and refuses first, so reaching here means the schema half and the
         // encode half disagreed about the same `OutputSpec`. Restating the
         // "how to supply a shape" guidance here made this a second copy of it,
         // which would drift — and would tell the user to fix something they
         // cannot, because a query that got this far already passed the check.
-        return Err(polars_err!(ComputeError:
+        polars_bail!(ComputeError:
             "internal: the array sink reached encoding with no shape, which \
              dtype_for_output refuses. The schema and encode halves of the sink \
              contract disagree about this output."
-        ));
+        );
     };
-    // Fast path: every row present with exactly the target element count —
-    // concatenate the flat values once and reshape into the nested Array.
-    // The fallback builds one AnyValue per ELEMENT (a 224x224x3 tensor is
-    // ~150k enum values plus recursive sub-Series per row), which dominated
-    // sink time for tensor outputs.
-    if let Some(series) = try_build_array_series_flat(name.clone(), rows, dtype_str, &shape)? {
-        return Ok(series);
-    }
-    let inner_dtype = dtype_str_to_polars(dtype_str)?;
-    let mut dtype = inner_dtype.clone();
-    for &dim in shape.iter().rev() {
-        dtype = DataType::Array(Box::new(dtype), dim);
-    }
-    let values: PolarsResult<Vec<AnyValue<'static>>> = rows
-        .iter()
-        .map(|r| {
-            if let Some((typed_data, row_shape)) = r {
-                build_typed_nested_array_value(typed_data, row_shape)
-            } else {
-                Ok(AnyValue::Null)
-            }
-        })
-        .collect();
-    let values = values?;
-    Series::from_any_values_and_dtype(name, &values, &dtype, true)
-}
-
-/// Flat construction of an Array-sink series: one values buffer + reshape.
-///
-/// Applies only when no row is null and every row's data length matches the
-/// target shape's element count (any irregularity falls back to the
-/// per-element `AnyValue` path, which handles nulls and per-row validation).
-fn try_build_array_series_flat(
-    name: PlSmallStr,
-    rows: &[TypedListRow],
-    dtype_str: &str,
-    shape: &[usize],
-) -> PolarsResult<Option<Series>> {
+    let dtype = element_dtype(rows, dtype_str)?;
     let expected_len: usize = shape.iter().product();
-    if rows.is_empty() || expected_len == 0 {
-        return Ok(None);
-    }
-    let all_regular = rows.iter().all(|r| match r {
-        Some((data, _)) => data.len() == expected_len && data.dtype_str() == dtype_str,
-        None => false,
-    });
-    if !all_regular {
-        return Ok(None);
+    for (i, row) in rows.iter().enumerate() {
+        if let Some((data, _)) = row {
+            polars_ensure!(
+                data.len() == expected_len,
+                ComputeError:
+                "row {} has {} values but the array column was planned with shape {:?} ({} values)",
+                i, data.len(), shape, expected_len
+            );
+        }
     }
 
-    macro_rules! concat_rows {
-        ($variant:ident) => {{
-            let mut flat = Vec::with_capacity(rows.len() * expected_len);
-            for row in rows {
-                let Some((TypedBufferData::$variant(values), _)) = row else {
-                    return Ok(None);
-                };
-                flat.extend_from_slice(values);
-            }
-            Series::new(name, flat)
-        }};
+    // Innermost dimension first; level `k` holds rows * prod(shape[..k]) slots
+    // of size shape[k]. Lengths are explicit so a zero-sized dimension works.
+    let mut array = flat_values(rows, dtype, Some(expected_len))?;
+    for level in (0..shape.len()).rev() {
+        let length = rows.len() * shape[..level].iter().product::<usize>();
+        let validity = if level == 0 { row_validity(rows) } else { None };
+        let arrow_dtype = FixedSizeListArray::default_datatype(array.dtype().clone(), shape[level]);
+        array = Box::new(FixedSizeListArray::try_new(
+            arrow_dtype,
+            length,
+            array,
+            validity,
+        )?);
     }
-    let first_variant = rows[0].as_ref().map(|(d, _)| d.dtype_str()).unwrap_or("");
-    let flat_series = match first_variant {
-        "u8" => concat_rows!(U8),
-        "i8" => concat_rows!(I8),
-        "u16" => concat_rows!(U16),
-        "i16" => concat_rows!(I16),
-        "u32" => concat_rows!(U32),
-        "i32" => concat_rows!(I32),
-        "u64" => concat_rows!(U64),
-        "i64" => concat_rows!(I64),
-        "f32" => concat_rows!(F32),
-        "f64" => concat_rows!(F64),
-        _ => return Ok(None),
-    };
-
-    let mut dims = Vec::with_capacity(shape.len() + 1);
-    dims.push(ReshapeDimension::new(rows.len() as i64));
-    dims.extend(shape.iter().map(|&d| ReshapeDimension::new(d as i64)));
-    flat_series.reshape_array(&dims).map(Some)
-}
-/// Build a nested Array AnyValue from typed data and shape.
-fn build_typed_nested_array_value(
-    data: &TypedBufferData,
-    shape: &[usize],
-) -> PolarsResult<AnyValue<'static>> {
-    if shape.is_empty() {
-        return Ok(AnyValue::Null);
-    }
-    if shape.len() == 1 {
-        let width = shape[0];
-        let inner_dtype = data.polars_dtype();
-        let values: Vec<AnyValue<'static>> = match data {
-            TypedBufferData::U8(vals) => vals.iter().map(|&v| AnyValue::UInt8(v)).collect(),
-            TypedBufferData::I8(vals) => vals.iter().map(|&v| AnyValue::Int8(v)).collect(),
-            TypedBufferData::U16(vals) => vals.iter().map(|&v| AnyValue::UInt16(v)).collect(),
-            TypedBufferData::I16(vals) => vals.iter().map(|&v| AnyValue::Int16(v)).collect(),
-            TypedBufferData::U32(vals) => vals.iter().map(|&v| AnyValue::UInt32(v)).collect(),
-            TypedBufferData::I32(vals) => vals.iter().map(|&v| AnyValue::Int32(v)).collect(),
-            TypedBufferData::U64(vals) => vals.iter().map(|&v| AnyValue::UInt64(v)).collect(),
-            TypedBufferData::I64(vals) => vals.iter().map(|&v| AnyValue::Int64(v)).collect(),
-            TypedBufferData::F32(vals) => vals.iter().map(|&v| AnyValue::Float32(v)).collect(),
-            TypedBufferData::F64(vals) => vals.iter().map(|&v| AnyValue::Float64(v)).collect(),
-        };
-        let series =
-            Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &values, &inner_dtype, true)?;
-        return Ok(AnyValue::Array(series, width));
-    }
-    let outer_dim = shape[0];
-    let inner_shape = &shape[1..];
-    let inner_size: usize = inner_shape.iter().product();
-    let mut inner_values: Vec<AnyValue<'static>> = Vec::with_capacity(outer_dim);
-    for i in 0..outer_dim {
-        let start = i * inner_size;
-        let end = start + inner_size;
-        let inner_data = slice_typed_data(data, start, end);
-        let inner_val = build_typed_nested_array_value(&inner_data, inner_shape)?;
-        inner_values.push(inner_val);
-    }
-    let base_dtype = data.polars_dtype();
-    let mut inner_dtype = base_dtype;
-    for &dim in inner_shape.iter().rev() {
-        inner_dtype = DataType::Array(Box::new(inner_dtype), dim);
-    }
-    let series =
-        Series::from_any_values_and_dtype(PlSmallStr::EMPTY, &inner_values, &inner_dtype, true)?;
-    Ok(AnyValue::Array(series, outer_dim))
-}
-/// Slice typed buffer data by index range.
-///
-/// # Panics
-/// Panics if `start > end` or `end > data.len()`.
-fn slice_typed_data(data: &TypedBufferData, start: usize, end: usize) -> TypedBufferData {
-    let len = data.len();
-    assert!(
-        start <= end && end <= len,
-        "slice_typed_data: bounds check failed: start={start}, end={end}, len={len}"
-    );
-    match data {
-        TypedBufferData::U8(vals) => TypedBufferData::U8(vals[start..end].to_vec()),
-        TypedBufferData::I8(vals) => TypedBufferData::I8(vals[start..end].to_vec()),
-        TypedBufferData::U16(vals) => TypedBufferData::U16(vals[start..end].to_vec()),
-        TypedBufferData::I16(vals) => TypedBufferData::I16(vals[start..end].to_vec()),
-        TypedBufferData::U32(vals) => TypedBufferData::U32(vals[start..end].to_vec()),
-        TypedBufferData::I32(vals) => TypedBufferData::I32(vals[start..end].to_vec()),
-        TypedBufferData::U64(vals) => TypedBufferData::U64(vals[start..end].to_vec()),
-        TypedBufferData::I64(vals) => TypedBufferData::I64(vals[start..end].to_vec()),
-        TypedBufferData::F32(vals) => TypedBufferData::F32(vals[start..end].to_vec()),
-        TypedBufferData::F64(vals) => TypedBufferData::F64(vals[start..end].to_vec()),
-    }
+    Series::from_arrow(name, array)
 }
 /// The buffer behind a node output, or an error naming what was there instead.
 fn require_buffer<'a>(
@@ -1006,5 +793,199 @@ mod tests {
         let b_pos = order.iter().position(|x| x == "b").unwrap();
         let a_pos = order.iter().position(|x| x == "a").unwrap();
         assert!(b_pos > a_pos);
+    }
+}
+
+/// The tensor sinks (`list`, `array`) are built straight from one flat values
+/// buffer — never element by element through `AnyValue`, which made a rank-3
+/// `list` sink ~34x, and an `array` sink with a single null row ~40x, slower
+/// than the zero-copy numpy sink (CR-33).
+#[cfg(test)]
+mod tensor_sink_tests {
+    use super::{
+        build_typed_array_series_from_rows_with_dtype,
+        build_typed_list_series_from_rows_with_dtype, TypedListRow,
+    };
+    use crate::graph::types::TypedBufferData;
+    use polars::prelude::*;
+
+    fn u8_row(start: u8, shape: &[usize]) -> TypedListRow {
+        let n: usize = shape.iter().product();
+        Some((
+            TypedBufferData::U8((0..n).map(|i| start.wrapping_add(i as u8)).collect()),
+            shape.to_vec(),
+        ))
+    }
+
+    const EXPLODE: ExplodeOptions = ExplodeOptions {
+        empty_as_null: false,
+        keep_nulls: true,
+    };
+
+    /// Explode every nesting level, returning the flat leaf values.
+    fn leaves(series: &Series, depth: usize) -> Vec<Option<u8>> {
+        let mut s = series.clone();
+        for _ in 0..depth {
+            s = match s.dtype() {
+                DataType::Array(_, _) => s.array().unwrap().explode(EXPLODE).unwrap(),
+                _ => s.list().unwrap().explode(EXPLODE).unwrap(),
+            };
+        }
+        s.u8().unwrap().iter().collect()
+    }
+
+    fn nested(dtype: DataType, depth: usize, array_dims: Option<&[usize]>) -> DataType {
+        let mut dt = dtype;
+        for level in (0..depth).rev() {
+            dt = match array_dims {
+                Some(dims) => DataType::Array(Box::new(dt), dims[level]),
+                None => DataType::List(Box::new(dt)),
+            };
+        }
+        dt
+    }
+
+    #[test]
+    fn array_sink_with_a_null_row_keeps_values_and_the_null() {
+        let shape = vec![2, 2, 3];
+        let rows = vec![u8_row(0, &shape), None, u8_row(100, &shape)];
+        let s = build_typed_array_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            "u8",
+            &Some(shape.clone()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.dtype(), &nested(DataType::UInt8, 3, Some(&shape)));
+        assert_eq!(s.len(), 3);
+        assert_eq!(s.null_count(), 1);
+        assert!(s.get(1).unwrap().is_null());
+        let non_null = s.drop_nulls();
+        let flat: Vec<u8> = leaves(&non_null, 3)
+            .into_iter()
+            .map(Option::unwrap)
+            .collect();
+        let expected: Vec<u8> = (0..12u8).chain(100..112u8).collect();
+        assert_eq!(flat, expected);
+    }
+
+    #[test]
+    fn list_sink_rank3_ragged_rows_with_a_null() {
+        let rows = vec![u8_row(0, &[2, 1, 3]), None, u8_row(50, &[1, 2, 3])];
+        let s =
+            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "u8", None, Some(3))
+                .unwrap();
+        assert_eq!(s.dtype(), &nested(DataType::UInt8, 3, None));
+        assert_eq!(s.len(), 3);
+        assert!(s.get(1).unwrap().is_null());
+        // Outer lengths are each row's own first dimension.
+        let outer: Vec<Option<u32>> = s.list().unwrap().lst_lengths().iter().collect();
+        assert_eq!(outer[0], Some(2));
+        assert_eq!(outer[2], Some(1));
+        let flat: Vec<u8> = leaves(&s.drop_nulls(), 3)
+            .into_iter()
+            .map(Option::unwrap)
+            .collect();
+        let expected: Vec<u8> = (0..6u8).chain(50..56u8).collect();
+        assert_eq!(flat, expected);
+    }
+
+    #[test]
+    fn list_sink_rank1_with_a_null() {
+        let rows = vec![u8_row(1, &[3]), None, u8_row(9, &[2])];
+        let s =
+            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "u8", None, Some(1))
+                .unwrap();
+        assert_eq!(s.dtype(), &DataType::List(Box::new(DataType::UInt8)));
+        assert!(s.get(1).unwrap().is_null());
+        let flat: Vec<u8> = leaves(&s.drop_nulls(), 1)
+            .into_iter()
+            .map(Option::unwrap)
+            .collect();
+        assert_eq!(flat, vec![1, 2, 3, 9, 10]);
+    }
+
+    #[test]
+    fn a_later_row_with_another_dtype_is_an_error_not_a_cast() {
+        let rows = vec![
+            u8_row(0, &[2]),
+            Some((TypedBufferData::F32(vec![0.5, 1.5]), vec![2])),
+        ];
+        let list =
+            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "u8", None, Some(1));
+        assert!(list.is_err(), "list sink cast a f32 row to u8: {list:?}");
+        let array = build_typed_array_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            "u8",
+            &Some(vec![2]),
+            None,
+        );
+        assert!(
+            array.is_err(),
+            "array sink accepted a f32 row as u8: {array:?}"
+        );
+    }
+
+    #[test]
+    fn array_row_with_the_wrong_element_count_is_an_error() {
+        let rows = vec![u8_row(0, &[2, 3]), u8_row(0, &[2, 2])];
+        let r = build_typed_array_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            "u8",
+            &Some(vec![2, 3]),
+            None,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn list_row_with_the_wrong_rank_is_an_error() {
+        let rows = vec![u8_row(0, &[2, 3]), u8_row(0, &[6])];
+        let r =
+            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "u8", None, Some(2));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn an_unrecognised_dtype_is_an_error_even_with_rows() {
+        let rows = vec![u8_row(0, &[2])];
+        let list =
+            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "uint8", None, Some(1));
+        assert!(
+            list.is_err(),
+            "unrecognised dtype fell back to the row: {list:?}"
+        );
+        let array = build_typed_array_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            "uint8",
+            &Some(vec![2]),
+            None,
+        );
+        assert!(array.is_err());
+    }
+
+    #[test]
+    fn all_null_rows_keep_the_planned_nesting() {
+        let rows: Vec<TypedListRow> = vec![None, None];
+        let list =
+            build_typed_list_series_from_rows_with_dtype("o".into(), &rows, "f32", None, Some(3))
+                .unwrap();
+        assert_eq!(list.dtype(), &nested(DataType::Float32, 3, None));
+        assert_eq!(list.null_count(), 2);
+        let shape = vec![2, 2, 1];
+        let array = build_typed_array_series_from_rows_with_dtype(
+            "o".into(),
+            &rows,
+            "f32",
+            &Some(shape.clone()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(array.dtype(), &nested(DataType::Float32, 3, Some(&shape)));
+        assert_eq!(array.null_count(), 2);
     }
 }
