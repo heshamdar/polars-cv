@@ -424,40 +424,42 @@ fn get_primitive_values(
         Some((array, accumulated_size))
     }
 }
-/// Get the underlying buffer from a primitive array.
+/// The primitive array's values as a byte buffer that *shares* its storage.
+///
+/// A reinterpretation, not a copy: `Buffer<T>` → `Buffer<u8>` keeps the same
+/// allocation, so the caller's per-row window is a view into the column. It
+/// used to copy the entire values buffer here — once per row — which made the
+/// `array` source quadratic in the batch size (CR-40). Sharing is safe because
+/// view-buffer never writes through `PolarsArrow` storage (its in-place paths
+/// require uniquely-owned `Rust` storage).
+///
+/// `None` when the array is not a `PrimitiveArray` of exactly `dtype` (the
+/// caller then takes the converting copy path).
 fn get_primitive_buffer(
     array: &dyn polars_arrow::array::Array,
     dtype: view_buffer::DType,
 ) -> Option<polars_buffer::Buffer<u8>> {
     use polars_arrow::array::PrimitiveArray;
-    macro_rules! try_get_buffer {
-        ($array:expr, $type:ty) => {
-            if let Some(arr) = $array.as_any().downcast_ref::<PrimitiveArray<$type>>() {
-                let values = arr.values();
-                let bytes = values.as_slice();
-                let u8_slice = unsafe {
-                    std::slice::from_raw_parts(
-                        bytes.as_ptr() as *const u8,
-                        bytes.len() * std::mem::size_of::<$type>(),
-                    )
-                };
-                return Some(polars_buffer::Buffer::from(u8_slice.to_vec()));
-            }
+    macro_rules! view_bytes {
+        ($type:ty) => {
+            array
+                .as_any()
+                .downcast_ref::<PrimitiveArray<$type>>()
+                .and_then(|arr| arr.values().clone().try_transmute::<u8>().ok())
         };
     }
     match dtype {
-        view_buffer::DType::U8 => try_get_buffer!(array, u8),
-        view_buffer::DType::I8 => try_get_buffer!(array, i8),
-        view_buffer::DType::U16 => try_get_buffer!(array, u16),
-        view_buffer::DType::I16 => try_get_buffer!(array, i16),
-        view_buffer::DType::U32 => try_get_buffer!(array, u32),
-        view_buffer::DType::I32 => try_get_buffer!(array, i32),
-        view_buffer::DType::U64 => try_get_buffer!(array, u64),
-        view_buffer::DType::I64 => try_get_buffer!(array, i64),
-        view_buffer::DType::F32 => try_get_buffer!(array, f32),
-        view_buffer::DType::F64 => try_get_buffer!(array, f64),
+        view_buffer::DType::U8 => view_bytes!(u8),
+        view_buffer::DType::I8 => view_bytes!(i8),
+        view_buffer::DType::U16 => view_bytes!(u16),
+        view_buffer::DType::I16 => view_bytes!(i16),
+        view_buffer::DType::U32 => view_bytes!(u32),
+        view_buffer::DType::I32 => view_bytes!(i32),
+        view_buffer::DType::U64 => view_bytes!(u64),
+        view_buffer::DType::I64 => view_bytes!(i64),
+        view_buffer::DType::F32 => view_bytes!(f32),
+        view_buffer::DType::F64 => view_bytes!(f64),
     }
-    None
 }
 /// Decode list with copy (fallback path).
 fn decode_list_with_copy(
@@ -996,6 +998,93 @@ pub(crate) fn build_series_from_spec(
             let contour_dtype = DataType::List(Box::new(contour_struct_dtype()));
             Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
         }
+    }
+}
+
+/// The `array` source reads a row as a *view* into the column's own values
+/// buffer. It used to copy the chunk's entire values buffer on every row to
+/// take one row's window, which made a batch quadratic: ~35 µs per 64-byte row
+/// at 100k rows (CR-40).
+#[cfg(test)]
+mod array_source_view_tests {
+    use super::decode_list_or_array_source;
+    use polars::prelude::*;
+    use polars_arrow::array::PrimitiveArray;
+
+    fn array_column<T: NumericNative>(flat: Vec<T>, dims: &[i64]) -> Series
+    where
+        Series: NamedFrom<Vec<T>, [T]>,
+    {
+        let mut shape = vec![ReshapeDimension::new(-1)];
+        shape.extend(dims.iter().map(|&d| ReshapeDimension::new(d)));
+        Series::new("a".into(), flat).reshape_array(&shape).unwrap()
+    }
+
+    /// Pointer to element 0 of the (single) chunk's leaf values.
+    fn leaf_ptr<T: NumericNative>(s: &Series, chunk: usize) -> *const T {
+        let mut arr: &dyn polars_arrow::array::Array =
+            s.array().unwrap().downcast_iter().nth(chunk).unwrap();
+        while let Some(fsl) = arr
+            .as_any()
+            .downcast_ref::<polars_arrow::array::FixedSizeListArray>()
+        {
+            arr = fsl.values().as_ref();
+        }
+        let prim = arr.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
+        prim.values().as_ptr()
+    }
+
+    #[test]
+    fn rows_point_into_the_column_values() {
+        let flat: Vec<u8> = (0..12).collect();
+        let s = array_column(flat.clone(), &[4]);
+        let base = leaf_ptr::<u8>(&s, 0);
+        for row in 0..3 {
+            let vb = decode_list_or_array_source(&s, row, Some("u8"), true)
+                .unwrap()
+                .unwrap();
+            assert_eq!(vb.as_slice::<u8>(), &flat[row * 4..row * 4 + 4]);
+            assert_eq!(vb.as_slice::<u8>().as_ptr(), base.wrapping_add(row * 4));
+        }
+    }
+
+    #[test]
+    fn sliced_and_multi_chunk_columns_read_the_right_rows() {
+        let flat: Vec<u8> = (0..12).collect();
+        let sliced = array_column(flat.clone(), &[4]).slice(1, 2);
+        let vb = decode_list_or_array_source(&sliced, 0, Some("u8"), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(vb.as_slice::<u8>(), &flat[4..8]);
+
+        let mut chunked = array_column(flat.clone(), &[4]);
+        chunked
+            .append(&array_column((100..108).collect::<Vec<u8>>(), &[4]))
+            .unwrap();
+        assert_eq!(chunked.n_chunks(), 2);
+        let vb = decode_list_or_array_source(&chunked, 4, Some("u8"), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(vb.as_slice::<u8>(), &[104, 105, 106, 107]);
+        assert_eq!(
+            vb.as_slice::<u8>().as_ptr(),
+            leaf_ptr::<u8>(&chunked, 1).wrapping_add(4)
+        );
+    }
+
+    #[test]
+    fn nested_f32_rows_are_views_too() {
+        let flat: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let s = array_column(flat.clone(), &[2, 4]);
+        let vb = decode_list_or_array_source(&s, 1, Some("f32"), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(vb.shape(), &[2, 4]);
+        assert_eq!(vb.as_slice::<f32>(), &flat[8..16]);
+        assert_eq!(
+            vb.as_slice::<f32>().as_ptr(),
+            leaf_ptr::<f32>(&s, 0).wrapping_add(8)
+        );
     }
 }
 
