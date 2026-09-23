@@ -544,7 +544,26 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   `runner.rs`). As an interim, run `catch_unwind` per row so a panic becomes a
   row error that the row policy then handles.
 
-### CR-35 — Published wheels ship without the SIMD code paths · `Open` · Medium
+### CR-35 — Published wheels ship without the SIMD code paths · `Won't fix (premise corrected)` · Low
+
+> **Measured (release, view-buffer kernels, baseline flags vs
+> `-C target-cpu=x86-64-v3`):**
+>
+> | kernel | baseline | v3 |
+> |---|---|---|
+> | grayscale u8 1024×1024×3 | 1.06 ms | 1.27 ms |
+> | threshold u8 1024×1024 | 0.08 ms | 0.10 ms |
+> | fused invert·scale·clamp f32 | 3.15 ms | 3.24 ms |
+> | cast u8→f32 | 0.73 ms | 0.74 ms |
+> | blur σ=2 u8 1024×1024 | 5.16 ms | 3.58 ms |
+> | resize → 224×224 (`fast_image_resize`) | 1.16 ms | 1.33 ms |
+>
+> Only the separable blur gains (1.44×). The other kernels already
+> auto-vectorise well at the SSE2 baseline, and `fast_image_resize` dispatches
+> at runtime. The config comment's claim is corrected here rather than acted
+> on. If blur-heavy workloads matter, a `#[target_feature(enable = "avx2,fma")]`
+> clone of the blur inner loop behind `is_x86_feature_detected!` is the
+> contained fix.
 
 - **Location:** `.cargo/config.toml` enables `x86-64-v3` for dev builds only;
   `ci.yml`, `publish.yml` and `benchmark.yml` all clear it with `RUSTFLAGS=""`.
