@@ -579,7 +579,19 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   coordinate buffers). Before changing anything, add a benchmark in
   `benchmarks/regression/` to confirm the cost.
 
-### CR-37 — Per-row executor overhead from stringly-typed dispatch · `Open` · Low
+### CR-37 — Per-row executor overhead from stringly-typed dispatch · `Partially resolved` · Low
+
+> **Id-keyed maps removed from the row loop.** Profiling showed `SipHash` over
+> node-id `String`s at about a third of the executor's per-row instructions.
+> `CompiledGraph` now compiles a `plan: Vec<NodePlan>` in topological order.
+> Each entry holds the node's column binding, upstream position, source spec,
+> `on_error`, cloud options, path policy and op resolvers. `node_outputs`,
+> prefetched batches, auto-format resolutions and per-output results are
+> indexed by position. Only cross-node operand reads still look a name up in
+> `node_index`. No-op rows went from 1.16 to 0.72 µs (debug, 100k 8×8 rows).
+> **Still open:** the static op chain is re-optimised and re-planned
+> (`ViewExpr::plan_with`) on every row, which is most of the ~1 µs a short op
+> chain adds. The source format is still dispatched by string comparison.
 
 > **Measured after CR-40 (debug, 100k rows of 8×8 u8 `array`, streaming):**
 > no ops 1.2 µs/row, `invert` 2.2 µs/row, a three-op fused chain 2.9 µs/row.

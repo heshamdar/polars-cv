@@ -75,27 +75,45 @@ enum ResolvedStep<'a> {
     },
 }
 
+/// One executed node, prepared at compile time.
+struct NodePlan {
+    id: String,
+    /// The node's source spec (its ops are compiled into `resolvers`).
+    source: crate::pipeline::SourceSpec,
+    /// Input column, for a root node.
+    column: Option<usize>,
+    /// Position in `plan` of the node this one reads, for a non-root node.
+    upstream: Option<usize>,
+    /// The source declared `on_error: "null"`: a decode error becomes a null
+    /// node output instead of failing the row.
+    source_null: bool,
+    /// Cloud credentials for a `file_path` source, parsed once at the edge
+    /// from the source spec's string map.
+    cloud_options: Option<crate::cloud::CloudOptions>,
+    /// Path allowlist; the unrestricted default when the source declared no
+    /// `allowed_roots`, which is every existing pipeline.
+    path_policy: crate::fetch::PathPolicy,
+    /// Op resolvers, aligned with the node's `ops`.
+    resolvers: Vec<OpResolver>,
+}
+
 /// A pipeline graph compiled for repeated execution.
 ///
 /// See the module docs for what may and may not live in here.
 pub struct CompiledGraph {
     /// Parsed graph with every expression param bound to an input slot.
     graph: UnifiedGraph,
-    /// Per-node op resolvers, aligned with each node's `ops`.
-    resolvers: HashMap<String, Vec<OpResolver>>,
+    /// The executed nodes in topological order, each with everything the row
+    /// loop needs about it. Rows address nodes by position here, never by
+    /// hashing their id: the id-keyed maps this replaced cost about a third
+    /// of the per-row executor time (CR-37).
+    plan: Vec<NodePlan>,
+    /// Node id → position in `plan`, for cross-node operand reads (`Binary`,
+    /// `ApplyMask`, `ChannelMerge`, shape references), which name a node.
+    node_index: HashMap<String, usize>,
     /// Expression column name → absolute input slot (for steps that carry
     /// the column *name*, e.g. `label_reduce`).
     name_to_slot: HashMap<String, usize>,
-    /// Nodes whose source declared `on_error: "null"`: their decode errors
-    /// become a null node output instead of failing the row.
-    source_null_nodes: std::collections::HashSet<String>,
-    /// Per-node cloud credentials for `file_path` sources, parsed once at
-    /// the edge from the source spec's string map.
-    cloud_options: HashMap<String, crate::cloud::CloudOptions>,
-    /// Per-node path allowlist, resolved once at the edge. A node with no
-    /// `allowed_roots` is absent here and reads with an unrestricted policy,
-    /// which is the default for every existing pipeline.
-    path_policies: HashMap<String, crate::fetch::PathPolicy>,
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
@@ -113,13 +131,16 @@ struct ExecState<'a> {
     /// up front (node_id → batch). Converts per-row network latency into
     /// per-batch latency; per-path errors surface at their row so the usual
     /// error policies apply.
-    prefetched: HashMap<String, crate::fetch::FetchedBatch>,
+    prefetched: Vec<Option<crate::fetch::FetchedBatch>>,
     /// Concrete decode path for each `"auto"` source node, resolved once per
     /// batch from the input column dtype (node_id → resolved format). The dtype
     /// is constant across rows, so this avoids re-resolving per row; a
     /// resolution error is stored and surfaced at its row so the usual error
     /// policies apply. Non-auto nodes are absent.
-    resolved_auto_formats: HashMap<String, Result<&'static str, String>>,
+    resolved_auto_formats: Vec<Option<Result<&'static str, String>>>,
+    /// Position in `plan` of each resolved output's node (aligned with
+    /// `resolved_outputs`).
+    output_nodes: Vec<Option<usize>>,
 }
 
 impl CompiledGraph {
@@ -148,30 +169,6 @@ impl CompiledGraph {
 
         bind_graph_params(&mut graph, &name_to_slot)?;
 
-        // Parse the per-source error setting once at the edge (the executor
-        // checks a set membership instead of comparing strings per row).
-        let mut source_null_nodes = std::collections::HashSet::new();
-        for (node_id, node) in &graph.nodes {
-            if crate::fetch::parse_on_error(
-                node.source.on_error.as_str(),
-                &format!("source node '{node_id}'"),
-            )? {
-                source_null_nodes.insert(node_id.clone());
-            }
-        }
-
-        // Parse per-node cloud credentials and path policies once at the edge.
-        let mut cloud_options: HashMap<String, crate::cloud::CloudOptions> = HashMap::new();
-        let mut path_policies: HashMap<String, crate::fetch::PathPolicy> = HashMap::new();
-        for (node_id, node) in &graph.nodes {
-            if let Some(map) = &node.source.cloud_options {
-                cloud_options.insert(node_id.clone(), crate::cloud::CloudOptions::from_map(map));
-            }
-            if let Some(roots) = &node.source.allowed_roots {
-                path_policies.insert(node_id.clone(), crate::fetch::PathPolicy::new(roots));
-            }
-        }
-
         // `_error` is reserved for the error-message field of the
         // null_with_message policy; an output alias would collide with it.
         if graph.on_error == RowErrorPolicy::NullWithMessage && graph.outputs.contains_key("_error")
@@ -183,10 +180,16 @@ impl CompiledGraph {
 
         // Resolve all-literal ops once; anything slot-bound re-resolves per row.
         let empty_ctx = ParamCtx::empty();
-        let mut resolvers: HashMap<String, Vec<OpResolver>> =
-            HashMap::with_capacity(graph.nodes.len());
-        for (node_id, node) in &graph.nodes {
-            let mut node_resolvers: Vec<OpResolver> = Vec::with_capacity(node.ops.len());
+        let order = graph.topological_order().to_vec();
+        let node_index: HashMap<String, usize> = order
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), i))
+            .collect();
+        let mut plan: Vec<NodePlan> = Vec::with_capacity(order.len());
+        for node_id in &order {
+            let node = &graph.nodes[node_id];
+            let mut resolvers: Vec<OpResolver> = Vec::with_capacity(node.ops.len());
             for spec in &node.ops {
                 // rasterize(shape=<node>) carries a shape_ref instead of
                 // width/height; it gets a dedicated resolver because its
@@ -200,7 +203,7 @@ impl CompiledGraph {
                                 node_id, shape_node
                             ));
                         }
-                        node_resolvers.push(OpResolver::RasterizeShapeRef {
+                        resolvers.push(OpResolver::RasterizeShapeRef {
                             spec: spec.clone(),
                             shape_node,
                         });
@@ -208,26 +211,72 @@ impl CompiledGraph {
                     }
                 }
                 if spec.is_all_literal() {
-                    node_resolvers.push(OpResolver::Static(resolve_op(spec, 0, &empty_ctx)?));
+                    resolvers.push(OpResolver::Static(resolve_op(spec, 0, &empty_ctx)?));
                 } else {
-                    node_resolvers.push(OpResolver::Dynamic(spec.clone()));
+                    resolvers.push(OpResolver::Dynamic(spec.clone()));
                 }
             }
-            resolvers.insert(node_id.clone(), node_resolvers);
+            let column = graph.column_bindings.get(node_id).copied();
+            // A non-root node reads its first upstream; `validate_graph_structure`
+            // has already refused a node with neither a binding nor an upstream,
+            // and an upstream of an executed node is executed before it.
+            let upstream = match column {
+                Some(_) => None,
+                None => Some(node_index[&node.upstream[0]]),
+            };
+            plan.push(NodePlan {
+                id: node_id.clone(),
+                column,
+                upstream,
+                // Parsed once at the edge: the row loop checks a flag instead
+                // of comparing strings.
+                source_null: crate::fetch::parse_on_error(
+                    node.source.on_error.as_str(),
+                    &format!("source node '{node_id}'"),
+                )?,
+                cloud_options: node
+                    .source
+                    .cloud_options
+                    .as_ref()
+                    .map(crate::cloud::CloudOptions::from_map),
+                path_policy: node
+                    .source
+                    .allowed_roots
+                    .as_ref()
+                    .map(|roots| crate::fetch::PathPolicy::new(roots))
+                    .unwrap_or_default(),
+                resolvers,
+                source: node.source.clone(),
+            });
+        }
+
+        // A node no output reaches is never executed, but its settings are
+        // still validated, as they were when every node was parsed here.
+        for (node_id, node) in &graph.nodes {
+            if !node_index.contains_key(node_id) {
+                crate::fetch::parse_on_error(
+                    node.source.on_error.as_str(),
+                    &format!("source node '{node_id}'"),
+                )?;
+            }
         }
 
         Ok(CompiledGraph {
             graph,
-            resolvers,
+            plan,
+            node_index,
             name_to_slot,
-            source_null_nodes,
-            cloud_options,
-            path_policies,
             key: GraphKwargsKey {
                 graph_json: graph_json.to_string(),
                 expr_column_names: expr_column_names.to_vec(),
             },
         })
+    }
+
+    /// The compiled form of one node, by id.
+    #[cfg(test)]
+    fn node_plan(&self, node_id: &str) -> &NodePlan {
+        &self.plan[self.node_index[node_id]]
     }
 
     /// The parsed (compile-time) graph.
@@ -256,21 +305,27 @@ impl CompiledGraph {
                 ));
             }
         }
+        let resolved_outputs = resolved_output_specs(
+            &self.graph,
+            &inputs.iter().map(|s| s.dtype().clone()).collect::<Vec<_>>(),
+        );
+        let output_nodes = resolved_outputs
+            .iter()
+            .map(|(_, spec)| self.node_index.get(&spec.node).copied())
+            .collect();
         let state = ExecState {
             inputs,
             ctx: ParamCtx::with_null_policy(inputs, self.graph.on_null_param),
-            resolved_outputs: resolved_output_specs(
-                &self.graph,
-                &inputs.iter().map(|s| s.dtype().clone()).collect::<Vec<_>>(),
-            ),
+            resolved_outputs,
             prefetched: self.prefetch_remote_sources(inputs),
             resolved_auto_formats: self.resolve_auto_source_formats(inputs),
+            output_nodes,
         };
 
-        let mut results: HashMap<String, Vec<RowResult>> = HashMap::new();
-        for (alias, _) in &state.resolved_outputs {
-            results.insert(alias.clone(), Vec::with_capacity(len));
-        }
+        // One row vector per resolved output, aligned with `resolved_outputs`.
+        let mut results: Vec<Vec<RowResult>> = (0..state.resolved_outputs.len())
+            .map(|_| Vec::with_capacity(len))
+            .collect();
         let batch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.execute_rows(&state, len, &mut results)
         }));
@@ -290,12 +345,11 @@ impl CompiledGraph {
             let (_, spec) = &state.resolved_outputs[0];
             // Take ownership of the row results so the encoder can move each
             // row's bytes/buffers into Arrow instead of copying them.
-            let data = results.remove("_output").unwrap();
+            let data = results.swap_remove(0);
             build_series_from_spec(inputs[0].name().clone(), spec, data)
         } else {
             let mut fields: Vec<Series> = Vec::with_capacity(state.resolved_outputs.len() + 1);
-            for (alias, spec) in &state.resolved_outputs {
-                let data = results.remove(alias).unwrap();
+            for ((alias, spec), data) in state.resolved_outputs.iter().zip(results) {
                 let field_series = build_series_from_spec(PlSmallStr::from_str(alias), spec, data)?;
                 fields.push(field_series);
             }
@@ -320,7 +374,7 @@ impl CompiledGraph {
         &self,
         state: &ExecState<'_>,
         len: usize,
-        results: &mut HashMap<String, Vec<RowResult>>,
+        results: &mut [Vec<RowResult>],
     ) -> Result<Vec<Option<String>>, String> {
         let policy = self.graph.on_error;
         let with_message = policy == RowErrorPolicy::NullWithMessage;
@@ -330,17 +384,17 @@ impl CompiledGraph {
             Vec::new()
         };
         // Allocated once and reused across rows/nodes to avoid per-row churn.
-        let mut node_outputs: HashMap<String, NodeOutput> = HashMap::new();
+        let mut node_outputs: Vec<Option<NodeOutput>> = vec![None; self.plan.len()];
         let mut dto_scratch: Vec<ResolvedStep<'_>> = Vec::new();
         for row_idx in 0..len {
-            node_outputs.clear();
+            node_outputs.iter_mut().for_each(|output| *output = None);
             // Panics are caught per row, so they reach the row policy like any
             // other row error. view-buffer reports some data-dependent failures
             // (e.g. operands that cannot broadcast) by panicking. Caught only
             // once per call, one such row failed the whole batch even under
             // `on_error="null"`, and under streaming how much of the query it
             // took down depended on the morsel size (CR-34). The per-row state
-            // is rebuilt from scratch every row (`node_outputs.clear()`, and the
+            // is rebuilt from scratch every row (`node_outputs` is reset, and the
             // null policies truncate `results` back to `row_idx`), so nothing a
             // panicking row half-wrote survives it.
             let row_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -358,8 +412,9 @@ impl CompiledGraph {
                     RowErrorPolicy::Null | RowErrorPolicy::NullWithMessage => {
                         // All-or-nothing per row: drop anything this row may
                         // have pushed before failing, then null every output.
-                        for (alias, spec) in &state.resolved_outputs {
-                            let rows = results.get_mut(alias).unwrap();
+                        for ((_, spec), rows) in
+                            state.resolved_outputs.iter().zip(results.iter_mut())
+                        {
                             rows.truncate(row_idx);
                             rows.push(null_row_result_for_spec(spec).map_err(|e| e.to_string())?);
                         }
@@ -378,13 +433,18 @@ impl CompiledGraph {
         &'g self,
         state: &ExecState<'_>,
         row_idx: usize,
-        node_outputs: &mut HashMap<String, NodeOutput>,
+        node_outputs: &mut [Option<NodeOutput>],
         dto_scratch: &mut Vec<ResolvedStep<'g>>,
-        results: &mut HashMap<String, Vec<RowResult>>,
+        results: &mut [Vec<RowResult>],
     ) -> Result<(), String> {
         self.run_row_nodes(state, row_idx, node_outputs, dto_scratch)?;
-        for (alias, spec) in &state.resolved_outputs {
-            if let Some(output) = node_outputs.get(&spec.node) {
+        for (((alias, spec), node), rows) in state
+            .resolved_outputs
+            .iter()
+            .zip(&state.output_nodes)
+            .zip(results.iter_mut())
+        {
+            if let Some(output) = node.and_then(|i| node_outputs[i].as_ref()) {
                 validate_output_schema(alias, spec, output)?;
                 match encode_node_output(output, spec) {
                     Ok(encoded) => {
@@ -406,7 +466,7 @@ impl CompiledGraph {
                                 RowResult::HistogramBuckets(Some(buckets))
                             }
                         };
-                        results.get_mut(alias).unwrap().push(row_result);
+                        rows.push(row_result);
                     }
                     Err(e) => {
                         return Err(format!("Encode error for '{alias}': {e}"));
@@ -414,7 +474,7 @@ impl CompiledGraph {
                 }
             } else {
                 let null_result = null_row_result_for_spec(spec).map_err(|e| e.to_string())?;
-                results.get_mut(alias).unwrap().push(null_result);
+                rows.push(null_result);
             }
         }
         Ok(())
@@ -431,12 +491,12 @@ impl CompiledGraph {
     /// A name that is not in the graph at all stays an error.
     fn operand<'o>(
         &self,
-        node_outputs: &'o HashMap<String, NodeOutput>,
+        node_outputs: &'o [Option<NodeOutput>],
         id: &str,
         what: &str,
     ) -> Result<Option<&'o NodeOutput>, String> {
-        match node_outputs.get(id) {
-            Some(output) => Ok(Some(output)),
+        match self.node_index.get(id) {
+            Some(&i) => Ok(node_outputs[i].as_ref()),
             None if self.graph.nodes.contains_key(id) => Ok(None),
             None => Err(format!("{what} references unknown node '{id}'")),
         }
@@ -529,10 +589,9 @@ impl CompiledGraph {
         &'g self,
         state: &ExecState<'_>,
         row_idx: usize,
-        node_outputs: &mut HashMap<String, NodeOutput>,
+        node_outputs: &mut [Option<NodeOutput>],
         dto_scratch: &mut Vec<ResolvedStep<'g>>,
     ) -> Result<(), String> {
-        let order = self.graph.topological_order();
         let inputs = state.inputs;
         let ctx = &state.ctx;
         {
@@ -540,43 +599,34 @@ impl CompiledGraph {
             // next node: leaving this node out of `node_outputs` is exactly
             // how a null *input* already propagates (see the `else` branch of
             // `if let Some(input)` below, and `execute_one_row`).
-            'nodes: for node_id in order {
-                let node = match self.graph.nodes.get(node_id) {
-                    Some(n) => n,
-                    None => continue,
-                };
-                let has_column_binding = self.graph.column_bindings.contains_key(node_id);
-                let node_input: Option<NodeOutput> = if has_column_binding {
-                    let on_error_null = self.source_null_nodes.contains(node_id);
+            'nodes: for (idx, np) in self.plan.iter().enumerate() {
+                let source = &np.source;
+                let node_id = &np.id;
+                let node_input: Option<NodeOutput> = if let Some(col_idx) = np.column {
+                    let on_error_null = np.source_null;
                     // Cleared here so `took_null` below refers only to this
                     // node's own source-parameter resolution (a contour
                     // source's `fill_value` / `background`).
                     ctx.clear_null();
                     let decode_result: Result<Option<NodeOutput>, String> = (|| {
                         // Bounds are validated once per call in `execute()`.
-                        let col_idx = self
-                            .graph
-                            .column_bindings
-                            .get(node_id)
-                            .copied()
-                            .unwrap_or(0);
                         let input_series = &inputs[col_idx];
                         // An `"auto"` source was resolved to a concrete decode
                         // path once per batch (see `resolve_auto_source_formats`);
                         // reuse that result here.
-                        let source_format = if node.source.format == "auto" {
-                            match state.resolved_auto_formats.get(node_id) {
+                        let source_format = if source.format == "auto" {
+                            match state.resolved_auto_formats[idx].as_ref() {
                                 Some(Ok(fmt)) => *fmt,
                                 Some(Err(e)) => return Err(e.clone()),
-                                None => node.source.format.as_str(),
+                                None => source.format.as_str(),
                             }
                         } else {
-                            node.source.format.as_str()
+                            source.format.as_str()
                         };
                         if source_format == "contour" {
                             match input_series.get(row_idx) {
                                 Ok(value) if !value.is_null() => {
-                                    if let Some(ref shape_pipeline) = node.source.shape_pipeline {
+                                    if let Some(ref shape_pipeline) = source.shape_pipeline {
                                         let shape_node_id = shape_pipeline
                                             .get("node_id")
                                             .and_then(|v| v.as_str())
@@ -613,8 +663,7 @@ impl CompiledGraph {
                                         }
                                         let height = shape[0] as u32;
                                         let width = shape[1] as u32;
-                                        let (fill_value, background) = match node
-                                            .source
+                                        let (fill_value, background) = match source
                                             .resolve_fill(row_idx, ctx)
                                         {
                                             Ok(v) => v,
@@ -629,12 +678,7 @@ impl CompiledGraph {
                                             Err(e) => Err(format!("Contour decode error: {e}")),
                                         }
                                     } else {
-                                        match decode_contour_source(
-                                            &value,
-                                            row_idx,
-                                            &node.source,
-                                            ctx,
-                                        ) {
+                                        match decode_contour_source(&value, row_idx, source, ctx) {
                                             Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
                                             Err(e) => Err(format!("Contour decode error: {e}")),
                                         }
@@ -664,7 +708,7 @@ impl CompiledGraph {
                                         // concurrently before the row loop; local
                                         // files are read inline.
                                         let empty;
-                                        let batch = match state.prefetched.get(node_id) {
+                                        let batch = match state.prefetched[idx].as_ref() {
                                             Some(b) => b,
                                             None => {
                                                 empty = crate::fetch::FetchedBatch::empty();
@@ -674,12 +718,12 @@ impl CompiledGraph {
                                         let bytes = crate::fetch::row_bytes(
                                             batch,
                                             path,
-                                            self.cloud_options.get(node_id),
-                                            &self.path_policy(node_id),
+                                            np.cloud_options.as_ref(),
+                                            &np.path_policy,
                                         )?;
                                         // Stage 2: file_path contents decode like
                                         // image bytes.
-                                        let mut source = node.source.clone();
+                                        let mut source = source.clone();
                                         source.format = "image_bytes".to_string();
                                         match decode_source(&bytes, &source) {
                                             Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
@@ -695,8 +739,8 @@ impl CompiledGraph {
                             if input_series.dtype() == &DataType::Null {
                                 Ok(None)
                             } else {
-                                let dtype_opt = node.source.dtype.as_deref();
-                                let require_contiguous = node.source.require_contiguous;
+                                let dtype_opt = source.dtype.as_deref();
+                                let require_contiguous = source.require_contiguous;
                                 match decode_list_or_array_source(
                                     input_series,
                                     row_idx,
@@ -729,7 +773,7 @@ impl CompiledGraph {
                                         offset,
                                         len,
                                         source_format,
-                                        node.source.dtype.as_deref(),
+                                        source.dtype.as_deref(),
                                     ) {
                                         Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
                                         Err(e) => Err(format!("Zero-copy decode error: {e}")),
@@ -743,12 +787,12 @@ impl CompiledGraph {
                                         // `source_format` may have been resolved
                                         // from `"auto"`; decode with the concrete
                                         // format so `decode_source` routes it.
-                                        let decode_spec = if node.source.format == "auto" {
-                                            let mut s = node.source.clone();
+                                        let decode_spec = if source.format == "auto" {
+                                            let mut s = source.clone();
                                             s.format = source_format.to_string();
                                             std::borrow::Cow::Owned(s)
                                         } else {
-                                            std::borrow::Cow::Borrowed(&node.source)
+                                            std::borrow::Cow::Borrowed(source)
                                         };
                                         match decode_source(bytes, &decode_spec) {
                                             Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
@@ -771,8 +815,7 @@ impl CompiledGraph {
                         Err(e) => return Err(e),
                     }
                 } else {
-                    let upstream_id = &node.upstream[0];
-                    node_outputs.get(upstream_id).cloned()
+                    np.upstream.and_then(|u| node_outputs[u].clone())
                 };
                 if let Some(input) = node_input {
                     // Static ops are borrowed from the compiled graph; dynamic
@@ -780,8 +823,8 @@ impl CompiledGraph {
                     // reads. The scratch Vec is reused so steady-state rows
                     // allocate nothing here.
                     dto_scratch.clear();
-                    if let Some(resolvers) = self.resolvers.get(node_id) {
-                        for resolver in resolvers {
+                    {
+                        for resolver in &np.resolvers {
                             match resolver {
                                 OpResolver::Static(step) => {
                                     dto_scratch.push(ResolvedStep::Step(Cow::Borrowed(step)))
@@ -1082,7 +1125,7 @@ impl CompiledGraph {
                         }
                     }
                     current_output = flush_buffer_ops(current_output, &mut pending_buffer_ops)?;
-                    node_outputs.insert(node_id.clone(), current_output);
+                    node_outputs[idx] = Some(current_output);
                 }
             }
         }
@@ -1095,25 +1138,22 @@ impl CompiledGraph {
     /// constant across rows, so resolving here (rather than per row) avoids
     /// repeated work — including the O(n) magic-byte scan for `Binary` columns.
     /// Errors are stored per node and re-surfaced at their row so the batch's
-    /// row-error policy still applies.
+    /// row-error policy still applies. Aligned with `plan`; non-auto nodes are
+    /// `None`.
     fn resolve_auto_source_formats(
         &self,
         inputs: &[Series],
-    ) -> HashMap<String, Result<&'static str, String>> {
-        let mut resolved = HashMap::new();
-        for (node_id, node) in &self.graph.nodes {
-            if node.source.format != "auto" {
-                continue;
-            }
-            let Some(col_idx) = self.graph.column_bindings.get(node_id) else {
-                continue;
-            };
-            let Some(series) = inputs.get(*col_idx) else {
-                continue;
-            };
-            resolved.insert(node_id.clone(), resolve_auto_format(series));
-        }
-        resolved
+    ) -> Vec<Option<Result<&'static str, String>>> {
+        self.plan
+            .iter()
+            .map(|np| {
+                if np.source.format != "auto" {
+                    return None;
+                }
+                let series = inputs.get(np.column?)?;
+                Some(resolve_auto_format(series))
+            })
+            .collect()
     }
 
     /// Concurrently fetch every remote `file_path` source in this batch.
@@ -1124,44 +1164,26 @@ impl CompiledGraph {
     /// them with its usual error message. `"auto"` nodes are included too: an
     /// auto source over a `String` column resolves to `file_path`, and the
     /// `series.str()` check below naturally skips auto nodes bound to any other
-    /// column type.
-    /// This node's path allowlist, or the unrestricted default.
-    ///
-    /// Returned by value so both fetch stages take the same thing; the policy
-    /// is a short list of resolved roots, and building an empty one for an
-    /// unrestricted node allocates nothing.
-    fn path_policy(&self, node_id: &str) -> crate::fetch::PathPolicy {
-        self.path_policies.get(node_id).cloned().unwrap_or_default()
-    }
-
+    /// column type. Aligned with `plan`.
     fn prefetch_remote_sources(
         &self,
         inputs: &[Series],
-    ) -> HashMap<String, crate::fetch::FetchedBatch> {
-        let mut prefetched = HashMap::new();
-        for (node_id, node) in &self.graph.nodes {
-            if node.source.format != "file_path" && node.source.format != "auto" {
-                continue;
-            }
-            let Some(col_idx) = self.graph.column_bindings.get(node_id) else {
-                continue;
-            };
-            let Some(series) = inputs.get(*col_idx) else {
-                continue;
-            };
-            let Ok(ca) = series.str() else {
-                continue;
-            };
-            prefetched.insert(
-                node_id.clone(),
-                crate::fetch::prefetch(
+    ) -> Vec<Option<crate::fetch::FetchedBatch>> {
+        self.plan
+            .iter()
+            .map(|np| {
+                let format = np.source.format.as_str();
+                if format != "file_path" && format != "auto" {
+                    return None;
+                }
+                let ca = inputs.get(np.column?)?.str().ok()?;
+                Some(crate::fetch::prefetch(
                     ca,
-                    self.cloud_options.get(node_id),
-                    &self.path_policy(node_id),
-                ),
-            );
-        }
-        prefetched
+                    np.cloud_options.as_ref(),
+                    &np.path_policy,
+                ))
+            })
+            .collect()
     }
 }
 
@@ -1921,7 +1943,7 @@ mod tests {
         let compiled = CompiledGraph::compile(graph, names).expect("graph must compile");
         EXECUTED_STEPS.with(|seen| {
             let mut seen = seen.borrow_mut();
-            for resolver in compiled.resolvers.values().flatten() {
+            for resolver in compiled.plan.iter().flat_map(|np| &np.resolvers) {
                 // A literal-param op holds its step already; a slot-bound one
                 // re-resolves per row, and resolving it against an empty
                 // context is enough to learn which variant it is. Failures are
@@ -2210,16 +2232,19 @@ mod tests {
     #[test]
     fn static_ops_are_precompiled_and_dynamic_are_not() {
         let compiled = CompiledGraph::compile(SIMPLE_GRAPH, &[]).unwrap();
-        assert!(matches!(compiled.resolvers["n0"][0], OpResolver::Static(_)));
+        assert!(matches!(
+            compiled.node_plan("n0").resolvers[0],
+            OpResolver::Static(_)
+        ));
 
         let compiled = CompiledGraph::compile(DYNAMIC_GRAPH, &["f".to_string()]).unwrap();
         assert!(matches!(
-            compiled.resolvers["n0"][0],
+            compiled.node_plan("n0").resolvers[0],
             OpResolver::Dynamic(_)
         ));
         // The dynamic op's expr param must have been bound to a slot:
         // 1 source column + position 0 → absolute slot 1.
-        match &compiled.resolvers["n0"][0] {
+        match &compiled.node_plan("n0").resolvers[0] {
             OpResolver::Dynamic(spec) => match spec.params.get("factor").unwrap() {
                 ParamValue::Slot { idx } => assert_eq!(*idx, 1),
                 other => panic!("expected bound slot, got {other:?}"),
