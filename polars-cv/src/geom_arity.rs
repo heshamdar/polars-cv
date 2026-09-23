@@ -178,23 +178,104 @@ pub(crate) fn row_contours(value: &AnyValue, arity: Arity) -> PolarsResult<Vec<C
     }
 }
 
-/// Assemble one row's per-contour results into the value that row contributes.
-pub(crate) fn pack_row(
-    results: Vec<AnyValue<'static>>,
-    arity: Arity,
-    elem: &DataType,
-) -> PolarsResult<AnyValue<'static>> {
-    match arity {
-        // `Single` ran exactly one contour, so its single result *is* the row.
-        Arity::Single => Ok(results.into_iter().next().unwrap_or(AnyValue::Null)),
-        Arity::Set => {
-            let series = Series::from_any_values_and_dtype(
-                PlSmallStr::from_static("item"),
-                &results,
-                elem,
-                true,
-            )?;
-            Ok(AnyValue::List(series))
+/// A per-contour result type, and how a column of them is assembled.
+///
+/// `rows` holds one entry per row: `None` for a null row, otherwise that row's
+/// per-contour results (exactly one under [`Arity::Single`]). The column must
+/// have dtype `arity.wrap(elem)`, the type the accessor declared.
+pub(crate) trait ContourOutput: Sized {
+    fn column(
+        name: PlSmallStr,
+        rows: Vec<Option<Vec<Self>>>,
+        arity: Arity,
+        elem: &DataType,
+    ) -> PolarsResult<Series>;
+}
+
+/// Measures, points, boxes and lists: small per-contour values.
+impl ContourOutput for AnyValue<'static> {
+    fn column(
+        name: PlSmallStr,
+        rows: Vec<Option<Vec<Self>>>,
+        arity: Arity,
+        elem: &DataType,
+    ) -> PolarsResult<Series> {
+        let values = rows
+            .into_iter()
+            .map(|row| match row {
+                None => Ok(AnyValue::Null),
+                // `Single` ran exactly one contour, so its result *is* the row.
+                Some(results) if arity == Arity::Single => {
+                    Ok(results.into_iter().next().unwrap_or(AnyValue::Null))
+                }
+                Some(results) => Series::from_any_values_and_dtype(
+                    PlSmallStr::from_static("item"),
+                    &results,
+                    elem,
+                    true,
+                )
+                .map(AnyValue::List),
+            })
+            .collect::<PolarsResult<Vec<_>>>()?;
+        Series::from_any_values_and_dtype(name, &values, &arity.wrap(elem.clone()), true)
+    }
+}
+
+/// Transforms: a contour per contour, built straight into Arrow through
+/// [`crate::geom_schema::contour_array`] rather than as an `AnyValue` with a
+/// sub-`Series` per ring, which made `.contour.translate()` cost as much as
+/// extracting the contours in the first place (CR-36).
+impl ContourOutput for Contour {
+    fn column(
+        name: PlSmallStr,
+        rows: Vec<Option<Vec<Self>>>,
+        arity: Arity,
+        elem: &DataType,
+    ) -> PolarsResult<Series> {
+        use polars_arrow::array::{Array, ListArray};
+        use polars_arrow::bitmap::Bitmap;
+        use polars_arrow::offset::Offsets;
+
+        let validity: Option<Bitmap> = rows
+            .iter()
+            .any(Option::is_none)
+            .then(|| rows.iter().map(Option::is_some).collect());
+        let array: Box<dyn Array> = match arity {
+            Arity::Single => {
+                // One slot per row; a null row's slot holds an empty contour
+                // under a cleared validity bit.
+                let empty = Contour::new(Vec::new());
+                let slots: Vec<&Contour> = rows
+                    .iter()
+                    .map(|row| match row {
+                        Some(results) if results.len() == 1 => Ok(&results[0]),
+                        Some(results) => Err(polars_err!(ComputeError:
+                            "internal: a single-contour row produced {} results",
+                            results.len()
+                        )),
+                        None => Ok(&empty),
+                    })
+                    .collect::<PolarsResult<_>>()?;
+                crate::geom_schema::contour_array(slots.iter().copied())?.with_validity(validity)
+            }
+            Arity::Set => {
+                let all: Vec<&Contour> = rows.iter().flatten().flatten().collect();
+                let values = crate::geom_schema::contour_array(all.iter().copied())?;
+                let lengths = rows.iter().map(|r| r.as_ref().map_or(0, Vec::len));
+                let offsets = Offsets::<i64>::try_from_lengths(lengths)?;
+                let dtype = ListArray::<i64>::default_datatype(values.dtype().clone());
+                ListArray::<i64>::try_new(dtype, offsets.into(), values, validity)?.boxed()
+            }
+        };
+        // The declared type governs; a column whose element layout differs
+        // from the canonical contour (e.g. one without holes) is cast exactly as
+        // the `AnyValue` path's strict construction would have been.
+        let declared = arity.wrap(elem.clone());
+        let series = Series::from_arrow(name, array)?;
+        if series.dtype() == &declared {
+            Ok(series)
+        } else {
+            series.strict_cast(&declared)
         }
     }
 }
@@ -205,34 +286,31 @@ pub(crate) fn pack_row(
 /// else calls [`parse_contour`] directly, so no accessor is free to disagree
 /// with what its `output_type_func` declared.
 ///
-/// `compute` returns the per-contour result as an `AnyValue` of type `elem`; it
-/// is never called for a null row, and its `row` argument is the *row* index —
+/// `compute` returns the per-contour result (see [`ContourOutput`]); it is
+/// never called for a null row, and its `row` argument is the *row* index —
 /// per-row parameters vary by row, not by contour within a row, so a row's
 /// parameter applies to every contour in its set.
-pub(crate) fn map_contours(
+pub(crate) fn map_contours<R: ContourOutput>(
     series: &Series,
     elem: DataType,
-    mut compute: impl FnMut(&Contour, usize) -> PolarsResult<AnyValue<'static>>,
+    mut compute: impl FnMut(&Contour, usize) -> PolarsResult<R>,
 ) -> PolarsResult<Series> {
     let arity = Arity::of(series.dtype());
-    let len = series.len();
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
-
-    for i in 0..len {
+    let mut rows: Vec<Option<Vec<R>>> = Vec::with_capacity(series.len());
+    for i in 0..series.len() {
         let value = series.get(i)?;
         if value.is_null() {
-            rows.push(AnyValue::Null);
+            rows.push(None);
             continue;
         }
         let contours = row_contours(&value, arity)?;
-        let mut results = Vec::with_capacity(contours.len());
-        for contour in &contours {
-            results.push(compute(contour, i)?);
-        }
-        rows.push(pack_row(results, arity, &elem)?);
+        let results = contours
+            .iter()
+            .map(|contour| compute(contour, i))
+            .collect::<PolarsResult<Vec<R>>>()?;
+        rows.push(Some(results));
     }
-
-    build_series(series.name().clone(), rows, arity.wrap(elem))
+    R::column(series.name().clone(), rows, arity, &elem)
 }
 
 /// As [`map_contours`], but each row's work runs under the call's
@@ -243,34 +321,29 @@ pub(crate) fn map_contours(
 /// row, exactly as a null input contour already does. Routing it through here
 /// keeps it from being re-implemented per accessor — the job `contour_row` did
 /// for the single-contour accessors, which this replaces.
-pub(crate) fn map_contours_with_params(
+pub(crate) fn map_contours_with_params<R: ContourOutput>(
     series: &Series,
     params: &GeomParams,
     elem: DataType,
-    mut compute: impl FnMut(&Contour, usize) -> PolarsResult<AnyValue<'static>>,
+    mut compute: impl FnMut(&Contour, usize) -> PolarsResult<R>,
 ) -> PolarsResult<Series> {
     let arity = Arity::of(series.dtype());
-    let len = series.len();
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
-
-    for i in 0..len {
+    let mut rows: Vec<Option<Vec<R>>> = Vec::with_capacity(series.len());
+    for i in 0..series.len() {
         let value = series.get(i)?;
         if value.is_null() {
-            rows.push(AnyValue::Null);
+            rows.push(None);
             continue;
         }
-        let row = params.row(|| {
+        rows.push(params.row(|| {
             let contours = row_contours(&value, arity)?;
-            let mut results = Vec::with_capacity(contours.len());
-            for contour in &contours {
-                results.push(compute(contour, i)?);
-            }
-            pack_row(results, arity, &elem)
-        })?;
-        rows.push(row.unwrap_or(AnyValue::Null));
+            contours
+                .iter()
+                .map(|contour| compute(contour, i))
+                .collect::<PolarsResult<Vec<R>>>()
+        })?);
     }
-
-    build_series(series.name().clone(), rows, arity.wrap(elem))
+    R::column(series.name().clone(), rows, arity, &elem)
 }
 
 /// Run `compute` over two contour columns, broadcasting a single against a set.
@@ -284,12 +357,12 @@ pub(crate) fn map_contours_with_params(
 ///
 /// The refusal reads dtypes, so it fires before any row is parsed rather than
 /// part-way through a batch.
-pub(crate) fn zip_contours(
+pub(crate) fn zip_contours<R: ContourOutput>(
     a: &Series,
     b: &Series,
     name: &'static str,
     elem: DataType,
-    mut compute: impl FnMut(&Contour, &Contour, usize) -> PolarsResult<AnyValue<'static>>,
+    mut compute: impl FnMut(&Contour, &Contour, usize) -> PolarsResult<R>,
 ) -> PolarsResult<Series> {
     let (a_arity, b_arity) = (Arity::of(a.dtype()), Arity::of(b.dtype()));
     if a_arity == Arity::Set && b_arity == Arity::Set {
@@ -302,54 +375,31 @@ pub(crate) fn zip_contours(
         );
     }
     let arity = a_arity.combine(b_arity);
-    let len = a.len();
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
-
-    for i in 0..len {
+    let mut rows: Vec<Option<Vec<R>>> = Vec::with_capacity(a.len());
+    for i in 0..a.len() {
         let (av, bv) = (a.get(i)?, b.get(i)?);
         if av.is_null() || bv.is_null() {
-            rows.push(AnyValue::Null);
+            rows.push(None);
             continue;
         }
         let (left, right) = (row_contours(&av, a_arity)?, row_contours(&bv, b_arity)?);
         // Exactly one side is a set, so the other side's single contour is
-        // repeated against it; when neither is, both are one-element.
-        let mut results = Vec::with_capacity(left.len().max(right.len()));
-        match (a_arity, b_arity) {
-            (Arity::Set, _) => {
-                let Some(single) = right.first() else {
-                    rows.push(pack_row(Vec::new(), arity, &elem)?);
-                    continue;
-                };
-                for contour in &left {
-                    results.push(compute(contour, single, i)?);
-                }
-            }
-            (_, Arity::Set) => {
-                let Some(single) = left.first() else {
-                    rows.push(pack_row(Vec::new(), arity, &elem)?);
-                    continue;
-                };
-                for contour in &right {
-                    results.push(compute(single, contour, i)?);
-                }
-            }
-            (Arity::Single, Arity::Single) => {
-                results.push(compute(&left[0], &right[0], i)?);
-            }
-        }
-        rows.push(pack_row(results, arity, &elem)?);
+        // repeated against it; when neither is, both are one-element. A set
+        // against an empty single side yields an empty set.
+        let results = match (a_arity, b_arity) {
+            (Arity::Set, _) => match right.first() {
+                Some(single) => left.iter().map(|c| compute(c, single, i)).collect(),
+                None => Ok(Vec::new()),
+            },
+            (_, Arity::Set) => match left.first() {
+                Some(single) => right.iter().map(|c| compute(single, c, i)).collect(),
+                None => Ok(Vec::new()),
+            },
+            (Arity::Single, Arity::Single) => compute(&left[0], &right[0], i).map(|r| vec![r]),
+        }?;
+        rows.push(Some(results));
     }
-
-    build_series(a.name().clone(), rows, arity.wrap(elem))
-}
-
-fn build_series(
-    name: PlSmallStr,
-    rows: Vec<AnyValue<'static>>,
-    dtype: DataType,
-) -> PolarsResult<Series> {
-    Series::from_any_values_and_dtype(name, &rows, &dtype, true)
+    R::column(a.name().clone(), rows, arity, &elem)
 }
 
 /// Declare a `.contour` accessor's output type and body from one statement.
@@ -448,4 +498,62 @@ macro_rules! contour_accessor {
             )
         }
     };
+}
+
+/// A transform's per-contour result is assembled straight into Arrow (CR-36),
+/// and must publish exactly what the per-contour `AnyValue` assembly did.
+#[cfg(test)]
+mod contour_output_tests {
+    use super::{Arity, ContourOutput};
+    use polars::prelude::*;
+    use view_buffer::geometry::contour::{Contour, Point};
+
+    fn contours() -> (Contour, Contour) {
+        let p = Point::new;
+        (
+            Contour::with_holes(
+                vec![p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0)],
+                vec![vec![p(4.0, 4.0), p(6.0, 4.0), p(6.0, 6.0)]],
+            ),
+            Contour::new(vec![p(20.0, 20.0), p(30.0, 20.0), p(30.0, 30.0)]),
+        )
+    }
+
+    fn elem() -> DataType {
+        DataType::Struct(crate::geom_schema::contour_fields())
+    }
+
+    fn both(rows: Vec<Option<Vec<Contour>>>, arity: Arity) -> (Series, Series) {
+        let as_anyvalues: Vec<Option<Vec<AnyValue<'static>>>> = rows
+            .iter()
+            .map(|r| {
+                r.as_ref()
+                    .map(|cs| cs.iter().map(crate::contour::contour_to_anyvalue).collect())
+            })
+            .collect();
+        let expected =
+            AnyValue::column("c".into(), as_anyvalues, arity, &elem()).expect("anyvalue path");
+        let got = Contour::column("c".into(), rows, arity, &elem()).expect("arrow path");
+        (got, expected)
+    }
+
+    #[test]
+    fn single_arity_matches() {
+        let (a, b) = contours();
+        let (got, expected) = both(vec![Some(vec![a]), None, Some(vec![b])], Arity::Single);
+        assert_eq!(got.dtype(), expected.dtype());
+        assert!(got.equals_missing(&expected), "{got:?}\n{expected:?}");
+        assert_eq!(got.null_count(), 1);
+    }
+
+    #[test]
+    fn set_arity_matches_including_empty_sets() {
+        let (a, b) = contours();
+        let (got, expected) = both(
+            vec![Some(vec![a, b.clone()]), None, Some(vec![]), Some(vec![b])],
+            Arity::Set,
+        );
+        assert_eq!(got.dtype(), expected.dtype());
+        assert!(got.equals_missing(&expected), "{got:?}\n{expected:?}");
+    }
 }

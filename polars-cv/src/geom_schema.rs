@@ -63,7 +63,8 @@ pub(crate) const CONTOUR_FIELD_NAMES: [&str; 3] = ["exterior", "holes", "is_clos
 
 /// The `{exterior, holes, is_closed}` fields a contour-valued result publishes.
 ///
-/// **This is the declaration.** `contour_to_anyvalue` and the test helper that
+/// **This is the declaration.** `contour_array` (the column builder),
+/// `contour_to_anyvalue` (its test oracle) and the test helper that
 /// used to re-spell this layout both read it.
 ///
 /// Composed from [`point_fields`] — a contour genuinely *is* built of points, so
@@ -83,6 +84,78 @@ pub(crate) fn contour_fields() -> Vec<Field> {
         ),
         Field::new(PlSmallStr::from_static("is_closed"), DataType::Boolean),
     ]
+}
+
+/// A column of contours, built straight into Arrow from the [`contour_fields`]
+/// declaration: one flat `x`/`y` buffer for every point, with offsets for the
+/// exterior rings, the holes and each hole's ring.
+///
+/// Replaces building one `AnyValue` per point and a sub-`Series` per ring, which
+/// cost ~30 ms per ~90k points in the contour sink (CR-36). Each declared
+/// field is matched by name to the array that fills it; a field this does not
+/// know is an error, so a schema change cannot be half-applied here.
+pub(crate) fn contour_array<'a>(
+    contours: impl ExactSizeIterator<Item = &'a view_buffer::geometry::Contour> + Clone,
+) -> PolarsResult<Box<dyn polars_arrow::array::Array>> {
+    use polars_arrow::array::{Array, BooleanArray, ListArray, PrimitiveArray, StructArray};
+    use polars_arrow::datatypes::ArrowDataType;
+    use polars_arrow::offset::Offsets;
+
+    let arrow = |dt: &DataType| dt.to_arrow(CompatLevel::newest());
+    let points = |pts: &mut dyn Iterator<Item = &'a view_buffer::geometry::Point>| {
+        let (xs, ys): (Vec<f64>, Vec<f64>) = pts.map(|p| (p.x, p.y)).unzip();
+        let len = xs.len();
+        StructArray::try_new(
+            arrow(&point_struct_dtype()),
+            len,
+            vec![
+                PrimitiveArray::from_vec(xs).boxed(),
+                PrimitiveArray::from_vec(ys).boxed(),
+            ],
+            None,
+        )
+    };
+    let list = |dtype: &DataType, lengths: Vec<usize>, values: Box<dyn Array>| {
+        let offsets = Offsets::<i64>::try_from_lengths(lengths.into_iter())?;
+        ListArray::<i64>::try_new(arrow(dtype), offsets.into(), values, None).map(|a| a.boxed())
+    };
+
+    let n = contours.len();
+    let fields = contour_fields();
+    let mut values: Vec<Box<dyn Array>> = Vec::with_capacity(fields.len());
+    for field in &fields {
+        let array = match field.name().as_str() {
+            "exterior" => {
+                let exterior = points(&mut contours.clone().flat_map(|c| c.exterior.iter()))?;
+                let lengths = contours.clone().map(|c| c.exterior.len()).collect();
+                list(field.dtype(), lengths, exterior.boxed())?
+            }
+            "holes" => {
+                let ring_points =
+                    points(&mut contours.clone().flat_map(|c| c.holes.iter().flatten()))?;
+                let ring_dtype = match field.dtype() {
+                    DataType::List(inner) => inner.as_ref().clone(),
+                    other => polars_bail!(ComputeError:
+                        "contour field 'holes' is declared as {other:?}, not a list of rings"),
+                };
+                let ring_lengths = contours
+                    .clone()
+                    .flat_map(|c| c.holes.iter().map(Vec::len))
+                    .collect();
+                let rings = list(&ring_dtype, ring_lengths, ring_points.boxed())?;
+                let hole_counts = contours.clone().map(|c| c.holes.len()).collect();
+                list(field.dtype(), hole_counts, rings)?
+            }
+            // Reserved and never read back; every contour is published closed.
+            "is_closed" => BooleanArray::from_slice(vec![true; n]).boxed(),
+            other => polars_bail!(ComputeError:
+                "contour field '{other}' is declared in contour_fields but \
+                 contour_array does not build it"),
+        };
+        values.push(array);
+    }
+    let dtype: ArrowDataType = arrow(&DataType::Struct(fields));
+    Ok(StructArray::try_new(dtype, n, values, None)?.boxed())
 }
 
 /// The field names of a bbox `{x, y, width, height}`, in wire order.
@@ -211,8 +284,8 @@ mod tests {
     #[test]
     fn a_contour_value_matches_the_published_dtype() {
         // `contour_to_anyvalue` (in `contour.rs`) builds its struct from
-        // `contour_fields()`; hold its output to `contour_struct_dtype()` so a
-        // future divergence in either fails here.
+        // `contour_fields()`; hold its output to that declaration so a future
+        // divergence fails here.
         use view_buffer::geometry::contour::{Contour, Point};
         let fields = contour_fields();
         let contour = Contour::new(vec![

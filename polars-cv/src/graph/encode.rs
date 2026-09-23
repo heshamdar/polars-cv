@@ -11,8 +11,6 @@ use view_buffer::geometry::{extract::extract_contours, rasterize::rasterize, Con
 use view_buffer::ops::NodeOutput;
 use view_buffer::{DType, GeometryOp, Op, PlannedDType, ViewBuffer};
 
-use crate::contour::contour_to_anyvalue;
-
 use super::decode::dtype_str_to_polars;
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, OutputValue, TypedBufferData};
@@ -533,33 +531,31 @@ pub(crate) fn encode_node_output(
         },
     }
 }
-/// Convert contours to Polars AnyValue representation.
-pub(super) fn contours_to_polars_value(contours: &[Contour]) -> PolarsResult<AnyValue<'static>> {
-    if contours.is_empty() {
-        return Ok(AnyValue::Null);
-    }
-    let contour_values: Vec<AnyValue<'static>> = contours.iter().map(contour_to_anyvalue).collect();
-    let contour_series = Series::from_any_values_and_dtype(
-        PlSmallStr::EMPTY,
-        &contour_values,
-        &contour_struct_dtype(),
-        true,
-    )?;
-    Ok(AnyValue::List(contour_series))
-}
+/// A `List[Contour]` column, one contour set per row, built straight into Arrow
+/// (see [`crate::geom_schema::contour_array`]).
+///
+/// A null row and an empty contour set are both published as null, which is
+/// what the former `AnyValue` construction did (an empty set became
+/// `AnyValue::Null`).
+pub(super) fn contour_set_series(
+    name: PlSmallStr,
+    rows: &[Option<Vec<Contour>>],
+) -> PolarsResult<Series> {
+    use polars_arrow::array::ListArray;
+    use polars_arrow::offset::Offsets;
 
-/// Shared contour struct dtype used by native contour encoding.
-pub(super) fn contour_struct_dtype() -> DataType {
-    let point_dtype = DataType::Struct(vec![
-        Field::new("x".into(), DataType::Float64),
-        Field::new("y".into(), DataType::Float64),
-    ]);
-    let hole_dtype = DataType::List(Box::new(point_dtype.clone()));
-    DataType::Struct(vec![
-        Field::new("exterior".into(), DataType::List(Box::new(point_dtype))),
-        Field::new("holes".into(), DataType::List(Box::new(hole_dtype))),
-        Field::new("is_closed".into(), DataType::Boolean),
-    ])
+    let present = |r: &Option<Vec<Contour>>| r.as_ref().is_some_and(|c| !c.is_empty());
+    let all: Vec<&Contour> = rows.iter().flatten().flatten().collect();
+    let values = crate::geom_schema::contour_array(all.iter().copied())?;
+    let lengths = rows.iter().map(|r| r.as_ref().map_or(0, Vec::len));
+    let offsets = Offsets::<i64>::try_from_lengths(lengths)?;
+    let validity = rows
+        .iter()
+        .any(|r| !present(r))
+        .then(|| rows.iter().map(present).collect());
+    let dtype = ListArray::<i64>::default_datatype(values.dtype().clone());
+    let array = ListArray::<i64>::try_new(dtype, offsets.into(), values, validity)?;
+    Series::from_arrow(name, array.boxed())
 }
 
 /// Convert flat f64 histogram buckets [lower_edge, upper_edge, count, normalized] to Polars List(Struct).
@@ -987,5 +983,105 @@ mod tensor_sink_tests {
         .unwrap();
         assert_eq!(array.dtype(), &nested(DataType::Float32, 3, Some(&shape)));
         assert_eq!(array.null_count(), 2);
+    }
+}
+
+/// The contour sink builds its column straight into Arrow (CR-36), and must
+/// publish exactly what the per-contour `AnyValue` construction published.
+#[cfg(test)]
+mod contour_sink_tests {
+    use crate::graph::decode::build_series_from_spec;
+    use crate::graph::types::{OutputSpec, RowResult};
+    use crate::pipeline::SinkSpec;
+    use polars::prelude::*;
+    use view_buffer::geometry::{Contour, Point};
+
+    fn spec() -> OutputSpec {
+        OutputSpec {
+            node: "n".to_string(),
+            sink: SinkSpec {
+                format: "native".to_string(),
+                quality: 85,
+                shape: None,
+                out_dtype: None,
+            },
+            expected_domain: "contour".to_string(),
+            expected_dtype: "auto".to_string(),
+            expected_shape: None,
+            shape_asserted: false,
+            expected_ndim: None,
+            expected_encoding: None,
+        }
+    }
+
+    fn p(x: f64, y: f64) -> Point {
+        Point::new(x, y)
+    }
+
+    fn rows() -> Vec<Option<Vec<Contour>>> {
+        let with_hole = Contour::with_holes(
+            vec![p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0)],
+            vec![
+                vec![p(4.0, 4.0), p(6.0, 4.0), p(6.0, 6.0)],
+                vec![p(1.0, 1.0), p(2.0, 1.0), p(2.0, 2.0), p(1.0, 2.0)],
+            ],
+        );
+        let triangle = Contour::new(vec![p(20.0, 20.0), p(30.0, 20.0), p(30.0, 30.0)]);
+        vec![
+            Some(vec![with_hole, triangle.clone()]),
+            None,
+            Some(vec![]),
+            Some(vec![triangle]),
+        ]
+    }
+
+    /// The former construction, kept here as the oracle.
+    fn oracle(rows: &[Option<Vec<Contour>>]) -> Series {
+        let element = DataType::Struct(crate::geom_schema::contour_fields());
+        let values: Vec<AnyValue<'static>> = rows
+            .iter()
+            .map(|row| match row {
+                Some(contours) if !contours.is_empty() => {
+                    let items: Vec<AnyValue<'static>> = contours
+                        .iter()
+                        .map(crate::contour::contour_to_anyvalue)
+                        .collect();
+                    AnyValue::List(
+                        Series::from_any_values_and_dtype(
+                            PlSmallStr::EMPTY,
+                            &items,
+                            &element,
+                            true,
+                        )
+                        .unwrap(),
+                    )
+                }
+                _ => AnyValue::Null,
+            })
+            .collect();
+        Series::from_any_values_and_dtype(
+            "o".into(),
+            &values,
+            &DataType::List(Box::new(element)),
+            true,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn contour_sink_matches_the_anyvalue_construction() {
+        let rows = rows();
+        let expected = oracle(&rows);
+        let data: Vec<RowResult> = rows.into_iter().map(RowResult::Contours).collect();
+        let got = build_series_from_spec("o".into(), &spec(), data).unwrap();
+        assert_eq!(got.dtype(), expected.dtype());
+        assert!(
+            got.equals_missing(&expected),
+            "got {got:?}\nexpected {expected:?}"
+        );
+        assert_eq!(
+            got.is_null().iter().collect::<Vec<_>>(),
+            vec![Some(false), Some(true), Some(true), Some(false)]
+        );
     }
 }

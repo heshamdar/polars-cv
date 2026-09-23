@@ -7,8 +7,7 @@
 use polars::prelude::*;
 
 use crate::geom_schema::{
-    bbox_anyvalue, bbox_struct_dtype, contour_fields, parse_bbox, point_anyvalue,
-    point_struct_dtype,
+    bbox_anyvalue, bbox_struct_dtype, parse_bbox, point_anyvalue, point_struct_dtype,
 };
 use polars_arrow::array::{ListArray, PrimitiveArray, StructArray as ArrowStructArray};
 use pyo3_polars::derive::polars_expr;
@@ -28,7 +27,7 @@ use view_buffer::{naming, ViewBuffer};
 // regardless of module order; importing it by name avoids depending on
 // `geom_arity` being declared before `contour` in lib.rs.
 use crate::contour_accessor;
-use crate::geom_arity::{elementwise_field, pack_row, row_contours, Arity};
+use crate::geom_arity::{elementwise_field, row_contours, Arity, ContourOutput};
 use crate::geom_params::{check_range, GeomParams, InputSlots};
 use crate::params::NullParamPolicy;
 
@@ -44,6 +43,11 @@ use crate::params::NullParamPolicy;
 ///   ring winding is never interpreted as a hole signal
 /// - is_closed: Boolean — reserved. Always written `true` here and ignored by
 ///   `parse_contour`; rings are implicitly closed.
+///
+/// Test-only: production contour columns are built straight into Arrow by
+/// `geom_schema::contour_array` (CR-36). This per-value construction stays as
+/// the independent oracle the equivalence tests compare that builder against.
+#[cfg(test)]
 pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
     // Build exterior points as list of structs
     let exterior_points: Vec<AnyValue> = contour
@@ -100,7 +104,7 @@ pub fn contour_to_anyvalue(contour: &Contour) -> AnyValue<'static> {
             AnyValue::List(holes_series),
             AnyValue::Boolean(true), // is_closed: reserved, never read back
         ],
-        contour_fields(),
+        crate::geom_schema::contour_fields(),
     )))
 }
 
@@ -968,7 +972,7 @@ fn contour_contains_point_output_type(input_fields: &[Field]) -> PolarsResult<Fi
 /// does rather than each element.
 ///
 /// It still reads the arity through [`Arity::of`] and wraps through
-/// [`elementwise_field`] / [`pack_row`], so the *decision* and the *wrapping*
+/// [`elementwise_field`] / [`ContourOutput`], so the *decision* and the *wrapping*
 /// stay single-authority — only the loop is local.
 #[polars_expr(output_type_func=contour_contains_point_output_type)]
 fn contour_contains_point(inputs: &[Series]) -> PolarsResult<Series> {
@@ -976,13 +980,13 @@ fn contour_contains_point(inputs: &[Series]) -> PolarsResult<Series> {
     let point_series = &inputs[1];
     let arity = Arity::of(contour_series.dtype());
     let len = contour_series.len();
-    let mut rows: Vec<AnyValue<'static>> = Vec::with_capacity(len);
+    let mut rows: Vec<Option<Vec<AnyValue<'static>>>> = Vec::with_capacity(len);
 
     for i in 0..len {
         let contour_value = contour_series.get(i)?;
         let point_value = point_series.get(i)?;
         if contour_value.is_null() || point_value.is_null() {
-            rows.push(AnyValue::Null);
+            rows.push(None);
             continue;
         }
         let (x, y) = parse_point_value(&point_value)?;
@@ -990,14 +994,14 @@ fn contour_contains_point(inputs: &[Series]) -> PolarsResult<Series> {
             .iter()
             .map(|contour| AnyValue::Boolean(predicates::contains_point(contour, x, y)))
             .collect();
-        rows.push(pack_row(results, arity, &DataType::Boolean)?);
+        rows.push(Some(results));
     }
 
-    Series::from_any_values_and_dtype(
+    AnyValue::column(
         contour_series.name().clone(),
-        &rows,
-        &arity.wrap(DataType::Boolean),
-        true,
+        rows,
+        arity,
+        &DataType::Boolean,
     )
 }
 
@@ -1138,7 +1142,7 @@ contour_accessor! {
     |contour, params, kwargs, row| {
         let dx = params.f64("dx", kwargs.dx, 0.0, row)?;
         let dy = params.f64("dy", kwargs.dy, 0.0, row)?;
-        Ok(contour_to_anyvalue(&transforms::translate(contour, dx, dy)))
+        Ok(transforms::translate(contour, dx, dy))
     }
 }
 
@@ -1163,7 +1167,7 @@ contour_accessor! {
             params.str_opt("origin", kwargs.origin.as_deref(), row)?,
             ScaleOrigin::Origin,
         )?;
-        Ok(contour_to_anyvalue(&transforms::scale(contour, sx, sy, scale_origin)))
+        Ok(transforms::scale(contour, sx, sy, scale_origin))
     }
 }
 
@@ -1173,21 +1177,21 @@ contour_accessor! {
         -> |input| Arity::elem_dtype(input);
     |contour, params, kwargs, row| {
         let tolerance = params.f64("tolerance", kwargs.tolerance, 1.0, row)?;
-        Ok(contour_to_anyvalue(&transforms::simplify(contour, tolerance)))
+        Ok(transforms::simplify(contour, tolerance))
     }
 }
 
 contour_accessor! {
     /// Flip contour (reverse winding).
     map fn contour_flip / contour_flip_output_type -> |input| Arity::elem_dtype(input);
-    |contour| Ok(contour_to_anyvalue(&transforms::flip(contour)))
+    |contour| Ok(transforms::flip(contour))
 }
 
 contour_accessor! {
     /// Compute convex hull.
     map fn contour_convex_hull / contour_convex_hull_output_type
         -> |input| Arity::elem_dtype(input);
-    |contour| Ok(contour_to_anyvalue(&transforms::convex_hull(contour)))
+    |contour| Ok(transforms::convex_hull(contour))
 }
 
 contour_accessor! {
@@ -1197,7 +1201,7 @@ contour_accessor! {
     |contour, params, kwargs, row| {
         let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, row)?;
         let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, row)?;
-        Ok(contour_to_anyvalue(&transforms::normalize(contour, ref_width, ref_height)))
+        Ok(transforms::normalize(contour, ref_width, ref_height))
     }
 }
 
@@ -1208,7 +1212,7 @@ contour_accessor! {
     |contour, params, kwargs, row| {
         let ref_width = params.f64("ref_width", kwargs.ref_width, 1.0, row)?;
         let ref_height = params.f64("ref_height", kwargs.ref_height, 1.0, row)?;
-        Ok(contour_to_anyvalue(&transforms::to_absolute(contour, ref_width, ref_height)))
+        Ok(transforms::to_absolute(contour, ref_width, ref_height))
     }
 }
 
@@ -1233,7 +1237,7 @@ contour_accessor! {
                     || polars_err!(ComputeError: "ensure_winding requires a 'direction'"),
                 )?,
         )?;
-        Ok(contour_to_anyvalue(&transforms::ensure_winding(contour, direction)))
+        Ok(transforms::ensure_winding(contour, direction))
     }
 }
 

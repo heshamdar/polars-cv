@@ -123,6 +123,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Contour outputs are built straight into Arrow.** The contour sink and every
+  `.contour` transform built one `AnyValue` per point and a sub-`Series` per
+  ring. The contour sink's encode overhead drops ~10x and `.contour.translate()`
+  ~6x on a 90k-point batch; the output is unchanged (CR-36).
 - **`source("array")` is no longer quadratic in the batch size.** The
   zero-copy path copied the column's entire values buffer on every row to
   read that one row, so a 100k-row morsel of 8×8 arrays cost ~35 µs per row.
