@@ -280,14 +280,8 @@ impl CompiledGraph {
                 return Err(polars_err!(ComputeError : "Pipeline execution failed: {}", msg));
             }
             Err(panic_payload) => {
-                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "Unknown panic during batch execution".to_string()
-                };
-                return Err(polars_err!(ComputeError : "Pipeline batch failed: {}", panic_msg));
+                return Err(polars_err!(ComputeError : "Pipeline batch failed: {}",
+                    panic_message(panic_payload.as_ref())));
             }
         };
 
@@ -340,8 +334,19 @@ impl CompiledGraph {
         let mut dto_scratch: Vec<ResolvedStep<'_>> = Vec::new();
         for row_idx in 0..len {
             node_outputs.clear();
-            let row_result =
-                self.execute_one_row(state, row_idx, &mut node_outputs, &mut dto_scratch, results);
+            // Panics are caught per row, so they reach the row policy like any
+            // other row error. view-buffer reports some data-dependent failures
+            // (e.g. operands that cannot broadcast) by panicking. Caught only
+            // once per call, one such row failed the whole batch even under
+            // `on_error="null"`, and under streaming how much of the query it
+            // took down depended on the morsel size (CR-34). The per-row state
+            // is rebuilt from scratch every row (`node_outputs.clear()`, and the
+            // null policies truncate `results` back to `row_idx`), so nothing a
+            // panicking row half-wrote survives it.
+            let row_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.execute_one_row(state, row_idx, &mut node_outputs, &mut dto_scratch, results)
+            }))
+            .unwrap_or_else(|payload| Err(panic_message(payload.as_ref())));
             match row_result {
                 Ok(()) => {
                     if with_message {
@@ -1179,6 +1184,17 @@ const KNOWN_SOURCE_FORMATS: &[&str] = &[
     "list",
     "raw",
 ];
+
+/// The message a caught panic carried.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
 
 /// Resolve an `"auto"` source format to a concrete decode path from the input
 /// column's Polars dtype. The dtype is constant across rows, so the resolution

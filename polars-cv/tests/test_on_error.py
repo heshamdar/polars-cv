@@ -147,3 +147,52 @@ class TestOnErrorNull:
         expr = pl.col("img").cv.pipe(pipe).sink("png")
         result = df.with_columns(out=expr)
         assert result["out"][0] is not None
+
+
+def _mismatched_shapes_frame() -> pl.DataFrame:
+    """Row 0 adds two 4x4 images; row 1 adds a 4x4 to a 3x5, which the engine
+    cannot broadcast — a data-dependent failure raised as a Rust panic."""
+    from tests.conftest import make_test_png
+
+    return pl.DataFrame(
+        {
+            "a": [make_test_png(4, 4), make_test_png(4, 4)],
+            "b": [make_test_png(4, 4), make_test_png(5, 3)],
+        }
+    )
+
+
+@plugin_required
+class TestEnginePanicsFollowTheRowPolicy:
+    """A panic inside the engine is one row's failure, not the batch's (CR-34).
+
+    view-buffer reports some data-dependent errors by panicking. They were
+    caught once per *call*, which ignored ``on_error``: under
+    ``on_error("null")`` one bad row failed the whole query, taking the good
+    rows with it, and under streaming the damage scaled with the morsel.
+    """
+
+    @staticmethod
+    def _expr(policy: str) -> pl.Expr:
+        p = Pipeline().source("image_bytes", dtype="u8").on_error(policy)
+        return pl.col("a").cv.pipe(p).add(pl.col("b").cv.pipe(p)).sink("blob")
+
+    @pytest.mark.parametrize("engine", ["in-memory", "streaming"])
+    def test_null_policy_nulls_only_the_panicking_row(self, engine: str) -> None:
+        out = (
+            _mismatched_shapes_frame()
+            .lazy()
+            .select(o=self._expr("null"))
+            .collect(engine=engine)  # ty: ignore[invalid-argument-type]
+        )
+        assert out["o"].is_null().to_list() == [False, True]
+
+    def test_null_with_message_records_the_panic(self) -> None:
+        out = _mismatched_shapes_frame().select(o=self._expr("null_with_message"))
+        errors = out["o"].struct.field("_error").to_list()
+        assert errors[0] is None
+        assert errors[1] is not None and "broadcast" in errors[1]
+
+    def test_raise_policy_still_raises(self) -> None:
+        with pytest.raises(pl.exceptions.ComputeError, match="broadcast"):
+            _mismatched_shapes_frame().select(o=self._expr("raise"))

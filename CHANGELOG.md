@@ -110,6 +110,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`on_error("null")` now covers failures the engine raises as panics.** Some
+  data-dependent failures, such as two operands that cannot broadcast, are
+  raised inside the engine as panics, which were caught once per batch. Under
+  `on_error("null")` one such row failed the whole query, good rows included,
+  and under streaming how much of the query it took down depended on the
+  morsel size. They are now caught per row and follow the row policy like any
+  other error (CR-34).
 - **A row the sink cannot represent is an error, not a null.** If the encoder
   ever produced a row of a different kind than the sink expects,
   `build_series_from_spec` published it as null. It now raises an internal error

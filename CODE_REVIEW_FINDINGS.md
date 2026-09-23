@@ -520,7 +520,17 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   copied once. Delete the `AnyValue` fallbacks rather than keeping them as a
   "slow path".
 
-### CR-34 — Panics are the engine's error channel, so `on_error` cannot cover them · `Open` · Medium
+### CR-34 — Panics are the engine's error channel, so `on_error` cannot cover them · `Partially resolved` · Medium
+
+> **Row policy gap closed.** `CompiledGraph::execute_rows` wraps each row in
+> `catch_unwind`, so an engine panic is that row's error and `on_error` applies
+> to it. The batch-level catch remains only as a backstop for series building.
+> Guarded by `tests/test_on_error.py::TestEnginePanicsFollowTheRowPolicy`
+> (operands that cannot broadcast, in-memory and streaming), watched failing
+> first with "Pipeline batch failed". **Still open:** the engine still reports
+> data errors by panicking. Each one prints a panic message to stderr, and
+> `panic = "unwind"` stays load-bearing. Converting `runner.rs`/`buffer.rs` to
+> return `Result` remains the end state.
 
 - **Location:** `view-buffer` has roughly 80 `panic!`/`unwrap`/`expect`/`assert!`
   sites outside tests (29 in `execution/runner.rs`, 19 in `core/buffer.rs`). The
