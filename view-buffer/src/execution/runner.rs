@@ -1699,7 +1699,80 @@ fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
 /// (`BLUR_HORIZ_BUF`) that grows to fit the largest image seen per thread and
 /// is never shrunk — zero allocator round-trip on warm paths.
 #[cfg(feature = "image_interop")]
+/// The separable Gaussian blur, dispatched once per call to an AVX2 build on
+/// x86_64 CPUs that have it (CR-35).
+///
+/// Published wheels target baseline x86-64 (SSE2), and blur is the one kernel
+/// measured to gain from AVX2 (~1.4x at `x86-64-v3`). The gain comes from the
+/// whole function — conversion, both passes, the output clamp — compiled for
+/// AVX2, so the whole body is duplicated, not one inner loop (dispatching per
+/// row-sized axpy measured *slower* than baseline). Only `avx2` is enabled,
+/// not `fma`: Rust never contracts `a * b + c` into a fused multiply-add by
+/// itself, so both builds perform identical IEEE operations and the output is
+/// bit-identical on every CPU (`blur_dispatch_is_bit_identical`).
 fn separable_gaussian_blur_typed<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
+where
+    T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+{
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the CPU supports AVX2, checked just above.
+            return unsafe { separable_gaussian_blur_avx2::<T>(contig_buf, sigma) };
+        }
+    }
+    separable_gaussian_blur_body::<T>(contig_buf, sigma)
+}
+
+/// [`separable_gaussian_blur_body`] compiled with AVX2 enabled.
+///
+/// # Safety
+/// The caller must have checked that the CPU supports AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn separable_gaussian_blur_avx2<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
+where
+    T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
+{
+    separable_gaussian_blur_body::<T>(contig_buf, sigma)
+}
+
+#[cfg(test)]
+mod blur_dispatch_tests {
+    use super::{separable_gaussian_blur_body, separable_gaussian_blur_typed};
+    use crate::core::buffer::ViewBuffer;
+
+    /// The dispatched blur (AVX2 build when the CPU has it) and the portable
+    /// build agree bit for bit.
+    #[test]
+    fn blur_dispatch_is_bit_identical() {
+        let (h, w, c) = (37usize, 53usize, 3usize);
+        let u8s: Vec<u8> = (0..h * w * c).map(|i| ((i * 7919) % 251) as u8).collect();
+        let f32s: Vec<f32> = u8s.iter().map(|&v| f32::from(v) / 7.0 - 11.0).collect();
+        let u8_buf = ViewBuffer::from_vec_with_shape(u8s, vec![h, w, c]);
+        let f32_buf = ViewBuffer::from_vec_with_shape(f32s, vec![h, w, c]);
+        for sigma in [0.8f32, 2.0, 5.5] {
+            let (a, b) = (
+                separable_gaussian_blur_typed::<u8>(&u8_buf, sigma),
+                separable_gaussian_blur_body::<u8>(&u8_buf, sigma),
+            );
+            assert_eq!(a.as_slice::<u8>(), b.as_slice::<u8>(), "u8 sigma {sigma}");
+            let (a, b) = (
+                separable_gaussian_blur_typed::<f32>(&f32_buf, sigma),
+                separable_gaussian_blur_body::<f32>(&f32_buf, sigma),
+            );
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(
+                bits(a.as_slice::<f32>()),
+                bits(b.as_slice::<f32>()),
+                "f32 sigma {sigma}"
+            );
+        }
+    }
+}
+
+#[inline(always)]
+fn separable_gaussian_blur_body<T>(contig_buf: &ViewBuffer, sigma: f32) -> ViewBuffer
 where
     T: crate::core::dtype::ViewType + Default + Copy + num_traits::NumCast,
 {
@@ -1723,11 +1796,15 @@ where
         v
     }));
 
-    BLUR_HORIZ_BUF.with(|cell| {
-        let mut slab = cell.borrow_mut();
-        if slab.len() < n {
-            slab.resize(n, 0.0f32);
-        }
+    // The scratch slab is taken out of the thread-local for the duration of
+    // the call rather than used inside a `with` closure: the passes must be in
+    // this function's own body to be compiled with its target features (a
+    // closure is a separate function and does not inherit them).
+    let mut slab = BLUR_HORIZ_BUF.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    if slab.len() < n {
+        slab.resize(n, 0.0f32);
+    }
+    let result = {
         let horiz = &mut slab[..n];
 
         // ── Horizontal pass (f32 → f32) ──────────────────────────────────
@@ -1805,7 +1882,9 @@ where
         }
 
         ViewBuffer::from_vec_with_shape(out, shape.to_vec())
-    })
+    };
+    BLUR_HORIZ_BUF.with(|cell| *cell.borrow_mut() = slab);
+    result
 }
 
 #[cfg(not(feature = "image_interop"))]

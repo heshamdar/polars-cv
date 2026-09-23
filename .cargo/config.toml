@@ -1,9 +1,10 @@
 # Local-dev SIMD flags — x86_64 hosts only.
 #
 # Enables AVX2/BMI2/FMA auto-vectorization. Measured in release (CR-35 in
-# CODE_REVIEW_FINDINGS.md), only the separable blur gains from it (~1.4x);
-# grayscale, threshold, the fused kernel, cast and resize are as fast or faster
-# at the SSE2 baseline the published wheels use.
+# CODE_REVIEW_FINDINGS.md), only the separable blur gains from it, and blur
+# now dispatches to an AVX2 build at runtime, so the baseline wheels get that
+# gain too. Grayscale, threshold, the fused kernel, cast and resize are as fast
+# or faster at the SSE2 baseline the published wheels use.
 #
 # `x86-64-v3` rather than `native`: native embeds whatever the *build* host's
 # CPUID reports, which traps with SIGILL when the process later runs on a host

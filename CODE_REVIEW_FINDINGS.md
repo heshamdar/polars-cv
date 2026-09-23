@@ -591,7 +591,20 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   `runner.rs`). As an interim, run `catch_unwind` per row so a panic becomes a
   row error that the row policy then handles.
 
-### CR-35 — Published wheels ship without the SIMD code paths · `Won't fix (premise corrected)` · Low
+### CR-35 — Published wheels ship without the SIMD code paths · `Resolved` · Low
+
+> **Resolved.** The separable blur, the one kernel that gains from AVX2, now
+> dispatches once per call to an AVX2 build of its whole body
+> (`is_x86_feature_detected!` + `#[target_feature(enable = "avx2")]`).
+> Release timings with the wheels' baseline flags: 1024² u8 5.02 → 3.84 ms,
+> 512²×3 u8 3.81 → 3.07 ms, on par with an `x86-64-v3` build. Two approaches
+> measured *worse* first, which is why the whole body is duplicated:
+> - dispatching only the row axpy was slower (5.51 ms);
+> - leaving the passes inside the `thread_local!` `with` closure was no faster,
+>   because a closure does not inherit its caller's target features.
+>
+> Only `avx2` is enabled, not `fma`, so the output is bit-identical on every
+> CPU (`blur_dispatch_is_bit_identical`, run against a baseline build).
 
 > **Measured (release, view-buffer kernels, baseline flags vs
 > `-C target-cpu=x86-64-v3`):**
