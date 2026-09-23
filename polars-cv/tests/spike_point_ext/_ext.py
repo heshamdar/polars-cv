@@ -1,7 +1,7 @@
 """SPIKE (throwaway): shared lazy first-use registration for extension types.
 
 Feasibility probe for the Polars-plugin design review. The extension types the
-spike defines (``polars_cv.point``, ``polars_cv.ndarray``) must be registered on
+spike defines (``polars_cv.point`` / ``.contour`` / ``.bbox`` / ``.ndarray``) must be registered on
 *two* copies of polars-core: the host (via ``pl.register_extension_type``) and
 the plugin (via the Rust ``register_extension_type`` that runs in the ``_lib``
 ``#[pymodule]`` init).
@@ -15,14 +15,16 @@ compiled extension" invariant.
 
 So registration is **lazy**: each type module records itself via
 ``register_lazy`` at import (pure Python, no ``.so`` load), and the first
-operation that actually needs a type calls ``ensure_registered`` — which runs
-the host registrations and triggers the single ``_lib`` import. Import stays
+operation that actually needs a type calls ``ensure_registered`` — which
+triggers the single ``_lib`` import and then runs the host registrations. Import stays
 cheap and plugin-free; the ``.so`` is pulled in only on first real use.
 
 Delete after the migrate-or-drop decision.
 """
 
 from __future__ import annotations
+
+import importlib
 
 import polars as pl
 
@@ -39,28 +41,42 @@ def register_lazy(ext_name: str, host_cls: type[pl.datatypes.BaseExtension]) -> 
 
 
 def ensure_registered() -> None:
-    """Register any not-yet-registered spike types on host + plugin, idempotently.
+    """Register any not-yet-registered spike types on plugin + host, idempotently.
 
     Cheap to call on every entry point: returns early once nothing is pending.
+    Every failure raises rather than degrading to a half-registered state — a
+    host-only registration would let a tagged column be built and then decay to
+    its storage at the plugin boundary, surfacing as a confusing error far from
+    the cause. A name is recorded as registered only after its registration
+    succeeded, so a failed attempt is retried rather than silently skipped.
     """
     pending = [(name, cls) for name, cls in _PENDING if name not in _REGISTERED_NAMES]
     if not pending:
         return
 
-    for name, cls in pending:
-        try:
-            pl.register_extension_type(name, cls)
-        except Exception:  # noqa: BLE001 - registry rejects a duplicate name
-            pass
-        _REGISTERED_NAMES.add(name)
-
-    # The lazy trigger for the Rust-side registration (module-init side effect).
-    # One import; later ones are sys.modules no-ops. Absent when the plugin is
-    # unbuilt — host-only registration still allows pure-Python round-trips.
+    # Plugin side first: its registration is a module-init side effect of the
+    # single ``_lib`` import (later imports are sys.modules no-ops).
     try:
-        import polars_cv._lib  # noqa: F401
-    except ImportError:
-        pass
+        lib = importlib.import_module("polars_cv._lib")
+    except ImportError as e:
+        msg = (
+            "the spike extension types need the compiled plugin "
+            "(`maturin develop --features pyo3-extension,spike-ext-types`)"
+        )
+        raise ImportError(msg) from e
+    if not getattr(lib, "__spike_ext_types__", False):
+        msg = (
+            "the compiled plugin was built without the `spike-ext-types` feature, "
+            "so its copy of polars-core has no spike extension types; rebuild with "
+            "`maturin develop --features pyo3-extension,spike-ext-types`"
+        )
+        raise RuntimeError(msg)
+
+    # Host side. No duplicate guard to swallow: ``_REGISTERED_NAMES`` already
+    # keeps this from registering a name twice, so any error here is real.
+    for name, cls in pending:
+        pl.register_extension_type(name, cls)
+        _REGISTERED_NAMES.add(name)
 
 
 def is_extension_named(dtype: object, ext_name: str) -> bool:

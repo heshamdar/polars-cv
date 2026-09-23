@@ -6,8 +6,9 @@
 //! field-name inspection.
 //!
 //! Isolated and additive: not wired into the `.bbox` namespace or `geom_schema`
-//! parity guards. Storage stays the plain `bbox_fields()` struct (one authority).
-//! Delete after the migrate-or-drop decision.
+//! parity guards. Storage is checked against
+//! [`crate::geom_schema::bbox_struct_dtype`] at schema resolution (see
+//! [`crate::ext_check`]). Delete after the migrate-or-drop decision.
 
 use std::any::Any;
 use std::borrow::Cow;
@@ -81,16 +82,11 @@ fn bbox_instance() -> ExtensionTypeInstance {
 }
 
 fn bbox_ext_output(input_fields: &[Field]) -> PolarsResult<Field> {
-    let field = &input_fields[0];
-    let DataType::Extension(typ, _) = field.dtype() else {
-        polars_bail!(SchemaMismatch: "expected a `polars_cv.bbox` column, got: {}", field.dtype());
-    };
-    if (&*typ.0 as &dyn Any).downcast_ref::<BBox>().is_none() {
-        polars_bail!(
-            SchemaMismatch: "expected a `polars_cv.bbox` column, got extension: {}", typ.name()
-        );
-    }
-    Ok(field.clone())
+    crate::ext_check::expect_ext::<BBox>(
+        &input_fields[0],
+        BBOX_EXT_NAME,
+        &crate::geom_schema::bbox_struct_dtype(),
+    )
 }
 
 /// Identity op over a `polars_cv.bbox` column: recover storage via

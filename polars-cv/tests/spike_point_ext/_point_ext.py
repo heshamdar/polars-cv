@@ -5,7 +5,7 @@ Feasibility probe for the Polars-plugin design review. Registers
 constructor, and a thin wrapper over the ``point_ext_translate`` plugin op.
 
 This is NOT part of the public API and is not exported from ``polars_cv``.
-Registration is lazy (see ``_spike_ext``): the host type is recorded at import
+Registration is lazy (see ``_ext``): the host type is recorded at import
 via ``register_lazy`` and both copies of polars-core are registered on first use
 by ``ensure_registered`` — so importing this module does not load the compiled
 ``.so``. Both registrations must agree on the name/storage or an incoming tagged
@@ -19,8 +19,8 @@ from polars._typing import IntoExpr
 from polars.plugins import register_plugin_function
 
 from polars_cv._namespace import _LIB_PATH
-from polars_cv._spike_ext import ensure_registered, register_lazy
 from polars_cv.geometry.schemas import POINT_SCHEMA
+from tests.spike_point_ext._ext import ensure_registered, register_lazy
 
 POINT_EXT_NAME = "polars_cv.point"
 

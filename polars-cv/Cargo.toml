@@ -30,11 +30,6 @@ view-buffer = { path = "../view-buffer", default-features = false, features = [
 polars = { version = "0.54", default-features = false, features = [
     "dtype-array",
     "dtype-struct",
-    # SPIKE (plugin design review): Arrow extension types for geometry. Enables
-    # `DataType::Extension`, `register_extension_type`, `Series::ext()` /
-    # `into_extension`. Forwards to polars-core/expr/lazy/ops/plan. Throwaway
-    # until the migrate-or-drop decision — see the spike plan.
-    "dtype-extension",
     "dtype-i8",
     "dtype-u8",
     "dtype-i16",
@@ -119,7 +114,14 @@ jpeg-decoder = "0.3"
 
 [features]
 pyo3-extension = ["pyo3/extension-module", "pyo3/abi3-py39"]
+# SPIKE (plugin design review): Arrow extension types for the geometry family and
+# the numpy sink struct (`src/ext_*.rs`). Opt-in and never in the maturin build
+# features, so release wheels carry none of it; build it for the spike tests with
+# `maturin develop --features pyo3-extension,spike-ext-types`. `dtype-extension` enables
+# `DataType::Extension`, `register_extension_type`, `Series::ext()` /
+# `into_extension`. Delete after the migrate-or-drop decision.
+spike-ext-types = ["polars/dtype-extension"]
 
 [dev-dependencies]
 # For testing
-polars = { version = "0.54", features = ["dtype-array", "dtype-struct", "dtype-extension", "lazy", "object", "strings", "dtype-datetime"] }
+polars = { version = "0.54", features = ["dtype-array", "dtype-struct", "lazy", "object", "strings", "dtype-datetime"] }

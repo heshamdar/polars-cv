@@ -6,8 +6,9 @@
 //! structural "looks-like" field matching `parse_contour` does today.
 //!
 //! Isolated and additive: not wired into the `.contour` namespace or
-//! `geom_schema` parity guards. Storage stays the plain `contour_fields()`
-//! struct (one authority). Delete after the migrate-or-drop decision.
+//! `geom_schema` parity guards. Storage is checked against
+//! [`crate::geom_schema::contour_fields`] at schema resolution (see
+//! [`crate::ext_check`]). Delete after the migrate-or-drop decision.
 
 use std::any::Any;
 use std::borrow::Cow;
@@ -81,18 +82,11 @@ fn contour_instance() -> ExtensionTypeInstance {
 }
 
 fn contour_ext_output(input_fields: &[Field]) -> PolarsResult<Field> {
-    let field = &input_fields[0];
-    let DataType::Extension(typ, _) = field.dtype() else {
-        polars_bail!(
-            SchemaMismatch: "expected a `polars_cv.contour` column, got: {}", field.dtype()
-        );
-    };
-    if (&*typ.0 as &dyn Any).downcast_ref::<Contour>().is_none() {
-        polars_bail!(
-            SchemaMismatch: "expected a `polars_cv.contour` column, got extension: {}", typ.name()
-        );
-    }
-    Ok(field.clone())
+    crate::ext_check::expect_ext::<Contour>(
+        &input_fields[0],
+        CONTOUR_EXT_NAME,
+        &DataType::Struct(crate::geom_schema::contour_fields()),
+    )
 }
 
 /// Identity op over a `polars_cv.contour` column: recover storage via

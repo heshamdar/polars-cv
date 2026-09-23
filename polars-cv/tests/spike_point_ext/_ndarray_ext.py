@@ -8,7 +8,7 @@ Isolated: this does NOT change the production ``.sink("numpy")`` path (its outpu
 stays a plain, untagged struct) or ``numpy_from_struct``. The reader here unwraps
 ``.ext.storage()`` and delegates to the existing ``numpy_from_struct``. The Rust
 copy is registered in the ``_lib`` module init (``src/ext_ndarray.rs``); host
-registration is lazy, via the shared ``_spike_ext`` helper. Delete after the
+registration is lazy, via the shared ``_ext`` helper. Delete after the
 migrate-or-drop decision.
 """
 
@@ -22,7 +22,11 @@ from polars.plugins import register_plugin_function
 
 from polars_cv import NUMPY_OUTPUT_SCHEMA, numpy_from_struct
 from polars_cv._namespace import _LIB_PATH
-from polars_cv._spike_ext import ensure_registered, is_extension_named, register_lazy
+from tests.spike_point_ext._ext import (
+    ensure_registered,
+    is_extension_named,
+    register_lazy,
+)
 
 if TYPE_CHECKING:
     import numpy as np

@@ -4,7 +4,7 @@ Part of the design-review extension-type spike, rounding out the geometry family
 Tags the ``{exterior, holes, is_closed}`` struct so a consumer identifies a
 contour by its type tag instead of the structural "looks-like" matching
 ``parse_contour`` does today. Isolated: not wired into the ``.contour`` namespace.
-Registration is lazy (see ``_spike_ext``). Delete after the migrate-or-drop decision.
+Registration is lazy (see ``_ext``). Delete after the migrate-or-drop decision.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from polars._typing import IntoExpr
 from polars.plugins import register_plugin_function
 
 from polars_cv._namespace import _LIB_PATH
-from polars_cv._spike_ext import ensure_registered, register_lazy
 from polars_cv.geometry.schemas import CONTOUR_SCHEMA, contour_from_points
+from tests.spike_point_ext._ext import ensure_registered, register_lazy
 
 CONTOUR_EXT_NAME = "polars_cv.contour"
 
