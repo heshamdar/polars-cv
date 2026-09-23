@@ -175,7 +175,7 @@ def _validate_sink_params(fmt: str, kwargs: "dict[str, Any]") -> None:
         return
     if dtype not in ("f16", "float16"):
         msg = (
-            f"numpy/torch sink dtype only supports 'f16' (got '{dtype}'). "
+            f"numpy/torch/ndarray sink dtype only supports 'f16' (got '{dtype}'). "
             "Use .cast(...) in the pipeline for other output dtypes."
         )
         raise ValueError(msg)
@@ -361,7 +361,10 @@ class LazyPipelineExpr:
 
         Args:
             format: Output format string (e.g., "numpy", "png") or a dict
-                    mapping aliases to formats for multi-output.
+                    mapping aliases to formats for multi-output. ``"ndarray"``
+                    is the ``"numpy"`` struct tagged with the
+                    ``polars_cv.ndarray`` extension type
+                    (:class:`polars_cv.NdArrayType`).
             return_expr: If True (default), return a pl.Expr. If False, return the PipelineGraph.
             opt_flags: Which plan-time optimizations to apply. ``None`` (default)
                     reads the ``POLARS_CV_OPTIMIZATIONS`` env var, falling back
@@ -371,7 +374,7 @@ class LazyPipelineExpr:
                     physical graph — see :mod:`polars_cv._optimize`.
             kwargs: Parameters for the sink. ``quality`` for the jpeg sink
                     (the other encoders take none); ``shape`` for the array
-                    sink; ``dtype="f16"`` for the numpy/torch sink to downcast
+                    sink; ``dtype="f16"`` for the numpy/torch/ndarray sink to downcast
                     the output tensor to half precision at the encode boundary
                     (halving the tensor bytes and H2D transfer). ``dtype`` only
                     accepts half precision, as ``"f16"`` or ``"float16"`` —

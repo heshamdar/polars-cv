@@ -318,7 +318,7 @@ class PointNamespace(_GeomNullPolicy, _PluginNamespace):
         Returns:
             Float64 X coordinate.
         """
-        return self._expr.struct.field("x")
+        return self._expr.ext.storage().struct.field("x")
 
     def y(self) -> pl.Expr:
         """
@@ -327,4 +327,4 @@ class PointNamespace(_GeomNullPolicy, _PluginNamespace):
         Returns:
             Float64 Y coordinate.
         """
-        return self._expr.struct.field("y")
+        return self._expr.ext.storage().struct.field("y")

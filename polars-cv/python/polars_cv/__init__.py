@@ -34,6 +34,14 @@ from ._types import (
 )
 from .display import show_images
 from .expressions import CvNamespace
+from .extension_types import (
+    NUMPY_OUTPUT_SCHEMA,
+    BBoxType,
+    ContourType,
+    NdArrayType,
+    PointType,
+    register_extension_types,
+)
 from .geometry import (
     BBOX_SCHEMA,
     CONTOUR_SCHEMA,
@@ -74,6 +82,11 @@ from .metrics import (
     recall_at_threshold,
 )
 from .pipeline import Pipeline
+
+# Registered at import, not on first use: a Parquet/IPC read of a tagged column
+# consults the registry, and a column read before registration decays to its
+# storage. Pure Python, so importing polars-cv still loads no compiled code.
+register_extension_types()
 
 __version__ = "0.28.0"
 
@@ -181,19 +194,6 @@ def build_info() -> dict[str, str | None]:
     }
 
 
-# Schema for numpy/torch sink output struct
-# Matches the Rust output module schema
-NUMPY_OUTPUT_SCHEMA = pl.Struct(
-    {
-        "data": pl.Binary,
-        "dtype": pl.String,
-        "shape": pl.List(pl.UInt64),
-        "strides": pl.List(pl.Int64),
-        "offset": pl.UInt64,
-    }
-)
-
-
 def numpy_from_struct(
     row: dict[str, object] | pl.Series,
     *,
@@ -201,6 +201,10 @@ def numpy_from_struct(
 ) -> "np.ndarray":
     """
     Convert numpy sink output struct to a NumPy array.
+
+    Reads both ``sink("numpy")`` and ``sink("ndarray")`` output: a row of either
+    is the same dict, and a single-row Series may be the plain struct or the
+    ``polars_cv.ndarray`` type over it.
 
     Args:
         row: Struct value from output column.
@@ -216,6 +220,9 @@ def numpy_from_struct(
         strides_list = row.get("strides")
         offset = row.get("offset", 0)
     elif isinstance(row, pl.Series):
+        # A `sink("ndarray")` column is the same struct under a type tag.
+        if isinstance(row.dtype, NdArrayType):
+            row = row.ext.storage()
         # Single-row Series from struct indexing
         if row.dtype == pl.Struct:
             struct_data = row.struct.unnest()
@@ -481,6 +488,11 @@ __all__ = [
     # NumPy conversion utilities
     "numpy_from_struct",
     "NUMPY_OUTPUT_SCHEMA",
+    # Arrow extension types
+    "NdArrayType",
+    "PointType",
+    "ContourType",
+    "BBoxType",
     # Mask comparison functions
     "mask_iou",
     "mask_dice",

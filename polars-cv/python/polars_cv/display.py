@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from polars_cv.extension_types import NdArrayType
+
 if TYPE_CHECKING:
     pass
 
@@ -195,7 +197,8 @@ def show_images(
             (default 200).
         format: How to interpret the column.
 
-            - ``"auto"`` (default): detect from magic bytes.
+            - ``"auto"`` (default): a ``sink("ndarray")`` column is known by
+              its type; anything else is detected from magic bytes.
             - ``"numpy"``: column is a numpy-sink Struct.
 
     Example:
@@ -213,6 +216,8 @@ def show_images(
 
     n = min(max_rows, df.height)
     col = df[column]
+    if format == "auto" and isinstance(col.dtype, NdArrayType):
+        format = "numpy"
 
     if _is_notebook():
         _show_notebook(col, n, max_width, format)

@@ -605,6 +605,10 @@ _REQUIRED_LIB_HOOKS = (
     # `geom_schema::{CONTOUR,BBOX}_FIELD_NAMES`.
     "contour_schema",
     "bbox_schema",
+    # Every extension type as (name, empty storage Series), read by
+    # `test_python_types_match_the_rust_declaration` so Python's
+    # `EXTENSION_TYPES` cannot drift from `ext_types::ExtType::ALL`.
+    "extension_types",
 )
 
 
@@ -2661,7 +2665,8 @@ class TestPluginKwargsRejectUnknownFields:
     ``test_every_deserialized_plugin_struct_rejects_unknown_fields`` reads
     source text, so it cannot tell a real ``deny_unknown_fields`` from the
     string appearing in a comment. These probes drive the genuine entry point —
-    ``register_plugin_function`` with a kwarg Rust does not declare — and
+    ``polars_cv._plugin.call``, the package's one route to
+    ``register_plugin_function``, with a kwarg Rust does not declare — and
     require the query to fail. `CLAUDE.md`: verify at the user-facing entry
     point, not the helper.
 
@@ -2680,14 +2685,12 @@ class TestPluginKwargsRejectUnknownFields:
 
     @staticmethod
     def _call(function_name: str, kwargs: dict[str, object]) -> None:
-        from polars.plugins import register_plugin_function
+        from polars_cv import _plugin
 
-        lib_path = Path(polars_cv.__file__).parent
         df = pl.DataFrame({"x": ["ignored"]})
         df.select(
-            register_plugin_function(
-                plugin_path=lib_path,
-                function_name=function_name,
+            _plugin.call(
+                function_name,
                 args=[pl.col("x")],
                 kwargs=kwargs,
                 is_elementwise=True,

@@ -52,6 +52,7 @@ class SinkFormat(str, Enum):
 
     NUMPY = "numpy"  # NumPy-compatible bytes
     TORCH = "torch"  # PyTorch-compatible bytes
+    NDARRAY = "ndarray"  # The numpy struct, tagged `polars_cv.ndarray`
     PNG = "png"  # Re-encode as PNG
     JPEG = "jpeg"  # Re-encode as JPEG
     WEBP = "webp"  # Re-encode as WebP
@@ -960,7 +961,7 @@ SOURCE_PARAM_APPLIES: "dict[str, frozenset[SourceFormat]]" = {
 SINK_PARAM_APPLIES: "dict[str, frozenset[SinkFormat]]" = {
     "quality": frozenset({SinkFormat.JPEG}),
     "shape": frozenset({SinkFormat.ARRAY}),
-    "dtype": frozenset({SinkFormat.NUMPY, SinkFormat.TORCH}),
+    "dtype": frozenset({SinkFormat.NUMPY, SinkFormat.TORCH, SinkFormat.NDARRAY}),
 }
 
 #: What to do instead, for the parameters where a caller has a real

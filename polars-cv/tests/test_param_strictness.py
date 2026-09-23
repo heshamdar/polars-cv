@@ -883,15 +883,10 @@ class TestInputSlotsAreValidated:
     }
 
     def _call(self, slots: dict, args: list) -> pl.Expr:
-        from pathlib import Path as _Path
+        from polars_cv import _plugin
 
-        from polars.plugins import register_plugin_function
-
-        import polars_cv
-
-        return register_plugin_function(
-            plugin_path=_Path(polars_cv.__file__).parent,
-            function_name="contour_normalize",
+        return _plugin.call(
+            "contour_normalize",
             args=[pl.col("c"), *args],
             kwargs={"ref_width": 10.0, "ref_height": 10.0, "input_slots": slots},
             is_elementwise=True,

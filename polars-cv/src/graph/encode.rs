@@ -692,7 +692,7 @@ pub(crate) fn encode_node_output(
                 contig.as_slice::<f64>().to_vec(),
             ))
         }
-        SinkKind::NumpyStruct => Ok(OutputValue::NumpyStruct(
+        SinkKind::NumpyStruct | SinkKind::NdArray => Ok(OutputValue::NumpyStruct(
             require_buffer(output, domain, format)?.clone(),
         )),
         SinkKind::EncodedImage | SinkKind::Blob => {

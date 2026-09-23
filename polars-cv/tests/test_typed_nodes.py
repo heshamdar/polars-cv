@@ -618,9 +618,8 @@ class TestRasterizeShapeReference:
     def test_unknown_shape_reference_errors_at_compile(self) -> None:
         import json
 
-        from polars.plugins import register_plugin_function
-
-        from polars_cv._graph import LIB_PATH, PipelineGraph
+        from polars_cv import _plugin
+        from polars_cv._graph import PipelineGraph
 
         graph = PipelineGraph()
         pipe = (
@@ -641,9 +640,8 @@ class TestRasterizeShapeReference:
                 op.pop("width", None)
                 op.pop("height", None)
                 op["shape_ref"] = {"type": "literal", "value": "ghost"}
-        expr = register_plugin_function(
-            plugin_path=LIB_PATH,
-            function_name="vb_graph",
+        expr = _plugin.call(
+            "vb_graph",
             args=[pl.col("image")],
             kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
             is_elementwise=True,
