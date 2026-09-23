@@ -557,7 +557,15 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   `multiversion` crate). The alternative is to publish a v3 wheel variant, as
   Polars does with `polars` / `polars-lts-cpu`.
 
-### CR-36 — Geometry I/O goes point by point through `AnyValue` · `Open` · Medium (inferred from code, not measured)
+### CR-36 — Geometry I/O goes point by point through `AnyValue` · `Open` · Low (measured)
+
+> **Measured (debug, streaming, 64 masks of 256², ~1,400 points/row):**
+> `extract_contours → area` 47 ms; the same extraction with contours as the
+> output 79 ms, so the `AnyValue` *encode* costs ~30 ms per ~90k points.
+> The *decode* half is not a hotspot. Contour source → rasterize (219 ms) is
+> no slower than extract → rasterize without any parse (242 ms), because
+> rasterizing dominates. `.contour.area()` on the column takes 5 ms.
+> Downgraded; only the encode is worth rewriting.
 
 - **Location:** `src/contour.rs` (89 `AnyValue` uses: `parse_contour_list` →
   `series.get(i)` per contour and per point), contour encoding in
@@ -572,6 +580,15 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   `benchmarks/regression/` to confirm the cost.
 
 ### CR-37 — Per-row executor overhead from stringly-typed dispatch · `Open` · Low
+
+> **Measured after CR-40 (debug, 100k rows of 8×8 u8 `array`, streaming):**
+> no ops 1.2 µs/row, `invert` 2.2 µs/row, a three-op fused chain 2.9 µs/row.
+> Native `arr.eval(255 - x)` takes 15 ns/row. The remaining per-row cost is
+> this finding. Also, the `blob`/`raw` "zero-copy" sources copy each row
+> (`get_binary_row_buffer`: `bytes.to_vec()`). That cost is linear, not
+> quadratic, but it contradicts the name. A true view into a `BinaryView`
+> data buffer needs an alignment check, because rows sit at arbitrary byte
+> offsets.
 
 - **Location:** `graph/compiled.rs` `run_row_nodes`.
 - **What's wrong:** every row, for every node:
@@ -618,6 +635,24 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
 - **Proposed fix:** set the outer struct validity as well. This is a
   user-visible behaviour change (`is_null()` starts returning `True`), so it
   needs a CHANGELOG entry and a decision on whether the field-level nulls stay.
+
+### CR-40 — The "zero-copy" `array` source copied the whole column on every row · `Resolved` · High (perf)
+
+- **Location:** `src/graph/decode.rs` `get_primitive_buffer`, reached through
+  `try_decode_array_zero_copy` for every `source("array")` row.
+- **What was wrong:** to take one row's window it built a new `Buffer` from
+  `values.as_slice().to_vec()`, which is the chunk's **entire** values buffer,
+  once per row. A batch was therefore quadratic: 35 µs per 64-byte row at 100k
+  rows. Found by profiling (callgrind: 99% of plugin time in `to_vec` under
+  `get_primitive_buffer`) while measuring CR-37.
+- **Fix:** `Buffer<T>::try_transmute::<u8>()` reinterprets the values buffer in
+  place, so each row is a view into the column. Sharing is safe because
+  view-buffer only writes in place through uniquely owned `Rust` storage.
+  1.2 µs/row after the fix (~30×).
+- **Guard:** `decode.rs::array_source_view_tests` asserts that each decoded
+  row's data pointer lies inside the column's own values buffer, for plain,
+  sliced, multi-chunk and nested f32 columns. It was watched failing on the
+  pointer check first.
 
 ---
 

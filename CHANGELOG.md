@@ -110,6 +110,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`source("array")` is no longer quadratic in the batch size.** The
+  zero-copy path copied the column's entire values buffer on every row to
+  read that one row, so a 100k-row morsel of 8×8 arrays cost ~35 µs per row.
+  Rows are now views into the column (~1.2 µs per row, debug build) (CR-40).
 - **`on_error("null")` now covers failures the engine raises as panics.** Some
   data-dependent failures, such as two operands that cannot broadcast, are
   raised inside the engine as panics, which were caught once per batch. Under
