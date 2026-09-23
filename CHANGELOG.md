@@ -81,6 +81,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Inputs an op cannot handle are row errors, and some silent wrong results
+  are now errors.** Every operation now checks its input shape before running,
+  so a shape the plan could not see (e.g. from a `blob` source) is an ordinary
+  error that `on_error` handles, rather than a panic. As a result some inputs
+  that used to "succeed" with a wrong or unsafe result now raise:
+  - `reshape` to a different element count, which produced a view over
+    memory the buffer did not own;
+  - image operations (resize, colour conversion, filters, rotation, affine
+    warps, grayscale, canny) given anything but `[H, W]` or `[H, W, C]`, which
+    either passed the input through unchanged or read a 4-D buffer with an axis
+    silently dropped;
+  - `transpose` with fewer axes than the input;
+  - a reshape after a transpose/flip/crop (a non-contiguous view).
+
+  `normalize(method="minmax"/"zscore")` explicitly accepts any shape, and
+  `perceptual_hash` any power-of-two `hash_size` (CR-34).
 - **An image with no contours yields `[]`, not null.** `extract_contours()`
   published an empty contour set as null, the same as a null input or a failed
   row, so `list.len()` read null instead of 0 and the `.contour` transforms

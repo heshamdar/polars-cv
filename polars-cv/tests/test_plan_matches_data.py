@@ -103,7 +103,9 @@ class TestOpInferShapeAuthority:
         j = self._op_json(
             Pipeline().source("image_bytes").resize(height=224, width=100)
         )
-        assert op_infer_shape(j, [None, None, None]) == [224, 100, None]
+        # The channel axis is the unknown input axis carried through unchanged,
+        # which the FFI reports as -1 ("preserved"), not a size.
+        assert op_infer_shape(j, [None, None, None]) == [224, 100, -1]
 
     def test_resize_expression_dim_is_unknown(self) -> None:
         from polars_cv._lib import op_infer_shape

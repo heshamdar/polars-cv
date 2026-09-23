@@ -1741,6 +1741,16 @@ impl ViewBuffer {
 
     /// Reshapes the buffer to a new shape.
     pub fn reshape(mut self, shape: Vec<usize>) -> Self {
+        // A different element count would describe memory this buffer does
+        // not own. `ViewOp::Reshape::validate` rejects it before execution;
+        // this is the backstop for direct callers.
+        assert_eq!(
+            self.layout.shape.iter().product::<usize>(),
+            shape.iter().product::<usize>(),
+            "reshape from {:?} to {:?} changes the element count",
+            self.layout.shape,
+            shape
+        );
         self.layout.shape = shape;
         self.layout = Layout::new_contiguous(self.layout.shape, self.layout.dtype);
         self

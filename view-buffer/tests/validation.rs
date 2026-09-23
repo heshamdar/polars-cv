@@ -74,19 +74,24 @@ fn test_is_integer_dtype() {
 
 // --- Op Validation Tests ---
 
+/// MinMax/ZScore take global statistics over every element (as documented on
+/// `Pipeline.normalize`), so any shape is valid. These tests used to pin a
+/// "2-D or single-channel only" rule that execution never enforced — it never
+/// called `validate` — and that contradicts the kernel; enforcing it (CR-34)
+/// would have rejected every minmax normalize of an RGB image.
 #[test]
-fn test_normalize_validates_shape() {
+fn test_normalize_accepts_any_shape() {
     let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
-
-    // Valid shapes
-    assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
-    assert!(op.validate(&[&[100, 200]], &[DType::F32]).is_ok());
-    assert!(op.validate(&[&[10, 10, 1]], &[DType::F32]).is_ok());
-
-    // Invalid shapes
-    assert!(op.validate(&[&[10, 10, 3]], &[DType::F32]).is_err());
-    assert!(op.validate(&[&[10, 10, 4]], &[DType::F32]).is_err());
-    assert!(op.validate(&[&[10]], &[DType::F32]).is_err());
+    for shape in [
+        &[10, 10][..],
+        &[100, 200],
+        &[10, 10, 1],
+        &[10, 10, 3],
+        &[10, 10, 4],
+        &[10],
+    ] {
+        assert!(op.validate(&[shape], &[DType::F32]).is_ok(), "{shape:?}");
+    }
 }
 
 #[test]
@@ -104,18 +109,20 @@ fn test_normalize_accepts_all_numeric_dtypes() {
 }
 
 #[test]
-fn test_normalize_error_message_contains_shape() {
-    let op = ComputeOp::Normalize(NormalizeMethod::MinMax, DType::F32);
-    let result = op.validate(&[&[10, 10, 3]], &[DType::F32]);
-
-    let err = result.unwrap_err();
-    let msg = format!("{err}");
-
-    assert!(msg.contains("10"), "Error should contain shape dimension");
-    assert!(
-        msg.contains("HW") || msg.contains("2D"),
-        "Error should mention required shape"
+fn test_normalize_preset_error_message_names_the_mismatch() {
+    // The per-channel method is the one that constrains the channel count.
+    let op = ComputeOp::Normalize(
+        NormalizeMethod::Preset {
+            mean: vec![0.5, 0.5],
+            std: vec![0.2, 0.2],
+        },
+        DType::F32,
     );
+    let msg = format!(
+        "{}",
+        op.validate(&[&[10, 10, 3]], &[DType::F32]).unwrap_err()
+    );
+    assert!(msg.contains("channel"), "{msg}");
 }
 
 #[test]
@@ -154,9 +161,8 @@ fn test_other_compute_ops_have_no_validation() {
 fn test_zscore_normalize_validates_same_as_minmax() {
     let op = ComputeOp::Normalize(NormalizeMethod::ZScore, DType::F32);
 
-    // Should have same requirements as MinMax
-    // With dtype promotion, all numeric types are accepted
+    // Same requirements as MinMax: a global statistic, any shape, any numeric dtype.
     assert!(op.validate(&[&[10, 10]], &[DType::F32]).is_ok());
-    assert!(op.validate(&[&[10, 10, 3]], &[DType::F32]).is_err()); // Shape still matters
-    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok()); // Now accepts U8
+    assert!(op.validate(&[&[10, 10, 3]], &[DType::F32]).is_ok());
+    assert!(op.validate(&[&[10, 10]], &[DType::U8]).is_ok());
 }

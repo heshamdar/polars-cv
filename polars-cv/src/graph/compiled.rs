@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use view_buffer::geometry::label::score_contours_on_buffer;
 use view_buffer::ops::{Domain, NodeOutput};
-use view_buffer::{PlannedDType, ViewBuffer, ViewDto, ViewExpr};
+use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
 
 use crate::contour::parse_contour_list;
 use crate::execute::{
@@ -422,7 +422,15 @@ impl CompiledGraph {
                     results,
                 )
             }))
-            .unwrap_or_else(|payload| Err(panic_message(payload.as_ref())));
+            .unwrap_or_else(|payload| {
+                // Labelled so a user (and the no-panic sweep in
+                // `tests/test_engine_no_panics.py`) can tell an engine bug
+                // from an input the engine rejected with a proper error.
+                Err(format!(
+                    "internal error: the engine panicked: {}",
+                    panic_message(payload.as_ref())
+                ))
+            });
             match row_result {
                 Ok(()) => {
                     if with_message {
@@ -969,6 +977,11 @@ impl CompiledGraph {
                                     graph_step.as_ref(),
                                     "Binary op other operand",
                                 )?;
+                                op.validate(
+                                    &[current_buf.shape(), other_buf.shape()],
+                                    &[current_buf.dtype(), other_buf.dtype()],
+                                )
+                                .map_err(|e| format!("{}: {e}", op.name()))?;
                                 let result = op.execute(&current_buf, &other_buf);
                                 current_output = NodeOutput::from_buffer(result);
                             }
@@ -990,6 +1003,8 @@ impl CompiledGraph {
                                     graph_step.as_ref(),
                                     "ApplyMask mask",
                                 )?;
+                                view_buffer::validate_mask(current_buf.shape(), mask_buf.shape())
+                                    .map_err(|e| format!("apply_mask: {e}"))?;
                                 let result =
                                     view_buffer::apply_mask(&current_buf, &mask_buf, *invert);
                                 current_output = NodeOutput::from_buffer(result);
@@ -1002,6 +1017,9 @@ impl CompiledGraph {
                                     graph_step.as_ref(),
                                     "Reduction",
                                 )?;
+                                reduction_op
+                                    .validate(&[current_buf.shape()], &[current_buf.dtype()])
+                                    .map_err(|e| format!("{}: {e}", reduction_op.name()))?;
                                 let result = reduction_op.execute(&current_buf);
                                 // The op's declared output domain (the same
                                 // authority the planner reads) decides scalar
@@ -1028,6 +1046,9 @@ impl CompiledGraph {
                                     graph_step.as_ref(),
                                     "Histogram",
                                 )?;
+                                histogram_op
+                                    .validate(&[current_buf.shape()], &[current_buf.dtype()])
+                                    .map_err(|e| format!("{}: {e}", histogram_op.name()))?;
                                 let result = histogram_op.execute(&current_buf);
                                 current_output = NodeOutput::from_buffer(result);
                             }
@@ -1045,6 +1066,9 @@ impl CompiledGraph {
                                 // result rides as a Buffer at runtime; the
                                 // planned `vector` domain (OutputSpec) selects
                                 // the List encoding at sink time.
+                                phash_op
+                                    .validate(&[current_buf.shape()], &[current_buf.dtype()])
+                                    .map_err(|e| format!("{}: {e}", phash_op.name()))?;
                                 let result = view_buffer::execution::runner::apply_perceptual_hash(
                                     (*current_buf).clone(),
                                     phash_op.clone(),
@@ -1134,6 +1158,11 @@ impl CompiledGraph {
                                 }
                                 let all_bufs: Vec<&ViewBuffer> =
                                     owned.iter().map(|b| b.as_ref()).collect();
+                                view_buffer::validate_channel_merge(
+                                    &all_bufs.iter().map(|b| b.shape()).collect::<Vec<_>>(),
+                                    &all_bufs.iter().map(|b| b.dtype()).collect::<Vec<_>>(),
+                                )
+                                .map_err(|e| format!("channel_merge: {e}"))?;
                                 let result = view_buffer::apply_channel_merge(&all_bufs);
                                 current_output = NodeOutput::from_buffer(result);
                             }
@@ -1355,7 +1384,11 @@ fn run_segment(
             );
             let mut expr = ViewExpr::new_source(source);
             for op in ops {
-                expr = expr.apply_op((*op).clone());
+                // The validated entry point: an op that cannot run on the
+                // shape reaching it is this row's error, not a kernel panic.
+                expr = expr
+                    .try_apply_op((*op).clone())
+                    .map_err(|e| format!("{}: {e}", op.as_op().name()))?;
             }
             #[cfg(test)]
             PLAN_BUILDS.with(|n| n.set(n.get() + 1));

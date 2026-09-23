@@ -152,7 +152,7 @@ class TestOnErrorNull:
 
 def _mismatched_shapes_frame() -> pl.DataFrame:
     """Row 0 adds two 4x4 images; row 1 adds a 4x4 to a 3x5, which the engine
-    cannot broadcast — a data-dependent failure raised as a Rust panic."""
+    cannot broadcast — a data-dependent failure the plan could not see."""
     from tests.conftest import make_test_png
 
     return pl.DataFrame(

@@ -30,7 +30,8 @@ pub use core::layout::{ExternalLayout, LayoutFacts};
 
 // Re-exports - Execution
 pub use execution::{
-    apply_channel_merge, apply_channel_swap, execute_plan, ExecutionPlan, PlanStep,
+    apply_channel_merge, apply_channel_swap, execute_plan, validate_channel_merge, ExecutionPlan,
+    PlanStep,
 };
 
 // Re-exports - Expression
@@ -38,8 +39,8 @@ pub use expr::{OptConfig, ViewExpr};
 
 // Re-exports - Ops
 pub use ops::{
-    apply_mask, BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType, GeometricEffect,
-    IdentityRule, ImageOp, ImageOpKind, NeighborhoodSupport, NormalizeMethod, Op,
+    apply_mask, validate_mask, BinaryOp, ColorConvertOp, ColorSpace, ComputeOp, FilterType,
+    GeometricEffect, IdentityRule, ImageOp, ImageOpKind, NeighborhoodSupport, NormalizeMethod, Op,
     OutputChannelRule, OutputRankRule, ScalarOp, SpatialDependency, ValidationError, ViewDto,
     ViewOp,
 };

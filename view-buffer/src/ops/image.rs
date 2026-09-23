@@ -207,6 +207,54 @@ pub struct ImageOp {
 }
 
 impl Op for ImageOp {
+    fn validate(
+        &self,
+        input_shapes: &[&[usize]],
+        _input_dtypes: &[DType],
+    ) -> Result<(), crate::ops::validation::ValidationError> {
+        use crate::ops::validation::{require_hw_or_hwc, require_single_channel, ValidationError};
+        let shape = input_shapes[0];
+        match &self.kind {
+            ImageOpKind::Threshold(_)
+            | ImageOpKind::Erode { .. }
+            | ImageOpKind::Dilate { .. }
+            | ImageOpKind::MorphGradient { .. } => require_single_channel(shape),
+            // Image kernels read axes 0/1 as height/width and axis 2 as channels;
+            // anything else would be passed through unchanged or read with an
+            // axis silently dropped, so it is refused rather than degraded.
+            ImageOpKind::Blur { .. }
+            | ImageOpKind::HistogramEqualize
+            | ImageOpKind::Pad { .. }
+            | ImageOpKind::PadToSize { .. }
+            | ImageOpKind::Canny { .. }
+            | ImageOpKind::Grayscale => require_hw_or_hwc(shape),
+            // The resampler handles one to four interleaved channels.
+            ImageOpKind::Resize { .. }
+            | ImageOpKind::ResizeScale { .. }
+            | ImageOpKind::ResizeToHeight { .. }
+            | ImageOpKind::ResizeToWidth { .. }
+            | ImageOpKind::ResizeMax { .. }
+            | ImageOpKind::ResizeMin { .. }
+            | ImageOpKind::Letterbox { .. } => {
+                require_hw_or_hwc(shape)?;
+                match shape.get(2) {
+                    Some(&c) if c > 4 => Err(ValidationError::ShapeRequirement {
+                        requirement: "at most 4 channels for resampling",
+                        got: shape.to_vec(),
+                    }),
+                    _ => Ok(()),
+                }
+            }
+            ImageOpKind::ChannelSwap { order } => match shape {
+                [_, _, c] if order.len() == *c && order.iter().all(|&i| i < *c) => Ok(()),
+                _ => Err(ValidationError::ShapeRequirement {
+                    requirement: "[H, W, C] with one order entry per channel, each < C",
+                    got: shape.to_vec(),
+                }),
+            },
+        }
+    }
+
     fn name(&self) -> &'static str {
         match &self.kind {
             ImageOpKind::Threshold(_) => "Threshold",

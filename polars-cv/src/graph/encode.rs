@@ -23,6 +23,11 @@ pub(crate) fn execute_geometry_op(
     input: NodeOutput,
     op: &GeometryOp,
 ) -> Result<NodeOutput, String> {
+    let shapes: Vec<&[usize]> = input.as_buffer().map(|b| b.shape()).into_iter().collect();
+    let dtypes: Vec<view_buffer::DType> =
+        input.as_buffer().map(|b| b.dtype()).into_iter().collect();
+    op.validate(&shapes, &dtypes)
+        .map_err(|e| format!("{}: {e}", op.name()))?;
     let expected_domain = op.input_domain();
     let actual_domain = input.domain();
     if !expected_domain.accepts(actual_domain) {

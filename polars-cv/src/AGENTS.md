@@ -207,7 +207,7 @@ Contains serde types (`SourceSpec`, `SinkSpec`, `OpSpec`) for JSON deserializati
 
 ## Error Handling
 
-- Rust panics in `view-buffer` are caught by `std::panic::catch_unwind` **per row** in `CompiledGraph::execute_rows` and become that row's error, so the `RowErrorPolicy` below applies to them. A second, batch-level catch in `execute` is only a backstop for panics outside the row loop (series building).
+- Data-dependent errors are `Result`s: every op's required `Op::validate` runs against the concrete input before the op executes (`ViewExpr::try_apply_op` for buffer segments; direct calls for the other steps), so a shape the plan never saw is a row error. A remaining panic is an engine bug: it is caught per row in `CompiledGraph::execute_rows`, reported as "internal error: the engine panicked: …", and follows the `RowErrorPolicy`. A batch-level catch in `execute` is only a backstop for series building. `tests/test_engine_no_panics.py` guards the no-panic property.
 - Source decoding errors produce `polars_err!(ComputeError: ...)` with descriptive messages
 - Null inputs produce null outputs (null propagation)
 - `on_error="null"` on source spec: decode errors produce `None` for that node instead of propagating (parsed once at compile into `CompiledGraph::source_null_nodes`)

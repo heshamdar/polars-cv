@@ -531,7 +531,43 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   copied once. Delete the `AnyValue` fallbacks rather than keeping them as a
   "slow path".
 
-### CR-34 — Panics are the engine's error channel, so `on_error` cannot cover them · `Partially resolved` · Medium
+### CR-34 — Panics are the engine's error channel, so `on_error` cannot cover them · `Resolved` · Medium
+
+> **Remainder resolved.** Data-dependent failures are now errors, not panics.
+>
+> - **Every op states its requirements.** `Op::validate` is a required contract
+>   method with no default, and every op implements it (the image, colour,
+>   filter and view ops were added).
+> - **The executor checks before running.** Buffer segments are built only
+>   through `ViewExpr::try_apply_op`, which validates each op against the
+>   tracked shape and dtype and refuses a reshape of a non-contiguous view.
+>   Binary, `apply_mask` (`validate_mask`), `channel_merge`
+>   (`validate_channel_merge`), reduction, histogram, phash and geometry steps
+>   validate directly.
+> - **Guard.** `tests/test_engine_no_panics.py` sweeps every buffer op, and
+>   every two-operand op across all operand pairs, over 16 input
+>   rank/channel/dtype cells. It found 49 panicking cases first; none remain.
+>
+> A before/after table of all 4,272 cells shows every change from "ok" to
+> "error" is deliberate. Each one was a silent wrong result:
+> - `reshape` to a different element count produced an out-of-bounds view (a
+>   `[100, 200, 3]` shape over 86 bytes); `ViewBuffer::reshape` now asserts too.
+> - Image ops given rank-1 or rank-4 input were a no-op or dropped an axis:
+>   resize and colour conversion read `[2, 5, 4, 3]` as H=2, W=5, C=4.
+> - A 3-entry `transpose` on rank 4.
+>
+> Found along the way:
+> - `Crop`'s `infer_shape` subtracted the `usize::MAX` "to the end" sentinel,
+>   so the tracked channel count was `usize::MAX`. It now resolves to the axis
+>   length, and the output rank follows the input.
+> - `op_infer_shape` reports an unknown input axis carried through unchanged
+>   as `-1` by an explicit rule, probing unknown dims with values distinct from
+>   parameter probes. Before, crop reached `-1` only by that arithmetic accident.
+> - Stale `validate` rules that nothing had enforced were brought into line
+>   with the kernels: minmax/z-score accept any shape (four tests pinned the
+>   old rule and were rewritten), and phash no longer imposes an undocumented
+>   16–1024 `hash_size` range.
+> - Caught panics are labelled "internal error: the engine panicked".
 
 > **Row policy gap closed.** `CompiledGraph::execute_rows` wraps each row in
 > `catch_unwind`, so an engine panic is that row's error and `on_error` applies
