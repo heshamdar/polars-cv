@@ -64,7 +64,7 @@ are implicitly closed; the first point is not repeated.
 
 ### `.contour` (ContourNamespace)
 
-Registered on `pl.Expr` for columns matching `CONTOUR_SCHEMA`. Each method calls `register_plugin_function` with a specific Rust function name (e.g., `contour_area`, `contour_iou`).
+Registered on `pl.Expr` for columns matching `CONTOUR_SCHEMA`. Each method calls `_plugin.call` (via `_PluginNamespace._plugin`) with a specific Rust function name (e.g., `contour_area`, `contour_iou`).
 
 Set-level detection helpers also live here and operate on `CONTOUR_SET_SCHEMA`:
 - `pairwise_iou(other)` -> `List[List[Float64]]`
@@ -83,11 +83,11 @@ existing contour matching logic. Used by `BBoxMatcher` in the metrics subsystem.
 
 ### `.point` (PointNamespace)
 
-Registered on `pl.Expr` for columns matching `POINT_SCHEMA`. Each method calls `register_plugin_function` with a specific Rust function name (e.g., `point_normalize`, `point_distance`).
+Registered on `pl.Expr` for columns matching `POINT_SCHEMA`. Each method calls `_plugin.call` (via `_PluginNamespace._plugin`) with a specific Rust function name (e.g., `point_normalize`, `point_distance`).
 
 ### Important: These bypass the pipeline/graph system
 
-Point and contour namespace operations go directly through `register_plugin_function` to dedicated Rust functions. They do **not** go through the `vb_graph` pipeline path. This is a design distinction — they operate on Struct columns directly rather than on binary image data.
+Point and contour namespace operations go directly through `_plugin.call` to dedicated Rust functions. Every accessor also accepts the `PointType`/`ContourType`/`BBoxType` extension types: `_plugin.call` hands the plugin `.ext.storage()`, so a tagged column computes exactly as its plain struct (`test_accessors_accept_tagged_inputs`). Accessors that work on the struct in Python (`.point.x`/`.y`) must read `.ext.storage()` themselves. They do **not** go through the `vb_graph` pipeline path. This is a design distinction — they operate on Struct columns directly rather than on binary image data.
 
 ### Parameter policy: per-row via input slots, not `ParamValue`
 

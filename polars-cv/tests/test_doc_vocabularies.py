@@ -133,7 +133,17 @@ _METRICS_SURFACES = tuple(v for v in vars(metrics).values() if inspect.isclass(v
 #: checking only `pl.Expr`/`pl.DataFrame` left `col` unresolvable on nearly
 #: every page — which is why the sweep once covered five hand-picked pages
 #: instead of all of them.
-_POLARS_SURFACES = (pl, pl.Expr, pl.DataFrame, pl.LazyFrame, pl.Series)
+#: The `.ext` namespaces are included for the extension-types page, whose
+#: `.ext.to(...)` / `.ext.storage()` are Polars methods reached through them.
+_POLARS_SURFACES = (
+    pl,
+    pl.Expr,
+    pl.DataFrame,
+    pl.LazyFrame,
+    pl.Series,
+    type(pl.col("_").ext),
+    type(pl.Series([None]).ext),
+)
 
 
 def _resolves(name: str) -> bool:

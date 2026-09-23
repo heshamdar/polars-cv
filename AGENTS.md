@@ -69,7 +69,7 @@ This is a **pre-release, largely AI-developed project**. Fix inconsistencies whe
 ```
 Python Pipeline spec
   → JSON graph serialization (PipelineGraph)
-  → register_plugin_function("vb_graph", graph_json, expr_column_names)
+  → _plugin.call("vb_graph", graph_json, expr_column_names)   # the one route to register_plugin_function
   → Polars calls Rust vb_graph(inputs, kwargs)
   → UnifiedGraph::from_json() → topological execution
   → Per-row: decode source → apply ops (ViewExpr/ViewBuffer) → encode sink
@@ -271,6 +271,8 @@ side channel.
 | Whether the compiled extension matches the sources | `POLARS_CV_SOURCE_HASH` from `build.rs`, recomputed by `build_info()` | `test_compiled_plugin_matches_the_rust_sources` — the version comparison cannot fire within a release cycle |
 | Dtype spellings on the Python side | `python/polars_cv/_dtype_names.py`, generated from `dtype_table!` by `scripts/gen_dtype_names.py` | `test_dtype_names_module_is_current` (regenerate-and-diff), `test_engine_dtype_names_match_the_generated_table` pins `_types.DType` to it without the plugin |
 | Which plan-time optimizations exist | `OPTIMIZATION_PASSES` in `_optimize.py` (one `PassSpec` per pass, both tiers) ↔ the `OptFlags` fields | `test_optimize.py::test_flags_match_registry_both_directions` — a pass without a flag or a flag without a pass fails. Optimization is one explicit phase (`PipelineGraph.optimize`); construction and serialization never optimize (`TestStaging`), and toggling a pass changes only the physical graph, never the output (`test_optimize_equivalence.py`) |
+| A polars-cv extension type's name and storage | Rust `ext_types::ExtType` (storage read from `geom_schema` / `output::numpy_output_dtype`), mirrored by `polars_cv.extension_types.EXTENSION_TYPES` so `import polars_cv` can register without the `.so` | `test_python_types_match_the_rust_declaration` (names, order and full storage dtype over the `extension_types` FFI, both directions); `all_lists_every_variant_once` holds `ExtType::ALL` to the enum; `ext_from_params` returns polars' generic `Extension` for our name over any other storage, so an instance of our class *is* the canonical layout |
+| How Python reaches the compiled plugin | `polars_cv._plugin.call` — pins polars to the file the import system loads and passes every argument as `.ext.storage()`, so Rust never receives an extension dtype and only builds tagged outputs (`ExtType::tag`) | `test_only_the_plugin_module_registers_plugin_functions` (AST scan of the package, fixtures in `test_plugin_entry_point.py`); `test_accessors_accept_tagged_inputs` sweeps every accessor case table with tagged inputs; `test_no_module_carries_its_own_plugin_path` |
 
 One deliberate exception, documented at the site: `OpSpec` is *not*
 `deny_unknown_fields`, because its params ride on `#[serde(flatten)]`, which

@@ -1,16 +1,71 @@
 # Plan: first-class Arrow extension types in polars-cv
 
-Status: proposal, following the extension-type spike (PR #95,
-`polars-cv/tests/spike_point_ext/`). Scope: the numpy/torch sink struct
-(`polars_cv.ndarray`) and the geometry family (`polars_cv.point` / `.contour` /
-`.bbox`).
+Status: **Phases 1, 2, 3 and 6 implemented** (see §0); Phases 4–5 and the
+open decisions remain. Scope: the numpy/torch sink struct (`polars_cv.ndarray`)
+and the geometry family (`polars_cv.point` / `.contour` / `.bbox`).
 
-**Recommendation:** migrate, in phases. Start by adding a new opt-in
-`sink("ndarray")`. Do not change `sink("numpy")`, and do not tag geometry
+**Recommendation (unchanged):** migrate, in phases. Start by adding a new
+opt-in `sink("ndarray")`. Do not change `sink("numpy")`, and do not tag geometry
 outputs, until input acceptance and persistence have shipped and been used.
 Tagging a column is a breaking change for anyone who touches it with struct
 operations (see §2.1), so every step that makes tagging the default must be
 explicit and versioned.
+
+## 0. Implementation status
+
+**Shipped:**
+
+| Phase | What landed | Where |
+|---|---|---|
+| 1 — Foundation | `ExtType` (Rust, one list; storage read from `geom_schema` / `numpy_output_dtype`); `extension_types` FFI; `NdArrayType` / `PointType` / `ContourType` / `BBoxType` registered at `import polars_cv`; `_plugin.call` as the only way into the plugin; `dtype-extension` always on | `src/ext_types.rs`, `python/polars_cv/extension_types.py`, `python/polars_cv/_plugin.py` |
+| 2 — `sink("ndarray")` | `SinkKind::NdArray` across the four halves; `SinkFormat.NDARRAY`; `numpy_from_struct` / `show_images` read the tag; `sink("numpy")` unchanged | `src/graph/{sink_kind,decode,encode}.rs`, `tests/test_ndarray_sink.py` |
+| 3 — Tagged inputs | Every accessor and `vb_graph` source accepts a tagged column; swept from the accessor case tables | `tests/test_schema_parity_namespaces.py::test_accessors_accept_tagged_inputs` |
+| 6 — Spike deleted | `tests/spike_point_ext/`, `src/ext_*.rs`, the `spike-ext-types` feature | — |
+
+**Where the implementation departed from §3, and why.** Building it turned up
+a simpler design that is stronger on every axis §3 cared about:
+
+- **No plugin-side registration at all (replaces §3.3's registration role and
+  all of §3.4).** `_plugin.call` passes every argument as `.ext.storage()` — a
+  no-op on a plain column, a zero-copy relabel on a tagged one. So the plugin
+  never *receives* an extension dtype, no Rust input path has to strip tags, and
+  a tagged column is validated by exactly the parser that validates its plain
+  struct. Rust only *builds* tagged outputs (`ExtType::tag`), which needs no
+  registry. The whole §2.2 plugin-side timing problem (registration living in a
+  `#[pymodule]` init that polars' `dlopen` never runs) disappears rather than
+  being managed.
+- **The two-`.so` hazard is removed, not guarded (§3.3).** `_plugin.plugin_path()`
+  resolves the file the import system loads and hands *that* to polars, instead
+  of the package directory (from which polars took the first `.so` `iterdir()`
+  returned). The planned `build_info()` guard became unnecessary.
+- **Canonical storage is enforced by the host type, not a Rust check (§3.5).**
+  polars *panics* if `ext_from_params` raises, so our classes instead return
+  polars' generic `Extension` for our name over any other storage or with
+  metadata. `isinstance(dtype, PointType)` is therefore a complete check.
+- **No generated Python module (§3.2).** Python declares the four classes over
+  the schema constants it already exports, and
+  `test_python_types_match_the_rust_declaration` compares names, order and the
+  *full* storage dtype over the `extension_types` FFI (an empty Series per type).
+  This is the pattern `POINT_SCHEMA` already uses, and it keeps
+  `NUMPY_OUTPUT_SCHEMA` — previously pinned only against a literal — honest too.
+- **Guard is the case tables (§3.4).** Instead of a per-source-path Rust probe,
+  every `.contour` / `.point` / `.bbox` case the completeness check requires is
+  re-run on tagged inputs and must equal the untagged result. It caught
+  `.point.x` / `.y`, which read the struct in Python and now read
+  `.ext.storage()`.
+
+**Remaining:**
+
+- Phase 4 — tagged geometry *outputs*. Users can tag with `.ext.to(PointType())`
+  today; a tagged contour sink or constructors are still to decide (§4).
+- Phase 5 — defaults (separate, major-version decision).
+- Open decision — `polars_cv.ndarray` metadata (dtype/ndim), Phase 2 note.
+- Upstream — report polars' `register_extension_type` duplicate check (it tests
+  the literal `"ext_name"`) and the `ext_from_params`-raises-panics behaviour.
+- Found along the way, not changed: `sink("numpy")` encodes a null input row as
+  a struct of null fields, not a null struct. `sink("ndarray")` matches it
+  (`test_null_input_rows_encode_as_the_numpy_sink_does`); changing it is its
+  own decision.
 
 ---
 

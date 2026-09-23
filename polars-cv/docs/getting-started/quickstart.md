@@ -106,6 +106,7 @@ A null in a parameter column fails the query by default;
 |--------|-------------|----------|
 | `numpy` | NumPy-compatible struct | NumPy, OpenCV, Scikit-image |
 | `torch` | PyTorch-compatible struct | PyTorch DataLoaders |
+| `ndarray` | The `numpy` struct, tagged `polars_cv.ndarray` | Columns that should say what they are (see [Extension Types](../user-guide/concepts/extension-types.md)) |
 | `png` | Re-encode as PNG bytes | Storage, display |
 | `jpeg` | Re-encode as JPEG bytes | Web usage |
 | `webp` | Re-encode as WebP bytes | Web usage (smaller files) |

@@ -90,7 +90,7 @@ When `.sink()` is called, a `PipelineGraph` is built:
 3. Output specs are attached to terminal nodes
 4. Common subexpression elimination (CSE) shares common prefixes
 5. The graph is serialized to JSON
-6. `register_plugin_function(function_name="vb_graph", ...)` is called
+6. `_plugin.call("vb_graph", ...)` is called (the package's only route to `register_plugin_function`)
 
 **A node reference is not a dependency until it is an upstream edge.** An op or
 source that points at another `LazyPipelineExpr` by node id — `rasterize(shape=)`,
