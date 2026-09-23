@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._graph_viz import get_graphviz_out
+from polars_cv._types import expr_key
 
 if TYPE_CHECKING:
     import pydot
@@ -420,7 +421,7 @@ class PipelineGraph:
             # canonical serialization, not ``hash(source)``: a hash collision
             # would bucket two *different* sources together and fuse a shared
             # prefix node with the wrong source. String equality cannot collide.
-            col_str = str(node.column)
+            col_str = expr_key(node.column)
             source = node.pipeline._source
             source_key = (
                 json.dumps(source.to_dict(), sort_keys=True) if source else "none"
@@ -635,7 +636,7 @@ class PipelineGraph:
         for node_id, node in self._nodes.items():
             if node.column is not None:
                 # Get a string representation of the column for deduplication
-                col_str = str(node.column)
+                col_str = expr_key(node.column)
                 if col_str not in seen_columns:
                     seen_columns[col_str] = idx
                     idx += 1
@@ -652,7 +653,7 @@ class PipelineGraph:
 
         for node in self._nodes.values():
             if node.column is not None:
-                col_str = str(node.column)
+                col_str = expr_key(node.column)
                 if col_str not in seen:
                     seen.add(col_str)
                     columns.append(node.column)
@@ -683,7 +684,7 @@ class PipelineGraph:
         for node in self._nodes.values():
             # Get expression columns from this node's pipeline
             for expr in node.pipeline._get_expr_columns():
-                expr_str = str(expr)
+                expr_str = expr_key(expr)
                 if expr_str not in seen:
                     seen.add(expr_str)
                     expr_columns.append(expr)
