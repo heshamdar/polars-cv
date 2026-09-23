@@ -289,10 +289,8 @@ class TestExecutionModes:
 class TestNullHandling:
     """Tests for null value handling in output."""
 
-    def test_null_input_produces_null_struct_fields(
-        self, simple_rgb_bytes: bytes
-    ) -> None:
-        """Null input should produce struct with null fields."""
+    def test_null_input_produces_a_null_row(self, simple_rgb_bytes: bytes) -> None:
+        """A null input is a null row, not a struct of null fields (CR-39)."""
         df = pl.DataFrame({"image": [simple_rgb_bytes, None, simple_rgb_bytes]})
 
         pipe = Pipeline().source("image_bytes")
@@ -304,23 +302,18 @@ class TestNullHandling:
         assert row0.get("data") is not None
         assert row2.get("data") is not None
 
-        # Second row should have null fields
-        row1 = result["output"][1]
-        assert row1.get("data") is None
-        assert row1.get("dtype") is None
-        assert row1.get("shape") is None
+        assert result["output"][1] is None
+        assert result["output"].is_null().to_list() == [False, True, False]
 
-    def test_null_struct_raises_on_conversion(self, simple_rgb_bytes: bytes) -> None:
-        """Attempting to convert null struct should raise ValueError."""
+    def test_null_row_raises_on_conversion(self, simple_rgb_bytes: bytes) -> None:
+        """Attempting to convert a null row should raise ValueError."""
         df = pl.DataFrame({"image": [None]}).cast({"image": pl.Binary})
 
         pipe = Pipeline().source("image_bytes")
         result = df.with_columns(output=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
         row = result["output"][0]
-
-        # Struct has null fields
-        assert row.get("data") is None
+        assert row is None
 
         # Should raise when trying to convert
         with pytest.raises(ValueError, match="null"):

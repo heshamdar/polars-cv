@@ -135,9 +135,10 @@ class TestOnErrorNull:
         assert row0 is not None
         assert row0["data"] is not None
 
-        # Corrupt row produces struct with all-null fields
-        row1 = result["out"][1]
-        assert row1["data"] is None
+        # Corrupt row is a null row (it used to be a struct of null fields,
+        # which is_null()/drop_nulls() could not see — CR-39).
+        assert result["out"][1] is None
+        assert result["out"].is_null().to_list() == [False, True]
 
     def test_backwards_compatible(self, create_test_png: Callable) -> None:
         """Omitting on_error keeps existing behaviour (raise on error)."""

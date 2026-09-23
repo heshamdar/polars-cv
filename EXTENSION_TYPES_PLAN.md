@@ -62,10 +62,10 @@ a simpler design that is stronger on every axis §3 cared about:
 - Open decision — `polars_cv.ndarray` metadata (dtype/ndim), Phase 2 note.
 - Upstream — report polars' `register_extension_type` duplicate check (it tests
   the literal `"ext_name"`) and the `ext_from_params`-raises-panics behaviour.
-- Found along the way, not changed: `sink("numpy")` encodes a null input row as
-  a struct of null fields, not a null struct. `sink("ndarray")` matches it
-  (`test_null_input_rows_encode_as_the_numpy_sink_does`); changing it is its
-  own decision.
+- Found along the way: `sink("numpy")` encoded a null input row as a struct
+  of null fields, not a null struct. Since changed (CR-39): both sinks now
+  publish a null row as a null value, and
+  `test_null_input_rows_encode_as_the_numpy_sink_does` still holds them equal.
 
 ---
 

@@ -172,13 +172,20 @@ pub fn build_numpy_series(
     let strides_col = build_strides_column(&encoded)?;
     let offset_col = build_offset_column(&encoded);
 
-    // Combine into struct
+    // A null row is a null *struct*, like every other sink's null row, so
+    // `is_null()`/`drop_nulls()` see it; the fields under it are null too.
+    // Field-level nulls alone read as a present row of nulls (CR-39).
+    let validity: Option<polars_arrow::bitmap::Bitmap> = encoded
+        .iter()
+        .any(Option::is_none)
+        .then(|| encoded.iter().map(Option::is_some).collect());
+
     StructChunked::from_series(
         name,
         len,
         [data_col, dtype_col, shape_col, strides_col, offset_col].iter(),
     )
-    .map(|ca| ca.into_series())
+    .map(|ca| ca.with_outer_validity(validity).into_series())
 }
 
 /// Build the 'data' column (Binary) from encoded rows using zero-copy buffer registration.

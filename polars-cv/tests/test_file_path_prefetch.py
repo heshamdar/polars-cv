@@ -205,7 +205,7 @@ class TestRemotePrefetch:
         pipe = Pipeline().source("file_path", on_error="null").grayscale()
         out = df.with_columns(out=pl.col("paths").cv.pipe(pipe).sink("numpy"))
         assert out["out"][0]["data"] is not None
-        assert out["out"][1]["data"] is None
+        assert out["out"][1] is None
         assert out["out"][2]["data"] is not None
 
     def test_failing_url_raises_by_default(self, http_image_server: str) -> None:
