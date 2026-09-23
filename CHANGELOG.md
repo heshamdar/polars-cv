@@ -110,6 +110,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **A row the sink cannot represent is an error, not a null.** If the encoder
+  ever produced a row of a different kind than the sink expects,
+  `build_series_from_spec` published it as null. It now raises an internal error
+  naming both kinds (CR-38).
 - **`sink("list")` and `sink("array")` no longer fall onto a per-element slow
   path.** A `list` sink of rank 2 or more, or an `array` sink with even one null
   row, built one `AnyValue` per element and ran ~34-40x slower than

@@ -447,7 +447,16 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   readable name only for error messages. Guard with the repro above as a
   regression test, watched failing first.
 
-### CR-32 — Multi-core execution depends on how Polars happens to chunk the input · `Open` · High
+### CR-32 — Multi-core execution depends on how Polars happens to chunk the input · `Re-scoped` · Low
+
+> **Re-scoped (2026-09-23).** The plugin's standard regime is lazy + streaming,
+> and there the morsels already spread the work across cores (3.5–3.8× on 4
+> cores in the table below). Parallelising inside a call would only help the
+> in-memory engine and would compete with the streaming engine's own
+> scheduling, so it is not planned unless a design emerges that helps both.
+> What is left is that eager users get no reliable signal: the warning counts
+> rows, and image rows are expensive. The warning should be based on the call's
+> elapsed time rather than its row count.
 
 - **Location:** `graph/compiled.rs` `execute_rows` (a sequential `for row_idx in
   0..len`); `engine_warning.rs`. No `rayon`/`POOL` use anywhere in either crate.
@@ -570,7 +579,13 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   (`Vec<Option<NodeOutput>>`) and the source format to an enum. Cache the
   planned `ExecutionPlan` step list per (static chain, input dtype, rank).
 
-### CR-38 — Row/sink kind mismatch silently becomes a null row · `Open` · Low
+### CR-38 — Row/sink kind mismatch silently becomes a null row · `Resolved` · Low
+
+> **Resolved.** Each sink kind in `build_series_from_spec` now lists the row
+> variants it accepts (`convert_rows`). `None` of an accepted variant is a null
+> row, and any other variant is an internal error (`foreign_row`). Guarded by
+> `sink_kind.rs::a_row_of_another_kind_is_an_error_not_a_null`, which covers
+> every `(domain, format)` pair and was watched failing on `(buffer, numpy)`.
 
 - **Location:** `graph/decode.rs` `build_series_from_spec`. Every arm maps
   unexpected `RowResult` variants with `_ => None`.
@@ -580,6 +595,19 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
 - **Proposed fix:** return an internal error on a variant mismatch. Better still,
   make `RowResult` generic over, or indexed by, `SinkKind` so the mismatch
   cannot be constructed at all.
+
+### CR-39 — A null row in the numpy/ndarray sink is a struct of nulls, not a null · `Open` · Low
+
+- **Location:** `src/output.rs` `build_numpy_series`. The validity bitmap is
+  applied to the struct's *fields*.
+- **What's wrong:** every other sink publishes a null row as a null value. A
+  numpy/ndarray null row is `{data: null, dtype: null, …}`, so
+  `is_null()` is `False` and `drop_nulls()`/`null_count()` do not see it.
+  `tests/test_ndarray_sink.py::_is_null_row` accepts both representations, so
+  nothing pins either one. Found while writing the CR-38 guard.
+- **Proposed fix:** set the outer struct validity as well. This is a
+  user-visible behaviour change (`is_null()` starts returning `True`), so it
+  needs a CHANGELOG entry and a decision on whether the field-level nulls stay.
 
 ---
 
