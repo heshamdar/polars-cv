@@ -11,8 +11,7 @@ use view_buffer::{ImageCodec, PlannedDType, ViewBuffer};
 
 use super::encode::{
     build_typed_array_series_from_rows_with_dtype, build_typed_list_series_from_rows_with_dtype,
-    contour_struct_dtype, contours_to_polars_value, histogram_buckets_to_polars_value,
-    histogram_struct_dtype, TypedListRow,
+    contour_set_series, histogram_buckets_to_polars_value, histogram_struct_dtype, TypedListRow,
 };
 use super::sink_kind::SinkKind;
 use super::types::{OutputSpec, RowResult, TypedBufferData};
@@ -808,7 +807,9 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
                 );
             }
         }
-        SinkKind::Contours => Ok(DataType::List(Box::new(contour_struct_dtype()))),
+        SinkKind::Contours => Ok(DataType::List(Box::new(DataType::Struct(
+            crate::geom_schema::contour_fields(),
+        )))),
     }
 }
 /// Create a null RowResult with the correct type based on OutputSpec.
@@ -988,15 +989,7 @@ pub(crate) fn build_series_from_spec(
                 RowResult::Contours(c) => Ok(c),
                 other => Err(other),
             })?;
-            let values = rows
-                .iter()
-                .map(|r| match r {
-                    Some(contours) => contours_to_polars_value(contours),
-                    None => Ok(AnyValue::Null),
-                })
-                .collect::<PolarsResult<Vec<_>>>()?;
-            let contour_dtype = DataType::List(Box::new(contour_struct_dtype()));
-            Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
+            contour_set_series(name, &rows)
         }
     }
 }

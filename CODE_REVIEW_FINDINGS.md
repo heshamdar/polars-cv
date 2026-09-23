@@ -587,7 +587,24 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   `multiversion` crate). The alternative is to publish a v3 wheel variant, as
   Polars does with `polars` / `polars-lts-cpu`.
 
-### CR-36 — Geometry I/O goes point by point through `AnyValue` · `Open` · Low (measured)
+### CR-36 — Geometry I/O goes point by point through `AnyValue` · `Resolved` · Low (measured)
+
+> **Resolved.** `geom_schema::contour_array` builds a contour column straight
+> into Arrow: flat `x`/`y` buffers plus offsets for the exteriors, holes and
+> hole rings, with each field matched by name to `contour_fields()`. It backs
+> both outputs:
+> - the graph's contour sink (`encode.rs::contour_set_series`). This deleted
+>   `encode.rs::contour_struct_dtype`, a second declaration of the layout.
+> - every `.contour` accessor. `map_contours*`/`zip_contours` are now generic
+>   over `ContourOutput`: measures keep the `AnyValue` path, and transforms
+>   return a `Contour`.
+>
+> The declared dtype still governs the result. With streaming on 64 masks
+> (~90k points): contour sink overhead ~31 → ~3 ms, and `.contour.translate`
+> 39 → 6.2 ms. `contour_to_anyvalue` is now test-only, as the oracle for
+> `encode.rs::contour_sink_tests` and `geom_arity.rs::contour_output_tests`.
+> Unchanged, and noted: the graph sink publishes an *empty* contour set as
+> null, while the `.contour` transforms publish it as an empty list.
 
 > **Measured (debug, streaming, 64 masks of 256², ~1,400 points/row):**
 > `extract_contours → area` 47 ms; the same extraction with contours as the
