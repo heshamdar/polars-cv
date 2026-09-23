@@ -27,13 +27,13 @@ from __future__ import annotations
 import polars as pl
 
 # (ext_name, host BaseExtension subclass) recorded at type-module import.
-_PENDING: list[tuple[str, type]] = []
+_PENDING: list[tuple[str, type[pl.datatypes.BaseExtension]]] = []
 # Names whose host registration has already run, so a type imported after the
 # first ensure_registered() still gets picked up on the next call.
 _REGISTERED_NAMES: set[str] = set()
 
 
-def register_lazy(ext_name: str, host_cls: type) -> None:
+def register_lazy(ext_name: str, host_cls: type[pl.datatypes.BaseExtension]) -> None:
     """Record a spike extension type to register on first use (no ``.so`` load)."""
     _PENDING.append((ext_name, host_cls))
 
