@@ -825,11 +825,44 @@ pub(crate) fn null_row_result_for_spec(spec: &OutputSpec) -> PolarsResult<RowRes
         SinkKind::Contours => RowResult::Contours(None),
     })
 }
+/// A row whose variant the sink kind does not accept.
+///
+/// `encode_node_output` and [`SinkKind`] are two halves of one contract, so
+/// reaching this means they disagree. Publishing the row as null (the former
+/// `_ => None` arms) would pass the bug off as data (CR-38).
+fn foreign_row(kind: SinkKind, row: &RowResult) -> PolarsError {
+    polars_err!(ComputeError:
+        "internal: a {:?} sink received a {} row. The encode half and the sink \
+         kind disagree about this output.",
+        kind, row.variant_name()
+    )
+}
+
+/// Convert every row with `accept`, which returns `None` for a variant the
+/// kind does not accept; that becomes an error rather than a null.
+fn convert_rows<T>(
+    kind: SinkKind,
+    data: Vec<RowResult>,
+    accept: impl Fn(RowResult) -> Result<Option<T>, RowResult>,
+) -> PolarsResult<Vec<Option<T>>> {
+    data.into_iter()
+        .map(|row| accept(row).map_err(|row| foreign_row(kind, &row)))
+        .collect()
+}
+
+/// A vector row as typed list data.
+fn vector_row(vals: Vec<f64>) -> (TypedBufferData, Vec<usize>) {
+    let len = vals.len();
+    (TypedBufferData::F64(vals), vec![len])
+}
+
 /// Build a series from row results using the OutputSpec to determine the type.
 ///
 /// This function uses static type information from the OutputSpec rather than
 /// inspecting the first row's data. This allows proper handling of null values
-/// while preserving the expected output type.
+/// while preserving the expected output type. Each kind accepts a fixed set of
+/// row variants; `None` of an accepted variant is a null row, and any other
+/// variant is an internal error.
 pub(crate) fn build_series_from_spec(
     name: PlSmallStr,
     spec: &OutputSpec,
@@ -837,23 +870,24 @@ pub(crate) fn build_series_from_spec(
 ) -> PolarsResult<Series> {
     let dtype = &spec.expected_dtype;
     let kind = SinkKind::resolve(spec)?;
-    if kind == SinkKind::HistogramBuckets {
-        let values: PolarsResult<Vec<AnyValue<'static>>> = data
-            .iter()
-            .map(|r| match r {
-                RowResult::HistogramBuckets(Some(buckets)) => {
-                    histogram_buckets_to_polars_value(buckets)
-                }
-                _ => Ok(AnyValue::Null),
-            })
-            .collect();
-        let histogram_dtype = DataType::List(Box::new(histogram_struct_dtype()));
-        return Series::from_any_values_and_dtype(name, &values?, &histogram_dtype, true);
-    }
     match kind {
         // Every arm below is keyed on the resolved kind, so a new one is a
         // compile error here rather than a row that quietly becomes Binary.
-        SinkKind::HistogramBuckets => unreachable!("handled above"),
+        SinkKind::HistogramBuckets => {
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::HistogramBuckets(b) => Ok(b),
+                other => Err(other),
+            })?;
+            let values = rows
+                .iter()
+                .map(|r| match r {
+                    Some(buckets) => histogram_buckets_to_polars_value(buckets),
+                    None => Ok(AnyValue::Null),
+                })
+                .collect::<PolarsResult<Vec<_>>>()?;
+            let histogram_dtype = DataType::List(Box::new(histogram_struct_dtype()));
+            Series::from_any_values_and_dtype(name, &values, &histogram_dtype, true)
+        }
         SinkKind::NumpyStruct | SinkKind::NdArray => {
             // Move the buffers in so each is the sole Arc owner: that lets
             // `into_polars_buffer_strided` take the zero-copy *strided* branch
@@ -862,13 +896,10 @@ pub(crate) fn build_series_from_spec(
             // consumers (`numpy_from_struct`, the struct->PNG helper) honor them
             // via `np.lib.stride_tricks.as_strided`, so permuted layouts decode
             // correctly without materialising to contiguous here.
-            let buffers: Vec<Option<ViewBuffer>> = data
-                .into_iter()
-                .map(|r| match r {
-                    RowResult::NumpyStruct(opt) => opt,
-                    _ => None,
-                })
-                .collect();
+            let buffers = convert_rows(kind, data, |r| match r {
+                RowResult::NumpyStruct(b) => Ok(b),
+                other => Err(other),
+            })?;
             let series =
                 crate::output::build_numpy_series(name, buffers, spec.sink.out_dtype.as_deref())?;
             match kind {
@@ -880,22 +911,20 @@ pub(crate) fn build_series_from_spec(
             // Register each row's already-materialised bytes as a BinaryView
             // backing buffer instead of copying them into a builder — see
             // `crate::output::binary_view_series_from_rows`.
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::Binary(b) => Ok(b),
+                other => Err(other),
+            })?;
             Ok(crate::output::binary_view_series_from_rows(
                 name,
-                data.into_iter().map(|r| match r {
-                    RowResult::Binary(b) => b,
-                    _ => None,
-                }),
+                rows.into_iter(),
             ))
         }
         SinkKind::BufferList => {
-            let rows: Vec<TypedListRow> = data
-                .into_iter()
-                .map(|r| match r {
-                    RowResult::TypedList(Some((typed_data, shape))) => Some((typed_data, shape)),
-                    _ => None,
-                })
-                .collect();
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::TypedList(t) => Ok(t),
+                other => Err(other),
+            })?;
             build_typed_list_series_from_rows_with_dtype(
                 name,
                 &rows,
@@ -905,13 +934,10 @@ pub(crate) fn build_series_from_spec(
             )
         }
         SinkKind::BufferArray => {
-            let rows: Vec<TypedListRow> = data
-                .into_iter()
-                .map(|r| match r {
-                    RowResult::TypedArray(Some((typed_data, shape))) => Some((typed_data, shape)),
-                    _ => None,
-                })
-                .collect();
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::TypedArray(t) => Ok(t),
+                other => Err(other),
+            })?;
             build_typed_array_series_from_rows_with_dtype(
                 name,
                 &rows,
@@ -921,28 +947,18 @@ pub(crate) fn build_series_from_spec(
             )
         }
         SinkKind::Scalar => {
-            let scalar_data: Vec<Option<f64>> = data
-                .into_iter()
-                .map(|r| match r {
-                    RowResult::Scalar(s) => s,
-                    _ => None,
-                })
-                .collect();
-            let output_ca = Float64Chunked::from_iter_options(name, scalar_data.into_iter());
-            Ok(output_ca.into_series())
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::Scalar(s) => Ok(s),
+                other => Err(other),
+            })?;
+            Ok(Float64Chunked::from_iter_options(name, rows.into_iter()).into_series())
         }
         SinkKind::VectorList => {
-            let rows: Vec<TypedListRow> = data
-                .into_iter()
-                .map(|r| match r {
-                    RowResult::TypedList(Some((typed_data, shape))) => Some((typed_data, shape)),
-                    RowResult::Vector(Some(vals)) => {
-                        let len = vals.len();
-                        Some((TypedBufferData::F64(vals), vec![len]))
-                    }
-                    _ => None,
-                })
-                .collect();
+            let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
+                RowResult::TypedList(t) => Ok(t),
+                RowResult::Vector(v) => Ok(v.map(vector_row)),
+                other => Err(other),
+            })?;
             build_typed_list_series_from_rows_with_dtype(
                 name,
                 &rows,
@@ -952,18 +968,11 @@ pub(crate) fn build_series_from_spec(
             )
         }
         SinkKind::VectorArray => {
-            let rows: Vec<TypedListRow> = data
-                .into_iter()
-                .map(|r| match r {
-                    RowResult::TypedList(Some((typed_data, shape)))
-                    | RowResult::TypedArray(Some((typed_data, shape))) => Some((typed_data, shape)),
-                    RowResult::Vector(Some(vals)) => {
-                        let len = vals.len();
-                        Some((TypedBufferData::F64(vals), vec![len]))
-                    }
-                    _ => None,
-                })
-                .collect();
+            let rows: Vec<TypedListRow> = convert_rows(kind, data, |r| match r {
+                RowResult::TypedList(t) | RowResult::TypedArray(t) => Ok(t),
+                RowResult::Vector(v) => Ok(v.map(vector_row)),
+                other => Err(other),
+            })?;
             build_typed_array_series_from_rows_with_dtype(
                 name,
                 &rows,
@@ -973,14 +982,17 @@ pub(crate) fn build_series_from_spec(
             )
         }
         SinkKind::Contours => {
-            let values: PolarsResult<Vec<AnyValue<'static>>> = data
+            let rows = convert_rows(kind, data, |r| match r {
+                RowResult::Contours(c) => Ok(c),
+                other => Err(other),
+            })?;
+            let values = rows
                 .iter()
                 .map(|r| match r {
-                    RowResult::Contours(Some(contours)) => contours_to_polars_value(contours),
-                    _ => Ok(AnyValue::Null),
+                    Some(contours) => contours_to_polars_value(contours),
+                    None => Ok(AnyValue::Null),
                 })
-                .collect();
-            let values = values?;
+                .collect::<PolarsResult<Vec<_>>>()?;
             let contour_dtype = DataType::List(Box::new(contour_struct_dtype()));
             Series::from_any_values_and_dtype(name, &values, &contour_dtype, true)
         }

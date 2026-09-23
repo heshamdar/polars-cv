@@ -83,6 +83,22 @@ pub(crate) enum RowResult {
     HistogramBuckets(Option<Vec<f64>>),
 }
 
+impl RowResult {
+    /// The variant's name, for internal-error messages.
+    pub(crate) fn variant_name(&self) -> &'static str {
+        match self {
+            RowResult::Binary(_) => "Binary",
+            RowResult::Scalar(_) => "Scalar",
+            RowResult::Vector(_) => "Vector",
+            RowResult::Contours(_) => "Contours",
+            RowResult::TypedList(_) => "TypedList",
+            RowResult::TypedArray(_) => "TypedArray",
+            RowResult::NumpyStruct(_) => "NumpyStruct",
+            RowResult::HistogramBuckets(_) => "HistogramBuckets",
+        }
+    }
+}
+
 /// Per-row error policy for graph execution.
 ///
 /// Applies to `Result`-level errors while producing a row (source decode,

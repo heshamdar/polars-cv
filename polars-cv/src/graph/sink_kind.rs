@@ -164,6 +164,64 @@ mod tests {
         ("contour", "native", SinkKind::Contours),
     ];
 
+    /// A spec each kind can actually build a column from (the array kinds
+    /// need a shape, the list kinds a rank).
+    fn buildable_spec(domain: &str, format: &str) -> OutputSpec {
+        let mut s = spec(domain, format);
+        s.sink.shape = Some(vec![1]);
+        s.expected_ndim = Some(1);
+        s
+    }
+
+    /// A row of the wrong kind is an error, never a null (CR-38).
+    ///
+    /// `encode_node_output` and `SinkKind` are two halves of one contract; if
+    /// they ever disagree, `build_series_from_spec` used to publish the row as
+    /// null through a `_ => None` arm, which reads as data rather than a bug.
+    #[test]
+    fn a_row_of_another_kind_is_an_error_not_a_null() {
+        use crate::graph::decode::{build_series_from_spec, null_row_result_for_spec};
+        use crate::graph::types::RowResult;
+        for &(domain, format, kind) in PAIRS {
+            let spec = buildable_spec(domain, format);
+            let foreign = if kind == SinkKind::Scalar {
+                RowResult::Binary(Some(vec![1]))
+            } else {
+                RowResult::Scalar(Some(1.0))
+            };
+            let result = build_series_from_spec("o".into(), &spec, vec![foreign]);
+            assert!(
+                result.is_err(),
+                "({domain}, {format}) published a foreign row instead of failing"
+            );
+            // The kind's own null row is still a null, not an error.
+            let null = null_row_result_for_spec(&spec).unwrap();
+            let series = build_series_from_spec("o".into(), &spec, vec![null])
+                .unwrap_or_else(|e| panic!("({domain}, {format}) null row failed: {e}"));
+            // The numpy/ndarray struct marks a null row by null *fields*
+            // rather than a null struct (CR-39), so read its `data` field.
+            let nulls = match kind {
+                SinkKind::NumpyStruct => series
+                    .struct_()
+                    .unwrap()
+                    .field_by_name("data")
+                    .unwrap()
+                    .null_count(),
+                SinkKind::NdArray => series
+                    .ext()
+                    .unwrap()
+                    .storage()
+                    .struct_()
+                    .unwrap()
+                    .field_by_name("data")
+                    .unwrap()
+                    .null_count(),
+                _ => series.null_count(),
+            };
+            assert_eq!(nulls, 1, "({domain}, {format})");
+        }
+    }
+
     #[test]
     fn every_named_pair_resolves_to_its_kind() {
         for &(domain, format, expected) in PAIRS {
