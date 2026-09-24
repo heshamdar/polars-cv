@@ -18,10 +18,9 @@ import polars as pl
 from polars_cv import _plugin
 from polars_cv._types import NullParamPolicy
 
-#: Accepted ``on_null(...)`` values, read from the Rust enum's Python mirror
-#: rather than spelled here. ``NullParamPolicy`` is registered in
-#: ``PLUGIN_REGISTRY``, so ``test_every_rust_enum_is_parity_checked`` holds the
-#: mirror to what ``enum_variants("NullParamPolicy")`` reports.
+#: Accepted ``on_null(...)`` values, read from ``NullParamPolicy`` — a class
+#: generated from the Rust enum (``PLUGIN_REGISTRY`` → ``enum_catalog.json``)
+#: rather than spelled here.
 _NULL_PARAM_POLICIES = tuple(p.value for p in NullParamPolicy)
 
 

@@ -174,6 +174,8 @@ REMOVED: tuple[Removed, ...] = (
     Removed("OP_NAMES", "P6: TYPED_OPS is generated from the catalogue"),
     Removed("known_ops", "P6: TYPED_OPS is generated from the catalogue"),
     Removed("_encode_literal", "P6: ParamValue.to_wire"),
+    Removed("_UNIFORM_PARITY_ENUMS", "P6: the Python enums are generated"),
+    Removed("test_every_rust_enum_is_parity_checked", "P6: generated enums"),
 )
 
 

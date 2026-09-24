@@ -42,14 +42,14 @@ pub enum PadPosition {
     BottomRight,
 }
 
-crate::naming::named_variants!(PadMode {
+crate::naming::named_variants!(PadMode: "Padding mode selection.\n\nControls how padding values are determined:\n- CONSTANT: Fill with a constant value (default)\n- EDGE: Replicate edge values\n- REFLECT: Reflect values at edge (not including edge)\n- SYMMETRIC: Reflect values at edge (including edge)" {
     "constant" => Constant,
     "edge" => Edge,
     "reflect" => Reflect,
     "symmetric" => Symmetric,
 });
 
-crate::naming::named_variants!(PadPosition {
+crate::naming::named_variants!(PadPosition: "Position for pad_to_size.\n\nControls where the original content is placed:\n- CENTER: Center content in padded area (default)\n- TOP_LEFT: Place content at top-left corner\n- BOTTOM_RIGHT: Place content at bottom-right corner" {
     "center" => Center,
     "top-left" => TopLeft,
     "bottom-right" => BottomRight,

@@ -185,7 +185,7 @@ pub enum FilterType {
 }
 
 // `Triangle` is surfaced under its API name "bilinear".
-crate::naming::named_variants!(FilterType {
+crate::naming::named_variants!(FilterType: "Image resize filter types." {
     "nearest" => Nearest,
     "bilinear" => Triangle,
     "catmullrom" => CatmullRom,

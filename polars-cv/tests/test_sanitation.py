@@ -541,6 +541,8 @@ _REQUIRED_LIB_HOOKS = (
     "op_catalog",
     # The source/sink catalogue, the same check's sibling for `io_catalog.json`.
     "io_catalog",
+    # The enum catalogue the Python enum classes are generated from.
+    "enum_catalog",
     # Validates a serialized source/sink against its typed format, so the
     # builder refuses an inapplicable keyword while it is written.
     "io_check",
@@ -794,18 +796,6 @@ def _rust_enum_variants(enum_name):
     return set(fn(enum_name)) if callable(fn) else None
 
 
-@plugin_required
-def test_enum_parity_dtype():
-    """Python DType values must equal the Rust DType variant set (A4)."""
-    rust = _rust_enum_variants("DType")
-    if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
-    import polars_cv._types as t
-
-    py = {m.value for m in t.DType}
-    assert py == rust, f"DType: python {py} != rust {rust}"
-
-
 # view-buffer's `any` Domain is an internal identity domain (materialize) that is
 # never surfaced to a Python pipeline, so it is excluded from the comparison.
 _RUST_INTERNAL_DOMAINS = {"any"}
@@ -830,127 +820,37 @@ def test_enum_parity_domain():
     assert py == surfaced, f"Domain: python {py} != surfaced rust {surfaced}"
 
 
-# Enums whose Python mirror is a plain `_types` enum of the same name, checked
-# uniformly below. `test_every_rust_enum_is_parity_checked` asserts this list
-# plus the bespoke cases account for every enum Rust surfaces, so adding one in
-# Rust fails here until it is either mirrored or explicitly excused.
-_UNIFORM_PARITY_ENUMS = [
-    "NormalizeMethod",
-    "ColorSpace",
-    "HashAlgorithm",
-    "HistogramOutput",
-    "PadMode",
-    "PadPosition",
-    "BorderMode",
-    "HistogramClosed",
-    "LabelReduction",
-    "LabelRegionMode",
-    "FilterType",
-    "ExtractMode",
-    "ApproxMethod",
-    "InterpolationType",
-    "ScaleOrigin",
-    "Winding",
-    # Owned by the plugin crate rather than the engine (PLUGIN_REGISTRY), which
-    # `enum_variants` chains onto the engine's. Nothing about checking them
-    # differs — that is the point of chaining rather than special-casing.
-    "RowErrorPolicy",
-    "NullParamPolicy",
-    "FetchErrorPolicy",
-]
-
-# Checked, but not by the uniform test: their Python side needs special
-# handling (a subtracted internal variant, an extra sub-assertion).
-_BESPOKE_PARITY_ENUMS = {"DType", "Domain"}
-
-# Surfaced by `enum_variants` with no Python enum to compare against.
-_NO_PYTHON_MIRROR = {
-    # Binary ops are Python *methods* (`.add()`, `.blend()`), not an enum, so
-    # there is no member set to diff. `test_binary_ops_match_rust` pins the
-    # names against the Rust table instead.
-    #
-    # This is now the *only* reason it is here. It used to be exempt for a
-    # second reason as well — its name table lived in the plugin crate, so
-    # `enum_variants` answered for it through a hand-written arm rather than a
-    # registry. The table has moved beside the enum in view-buffer, so it is
-    # registered and name-checked like everything else.
-    "BinaryOp",
-    # The sink `dtype` (only half precision) has no Python enum: `.sink()`
-    # passes the keyword through and the typed sink (`formats::sink`) is its
-    # only validator, over `io_check`.
-    "SinkDType",
-}
+# Every other registered enum's Python class is generated from the enum
+# catalogue (`scripts/gen_ops.py`, `tests/golden/enum_catalog.json`), so there is
+# no second copy to compare; `test_the_committed_catalog_is_the_built_one` holds
+# the catalogue to the built extension and the module to the catalogue.
 
 
-@plugin_required
-@pytest.mark.parametrize("enum_name", _UNIFORM_PARITY_ENUMS)
-def test_enum_parity_api_enums(enum_name):
-    """Each user-facing API enum must equal its view-buffer authority set (A4)."""
-    rust = _rust_enum_variants(enum_name)
-    if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
-    import polars_cv._types as t
+def test_every_enum_exclusion_names_a_registered_enum() -> None:
+    """``gen_ops.NOT_GENERATED`` may only excuse enums the catalogue holds.
 
-    py = {m.value for m in getattr(t, enum_name)}
-    assert py == rust, f"{enum_name}: python {py} != rust {rust}"
-
-
-@plugin_required
-def test_filter_type_exposes_every_rust_variant():
-    """`FilterType` is full parity, not a subset.
-
-    It was previously a deliberate subset (nearest/bilinear/lanczos3). Making
-    `filter` a per-row parameter broke that: the literal path validated against
-    the Python enum while a column value went straight to Rust's larger table,
-    so an expression could reach a filter a literal could not. Rather than
-    validate the same restriction twice, the subset was dropped — checked here
-    alongside the other API enums via `test_enum_parity_api_enums`, with this
-    test pinning the specific variants that used to be Rust-only.
+    A registered enum gets a Python class by being registered; the exclusions
+    are the stated exceptions. One naming an enum that no longer exists would
+    read as coverage while excusing nothing.
     """
-    rust = _rust_enum_variants("FilterType")
-    if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
-    import polars_cv._types as t
+    import importlib.util
+    from pathlib import Path
 
-    py = {m.value for m in t.FilterType}
-    assert {"catmullrom", "gaussian"} <= py, (
-        "catmullrom/gaussian must stay reachable from Python; a subset here "
-        "would be bypassable through a per-row `filter` expression"
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "gen_ops", root / "scripts" / "gen_ops.py"
     )
-    assert py == rust, f"FilterType: python {py} != rust {rust}"
-
-
-@plugin_required
-def test_every_rust_enum_is_parity_checked():
-    """Every enum ``enum_variants`` answers for must be checked by some test.
-
-    The list of enums to check used to be hand-written, and had drifted:
-    ``LabelReduction`` and ``LabelRegionMode`` both had authoritative Rust
-    tables and neither appeared in any parity test, so a Python/Rust
-    divergence in either would have shipped. Reading the enum names from Rust
-    closes that: a newly registered enum lands in ``enum_names()`` and fails
-    here until it is mirrored in ``_types`` or explicitly excused above.
-    """
-    fn = getattr(_lib(), "enum_names", None)
-    if not callable(fn):
-        pytest.skip("_lib.enum_names() not built")
-
-    surfaced = set(fn())
-    accounted = set(_UNIFORM_PARITY_ENUMS) | _BESPOKE_PARITY_ENUMS | _NO_PYTHON_MIRROR
-    unchecked = surfaced - accounted
-    assert not unchecked, (
-        f"these Rust enums are surfaced to Python but no parity test covers "
-        f"them: {sorted(unchecked)}. Add each to _UNIFORM_PARITY_ENUMS (with a "
-        f"matching polars_cv._types enum), or to _NO_PYTHON_MIRROR with a "
-        f"reason."
-    )
-
-    # The reverse direction: an excused or bespoke name that Rust no longer
-    # surfaces is a stale entry that would quietly stop checking anything.
-    stale = accounted - surfaced
-    assert not stale, (
-        f"these names are listed as parity-checked but Rust does not surface "
-        f"them: {sorted(stale)}"
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registered = {
+        e["name"]
+        for e in json.loads(
+            (root / "tests" / "golden" / "enum_catalog.json").read_text()
+        )
+    }
+    assert set(module.NOT_GENERATED) <= registered, (
+        f"stale exclusions: {sorted(set(module.NOT_GENERATED) - registered)}"
     )
 
 
@@ -1733,12 +1633,11 @@ def _dtype_table_rows() -> list[tuple[str, str, int, str]]:
 def test_engine_dtype_names_match_the_generated_table() -> None:
     """``_types.DType`` must spell exactly what ``dtype_table!`` spells.
 
-    ``DType`` is in view-buffer's ``naming::REGISTRY``, so
-    ``test_every_rust_enum_is_parity_checked`` already compares it to the Rust
-    variants — but only through ``enum_variants``, which needs the compiled
-    extension. Editing Python is exactly when the extension is stale, so the
-    check that matters most runs in the plugin-free lane, against the generated
-    module. This is also what gives ``SHORT_NAMES`` a reader: a generated
+    ``DType`` is generated from view-buffer's ``naming::REGISTRY`` (via
+    ``enum_catalog.json``), and the catalogue is checked against the built
+    extension — which needs the extension. Editing Python is exactly when the
+    extension is stale, so the check that matters most runs in the plugin-free
+    lane, against the generated module. This is also what gives ``SHORT_NAMES`` a reader: a generated
     constant nothing reads is a fourth dtype table with extra steps.
     """
     from polars_cv._dtype_names import SHORT_NAMES, WIRE_CODES
@@ -2780,10 +2679,14 @@ def test_the_committed_catalog_is_the_built_one() -> None:
     import importlib.util
     from pathlib import Path
 
-    from polars_cv._lib import io_catalog, op_catalog
+    from polars_cv._lib import enum_catalog, io_catalog, op_catalog
 
     root = Path(__file__).resolve().parent.parent
-    for name, built in (("op_catalog", op_catalog), ("io_catalog", io_catalog)):
+    for name, built in (
+        ("op_catalog", op_catalog),
+        ("io_catalog", io_catalog),
+        ("enum_catalog", enum_catalog),
+    ):
         committed = (root / "tests" / "golden" / f"{name}.json").read_text()
         assert built() == committed, (
             f"{name}.json differs from the built extension: rebuild (maturin "

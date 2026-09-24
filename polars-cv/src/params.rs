@@ -37,7 +37,7 @@ pub enum NullParamPolicy {
 
 // As with `RowErrorPolicy`, these must agree with the `rename_all` above;
 // `null_param_policy_names_match_serde` checks that they do.
-view_buffer::naming::named_variants!(NullParamPolicy {
+view_buffer::naming::named_variants!(NullParamPolicy: "What a null in a per-row expression parameter means.\n\nDeliberately separate from :class:`RowErrorPolicy`: under ``NULL`` a null\nparameter is not an error, so it records no ``_error`` message and does not\nweaken reporting for genuine decode/encode/operation failures.\n- RAISE: a null parameter fails the expression.\n- NULL: the affected node produces no output for that row." {
     "raise" => Raise,
     "null" => Null,
 });

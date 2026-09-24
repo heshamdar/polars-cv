@@ -9,7 +9,7 @@ pub enum InterpolationType {
     Bilinear,
 }
 
-crate::naming::named_variants!(InterpolationType {
+crate::naming::named_variants!(InterpolationType: "Interpolation used when sampling an affine warp (``rotate``,\n``warp_affine``, ``shear``, ``rotate_and_scale``).\n\n- NEAREST: Nearest-neighbour sampling (preserves hard edges/pixel art).\n- BILINEAR: Bilinear sampling (default)." {
     "nearest" => Nearest,
     "bilinear" => Bilinear,
 });

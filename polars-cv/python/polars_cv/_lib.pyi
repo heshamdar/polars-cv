@@ -55,6 +55,9 @@ def op_catalog() -> str:
 def io_catalog() -> str:
     """Return the source/sink catalogue as JSON (see ``tests/golden/io_catalog.json``)."""
 
+def enum_catalog() -> str:
+    """Return the registered-enum catalogue as JSON (see ``tests/golden/enum_catalog.json``)."""
+
 def io_check(kind: str, spec_json: str) -> None:
     """Validate one serialized source or sink against its typed format; raise ``ValueError``."""
 

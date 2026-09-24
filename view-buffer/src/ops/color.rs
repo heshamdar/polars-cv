@@ -24,7 +24,7 @@ pub enum ColorSpace {
     Gray,
 }
 
-crate::naming::named_variants!(ColorSpace {
+crate::naming::named_variants!(ColorSpace: "Supported color spaces for ``convert_color``." {
     "rgb" => Rgb,
     "bgr" => Bgr,
     "hsv" => Hsv,

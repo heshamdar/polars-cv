@@ -44,7 +44,7 @@ pub enum HashAlgorithm {
     Blockhash,
 }
 
-crate::naming::named_variants!(HashAlgorithm {
+crate::naming::named_variants!(HashAlgorithm: "Perceptual hash algorithm selection.\n\nDifferent algorithms trade off speed vs robustness to transformations:\n- AVERAGE: Fastest, least robust. Good for exact/near-exact matches.\n- DIFFERENCE: Gradient-based, good balance of speed and robustness.\n- PERCEPTUAL: DCT-based, most robust to resize/compression. Recommended default.\n- BLOCKHASH: Block-based, good resistance to cropping." {
     "average" => Average,
     "difference" => Difference,
     "perceptual" => Perceptual,

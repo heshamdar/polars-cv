@@ -19,7 +19,74 @@ except ImportError:
 
 import polars as pl
 
-from polars_cv._ops_generated import SinkFormat, SourceFormat
+# The enums are generated from the Rust registries (`scripts/gen_ops.py`);
+# re-exported here, where the rest of the package imports them from.
+from polars_cv._ops_generated import (
+    ApproxMethod as ApproxMethod,
+)
+from polars_cv._ops_generated import (
+    BorderMode as BorderMode,
+)
+from polars_cv._ops_generated import (
+    ColorSpace as ColorSpace,
+)
+from polars_cv._ops_generated import (
+    DType as DType,
+)
+from polars_cv._ops_generated import (
+    ExtractMode as ExtractMode,
+)
+from polars_cv._ops_generated import (
+    FetchErrorPolicy as FetchErrorPolicy,
+)
+from polars_cv._ops_generated import (
+    FilterType as FilterType,
+)
+from polars_cv._ops_generated import (
+    HashAlgorithm as HashAlgorithm,
+)
+from polars_cv._ops_generated import (
+    HistogramClosed as HistogramClosed,
+)
+from polars_cv._ops_generated import (
+    HistogramOutput as HistogramOutput,
+)
+from polars_cv._ops_generated import (
+    InterpolationType as InterpolationType,
+)
+from polars_cv._ops_generated import (
+    LabelReduction as LabelReduction,
+)
+from polars_cv._ops_generated import (
+    LabelRegionMode as LabelRegionMode,
+)
+from polars_cv._ops_generated import (
+    NormalizeMethod as NormalizeMethod,
+)
+from polars_cv._ops_generated import (
+    NullParamPolicy as NullParamPolicy,
+)
+from polars_cv._ops_generated import (
+    PadMode as PadMode,
+)
+from polars_cv._ops_generated import (
+    PadPosition as PadPosition,
+)
+from polars_cv._ops_generated import (
+    RowErrorPolicy as RowErrorPolicy,
+)
+from polars_cv._ops_generated import (
+    ScaleOrigin as ScaleOrigin,
+)
+from polars_cv._ops_generated import (
+    SinkFormat as SinkFormat,
+)
+from polars_cv._ops_generated import (
+    SourceFormat as SourceFormat,
+)
+from polars_cv._ops_generated import (
+    Winding as Winding,
+)
 
 from ._dtype_names import NUMPY_TO_SHORT
 
@@ -34,59 +101,6 @@ FloatOrExpr: TypeAlias = Union[float, pl.Expr]
 # ``rotate(expand)`` — stays a plain ``bool``.
 BoolOrExpr: TypeAlias = Union[bool, pl.Expr]
 StrOrExpr: TypeAlias = Union[str, pl.Expr]
-
-
-class RowErrorPolicy(str, Enum):
-    """What a failing row does to a graph query.
-
-    Mirrors ``RowErrorPolicy`` in ``src/graph/types.rs``. Applies to errors
-    raised while producing a row — source decode, op execution, output encode.
-    """
-
-    RAISE = "raise"  # Propagate the first error, failing the whole expression
-    NULL = "null"  # A failing row yields null; other rows proceed
-    NULL_WITH_MESSAGE = "null_with_message"  # As NULL, plus an `_error` field
-
-
-class NullParamPolicy(str, Enum):
-    """What a null in a per-row expression parameter means.
-
-    Mirrors ``NullParamPolicy`` in ``src/params.rs``. Deliberately separate from
-    :class:`RowErrorPolicy`: under ``NULL`` a null parameter is not an error, so
-    it records no ``_error`` message and does not weaken reporting for genuine
-    decode/encode/operation failures.
-    """
-
-    RAISE = "raise"  # A null parameter fails the expression
-    NULL = "null"  # The affected node produces no output for that row
-
-
-class FetchErrorPolicy(str, Enum):
-    """What an unreadable path does to the query.
-
-    Mirrors ``FetchErrorPolicy`` in ``src/fetch.rs``. Settled at fetch time,
-    before any graph node runs, which is why it is not :class:`RowErrorPolicy`:
-    ``.cv.read_bytes()`` has no graph at all, and ``source("file_path")``
-    resolves its bytes before the graph starts.
-    """
-
-    RAISE = "raise"  # An unreadable path fails the whole query
-    NULL = "null"  # An unreadable path yields null for that row only
-
-
-class DType(str, Enum):
-    """Supported data types."""
-
-    U8 = "u8"
-    I8 = "i8"
-    U16 = "u16"
-    I16 = "i16"
-    U32 = "u32"
-    I32 = "i32"
-    U64 = "u64"
-    I64 = "i64"
-    F32 = "f32"
-    F64 = "f64"
 
 
 #: Polars types that reach a buffer through a *cast* rather than a numpy name.
@@ -143,240 +157,11 @@ def dtype_name_for(dtype: pl.DataType) -> str:
         ) from None
 
 
-class NormalizeMethod(str, Enum):
-    """Normalization methods."""
-
-    MINMAX = "minmax"
-    ZSCORE = "zscore"
-    PRESET = "preset"  # Channel-wise with preset mean/std values
-
-
 # ImageNet normalization constants
 # These are the standard normalization values computed from the ImageNet dataset.
 # Use with: normalize(method="preset", mean=IMAGENET_MEAN, std=IMAGENET_STD)
 IMAGENET_MEAN: list[float] = [0.485, 0.456, 0.406]
 IMAGENET_STD: list[float] = [0.229, 0.224, 0.225]
-
-
-class ColorSpace(str, Enum):
-    """Supported color spaces for ``convert_color``."""
-
-    RGB = "rgb"
-    BGR = "bgr"
-    HSV = "hsv"
-    LAB = "lab"
-    YCBCR = "ycbcr"
-    GRAY = "gray"
-
-
-class FilterType(str, Enum):
-    """Image resize filter types.
-
-    Full parity with view-buffer's ``FilterType`` authority. ``BILINEAR`` is the
-    API name for view-buffer's ``Triangle`` variant; the parser also accepts
-    ``"triangle"`` as a backwards-compatible alias.
-    """
-
-    NEAREST = "nearest"
-    BILINEAR = "bilinear"
-    CATMULLROM = "catmullrom"
-    GAUSSIAN = "gaussian"
-    LANCZOS3 = "lanczos3"
-
-
-class HashAlgorithm(str, Enum):
-    """
-    Perceptual hash algorithm selection.
-
-    Different algorithms trade off speed vs robustness to transformations:
-    - AVERAGE: Fastest, least robust. Good for exact/near-exact matches.
-    - DIFFERENCE: Gradient-based, good balance of speed and robustness.
-    - PERCEPTUAL: DCT-based, most robust to resize/compression. Recommended default.
-    - BLOCKHASH: Block-based, good resistance to cropping.
-    """
-
-    AVERAGE = "average"
-    DIFFERENCE = "difference"
-    PERCEPTUAL = "perceptual"
-    BLOCKHASH = "blockhash"
-
-
-class HistogramOutput(str, Enum):
-    """
-    Histogram output mode selection.
-
-    Controls what the histogram operation returns:
-    - COUNTS: Bin counts as a 1D array
-    - NORMALIZED: Histogram normalized to sum to 1.0
-    - QUANTIZED: Input array with pixels replaced by bin indices
-    - EDGES: Bin edge values
-    - BUCKETS: List of bucket structs (lower_edge, upper_edge, count, normalized)
-    """
-
-    COUNTS = "counts"
-    NORMALIZED = "normalized"
-    QUANTIZED = "quantized"
-    EDGES = "edges"
-    BUCKETS = "buckets"
-
-
-class PadMode(str, Enum):
-    """
-    Padding mode selection.
-
-    Controls how padding values are determined:
-    - CONSTANT: Fill with a constant value (default)
-    - EDGE: Replicate edge values
-    - REFLECT: Reflect values at edge (not including edge)
-    - SYMMETRIC: Reflect values at edge (including edge)
-    """
-
-    CONSTANT = "constant"
-    EDGE = "edge"
-    REFLECT = "reflect"
-    SYMMETRIC = "symmetric"
-
-
-class ExtractMode(str, Enum):
-    """
-    Contour retrieval mode for ``extract_contours``.
-
-    Mirrors view-buffer's ``ExtractMode`` authority:
-    - EXTERNAL: Outermost contours only (default).
-    - TREE: Full nesting hierarchy.
-    - ALL: Every contour, without hierarchy.
-    """
-
-    EXTERNAL = "external"
-    TREE = "tree"
-    ALL = "all"
-
-
-class ApproxMethod(str, Enum):
-    """
-    Contour point-approximation method for ``extract_contours``.
-
-    Mirrors view-buffer's ``ApproxMethod`` authority:
-    - NONE: Keep every boundary point.
-    - SIMPLE: Drop redundant collinear points (default).
-    - APPROX: Douglas-Peucker style approximation.
-    """
-
-    NONE = "none"
-    SIMPLE = "simple"
-    APPROX = "approx"
-
-
-class InterpolationType(str, Enum):
-    """
-    Interpolation used when sampling an affine warp (``rotate``,
-    ``warp_affine``, ``shear``, ``rotate_and_scale``).
-
-    Mirrors view-buffer's ``InterpolationType`` authority:
-    - NEAREST: Nearest-neighbour sampling (preserves hard edges/pixel art).
-    - BILINEAR: Bilinear sampling (default).
-    """
-
-    NEAREST = "nearest"
-    BILINEAR = "bilinear"
-
-
-class PadPosition(str, Enum):
-    """
-    Position for pad_to_size.
-
-    Controls where the original content is placed:
-    - CENTER: Center content in padded area (default)
-    - TOP_LEFT: Place content at top-left corner
-    - BOTTOM_RIGHT: Place content at bottom-right corner
-    """
-
-    CENTER = "center"
-    TOP_LEFT = "top-left"
-    BOTTOM_RIGHT = "bottom-right"
-
-
-class BorderMode(str, Enum):
-    """
-    Border-handling mode for 2D convolution (``convolve2d``).
-
-    Mirrors view-buffer's ``BorderMode`` authority:
-    - REPLICATE: Replicate the nearest edge pixel.
-    - ZERO: Treat out-of-bounds pixels as zero.
-    - REFLECT: Reflect pixels around the edge (dcba|abcd|dcba).
-    """
-
-    REPLICATE = "replicate"
-    ZERO = "zero"
-    REFLECT = "reflect"
-
-
-class HistogramClosed(str, Enum):
-    """
-    Interval inclusiveness for histogram binning.
-
-    Mirrors view-buffer's ``HistogramClosed`` authority:
-    - LEFT: Intervals are left-closed ``[a, b)``.
-    - RIGHT: Intervals are right-closed ``(a, b]``.
-    """
-
-    LEFT = "left"
-    RIGHT = "right"
-
-
-class LabelReduction(str, Enum):
-    """
-    Reduction over a contour region's pixel values (``label_reduce``).
-
-    Mirrors view-buffer's ``LabelReduction`` authority.
-    """
-
-    MAX = "max"
-    MEAN = "mean"
-    SUM = "sum"
-
-
-class LabelRegionMode(str, Enum):
-    """
-    Region selection for ``label_reduce``.
-
-    Mirrors view-buffer's ``LabelRegionMode`` authority:
-    - INTERIOR: Pixels strictly inside the contour polygon.
-    - BOUNDARY: Interior pixels plus pixels on the contour boundary.
-    - BBOX: All pixels within the bounding box.
-    """
-
-    INTERIOR = "interior"
-    BOUNDARY = "boundary"
-    BBOX = "bbox"
-
-
-class ScaleOrigin(str, Enum):
-    """
-    Point a contour scale operation is measured from (``.contour.scale``).
-
-    Mirrors view-buffer's ``ScaleOrigin`` authority.
-    """
-
-    CENTROID = "centroid"
-    BBOX_CENTER = "bbox_center"
-    ORIGIN = "origin"
-
-
-class Winding(str, Enum):
-    """
-    Winding direction of a contour ring (``.contour.ensure_winding``).
-
-    Mirrors view-buffer's ``Winding`` authority, long spellings included: the
-    plugin has always accepted ``"clockwise"``/``"counterclockwise"`` alongside
-    the short forms, and the annotation that named only the short ones was the
-    reason nobody noticed the parser silently ignored everything else.
-    """
-
-    CCW = "ccw"
-    COUNTERCLOCKWISE = "counterclockwise"
-    CW = "cw"
-    CLOCKWISE = "clockwise"
 
 
 class Domain(str, Enum):
