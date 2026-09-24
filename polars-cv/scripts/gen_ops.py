@@ -9,7 +9,8 @@ compiled extension, so it runs without a build. It writes:
 - ``TYPED_OPS``: the op names that cross the wire in the typed form;
 - ``OP_FIELDS``: each typed op's field types, which the builder's one encoder
   (``Pipeline._append_typed``) reads;
-- ``_OpsMixin``: one builder method per public op, with the signature, defaults
+- ``_OpsMixin``: one builder method per op (``_``-prefixed for an internal op
+  that hand-written sugar wraps), with the signature, defaults
   and docstring the Rust definition declares. ``Pipeline`` inherits it.
 
 Usage::
@@ -118,6 +119,21 @@ def docstring(op: dict[str, Any]) -> str:
     return "\n".join(parts).rstrip()
 
 
+def method_name(op: dict[str, Any]) -> str:
+    """The generated method's name.
+
+    A ``public`` op is the Python method itself. An ``internal`` one is the
+    building block a hand-written sugar method on ``Pipeline`` calls (``scale``
+    adds ``out_dtype``/``preserve_dtype`` over ``_scale``), so it is private.
+    """
+    if op["visibility"] == "public":
+        return op["python"]
+    if op["visibility"] == "internal":
+        return f"_{op['python']}"
+    msg = f"gen_ops.py cannot yet place {op['visibility']} op {op['name']!r}"
+    raise ValueError(msg)
+
+
 def method(op: dict[str, Any]) -> str:
     """Render one builder method."""
     params = ["self"]
@@ -134,7 +150,7 @@ def method(op: dict[str, Any]) -> str:
     values = ", ".join(f'"{f["name"]}": {f["name"]}' for f in op["fields"])
     doc = _indent(docstring(op), "        ").lstrip()
     return (
-        f"    def {op['python']}({', '.join(params)}) -> Pipeline:\n"
+        f"    def {method_name(op)}({', '.join(params)}) -> Pipeline:\n"
         f'        """{doc}\n        """\n'
         f'        return self._append_typed("{op["name"]}", {{{values}}})\n'
     )
@@ -165,12 +181,7 @@ def render(catalog: list[dict[str, Any]]) -> str:
     fields = {
         op["name"]: {f["name"]: f["type"] for f in op["fields"]} for op in catalog
     }
-    public = [op for op in catalog if op["visibility"] == "public"]
-    unsupported = [op["name"] for op in catalog if op["visibility"] != "public"]
-    if unsupported:
-        msg = f"gen_ops.py cannot yet place non-public ops: {unsupported}"
-        raise ValueError(msg)
-    methods = "\n".join(method(op) for op in public)
+    methods = "\n".join(method(op) for op in catalog)
     text = (
         _HEADER.format(imports=_imports(methods))
         + "\n#: Ops whose wire form is typed (bare values and slots).\n"

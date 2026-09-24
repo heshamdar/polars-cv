@@ -200,8 +200,8 @@ class LazyPipelineExpr:
     def normalize(
         self,
         method: str = ...,
-        mean: list[FloatOrExpr] | None = ...,
-        std: list[FloatOrExpr] | None = ...,
+        mean: Sequence[FloatOrExpr] | None = ...,
+        std: Sequence[FloatOrExpr] | None = ...,
         out_dtype: str | None = ...,
     ) -> LazyPipelineExpr: ...
     def on_error(self, policy: str) -> LazyPipelineExpr: ...

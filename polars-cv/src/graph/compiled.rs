@@ -2483,7 +2483,7 @@ mod tests {
         "nodes": {
             "n0": {
                 "source": {"format": "raw", "dtype": "u8"},
-                "ops": [{"op": "invert"}, {"op": "scale", "factor": {"type": "literal", "value": 2.0}}]
+                "ops": [{"op": "invert"}, {"op": "scale", "factor": 2.0}]
             }
         },
         "outputs": {
@@ -2615,11 +2615,12 @@ mod tests {
         // The dynamic op's expr param must have been bound to a slot:
         // 1 source column + position 0 → absolute slot 1.
         match &compiled.node_plan("n0").resolvers[0] {
-            OpResolver::Dynamic(OpSpec::Legacy(spec)) => match spec.params.get("factor").unwrap() {
-                ParamValue::Slot { idx } => assert_eq!(*idx, 1),
-                other => panic!("expected bound slot, got {other:?}"),
-            },
-            _ => unreachable!(),
+            OpResolver::Dynamic(OpSpec::Typed(op)) => {
+                let mut slots = Vec::new();
+                op.visit_slots(&mut |name, slot| slots.push((name, slot)));
+                assert_eq!(slots, [("factor", 1)]);
+            }
+            _ => panic!("expected a dynamic typed op"),
         }
     }
 

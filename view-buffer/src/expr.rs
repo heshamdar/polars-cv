@@ -8,7 +8,7 @@ use crate::ops::affine::AffineParams;
 use crate::ops::scalar::{FusedKernel, ScalarOp};
 use crate::ops::traits::MemoryEffect;
 use crate::ops::{
-    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, NormalizeMethod, Op,
+    ColorConvertOp, ComputeOp, ConvolveOp, FilterType, ImageOp, ImageOpKind, Normalization, Op,
     ViewDto, ViewOp,
 };
 
@@ -389,7 +389,7 @@ impl ViewExpr {
     /// f32; pass `DType::F32` for the default float output, or another dtype to
     /// have the normalized result cast to it (folded into the op's `Fixed`
     /// output rule).
-    pub fn normalize(self: &Arc<Self>, method: NormalizeMethod, out_dtype: DType) -> Arc<Self> {
+    pub fn normalize(self: &Arc<Self>, method: Normalization, out_dtype: DType) -> Arc<Self> {
         self.compute_node(ComputeOp::Normalize(method, out_dtype))
     }
 

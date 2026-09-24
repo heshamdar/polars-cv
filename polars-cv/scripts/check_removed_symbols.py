@@ -104,6 +104,9 @@ REMOVED: tuple[Removed, ...] = (
     Removed("as_int_list", "P3: axes are Vec<Literal<u32>>"),
     Removed("_literal_axes", "P3: a Literal field refuses an expression"),
     Removed("_require_axes_within_rank", "P3: ViewOp::validate at plan time"),
+    # Typed-op P3 (compute family): `NormalizeMethod` is a fieldless
+    # `named_variants!` enum, so no enum is registered without a table.
+    Removed("REGISTERED_WITHOUT_A_TABLE", "P3: every registered enum has a table"),
 )
 
 

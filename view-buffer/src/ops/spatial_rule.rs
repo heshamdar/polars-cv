@@ -155,7 +155,7 @@ mod tests {
     use super::*;
     use crate::ops::binary::BinaryOp;
     use crate::ops::color::{ColorConvertOp, ColorSpace};
-    use crate::ops::compute::{ComputeOp, NormalizeMethod};
+    use crate::ops::compute::{ComputeOp, Normalization};
     use crate::ops::filter::{BorderMode, ConvolveOp};
     use crate::ops::histogram::HistogramOp;
     use crate::ops::image::{FilterType, ImageOp, ImageOpKind};
@@ -214,7 +214,7 @@ mod tests {
     fn global_ops() {
         let g = SpatialDependency::Global;
         assert_eq!(
-            ComputeOp::Normalize(NormalizeMethod::MinMax, crate::core::dtype::DType::F32)
+            ComputeOp::Normalize(Normalization::MinMax, crate::core::dtype::DType::F32)
                 .spatial_dependency(),
             g
         );

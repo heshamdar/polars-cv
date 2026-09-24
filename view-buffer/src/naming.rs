@@ -162,17 +162,6 @@ registry!(
     crate::ops::NormalizeMethod,
 );
 
-// `NormalizeMethod::Preset` carries payload, so it has no value table and
-// cannot use `named_variants!`. It is registered by hand off its `NAMES` list
-// (which has its own exhaustiveness guard) rather than left out — being
-// unregistered is what stops an enum from being parity-checked at all.
-impl NamedEnum for crate::ops::NormalizeMethod {
-    const ENUM_NAME: &'static str = "NormalizeMethod";
-    fn variant_names() -> Vec<&'static str> {
-        Self::NAMES.to_vec()
-    }
-}
-
 /// Look up a registered enum's variant names.
 pub fn registered_variants(name: &str) -> Option<Vec<&'static str>> {
     REGISTRY.iter().find_map(|(n, f)| (*n == name).then(f))
@@ -381,13 +370,6 @@ mod tests {
         }
     }
 
-    /// Enums registered without a `named_variants!` table of their own.
-    ///
-    /// One entry, and it is documented at its `impl NamedEnum` above:
-    /// `NormalizeMethod::Preset` carries payload, so the enum has no value
-    /// table and is registered off its `NAMES` list instead.
-    const REGISTERED_WITHOUT_A_TABLE: &[&str] = &["NormalizeMethod"];
-
     /// Every `named_variants!` enum in this crate, found by scanning `src/`.
     ///
     /// Deliberately not a hand-written list: a list is the thing this test
@@ -466,14 +448,7 @@ mod tests {
              private, it makes it unchecked."
         );
 
-        let exempt: std::collections::BTreeSet<String> = REGISTERED_WITHOUT_A_TABLE
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let unbacked: Vec<&String> = registered
-            .difference(&declared)
-            .filter(|n| !exempt.contains(*n))
-            .collect();
+        let unbacked: Vec<&String> = registered.difference(&declared).collect();
         assert!(
             unbacked.is_empty(),
             "these names are in REGISTRY but no named_variants! invocation was \
