@@ -25,11 +25,25 @@ harness exists to find.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 import polars as pl
 
 from polars_cv import Pipeline
+from polars_cv.geometry.schemas import CONTOUR_SET_SCHEMA
+from tests._expr_param_cases import (
+    CONTOUR_SET,
+    CONTOURS,
+    DIAMOND,
+    DIAMOND_SET,
+    IMAGE,
+    RECT,
+    RING,
+)
+from tests.conftest import make_image_png, make_rect_png, make_ring_png
+
+if TYPE_CHECKING:
+    from tests._expr_param_cases import ExprCase
 
 #: Sink per output domain. ``list`` keeps a buffer's nesting and dtype without
 #: fixing its shape (an expression-valued ``resize`` has no plan-time shape, so
@@ -137,3 +151,43 @@ def assert_values_vary(outputs: Sequence[Any], *, label: str = "") -> None:
         f"{label}two rows with different parameter values produced the same "
         f"output — the value never reached the kernel"
     )
+
+
+# --- Input frames ----------------------------------------------------------
+
+#: 16x16 so every case's crops, pads and resizes stay inside it, and noisy so a
+#: filter, a channel permutation or a threshold actually changes the result.
+_SIDE = 16
+
+PARAM = "p"
+
+
+def input_images() -> dict[str, bytes]:
+    """The input columns, built once per test that needs them."""
+    return {
+        IMAGE: make_image_png(_SIDE, _SIDE, 3, seed=7),
+        RECT: make_rect_png(_SIDE, _SIDE, 3),
+        RING: make_ring_png(_SIDE, _SIDE, 3),
+    }
+
+
+def input_frame(case: "ExprCase", values: "tuple | list") -> pl.DataFrame:
+    """A frame carrying every input column plus the parameter column.
+
+    All rows hold the *same* image, so the only thing varying down the frame is
+    the parameter. A case whose rows differ because their images differ would
+    pass ``assert_values_vary`` without the parameter doing anything.
+    """
+    rows = len(values)
+    images = input_images()
+    data: dict[str, list] = {name: [blob] * rows for name, blob in images.items()}
+    data[CONTOURS] = [CONTOUR_SET] * rows
+    data[DIAMOND] = [DIAMOND_SET] * rows
+    data[PARAM] = list(values)
+    overrides: dict[str, pl.DataType] = {
+        CONTOURS: CONTOUR_SET_SCHEMA,
+        DIAMOND: CONTOUR_SET_SCHEMA,
+    }
+    if case.dtype is not None:
+        overrides[PARAM] = case.dtype
+    return pl.DataFrame(data, schema_overrides=overrides)
