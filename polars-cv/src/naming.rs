@@ -7,14 +7,11 @@
 //!
 //! They are declared *the same way*, through the exported `named_variants!` and
 //! `registry!` macros, and [`PLUGIN_REGISTRY`] is chained onto the engine's by
-//! `enum_variants`/`enum_names` in `lib.rs`. That chaining is the whole point:
-//! registering an enum is what surfaces it to Python **and** what generates its
-//! Python class (`enum_catalog_json` → `scripts/gen_ops.py`). The alternative —
-//! a hand-written match arm per enum in the FFI — is what `BinaryOp` used to
-//! need.
+//! [`enum_catalog_json`]. That chaining is the whole point: registering an enum
+//! is what generates its Python class (`enum_catalog` → `scripts/gen_ops.py`).
 //!
-//! Adding an enum here is therefore the same act as getting it checked. Do not
-//! add an arm to `enum_variants` instead.
+//! Adding an enum here is therefore the same act as surfacing it. Do not
+//! hand-write a Python class for one instead.
 
 use view_buffer::naming::registry;
 
@@ -52,18 +49,6 @@ pub fn enum_catalog_json() -> String {
     let mut text = serde_json::to_string_pretty(&enums).expect("the catalogue serializes");
     text.push('\n');
     text
-}
-
-/// Look up a plugin-owned enum's variant names.
-pub(crate) fn registered_variants(name: &str) -> Option<Vec<&'static str>> {
-    PLUGIN_REGISTRY
-        .iter()
-        .find_map(|(n, f, _)| (*n == name).then(f))
-}
-
-/// The names of every plugin-owned enum.
-pub(crate) fn registered_names() -> Vec<&'static str> {
-    PLUGIN_REGISTRY.iter().map(|(n, _, _)| *n).collect()
 }
 
 #[cfg(test)]
@@ -118,22 +103,19 @@ mod tests {
 
     /// No plugin enum may shadow an engine enum.
     ///
-    /// `enum_variants` searches the engine registry first, so a duplicated name
-    /// here would be silently unreachable — the plugin's variants would never be
-    /// the ones Python saw, and the enum catalogue would carry two classes of
-    /// one name.
+    /// The enum catalogue would otherwise carry two classes of one name, and
+    /// the generated module would silently keep only the later one.
     #[test]
     fn plugin_enums_do_not_shadow_engine_enums() {
-        let engine = view_buffer::naming::registered_names();
         let clashes: Vec<_> = PLUGIN_REGISTRY
             .iter()
             .map(|(n, _, _)| *n)
-            .filter(|n| engine.contains(n))
+            .filter(|n| view_buffer::naming::REGISTRY.iter().any(|(e, _, _)| e == n))
             .collect();
         assert!(
             clashes.is_empty(),
             "these plugin enums share a name with an engine enum, so \
-             `enum_variants` would answer with the engine's: {clashes:?}"
+             the catalogue would carry two classes of one name: {clashes:?}"
         );
     }
 
@@ -144,8 +126,8 @@ mod tests {
     /// view-buffer's. Exporting the macro gave this crate the ability to
     /// declare vocabularies without giving it the check that makes declaring
     /// one the same act as being checked — so a `named_variants!` table here
-    /// that nobody added to `registry!` was invisible to `enum_variants`, to
-    /// `enum_names()`, and to the enum catalogue its Python class is generated from.
+    /// that nobody added to `registry!` was invisible to the enum catalogue its
+    /// Python class is generated from.
     fn declared_enums() -> std::collections::BTreeSet<String> {
         fn walk(dir: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
             for entry in std::fs::read_dir(dir).expect("src/ is readable") {
@@ -206,9 +188,8 @@ mod tests {
             unregistered.is_empty(),
             "these enums declare a named_variants! table in polars-cv/src but \
              are not in PLUGIN_REGISTRY: {unregistered:?}. Add each to the \
-             registry! invocation in src/naming.rs — that is what surfaces it \
-             over `enum_variants` *and* what makes the Python parity test \
-             demand a mirror for it."
+             registry! invocation in src/naming.rs — that is what puts it in \
+             the enum catalogue and so generates its Python class."
         );
 
         let missing: Vec<_> = registered.difference(&declared).cloned().collect();

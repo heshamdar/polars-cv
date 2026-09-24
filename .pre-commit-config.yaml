@@ -75,7 +75,7 @@ repos:
       #
       # This lane needs the compiled extension. 427 of the 651 are
       # `@plugin_required` -- many structural facts are only observable through
-      # the FFI, such as the enum-parity sweep reading `enum_variants` -- and
+      # the FFI, such as the catalogue checks reading `enum_catalog` -- and
       # without a `.so` they do not politely skip: sixteen fail outright and
       # `test_schema_parity_chains.py` aborts collection, because its
       # `parametrize` reads `_lib` at import time. So this hook assumes the

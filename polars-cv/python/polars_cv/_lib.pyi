@@ -60,6 +60,3 @@ def enum_catalog() -> str:
 
 def io_check(kind: str, spec_json: str) -> None:
     """Validate one serialized source or sink against its typed format; raise ``ValueError``."""
-
-def enum_variants(name: str) -> list[str]:
-    """Return the string variants of a Rust enum, for Python<->Rust parity checks."""

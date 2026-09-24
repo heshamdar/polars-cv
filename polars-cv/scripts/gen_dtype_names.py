@@ -14,8 +14,8 @@ package root.
 Generating closes that. The names are checked in rather than read over the FFI
 because ``numpy_from_struct`` is pure Python and imports no ``_lib``: it must
 keep working with no compiled extension. ``numpy_name`` does not cross the FFI
-either — ``enum_variants`` carries variant names only — so there is nothing to
-read at runtime without widening it.
+either — the enum catalogue carries variant names only — so there is nothing
+to read at runtime without widening it.
 
 Usage::
 
@@ -49,7 +49,7 @@ def dtype_table_rows() -> list[tuple[str, str, int, str]]:
     """Parse ``dtype_table!``'s rows: ``(variant, short, wire_code, numpy)``.
 
     Read from source rather than the FFI because the wire codes are not
-    surfaced across it — ``enum_variants`` carries names only. Source-scanning
+    surfaced across it — the enum catalogue carries names only. Source-scanning
     is the weaker technique, so it is used for exactly the part the FFI cannot
     answer, and the parse asserts it found a plausible table rather than
     silently matching nothing.

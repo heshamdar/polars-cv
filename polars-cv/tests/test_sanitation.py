@@ -517,8 +517,6 @@ _REQUIRED_LIB_HOOKS = (
     "op_infer_shape",
     "op_output_channels",
     "binary_output_dtype",
-    "enum_variants",
-    "enum_names",
     # The 2x3 rotation+scale matrix about an arbitrary centre, read by the
     # planner's literal `rotate_and_scale` so `_rotation_matrix` does not
     # recompute the trig.
@@ -792,8 +790,12 @@ def test_contract_publishes_no_second_spelling():
 
 
 def _rust_enum_variants(enum_name):
-    fn = getattr(_lib(), "enum_variants", None)
-    return set(fn(enum_name)) if callable(fn) else None
+    """``enum_name``'s variant spellings, read from the built enum catalogue."""
+    fn = getattr(_lib(), "enum_catalog", None)
+    if not callable(fn):
+        return None
+    (desc,) = [e for e in json.loads(fn()) if e["name"] == enum_name]
+    return set(desc["variants"])
 
 
 # view-buffer's `any` Domain is an internal identity domain (materialize) that is
@@ -812,7 +814,7 @@ def test_enum_parity_domain():
     """
     rust = _rust_enum_variants("Domain")
     if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
+        pytest.skip("_lib.enum_catalog() not built")
     import polars_cv._types as t
 
     surfaced = rust - _RUST_INTERNAL_DOMAINS
@@ -859,7 +861,7 @@ def test_binary_ops_match_rust():
     """``BinaryOp`` has no Python enum, so pin the method names instead."""
     rust = _rust_enum_variants("BinaryOp")
     if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
+        pytest.skip("_lib.enum_catalog() not built")
     # `hasattr(LazyPipelineExpr, name)` would be a weak proxy: the class
     # generates methods from Pipeline, so a Rust op whose name collided with an
     # unrelated generated method would pass. Compare against the names the lazy
@@ -1335,7 +1337,7 @@ def test_enum_validation_uniform(build, label: str, enum_name: str, good: str) -
 
     rust = _rust_enum_variants(enum_name)
     if rust is None:
-        pytest.skip("_lib.enum_variants() not built")
+        pytest.skip("_lib.enum_catalog() not built")
     assert good in rust, (
         f"'{good}' is used here as a known-good {enum_name}, but Rust publishes "
         f"{sorted(rust)}. The positive half of this test is checking a value "
@@ -1378,7 +1380,7 @@ def test_non_structural_geometry_enums_accept_an_expression() -> None:
     from polars_cv.geometry.contours import ContourNamespace
     from polars_cv.geometry.points import PointNamespace
 
-    enum_names = {
+    geom_enum_names = {
         cls.__name__ for cls in (Winding, ScaleOrigin, LabelReduction, LabelRegionMode)
     }
     found: dict[str, str] = {}
@@ -1388,7 +1390,7 @@ def test_non_structural_geometry_enums_accept_an_expression() -> None:
                 continue
             for param_name, param in inspect.signature(method).parameters.items():
                 annotation = str(param.annotation)
-                if any(enum in annotation for enum in enum_names):
+                if any(enum in annotation for enum in geom_enum_names):
                     found[f"{namespace.__name__}.{name}.{param_name}"] = annotation
 
     # Non-vacuity: an import rename or a signature-scan bug must fail here
