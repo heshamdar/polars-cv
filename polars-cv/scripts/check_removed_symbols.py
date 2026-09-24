@@ -215,6 +215,21 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_commit_reordered_ops", "P7b: _replay"),
     Removed("_commit_eliminated_ops", "P7b: _replay"),
     Removed("_entering_dims_at", "P7b: _entering_dims reads a PlanState"),
+    Removed("_entering_dims", "P7c: the passes run in Rust (passes.rs)"),
+    Removed("_eliminate_identities_inplace", "P7c: node_pass(identity_elimination)"),
+    Removed("_op_is_identity_at", "P7c: passes::is_identity"),
+    Removed("_output_shape_equals_input", "P7c: passes::shape_preserved"),
+    Removed(
+        "_hoist_spatial_windows_inplace", "P7c: node_pass(spatial_window_pushdown)"
+    ),
+    Removed("_compute_spatial_pushdown", "P7c: passes::hoist_spatial_windows"),
+    Removed("_spatial_transfer", "P7c: passes::hoist_spatial_windows"),
+    Removed("_is_spatial_window", "P7c: GraphStep::is_spatial_window"),
+    Removed("_SPATIAL_BARRIER", "P7c: passes::hoist_spatial_windows"),
+    Removed("_op_reads_sibling_nodes", "P7c: GraphStep::reads_other_nodes"),
+    Removed("_names_nodes", "P7c: GraphStep::reads_other_nodes"),
+    Removed("_op_contract_for", "P7c: the passes read contracts in Rust"),
+    Removed("_pass_handlers", "P7c: dispatch on the generated LogicalPass"),
 )
 
 

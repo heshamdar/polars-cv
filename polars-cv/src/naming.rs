@@ -21,6 +21,7 @@ registry!(
     crate::params::NullParamPolicy,
     crate::fetch::FetchErrorPolicy,
     crate::formats::sink_dtype::SinkDType,
+    crate::passes::LogicalPass,
 );
 
 /// One registered enum, as the enum catalogue describes it.

@@ -517,6 +517,9 @@ _REQUIRED_LIB_HOOKS = (
     # One appended op's whole plan-time effect (domain check, schema, H/W,
     # channels, rank clipping), the builder's one call per append.
     "plan_step",
+    # The node-scope optimisation passes (identity elimination, spatial-window
+    # pushdown), which answer with the node's new op order.
+    "node_pass",
     # The 2x3 rotation+scale matrix about an arbitrary centre, read by the
     # planner's literal `rotate_and_scale` so `_rotation_matrix` does not
     # recompute the trig.

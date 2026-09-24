@@ -216,6 +216,24 @@ impl GraphStep {
         }
     }
 
+    /// Whether this step reads another graph node's buffer, so a spatial
+    /// window hoisted past it would crop only this operand. Exhaustive: a new
+    /// multi-input step must say so.
+    pub fn reads_other_nodes(&self) -> bool {
+        match self {
+            GraphStep::Binary { .. }
+            | GraphStep::ApplyMask { .. }
+            | GraphStep::ChannelMerge { .. } => true,
+            GraphStep::Buffer(_)
+            | GraphStep::Geometry(_)
+            | GraphStep::Reduction(_)
+            | GraphStep::Histogram(_)
+            | GraphStep::PerceptualHash(_)
+            | GraphStep::ExtractShape
+            | GraphStep::LabelReduce { .. } => false,
+        }
+    }
+
     /// Whether this step is a hoistable H/W spatial window (a crop/ROI) — the
     /// plan-time authority the spatial-window pushdown reads.
     pub fn is_spatial_window(&self) -> bool {

@@ -186,6 +186,14 @@ class LabelRegionMode(str, Enum):
     BBOX = "bbox"
 
 
+class LogicalPass(str, Enum):
+    """A logical optimisation pass (``OptFlags`` field names)."""
+
+    COMMON_SUBEXPRESSION_ELIMINATION = "common_subexpression_elimination"
+    IDENTITY_ELIMINATION = "identity_elimination"
+    SPATIAL_WINDOW_PUSHDOWN = "spatial_window_pushdown"
+
+
 class NormalizeMethod(str, Enum):
     """Normalization methods (``PRESET``: channel-wise with preset mean/std values)."""
 

@@ -157,6 +157,15 @@
     ]
   },
   {
+    "name": "LogicalPass",
+    "doc": "A logical optimisation pass (``OptFlags`` field names).",
+    "variants": [
+      "common_subexpression_elimination",
+      "identity_elimination",
+      "spatial_window_pushdown"
+    ]
+  },
+  {
     "name": "NormalizeMethod",
     "doc": "Normalization methods (``PRESET``: channel-wise with preset mean/std values).",
     "variants": [
