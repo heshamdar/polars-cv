@@ -948,7 +948,7 @@ expression keys), planned in [`TYPED_OPS_PLAN.md`](TYPED_OPS_PLAN.md). That file
 carries the phase-by-phase work, the transition discipline and the deletion
 matrix; the entries here track status only.
 
-### CR-45 — Ops cross the boundary as a name plus an untyped param map · `Open` · Medium (design)
+### CR-45 — Ops cross the boundary as a name plus an untyped param map · `Fixed` · Medium (design)
 
 - **Location:** `polars-cv/src/pipeline.rs` (`OpSpec`), `execute.rs`
   (`KNOWN_OPS`, `resolve_op_inner`), `params.rs` (`OpParams`), `pipeline.py`
@@ -970,8 +970,12 @@ matrix; the entries here track status only.
   generated Python builders; `LEGACY_OPS` holds the remaining 81. P3 (every
   op typed) done — all 85 ops are typed, `LEGACY_OPS` is empty, and the
   name-keyed resolution (`resolve_op_inner`, `OpParams`, the `get::*` readers,
-  the arm-scan guards) is deleted. Remaining for this finding: P6 deletes
-  `LegacyOpSpec`, the empty `LEGACY_OPS` and the dispatcher's legacy arm.
+  the arm-scan guards) is deleted.
+- **Resolution (P6):** `TypedOp` is the wire op; `LegacyOpSpec`, `LEGACY_OPS`,
+  the dispatcher, the untyped `ParamValue`, `known_ops` and `OP_NAMES` are
+  deleted, and the Python enums are generated from the Rust registries
+  (`enum_catalog`), taking their parity tests and the `enum_variants` FFI with
+  them. The Python planner's own `OpSpec`/`ParamValue` go with CR-46 (P7).
 
 ### CR-46 — The planner is split across the FFI and folded twice · `Open` · Medium (design)
 

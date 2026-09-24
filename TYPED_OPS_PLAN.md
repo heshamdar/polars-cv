@@ -16,16 +16,16 @@
 > | P3 — Migrate every op | **done** — all 85 ops typed (P3.1 view, P3.2 compute, P3.3 image, P3.4 colour/filter/rotate/reductions/phash/channel, P3.5a geometry, P3.5b binary/mask/merge, P3.5c rasterize/label_reduce/extract_shape); `LEGACY_OPS` empty; name-keyed resolution deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `af41c23` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P4 — Typed sources and sinks | **done** — `src/formats/` (`formats!` registry, `io_catalog.json`, `io_check`); both applicability tables, `PARAM_HINTS`, `KNOWN_SOURCE_FORMATS`, `SourceSpec`/`SinkSpec` and the last untyped param readers deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `910afb2` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P5 — Geometry namespaces | **done** — `ContourKwargs`/`PointKwargs` are typed (`Param<T>`, `ColumnRef`, `#[derive(Op)]`); `input_slots`, `InputSlots`, `parse_named`/`require_named` deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `f3d7d94` (slow lane, `cargo deny`, `mkdocs --strict` included) |
-> | P6 — Delete the legacy protocol | pending |
+> | P6 — Delete the legacy protocol | **done** — `pipeline.rs` (`OpSpec`/`LegacyOpSpec`/dispatcher), `LEGACY_OPS`, `resolve_op`, the untyped `ParamValue`, `known_ops`, `OP_NAMES` (P6a); 20 Python enums generated from the registries via `enum_catalog.json` and their parity tests deleted (P6b); `enum_variants`/`enum_names` and the serde-name tests deleted, graph policies parse through `NAMED` (P6c). Python `OpSpec`/`ParamValue` deferred to P7, enum helpers kept (see deviations). Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `2ae7651` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P7 — Planner into Rust | pending |
 > | P8 — API reshaping | pending |
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
 
-## Handover (2026-09-24, P5 closed)
+## Handover (2026-09-24, P6 closed)
 
 Written so a fresh session can continue without the originating conversation.
-Read this section, then the phase text for P6 onwards below.
+Read this section, then the phase text for P7 onwards below.
 
 ### State
 
@@ -33,10 +33,14 @@ Read this section, then the phase text for P6 onwards below.
   plan: P0 (up to `5a83210`), P1 `cb6fc46`, P2 `1faec46`, P3.1 `dd52de0`,
   P3.2 `dfa8a94`, P3.3 `b8e23ba`, P3.4 `c774819`, P3.5a `d13274b`, P3.5b
   `0c637e1`, P3.5c `af41c23`, P3 exit `c92c1e9`, P4a (sinks) `0da9163`, P4b
-  (sources) `910afb2`, P4 exit `8d79321`, P5 `f3d7d94`, then the P5 exit.
-- Every op, source and sink is typed. `LEGACY_OPS` is `&[]`; `LegacyOpSpec`,
-  `OpSpec::Legacy`, the dispatcher's legacy arm and the untyped `ParamValue`
-  (now only a wire shape the legacy arm parses) remain for P6.
+  (sources) `910afb2`, P4 exit `8d79321`, P5 `f3d7d94`, P5 exit `249dcff`,
+  P6a `94e9bfa`, P6b `f2a7ea3`, P6c `2ae7651`, then the P6 exit.
+- Every op, source and sink is typed, and the untyped protocol is gone:
+  `TypedOp` is the wire op (an unregistered name is "Unknown operation").
+- Python enums are generated (`enum_catalog` FFI → `tests/golden/
+  enum_catalog.json` → `gen_ops.py`) from `named_variants!` + the two
+  registries, docstrings included (`named_variants!(Name: "doc" { … })`);
+  `gen_ops.NOT_GENERATED` lists the three exceptions with reasons.
 - Sources and sinks: one `#[derive(Op)]` struct per format in
   `polars-cv/src/formats/`, a `formats!` registry emitting the enum, its
   tagged wire form (a field the format does not read is refused naming where
@@ -46,8 +50,9 @@ Read this section, then the phase text for P6 onwards below.
 - The geometry namespaces' kwargs are typed the same way (P5): `Param<T>`
   fields and `ColumnRef` operands, `{"$slot": n}` on the wire, checked by
   `GeomParams` against the derived slots.
-- Next: **P6 — delete the legacy protocol** (below). Set a line-count target
-  first (see the ledger): P6 is where the net reduction is supposed to start.
+- Next: **P7 — planner into Rust** (below). Its line-count target is in the
+  ledger; P7 also takes the Python `OpSpec`/`ParamValue` (the planner's own
+  op representation, which P6 could not delete without it).
 
 ### Line counts per phase
 
@@ -60,13 +65,17 @@ stands (lines, by area; `py-gen` is `_ops_generated.py`, generated):
 | P3 exit `c92c1e9` | 17,781 | 209 | 20,991 | 14,299 | 1,575 | 55,468 |
 | P4 `910afb2` | 18,193 | 209 | 20,964 | 14,099 | 1,607 | 55,430 |
 | P5 `f3d7d94` | 18,085 | 209 | 20,964 | 14,093 | 1,607 | 55,443 |
+| P6 `2ae7651` | 17,728 | 209 | 20,956 | 13,752 | 1,862 | 55,266 |
 
 So far the phases have *moved* definitions into typed Rust (each carrying the
 docs, defaults and validation Python used to hold) more than they have
-removed code: hand-written Python is down 1,975 lines, the plugin up 1,164.
-The net reductions the plan is for sit in P6 (legacy protocol, registries,
-19 enum mirrors, parity tests) and P7 (the Python planner and its FFIs); set a
-target for each before starting it.
+removed code. P6 was the first net reduction: plugin −357, hand-written
+Python −341 (the enum classes moved to the generated module, +255), tests
+−177. Since P0: hand-written Python −2,316, plugin +807.
+
+**P7 target** (the Python planner and its FFIs): hand-written Python ≤ 11,800
+(−1,950), plugin ≤ 18,900 (+1,170 for `Plan`/`PlanState` and the passes),
+so hand-written code (plugin + engine + py-hand) falls by at least 780.
 
 ### How a family is migrated (the recipe every P3 commit followed)
 
@@ -147,7 +156,7 @@ golden corpus or signature snapshot (both must stay green unchanged).
   named enum/bool returns `WireScalar::probe_value()`. An op whose validity
   couples a per-row value to a literal (convolve2d `ksize`) must special-case
   `ctx.is_probe()`.
-- `OpSpec`'s dispatcher parses each op once into a map and never clones it
+- Parse each op once and never clone the parsed JSON on the append path
   (a clone cost ~13 µs/append; see the P2 row).
 - Named enums get their wire form only from `NAMED` (`WireScalar`, emitted by
   `named_variants!`); side-table aliases were unreachable from Python and have
@@ -160,6 +169,26 @@ golden corpus or signature snapshot (both must stay green unchanged).
 
 Where the implementation departs from the text below, and why. The text is left
 as planned so the deviation stays visible.
+
+- **P6 — the enum registries and their source scans stay.** The plan meant to
+  reach every enum through `Describe` (op field types) and delete `REGISTRY`/
+  `PLUGIN_REGISTRY`, but `Winding`, `RowErrorPolicy` and `NullParamPolicy` are
+  not op or io fields, so field types cannot enumerate them. The registries
+  are now the enum catalogue's source (not a parity list), and the scans are
+  what make declaring a `NAMED` table the same act as generating its class.
+  The `enum_variants`/`enum_names` FFIs did go.
+- **P6 — the graph policies drop serde rather than `named_variants!` emitting
+  it.** Engine enums already derive serde for `ViewDto` in another spelling,
+  so the macro cannot emit a second impl; `RowErrorPolicy`/`NullParamPolicy`
+  lose their derives and the graph fields read them through
+  `ops::param::literal_field`, the path `Literal<T>` takes.
+- **P6 — Python `OpSpec`/`ParamValue` move to P7.** They are the planner's op
+  representation (`_graph.py`, CSE, `_plan_view`); deleting them is deleting
+  the Python planner.
+- **P6 — `_validate_enum`, `_enum_or_expr`, `_reject_expr` stay.** They
+  validate literals against the *generated* enums (no second vocabulary) for
+  `source()`, `out_dtype=` and the geometry accessors, which have no build-time
+  Rust check; deleting them would move those errors from build to execution.
 
 - **P3 — the binary family's lazy methods are not generated.** Each
   `lazy_only` builder constructs a new graph node its own way (a binary op
