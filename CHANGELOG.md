@@ -81,18 +81,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
-- **`crop`, `resize`, `warp_affine` and `histogram` are typed ops.** Each is one
-  Rust definition (`polars-cv/src/ops/`) from which the Python builder method is
-  generated; call signatures are unchanged. Their wire form is the value itself
-  (`"height": 224`, `"filter": "bilinear"`) or `{"$slot": n}`, and the Rust
-  definition is now the only validator, so errors are reported by it — naming
-  the op, the field and the valid values (`operation 'resize': 'filter':
-  unknown FilterType "bogus", expected one of [...]`, `'top': -5 cannot be
-  negative`). A misspelled or extra field in a hand-built graph is rejected by
-  name. On the wire, `warp_affine`'s `output_height`/`output_width` are one
-  `output_size` field and `histogram`'s `range_min`/`range_max` one `range`
-  field, matching the Python signatures; a `range_min` without `range_max` used
-  to be silently ignored. (Typed-op plan P2.)
+- **Every operation is a typed op.** Each of the 85 ops is one Rust definition
+  (`polars-cv/src/ops/`) from which its Python builder method is generated
+  (hand-written sugar remains only where a signature needs it: `scale`,
+  `clamp`, `resize_scale`, `perceptual_hash`, `scale_contour`, `rasterize`,
+  and the `LazyPipelineExpr` methods that combine expressions); call
+  signatures are unchanged. The wire form of a field is the value itself
+  (`"height": 224`, `"filter": "bilinear"`) or `{"$slot": n}`, every field is
+  present, and the Rust definition is the only validator, so errors are
+  reported by it — naming the op, the field and the valid values (`operation
+  'resize': 'filter': unknown FilterType "bogus", expected one of [...]`,
+  `'top': -5 cannot be negative`). A misspelled, extra or missing field in a
+  hand-built graph is rejected by name. Wire fields follow the Python
+  signatures: `warp_affine(output_size=)` (was `output_height`/`output_width`),
+  `histogram(range=)` (was `range_min`/`range_max`, where one without the other
+  was silently ignored), the binary ops' `other`, `apply_mask`'s `mask` and
+  `channel_merge`'s `others` (were `other_node`/`other_nodes`), and
+  `rasterize`'s `size`: `[height, width]` or the id of the node whose canvas it
+  takes (was `width`/`height` or `shape_ref`). (Typed-op plan P2–P3.)
 - **Expression parameters cross the plugin boundary as positional slots.** A
   parameter given as a `pl.Expr` serializes as `{"$slot": n}`, the index of the
   plugin input column that carries it; the graph assigns each distinct
@@ -296,6 +302,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   inherits. `OpSpec` deserialization dispatches by name to the typed or the
   legacy (`LEGACY_OPS`, was `KNOWN_OPS`) path with no fallback between them.
   The API docs render inherited members.
+- **Typed-op migration, P3 (every op typed).** All 85 ops are `typed_ops!`
+  entries; `LEGACY_OPS` is empty (it, `LegacyOpSpec` and the dispatcher's
+  legacy arm go in P6, and `resolve_op` refuses a hand-built legacy spec).
+  Deleted with the name-keyed resolution: `resolve_op_inner` and its arm-scan
+  guards, the `OpParams` read-tracker, the `get::*` enum/flag/list readers,
+  `ParamValue::resolve_{f64,bool,str,string}`, the `shape_ref` probe injection,
+  the `BINARY_OPS` alias, Python's `_enum_param`, `_add_binary_op` and
+  `_add_channel_merge` — each listed in `check_removed_symbols.py`. New field
+  types: `NodeRef` (another graph node, for `lazy_only` ops, whose builders stay
+  on `LazyPipelineExpr`) and `ColumnRef` (`label_reduce`'s contour column).
+  `ParamCtx` carries the plan-time probe value, which a node-sized `rasterize`
+  reads so its canvas plans as unknown.
 - **Typed-op migration, P1 (positional slots).** `_types.SlotTable` is the one
   expression-identity authority; the process-wide `expr_key` registry, Rust's
   name->slot binding and the planning probe re-serializers are deleted and
