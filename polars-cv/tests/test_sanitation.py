@@ -624,6 +624,11 @@ _REQUIRED_LIB_HOOKS = (
     # so the committed JSON the Python builder is generated from cannot lag the
     # built extension.
     "op_catalog",
+    # The source/sink catalogue, the same check's sibling for `io_catalog.json`.
+    "io_catalog",
+    # Validates a serialized source/sink against its typed format, so the
+    # builder refuses an inapplicable keyword while it is written.
+    "io_check",
 )
 
 
@@ -955,6 +960,10 @@ _NO_PYTHON_MIRROR = {
     # registry. The table has moved beside the enum in view-buffer, so it is
     # registered and name-checked like everything else.
     "BinaryOp",
+    # The sink `dtype` (only half precision) has no Python enum: `.sink()`
+    # passes the keyword through and the typed sink (`formats::sink`) is its
+    # only validator, over `io_check`.
+    "SinkDType",
 }
 
 
@@ -1056,16 +1065,9 @@ def test_binary_ops_match_rust():
 # graph/compiled.rs, which the graph validator rejects unknown formats against
 # — so the two lists must be equal, and the test below pins them.
 #
-# Sink formats genuinely have no list: `SinkKind::resolve` (graph/sink_kind.rs)
-# is the one place a (domain, format) pair is interpreted, and it errors on the
-# fall-through, so an unhandled sink is rejected rather than enumerated. The
-# four halves of the sink contract match on the resolved *kind*, so they cannot
-# disagree about which pairs exist.
-#
-# This note used to say the pair was matched in two places that "error on the
-# fall-through, so there is no second declaration to drift from". Both halves
-# of that were false: there were four such matches, and two of them ended in
-# `_ => Binary` rather than an error.
+# Sink formats are typed (`src/formats/sink.rs`): `SinkFormat` is generated from
+# that registry, and `SinkKind::resolve` matches on the typed sink, so there is
+# no second list to pin.
 
 
 @requires_checkout
@@ -1987,6 +1989,10 @@ def test_no_second_dtype_spelling_table() -> None:
         root / "view-buffer" / "src" / "core" / "dtype.rs",
         # Pins the frozen VIEW codes literally, on purpose.
         root / "view-buffer" / "tests" / "dtype_single_authority.rs",
+        # `SinkDType`: half precision exists only as the tensor sinks'
+        # encode-time downcast (the engine has no f16), so its name is
+        # deliberately outside `dtype_table!`. The file holds nothing else.
+        root / "polars-cv" / "src" / "formats" / "sink_dtype.rs",
     }
     expected_pairs = {
         (variant, short) for variant, short, _code, _numpy in _dtype_table_rows()
@@ -2910,15 +2916,16 @@ def test_the_committed_catalog_is_the_built_one() -> None:
     import importlib.util
     from pathlib import Path
 
-    from polars_cv._lib import op_catalog
+    from polars_cv._lib import io_catalog, op_catalog
 
     root = Path(__file__).resolve().parent.parent
-    committed = (root / "tests" / "golden" / "op_catalog.json").read_text()
-    assert op_catalog() == committed, (
-        "op_catalog.json differs from the built extension: rebuild (maturin "
-        "develop) or re-bless (POLARS_CV_BLESS=1 cargo test -p polars-cv "
-        "catalog_matches)"
-    )
+    for name, built in (("op_catalog", op_catalog), ("io_catalog", io_catalog)):
+        committed = (root / "tests" / "golden" / f"{name}.json").read_text()
+        assert built() == committed, (
+            f"{name}.json differs from the built extension: rebuild (maturin "
+            "develop) or re-bless (POLARS_CV_BLESS=1 cargo test -p polars-cv "
+            "catalog_matches)"
+        )
     spec = importlib.util.spec_from_file_location(
         "gen_ops", root / "scripts" / "gen_ops.py"
     )

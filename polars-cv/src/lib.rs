@@ -9,6 +9,7 @@ mod contour;
 mod execute;
 mod ext_types;
 mod fetch;
+mod formats;
 mod geom_arity;
 mod geom_params;
 mod geom_schema;
@@ -52,6 +53,8 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(known_ops, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(io_check, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
     m.add_function(wrap_pyfunction!(bbox_schema, m)?)?;
@@ -637,6 +640,31 @@ fn known_ops() -> Vec<String> {
 #[pyfunction]
 fn op_catalog() -> String {
     crate::ops::catalog_json()
+}
+
+/// The source/sink catalogue as JSON (`tests/golden/io_catalog.json`): every
+/// format and the fields it reads, which `scripts/gen_ops.py` generates
+/// `SourceFormat`/`SinkFormat` from.
+#[pyfunction]
+fn io_catalog() -> String {
+    crate::formats::io_catalog_json()
+}
+
+/// Validate one serialized sink (`kind="sink"`) against its typed format, so
+/// the builder refuses it when it is written rather than at `collect()`.
+///
+/// The same deserializer the graph uses; there is no second validator.
+#[pyfunction]
+fn io_check(kind: &str, spec_json: &str) -> PyResult<()> {
+    let result = match kind {
+        "sink" => serde_json::from_str::<crate::formats::sink::Sink>(spec_json).map(|_| ()),
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "io_check: unknown kind '{other}'"
+            )))
+        }
+    };
+    result.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
 /// Return the full contract for a single serialized op spec.

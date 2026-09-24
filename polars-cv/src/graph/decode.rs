@@ -7,7 +7,7 @@
 //! - Padding and masking operations
 
 use polars::prelude::*;
-use view_buffer::{ImageCodec, PlannedDType, ViewBuffer};
+use view_buffer::{PlannedDType, ViewBuffer};
 
 use super::encode::{
     build_typed_array_series_from_rows_with_dtype, build_typed_list_series_from_rows_with_dtype,
@@ -631,11 +631,9 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
             // exists to prevent. `ImageCodec::check_shape` is the one entry
             // point both halves read, and it treats an unknown as permission,
             // so a source whose dtype is still "auto" is not refused here.
-            let format = kind
-                .image_codec_format(spec)
-                .expect("EncodedImage carries a codec format");
-            let codec = ImageCodec::from_sink_format(format)
-                .expect("this arm matches exactly the formats from_sink_format parses");
+            let codec = kind
+                .image_codec(spec)
+                .expect("EncodedImage carries a codec");
             let dtype = PlannedDType::parse(&spec.expected_dtype).unwrap_or(PlannedDType::Unknown);
             codec
                 .check_shape(dtype, spec.expected_shape.as_deref(), spec.expected_ndim)
@@ -676,7 +674,8 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
         }
         SinkKind::BufferArray => {
             let inner = list_array_inner_dtype(&spec.expected_dtype, "array")?;
-            let shape = spec.sink.shape.as_ref().or(spec.expected_shape.as_ref());
+            let sink_shape = spec.sink.shape();
+            let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
             if let Some(shape) = shape {
                 let mut dtype = inner;
                 for &dim in shape.iter().rev() {
@@ -730,7 +729,8 @@ pub(crate) fn dtype_for_output(spec: &OutputSpec) -> PolarsResult<DataType> {
         // produced an Array while lazy schema claimed Binary.
         SinkKind::VectorArray => {
             let inner = list_array_inner_dtype(&spec.expected_dtype, "array")?;
-            let shape = spec.sink.shape.as_ref().or(spec.expected_shape.as_ref());
+            let sink_shape = spec.sink.shape();
+            let shape = sink_shape.as_ref().or(spec.expected_shape.as_ref());
             if let Some(shape) = shape {
                 let mut dtype = inner;
                 for &dim in shape.iter().rev() {
@@ -840,8 +840,7 @@ pub(crate) fn build_series_from_spec(
                 RowResult::NumpyStruct(b) => Ok(b),
                 other => Err(other),
             })?;
-            let series =
-                crate::output::build_numpy_series(name, buffers, spec.sink.out_dtype.as_deref())?;
+            let series = crate::output::build_numpy_series(name, buffers, spec.sink.as_f16())?;
             match kind {
                 SinkKind::NdArray => crate::ext_types::ExtType::NdArray.tag(series),
                 _ => Ok(series),
@@ -882,7 +881,7 @@ pub(crate) fn build_series_from_spec(
                 name,
                 &rows,
                 dtype,
-                &spec.sink.shape,
+                &spec.sink.shape(),
                 spec.expected_shape.as_ref(),
             )
         }
@@ -917,7 +916,7 @@ pub(crate) fn build_series_from_spec(
                 name,
                 &rows,
                 dtype,
-                &spec.sink.shape,
+                &spec.sink.shape(),
                 spec.expected_shape.as_ref(),
             )
         }

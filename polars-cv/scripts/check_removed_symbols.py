@@ -148,6 +148,11 @@ REMOVED: tuple[Removed, ...] = (
     Removed("unread_param_tests", "P3: deny_unknown_fields on every op"),
     Removed("resolve_op_arms_are_all_known_ops", "P3: no name-keyed arms"),
     Removed("known_ops_all_resolve", "P3: no name-keyed arms"),
+    # Typed-op P4 (sinks): each sink format is a typed struct
+    # (`src/formats/sink.rs`) and `SinkFormat` is generated from it.
+    Removed("SINK_PARAM_APPLIES", "P4: the typed sink formats"),
+    Removed("from_sink_format", "P4: Sink::image_codec"),
+    Removed("image_codec_format", "P4: SinkKind::image_codec"),
 )
 
 

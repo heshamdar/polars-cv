@@ -24,6 +24,7 @@ registry!(
     crate::graph::RowErrorPolicy,
     crate::params::NullParamPolicy,
     crate::fetch::FetchErrorPolicy,
+    crate::formats::sink_dtype::SinkDType,
 );
 
 /// Look up a plugin-owned enum's variant names.

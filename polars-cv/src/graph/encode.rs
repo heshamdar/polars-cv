@@ -471,7 +471,7 @@ pub(crate) fn encode_node_output(
     spec: &OutputSpec,
 ) -> Result<OutputValue, String> {
     let sink = &spec.sink;
-    let format = sink.format.as_str();
+    let format = sink.name();
     let domain = spec.expected_domain.as_str();
     let kind = SinkKind::resolve(spec).map_err(|e| e.to_string())?;
 
@@ -491,9 +491,10 @@ pub(crate) fn encode_node_output(
                 .map_err(|e| format!("Encode error: {e}"))
         }
         SinkKind::BufferList => Ok(typed_list_of(require_buffer(output, domain, format)?)),
-        SinkKind::BufferArray => {
-            typed_array_of(require_buffer(output, domain, format)?, sink.shape.as_ref())
-        }
+        SinkKind::BufferArray => typed_array_of(
+            require_buffer(output, domain, format)?,
+            sink.shape().as_ref(),
+        ),
         // A vector arrives either as a real `Vector` or as the 1-D buffer a
         // hash/histogram produces. Both are the same domain to the planner, so
         // both encode the same way here.
@@ -504,7 +505,7 @@ pub(crate) fn encode_node_output(
         SinkKind::VectorArray => match output {
             NodeOutput::Vector(vals) => {
                 let values = vals.as_ref().clone();
-                let shape = sink.shape.clone().unwrap_or_else(|| vec![values.len()]);
+                let shape = sink.shape().unwrap_or_else(|| vec![values.len()]);
                 let planned: usize = shape.iter().product();
                 if planned != values.len() {
                     return Err(format!(
@@ -518,7 +519,10 @@ pub(crate) fn encode_node_output(
                     shape,
                 })
             }
-            _ => typed_array_of(require_buffer(output, domain, format)?, sink.shape.as_ref()),
+            _ => typed_array_of(
+                require_buffer(output, domain, format)?,
+                sink.shape().as_ref(),
+            ),
         },
         SinkKind::Scalar => match output {
             NodeOutput::Scalar(val) => Ok(OutputValue::Scalar(*val)),
@@ -943,19 +947,13 @@ mod tensor_sink_tests {
 mod contour_sink_tests {
     use crate::graph::decode::build_series_from_spec;
     use crate::graph::types::{OutputSpec, RowResult};
-    use crate::pipeline::SinkSpec;
     use polars::prelude::*;
     use view_buffer::geometry::{Contour, Point};
 
     fn spec() -> OutputSpec {
         OutputSpec {
             node: "n".to_string(),
-            sink: SinkSpec {
-                format: "native".to_string(),
-                quality: 85,
-                shape: None,
-                out_dtype: None,
-            },
+            sink: serde_json::from_value(serde_json::json!({"format": "native"})).unwrap(),
             expected_domain: "contour".to_string(),
             expected_dtype: "auto".to_string(),
             expected_shape: None,

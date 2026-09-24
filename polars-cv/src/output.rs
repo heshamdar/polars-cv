@@ -140,16 +140,12 @@ impl NumpyRowOutput {
 pub fn build_numpy_series(
     name: PlSmallStr,
     rows: Vec<Option<ViewBuffer>>,
-    out_dtype: Option<&str>,
+    as_f16: bool,
 ) -> PolarsResult<Series> {
     let len = rows.len();
 
-    // A half-precision request downcasts at the encode boundary (the engine has
-    // no native f16 dtype). Both spellings are matched because the Python sink
-    // guard accepts both: `_validate_sink_params` in `lazy.py` admits
-    // `("f16", "float16")`. Any other value is a bug, so treat it as native
-    // rather than guessing a width.
-    let as_f16 = matches!(out_dtype, Some("f16") | Some("float16"));
+    // A half-precision request (`formats::sink::SinkDType`) downcasts at the
+    // encode boundary: the engine has no native f16 dtype.
 
     // Convert each row to NumpyRowOutput
     let encoded: Vec<Option<NumpyRowOutput>> = rows
@@ -522,7 +518,7 @@ mod tests {
         let series = build_numpy_series(
             PlSmallStr::from_static("output"),
             vec![Some(buf1), None, Some(buf2)],
-            None,
+            false,
         )
         .unwrap();
 

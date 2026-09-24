@@ -8,6 +8,7 @@ lazy pipeline operations that are fused into a single plugin call when
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -136,49 +137,18 @@ def _require_concrete_sink_dtype(
 
 
 def _validate_sink_params(fmt: str, kwargs: "dict[str, Any]") -> None:
-    """Check one sink's keywords: which apply to *fmt*, then their values.
+    """Check one sink — its format and keywords — against its Rust definition.
 
-    Applicability comes from `SINK_PARAM_APPLIES` — the same table and the same
-    checker the source end uses — so an unknown keyword and one that does not
-    apply to this format both raise here rather than riding into the graph. An
-    unparseable format is left to the encoder's own error: the parameters are
-    not silently accepted, the query simply fails on the format instead.
-
-    Only ``dtype`` has a value constraint: half precision alone is accepted,
-    spelled either ``"f16"`` or ``"float16"``. The engine has no native f16
-    dtype, so f16 is produced purely as an encode-time downcast at the sink
-    boundary (halving the output-tensor bytes / H2D
-    transfer). Every other output dtype is expressible with a pipeline
-    ``.cast()``, which runs through the real cast op so the planned and produced
-    dtypes stay identical — the sink dtype deliberately does *not* duplicate
-    that path.
+    Each sink format is a typed struct carrying exactly the fields its encoder
+    reads (``src/formats/sink.rs``). The graph deserializes the same struct, so
+    this is that one validator run early: an unknown format, a keyword the
+    format does not read (naming where it does apply), a misspelled keyword and
+    a ``dtype`` other than half precision all raise here, while the pipeline is
+    being built, rather than at ``collect()``.
     """
-    from polars_cv._types import (
-        SINK_PARAM_APPLIES,
-        SinkFormat,
-        reject_inapplicable_params,
-    )
+    from polars_cv._lib import io_check
 
-    try:
-        sink_format = SinkFormat(fmt)
-    except ValueError:
-        return
-    reject_inapplicable_params(
-        kind="sink",
-        fmt=sink_format,
-        supplied=kwargs,
-        applies=SINK_PARAM_APPLIES,
-    )
-
-    dtype = kwargs.get("dtype")
-    if dtype is None:
-        return
-    if dtype not in ("f16", "float16"):
-        msg = (
-            f"numpy/torch/ndarray sink dtype only supports 'f16' (got '{dtype}'). "
-            "Use .cast(...) in the pipeline for other output dtypes."
-        )
-        raise ValueError(msg)
+    io_check("sink", json.dumps({"format": fmt, **kwargs}, default=list))
 
 
 class LazyPipelineExpr:

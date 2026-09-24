@@ -1,0 +1,166 @@
+{
+  "sinks": [
+    {
+      "name": "array",
+      "python": "array",
+      "visibility": "public",
+      "doc": "A fixed-shape Polars `Array`.",
+      "fields": [
+        {
+          "name": "shape",
+          "doc": "The output shape; inferred from the planned shape when absent.",
+          "positional": false,
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "list",
+              "inner": {
+                "kind": "scalar",
+                "per_row": false,
+                "py": "int"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "blob",
+      "python": "blob",
+      "visibility": "public",
+      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "fields": []
+    },
+    {
+      "name": "jpeg",
+      "python": "jpeg",
+      "visibility": "public",
+      "doc": "Re-encoded as JPEG.",
+      "fields": [
+        {
+          "name": "quality",
+          "doc": "JPEG quality, 1-100 (default 85). Only the JPEG encoder takes one.",
+          "positional": false,
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "int"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "list",
+      "python": "list",
+      "visibility": "public",
+      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "fields": []
+    },
+    {
+      "name": "native",
+      "python": "native",
+      "visibility": "public",
+      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "fields": []
+    },
+    {
+      "name": "ndarray",
+      "python": "ndarray",
+      "visibility": "public",
+      "doc": "A zero-copy tensor struct (`numpy`, `torch`, or the tagged `ndarray`).",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Downcast the elements to this dtype at encode time: only half precision\n(``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any other dtype.",
+          "positional": false,
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "SinkDType",
+              "variants": [
+                "f16",
+                "float16"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "numpy",
+      "python": "numpy",
+      "visibility": "public",
+      "doc": "A zero-copy tensor struct (`numpy`, `torch`, or the tagged `ndarray`).",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Downcast the elements to this dtype at encode time: only half precision\n(``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any other dtype.",
+          "positional": false,
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "SinkDType",
+              "variants": [
+                "f16",
+                "float16"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "png",
+      "python": "png",
+      "visibility": "public",
+      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "fields": []
+    },
+    {
+      "name": "tiff",
+      "python": "tiff",
+      "visibility": "public",
+      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "fields": []
+    },
+    {
+      "name": "torch",
+      "python": "torch",
+      "visibility": "public",
+      "doc": "A zero-copy tensor struct (`numpy`, `torch`, or the tagged `ndarray`).",
+      "fields": [
+        {
+          "name": "dtype",
+          "doc": "Downcast the elements to this dtype at encode time: only half precision\n(``\"f16\"``/``\"float16\"``); use ``.cast(...)`` for any other dtype.",
+          "positional": false,
+          "type": {
+            "kind": "optional",
+            "inner": {
+              "kind": "scalar",
+              "per_row": false,
+              "py": "SinkDType",
+              "variants": [
+                "f16",
+                "float16"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "webp",
+      "python": "webp",
+      "visibility": "public",
+      "doc": "A format with no parameters: re-encoded by an image codec (``png``,\n``webp``, ``tiff``), the self-describing VIEW ``blob``, a nested ``list``,\nor the domain's ``native`` Polars type.",
+      "fields": []
+    }
+  ]
+}

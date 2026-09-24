@@ -24,7 +24,7 @@ class TestF16SinkValidation:
 
     def test_non_f16_dtype_rejected(self) -> None:
         expr = pl.col("img").cv.pipe(Pipeline().source("image_bytes"))
-        with pytest.raises(ValueError, match="only supports 'f16'"):
+        with pytest.raises(ValueError, match="'dtype'.*SinkDType.*f16"):
             expr.sink("numpy", dtype="u8")
 
     def test_f16_accepted_on_numpy_and_torch(self) -> None:
