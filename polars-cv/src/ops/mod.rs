@@ -19,6 +19,7 @@
 //! name in neither set is an error.
 
 pub mod affine;
+pub mod compute;
 pub mod histogram;
 pub mod image;
 pub mod param;
@@ -175,13 +176,36 @@ macro_rules! typed_ops {
 }
 
 typed_ops! {
+    "abs" => Abs(compute::Abs) {},
+    "add_constant" => AddConstant(compute::AddConstant) {"value": 1.0},
+    "adjust_contrast" => AdjustContrast(compute::AdjustContrast) {"factor": 1.5},
+    "adjust_gamma" => AdjustGamma(compute::AdjustGamma) {"gamma": 0.5},
+    "cast" => Cast(compute::Cast) {"dtype": "f32"},
+    "ceil" => Ceil(compute::Ceil) {},
+    "clamp" => Clamp(compute::Clamp) {"min": 0.0, "max": 1.0},
+    "clamp_max" => ClampMax(compute::ClampMax) {"value": 1.0},
+    "clamp_min" => ClampMin(compute::ClampMin) {"value": 0.0},
     "crop" => Crop(view::Crop) {"top": 1, "left": 1, "height": 2, "width": 2},
     "flip" => Flip(view::Flip) {"axes": [1]},
+    "floor" => Floor(compute::Floor) {},
     "histogram" => Histogram(histogram::Histogram)
         {"bins": 8, "range": null, "closed": "left", "output": "counts"},
+    "invert" => Invert(compute::Invert) {},
+    "neg" => Neg(compute::Neg) {},
+    "normalize" => Normalize(compute::Normalize)
+        {"method": "preset", "mean": [0.5], "std": [0.25], "out_dtype": "f32"},
+    "reciprocal" => Reciprocal(compute::Reciprocal) {},
+    "relu" => Relu(compute::Relu) {},
     "reshape" => Reshape(view::Reshape) {"shape": [2, 2, 1]},
     "resize" => Resize(image::Resize) {"height": 4, "width": 4, "filter": "bilinear"},
+    "round" => Round(compute::Round) {},
+    "scale" => Scale(compute::Scale) {"factor": 2.0},
+    "sign" => Sign(compute::Sign) {},
+    "sqrt" => Sqrt(compute::Sqrt) {},
+    "square" => Square(compute::Square) {},
+    "subtract_constant" => SubtractConstant(compute::SubtractConstant) {"value": 1.0},
     "transpose" => Transpose(view::Transpose) {"axes": [1, 0, 2]},
+    "trunc" => Trunc(compute::Trunc) {},
     "warp_affine" => WarpAffine(affine::WarpAffine) {
         "matrix": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         "output_size": [4, 4],
@@ -427,6 +451,37 @@ mod tests {
         let err = parse_err(json!({"op": "resize", "height": 4, "width": 4,
                                    "filter": "triangle"}));
         assert!(err.contains("'filter'"), "{err}");
+    }
+
+    #[test]
+    fn scale_and_clamp_refuse_an_out_dtype() {
+        // The two ops that shipped an accepted-but-unread `out_dtype`: it
+        // entered the op's identity and reached no code path.
+        for op in [
+            json!({"op": "scale", "factor": 2.0, "out_dtype": "u8"}),
+            json!({"op": "clamp", "min": 0.0, "max": 1.0, "out_dtype": "u8"}),
+        ] {
+            let err = parse_err(op);
+            assert!(err.contains("out_dtype"), "{err}");
+        }
+    }
+
+    #[test]
+    fn normalize_statistics_belong_to_the_preset_only() {
+        let resolve = |v: serde_json::Value| match parse(v).unwrap() {
+            OpSpec::Typed(op) => op.resolve(0, &ParamCtx::empty()).map(|_| ()),
+            OpSpec::Legacy(_) => unreachable!(),
+        };
+        let err = resolve(json!({"op": "normalize", "method": "minmax",
+                                 "mean": [0.5], "std": [0.5]}))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("only valid for method='preset'"), "{err}");
+        let err = resolve(json!({"op": "normalize", "method": "preset", "mean": [0.5]}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("requires both"), "{err}");
+        assert!(resolve(json!({"op": "normalize", "method": "zscore"})).is_ok());
     }
 
     #[test]

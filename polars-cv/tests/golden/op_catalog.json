@@ -1,5 +1,167 @@
 [
   {
+    "name": "abs",
+    "python": "abs",
+    "visibility": "public",
+    "doc": "Absolute value (`|x|`). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "add_constant",
+    "python": "add_constant",
+    "visibility": "public",
+    "doc": "Add a constant to every value (`x + value`).",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Constant addend (literal or per-row expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "adjust_contrast",
+    "python": "adjust_contrast",
+    "visibility": "public",
+    "doc": "Adjust image contrast: `(pixel - mean) * factor + mean`.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").adjust_contrast(factor=1.5)",
+    "fields": [
+      {
+        "name": "factor",
+        "doc": "Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "adjust_gamma",
+    "python": "adjust_gamma",
+    "visibility": "public",
+    "doc": "Apply gamma (power-law) correction: normalize to [0,1], raise to `gamma`,\ndenormalize.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").adjust_gamma(gamma=0.5)",
+    "fields": [
+      {
+        "name": "gamma",
+        "doc": "Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "cast",
+    "python": "cast",
+    "visibility": "public",
+    "doc": "Cast to a different data type.",
+    "fields": [
+      {
+        "name": "dtype",
+        "doc": "Target data type (e.g., \"f32\", \"u8\").",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "DType",
+          "variants": [
+            "u8",
+            "i8",
+            "u16",
+            "i16",
+            "u32",
+            "i32",
+            "u64",
+            "i64",
+            "f32",
+            "f64"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "ceil",
+    "python": "ceil",
+    "visibility": "public",
+    "doc": "Round toward positive infinity. Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "clamp",
+    "python": "clamp",
+    "visibility": "internal",
+    "doc": "Clamp values to a range.\n\nThe public `Pipeline.clamp` is sugar over this op that adds\n`out_dtype`/`preserve_dtype` (a trailing cast).",
+    "fields": [
+      {
+        "name": "min",
+        "doc": "Minimum value (literal or expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "max",
+        "doc": "Maximum value (literal or expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "clamp_max",
+    "python": "clamp_max",
+    "visibility": "public",
+    "doc": "Cap values at `value` (`min(x, value)`); one-sided clamp.",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Upper bound (literal or per-row expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "clamp_min",
+    "python": "clamp_min",
+    "visibility": "public",
+    "doc": "Floor values at `value` (`max(x, value)`); one-sided clamp.",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Lower bound (literal or per-row expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
     "name": "crop",
     "python": "crop",
     "visibility": "public",
@@ -75,6 +237,13 @@
         }
       }
     ]
+  },
+  {
+    "name": "floor",
+    "python": "floor",
+    "visibility": "public",
+    "doc": "Round toward negative infinity. Domain: buffer → buffer.",
+    "fields": []
   },
   {
     "name": "histogram",
@@ -159,6 +328,115 @@
     ]
   },
   {
+    "name": "invert",
+    "python": "invert",
+    "visibility": "public",
+    "doc": "Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].",
+    "fields": []
+  },
+  {
+    "name": "neg",
+    "python": "neg",
+    "visibility": "public",
+    "doc": "Negate every value (`-x`). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "normalize",
+    "python": "normalize",
+    "visibility": "public",
+    "doc": "Normalize values to a standard range.\n\nExample:\n    >>> Pipeline().source().normalize(method=\"minmax\")\n    >>> Pipeline().source().normalize(\n    ...     method=\"preset\",\n    ...     mean=[0.485, 0.456, 0.406],\n    ...     std=[0.229, 0.224, 0.225],\n    ... )",
+    "fields": [
+      {
+        "name": "method",
+        "doc": "Normalization method: \"minmax\" scales values to [0, 1] using\nper-element min/max; \"zscore\" standardizes to mean=0, std=1 using\nper-element statistics; \"preset\" applies ImageNet-style channel-wise\nnormalization, `(x - mean[c]) / std[c]`, with the given `mean` and `std`.",
+        "positional": true,
+        "default": "minmax",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "NormalizeMethod",
+          "variants": [
+            "minmax",
+            "zscore",
+            "preset"
+          ]
+        }
+      },
+      {
+        "name": "mean",
+        "doc": "Per-channel mean values; required for, and only valid with,\nmethod=\"preset\" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element may\nbe a literal float or a Polars expression; the list length is the channel\ncount.",
+        "positional": true,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "list",
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "float"
+            }
+          }
+        }
+      },
+      {
+        "name": "std",
+        "doc": "Per-channel standard deviation values; required for, and only valid\nwith, method=\"preset\" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each\nelement accepts an expression, as with `mean`.",
+        "positional": true,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "list",
+            "inner": {
+              "kind": "scalar",
+              "per_row": true,
+              "py": "float"
+            }
+          }
+        }
+      },
+      {
+        "name": "out_dtype",
+        "doc": "Output dtype (default f32). Normalization computes in f32 and the result\nis cast to this dtype at execution. For half precision use the sink\ndtype instead (`.sink(\"numpy\", dtype=\"f16\")`).",
+        "positional": true,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "DType",
+            "variants": [
+              "u8",
+              "i8",
+              "u16",
+              "i16",
+              "u32",
+              "i32",
+              "u64",
+              "i64",
+              "f32",
+              "f64"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "reciprocal",
+    "python": "reciprocal",
+    "visibility": "public",
+    "doc": "Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "relu",
+    "python": "relu",
+    "visibility": "public",
+    "doc": "Apply ReLU activation (max(0, x)): negative values become zero.",
+    "fields": []
+  },
+  {
     "name": "reshape",
     "python": "reshape",
     "visibility": "public",
@@ -226,6 +504,70 @@
     ]
   },
   {
+    "name": "round",
+    "python": "round",
+    "visibility": "public",
+    "doc": "Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "scale",
+    "python": "scale",
+    "visibility": "internal",
+    "doc": "Multiply all values by a factor.\n\nThe public `Pipeline.scale` is sugar over this op that adds\n`out_dtype`/`preserve_dtype` (a trailing cast).",
+    "fields": [
+      {
+        "name": "factor",
+        "doc": "Scale factor.",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "sign",
+    "python": "sign",
+    "visibility": "public",
+    "doc": "Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "sqrt",
+    "python": "sqrt",
+    "visibility": "public",
+    "doc": "Square root (`sqrt(x)`; NaN for negative input). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "square",
+    "python": "square",
+    "visibility": "public",
+    "doc": "Square (`x * x`). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "subtract_constant",
+    "python": "subtract_constant",
+    "visibility": "public",
+    "doc": "Subtract a constant from every value (`x - value`).",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Constant subtrahend (literal or per-row expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
     "name": "transpose",
     "python": "transpose",
     "visibility": "public",
@@ -245,6 +587,13 @@
         }
       }
     ]
+  },
+  {
+    "name": "trunc",
+    "python": "trunc",
+    "visibility": "public",
+    "doc": "Round toward zero (drop the fractional part). Domain: buffer → buffer.",
+    "fields": []
   },
   {
     "name": "warp_affine",

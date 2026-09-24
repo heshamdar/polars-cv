@@ -7,8 +7,8 @@ use polars::prelude::*;
 
 use view_buffer::{
     geometry::rasterize::rasterize, BinaryOp, ComputeOp, DType, FilterType, GeometryOp,
-    ImageAdapter, ImageCodec, ImageOp, ImageOpKind, InterpolationType, NormalizeMethod,
-    PlannedDType, ScalarOp, ViewBuffer, ViewDto, ViewOp,
+    ImageAdapter, ImageCodec, ImageOp, ImageOpKind, InterpolationType, PlannedDType, ViewBuffer,
+    ViewDto, ViewOp,
 };
 
 use crate::graph::step::GraphStep;
@@ -281,11 +281,7 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>
 /// guards the forward direction and `resolve_op_arms_are_all_known_ops` the
 /// reverse, so a migrated op cannot leave its arm behind.
 pub const LEGACY_OPS: &[&str] = &[
-    "abs",
     "add",
-    "add_constant",
-    "adjust_contrast",
-    "adjust_gamma",
     "apply_mask",
     "bitwise_and",
     "bitwise_or",
@@ -293,14 +289,9 @@ pub const LEGACY_OPS: &[&str] = &[
     "blend",
     "blur",
     "canny",
-    "cast",
-    "ceil",
     "channel_merge",
     "channel_select",
     "channel_swap",
-    "clamp",
-    "clamp_max",
-    "clamp_min",
     "contour_area",
     "contour_bounding_box",
     "contour_centroid",
@@ -317,23 +308,18 @@ pub const LEGACY_OPS: &[&str] = &[
     "erode",
     "extract_contours",
     "extract_shape",
-    "floor",
     "grayscale",
-    "invert",
     "label_reduce",
     "letterbox",
     "maximum",
     "minimum",
     "morphology_gradient",
     "multiply",
-    "neg",
-    "normalize",
     "pad",
     "pad_to_size",
     "perceptual_hash",
     "rasterize",
     "ratio",
-    "reciprocal",
     "reduce_argmax",
     "reduce_argmin",
     "reduce_max",
@@ -343,22 +329,14 @@ pub const LEGACY_OPS: &[&str] = &[
     "reduce_popcount",
     "reduce_std",
     "reduce_sum",
-    "relu",
     "resize_max",
     "resize_min",
     "resize_scale",
     "resize_to_height",
     "resize_to_width",
     "rotate",
-    "round",
-    "scale",
-    "sign",
-    "sqrt",
-    "square",
     "subtract",
-    "subtract_constant",
     "threshold",
-    "trunc",
 ];
 
 /// A fusable single-buffer engine op, as a resolved step.
@@ -425,84 +403,6 @@ fn resolve_op_inner(
     ctx: &ParamCtx,
 ) -> PolarsResult<GraphStep> {
     match op_name {
-        // Compute operations
-        "cast" => {
-            let dtype_str = get_param(params, "dtype")?.resolve_string()?;
-            let dtype = parse_dtype(dtype_str)?;
-            buffer_step(ViewDto::Compute(ComputeOp::Cast(dtype)))
-        }
-        "scale" => {
-            let factor = get_param(params, "factor")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Compute(ComputeOp::Scale(factor)))
-        }
-        "normalize" => {
-            let method_str = get_param(params, "method")?.resolve_string()?;
-            let method = match method_str {
-                "minmax" => NormalizeMethod::MinMax,
-                "zscore" => NormalizeMethod::ZScore,
-                "preset" => {
-                    // Per-element ParamValues, so a per-row mean/std (dataset
-                    // statistics joined in as columns) resolves per row. The
-                    // element count is the channel count and stays structural.
-                    let mean = get_param(params, "mean")?.resolve_f32_list(row_idx, ctx)?;
-                    let std = get_param(params, "std")?.resolve_f32_list(row_idx, ctx)?;
-
-                    NormalizeMethod::Preset { mean, std }
-                }
-                other => {
-                    return Err(polars_err!(ComputeError:
-                        "parameter 'method': unknown value '{}', expected one of {:?}",
-                        other, NormalizeMethod::NAMES))
-                }
-            };
-            // Honor the configured output dtype so the produced buffer matches
-            // the planner's `Fixed(out_dtype)` resolution (default f32). Without
-            // this, `normalize(out_dtype=...)` planned one dtype and executed
-            // another — a plan/execution contract violation.
-            let out_dtype = match params.get("out_dtype") {
-                Some(p) => parse_dtype(p.resolve_string()?)?,
-                None => DType::F32,
-            };
-            buffer_step(ViewDto::Compute(ComputeOp::Normalize(method, out_dtype)))
-        }
-        "clamp" => {
-            let min = get_param(params, "min")?.resolve_f32(row_idx, ctx)?;
-            let max = get_param(params, "max")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Compute(ComputeOp::Clamp { min, max }))
-        }
-        "relu" => buffer_step(ViewDto::Compute(ComputeOp::Relu)),
-
-        // Core math primitives: pure elementwise scalar ops that fuse into the
-        // kernel. Each resolves to one `ComputeOp::Scalar(ScalarOp)` (see the
-        // ScalarOp arithmetic authority in view-buffer). No-arg ops carry no
-        // params; the constant ops resolve their `value` per row like `scale`.
-        "neg" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Neg))),
-        "abs" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Abs))),
-        "sqrt" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Sqrt))),
-        "square" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Square))),
-        "reciprocal" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Recip))),
-        "sign" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Sign))),
-        "floor" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Floor))),
-        "ceil" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Ceil))),
-        "round" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Round))),
-        "trunc" => buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Trunc))),
-        "clamp_min" => {
-            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Max(value))))
-        }
-        "clamp_max" => {
-            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Min(value))))
-        }
-        "add_constant" => {
-            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Add(value))))
-        }
-        "subtract_constant" => {
-            let value = get_param(params, "value")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Compute(ComputeOp::Scalar(ScalarOp::Sub(value))))
-        }
-
         // Image operations
         "resize_scale" => {
             let scale_x = get_param(params, "scale_x")?.resolve_f32(row_idx, ctx)?;
@@ -947,16 +847,6 @@ fn resolve_op_inner(
         }
 
         // Intensity operations
-        "adjust_contrast" => {
-            let factor = get_param(params, "factor")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Compute(ComputeOp::AdjustContrast(factor)))
-        }
-        "adjust_gamma" => {
-            let gamma = get_param(params, "gamma")?.resolve_f32(row_idx, ctx)?;
-            buffer_step(ViewDto::Compute(ComputeOp::AdjustGamma(gamma)))
-        }
-        "invert" => buffer_step(ViewDto::Compute(ComputeOp::Invert)),
-
         // Color space conversion
         "cvt_color" => {
             use view_buffer::ops::color::{ColorConvertOp, ColorSpace};
@@ -1456,21 +1346,13 @@ mod unread_param_tests {
 
     /// The known-bad half: a parameter no arm reads must be rejected, by name.
     ///
-    /// `scale`/`clamp` are the two ops that actually shipped this — they
-    /// accepted an `out_dtype` that entered the op's identity and reached no
-    /// code path. The fabricated cases alongside them keep the check honest for
-    /// ops that never had the bug.
+    /// `scale`/`clamp`, the two ops that actually shipped this (an accepted,
+    /// unread `out_dtype`), are typed now and refuse the key at
+    /// deserialization (`ops::tests::scale_and_clamp_refuse_an_out_dtype`).
+    /// This keeps the legacy tracker honest until its last op migrates.
     #[test]
     fn a_parameter_no_arm_reads_is_rejected() {
-        let cases: &[UnreadCase<'_>] = &[
-            ("scale", &[("factor", json!(2.0))], "out_dtype"),
-            (
-                "clamp",
-                &[("min", json!(0.0)), ("max", json!(1.0))],
-                "out_dtype",
-            ),
-            ("grayscale", &[], "sigma"),
-        ];
+        let cases: &[UnreadCase<'_>] = &[("grayscale", &[], "sigma")];
         for (op, base, stray) in cases {
             let mut params = base.to_vec();
             params.push((stray, json!("u8")));
@@ -1511,8 +1393,6 @@ mod unread_param_tests {
                     ("shape_ref", json!("other_node")),
                 ],
             ),
-            ("scale", &[("factor", json!(2.0))]),
-            ("clamp", &[("min", json!(0.0)), ("max", json!(1.0))]),
         ];
         for (op, params) in cases {
             let spec = op_with(op, params);

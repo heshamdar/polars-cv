@@ -46,7 +46,7 @@ pub mod view;
 
 pub use binary::BinaryOp;
 pub use color::{ColorConvertOp, ColorSpace};
-pub use compute::{ComputeOp, NormalizeMethod};
+pub use compute::{ComputeOp, Normalization, NormalizeMethod};
 pub use dto::ViewDto;
 pub use filter::{BorderMode, ConvolveOp};
 pub use histogram::{HistogramOp, HistogramOutput};

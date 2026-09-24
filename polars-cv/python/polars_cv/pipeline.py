@@ -34,7 +34,6 @@ from polars_cv._types import (
     IntOrExpr,
     LabelReduction,
     LabelRegionMode,
-    NormalizeMethod,
     NullParamPolicy,
     OpSpec,
     PadMode,
@@ -1934,25 +1933,6 @@ class Pipeline(_OpsMixin):
 
     # --- Compute Operations ---
 
-    def cast(self, dtype: str) -> "Pipeline":
-        """
-        Cast to a different data type.
-
-        Args:
-            dtype: Target data type (e.g., "f32", "u8").
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If dtype is invalid or domain is not buffer.
-        """
-        dtype_enum = _validate_enum(dtype, DType, "dtype")
-        return self._append_op(
-            "cast",
-            lambda p: {"dtype": ParamValue(is_expr=False, value=dtype_enum.value)},
-        )
-
     def _out_dtype_target(
         self, op_name: str, out_dtype: str | None, preserve_dtype: bool
     ) -> str | None:
@@ -2041,96 +2021,8 @@ class Pipeline(_OpsMixin):
                 ``preserve_dtype``, or both keywords at once).
         """
         target = self._out_dtype_target("scale", out_dtype, preserve_dtype)
-        new = self._append_op("scale", lambda p: {"factor": p._track_expr(factor)})
+        new = self._scale(factor)
         return self._apply_out_dtype(new, target)
-
-    def normalize(
-        self,
-        method: str = "minmax",
-        mean: list[FloatOrExpr] | None = None,
-        std: list[FloatOrExpr] | None = None,
-        out_dtype: str | None = None,
-    ) -> "Pipeline":
-        """
-        Normalize values to a standard range.
-
-        Args:
-            method: Normalization method. One of:
-                - ``"minmax"``: Scale values to [0, 1] range using per-element
-                  min/max. Output dtype is f32 by default.
-                - ``"zscore"``: Standardize to mean=0, std=1 using per-element
-                  statistics. Output dtype is f32 by default.
-                - ``"preset"``: Apply ImageNet-style channel-wise normalization
-                  using provided ``mean`` and ``std`` values. Each channel is
-                  normalized as ``(x - mean[c]) / std[c]``.
-            mean: Per-channel mean values. Required when ``method="preset"``.
-                Common preset: ``[0.485, 0.456, 0.406]`` (ImageNet). **Each
-                element may be a literal float or a Polars expression**, so
-                per-row statistics can be joined in as columns; the list
-                *length* is the channel count and must be literal.
-            std: Per-channel standard deviation values. Required when
-                ``method="preset"``. Common preset: ``[0.229, 0.224, 0.225]``
-                (ImageNet). Each element accepts an expression, as with
-                ``mean``.
-            out_dtype: Output dtype (default f32). Normalization always computes
-                in f32; the result is then cast to this dtype at execution, so
-                the produced dtype always matches the planned dtype. Accepts any
-                :class:`DType` name. For half precision use the sink dtype
-                instead — ``.sink("numpy", dtype="f16")`` — since the engine has
-                no native f16 type.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If method is invalid or preset is missing mean/std.
-
-        Example:
-            >>> Pipeline().source().normalize(method="minmax")
-            >>> Pipeline().source().normalize(
-            ...     method="preset",
-            ...     mean=[0.485, 0.456, 0.406],
-            ...     std=[0.229, 0.224, 0.225],
-            ... )
-        """
-        method_enum = _validate_enum(method, NormalizeMethod, "normalize method")
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {
-                "method": ParamValue(is_expr=False, value=method_enum.value),
-            }
-
-            # Handle preset method with mean/std
-            if method_enum == NormalizeMethod.PRESET:
-                if mean is None or std is None:
-                    msg = "method='preset' requires both 'mean' and 'std' parameters"
-                    raise ValueError(msg)
-                if len(mean) != len(std):
-                    msg = (
-                        f"mean length ({len(mean)}) must match std length ({len(std)})"
-                    )
-                    raise ValueError(msg)
-                params["mean"] = _param_list(mean, p._track_expr)
-                params["std"] = _param_list(std, p._track_expr)
-            elif mean is not None or std is not None:
-                msg = "mean/std parameters are only valid for method='preset'"
-                raise ValueError(msg)
-
-            # Add out_dtype if specified. Normalization computes in f32 and
-            # casts the result to this dtype at execution (so plan ==
-            # production). Unlike `scale`/`clamp`, this one rides on the op:
-            # `out_dtype` is folded into `Normalize`'s `Fixed(out_dtype)` dtype
-            # rule (defaulting to f32), so the planner resolves the right dtype
-            # straight from `output_dtype_rule()`, and the runner's
-            # `apply_normalize` performs the cast.
-            if out_dtype is not None:
-                out_dtype_enum = _validate_enum(out_dtype, DType, "out_dtype")
-                params["out_dtype"] = ParamValue(
-                    is_expr=False, value=out_dtype_enum.value
-                )
-            return params
-
-        return self._append_op("normalize", _params)
 
     def clamp(
         self,
@@ -2169,120 +2061,14 @@ class Pipeline(_OpsMixin):
         """
         target = self._out_dtype_target("clamp", out_dtype, preserve_dtype)
 
-        new = self._append_op(
-            "clamp",
-            lambda p: {
-                "min": p._track_expr(min_val),
-                "max": p._track_expr(max_val),
-            },
-        )
+        new = self._clamp(min_val, max_val)
         return self._apply_out_dtype(new, target)
-
-    def relu(self) -> "Pipeline":
-        """
-        Apply ReLU activation (max(0, x)).
-
-        All negative values are set to zero, positive values are unchanged.
-        Works on any numeric dtype.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If domain is not buffer.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").relu()
-            ```
-        """
-        return self._append_op("relu", lambda p: {})
 
     # --- Core math primitives ---
     #
     # Pure elementwise scalar ops. Each promotes to float (integers → f32, f64
     # preserved) like ``scale``/``relu`` and fuses automatically with adjacent
     # scalar ops into a single kernel pass — the user never manages fusion.
-
-    def neg(self) -> "Pipeline":
-        """Negate every value (``-x``). Domain: buffer → buffer."""
-        return self._append_op("neg", lambda p: {})
-
-    def abs(self) -> "Pipeline":
-        """Absolute value (``|x|``). Domain: buffer → buffer."""
-        return self._append_op("abs", lambda p: {})
-
-    def sqrt(self) -> "Pipeline":
-        """Square root (``sqrt(x)``; NaN for negative input). Domain: buffer → buffer."""
-        return self._append_op("sqrt", lambda p: {})
-
-    def square(self) -> "Pipeline":
-        """Square (``x * x``). Domain: buffer → buffer."""
-        return self._append_op("square", lambda p: {})
-
-    def reciprocal(self) -> "Pipeline":
-        """Reciprocal (``1 / x``; ±inf at zero). Domain: buffer → buffer."""
-        return self._append_op("reciprocal", lambda p: {})
-
-    def sign(self) -> "Pipeline":
-        """Sign: ``-1``/``0``/``+1`` (``0`` for ±0, NaN for NaN). Domain: buffer → buffer."""
-        return self._append_op("sign", lambda p: {})
-
-    def floor(self) -> "Pipeline":
-        """Round toward negative infinity. Domain: buffer → buffer."""
-        return self._append_op("floor", lambda p: {})
-
-    def ceil(self) -> "Pipeline":
-        """Round toward positive infinity. Domain: buffer → buffer."""
-        return self._append_op("ceil", lambda p: {})
-
-    def round(self) -> "Pipeline":
-        """Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer."""
-        return self._append_op("round", lambda p: {})
-
-    def trunc(self) -> "Pipeline":
-        """Round toward zero (drop the fractional part). Domain: buffer → buffer."""
-        return self._append_op("trunc", lambda p: {})
-
-    def clamp_min(self, value: FloatOrExpr) -> "Pipeline":
-        """
-        Floor values at ``value`` (``max(x, value)``); one-sided clamp.
-
-        Args:
-            value: Lower bound (literal or per-row expression).
-        """
-        return self._append_op("clamp_min", lambda p: {"value": p._track_expr(value)})
-
-    def clamp_max(self, value: FloatOrExpr) -> "Pipeline":
-        """
-        Cap values at ``value`` (``min(x, value)``); one-sided clamp.
-
-        Args:
-            value: Upper bound (literal or per-row expression).
-        """
-        return self._append_op("clamp_max", lambda p: {"value": p._track_expr(value)})
-
-    def add_constant(self, value: FloatOrExpr) -> "Pipeline":
-        """
-        Add a constant to every value (``x + value``).
-
-        Args:
-            value: Constant addend (literal or per-row expression).
-        """
-        return self._append_op(
-            "add_constant", lambda p: {"value": p._track_expr(value)}
-        )
-
-    def subtract_constant(self, value: FloatOrExpr) -> "Pipeline":
-        """
-        Subtract a constant from every value (``x - value``).
-
-        Args:
-            value: Constant subtrahend (literal or per-row expression).
-        """
-        return self._append_op(
-            "subtract_constant", lambda p: {"value": p._track_expr(value)}
-        )
 
     # --- Channel Operations ---
 
@@ -2336,52 +2122,6 @@ class Pipeline(_OpsMixin):
 
     # --- Intensity Adjustments ---
 
-    def adjust_contrast(self, *, factor: FloatOrExpr) -> "Pipeline":
-        """
-        Adjust image contrast.
-
-        Scales pixel deviation from the mean: ``(pixel - mean) * factor + mean``.
-
-        Domain: buffer → buffer
-
-        Args:
-            factor: Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.5)
-            ```
-        """
-        return self._append_op(
-            "adjust_contrast", lambda p: {"factor": p._track_expr(factor)}
-        )
-
-    def adjust_gamma(self, *, gamma: FloatOrExpr) -> "Pipeline":
-        """
-        Apply gamma (power-law) correction.
-
-        Normalizes to [0,1], applies ``pixel^gamma``, then denormalizes.
-
-        Domain: buffer → buffer
-
-        Args:
-            gamma: Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)
-            ```
-        """
-        return self._append_op(
-            "adjust_gamma", lambda p: {"gamma": p._track_expr(gamma)}
-        )
-
     def adjust_brightness(
         self, *, factor: FloatOrExpr, preserve_dtype: bool = False
     ) -> "Pipeline":
@@ -2410,24 +2150,6 @@ class Pipeline(_OpsMixin):
         target = self._out_dtype_target("adjust_brightness", None, preserve_dtype)
         new = self.scale(factor=factor).clamp(min_val=0.0, max_val=255.0)
         return self._apply_out_dtype(new, target)
-
-    def invert(self) -> "Pipeline":
-        """
-        Invert pixel values.
-
-        For u8: ``255 - pixel``. For float [0,1]: ``1.0 - pixel``.
-
-        Domain: buffer → buffer
-
-        Returns:
-            Self for chaining.
-
-        Example:
-            ```python
-            >>> pipe = Pipeline().source("image_bytes").invert()
-            ```
-        """
-        return self._append_op("invert", lambda p: {})
 
     # --- Color Space Conversion ---
 

@@ -196,7 +196,7 @@ fn apply_scalar_op_f64(buf: &ViewBuffer, op: &ScalarOp) -> ViewBuffer {
 /// dtype-contract tests).
 fn apply_normalize(
     buf: &ViewBuffer,
-    method: &crate::ops::NormalizeMethod,
+    method: &crate::ops::Normalization,
     out_dtype: DType,
 ) -> ViewBuffer {
     let normalized = apply_normalize_f32(buf, method);
@@ -216,8 +216,8 @@ fn apply_normalize(
 /// - **Constant array (min == max)**: Returns 0.0 for all elements (MinMax) or 0.0 (ZScore)
 /// - **NaN values**: Propagated according to IEEE 754 semantics
 /// - **Inf values**: Handled naturally by min/max/mean calculations
-fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -> ViewBuffer {
-    use crate::ops::NormalizeMethod;
+fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::Normalization) -> ViewBuffer {
+    use crate::ops::Normalization;
 
     // Cast to f32 working dtype if needed (dtype promotion)
     let work_buf = if buf.dtype() != DType::F32 {
@@ -233,7 +233,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
     {
         if let Ok(view) = work_buf.as_array_view::<f32>() {
             match method {
-                NormalizeMethod::MinMax => {
+                Normalization::MinMax => {
                     let min = view.iter().cloned().fold(f32::INFINITY, f32::min);
                     let max = view.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                     let range = max - min;
@@ -244,7 +244,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
                     let result = view.mapv(|x| (x - min) / range);
                     return ViewBuffer::from_array(result.into_owned());
                 }
-                NormalizeMethod::ZScore => {
+                Normalization::ZScore => {
                     let n = view.len() as f32;
                     let mean = view.iter().sum::<f32>() / n;
                     let variance = view.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
@@ -256,7 +256,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
                     let result = view.mapv(|x| (x - mean) / std_val);
                     return ViewBuffer::from_array(result.into_owned());
                 }
-                NormalizeMethod::Preset { mean, std } => {
+                Normalization::Preset { mean, std } => {
                     // Channel-wise normalization - need to iterate with channel awareness
                     let channels = if shape.len() == 3 { shape[2] } else { 1 };
                     assert_eq!(
@@ -295,7 +295,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
     let src = contig.as_slice::<f32>();
 
     let new_data: Vec<f32> = match method {
-        NormalizeMethod::MinMax => {
+        Normalization::MinMax => {
             let min = src.iter().cloned().fold(f32::INFINITY, f32::min);
             let max = src.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let range = max - min;
@@ -305,7 +305,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
                 src.iter().map(|&x| (x - min) / range).collect()
             }
         }
-        NormalizeMethod::ZScore => {
+        Normalization::ZScore => {
             let n = count as f32;
             let mean = src.iter().sum::<f32>() / n;
             let variance = src.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
@@ -316,7 +316,7 @@ fn apply_normalize_f32(buf: &ViewBuffer, method: &crate::ops::NormalizeMethod) -
                 src.iter().map(|&x| (x - mean) / std_val).collect()
             }
         }
-        NormalizeMethod::Preset { mean, std } => {
+        Normalization::Preset { mean, std } => {
             let channels = if shape.len() == 3 { shape[2] } else { 1 };
             assert_eq!(
                 mean.len(),

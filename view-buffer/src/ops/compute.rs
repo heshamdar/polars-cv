@@ -11,10 +11,10 @@ use crate::ops::validation::ValidationError;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Method for normalizing data.
+/// A normalization, with the per-channel statistics a preset carries.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum NormalizeMethod {
+pub enum Normalization {
     /// Scale to [0.0, 1.0] range using min/max.
     MinMax,
     /// Standardize using (x - mean) / std (computed per-image).
@@ -37,19 +37,34 @@ pub enum NormalizeMethod {
     },
 }
 
-impl NormalizeMethod {
-    /// Canonical Python-facing method names.
-    ///
-    /// `Preset` carries payload, so this enum cannot use the `named_variants!`
-    /// value table; the parser handles `preset` structurally (it needs the
-    /// `mean`/`std` parameters). The exhaustive match below still forces this
-    /// list to be revisited when a variant is added.
-    pub const NAMES: &'static [&'static str] = &["minmax", "zscore", "preset"];
+/// Which normalization: the user-facing method name, without its payload.
+///
+/// `Normalization::Preset` carries statistics, so it cannot hold a
+/// `named_variants!` table; this fieldless twin does, and
+/// [`Normalization::method`] ties the two together exhaustively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalizeMethod {
+    MinMax,
+    ZScore,
+    Preset,
 }
 
-const _: fn(&NormalizeMethod) = |m| match m {
-    NormalizeMethod::MinMax | NormalizeMethod::ZScore | NormalizeMethod::Preset { .. } => (),
-};
+crate::naming::named_variants!(NormalizeMethod {
+    "minmax" => MinMax,
+    "zscore" => ZScore,
+    "preset" => Preset,
+});
+
+impl Normalization {
+    /// The method this normalization is.
+    pub fn method(&self) -> NormalizeMethod {
+        match self {
+            Normalization::MinMax => NormalizeMethod::MinMax,
+            Normalization::ZScore => NormalizeMethod::ZScore,
+            Normalization::Preset { .. } => NormalizeMethod::Preset,
+        }
+    }
+}
 
 /// Compute operations that process data element-wise or globally.
 #[derive(Debug, Clone, PartialEq)]
@@ -83,7 +98,7 @@ pub enum ComputeOp {
     /// `output_dtype_rule().resolve(input)` already yields it; execution casts
     /// the f32 result to it so the produced dtype matches — see the
     /// dtype-contract tests.
-    Normalize(NormalizeMethod, DType),
+    Normalize(Normalization, DType),
     /// Clamp values to [min, max] range.
     Clamp { min: f32, max: f32 },
     /// Adjust contrast: `(pixel - mean) * factor + mean`.
@@ -248,8 +263,8 @@ impl Op for ComputeOp {
 
                 match method {
                     // Global statistics over every element: any shape.
-                    NormalizeMethod::MinMax | NormalizeMethod::ZScore => {}
-                    NormalizeMethod::Preset { mean, std } => {
+                    Normalization::MinMax | Normalization::ZScore => {}
+                    Normalization::Preset { mean, std } => {
                         if shape.len() < 2 || shape.len() > 3 {
                             return Err(ValidationError::ShapeRequirement {
                                 requirement: "2D (HW) or 3D (HWC)",

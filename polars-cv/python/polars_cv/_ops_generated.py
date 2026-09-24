@@ -17,11 +17,71 @@ if TYPE_CHECKING:
 
 #: Ops whose wire form is typed (bare values and slots).
 TYPED_OPS: frozenset[str] = frozenset(
-    ["crop", "flip", "histogram", "reshape", "resize", "transpose", "warp_affine"]
+    [
+        "abs",
+        "add_constant",
+        "adjust_contrast",
+        "adjust_gamma",
+        "cast",
+        "ceil",
+        "clamp",
+        "clamp_max",
+        "clamp_min",
+        "crop",
+        "flip",
+        "floor",
+        "histogram",
+        "invert",
+        "neg",
+        "normalize",
+        "reciprocal",
+        "relu",
+        "reshape",
+        "resize",
+        "round",
+        "scale",
+        "sign",
+        "sqrt",
+        "square",
+        "subtract_constant",
+        "transpose",
+        "trunc",
+        "warp_affine",
+    ]
 )
 
 #: Each typed op's field types, as the catalogue describes them.
 OP_FIELDS: dict[str, dict[str, Any]] = {
+    "abs": {},
+    "add_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "adjust_contrast": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "adjust_gamma": {"gamma": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "cast": {
+        "dtype": {
+            "kind": "scalar",
+            "per_row": False,
+            "py": "DType",
+            "variants": [
+                "u8",
+                "i8",
+                "u16",
+                "i16",
+                "u32",
+                "i32",
+                "u64",
+                "i64",
+                "f32",
+                "f64",
+            ],
+        }
+    },
+    "ceil": {},
+    "clamp": {
+        "min": {"kind": "scalar", "per_row": True, "py": "float"},
+        "max": {"kind": "scalar", "per_row": True, "py": "float"},
+    },
+    "clamp_max": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "clamp_min": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "crop": {
         "top": {"kind": "scalar", "per_row": True, "py": "int"},
         "left": {"kind": "scalar", "per_row": True, "py": "int"},
@@ -40,6 +100,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "inner": {"kind": "scalar", "per_row": False, "py": "int"},
         }
     },
+    "floor": {},
     "histogram": {
         "bins": {
             "kind": "one_of",
@@ -72,6 +133,52 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["counts", "normalized", "quantized", "edges", "buckets"],
         },
     },
+    "invert": {},
+    "neg": {},
+    "normalize": {
+        "method": {
+            "kind": "scalar",
+            "per_row": False,
+            "py": "NormalizeMethod",
+            "variants": ["minmax", "zscore", "preset"],
+        },
+        "mean": {
+            "kind": "optional",
+            "inner": {
+                "kind": "list",
+                "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            },
+        },
+        "std": {
+            "kind": "optional",
+            "inner": {
+                "kind": "list",
+                "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+            },
+        },
+        "out_dtype": {
+            "kind": "optional",
+            "inner": {
+                "kind": "scalar",
+                "per_row": False,
+                "py": "DType",
+                "variants": [
+                    "u8",
+                    "i8",
+                    "u16",
+                    "i16",
+                    "u32",
+                    "i32",
+                    "u64",
+                    "i64",
+                    "f32",
+                    "f64",
+                ],
+            },
+        },
+    },
+    "reciprocal": {},
+    "relu": {},
     "reshape": {
         "shape": {
             "kind": "list",
@@ -88,12 +195,19 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
         },
     },
+    "round": {},
+    "scale": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "sign": {},
+    "sqrt": {},
+    "square": {},
+    "subtract_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "transpose": {
         "axes": {
             "kind": "list",
             "inner": {"kind": "scalar", "per_row": False, "py": "int"},
         }
     },
+    "trunc": {},
     "warp_affine": {
         "matrix": {
             "kind": "array",
@@ -123,6 +237,81 @@ class _OpsMixin:
 
         def _append_typed(self, op_name: str, values: dict[str, Any]) -> Pipeline: ...
 
+    def abs(self) -> Pipeline:
+        """Absolute value (`|x|`). Domain: buffer → buffer."""
+        return self._append_typed("abs", {})
+
+    def add_constant(self, value: FloatOrExpr) -> Pipeline:
+        """Add a constant to every value (`x + value`).
+
+        Args:
+            value: Constant addend (literal or per-row expression).
+        """
+        return self._append_typed("add_constant", {"value": value})
+
+    def adjust_contrast(self, *, factor: FloatOrExpr) -> Pipeline:
+        """Adjust image contrast: `(pixel - mean) * factor + mean`.
+
+        Args:
+            factor: Contrast factor. 1.0 = no change, >1 = more contrast, <1 = less.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").adjust_contrast(factor=1.5)
+        """
+        return self._append_typed("adjust_contrast", {"factor": factor})
+
+    def adjust_gamma(self, *, gamma: FloatOrExpr) -> Pipeline:
+        """Apply gamma (power-law) correction: normalize to [0,1], raise to `gamma`,
+        denormalize.
+
+        Args:
+            gamma: Gamma value. <1 = brighter, >1 = darker, 1.0 = no change.
+
+        Example:
+            >>> pipe = Pipeline().source("image_bytes").adjust_gamma(gamma=0.5)
+        """
+        return self._append_typed("adjust_gamma", {"gamma": gamma})
+
+    def cast(self, dtype: str) -> Pipeline:
+        """Cast to a different data type.
+
+        Args:
+            dtype: Target data type (e.g., "f32", "u8").
+        """
+        return self._append_typed("cast", {"dtype": dtype})
+
+    def ceil(self) -> Pipeline:
+        """Round toward positive infinity. Domain: buffer → buffer."""
+        return self._append_typed("ceil", {})
+
+    def _clamp(self, min: FloatOrExpr, max: FloatOrExpr) -> Pipeline:
+        """Clamp values to a range.
+
+        The public `Pipeline.clamp` is sugar over this op that adds
+        `out_dtype`/`preserve_dtype` (a trailing cast).
+
+        Args:
+            min: Minimum value (literal or expression).
+            max: Maximum value (literal or expression).
+        """
+        return self._append_typed("clamp", {"min": min, "max": max})
+
+    def clamp_max(self, value: FloatOrExpr) -> Pipeline:
+        """Cap values at `value` (`min(x, value)`); one-sided clamp.
+
+        Args:
+            value: Upper bound (literal or per-row expression).
+        """
+        return self._append_typed("clamp_max", {"value": value})
+
+    def clamp_min(self, value: FloatOrExpr) -> Pipeline:
+        """Floor values at `value` (`max(x, value)`); one-sided clamp.
+
+        Args:
+            value: Lower bound (literal or per-row expression).
+        """
+        return self._append_typed("clamp_min", {"value": value})
+
     def crop(
         self,
         *,
@@ -151,6 +340,10 @@ class _OpsMixin:
         """
         return self._append_typed("flip", {"axes": axes})
 
+    def floor(self) -> Pipeline:
+        """Round toward negative infinity. Domain: buffer → buffer."""
+        return self._append_typed("floor", {})
+
     def histogram(
         self,
         bins: IntOrExpr | Sequence[float] = 256,
@@ -175,6 +368,61 @@ class _OpsMixin:
             "histogram",
             {"bins": bins, "range": range, "closed": closed, "output": output},
         )
+
+    def invert(self) -> Pipeline:
+        """Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1]."""
+        return self._append_typed("invert", {})
+
+    def neg(self) -> Pipeline:
+        """Negate every value (`-x`). Domain: buffer → buffer."""
+        return self._append_typed("neg", {})
+
+    def normalize(
+        self,
+        method: str = "minmax",
+        mean: Sequence[FloatOrExpr] | None = None,
+        std: Sequence[FloatOrExpr] | None = None,
+        out_dtype: str | None = None,
+    ) -> Pipeline:
+        """Normalize values to a standard range.
+
+        Args:
+            method: Normalization method: "minmax" scales values to [0, 1] using per-
+                element min/max; "zscore" standardizes to mean=0, std=1 using per-
+                element statistics; "preset" applies ImageNet-style channel-wise
+                normalization, `(x - mean[c]) / std[c]`, with the given `mean` and
+                `std`.
+            mean: Per-channel mean values; required for, and only valid with,
+                method="preset" (e.g. ImageNet `[0.485, 0.456, 0.406]`). Each element
+                may be a literal float or a Polars expression; the list length is the
+                channel count.
+            std: Per-channel standard deviation values; required for, and only valid
+                with, method="preset" (e.g. ImageNet `[0.229, 0.224, 0.225]`). Each
+                element accepts an expression, as with `mean`.
+            out_dtype: Output dtype (default f32). Normalization computes in f32 and the
+                result is cast to this dtype at execution. For half precision use the
+                sink dtype instead (`.sink("numpy", dtype="f16")`).
+
+        Example:
+            >>> Pipeline().source().normalize(method="minmax")
+            >>> Pipeline().source().normalize(
+            ...     method="preset",
+            ...     mean=[0.485, 0.456, 0.406],
+            ...     std=[0.229, 0.224, 0.225],
+            ... )
+        """
+        return self._append_typed(
+            "normalize",
+            {"method": method, "mean": mean, "std": std, "out_dtype": out_dtype},
+        )
+
+    def reciprocal(self) -> Pipeline:
+        """Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer."""
+        return self._append_typed("reciprocal", {})
+
+    def relu(self) -> Pipeline:
+        """Apply ReLU activation (max(0, x)): negative values become zero."""
+        return self._append_typed("relu", {})
 
     def reshape(self, shape: Sequence[IntOrExpr]) -> Pipeline:
         """Reshape array to new dimensions.
@@ -202,6 +450,41 @@ class _OpsMixin:
             "resize", {"height": height, "width": width, "filter": filter}
         )
 
+    def round(self) -> Pipeline:
+        """Round to nearest, ties to even (matches Polars/numpy). Domain: buffer → buffer."""
+        return self._append_typed("round", {})
+
+    def _scale(self, factor: FloatOrExpr) -> Pipeline:
+        """Multiply all values by a factor.
+
+        The public `Pipeline.scale` is sugar over this op that adds
+        `out_dtype`/`preserve_dtype` (a trailing cast).
+
+        Args:
+            factor: Scale factor.
+        """
+        return self._append_typed("scale", {"factor": factor})
+
+    def sign(self) -> Pipeline:
+        """Sign: `-1`/`0`/`+1` (`0` for ±0, NaN for NaN). Domain: buffer → buffer."""
+        return self._append_typed("sign", {})
+
+    def sqrt(self) -> Pipeline:
+        """Square root (`sqrt(x)`; NaN for negative input). Domain: buffer → buffer."""
+        return self._append_typed("sqrt", {})
+
+    def square(self) -> Pipeline:
+        """Square (`x * x`). Domain: buffer → buffer."""
+        return self._append_typed("square", {})
+
+    def subtract_constant(self, value: FloatOrExpr) -> Pipeline:
+        """Subtract a constant from every value (`x - value`).
+
+        Args:
+            value: Constant subtrahend (literal or per-row expression).
+        """
+        return self._append_typed("subtract_constant", {"value": value})
+
     def transpose(self, axes: Sequence[int]) -> Pipeline:
         """Transpose dimensions.
 
@@ -209,6 +492,10 @@ class _OpsMixin:
             axes: New order of axes: a permutation of every input axis.
         """
         return self._append_typed("transpose", {"axes": axes})
+
+    def trunc(self) -> Pipeline:
+        """Round toward zero (drop the fractional part). Domain: buffer → buffer."""
+        return self._append_typed("trunc", {})
 
     def warp_affine(
         self,
