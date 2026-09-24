@@ -32,6 +32,7 @@ The 2026-09-23 performance & streaming review opened **CR-31–CR-38** (see
 that section); CR-31 is a silent wrong-answer bug and should go first.
 The 2026-09-24 quality review opened **CR-41–CR-44** (P0: soundness, strict
 input handling, dev-loop and dependency metadata); all four are resolved.
+The typed-op-protocol work is tracked as **CR-45–CR-49** (see `TYPED_OPS_PLAN.md`).
 
 ---
 
@@ -936,6 +937,54 @@ parallelism) are tracked for later phases, not here.
   works, move the visualisation libraries to a `viz` extra with a clear
   ImportError, justify or lower the numpy floor, and align the abi3 tag with
   `requires-python`.
+
+---
+
+## Typed op protocol (2026-09-24)
+
+The quality review's architectural findings (#6–#9: string-typed op protocol,
+planner split across the FFI, probe-based shape inference, creation-order
+expression keys), planned in [`TYPED_OPS_PLAN.md`](TYPED_OPS_PLAN.md). That file
+carries the phase-by-phase work, the transition discipline and the deletion
+matrix; the entries here track status only.
+
+### CR-45 — Ops cross the boundary as a name plus an untyped param map · `Open` · Medium (design)
+
+- **Location:** `polars-cv/src/pipeline.rs` (`OpSpec`), `execute.rs`
+  (`KNOWN_OPS`, `resolve_op_inner`), `params.rs` (`OpParams`), `pipeline.py`
+  (`OP_NAMES`, hand-written builders), 19 hand-written enum mirrors.
+- **What's wrong:** nothing structural ties Python and Rust together, so
+  agreement is kept by registries, parity tests, source scans and a runtime
+  read-tracker — each a second copy of a fact.
+- **Fix:** one `define_op!` definition per op (typed `Param<T>` / `Literal<T>`
+  fields, serde-enforced), a generated Python builder, and deletion of every
+  check the types make structural. Plan phases P1–P3, P6.
+
+### CR-46 — The planner is split across the FFI and folded twice · `Open` · Medium (design)
+
+- **Location:** `pipeline.py` planner state and `_append_op`/`_push_op`/`_update_*`;
+  `lib.rs` `op_schema`/`op_contract`/`op_infer_shape`/`op_output_channels`/
+  `op_identity_rule`; `graph/compiled.rs` `fold_output_rank`/`fold_output_dtype`.
+- **Fix:** a Rust `Plan` pyclass owns the fold; Python becomes a thin recorder.
+  Plan phase P7.
+
+### CR-47 — Source/sink params are policed by applicability tables · `Open` · Low (design)
+
+- **Location:** `_types.py` `SOURCE_PARAM_APPLIES`/`SINK_PARAM_APPLIES`;
+  `pipeline.rs` `SourceSpec`/`SinkSpec` (`format: String`).
+- **Fix:** tagged enums per format. Plan phase P4.
+
+### CR-48 — Geometry accessors carry a second per-row parameter mechanism · `Open` · Low (design)
+
+- **Location:** `geom_params.rs` (`InputSlots` by name), `contour.rs`/`point.rs`
+  kwargs, `_namespace.py` `_ArgBinder`.
+- **Fix:** the same `Param<T>` + positional slots. Plan phase P5.
+
+### CR-49 — Plan-time shapes are inferred by probing four magic values · `Open` · Low (design)
+
+- **Location:** `lib.rs` `op_infer_shape` (probes 7, 13, 90, 180),
+  `unknown_dim_probe`, `PRESERVED_DIM`, `ParamCtx::probe`.
+- **Fix:** symbolic `Dim` in a required `Op::infer_dims`. Plan phase P9.
 
 ---
 
