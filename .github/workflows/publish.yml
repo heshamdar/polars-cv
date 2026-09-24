@@ -88,9 +88,9 @@ jobs:
         include:
           # Linux x86_64 (manylinux2014). The `interpreter` pin is required: the
           # manylinux build container defaults to Python 3.8, which is below the
-          # crate's abi3-py39 floor, so maturin silently falls back to a
-          # version-locked cp38 wheel. Pinning a >=3.9 interpreter makes maturin
-          # emit a portable cp39-abi3 wheel, matching the macOS build.
+          # crate's abi3-py310 floor, so maturin silently falls back to a
+          # version-locked cp38 wheel. Pinning a >=3.10 interpreter makes maturin
+          # emit a portable cp310-abi3 wheel, matching the macOS build.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: manylinux2014
@@ -101,8 +101,8 @@ jobs:
             target: aarch64-unknown-linux-gnu
             manylinux: manylinux2014
             interpreter: "-i python3.12"
-          # macOS arm64. The host Python (3.12) is already >= the abi3-py39 floor,
-          # so maturin produces a cp39-abi3 wheel without an explicit interpreter.
+          # macOS arm64. The host Python (3.12) is already >= the abi3-py310 floor,
+          # so maturin produces a cp310-abi3 wheel without an explicit interpreter.
           - os: macos-latest
             target: aarch64-apple-darwin
 
@@ -152,7 +152,7 @@ jobs:
             fi
           done
           if [[ "$fail" -ne 0 ]]; then
-            echo "Expected only abi3 wheels (e.g. cp39-abi3-...); see errors above."
+            echo "Expected only abi3 wheels (e.g. cp310-abi3-...); see errors above."
             exit 1
           fi
 

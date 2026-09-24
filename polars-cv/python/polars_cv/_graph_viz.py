@@ -174,8 +174,8 @@ def get_graphviz_out(graph: PipelineGraph) -> Source:
     """
     if not _VIZ_AVAILABLE:
         raise ImportError(
-            "Graph visualization requires 'networkx', 'graphviz', and 'pydot' packages. "
-            "Install them with: pip install networkx graphviz pydot"
+            "Graph visualization requires 'networkx', 'graphviz', and 'pydot'. "
+            "Install them with: pip install 'polars-cv[viz]'"
         )
     spec = graph._to_dict()
 

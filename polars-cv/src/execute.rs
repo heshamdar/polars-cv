@@ -452,44 +452,32 @@ fn resolve_op_inner(
             buffer_step(ViewDto::View(ViewOp::Flip(axes)))
         }
         "crop" => {
-            // Allow negative values for top/left and clamp to 0
-            // This makes the API more forgiving and follows NumPy/OpenCV conventions
-            let top_raw = get_param(params, "top")?.resolve_i64(row_idx, ctx)?;
-            let left_raw = get_param(params, "left")?.resolve_i64(row_idx, ctx)?;
-
-            // Clamp negative values to 0
-            let top = top_raw.max(0) as usize;
-            let left = left_raw.max(0) as usize;
-
-            // Height and width might be optional - these should still be non-negative
-            let height = params
-                .get("height")
-                .map(|p| {
-                    let h = p.resolve_i64(row_idx, ctx)?;
-                    // Clamp negative height to 0 (will result in empty crop)
-                    Ok::<usize, PolarsError>(h.max(0) as usize)
+            // Every bound is an index, so a negative one is an error, not a
+            // value to clamp: clamping `top=-5` to 0 while keeping the height
+            // returned a shifted window. `height`/`width` are independent —
+            // an absent one means "to the end of that axis" (`usize::MAX`).
+            // A window that runs past the input is rejected by
+            // `ViewOp::Crop`'s `validate`, which is where the input shape is
+            // known (CR-42).
+            let index = |name: &str, p: &ParamValue| -> PolarsResult<usize> {
+                let v = p.resolve_i64(row_idx, ctx)?;
+                usize::try_from(v).map_err(|_| {
+                    polars_err!(ComputeError: "crop: '{}' cannot be negative (got {})", name, v)
                 })
-                .transpose()?;
-            let width = params
-                .get("width")
-                .map(|p| {
-                    let w = p.resolve_i64(row_idx, ctx)?;
-                    // Clamp negative width to 0 (will result in empty crop)
-                    Ok::<usize, PolarsError>(w.max(0) as usize)
-                })
-                .transpose()?;
-
-            // For crop, we need start and end vectors
-            // Assuming HWC layout: start = [top, left, 0], end = [top+height, left+width, C]
-            // The slice operation in ViewBuffer will further clamp these to valid bounds
-            let start = vec![top, left, 0];
-            let end = match (height, width) {
-                (Some(h), Some(w)) => {
-                    vec![top.saturating_add(h), left.saturating_add(w), usize::MAX]
-                }
-                _ => vec![usize::MAX, usize::MAX, usize::MAX], // Full extent
             };
-
+            let top = index("top", get_param(params, "top")?)?;
+            let left = index("left", get_param(params, "left")?)?;
+            let end_of = |origin: usize, extent: &str| -> PolarsResult<usize> {
+                match params.get(extent) {
+                    None => Ok(usize::MAX),
+                    Some(p) => origin
+                        .checked_add(index(extent, p)?)
+                        .filter(|&e| e != usize::MAX)
+                        .ok_or_else(|| polars_err!(ComputeError: "crop: '{}' overflows", extent)),
+                }
+            };
+            let start = vec![top, left, 0];
+            let end = vec![end_of(top, "height")?, end_of(left, "width")?, usize::MAX];
             buffer_step(ViewDto::View(ViewOp::Crop { start, end }))
         }
 

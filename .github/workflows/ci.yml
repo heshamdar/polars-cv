@@ -151,6 +151,51 @@ jobs:
           # subprocess-based out-of-core verification not needed on every PR.
           pytest tests/ -x -v --tb=short -m "not network and not slow"
 
+  dependency-floors:
+    # The locked environment tests the newest versions; this job tests the
+    # oldest ones pyproject.toml claims, on the oldest supported Python
+    # (CR-44). `scripts/dependency_floors.py` reads the floors from
+    # `[project] dependencies`, so the claim and the test cannot drift apart.
+    name: Test declared dependency floors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python
+        id: setup_python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: floors-py-${{ steps.setup_python.outputs.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies at their declared floors
+        working-directory: polars-cv
+        run: |
+          uv sync --group dev --no-install-project
+          uv pip install $(.venv/bin/python scripts/dependency_floors.py)
+
+      - name: Build and Test
+        working-directory: polars-cv
+        env:
+          POLARS_CV_REQUIRE_PLUGIN: "1"
+        run: |
+          source .venv/bin/activate
+          maturin develop
+          pytest tests/ -x -q --tb=short -m "not network and not slow"
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
