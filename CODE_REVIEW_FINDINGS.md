@@ -959,6 +959,10 @@ matrix; the entries here track status only.
 - **Fix:** one `define_op!` definition per op (typed `Param<T>` / `Literal<T>`
   fields, serde-enforced), a generated Python builder, and deletion of every
   check the types make structural. Plan phases P1–P3, P6.
+- **Progress:** P0 (safety net) done — golden corpus, signature snapshot,
+  removed-symbol gate, `tests/_plan_view.py` seam, baselines in
+  `benchmarks/reports/2026-09-24-typed-ops-baseline/`, and the never-read
+  `GraphNode` fields `alias`/`domain`/`output_dtype` deleted.
 
 ### CR-46 — The planner is split across the FFI and folded twice · `Open` · Medium (design)
 

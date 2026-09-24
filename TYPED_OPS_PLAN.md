@@ -10,8 +10,8 @@
 >
 > | Phase | Status |
 > |---|---|
-> | P0 — Safety net and seams | in progress |
-> | P1 — Positional expression slots | pending |
+> | P0 — Safety net and seams | **done** — corpus (214 cases), signature snapshot, pickle pin, removed-symbol gate, `_plan_view` seam (30 files), baselines, dead `GraphNode` fields |
+> | P1 — Positional expression slots | next |
 > | P2 — Catalogue foundation + spike | pending |
 > | P3 — Migrate every op | pending |
 > | P4 — Typed sources and sinks | pending |
