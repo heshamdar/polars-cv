@@ -1,0 +1,42 @@
+[
+  {
+    "name": "common_subexpression_elimination",
+    "tier": "logical",
+    "summary": "Share a common leading op run across sibling pipelines that read the same source column into one upstream node."
+  },
+  {
+    "name": "identity_elimination",
+    "tier": "logical",
+    "summary": "Delete no-op operations — a zero pad, a same-dtype cast, a full-frame crop — that preserve their input byte for byte."
+  },
+  {
+    "name": "spatial_window_pushdown",
+    "tier": "logical",
+    "summary": "Hoist a spatial window (a crop/ROI) earlier past ops it commutes with, so upstream ops process fewer pixels."
+  },
+  {
+    "name": "cast_chain_collapse",
+    "tier": "engine",
+    "summary": "Drop a redundant intermediate cast from a cast chain when the intermediate dtype losslessly holds the input and dropping it keeps the final cast's conversion (a narrowing intermediate quantizes, and a float between an integer input and an integer target saturates, so both are kept)."
+  },
+  {
+    "name": "cast_identity",
+    "tier": "engine",
+    "summary": "Drop a cast whose target dtype already equals its input dtype."
+  },
+  {
+    "name": "view_flip_involution",
+    "tier": "engine",
+    "summary": "Cancel two adjacent flips over the same axes (flip∘flip = id)."
+  },
+  {
+    "name": "view_transpose_merge",
+    "tier": "engine",
+    "summary": "Merge two adjacent transposes into one (or into the identity)."
+  },
+  {
+    "name": "scalar_fusion",
+    "tier": "engine",
+    "summary": "Fuse adjacent scalar/compute ops into one kernel (f64 chains stay unfused — a mandatory precision guard, not this toggle)."
+  }
+]

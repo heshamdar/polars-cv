@@ -33,6 +33,61 @@ view_buffer::naming::named_variants!(LogicalPass: "A logical optimisation pass (
     "spatial_window_pushdown" => SpatialWindowPushdown,
 });
 
+impl LogicalPass {
+    /// One line on what the pass does (the catalogue's `summary`).
+    pub fn summary(self) -> &'static str {
+        match self {
+            LogicalPass::CommonSubexpressionElimination => {
+                "Share a common leading op run across sibling pipelines that read the same source column into one upstream node."
+            }
+            LogicalPass::IdentityElimination => {
+                "Delete no-op operations — a zero pad, a same-dtype cast, a full-frame crop — that preserve their input byte for byte."
+            }
+            LogicalPass::SpatialWindowPushdown => {
+                "Hoist a spatial window (a crop/ROI) earlier past ops it commutes with, so upstream ops process fewer pixels."
+            }
+        }
+    }
+}
+
+/// One optimisation pass, as the catalogue describes it.
+#[derive(serde::Serialize)]
+struct PassDesc {
+    name: &'static str,
+    /// `logical` (rewrites the graph before serialization) or `engine` (a
+    /// per-row lowering in view-buffer, toggled through `OptConfig`).
+    tier: &'static str,
+    summary: &'static str,
+}
+
+/// Every optimisation pass, in the order they apply: the logical ones
+/// (`LogicalPass`), then the engine's (`view_buffer::ENGINE_PASSES`). The
+/// Python `OptFlags` and `OPTIMIZATION_PASSES` are generated from it.
+pub fn pass_catalog_json() -> String {
+    let logical = LogicalPass::NAMED.iter().map(|(name, pass)| PassDesc {
+        name,
+        tier: "logical",
+        summary: pass.summary(),
+    });
+    let engine = view_buffer::ENGINE_PASSES
+        .iter()
+        .map(|(name, summary)| PassDesc {
+            name,
+            tier: "engine",
+            summary,
+        });
+    let passes: Vec<PassDesc> = logical.chain(engine).collect();
+    let mut text = serde_json::to_string_pretty(&passes).expect("the catalogue serializes");
+    text.push('\n');
+    text
+}
+
+/// The pass catalogue (see [`pass_catalog_json`]).
+#[pyfunction]
+pub(crate) fn pass_catalog() -> String {
+    pass_catalog_json()
+}
+
 /// The planner's state at one op boundary, as a pass reads it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Boundary {
@@ -296,6 +351,28 @@ mod tests {
         assert_eq!(
             run(LogicalPass::SpatialWindowPushdown, &node(&o, &s, &[1])).unwrap(),
             None
+        );
+    }
+
+    /// The committed pass catalogue is what `scripts/gen_ops.py` generates
+    /// `OptFlags` from. Regenerate with `POLARS_CV_BLESS=1 cargo test -p
+    /// polars-cv catalog_matches`.
+    #[test]
+    fn pass_catalog_matches_the_committed_file() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/golden/pass_catalog.json"
+        );
+        let current = pass_catalog_json();
+        if std::env::var_os("POLARS_CV_BLESS").is_some() {
+            std::fs::write(path, &current).unwrap();
+        }
+        let committed = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            committed == current,
+            "tests/golden/pass_catalog.json is stale; regenerate with \
+             POLARS_CV_BLESS=1 cargo test -p polars-cv catalog_matches, then \
+             python scripts/gen_ops.py"
         );
     }
 

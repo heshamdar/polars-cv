@@ -512,6 +512,9 @@ _REQUIRED_LIB_HOOKS = (
     # The node-scope optimisation passes (identity elimination, spatial-window
     # pushdown), which answer with the node's new op order.
     "node_pass",
+    # Every optimisation pass (logical and engine), which OptFlags and
+    # OPTIMIZATION_PASSES are generated from.
+    "pass_catalog",
     # The 2x3 rotation+scale matrix about an arbitrary centre, read by the
     # planner's literal `rotate_and_scale` so `_rotation_matrix` does not
     # recompute the trig.
@@ -2578,13 +2581,14 @@ def test_the_committed_catalog_is_the_built_one() -> None:
     import importlib.util
     from pathlib import Path
 
-    from polars_cv._lib import enum_catalog, io_catalog, op_catalog
+    from polars_cv._lib import enum_catalog, io_catalog, op_catalog, pass_catalog
 
     root = Path(__file__).resolve().parent.parent
     for name, built in (
         ("op_catalog", op_catalog),
         ("io_catalog", io_catalog),
         ("enum_catalog", enum_catalog),
+        ("pass_catalog", pass_catalog),
     ):
         committed = (root / "tests" / "golden" / f"{name}.json").read_text()
         assert built() == committed, (

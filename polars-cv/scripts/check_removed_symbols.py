@@ -239,6 +239,18 @@ REMOVED: tuple[Removed, ...] = (
     Removed("identity_rule_name", "P7c: no contract strings cross the FFI"),
     Removed("dtype_rule_name", "P7c: no contract strings cross the FFI"),
     Removed("_CONTRACT_KEYS", "P7c: op_contract deleted"),
+    Removed(
+        "bit_exact",
+        "P7c: nothing read it; the equivalence guard byte-compares every pass",
+    ),
+    Removed(
+        "test_flags_match_registry_both_directions",
+        "P7c: OptFlags and the pass list are generated from one catalogue",
+    ),
+    Removed(
+        "test_every_logical_pass_is_a_rust_pass",
+        "P7c: OptFlags and the pass list are generated from one catalogue",
+    ),
 )
 
 

@@ -581,8 +581,8 @@ def test_affine_fusion_pass_is_gone() -> None:
     ):
         assert gone not in source, (
             f"{gone} was restored -- affine fusion is removed; if a new "
-            f"interpolation-fusing pass is added it must declare bit_exact=False "
-            f"and be tested within a tolerance, not silently."
+            f"interpolation-fusing pass is added it must be tested within a "
+            f"tolerance explicitly, not slipped past the byte-equality guard."
         )
 
 
