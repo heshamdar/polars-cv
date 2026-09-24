@@ -24,6 +24,7 @@ from polars_cv._optimize import (
     PassSpec,
     resolve_opt_flags,
 )
+from polars_cv._types import SlotTable
 from tests._plan_view import op_json, op_names, source_of
 from tests.conftest import plugin_required
 
@@ -218,7 +219,7 @@ class TestStaging:
 
     def test_serialization_is_verbatim(self) -> None:
         # _to_spec_dict never optimizes; it serializes the ops as written.
-        spec = _removable_op_pipe()._to_spec_dict()
+        spec = _removable_op_pipe()._to_spec_dict(SlotTable().index)
         assert [op["op"] for op in spec["ops"]] == ["resize", "crop"]
 
     def test_optimize_none_changes_nothing(self) -> None:
@@ -517,11 +518,13 @@ class TestShapeSubpipelineStaging:
     """
 
     def test_construction_leaves_shape_subpipeline_logical(self) -> None:
-        # No plugin: pure construction. The embedded shape spec must be the
-        # verbatim logical op chain, NOT a construction-time rewrite.
-        pipe = Pipeline().source("contour", shape=_shape_ref())
-        embedded = source_of(pipe).shape_pipeline["pipeline"]["ops"]
-        assert [op["op"] for op in embedded] == ["resize", "crop"]
+        # No plugin: pure construction. The source references the shape node
+        # by id only, and that node's ops stay the verbatim logical chain, NOT
+        # a construction-time rewrite.
+        shape = _shape_ref()
+        pipe = Pipeline().source("contour", shape=shape)
+        assert source_of(pipe).shape_node == shape._node_id
+        assert op_names(shape) == ["resize", "crop"]
 
     @plugin_required
     def test_shape_subpipeline_optimization_respects_opt_flags(self) -> None:

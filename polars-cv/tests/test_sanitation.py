@@ -39,6 +39,7 @@ import pytest
 
 import polars_cv
 from polars_cv import Pipeline
+from polars_cv._types import planning_slots
 from tests._discovery import (
     package_modules,
     requires_checkout,
@@ -764,7 +765,9 @@ def test_planner_domain_is_sourced_from_rust(op_name):
         pytest.skip("_lib.op_contract() not built")
 
     pipe = build_case(op_name)
-    rust_domain = contract_fn(json.dumps(pipe._ops[-1].to_dict()))["output_domain"]
+    rust_domain = contract_fn(json.dumps(pipe._ops[-1].to_dict(planning_slots)))[
+        "output_domain"
+    ]
     planned_domain, _, _ = Pipeline._compute_output_domain_dtype_ndim(
         pipe._ops, initial_domain="buffer", initial_dtype="u8"
     )
@@ -786,7 +789,9 @@ def test_contract_exposes_rank_and_channel_rules(op_name):
     if not callable(contract_fn):
         pytest.skip("_lib.op_contract() not built")
 
-    contract = contract_fn(json.dumps(build_case(op_name)._ops[-1].to_dict()))
+    contract = contract_fn(
+        json.dumps(build_case(op_name)._ops[-1].to_dict(planning_slots))
+    )
     rank, channel = contract["rank_rule"], contract["channel_rule"]
 
     assert rank in ("preserve", "reduce_one", "unknown") or (
@@ -837,7 +842,7 @@ def test_contract_publishes_no_second_spelling():
         pytest.skip("_lib.op_contract() not built")
 
     spec = Pipeline().source("image_bytes").grayscale()._ops[-1]
-    keys = set(contract_fn(json.dumps(spec.to_dict())))
+    keys = set(contract_fn(json.dumps(spec.to_dict(planning_slots))))
     assert keys == _CONTRACT_KEYS, (
         f"op_contract's key set changed: added {sorted(keys - _CONTRACT_KEYS)}, "
         f"removed {sorted(_CONTRACT_KEYS - keys)}. Every key here is read by "

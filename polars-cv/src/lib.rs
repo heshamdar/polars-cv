@@ -189,17 +189,12 @@ pub(crate) fn resolve_op_from_json_probe(
 
     let mut op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
-    // Bind each expression param to a placeholder slot holding `1_i64`,
-    // mirroring what graph compilation does with the real input columns.
-    // `label_reduce.contours` carries the column *name* through the step and
-    // stays unbound, exactly as in `graph::compiled::bind_graph_params`.
-    let keep_named = op_spec.op == "label_reduce";
     // rasterize-by-shape-reference carries no width/height (they come from
     // another node's buffer at execution, via the RasterizeShapeRef
     // resolver). Give introspection placeholder dims so the op resolves; the
     // structural schema never depends on their values.
     //
-    // They are *expression* placeholders, not literals, because `op_infer_shape`
+    // They are *slot* placeholders, not literals, because `op_infer_shape`
     // does read their values: it reports a dimension as known only when it is
     // identical across probes, and a literal placeholder would publish a 1x1
     // canvas as fact for a mask sized by another node.
@@ -208,29 +203,27 @@ pub(crate) fn resolve_op_from_json_probe(
             op_spec
                 .params
                 .entry(dim.to_string())
-                .or_insert(ParamValue::Expr {
-                    col: Some("__shape_ref__".to_string()),
-                });
+                .or_insert(ParamValue::Slot { idx: 0 });
         }
     }
+    // Re-point every per-row param at its own placeholder column holding
+    // `probe`; the slot indices the op arrived with name real inputs that a
+    // plan-time call does not have.
     let mut placeholders: Vec<Series> = Vec::new();
-    for (pname, p) in op_spec.params.iter_mut() {
-        if keep_named && pname == "contours" {
-            continue;
-        }
-        if matches!(p, ParamValue::Expr { .. }) {
+    for p in op_spec.params.values_mut() {
+        if matches!(p, ParamValue::Slot { .. }) {
             *p = ParamValue::Slot {
                 idx: placeholders.len(),
             };
             placeholders.push(Series::new("".into(), &[probe]));
         } else if let ParamValue::Literal { value } = p {
-            // A literal may itself be a list of ParamValue dicts (reshape's
-            // shape). Neutralize any expression entries the same way so the
-            // op's structural schema (here: the target rank = entry count)
-            // is introspectable regardless of per-row dims.
+            // A literal may itself be a list of wire params (reshape's shape).
+            // Neutralize any slot entries the same way so the op's structural
+            // schema (here: the target rank = entry count) is introspectable
+            // regardless of per-row dims.
             if let Some(arr) = value.as_array_mut() {
                 for entry in arr.iter_mut() {
-                    if entry.get("type").and_then(|t| t.as_str()) == Some("expr") {
+                    if matches!(ParamValue::from_wire(entry), Ok(ParamValue::Slot { .. })) {
                         *entry = serde_json::json!({"type": "literal", "value": probe});
                     }
                 }
@@ -707,14 +700,14 @@ fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
 /// the deciding param was per-row, not on its value.
 #[pyfunction]
 fn op_identity_rule(op_json: &str) -> PyResult<String> {
-    // The names of parameters that are expression-bound in the *original* spec,
+    // The names of parameters that are per-row (slots) in the *original* spec,
     // before `resolve_op_from_json` neutralizes them to a placeholder.
     let spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid op json: {e}")))?;
     let expr_params: std::collections::HashSet<&str> = spec
         .params
         .iter()
-        .filter(|(_, p)| matches!(p, crate::params::ParamValue::Expr { .. }))
+        .filter(|(_, p)| matches!(p, crate::params::ParamValue::Slot { .. }))
         .map(|(name, _)| name.as_str())
         .collect();
 
@@ -744,11 +737,9 @@ fn op_identity_rule(op_json: &str) -> PyResult<String> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphKwargs {
-    /// JSON-serialized pipeline graph specification.
+    /// JSON-serialized pipeline graph specification. Expression parameters
+    /// in it are positional slots into the call's input series.
     pub graph_json: String,
-    /// Names of expression columns (for resolving dynamic parameters).
-    #[serde(default)]
-    pub expr_column_names: Vec<String>,
 }
 
 /// Shared implementation for graph execution.
@@ -760,7 +751,7 @@ pub struct GraphKwargs {
 /// Everything data-dependent ("auto" dtype resolution, per-row decode/params)
 /// happens inside `CompiledGraph::execute` per call.
 fn execute_graph(inputs: &[Series], kwargs: &GraphKwargs) -> PolarsResult<Series> {
-    let compiled = crate::graph::get_or_compile(&kwargs.graph_json, &kwargs.expr_column_names)?;
+    let compiled = crate::graph::get_or_compile(&kwargs.graph_json)?;
     compiled.execute(inputs)
 }
 
@@ -792,7 +783,7 @@ fn unified_output_dtype(input_fields: &[Field], kwargs: GraphKwargs) -> PolarsRe
     // uses, and `"auto"` sentinels are resolved by the same
     // `resolved_output_specs` — the planned and executed schema are computed
     // by exactly one piece of logic and cannot diverge.
-    let compiled = crate::graph::get_or_compile(&kwargs.graph_json, &kwargs.expr_column_names)?;
+    let compiled = crate::graph::get_or_compile(&kwargs.graph_json)?;
     let graph = compiled.graph();
     let resolved = crate::graph::resolved_output_specs(
         graph,

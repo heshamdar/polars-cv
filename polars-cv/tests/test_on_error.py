@@ -9,6 +9,7 @@ import pytest
 
 import polars_cv  # noqa: F401 — registers .cv namespace
 from polars_cv import Pipeline
+from polars_cv._types import SlotTable
 from tests._plan_view import source_of
 from tests.conftest import plugin_required
 
@@ -45,14 +46,14 @@ class TestOnErrorValidation:
         """on_error='null' is included in serialized dict."""
         pipe = Pipeline().source("image_bytes", on_error="null")
         assert source_of(pipe) is not None
-        d = source_of(pipe).to_dict()
+        d = source_of(pipe).to_dict(SlotTable().index)
         assert d["on_error"] == "null"
 
     def test_on_error_raise_not_serialized(self) -> None:
         """on_error='raise' (default) is omitted from serialized dict."""
         pipe = Pipeline().source("image_bytes")
         assert source_of(pipe) is not None
-        d = source_of(pipe).to_dict()
+        d = source_of(pipe).to_dict(SlotTable().index)
         assert "on_error" not in d
 
 

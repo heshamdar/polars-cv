@@ -9,9 +9,10 @@ CSE), and root-column deduplication — so two different expressions with equal
 text silently became one, and the second op read the first op's values
 (CR-31).
 
-The identity authority is now :func:`polars_cv._types.expr_key`, which keeps
-the readable text as the key when it is unambiguous and disambiguates by
-``Expr.meta.eq`` when it is not.
+The identity authority is now :class:`polars_cv._types.SlotTable`: a graph
+assigns each distinct expression (by ``Expr.meta.eq``) a plugin input
+position, and a parameter is serialized as that position. No text is involved,
+so text collisions cannot merge expressions.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline
-from polars_cv._types import OpSpec, ParamValue, expr_key
+from polars_cv._types import OpSpec, ParamValue, SlotTable
 
 from .conftest import make_test_png, plugin_required
 
@@ -33,31 +34,33 @@ def _series(value: float) -> pl.Series:
     return pl.Series("f", [value] * N)
 
 
-class TestExprKey:
-    """The key is injective over distinct expressions and stable over equal ones."""
+class TestSlotTable:
+    """Positions are injective over distinct expressions, shared by equal ones."""
 
-    def test_distinct_literal_series_with_equal_text_get_distinct_keys(self) -> None:
+    def test_distinct_literal_series_with_equal_text_get_distinct_slots(self) -> None:
         a, b = pl.lit(_series(1.0)), pl.lit(_series(3.0))
         assert str(a) == str(b)  # the premise: the display text collides
-        assert expr_key(a) != expr_key(b)
+        table = SlotTable()
+        assert table.add(a) != table.add(b)
 
-    def test_distinct_udfs_with_equal_text_get_distinct_keys(self) -> None:
+    def test_distinct_udfs_with_equal_text_get_distinct_slots(self) -> None:
         f = pl.col("x").map_batches(lambda s: s * 2)
         g = pl.col("x").map_batches(lambda s: s * 3)
         assert str(f) == str(g)
-        assert expr_key(f) != expr_key(g)
+        table = SlotTable()
+        assert table.add(f) != table.add(g)
 
-    def test_equal_expressions_built_separately_share_a_key(self) -> None:
+    def test_equal_expressions_built_separately_share_a_slot(self) -> None:
         # Deduplication of genuinely-equal expressions must survive.
-        assert expr_key(pl.col("h") * 2) == expr_key(pl.col("h") * 2)
+        table = SlotTable()
+        assert table.add(pl.col("h") * 2) == table.add(pl.col("h") * 2)
+        assert len(table) == 1
 
-    def test_unambiguous_key_is_the_readable_text(self) -> None:
-        assert expr_key(pl.col("my_column")) == 'col("my_column")'
-
-    def test_key_is_stable_for_the_same_expression(self) -> None:
-        a = pl.lit(_series(5.0))
-        pl.lit(_series(6.0))  # a colliding neighbour registered in between
-        assert expr_key(a) == expr_key(a)
+    def test_an_unregistered_expression_is_an_error(self) -> None:
+        table = SlotTable()
+        table.add(pl.col("a"))
+        with pytest.raises(KeyError, match="not a registered plugin input"):
+            table.index(pl.col("b"))
 
 
 class TestParamValueIdentity:
@@ -79,12 +82,13 @@ class TestParamValueIdentity:
         assert a == b
         assert hash(a) == hash(b)
 
-    def test_serialized_keys_differ(self) -> None:
-        # Both held, as a pipeline holds every expression it references until
-        # the graph is serialized.
+    def test_serialized_slots_differ(self) -> None:
         a = ParamValue.from_arg(pl.lit(_series(1.0)))
         b = ParamValue.from_arg(pl.lit(_series(3.0)))
-        assert a.to_dict()["col"] != b.to_dict()["col"]
+        table = SlotTable()
+        table.add(a.value)
+        table.add(b.value)
+        assert a.to_dict(table.index) != b.to_dict(table.index)
 
 
 @plugin_required

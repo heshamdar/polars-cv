@@ -45,14 +45,15 @@ from polars_cv._types import (
     ScaleOrigin,
     ShapeAssertion,
     ShapeHints,
+    SlotTable,
     SourceFormat,
     SourceSpec,
     StrOrExpr,
     _reject_expr,
     _validate_enum,
-    expr_key,
     is_supplied,
     normalize_cloud_options,
+    planning_slots,
     reject_inapplicable_params,
 )
 
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
 
     from polars_cv._graph import PipelineGraph
     from polars_cv._optimize import OptFlags
+    from polars_cv._types import SlotOf
     from polars_cv.lazy import LazyPipelineExpr
 
 
@@ -120,7 +122,7 @@ def _matrix_param_from_floats(values: "list[float]") -> "ParamValue":
     """
     return ParamValue(
         is_expr=False,
-        value=[{"type": "literal", "value": float(v)} for v in values],
+        value=[ParamValue(is_expr=False, value=float(v)) for v in values],
     )
 
 
@@ -141,7 +143,7 @@ def _param_list(
     """
     return ParamValue(
         is_expr=False,
-        value=[track(v).to_dict() for v in values],
+        value=[track(v) for v in values],
     )
 
 
@@ -186,7 +188,7 @@ def _op_contract_for(spec: "OpSpec") -> dict:
     """
     from polars_cv._lib import op_contract
 
-    return op_contract(json.dumps(spec.to_dict()))
+    return op_contract(json.dumps(spec.to_dict(planning_slots)))
 
 
 def _op_reads_sibling_nodes(op: "OpSpec") -> bool:
@@ -614,7 +616,7 @@ class Pipeline:
         domain, dtype, ndim = initial_domain, initial_dtype, initial_ndim
         for op_spec in ops:
             domain, dtype, ndim = op_schema(
-                json.dumps(op_spec.to_dict()), domain, dtype, ndim
+                json.dumps(op_spec.to_dict(planning_slots)), domain, dtype, ndim
             )
         return domain, dtype, ndim
 
@@ -630,9 +632,8 @@ class Pipeline:
         """
         param = ParamValue.from_arg(value)
         if param.is_expr and isinstance(value, pl.Expr):
-            # Check if we already track this expression
-            key = expr_key(value)
-            if not any(expr_key(e) == key for e in self._expr_refs):
+            # Track each distinct expression once (by meta.eq, never by text).
+            if not any(e is value or e.meta.eq(value) for e in self._expr_refs):
                 self._expr_refs.append(value)
         return param
 
@@ -1103,7 +1104,7 @@ class Pipeline:
         from polars_cv._lib import op_schema
 
         domain, dtype, ndim = op_schema(
-            json.dumps(spec.to_dict()),
+            json.dumps(spec.to_dict(planning_slots)),
             self._current_domain,
             self._output_dtype,
             self._expected_ndim,
@@ -1221,7 +1222,9 @@ class Pipeline:
         input_channels = (
             None if current is None or current.is_expr else int(current.value)
         )
-        out = op_output_channels(json.dumps(spec.to_dict()), input_channels)
+        out = op_output_channels(
+            json.dumps(spec.to_dict(planning_slots)), input_channels
+        )
         self._shape_hints.channels = (
             None if out is None else ParamValue(is_expr=False, value=out)
         )
@@ -1296,7 +1299,7 @@ class Pipeline:
         from polars_cv._lib import op_infer_shape
 
         try:
-            out = op_infer_shape(json.dumps(spec.to_dict()), dims)
+            out = op_infer_shape(json.dumps(spec.to_dict(planning_slots)), dims)
         except ValueError:
             # No inferable shape for this step — an axis reduction, a
             # histogram, a channel merge, a binary op, or an op whose params
@@ -1612,27 +1615,15 @@ class Pipeline:
             width_param = new._track_expr(width) if width is not None else None
             height_param = new._track_expr(height) if height is not None else None
 
-            # Serialize shape pipeline if provided
-            shape_pipeline_dict = None
+            # The canvas node, by id: Rust takes that node's already-computed
+            # buffer. (The whole shape sub-pipeline used to be embedded here as
+            # well; Rust never read it.)
+            shape_node = None
             if shape is not None:
                 if not isinstance(shape, LazyPipelineExpr):
                     msg = "'shape' must be a LazyPipelineExpr"
                     raise TypeError(msg)
-                # Serialize the shape sub-pipeline's LOGICAL ops verbatim —
-                # construction never optimizes. This embedded dict only carries
-                # the shape node's `node_id`; Rust reads that and fetches the
-                # node's already-computed output (graph/compiled.rs), never these
-                # ops. The real shape node is a normal graph node (added via
-                # `_shape_refs` below), so `PipelineGraph.optimize()` fuses it
-                # like any other node, honoring `opt_flags`. Keeping the embedded
-                # spec logical also makes SourceSpec identity independent of
-                # fusion state.
-                shape_pipeline_dict = {
-                    "node_id": shape._node_id,
-                    "column": str(shape._column),
-                    "pipeline": shape._pipeline._to_spec_dict(),
-                    "upstream": [u._node_id for u in shape._upstream],
-                }
+                shape_node = shape._node_id
                 # Referencing a node by id is not enough to get it executed:
                 # `_shape_refs` is what `cv.pipe` / `LazyPipelineExpr.pipe`
                 # turn into upstream edges, and only an upstream edge puts a
@@ -1649,7 +1640,7 @@ class Pipeline:
                 height=height_param,
                 fill_value=new._track_expr(fill_value),
                 background=new._track_expr(background),
-                shape_pipeline=shape_pipeline_dict,
+                shape_node=shape_node,
                 on_error=on_error,
             )
             new._seed_from_contour_rasterize(shape=shape)
@@ -4651,7 +4642,7 @@ class Pipeline:
         for op in self._ops:
             entering.append((dtype, ndim))
             domain, dtype, ndim = op_schema(
-                json.dumps(op.to_dict()), domain, dtype, ndim
+                json.dumps(op.to_dict(planning_slots)), domain, dtype, ndim
             )
         survivors = [
             i
@@ -4680,7 +4671,7 @@ class Pipeline:
         """
         from polars_cv._lib import op_identity_rule, op_infer_shape, op_schema
 
-        op_json = json.dumps(spec.to_dict())
+        op_json = json.dumps(spec.to_dict(planning_slots))
         rule = op_identity_rule(op_json)
         if rule == "never":
             return False
@@ -4766,7 +4757,7 @@ class Pipeline:
             },
         )
 
-    def _to_spec_dict(self) -> dict:
+    def _to_spec_dict(self, slot_of: "SlotOf") -> dict:
         """
         Convert pipeline to specification dictionary (without sink).
 
@@ -4782,12 +4773,16 @@ class Pipeline:
         separate cache entries. Plan-time shape still crosses the boundary as
         ``expected_shape`` on the output spec, which Rust does read.
 
+        Args:
+            slot_of: The graph's slot resolver (``SlotTable.index``), mapping
+                each expression parameter to its plugin input position.
+
         Returns:
             Dictionary with source and ops.
         """
         return {
-            "source": self._source.to_dict() if self._source else None,
-            "ops": [op.to_dict() for op in self._ops],
+            "source": self._source.to_dict(slot_of) if self._source else None,
+            "ops": [op.to_dict(slot_of) for op in self._ops],
         }
 
     # --- Serialization ---
@@ -4804,11 +4799,12 @@ class Pipeline:
         """
         self.validate()
 
-        spec: dict = {
-            "source": self._source.to_dict() if self._source else None,
-            "ops": [op.to_dict() for op in self._ops],
-        }
-        return json.dumps(spec)
+        # A lone pipeline's inputs: its column at 0, then its expressions.
+        table = SlotTable()
+        table.add(pl.col("__input__"))
+        for expr in self._expr_refs:
+            table.add(expr)
+        return json.dumps(self._to_spec_dict(table.index))
 
     def _get_expr_columns(self) -> list[pl.Expr]:
         """

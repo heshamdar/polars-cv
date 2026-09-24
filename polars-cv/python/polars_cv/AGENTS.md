@@ -101,7 +101,7 @@ graph at all. Record the id without the edge and the reference dangles at
 execution — invisibly, for as long as some other consumer happens to pull the
 same node in (masking with the same image, which every example does). The
 appended edge does not disturb the referenced node's own input:
-`_build_column_bindings` keys on the node having a column, and the executor
+`PipelineGraph._to_dict`'s column bindings key on the node having a column, and the executor
 picks the decode path from `has_column_binding`, using upstream only for
 ordering.
 

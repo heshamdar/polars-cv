@@ -643,7 +643,7 @@ class TestRasterizeShapeReference:
         expr = _plugin.call(
             "vb_graph",
             args=[pl.col("image")],
-            kwargs={"graph_json": json.dumps(spec), "expr_column_names": []},
+            kwargs={"graph_json": json.dumps(spec)},
             is_elementwise=True,
         )
         df = pl.DataFrame({"image": [self._png(16, 16)]})

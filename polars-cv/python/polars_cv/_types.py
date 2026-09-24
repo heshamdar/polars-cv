@@ -7,11 +7,9 @@ including ParamValue for handling literal vs expression parameters.
 
 from __future__ import annotations
 
-import threading
-import weakref
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Union
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Union
 
 try:
     from typing import TypeAlias
@@ -489,58 +487,80 @@ def _enum_or_expr(value: "Any", enum_cls: type, label: str) -> "Any":
     return _validate_enum(value, enum_cls, label).value
 
 
-#: Expressions that have been given a key, bucketed by display text:
-#: ``text -> [(weakref to expr, key)]``. Weak so a long-lived process that
-#: builds many pipelines does not keep their (possibly large ``lit(Series)``)
-#: expressions alive; a bucket is dropped once all its expressions have died.
-_EXPR_KEYS: dict[str, list[tuple[weakref.ref[pl.Expr], str]]] = {}
-_EXPR_KEYS_LOCK = threading.Lock()
+#: Maps an expression parameter to the plugin input it binds to.
+SlotOf = Callable[[pl.Expr], int]
 
 
-def expr_key(expr: pl.Expr) -> str:
-    """The identity of an expression parameter: the one authority for it.
+class SlotTable:
+    """The plugin's input columns, in order: the one authority for which input
+    an expression parameter binds to.
 
-    Everything that asks "is this the same expression?" reads this key — the
-    plugin input slot an expression binds to (``ParamValue.to_dict`` and
-    ``PipelineGraph._get_expr_columns``), ``ParamValue`` equality and hashing
-    (and therefore CSE), and root-column deduplication.
-
-    ``str(expr)`` alone is not an identity: it is a display form, so every
-    ``pl.lit(pl.Series("f", ...))`` prints ``Series[f]`` and two different
-    Python UDFs print the same ``python_udf`` text. Using it made distinct
-    expressions share one plugin slot, silently (CR-31).
-
-    The key is the display text while that is unambiguous, which keeps the
-    graph JSON readable (``col("h")``). An expression whose text matches a
-    *different* live expression (by ``Expr.meta.eq``) gets ``text#n`` instead.
-    ``meta.serialize`` would be a context-free alternative but raises for
-    Python UDFs without ``cloudpickle``.
-
-    Limits: keys are unique among expressions alive at the same time, which is
-    what a graph needs — every expression a pipeline references is held by it
-    until serialization. After an expression dies its key may be reused; that
-    is harmless because a compiled graph binds slots by position and holds no
-    data. Expressions that are ``meta.eq``-equal but print differently get
-    different keys (a missed deduplication, never a wrong merge).
+    Expressions are identified by ``Expr.meta.eq``, never by display text:
+    ``str(expr)`` is not an identity (every ``pl.lit(pl.Series(...))`` prints
+    alike, as do two Python UDFs — CR-31), and the text-keyed registry that
+    papered over that made the graph JSON depend on which *other* expressions
+    were alive. A graph builds one table (root columns first, then every
+    expression parameter) and serializes each parameter as its position.
     """
-    text = str(expr)
-    with _EXPR_KEYS_LOCK:
-        live = [
-            (ref, key) for ref, key in _EXPR_KEYS.get(text, []) if ref() is not None
-        ]
-        for ref, key in live:
-            other = ref()
-            if other is expr or (other is not None and other.meta.eq(expr)):
-                _EXPR_KEYS[text] = live
-                return key
-        taken = {key for _, key in live}
-        key, n = text, 0
-        while key in taken:
-            n += 1
-            key = f"{text}#{n}"
-        live.append((weakref.ref(expr), key))
-        _EXPR_KEYS[text] = live
-        return key
+
+    def __init__(self) -> None:
+        self._exprs: list[pl.Expr] = []
+
+    def _find(self, expr: pl.Expr) -> int | None:
+        for i, known in enumerate(self._exprs):
+            if known is expr or known.meta.eq(expr):
+                return i
+        return None
+
+    def add(self, expr: pl.Expr) -> int:
+        """Register *expr* (once, by ``meta.eq``) and return its position."""
+        found = self._find(expr)
+        if found is not None:
+            return found
+        self._exprs.append(expr)
+        return len(self._exprs) - 1
+
+    def index(self, expr: pl.Expr) -> int:
+        """The position of an already-registered *expr*.
+
+        Raises rather than appending: an expression parameter that was never
+        registered as a plugin input is a builder bug, and binding it to some
+        other column would be a silent wrong answer.
+        """
+        found = self._find(expr)
+        if found is None:
+            msg = (
+                f"expression {expr} is not a registered plugin input; builders "
+                "must register expression parameters via Pipeline._track_expr"
+            )
+            raise KeyError(msg)
+        return found
+
+    @property
+    def columns(self) -> list[pl.Expr]:
+        return list(self._exprs)
+
+    def __len__(self) -> int:
+        return len(self._exprs)
+
+
+def planning_slots(expr: pl.Expr) -> int:  # noqa: ARG001 - deliberately ignored
+    """The slot resolver for plan-time FFI calls (``op_schema`` and friends).
+
+    Planning never reads a slot's data: the Rust planner replaces every slot
+    with a probe placeholder. So any index is sound here — and only here. A
+    graph that executes serializes through its own :class:`SlotTable`.
+    """
+    return 0
+
+
+def _encode_literal(value: Any, slot_of: SlotOf) -> Any:
+    """A literal's wire value; nested ``ParamValue`` elements serialize too."""
+    if isinstance(value, ParamValue):
+        return value.to_dict(slot_of)
+    if isinstance(value, list):
+        return [_encode_literal(v, slot_of) for v in value]
+    return value
 
 
 @dataclass
@@ -577,13 +597,15 @@ class ParamValue:
         if self.is_expr != other.is_expr:
             return False
         if self.is_expr:
-            return expr_key(self.value) == expr_key(other.value)
+            return self.value is other.value or self.value.meta.eq(other.value)
         return self.value == other.value
 
     def __hash__(self) -> int:
         """Hash for use in sets and dicts."""
         if self.is_expr:
-            return hash((True, expr_key(self.value)))
+            # meta.eq-equal expressions may print differently, so no text is a
+            # sound hash; equal objects need only share a bucket.
+            return hash(True)
         # For literals, hash the value directly (works for immutable types)
         try:
             return hash((False, self.value))
@@ -606,43 +628,16 @@ class ParamValue:
             return cls(is_expr=True, value=arg)
         return cls(is_expr=False, value=arg)
 
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Serialize to dictionary for JSON encoding.
+    def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
+        """Serialize for the plugin wire.
 
-        Returns:
-            Dictionary with type and value/expr fields.
-
-        Note:
-            For expression parameters, we use the expression's string representation
-            as the identifier. This ensures unique keys even when multiple expressions
-            share the same root column (e.g., col("x").max() and col("x").min()).
-            The same string representation is used in _get_expr_columns() to ensure
-            the keys match when looking up expression values on the Rust side.
+        An expression is ``{"$slot": n}``, its position among the plugin's
+        inputs as *slot_of* assigns it; a literal is ``{"type": "literal",
+        "value": ...}`` (element lists serialize element by element).
         """
         if self.is_expr:
-            # Use the expression's string representation as a unique identifier.
-            # This avoids collisions when multiple expressions share the same root
-            # (e.g., height_expr.max() and width_expr.max() from the same source).
-            return {"type": "expr", "col": expr_key(self.value)}
-        return {"type": "literal", "value": self.value}
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ParamValue":
-        """
-        Deserialize from dictionary.
-
-        Args:
-            d: Dictionary with type and value/expr fields.
-
-        Returns:
-            ParamValue instance.
-        """
-        if d["type"] == "literal":
-            return cls(is_expr=False, value=d["value"])
-        # For expressions, we store the serialized form
-        # Actual expression is reconstructed on the Rust side
-        return cls(is_expr=True, value=d)
+            return {"$slot": slot_of(self.value)}
+        return {"type": "literal", "value": _encode_literal(self.value, slot_of)}
 
 
 @dataclass
@@ -862,9 +857,9 @@ class SourceSpec:
     height: "ParamValue | None" = None
     fill_value: "ParamValue | None" = None
     background: "ParamValue | None" = None
-    shape_pipeline: dict | None = (
-        None  # Serialized LazyPipelineExpr for shape inference
-    )
+    # Contour source only: the graph node whose buffer fixes the canvas. Rust
+    # reads the id and takes that node's already-computed output.
+    shape_node: str | None = None
     # Cloud options for file_path sources
     cloud_options: CloudOptions | None = None
     # Contiguity requirement for list/array sources
@@ -894,7 +889,7 @@ class SourceSpec:
             and self.height == other.height
             and self.fill_value == other.fill_value
             and self.background == other.background
-            and self.shape_pipeline == other.shape_pipeline
+            and self.shape_node == other.shape_node
             and self.cloud_options == other.cloud_options
             and self.require_contiguous == other.require_contiguous
             and self.on_error == other.on_error
@@ -912,7 +907,7 @@ class SourceSpec:
                 self.height,
                 self.fill_value,
                 self.background,
-                str(self.shape_pipeline) if self.shape_pipeline else None,
+                self.shape_node,
                 str(self.cloud_options) if self.cloud_options else None,
                 self.require_contiguous,
                 self.on_error,
@@ -921,23 +916,23 @@ class SourceSpec:
             )
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
+    def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
+        """Serialize for the plugin wire (see :meth:`ParamValue.to_dict`)."""
         result: dict[str, Any] = {"format": self.format.value}
         if self.dtype is not None:
             result["dtype"] = self.dtype.value
         # Include contour-specific parameters if source is contour
         if self.format == SourceFormat.CONTOUR:
             if self.width is not None:
-                result["width"] = self.width.to_dict()
+                result["width"] = self.width.to_dict(slot_of)
             if self.height is not None:
-                result["height"] = self.height.to_dict()
+                result["height"] = self.height.to_dict(slot_of)
             if self.fill_value is not None:
-                result["fill_value"] = self.fill_value.to_dict()
+                result["fill_value"] = self.fill_value.to_dict(slot_of)
             if self.background is not None:
-                result["background"] = self.background.to_dict()
-            if self.shape_pipeline is not None:
-                result["shape_pipeline"] = self.shape_pipeline
+                result["background"] = self.background.to_dict(slot_of)
+            if self.shape_node is not None:
+                result["shape_node"] = self.shape_node
         # Include require_contiguous for list/array sources ("auto" may resolve
         # to a list/array column at runtime).
         if self.format in (SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO):
@@ -1207,9 +1202,9 @@ class OpSpec:
         param_hashes = tuple((k, hash(v)) for k, v in sorted(self.params.items()))
         return hash((self.op, param_hashes))
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
+    def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
+        """Serialize for the plugin wire (see :meth:`ParamValue.to_dict`)."""
         result: dict[str, Any] = {"op": self.op}
         for key, value in self.params.items():
-            result[key] = value.to_dict()
+            result[key] = value.to_dict(slot_of)
         return result
