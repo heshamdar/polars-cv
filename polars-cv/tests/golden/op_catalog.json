@@ -56,6 +56,27 @@
     ]
   },
   {
+    "name": "flip",
+    "python": "flip",
+    "visibility": "public",
+    "doc": "Flip along specified axes.",
+    "fields": [
+      {
+        "name": "axes",
+        "doc": "Axes to flip.",
+        "positional": true,
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
     "name": "histogram",
     "python": "histogram",
     "visibility": "public",
@@ -138,6 +159,27 @@
     ]
   },
   {
+    "name": "reshape",
+    "python": "reshape",
+    "visibility": "public",
+    "doc": "Reshape array to new dimensions.",
+    "fields": [
+      {
+        "name": "shape",
+        "doc": "New shape. The number of entries fixes the output rank; each entry may\nbe a Polars expression.",
+        "positional": true,
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
     "name": "resize",
     "python": "resize",
     "visibility": "public",
@@ -179,6 +221,27 @@
             "gaussian",
             "lanczos3"
           ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "transpose",
+    "python": "transpose",
+    "visibility": "public",
+    "doc": "Transpose dimensions.",
+    "fields": [
+      {
+        "name": "axes",
+        "doc": "New order of axes: a permutation of every input axis.",
+        "positional": true,
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
         }
       }
     ]

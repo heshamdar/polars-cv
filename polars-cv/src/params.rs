@@ -341,43 +341,14 @@ impl ParamValue {
     /// Resolve a per-element parameter list to `usize`s at `row_idx`.
     ///
     /// For value-carrying lists such as `channel_swap`'s permutation, where the
-    /// element *count* is structural but the values are not. Axis lists, which
-    /// reorder dimensions and therefore change the output rank, must keep using
-    /// [`as_int_list`](Self::as_int_list).
+    /// element *count* is structural but the values are not. (Axis lists, which
+    /// reorder dimensions, are typed `Literal` lists on their ops.)
     pub fn resolve_usize_list(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<Vec<usize>> {
         let mut owned = None;
         self.param_elements(&mut owned)?
             .iter()
             .map(|p| p.resolve_usize(row_idx, ctx))
             .collect()
-    }
-
-    /// Get literal value as a list of integers (for transpose, flip axes).
-    pub fn as_int_list(&self) -> PolarsResult<Vec<usize>> {
-        match self {
-            ParamValue::Literal { value } => {
-                let arr = value.as_array().ok_or_else(
-                    || polars_err!(ComputeError: "Expected array literal, got {:?}", value),
-                )?;
-
-                arr.iter()
-                    .map(|v| {
-                        v.as_i64()
-                            .and_then(|i| {
-                                if i < 0 {
-                                    None
-                                } else {
-                                    Some(i as usize)
-                                }
-                            })
-                            .ok_or_else(|| polars_err!(ComputeError: "Expected non-negative integer in array"))
-                    })
-                    .collect()
-            }
-            ParamValue::Slot { .. } | ParamValue::List(_) => {
-                Err(polars_err!(ComputeError: "Axes parameters cannot be expressions"))
-            }
-        }
     }
 }
 
@@ -1172,14 +1143,6 @@ mod tests {
             value: serde_json::json!("hello"),
         };
         assert_eq!(param.resolve_string().unwrap(), "hello");
-    }
-
-    #[test]
-    fn test_int_list() {
-        let param = ParamValue::Literal {
-            value: serde_json::json!([0, 2, 1]),
-        };
-        assert_eq!(param.as_int_list().unwrap(), vec![0, 2, 1]);
     }
 
     #[test]

@@ -49,12 +49,9 @@ impl Op for ViewOp {
                 if is_permutation {
                     Ok(())
                 } else {
-                    Err(ValidationError::InvalidParameter {
-                        param: "axes".to_string(),
-                        reason: format!(
-                            "{perm:?} is not a permutation of the {} axes of {shape:?}",
-                            shape.len()
-                        ),
+                    Err(ValidationError::NotAPermutation {
+                        axes: perm.clone(),
+                        ndim: shape.len(),
                     })
                 }
             }

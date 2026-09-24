@@ -99,6 +99,11 @@ REMOVED: tuple[Removed, ...] = (
     Removed("as_f64_vec", "P2: histogram edges are a typed Bins::Edges"),
     Removed("range_min", "P2: histogram `range` is one two-element field"),
     Removed("range_max", "P2: histogram `range` is one two-element field"),
+    # Typed-op P3 (view family): axis lists are typed `Literal<u32>` lists and
+    # checked by the engine op's own `validate` at plan time.
+    Removed("as_int_list", "P3: axes are Vec<Literal<u32>>"),
+    Removed("_literal_axes", "P3: a Literal field refuses an expression"),
+    Removed("_require_axes_within_rank", "P3: ViewOp::validate at plan time"),
 )
 
 

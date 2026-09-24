@@ -16,7 +16,9 @@ if TYPE_CHECKING:
     from polars_cv.pipeline import Pipeline
 
 #: Ops whose wire form is typed (bare values and slots).
-TYPED_OPS: frozenset[str] = frozenset(["crop", "histogram", "resize", "warp_affine"])
+TYPED_OPS: frozenset[str] = frozenset(
+    ["crop", "flip", "histogram", "reshape", "resize", "transpose", "warp_affine"]
+)
 
 #: Each typed op's field types, as the catalogue describes them.
 OP_FIELDS: dict[str, dict[str, Any]] = {
@@ -31,6 +33,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "kind": "optional",
             "inner": {"kind": "scalar", "per_row": True, "py": "int"},
         },
+    },
+    "flip": {
+        "axes": {
+            "kind": "list",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        }
     },
     "histogram": {
         "bins": {
@@ -64,6 +72,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["counts", "normalized", "quantized", "edges", "buckets"],
         },
     },
+    "reshape": {
+        "shape": {
+            "kind": "list",
+            "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+        }
+    },
     "resize": {
         "height": {"kind": "scalar", "per_row": True, "py": "int"},
         "width": {"kind": "scalar", "per_row": True, "py": "int"},
@@ -73,6 +87,12 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "py": "FilterType",
             "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
         },
+    },
+    "transpose": {
+        "axes": {
+            "kind": "list",
+            "inner": {"kind": "scalar", "per_row": False, "py": "int"},
+        }
     },
     "warp_affine": {
         "matrix": {
@@ -123,6 +143,14 @@ class _OpsMixin:
             "crop", {"top": top, "left": left, "height": height, "width": width}
         )
 
+    def flip(self, axes: Sequence[int]) -> Pipeline:
+        """Flip along specified axes.
+
+        Args:
+            axes: Axes to flip.
+        """
+        return self._append_typed("flip", {"axes": axes})
+
     def histogram(
         self,
         bins: IntOrExpr | Sequence[float] = 256,
@@ -148,6 +176,15 @@ class _OpsMixin:
             {"bins": bins, "range": range, "closed": closed, "output": output},
         )
 
+    def reshape(self, shape: Sequence[IntOrExpr]) -> Pipeline:
+        """Reshape array to new dimensions.
+
+        Args:
+            shape: New shape. The number of entries fixes the output rank; each entry
+                may be a Polars expression.
+        """
+        return self._append_typed("reshape", {"shape": shape})
+
     def resize(
         self, *, height: IntOrExpr, width: IntOrExpr, filter: str | pl.Expr = "lanczos3"
     ) -> Pipeline:
@@ -164,6 +201,14 @@ class _OpsMixin:
         return self._append_typed(
             "resize", {"height": height, "width": width, "filter": filter}
         )
+
+    def transpose(self, axes: Sequence[int]) -> Pipeline:
+        """Transpose dimensions.
+
+        Args:
+            axes: New order of axes: a permutation of every input axis.
+        """
+        return self._append_typed("transpose", {"axes": axes})
 
     def warp_affine(
         self,

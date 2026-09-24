@@ -50,6 +50,34 @@ pub enum ValidationError {
     /// Invalid parameter value.
     #[error("Invalid parameter '{param}': {reason}")]
     InvalidParameter { param: String, reason: String },
+
+    /// An axis list that must reorder every input axis exactly once does not.
+    #[error("axes {axes:?} are not a permutation of the {ndim} input axes")]
+    NotAPermutation { axes: Vec<usize>, ndim: usize },
+}
+
+impl ValidationError {
+    /// Whether the failure is decided by the input's *rank* alone, so it holds
+    /// whatever the (possibly unknown) dimension sizes are.
+    ///
+    /// The planner validates an op against a shape whose unknown sizes are
+    /// placeholders; only a rank-level failure is a real verdict there. A
+    /// size-level one (an element count, a window past an edge) is a verdict
+    /// only once every size is known. Exhaustive, so a new variant must say
+    /// which it is.
+    pub fn depends_only_on_rank(&self) -> bool {
+        match self {
+            ValidationError::RankRequirement { .. }
+            | ValidationError::InvalidAxis { .. }
+            | ValidationError::NotAPermutation { .. }
+            | ValidationError::InsufficientInputs { .. } => true,
+            ValidationError::ShapeRequirement { .. }
+            | ValidationError::DTypeRequirement { .. }
+            | ValidationError::Generic { .. }
+            | ValidationError::ShapeMismatch { .. }
+            | ValidationError::InvalidParameter { .. } => false,
+        }
+    }
 }
 
 // --- Shape Predicates ---

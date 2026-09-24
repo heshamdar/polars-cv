@@ -241,18 +241,6 @@ def _output_shape_equals_input(
 _SPATIAL_BARRIER = object()
 
 
-def _literal_axes(axes: "Sequence[int]", label: str) -> "ParamValue":
-    """Build an axis-list parameter, rejecting expressions element-wise.
-
-    Axis lists reorder or select dimensions, so they fix the output rank at
-    planning time — unlike value-carrying lists (``convolve2d``'s kernel, a
-    ``normalize`` mean/std pair), whose elements may be per-row.
-    """
-    for axis in axes:
-        _reject_expr(axis, f"'{label}'")
-    return ParamValue(is_expr=False, value=list(axes))
-
-
 def _asserted_rank(dims: "Sequence[int | None]") -> int:
     """Validate an ``assert_shape(dims=...)`` list and return the rank it pins.
 
@@ -1096,32 +1084,6 @@ class Pipeline(_OpsMixin):
             },
         )
 
-    def _require_axes_within_rank(self, axes: "Sequence[int]", label: str) -> None:
-        """Reject an axis list that does not address the tracked rank.
-
-        The rank is only known some of the time (an ``auto`` source leaves it
-        ``None``), so this is a check that fires when it can rather than a
-        guarantee. It has to exist because ``infer_shape`` indexes the input
-        shape directly: a ``transpose`` carrying three axes over rank-2 data
-        would otherwise reach the engine and abort, and the planner calls
-        ``infer_shape`` from an ordinary builder where a clean ValueError is
-        the contract.
-        """
-        ndim = self._expected_ndim
-        if ndim is None:
-            return
-        # Only range-check plain integers. A Polars expression here is a
-        # *structural* violation with its own error, raised by `_literal_axes`
-        # further down; pre-empting it with a range message would bury the
-        # real problem.
-        bad = [a for a in axes if isinstance(a, int) and not -ndim <= a < ndim]
-        if bad:
-            msg = (
-                f"{label} {list(axes)} is out of range for a {ndim}-dimensional "
-                f"input (valid axes: 0..{ndim - 1})."
-            )
-            raise ValueError(msg)
-
     def _require_input_domain(self, spec: "OpSpec", contract: dict) -> None:
         """Reject an operation whose input domain is not the current domain.
 
@@ -1359,12 +1321,12 @@ class Pipeline(_OpsMixin):
             return
         from polars_cv._lib import op_infer_shape
 
-        try:
-            out = op_infer_shape(json.dumps(spec.to_dict(planning_slots)), dims)
-        except ValueError:
+        # A ValueError here is the op's parameters not fitting the input (its
+        # Rust `validate`), raised to the builder's caller as is.
+        out = op_infer_shape(json.dumps(spec.to_dict(planning_slots)), dims)
+        if out is None:
             # No inferable shape for this step — an axis reduction, a
-            # histogram, a channel merge, a binary op, or an op whose params
-            # disagree with the input rank.
+            # histogram, a channel merge, a binary op.
             #
             # Invalidate rather than keep the pre-op values. Several of these
             # steps *do* change H/W (an axis reduction drops a dimension), so
@@ -1951,62 +1913,6 @@ class Pipeline(_OpsMixin):
         return new
 
     # --- View Operations (zero-copy where possible) ---
-
-    def transpose(self, axes: list[int]) -> "Pipeline":
-        """
-        Transpose dimensions.
-
-        Args:
-            axes: New order of axes.
-
-        Returns:
-            Self for chaining.
-        """
-        # Axes are always literals (list of ints)
-        self._require_axes_within_rank(axes, "transpose axes")
-        if (
-            self._expected_ndim is not None
-            and all(isinstance(a, int) for a in axes)
-            and len(axes) != self._expected_ndim
-        ):
-            msg = (
-                f"transpose axes {list(axes)} must name every one of the "
-                f"{self._expected_ndim} input dimensions exactly once."
-            )
-            raise ValueError(msg)
-        return self._append_op(
-            "transpose", lambda p: {"axes": _literal_axes(axes, "axes")}
-        )
-
-    def reshape(self, shape: list[int | pl.Expr]) -> "Pipeline":
-        """
-        Reshape array to new dimensions.
-
-        Args:
-            shape: New shape (list of ints or expressions).
-
-        Returns:
-            Self for chaining.
-        """
-        # Mixed literal/expr shapes: each entry is tracked independently, so
-        # the entry *count* stays structural while any element may be per-row.
-        return self._append_op(
-            "reshape",
-            lambda p: {"shape": _param_list(shape, p._track_expr)},
-        )
-
-    def flip(self, axes: list[int]) -> "Pipeline":
-        """
-        Flip along specified axes.
-
-        Args:
-            axes: Axes to flip.
-
-        Returns:
-            Self for chaining.
-        """
-        self._require_axes_within_rank(axes, "flip axes")
-        return self._append_op("flip", lambda p: {"axes": _literal_axes(axes, "axes")})
 
     def flip_h(self) -> "Pipeline":
         """
@@ -4575,9 +4481,8 @@ class Pipeline(_OpsMixin):
             entering_dims = self._entering_dims_at(index, entering_ndim)
             if entering_dims is None:
                 return False
-            try:
-                out_dims = op_infer_shape(op_json, entering_dims)
-            except ValueError:
+            out_dims = op_infer_shape(op_json, entering_dims)
+            if out_dims is None:
                 return False
             return _output_shape_equals_input(out_dims, entering_dims)
         return False

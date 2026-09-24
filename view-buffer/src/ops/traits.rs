@@ -197,6 +197,10 @@ pub trait Op {
     /// see becomes a row error instead of an index-out-of-bounds panic. An op
     /// that accepts anything says so with an explicit `Ok(())`; a new op cannot
     /// inherit "accepts anything" by omission.
+    ///
+    /// The planner also calls it with no dtypes and placeholder sizes for the
+    /// dimensions it cannot know (see `ValidationError::depends_only_on_rank`),
+    /// so an implementation must not assume `input_dtypes` is non-empty.
     fn validate(
         &self,
         input_shapes: &[&[usize]],
