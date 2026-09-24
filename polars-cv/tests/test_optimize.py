@@ -600,8 +600,8 @@ class TestIdentityElimination:
     """Staging for the identity-elimination pass.
 
     Needs the compiled plugin: the pass reads ``op_identity_rule`` /
-    ``op_schema`` / ``op_infer_shape`` to classify each op and evaluate its
-    condition against the entering state.
+    ``op_infer_shape`` to classify each op and evaluate its condition against
+    the recorded entering state.
     """
 
     @plugin_required

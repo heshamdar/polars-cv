@@ -10,7 +10,8 @@ from __future__ import annotations
 import copy
 import json
 import math
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import polars as pl
 
@@ -280,8 +281,6 @@ _STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
     "_current_domain": _same,
     "_output_dtype": _same,
     "_expected_ndim": _same,
-    "_initial_output_dtype": _same,
-    "_initial_expected_ndim": _same,
     "_on_error": _same,
     "_on_null_param": _same,
     "_shape_declared": _same,
@@ -289,7 +288,8 @@ _STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
     "_ops": list,
     "_expr_refs": list,
     "_asserted_dims": set,
-    "_hint_snapshots": dict,
+    # Per-op entering states: immutable records, so a shallow copy suffices.
+    "_entering": list,
     # `pl.Expr` / `LazyPipelineExpr` elements are shared deliberately — they are
     # graph identities, and deep-copying one would break node reference.
     "_shape_refs": list,
@@ -299,24 +299,43 @@ _STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
 }
 
 
-#: The :class:`Pipeline` fields keyed by op *position*, so every wholesale
-#: rewrite of ``_ops`` must supply a re-keyed replacement for each of them or the
-#: plan-time schema desyncs from what executes. ``_hint_snapshots`` is keyed by
-#: op index; ``_assertions`` by op-boundary position.
-#:
-#: This is the op-index counterpart to :data:`_STATE_COPIERS`: the single
-#: authority for "what is position-keyed", read only by
-#: :meth:`Pipeline._rewrite_ops`, which refuses to run unless a caller addresses
-#: exactly this set. A field added here becomes a hard failure at *every* rewrite
-#: caller at once, rather than the silent omission that once let CSE re-key
-#: ``_hint_snapshots`` but forget ``_assertions``. The re-key *arithmetic*
-#: legitimately differs per rewrite (a slice shifts, a reorder drops moved
-#: entries, an elimination compacts — and the two tables even use different index
-#: domains), so it stays in each caller; only the *enumeration* is centralized.
-#:
-#: A name added here that is not a real field fails
-#: ``test_position_keyed_fields_are_real_pipeline_state``.
-_POSITION_KEYED_FIELDS: "tuple[str, ...]" = ("_hint_snapshots", "_assertions")
+@dataclass(frozen=True)
+class PlanState:
+    """The planner's tracked state at one op boundary.
+
+    What :meth:`Pipeline._push_op` advances and what a replay starts from:
+    domain, dtype, rank, the shape hints, which of them the user asserted, and
+    whether a shape declaration reached this lineage. ``hints`` is a private
+    copy, never mutated.
+    """
+
+    domain: str
+    dtype: str
+    ndim: "int | None"
+    hints: ShapeHints
+    asserted_dims: "frozenset[str]"
+    shape_declared: bool
+
+
+class _Position(NamedTuple):
+    """What the planner keeps for one op: the state entering it, and a binary
+    op's other operand dtype (its two-input dtype rule reads it on replay)."""
+
+    state: PlanState
+    other_dtype: "str | None"
+
+
+def _assertion_window(
+    assertions: "dict[int, ShapeAssertion]", start: int, end: int
+) -> "dict[int, ShapeAssertion]":
+    """The assertions of op boundaries ``start..=end``, re-keyed from 0.
+
+    Assertions are keyed by op *boundary* (an assertion at ``k`` applies after
+    op ``k - 1``), so a slice ``[start, end)`` keeps both of its end boundaries.
+    """
+    return {
+        i - start: copy.deepcopy(a) for i, a in assertions.items() if start <= i <= end
+    }
 
 
 def _encode_field(
@@ -434,17 +453,10 @@ class Pipeline(_OpsMixin):
         self._output_dtype: str = "auto"
         # Number of dimensions tracking
         self._expected_ndim: int | None = None
-        # Post-source state (before any op), captured by source(). Batch
-        # re-folds over the op list (to_graph, CSE prefixes) must seed from
-        # here — seeding from the final state double-applies every op.
-        self._initial_output_dtype: str = "auto"
-        self._initial_expected_ndim: int | None = None
-        # Height/width hints as they were ENTERING each op, keyed by op
-        # index. Identity elimination reads these so a shape-preserving op is
-        # judged against the shape at its own position, not the final shape.
-        self._hint_snapshots: dict[
-            int, tuple[ParamValue | None, ParamValue | None]
-        ] = {}
+        # The state entering each op, in step with `_ops`. A slice, a
+        # reorder or a deletion of the ops replays them from one of these
+        # (`_replay`), and identity elimination judges an op against its own.
+        self._entering: list[_Position] = []
         # Shape dimensions the user asserted via assert_shape(), keyed by the
         # op position the assertion was written at. Distinguishes a user
         # assertion (authoritative, must survive a continuation replay) from a
@@ -473,35 +485,6 @@ class Pipeline(_OpsMixin):
         # consumers wiring this pipeline into a graph add them as upstream
         # dependencies so the referenced node executes first.
         self._shape_refs: "list[LazyPipelineExpr]" = []
-
-    @staticmethod
-    def _compute_output_domain_dtype_ndim(
-        ops: list["OpSpec"],
-        initial_domain: str = "buffer",
-        initial_dtype: str = "u8",
-        initial_ndim: int | None = None,
-    ) -> tuple[str, str, int | None]:
-        """
-        Fold every operation's schema effect over an initial state.
-
-        Each op's (domain, dtype, ndim) effect comes from the single Rust
-        authority ``op_schema`` — including the param-dependent cases (cast
-        target, histogram output mode, reduction axis presence) that used to
-        be re-implemented here as Python special cases.
-
-        Used by lazy continuations, which seed the fold with the upstream
-        node's state; incremental per-append tracking (``plan_step``) shares
-        the same Rust fold (``plan::fold``), so the two cannot diverge (guarded
-        by ``test_pipeline_state_matches_batch_fold``).
-        """
-        from polars_cv._lib import op_schema
-
-        domain, dtype, ndim = initial_domain, initial_dtype, initial_ndim
-        for op_spec in ops:
-            domain, dtype, ndim = op_schema(
-                json.dumps(op_spec.to_dict(planning_slots)), domain, dtype, ndim
-            )
-        return domain, dtype, ndim
 
     def _track_expr(self, value: IntOrExpr | FloatOrExpr) -> ParamValue:
         """
@@ -747,12 +730,7 @@ class Pipeline(_OpsMixin):
                 and refuses a binary op without it.
         """
         planned = self._plan_step(spec, other_dtype=other_dtype)
-        # The H/W entering this op, by position: identity elimination judges a
-        # shape-preserving op against its own entering shape.
-        self._hint_snapshots[len(self._ops)] = (
-            copy.deepcopy(self._shape_hints.height),
-            copy.deepcopy(self._shape_hints.width),
-        )
+        self._entering.append(_Position(self._state(), other_dtype))
         self._ops.append(spec)
         self._apply_step(planned)
         # An assertion recorded *after* this op outranks what the contract
@@ -760,6 +738,60 @@ class Pipeline(_OpsMixin):
         # canvas comes from another node's buffer, which no contract on this
         # op can describe.
         self._apply_assertions_at(len(self._ops))
+
+    def _replay(
+        self,
+        positions: "Sequence[int]",
+        *,
+        start: PlanState,
+        assertions: "dict[int, ShapeAssertion]",
+    ) -> None:
+        """Rebuild the op list from ``positions`` of the current one, in place.
+
+        **The one wholesale rewrite of ``_ops``**: a slice (CSE's prefix and
+        suffix, a sub-pipeline), a reorder (the spatial pushdown) and a
+        deletion (identity elimination) all name the ops they keep, in order,
+        and the state they start from. Each op is then appended again through
+        :meth:`_push_op`, so every per-position fact is *recomputed* for the new
+        order rather than re-keyed by the caller — the re-key arithmetic each
+        rewrite used to carry is where the CSE path once forgot the
+        assertions. ``assertions`` is required, and keyed for the new list.
+        """
+        steps = [(self._ops[i], self._entering[i].other_dtype) for i in positions]
+        self._ops = []
+        self._entering = []
+        self._assertions = assertions
+        self._restore(start)
+        self._apply_assertions_at(0)
+        for spec, other_dtype in steps:
+            self._push_op(spec, other_dtype=other_dtype)
+
+    def _state(self) -> PlanState:
+        """The current tracked state, as an immutable record."""
+        return PlanState(
+            domain=self._current_domain,
+            dtype=self._output_dtype,
+            ndim=self._expected_ndim,
+            hints=copy.deepcopy(self._shape_hints),
+            asserted_dims=frozenset(self._asserted_dims),
+            shape_declared=self._shape_declared,
+        )
+
+    def _restore(self, state: PlanState) -> None:
+        """Adopt ``state`` as the current tracked state."""
+        self._current_domain = state.domain
+        self._output_dtype = state.dtype
+        self._expected_ndim = state.ndim
+        self._shape_hints = copy.deepcopy(state.hints)
+        self._asserted_dims = set(state.asserted_dims)
+        self._shape_declared = state.shape_declared
+
+    def _state_at(self, position: int) -> PlanState:
+        """The state at op boundary ``position``: entering op ``position``, or
+        the current state at the end."""
+        if position < len(self._ops):
+            return self._entering[position].state
+        return self._state()
 
     def _plan_step(
         self, spec: "OpSpec", *, other_dtype: "str | None" = None
@@ -897,88 +929,6 @@ class Pipeline(_OpsMixin):
             f"cannot change what the data is — remove it, or fix the value."
         )
         raise ValueError(msg)
-
-    def _rewrite_ops(
-        self, new_ops: "list[OpSpec]", *, position_keyed: "dict[str, Any]"
-    ) -> None:
-        """Replace ``_ops`` wholesale and re-key every position-keyed side table.
-
-        The single, unskippable op-index rewrite primitive — the op-position
-        counterpart to :meth:`_copy_state_from` (which is driven by
-        :data:`_STATE_COPIERS`). It is the *only* place ``_ops`` is reassigned
-        for a rewrite, and it enforces that the caller supplies a re-keyed
-        replacement for **exactly** the fields in :data:`_POSITION_KEYED_FIELDS`
-        — no more, no fewer — so a new position-keyed field cannot be silently
-        forgotten by one rewrite while handled by another (the class of bug that
-        let CSE re-key ``_hint_snapshots`` but not ``_assertions``).
-
-        The primitive does not *compute* the re-key: the three rewrites (CSE
-        slice, pushdown reorder, identity elimination) transform the indices in
-        genuinely different ways, so each caller builds its own replacement and
-        passes it here. This method owns only the assignment and the coverage
-        check.
-
-        Args:
-            new_ops: The new op list.
-            position_keyed: One entry per field in
-                :data:`_POSITION_KEYED_FIELDS`, mapping the field name to its
-                already-re-keyed replacement value.
-        """
-        supplied = set(position_keyed)
-        required = set(_POSITION_KEYED_FIELDS)
-        if supplied != required:
-            missing = sorted(required - supplied)
-            extra = sorted(supplied - required)
-            msg = (
-                "_rewrite_ops must be given a re-keyed value for exactly the "
-                f"position-keyed fields {list(_POSITION_KEYED_FIELDS)}."
-            )
-            if missing:
-                msg += f" Missing: {missing}."
-            if extra:
-                msg += f" Unknown: {extra}."
-            raise ValueError(msg)
-        self._ops = list(new_ops)
-        for name, value in position_keyed.items():
-            setattr(self, name, value)
-
-    def _set_ops_slice(self, ops: "list[OpSpec]", *, shift: int) -> None:
-        """Replace the whole op list for CSE, re-keying the position-keyed tables.
-
-        The wholesale replacement for CSE (``_graph.py``), which splits one
-        pipeline's ops across a shared prefix node and a suffix node. Distinct
-        from :meth:`_push_op`, which appends a single op and advances the tracked
-        state; here the state is supplied by the caller and only the index-keyed
-        side tables move. The actual ``_ops`` assignment and the position-keyed
-        coverage check are delegated to :meth:`_rewrite_ops`.
-
-        ``_hint_snapshots`` (op-index keyed) keeps the ``[shift, shift+len)``
-        window shifted down; ``_assertions`` (op-*boundary* keyed) keeps the
-        inclusive ``[shift, shift+len]`` window — the two index domains differ,
-        which is exactly why the re-key stays here rather than in the primitive.
-
-        Args:
-            ops: The new op list.
-            shift: How far each surviving op moved left (``prefix_len`` for a
-                suffix node, ``0`` when keeping a prefix).
-        """
-        new_hint_snapshots = {
-            i - shift: v
-            for i, v in self._hint_snapshots.items()
-            if shift <= i < shift + len(ops)
-        }
-        new_assertions = {
-            i - shift: copy.deepcopy(a)
-            for i, a in self._assertions.items()
-            if shift <= i <= shift + len(ops)
-        }
-        self._rewrite_ops(
-            ops,
-            position_keyed={
-                "_hint_snapshots": new_hint_snapshots,
-                "_assertions": new_assertions,
-            },
-        )
 
     @staticmethod
     def _shape_ref_dims(
@@ -1345,12 +1295,6 @@ class Pipeline(_OpsMixin):
                     # Mark as "auto" so Rust resolves from input_fields
                     new._output_dtype = "auto"
                     new._expected_ndim = None
-
-        # Snapshot the post-source state: batch re-folds over the op list
-        # (to_graph, CSE prefixes) seed from these, never from the final
-        # per-op-tracked values.
-        new._initial_output_dtype = new._output_dtype
-        new._initial_expected_ndim = new._expected_ndim
 
         return new
 
@@ -2287,24 +2231,12 @@ class Pipeline(_OpsMixin):
             # Non-root node: source is blob (receives from upstream)
             sub._source = SourceSpec(format=SourceFormat(source_format))
 
-        # The op slice carries its position-keyed side tables with it, so a
-        # plan-time pass in the sub-pipeline still sees per-position shapes.
-        sub._set_ops_slice(self._ops[start_op:end_op], shift=start_op)
-
-        # Compute the correct domain and dtype for this subset of operations.
-        # The fold covers ops[0:end_op], so it must be seeded with the
-        # post-source (pre-op) state — seeding with the pipeline's final
-        # state would apply every op a second time.
-        ops_to_compute = self._ops[0:end_op]
-        domain, dtype, ndim = Pipeline._compute_output_domain_dtype_ndim(
-            ops_to_compute,
-            initial_dtype=self._initial_output_dtype,
-            initial_ndim=self._initial_expected_ndim,
+        # The slice starts from the state entering its first op.
+        sub._replay(
+            range(start_op, end_op),
+            start=self._state_at(start_op),
+            assertions=_assertion_window(self._assertions, start_op, end_op),
         )
-        sub._current_domain = domain
-        sub._output_dtype = dtype
-        sub._expected_ndim = ndim
-
         return sub
 
     # --- Graph Composition Support ---
@@ -2349,7 +2281,7 @@ class Pipeline(_OpsMixin):
     # ``op_contract``'s ``spatial_rule``) deciding whether — and how — it passes.
     # The three pieces are the transfer function (:meth:`_spatial_transfer`), the
     # driver (:meth:`_compute_spatial_pushdown`), and the commit
-    # (:meth:`_commit_reordered_ops`); later spatial optimizations widen the
+    # (:meth:`_replay`); later spatial optimizations widen the
     # transfer function's arms rather than adding a pass. Phase 1 moves a crop
     # past a run of ``Pointwise`` ops within one node.
 
@@ -2404,12 +2336,10 @@ class Pipeline(_OpsMixin):
         )
         return True
 
-    def _compute_spatial_pushdown(
-        self, ops: "list[OpSpec]"
-    ) -> "tuple[list[OpSpec], dict[int, int]]":
+    def _compute_spatial_pushdown(self, ops: "list[OpSpec]") -> "list[int]":
         """Hoist each crop to the front of the ``Pointwise`` run before it.
 
-        Returns the new op list and an ``old index -> new index`` bijection.
+        Returns the new order, as the original index of each op.
         A crop is moved to the start of the maximal contiguous run of ops
         immediately preceding it that the transfer function lets it cross; the
         run stops at the first barrier. An ``assert_shape`` op-boundary in the
@@ -2448,43 +2378,7 @@ class Pipeline(_OpsMixin):
                 continue
             run = result[j:]
             result[j:] = [i, *run]
-        perm = {orig: pos for pos, orig in enumerate(result)}
-        new_ops = [ops[orig] for orig in result]
-        return new_ops, perm
-
-    def _commit_reordered_ops(
-        self, ops: "list[OpSpec]", perm: "dict[int, int]"
-    ) -> None:
-        """Replace ``_ops`` with a permutation rewrite, re-keying side tables.
-
-        The reorder sibling of :meth:`_set_ops_slice` (CSE's prefix/suffix
-        split) and :meth:`_commit_eliminated_ops` (identity elimination's
-        deletion). ``perm`` is an ``old index -> new index`` bijection.
-
-        ``_hint_snapshots`` (entering H/W per op): ops that did not move keep
-        their exact snapshot — their entering shape is unchanged because a
-        ``Pointwise`` reorder near them does not alter H/W. Moved ops are
-        ``Pointwise``, so their snapshot is dropped rather than carried stale. A
-        future move that changes an op's *entering* shape (cross-node,
-        geometric) must recompute snapshots, not drop them — see the pushdown
-        design notes.
-
-        ``_assertions`` (keyed by op-boundary position): the reorder is a
-        permutation confined between two boundaries with no assertion boundary
-        inside it (:meth:`_compute_spatial_pushdown` leaves such a crop in
-        place), so every boundary's prefix op-set is unchanged and no assertion
-        key moves — it is passed to :meth:`_rewrite_ops` unchanged.
-        """
-        new_hint_snapshots = {
-            i: v for i, v in self._hint_snapshots.items() if perm.get(i, i) == i
-        }
-        self._rewrite_ops(
-            ops,
-            position_keyed={
-                "_hint_snapshots": new_hint_snapshots,
-                "_assertions": self._assertions,
-            },
-        )
+        return result
 
     def _hoist_spatial_windows_inplace(self) -> None:
         """Apply the spatial-window pushdown to this pipeline's ops, in place.
@@ -2493,19 +2387,21 @@ class Pipeline(_OpsMixin):
         A no-op when nothing moves, so it is safe to call unconditionally on an
         already-optimized or window-free pipeline.
         """
-        new_ops, perm = self._compute_spatial_pushdown(self._ops)
-        if all(new == old for new, old in perm.items()):
+        order = self._compute_spatial_pushdown(self._ops)
+        if order == list(range(len(self._ops))):
             return
-        self._commit_reordered_ops(new_ops, perm)
+        # A crop only moves within a stretch holding no assertion boundary
+        # (`_compute_spatial_pushdown`), so no assertion key moves; the replay
+        # recomputes every entering shape for the new order.
+        self._replay(order, start=self._state_at(0), assertions=self._assertions)
 
     # ---- Identity elimination (Tier-1) --------------------------------------
     #
     # Delete ops that are value-, dtype-, shape- and channel-preserving no-ops.
     # Which ops *can* be a no-op is the Rust ``IdentityRule`` authority
     # (``op_identity_rule``); the condition is evaluated here against the state
-    # entering each op, reconstructed from the planner's own fold
-    # (``_compute_output_domain_dtype_ndim`` for dtype/ndim, ``_hint_snapshots``
-    # for H/W). No shape/dtype math is re-implemented, and — unlike the
+    # entering each op and the state it leaves, both recorded by ``_push_op``
+    # (``_entering``). No shape/dtype math is re-implemented, and — unlike the
     # crop-specific ``_is_spatial_window`` recogniser in the pushdown — no op
     # name is matched: the classification lives entirely in the Rust contract.
 
@@ -2513,10 +2409,10 @@ class Pipeline(_OpsMixin):
         """Drop no-op ops from this pipeline's ops, in place.
 
         The Tier-1 entry point (called by ``PipelineGraph.optimize`` per node).
-        A removed op is a no-op, so it changes no output byte and perturbs no
-        downstream entering state — elimination is output-preserving even inside
-        a dict-sink observed or multi-consumer node, and the entering states
-        computed once up front stay valid as ops drop out.
+        A removed op is a no-op, so it changes no output byte — elimination is
+        output-preserving even inside a dict-sink observed or multi-consumer
+        node — and every verdict is read off the states recorded before any op
+        drops out.
 
         Conservative around user shape assertions: a node carrying any
         ``assert_shape`` is left untouched, so no positional assertion key has to
@@ -2525,50 +2421,23 @@ class Pipeline(_OpsMixin):
         """
         if not self._ops or self._assertions:
             return
-        # Fold the entering (dtype, ndim) for every op in a single forward pass —
-        # the same ``op_schema`` authority construction uses — instead of
-        # re-folding the prefix inside each ``_op_is_identity_at`` (which was
-        # O(n²) FFI calls). A removed op is a no-op, so it perturbs no downstream
-        # entering state, and these snapshots stay valid as ops drop out.
-        from polars_cv._lib import op_schema
-
-        entering: "list[tuple[str, int | None]]" = []
-        domain, dtype, ndim = (
-            "buffer",
-            self._initial_output_dtype,
-            self._initial_expected_ndim,
-        )
-        for op in self._ops:
-            entering.append((dtype, ndim))
-            domain, dtype, ndim = op_schema(
-                json.dumps(op.to_dict(planning_slots)), domain, dtype, ndim
-            )
         survivors = [
-            i
-            for i, op in enumerate(self._ops)
-            if not self._op_is_identity_at(i, op, *entering[i])
+            i for i, op in enumerate(self._ops) if not self._op_is_identity_at(i, op)
         ]
         if len(survivors) == len(self._ops):
             return
-        self._commit_eliminated_ops(survivors)
+        self._replay(survivors, start=self._state_at(0), assertions=self._assertions)
 
-    def _op_is_identity_at(
-        self,
-        index: int,
-        spec: "OpSpec",
-        entering_dtype: str,
-        entering_ndim: "int | None",
-    ) -> bool:
+    def _op_is_identity_at(self, index: int, spec: "OpSpec") -> bool:
         """Whether ``spec`` at ``index`` is a removable no-op.
 
         Reads the op's ``IdentityRule`` and evaluates it against the state
-        entering the op (``entering_dtype``/``entering_ndim``, folded once by
-        :meth:`_eliminate_identities_inplace`). Any unknown — an ``auto`` dtype,
-        an unknown dimension, or an expression where a literal value is required —
-        resolves to *not* an identity: the pass removes an op only when it can
-        prove it does nothing.
+        entering the op and the one it leaves (:meth:`_state_at`). Any unknown —
+        an ``auto`` dtype, an unknown dimension, or an expression where a
+        literal value is required — resolves to *not* an identity: the pass
+        removes an op only when it can prove it does nothing.
         """
-        from polars_cv._lib import op_identity_rule, op_infer_shape, op_schema
+        from polars_cv._lib import op_identity_rule, op_infer_shape
 
         op_json = json.dumps(spec.to_dict(planning_slots))
         rule = op_identity_rule(op_json)
@@ -2583,15 +2452,13 @@ class Pipeline(_OpsMixin):
             # nothing more to check.
             return True
 
+        entering = self._state_at(index)
         if rule == "when_dtype_preserved":
-            if entering_dtype == "auto":
+            if entering.dtype == "auto":
                 return False
-            _, out_dtype, _ = op_schema(
-                op_json, Domain.BUFFER.value, entering_dtype, entering_ndim
-            )
-            return out_dtype == entering_dtype
+            return self._state_at(index + 1).dtype == entering.dtype
         if rule == "when_shape_preserved":
-            entering_dims = self._entering_dims_at(index, entering_ndim)
+            entering_dims = self._entering_dims(entering)
             if entering_dims is None:
                 return False
             out_dims = op_infer_shape(op_json, entering_dims)
@@ -2600,60 +2467,28 @@ class Pipeline(_OpsMixin):
             return _output_shape_equals_input(out_dims, entering_dims)
         return False
 
-    def _entering_dims_at(
-        self, index: int, ndim: "int | None"
-    ) -> "list[int | None] | None":
-        """The dimensions entering op ``index``, or ``None`` when rank is unknown.
+    def _entering_dims(self, entering: PlanState) -> "list[int | None] | None":
+        """The dimensions of ``entering``, or ``None`` when rank is unknown.
 
-        Length ``ndim``; H/W come from ``_hint_snapshots[index]`` (the entering
-        shape ``_push_op`` recorded for every op), and every other axis is
+        Length ``ndim``; H/W come from its hints, and every other axis is
         reported ``None`` (unknown). That is enough for the WhenShapePreserved
         ops, whose H/W is the only axis they resize.
 
         ``None`` too when a shape declaration reached this pipeline
-        (``_shape_declared``): the snapshots may then carry a *claimed* H/W —
-        via a CSE suffix that kept the hints but not the assertion, or a lazy
+        (``_shape_declared``): the hints may then carry a *claimed* H/W — via a
+        CSE suffix that kept the hints but not the assertion, or a lazy
         continuation seeded from an asserting upstream — and deleting an op on
         the strength of a claim changes the output whenever the claim is wrong.
         """
+        ndim = entering.ndim
         if ndim is None or self._shape_declared:
             return None
         dims: "list[int | None]" = [None] * ndim
-        snap = self._hint_snapshots.get(index)
-        if snap is not None:
-            h, w = snap
-            if ndim >= 1 and h is not None and not h.is_expr:
-                dims[0] = int(h.value)
-            if ndim >= 2 and w is not None and not w.is_expr:
-                dims[1] = int(w.value)
+        for axis, dim in enumerate(HINT_DIMS[:2][:ndim]):
+            hint = entering.hints.get(dim)
+            if hint is not None and not hint.is_expr:
+                dims[axis] = int(hint.value)
         return dims
-
-    def _commit_eliminated_ops(self, survivors: "list[int]") -> None:
-        """Replace ``_ops`` with the surviving subset, re-keying side tables.
-
-        The deletion sibling of :meth:`_commit_reordered_ops` (reorder) and
-        :meth:`_set_ops_slice` (CSE split). ``survivors`` is the sorted list of
-        surviving original op indices.
-
-        ``_hint_snapshots`` (entering H/W per op): every removed op is a no-op,
-        so a survivor's entering H/W is unchanged — its snapshot carries over
-        verbatim under the new index. ``_assertions`` need no re-keying: a node
-        carrying assertions is not eliminated from at all
-        (:meth:`_eliminate_identities_inplace`), so it is passed to
-        :meth:`_rewrite_ops` unchanged.
-        """
-        old_to_new = {old: new for new, old in enumerate(survivors)}
-        new_ops = [self._ops[o] for o in survivors]
-        new_hint_snapshots = {
-            old_to_new[o]: v for o, v in self._hint_snapshots.items() if o in old_to_new
-        }
-        self._rewrite_ops(
-            new_ops,
-            position_keyed={
-                "_hint_snapshots": new_hint_snapshots,
-                "_assertions": self._assertions,
-            },
-        )
 
     def _to_spec_dict(self, slot_of: "SlotOf") -> dict:
         """

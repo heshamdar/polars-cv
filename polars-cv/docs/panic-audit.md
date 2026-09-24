@@ -39,7 +39,7 @@ not a scatter of local edits — so it is left for triage as agreed.
 correct, but the graph executor (`polars-cv/src/graph/compiled.rs` →
 `view-buffer` apply fns) applies ops **without calling it**. Confirmed: the only
 non-test `.validate(` call sites in the whole workspace are unit tests. So the
-shape/dtype contracts are enforced at *plan* time (Python planner, `op_schema`)
+shape/dtype contracts are enforced at *plan* time (Python planner, `plan_step`)
 but not defensively re-checked at *execution* time, and per-row expression
 params (e.g. `reshape([pl.col(...), ...])`) can produce a runtime shape the
 planner never saw.

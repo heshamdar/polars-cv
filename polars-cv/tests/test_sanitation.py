@@ -513,7 +513,6 @@ _REQUIRED_LIB_HOOKS = (
     # whether an op is a removable no-op. Separate from `op_contract` because its
     # `Always` verdict depends on literal parameter values.
     "op_identity_rule",
-    "op_schema",
     "op_infer_shape",
     # One appended op's whole plan-time effect (domain check, schema, H/W,
     # channels, rank clipping), the builder's one call per append.
@@ -707,8 +706,8 @@ def test_planner_domain_is_sourced_from_rust(op_name):
     contract (ViewDto::output_domain) rather than a Python domain table (A10).
 
     The former Pipeline._OPERATION_OUTPUT_DOMAIN dict is gone; this guards
-    against a special-case in _compute_output_domain_dtype_ndim diverging from
-    the Rust authority for buffer-producing ops.
+    against the tracked domain (``plan_step``) diverging from the contract.
+    ``any`` means "the input's", so it is checked against the entering domain.
     """
     import json
 
@@ -720,9 +719,9 @@ def test_planner_domain_is_sourced_from_rust(op_name):
     rust_domain = contract_fn(json.dumps(pipe._ops[-1].to_dict(planning_slots)))[
         "output_domain"
     ]
-    planned_domain, _, _ = Pipeline._compute_output_domain_dtype_ndim(
-        pipe._ops, initial_domain="buffer", initial_dtype="u8"
-    )
+    if rust_domain == "any":
+        rust_domain = pipe._state_at(len(pipe._ops) - 1).domain
+    planned_domain = pipe._current_domain
     assert planned_domain == rust_domain, (
         f"{op_name}: planner domain {planned_domain!r} != Rust authority "
         f"{rust_domain!r}"
@@ -1083,7 +1082,7 @@ def test_explicit_lazy_methods_take_a_lazy_operand():
 
 
 # ---------------------------------------------------------------------------
-# op_schema: the single per-op schema authority (domain, dtype, ndim)
+# plan_step: the single per-op schema authority (domain, dtype, ndim)
 # ---------------------------------------------------------------------------
 
 
@@ -1158,17 +1157,19 @@ def _op_json(op: str, **params: object) -> str:
     ],
 )
 def test_op_schema_authority(op_json, state_in, expected) -> None:
-    """``op_schema`` resolves the param-dependent schema cases in Rust —
+    """``plan_step`` resolves the param-dependent schema cases in Rust —
     including everything the Python planner used to special-case."""
     import polars_cv._lib as lib
 
-    assert tuple(lib.op_schema(op_json, *state_in)) == expected
+    step = lib.plan_step(op_json, *state_in, [None] * 3)
+    assert (step["domain"], step["dtype"], step["ndim"]) == expected
 
 
 @plugin_required
-def test_pipeline_state_matches_batch_fold() -> None:
-    """Incrementally tracked builder state (``plan_step``) equals the batch fold
-    over ``op_schema`` from the initial state: the two share ``plan::fold``."""
+def test_replay_reproduces_the_tracked_state() -> None:
+    """Replaying a pipeline's ops from its first entering state (what every
+    slice, reorder and deletion does) reproduces the state its builders
+    tracked, at every position — so a rewrite cannot shift the plan."""
     corpus = [
         Pipeline().source("blob", dtype="u8").grayscale().threshold(128),
         Pipeline().source("blob", dtype="u8").cast("f32").scale(2.0),
@@ -1202,11 +1203,15 @@ def test_pipeline_state_matches_batch_fold() -> None:
         .convex_hull(),
     ]
     for pipe in corpus:
-        folded = Pipeline._compute_output_domain_dtype_ndim(
-            pipe._ops, initial_domain="buffer", initial_dtype="u8", initial_ndim=None
+        replayed = pipe._clone()
+        replayed._replay(
+            range(len(pipe._ops)),
+            start=pipe._state_at(0),
+            assertions=pipe._assertions,
         )
-        tracked = (pipe._current_domain, pipe._output_dtype, pipe._expected_ndim)
-        assert tracked == folded, f"state drift for {[o.op for o in pipe._ops]}"
+        ops = [o.op for o in pipe._ops]
+        assert replayed._state() == pipe._state(), f"final state drift for {ops}"
+        assert replayed._entering == pipe._entering, f"entering drift for {ops}"
 
 
 @plugin_required

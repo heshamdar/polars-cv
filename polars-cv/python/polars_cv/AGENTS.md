@@ -111,16 +111,18 @@ Every operation's schema effect — output domain, dtype, rank (ndim), H/W and
 channel count — comes from the op's Rust contract, applied in Rust by one call
 per appended op: `_lib.plan_step(op_json, domain, dtype, ndim, dims,
 other_dtype=None)` (`src/plan.rs`). `Pipeline._push_op` makes it through
-`_plan_step` and adopts the result with `_apply_step`; the batch folds
-(`_compute_output_domain_dtype_ndim`, identity elimination) read
-`_lib.op_schema`, which shares `plan::fold`. Python **reads** these rules; it
+`_plan_step` and adopts the result with `_apply_step`, recording the state
+entering each op (`_entering`, a `PlanState` per op). A slice, reorder or
+deletion of the ops goes through `_replay`, which appends the kept ops again
+from a recorded state, so no per-position fact is ever re-keyed by hand.
+Python **reads** these rules; it
 does not re-declare them. There is no Python contract
 table to keep in sync.
 
 The contract fields read by the planner are:
 - `output_domain` — buffer / scalar / vector / contour (`any` = identity, leaves
   the domain unchanged)
-- `dtype_rule` — resolved to a concrete dtype by `op_schema`
+- `dtype_rule` — resolved to a concrete dtype by `plan_step`
 - `rank_rule` — `fixed:N`, `reduce_one`, `preserve`, or `unknown`
 - `channel_rule` — drives planning-time channel inference
 
@@ -271,8 +273,9 @@ the same mixin unless `.cv` genuinely honours it.
    per-row expressions on the clone rather than the receiver. `_append_op`
    then validates the input domain against `op_contract(...)["input_domains"]`
    and hands off to `_push_op`, which appends and applies **both** halves of
-   the plan-time effect: the `op_schema` fold (domain/dtype/ndim) and the
-   shape hints (`op_infer_shape` for H/W, the channel rule for C).
+   the plan-time effect in one `plan_step` call: the schema fold
+   (domain/dtype/ndim) and the shape hints (`infer_shape` for H/W, the channel
+   rule for C).
 
    **Do not touch `_ops` directly.** `_push_op` is the only function permitted
    to mutate it, enforced by `test_op_append_is_structurally_exclusive` in
@@ -297,8 +300,8 @@ the same mixin unless `.cv` genuinely honours it.
 
 3. **Schema inference**: nothing to add in `_types.py` or the planner. The
    op's domain, dtype, rank and channel effects are read at planning time from
-   its Rust contract via `_lib.op_schema` (and `_lib.op_contract` for
-   channels/rank detail), so make sure the op declares the right contract on
+   its Rust contract via `_lib.plan_step` (and `_lib.op_contract` for the
+   passes' spatial detail), so make sure the op declares the right contract on
    the Rust side (next step). Do not add per-op special cases in Python —
    `test_op_schema_authority` and the batch-fold conformance tests in
    `test_sanitation.py` guard this.

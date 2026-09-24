@@ -275,16 +275,13 @@ class LazyPipelineExpr:
             # opening guard — the H/W half of the replay never ran. It
             # cannot be fixed by hoisting that assignment, either: a
             # rank-changing op must infer against its own input rank, not the
-            # chain's final one. Batch re-folds (CSE prefixes) seed from the
-            # same pre-op state.
+            # chain's final one.
             upstream_dtype = self._pipeline._output_dtype
             upstream_ndim = self._pipeline._expected_ndim
             new_pipeline._shape_hints = _copy.deepcopy(self._pipeline._shape_hints)
             new_pipeline._current_domain = self._pipeline._current_domain
             new_pipeline._output_dtype = upstream_dtype
             new_pipeline._expected_ndim = upstream_ndim
-            new_pipeline._initial_output_dtype = upstream_dtype
-            new_pipeline._initial_expected_ndim = upstream_ndim
             new_pipeline._assertions = _copy.deepcopy(pipeline._assertions)
             # The seeded hints may carry the upstream's declared H/W while its
             # assertions stay behind, so the "a declaration reached here" fact
