@@ -17,7 +17,7 @@
 > | P4 — Typed sources and sinks | **done** — `src/formats/` (`formats!` registry, `io_catalog.json`, `io_check`); both applicability tables, `PARAM_HINTS`, `KNOWN_SOURCE_FORMATS`, `SourceSpec`/`SinkSpec` and the last untyped param readers deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `910afb2` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P5 — Geometry namespaces | **done** — `ContourKwargs`/`PointKwargs` are typed (`Param<T>`, `ColumnRef`, `#[derive(Op)]`); `input_slots`, `InputSlots`, `parse_named`/`require_named` deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `f3d7d94` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P6 — Delete the legacy protocol | **done** — `pipeline.rs` (`OpSpec`/`LegacyOpSpec`/dispatcher), `LEGACY_OPS`, `resolve_op`, the untyped `ParamValue`, `known_ops`, `OP_NAMES` (P6a); 20 Python enums generated from the registries via `enum_catalog.json` and their parity tests deleted (P6b); `enum_variants`/`enum_names` and the serde-name tests deleted, graph policies parse through `NAMED` (P6c). Python `OpSpec`/`ParamValue` deferred to P7, enum helpers kept (see deviations). Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `2ae7651` (slow lane, `cargo deny`, `mkdocs --strict` included) |
-> | P7 — Planner into Rust | **in progress** — P7a `a6f0aa1`: one `plan_step` FFI per append (`src/plan.rs`: domain check, schema fold, H/W, channels, rank clipping; binary dtype via `other_dtype`); `op_output_channels`, `binary_output_dtype` and eight Python helpers deleted. Next: P7b per-position `Plan` state (retires `op_schema`, `_hint_snapshots`, `_rewrite_ops`), P7c passes into Rust, P7d continuation/CSE |
+> | P7 — Planner into Rust | **in progress** — P7a `a6f0aa1`: one `plan_step` FFI per append (`src/plan.rs`: domain check, schema fold, H/W, channels, rank clipping; binary dtype via `other_dtype`); `op_output_channels`, `binary_output_dtype` and eight Python helpers deleted. P7b `98d7592`: per-op entering state (`PlanState` in `_entering`) and one rewrite primitive, `_replay`, for CSE, sub-pipelines, pushdown and identity elimination; `op_schema`, the batch folds, `_hint_snapshots`, `_rewrite_ops` and the three commit helpers deleted. Next: P7c passes into Rust, P7d continuation/CSE and the `Plan` pyclass |
 > | P8 — API reshaping | pending |
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
@@ -53,9 +53,14 @@ Read this section, then the phase text for P7 onwards below.
 - P7a is in (`a6f0aa1`): `Pipeline._push_op` → `_plan_step` (the
   `plan_step` FFI) → `_apply_step`. `op_schema` remains only for the batch
   folds, sharing `plan::fold`.
-- Next: **P7b — per-position plan state** (below). Its line-count target is in the
-  ledger; P7 also takes the Python `OpSpec`/`ParamValue` (the planner's own
-  op representation, which P6 could not delete without it).
+- P7b is in (`98d7592`): `_entering` holds each op's entering `PlanState`;
+  every rewrite of the op list is `_replay` (re-append from a recorded
+  state). The state still lives in Python; the Rust `Plan` pyclass takes it
+  over with the passes.
+- Next: **P7c — optimiser passes into Rust** (below). The P7 line-count
+  target is in the ledger; P7 also takes the Python `OpSpec`/`ParamValue`
+  (the planner's own op representation, which P6 could not delete without
+  it).
 
 ### Line counts per phase
 
