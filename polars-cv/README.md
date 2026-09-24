@@ -32,15 +32,13 @@ result = df.with_columns(
 )
 ```
 
-## Scaling to Large Datasets (Streaming)
+## Scaling to Large Datasets
 
-The `.cv.pipe(...)` expression is a normal elementwise Polars plugin, so the
-**parallelism comes from Polars' engine, not from inside the plugin**. On a
-plain `DataFrame.with_columns(...)`/`.select(...)` call (eager), the whole
-column is processed on a single thread. For larger-than-a-handful image
-workloads, run through the lazy **streaming** engine instead — Polars splits the
-column into morsels and processes them across its worker pool, and can spill
-intermediate state to disk when memory is tight:
+Each `.cv.pipe(...)` call spreads its rows over the plugin's thread pool (sized
+by `POLARS_MAX_THREADS`), so a plain eager `DataFrame.with_columns(...)` uses
+every core. For data larger than memory, run through the lazy **streaming**
+engine, which processes the column in morsels and can spill intermediate state
+to disk:
 
 ```python
 result = (
@@ -50,9 +48,8 @@ result = (
 )
 ```
 
-This is the recommended path for anything beyond small/interactive use; the
-plugin's per-morsel graph is cached, so per-morsel overhead is just a hash
-lookup. (The detection-metrics APIs already collect with
+The compiled graph is cached process-wide, so per-morsel overhead is just a
+hash lookup. (The detection-metrics APIs already collect with
 `engine="streaming"` internally.)
 
 ## Source Behavior (Auto DType)

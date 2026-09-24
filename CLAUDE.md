@@ -352,7 +352,6 @@ Rust: view-buffer (the engine)
 - `image_metadata.rs` — header-only metadata plugin functions (`.cv.width()`/`height()`/`channels()`/`image_dtype()`)
 - `output.rs` — zero-copy numpy/torch struct output encoding
 - `ext_types.rs` — `ExtType`, the polars-cv extension types (`polars_cv.ndarray`/`point`/`contour`/`bbox`); builds tagged outputs such as `sink("ndarray")`, published over FFI by `extension_types`
-- `engine_warning.rs` — one-time single-threaded-batch warning (points users to `engine="streaming"`)
 - `contour.rs`, `point.rs` — standalone plugin functions for geometry namespaces
 - `geom_params.rs` — `GeomParams`: per-row parameter resolution for those standalone functions, reading expression params off the extra inputs the Python `_ArgBinder` appends and names in `input_slots`
 

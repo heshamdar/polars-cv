@@ -964,27 +964,46 @@ def test_no_module_carries_its_own_plugin_path() -> None:
 
 
 # ---------------------------------------------------------------------------
-# POLARS_CV_ENGINE_WARN_ROWS: a row threshold for a cost that is not row-shaped
+# The single-thread engine warning: its premise is gone
 # ---------------------------------------------------------------------------
 
 
-def test_the_engine_warning_reads_no_row_threshold() -> None:
-    """The single-thread warning must not go back to counting rows (CR-32).
+@plugin_required
+def test_the_single_thread_engine_warning_is_gone() -> None:
+    """A long in-memory call prints nothing about threads (CR-32).
 
-    ``POLARS_CV_ENGINE_WARN_ROWS`` fired at 50 000 rows in one call, but an
-    image row costs milliseconds, so a single-threaded run could take tens of
-    seconds without firing. The warning is now based on how long one call ran
-    with no other call alongside it (``POLARS_CV_ENGINE_WARN_SECONDS``). The
-    old name survives only in the notice telling a user who still sets it that
-    it is no longer read.
+    The warning told eager users their call "ran on one thread" and sent them
+    to the streaming engine. A call now runs its rows on the plugin's thread
+    pool, so the advice is false and the warning, with its
+    ``POLARS_CV_ENGINE_WARN_SECONDS`` / ``POLARS_CV_SILENCE_ENGINE_WARNING``
+    knobs, was deleted. Run with the threshold that used to fire on any call.
     """
-    source = next(p for p in rust_sources() if p.name == "engine_warning.rs")
-    text = source.read_text()
-    assert "POLARS_CV_ENGINE_WARN_SECONDS" in text, (
-        "probe is broken: engine_warning.rs no longer reads the seconds "
-        "threshold, so the absence check below proves nothing"
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import polars as pl
+        from polars_cv import Pipeline
+        from tests.conftest import make_test_png
+
+        df = pl.DataFrame({"img": [make_test_png(32, 32)] * 16})
+        pipe = Pipeline().source("image_bytes", dtype="u8").blur(sigma=1.0)
+        df.lazy().select(o=pl.col("img").cv.pipe(pipe).sink("numpy")).collect(
+            engine="in-memory"
+        )
+        """
     )
-    assert 'var("POLARS_CV_ENGINE_WARN_ROWS")' not in text, (
-        "the row threshold is being read again"
+    env = {**os.environ, "POLARS_CV_ENGINE_WARN_SECONDS": "0.000001"}
+    env.pop("POLARS_CV_SILENCE_ENGINE_WARNING", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
     )
-    assert "DEFAULT_WARN_ROWS" not in text, "the row threshold constant is back"
+    assert "polars-cv:" not in proc.stderr, proc.stderr

@@ -24,7 +24,11 @@
 use polars::prelude::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+
+use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
 use view_buffer::geometry::label::score_contours_on_buffer;
 use view_buffer::ops::{Domain, NodeOutput};
 use view_buffer::{Op, PlannedDType, ViewBuffer, ViewDto, ViewExpr};
@@ -119,13 +123,24 @@ pub struct CompiledGraph {
     /// The exact kwargs this graph was compiled from, kept for exact-match
     /// cache validation.
     key: GraphKwargsKey,
+    /// Which threads executed rows of this graph (test instrumentation).
+    #[cfg(test)]
+    row_threads: Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+    /// Signalled when a thread first executes a row (test instrumentation).
+    #[cfg(test)]
+    row_threads_seen: std::sync::Condvar,
+    /// When set, a row waits (bounded) until a second thread has run a row,
+    /// so a test of parallelism does not depend on scheduling luck.
+    #[cfg(test)]
+    rendezvous: std::sync::atomic::AtomicBool,
+    /// How many times a buffer-op segment was planned (test instrumentation).
+    #[cfg(test)]
+    plan_builds: AtomicUsize,
 }
 
 /// Per-call execution state: everything derived from the actual input series.
 struct ExecState<'a> {
     inputs: &'a [Series],
-    /// Typed parameter accessors, built once per call.
-    ctx: ParamCtx<'a>,
     /// Output specs with `"auto"` dtype/ndim resolved from the input column
     /// type, sorted by alias.
     resolved_outputs: Vec<(String, OutputSpec)>,
@@ -277,6 +292,14 @@ impl CompiledGraph {
                 graph_json: graph_json.to_string(),
                 expr_column_names: expr_column_names.to_vec(),
             },
+            #[cfg(test)]
+            row_threads: Mutex::default(),
+            #[cfg(test)]
+            row_threads_seen: std::sync::Condvar::new(),
+            #[cfg(test)]
+            rendezvous: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            plan_builds: AtomicUsize::new(0),
         })
     }
 
@@ -322,30 +345,63 @@ impl CompiledGraph {
             .collect();
         let state = ExecState {
             inputs,
-            ctx: ParamCtx::with_null_policy(inputs, self.graph.on_null_param),
             resolved_outputs,
             prefetched: self.prefetch_remote_sources(inputs),
             resolved_auto_formats: self.resolve_auto_source_formats(inputs),
             output_nodes,
         };
 
-        // One row vector per resolved output, aligned with `resolved_outputs`.
+        // Rows are independent, so the call is split into contiguous row
+        // ranges that run on the plugin's thread pool and are concatenated in
+        // order. Without this a call used one core however many rows it held,
+        // so the in-memory engine was single-threaded on a single-chunk frame
+        // (CR-32). The pool is the plugin's own copy of polars' `THREAD_POOL`
+        // (a plugin links its own polars-core, so it cannot join the host's);
+        // it is sized by `POLARS_MAX_THREADS`, and callers block while their
+        // rows run, so concurrent calls (streaming morsels) share its threads
+        // rather than multiplying them.
+        let ranges = row_ranges(len, THREAD_POOL.current_num_threads());
+        let plan_cache = PlanCache::new(&self.plan);
+        let first_failure = AtomicUsize::new(usize::MAX);
+        let run_range = |range_idx: usize, rows: Range<usize>| -> RangeOutcome {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.execute_rows(&state, rows, range_idx, &plan_cache, &first_failure)
+            }))
+            .map_err(|payload| {
+                polars_err!(ComputeError : "Pipeline batch failed: {}",
+                    panic_message(payload.as_ref()))
+            })?
+            .map_err(|msg| polars_err!(ComputeError : "Pipeline execution failed: {}", msg))
+        };
+        let mut outcomes: Vec<Option<RangeOutcome>> = ranges.iter().map(|_| None).collect();
+        if let [only] = ranges.as_slice() {
+            outcomes[0] = Some(run_range(0, only.clone()));
+        } else {
+            let run_range = &run_range;
+            THREAD_POOL.scope(|scope| {
+                for ((range_idx, rows), slot) in
+                    ranges.iter().cloned().enumerate().zip(outcomes.iter_mut())
+                {
+                    scope.spawn(move |_| *slot = Some(run_range(range_idx, rows)));
+                }
+            });
+        }
+
+        // Concatenate in row order. Under `on_error="raise"` the first failing
+        // range holds the earliest failing row, so its error is the one a
+        // sequential run would have reported.
         let mut results: Vec<Vec<RowResult>> = (0..state.resolved_outputs.len())
             .map(|_| Vec::with_capacity(len))
             .collect();
-        let batch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.execute_rows(&state, len, &mut results)
-        }));
-        let error_messages = match batch_result {
-            Ok(Ok(messages)) => messages,
-            Ok(Err(msg)) => {
-                return Err(polars_err!(ComputeError : "Pipeline execution failed: {}", msg));
+        let mut error_messages: Vec<Option<String>> = Vec::new();
+        for outcome in outcomes {
+            let (range_results, range_messages) =
+                outcome.expect("every range ran to completion inside the scope")?;
+            for (all, part) in results.iter_mut().zip(range_results) {
+                all.extend(part);
             }
-            Err(panic_payload) => {
-                return Err(polars_err!(ComputeError : "Pipeline batch failed: {}",
-                    panic_message(panic_payload.as_ref())));
-            }
-        };
+            error_messages.extend(range_messages);
+        }
 
         let with_message = self.graph.on_error == RowErrorPolicy::NullWithMessage;
         if self.graph.is_single_output() && !with_message {
@@ -371,37 +427,47 @@ impl CompiledGraph {
         }
     }
 
-    /// The per-row loop: decode sources, run ops, encode outputs.
+    /// The per-row loop over one row range: decode sources, run ops, encode
+    /// outputs.
     ///
     /// Applies the graph's [`RowErrorPolicy`] to per-row errors and returns
-    /// one error-message slot per row when the policy is `NullWithMessage`
-    /// (an empty Vec otherwise). Errors are `String` so the surrounding
+    /// this range's rows (one vector per resolved output) plus one
+    /// error-message slot per row when the policy is `NullWithMessage` (an
+    /// empty Vec otherwise). Errors are `String` so the surrounding
     /// `catch_unwind`/`PolarsError` wrapping stays in one place.
+    ///
+    /// Under `Raise` a failing range records its index in `first_failure`,
+    /// and a range after it stops early: its rows would be discarded, since
+    /// the earlier error is the one reported.
     fn execute_rows(
         &self,
         state: &ExecState<'_>,
-        len: usize,
-        results: &mut [Vec<RowResult>],
-    ) -> Result<Vec<Option<String>>, String> {
+        rows: Range<usize>,
+        range_idx: usize,
+        plan_cache: &PlanCache,
+        first_failure: &AtomicUsize,
+    ) -> Result<RangeRows, String> {
         let policy = self.graph.on_error;
         let with_message = policy == RowErrorPolicy::NullWithMessage;
+        let mut results: Vec<Vec<RowResult>> = (0..state.resolved_outputs.len())
+            .map(|_| Vec::with_capacity(rows.len()))
+            .collect();
         let mut error_messages: Vec<Option<String>> = if with_message {
-            Vec::with_capacity(len)
+            Vec::with_capacity(rows.len())
         } else {
             Vec::new()
         };
+        // Per range, not per call: `ParamCtx` carries this thread's
+        // null-parameter flag in a `Cell`.
+        let ctx = ParamCtx::with_null_policy(state.inputs, self.graph.on_null_param);
         // Allocated once and reused across rows/nodes to avoid per-row churn.
         let mut node_outputs: Vec<Option<NodeOutput>> = vec![None; self.plan.len()];
         let mut dto_scratch: Vec<ResolvedStep<'_>> = Vec::new();
-        // Planned steps of each static buffer-op segment, per node and
-        // segment start, reused while the source layout repeats (CR-37).
-        // Per call, so it needs no synchronisation across morsels.
-        let mut plan_cache: Vec<Vec<Option<CachedPlan>>> = self
-            .plan
-            .iter()
-            .map(|np| (0..np.resolvers.len()).map(|_| None).collect())
-            .collect();
-        for row_idx in 0..len {
+        let start = rows.start;
+        for row_idx in rows {
+            if first_failure.load(Ordering::Relaxed) < range_idx {
+                break;
+            }
             node_outputs.iter_mut().for_each(|output| *output = None);
             // Panics are caught per row, so they reach the row policy like any
             // other row error. view-buffer reports some data-dependent failures
@@ -410,16 +476,17 @@ impl CompiledGraph {
             // `on_error="null"`, and under streaming how much of the query it
             // took down depended on the morsel size (CR-34). The per-row state
             // is rebuilt from scratch every row (`node_outputs` is reset, and the
-            // null policies truncate `results` back to `row_idx`), so nothing a
+            // null policies truncate `results` back to this row), so nothing a
             // panicking row half-wrote survives it.
             let row_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.execute_one_row(
                     state,
+                    &ctx,
                     row_idx,
                     &mut node_outputs,
                     &mut dto_scratch,
-                    &mut plan_cache,
-                    results,
+                    plan_cache,
+                    &mut results,
                 )
             }))
             .unwrap_or_else(|payload| {
@@ -438,15 +505,18 @@ impl CompiledGraph {
                     }
                 }
                 Err(msg) => match policy {
-                    RowErrorPolicy::Raise => return Err(msg),
+                    RowErrorPolicy::Raise => {
+                        first_failure.fetch_min(range_idx, Ordering::Relaxed);
+                        return Err(msg);
+                    }
                     RowErrorPolicy::Null | RowErrorPolicy::NullWithMessage => {
                         // All-or-nothing per row: drop anything this row may
                         // have pushed before failing, then null every output.
-                        for ((_, spec), rows) in
+                        for ((_, spec), out) in
                             state.resolved_outputs.iter().zip(results.iter_mut())
                         {
-                            rows.truncate(row_idx);
-                            rows.push(null_row_result_for_spec(spec).map_err(|e| e.to_string())?);
+                            out.truncate(row_idx - start);
+                            out.push(null_row_result_for_spec(spec).map_err(|e| e.to_string())?);
                         }
                         if with_message {
                             error_messages.push(Some(msg));
@@ -455,20 +525,36 @@ impl CompiledGraph {
                 },
             }
         }
-        Ok(error_messages)
+        Ok((results, error_messages))
     }
 
     /// Execute every node and encode every output for one row.
+    #[allow(clippy::too_many_arguments)]
     fn execute_one_row<'g>(
         &'g self,
         state: &ExecState<'_>,
+        ctx: &ParamCtx<'_>,
         row_idx: usize,
         node_outputs: &mut [Option<NodeOutput>],
         dto_scratch: &mut Vec<ResolvedStep<'g>>,
-        plan_cache: &mut [Vec<Option<CachedPlan>>],
+        plan_cache: &PlanCache,
         results: &mut [Vec<RowResult>],
     ) -> Result<(), String> {
-        self.run_row_nodes(state, row_idx, node_outputs, dto_scratch, plan_cache)?;
+        #[cfg(test)]
+        {
+            let mut seen = self.row_threads.lock().unwrap();
+            seen.insert(std::thread::current().id());
+            self.row_threads_seen.notify_all();
+            // One wait per call: once a second thread has arrived (or the
+            // wait timed out, as it does for a sequential run) rows proceed.
+            if self.rendezvous.swap(false, Ordering::Relaxed) {
+                let _ = self
+                    .row_threads_seen
+                    .wait_timeout_while(seen, std::time::Duration::from_secs(5), |s| s.len() < 2)
+                    .unwrap();
+            }
+        }
+        self.run_row_nodes(state, ctx, row_idx, node_outputs, dto_scratch, plan_cache)?;
         for (((alias, spec), node), rows) in state
             .resolved_outputs
             .iter()
@@ -619,13 +705,13 @@ impl CompiledGraph {
     fn run_row_nodes<'g>(
         &'g self,
         state: &ExecState<'_>,
+        ctx: &ParamCtx<'_>,
         row_idx: usize,
         node_outputs: &mut [Option<NodeOutput>],
         dto_scratch: &mut Vec<ResolvedStep<'g>>,
-        plan_cache: &mut [Vec<Option<CachedPlan>>],
+        plan_cache: &PlanCache,
     ) -> Result<(), String> {
         let inputs = state.inputs;
-        let ctx = &state.ctx;
         {
             // Labelled so a null per-row parameter can skip straight to the
             // next node: leaving this node out of `node_outputs` is exactly
@@ -884,17 +970,22 @@ impl CompiledGraph {
                     // `OptConfig` is `Copy`, so the closure captures a value and
                     // does not borrow `self`.
                     let opt_cfg = self.graph.opt;
-                    let node_cache = &mut plan_cache[idx];
-                    let mut flush_buffer_ops = |output: NodeOutput,
-                                                pending: &mut PendingSegment<'_>|
+                    let node_cache = &plan_cache.slots[idx];
+                    let flush_buffer_ops = |output: NodeOutput,
+                                            pending: &mut PendingSegment<'_>|
                      -> Result<NodeOutput, String> {
                         let slot = match pending.start {
-                            Some(start) if pending.cacheable => Some(&mut node_cache[start]),
+                            Some(start) if pending.cacheable => Some(&node_cache[start]),
                             _ => None,
                         };
                         let result = run_segment(output, &pending.ops, slot, &opt_cfg);
                         pending.clear();
-                        result
+                        let (output, _planned) = result?;
+                        #[cfg(test)]
+                        if _planned {
+                            self.plan_builds.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Ok(output)
                     };
                     let mut pending_buffer_ops = PendingSegment::default();
                     for (step_idx, step) in dto_scratch.iter().enumerate() {
@@ -1351,67 +1442,120 @@ struct CachedPlan {
     steps: Vec<view_buffer::execution::PlanStep>,
 }
 
+/// Distinct source layouts remembered per segment. A column whose rows keep
+/// changing shape stops being cached once this many are held, so a call's
+/// cache stays small; such segments plan per row, as they did before CR-37.
+const PLAN_CACHE_LAYOUTS: usize = 16;
+
+/// The plans of every static buffer-op segment for one call, shared by the
+/// row ranges that call runs in parallel: a segment is planned once per
+/// distinct source layout per call (CR-37), whichever thread meets it first.
+/// Per call, so nothing data-derived outlives it.
+struct PlanCache {
+    /// Per node, per segment start: the layouts planned so far.
+    slots: Vec<Vec<RwLock<Vec<CachedPlan>>>>,
+}
+
+impl PlanCache {
+    fn new(plan: &[NodePlan]) -> Self {
+        PlanCache {
+            slots: plan
+                .iter()
+                .map(|np| np.resolvers.iter().map(|_| RwLock::default()).collect())
+                .collect(),
+        }
+    }
+}
+
 /// Plan (or replay the cached plan of) one op segment and execute it.
+/// Returns the output and whether the segment had to be planned.
 fn run_segment(
     output: NodeOutput,
     ops: &[&ViewDto],
-    cache: Option<&mut Option<CachedPlan>>,
+    cache: Option<&RwLock<Vec<CachedPlan>>>,
     cfg: &view_buffer::OptConfig,
-) -> Result<NodeOutput, String> {
+) -> Result<(NodeOutput, bool), String> {
     if ops.is_empty() {
-        return Ok(output);
+        return Ok((output, false));
     }
     let buf = output
         .as_buffer()
         .ok_or_else(|| format!("Expected Buffer for pending ops, got {:?}", output.domain()))?;
     let source = (**buf).clone();
-    let matches = |c: &CachedPlan| {
-        c.dtype == source.dtype()
-            && c.shape == source.shape()
-            && c.strides == source.strides_bytes()
+    let key = (
+        source.dtype(),
+        source.shape().to_vec(),
+        source.strides_bytes().to_vec(),
+    );
+    let matches = |c: &CachedPlan| c.dtype == key.0 && c.shape == key.1 && c.strides == key.2;
+    let execute = |source: ViewBuffer, steps| {
+        let plan = view_buffer::execution::ExecutionPlan { source, steps };
+        NodeOutput::from_buffer(plan.execute())
     };
-    let result = match cache {
-        Some(Some(cached)) if matches(cached) => view_buffer::execution::ExecutionPlan {
-            source,
-            steps: cached.steps.clone(),
+    let plan = |source: ViewBuffer| -> Result<Vec<view_buffer::execution::PlanStep>, String> {
+        let mut expr = ViewExpr::new_source(source);
+        for op in ops {
+            // The validated entry point: an op that cannot run on the
+            // shape reaching it is this row's error, not a kernel panic.
+            expr = expr
+                .try_apply_op((*op).clone())
+                .map_err(|e| format!("{}: {e}", op.as_op().name()))?;
         }
-        .execute(),
-        slot => {
-            let key = (
-                source.dtype(),
-                source.shape().to_vec(),
-                source.strides_bytes().to_vec(),
-            );
-            let mut expr = ViewExpr::new_source(source);
-            for op in ops {
-                // The validated entry point: an op that cannot run on the
-                // shape reaching it is this row's error, not a kernel panic.
-                expr = expr
-                    .try_apply_op((*op).clone())
-                    .map_err(|e| format!("{}: {e}", op.as_op().name()))?;
-            }
-            #[cfg(test)]
-            PLAN_BUILDS.with(|n| n.set(n.get() + 1));
-            let plan = expr.plan_with(cfg);
-            if let Some(slot) = slot {
-                *slot = Some(CachedPlan {
-                    dtype: key.0,
-                    shape: key.1,
-                    strides: key.2,
-                    steps: plan.steps.clone(),
-                });
-            }
-            plan.execute()
-        }
+        Ok(expr.plan_with(cfg).steps)
     };
-    Ok(NodeOutput::from_buffer(result))
+    let cached = |plans: &[CachedPlan]| plans.iter().find(|p| matches(p)).map(|p| p.steps.clone());
+
+    let Some(cache) = cache else {
+        let steps = plan(source.clone())?;
+        return Ok((execute(source, steps), true));
+    };
+    if let Some(steps) = cached(&cache.read().unwrap()) {
+        return Ok((execute(source, steps), false));
+    }
+    // Planned under the write lock: a range that misses on the same layout
+    // meanwhile waits here and then finds this plan, rather than planning
+    // its own. Only planning is serialised; execution happens after release.
+    let mut plans = cache.write().unwrap();
+    if let Some(steps) = cached(&plans) {
+        drop(plans);
+        return Ok((execute(source, steps), false));
+    }
+    let steps = plan(source.clone())?;
+    if plans.len() < PLAN_CACHE_LAYOUTS {
+        plans.push(CachedPlan {
+            dtype: key.0,
+            shape: key.1.clone(),
+            strides: key.2.clone(),
+            steps: steps.clone(),
+        });
+    }
+    drop(plans);
+    Ok((execute(source, steps), true))
 }
 
-#[cfg(test)]
-thread_local! {
-    /// How many times a buffer-op segment was planned (test instrumentation).
-    static PLAN_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+/// Contiguous row ranges covering `0..len`, for `threads` workers.
+///
+/// A few ranges per thread so an expensive stretch of rows does not leave
+/// the other threads idle; one range when there is nothing to split.
+fn row_ranges(len: usize, threads: usize) -> Vec<Range<usize>> {
+    const RANGES_PER_THREAD: usize = 4;
+    let count = (threads * RANGES_PER_THREAD).clamp(1, len.max(1));
+    let (base, extra) = (len / count, len % count);
+    let mut start = 0;
+    (0..count)
+        .map(|i| {
+            let end = start + base + usize::from(i < extra);
+            let range = start..end;
+            start = end;
+            range
+        })
+        .collect()
 }
+
+/// One row range's rows (one vector per resolved output) and error messages.
+type RangeRows = (Vec<Vec<RowResult>>, Vec<Option<String>>);
+/// A row range's result, with its failure already in `PolarsError` form.
+type RangeOutcome = PolarsResult<RangeRows>;
 
 /// The message a caught panic carried.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -2448,10 +2592,10 @@ mod tests {
         "column_bindings": {"n0": 0}
     }"#;
 
-    fn plans_during(f: impl FnOnce()) -> usize {
-        let before = PLAN_BUILDS.with(|n| n.get());
+    fn plans_during(compiled: &CompiledGraph, f: impl FnOnce()) -> usize {
+        let before = compiled.plan_builds.load(Ordering::Relaxed);
         f();
-        PLAN_BUILDS.with(|n| n.get()) - before
+        compiled.plan_builds.load(Ordering::Relaxed) - before
     }
 
     /// A static op segment is planned once per source dtype/shape/strides in a
@@ -2467,7 +2611,9 @@ mod tests {
         let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH, &[]).unwrap();
         let input = Series::new("r".into(), &rows);
         let mut out = None;
-        let plans = plans_during(|| out = Some(compiled.execute(&[input]).unwrap()));
+        let plans = plans_during(&compiled, || {
+            out = Some(compiled.execute(&[input]).unwrap())
+        });
         assert_eq!(
             plans, 2,
             "three [4] rows share one plan, the [6] row needs its own"
@@ -2487,6 +2633,37 @@ mod tests {
         }
     }
 
+    /// One call spreads its rows over the plugin's thread pool, so a
+    /// single-chunk frame on the in-memory engine is not single-threaded
+    /// (CR-32), and the rows still come back in order.
+    #[test]
+    fn a_call_runs_its_rows_on_several_threads() {
+        use pyo3_polars::export::polars_core::runtime::THREAD_POOL;
+        if THREAD_POOL.current_num_threads() < 2 {
+            eprintln!("skipped: the pool has a single thread");
+            return;
+        }
+        let rows: Vec<Vec<u8>> = (0..256u32).map(|i| vec![i as u8; 64]).collect();
+        let compiled = CompiledGraph::compile(RAW_CHAIN_GRAPH, &[]).unwrap();
+        // The first row waits (up to 5 s) for a second thread to run a row:
+        // a parallel call gets one at once, a sequential call times out.
+        compiled.rendezvous.store(true, Ordering::Relaxed);
+        let out = compiled.execute(&[Series::new("r".into(), &rows)]).unwrap();
+        let threads = compiled.row_threads.lock().unwrap().len();
+        assert!(threads > 1, "256 rows ran on {threads} thread(s)");
+        for (i, row) in rows.iter().enumerate() {
+            // Each row must equal the same row executed alone.
+            let alone = compiled
+                .execute(&[Series::new("r".into(), std::slice::from_ref(row))])
+                .unwrap();
+            assert_eq!(
+                out.binary().unwrap().get(i),
+                alone.binary().unwrap().get(0),
+                "row {i}"
+            );
+        }
+    }
+
     /// A segment with a per-row parameter is planned every row.
     #[test]
     fn dynamic_segments_are_not_cached() {
@@ -2495,7 +2672,9 @@ mod tests {
         let blobs = Series::new("b".into(), &[buf.to_blob(), buf.to_blob(), buf.to_blob()]);
         let factors = Series::new("f".into(), &[1.0f64, 2.0, 3.0]);
         let mut out = None;
-        let plans = plans_during(|| out = Some(compiled.execute(&[blobs, factors]).unwrap()));
+        let plans = plans_during(&compiled, || {
+            out = Some(compiled.execute(&[blobs, factors]).unwrap())
+        });
         assert_eq!(plans, 3);
         let out = out.unwrap();
         let third = ViewBuffer::from_blob(out.binary().unwrap().get(2).unwrap()).unwrap();

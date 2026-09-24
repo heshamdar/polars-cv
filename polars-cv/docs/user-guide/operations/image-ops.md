@@ -45,6 +45,11 @@ Extract a rectangular region.
 Pipeline().source("image_bytes").crop(top=10, left=10, height=100, width=100)
 ```
 
+Omit `height` or `width` to crop to the end of that axis. The window must lie
+inside the image: a negative bound, or a window that runs past the edge, is an
+error (a per-row error when it comes from a column, so `on_error` applies)
+rather than being clamped to a smaller region.
+
 ## Rotate
 
 Rotate by an angle in degrees. Part of the [affine transform family](#affine-transforms).
