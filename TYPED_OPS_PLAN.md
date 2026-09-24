@@ -17,7 +17,7 @@
 > | P4 — Typed sources and sinks | **done** — `src/formats/` (`formats!` registry, `io_catalog.json`, `io_check`); both applicability tables, `PARAM_HINTS`, `KNOWN_SOURCE_FORMATS`, `SourceSpec`/`SinkSpec` and the last untyped param readers deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `910afb2` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P5 — Geometry namespaces | **done** — `ContourKwargs`/`PointKwargs` are typed (`Param<T>`, `ColumnRef`, `#[derive(Op)]`); `input_slots`, `InputSlots`, `parse_named`/`require_named` deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `f3d7d94` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P6 — Delete the legacy protocol | **done** — `pipeline.rs` (`OpSpec`/`LegacyOpSpec`/dispatcher), `LEGACY_OPS`, `resolve_op`, the untyped `ParamValue`, `known_ops`, `OP_NAMES` (P6a); 20 Python enums generated from the registries via `enum_catalog.json` and their parity tests deleted (P6b); `enum_variants`/`enum_names` and the serde-name tests deleted, graph policies parse through `NAMED` (P6c). Python `OpSpec`/`ParamValue` deferred to P7, enum helpers kept (see deviations). Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `2ae7651` (slow lane, `cargo deny`, `mkdocs --strict` included) |
-> | P7 — Planner into Rust | **in progress** — P7a `a6f0aa1`: one `plan_step` FFI per append (`src/plan.rs`: domain check, schema fold, H/W, channels, rank clipping; binary dtype via `other_dtype`); `op_output_channels`, `binary_output_dtype` and eight Python helpers deleted. P7b `98d7592`: per-op entering state (`PlanState` in `_entering`) and one rewrite primitive, `_replay`, for CSE, sub-pipelines, pushdown and identity elimination; `op_schema`, the batch folds, `_hint_snapshots`, `_rewrite_ops` and the three commit helpers deleted. P7c `66ff9bb`, `0df1790`, `9e3b6af`: identity elimination and the spatial pushdown run in Rust (`src/passes.rs`, `node_pass`, dispatched on a generated `LogicalPass`); `op_contract`, `op_identity_rule`, `op_infer_shape` and their string vocabularies deleted (tests ported to Rust); the pass list is a Rust catalogue (`pass_catalog.json` → generated `OptFlags` fields), `OptConfig` refuses unknown keys, `bit_exact` deleted. Next: P7d — the remaining Python planner state (`OpSpec`/`ParamValue`, assertions, `output_encoding`) and `explain`/`_graph_viz` on the recorded states |
+> | P7 — Planner into Rust | **in progress** — P7a `a6f0aa1`: one `plan_step` FFI per append (`src/plan.rs`: domain check, schema fold, H/W, channels, rank clipping; binary dtype via `other_dtype`); `op_output_channels`, `binary_output_dtype` and eight Python helpers deleted. P7b `98d7592`: per-op entering state (`PlanState` in `_entering`) and one rewrite primitive, `_replay`, for CSE, sub-pipelines, pushdown and identity elimination; `op_schema`, the batch folds, `_hint_snapshots`, `_rewrite_ops` and the three commit helpers deleted. P7c `66ff9bb`, `0df1790`, `9e3b6af`: identity elimination and the spatial pushdown run in Rust (`src/passes.rs`, `node_pass`, dispatched on a generated `LogicalPass`); `op_contract`, `op_identity_rule`, `op_infer_shape` and their string vocabularies deleted (tests ported to Rust); the pass list is a Rust catalogue (`pass_catalog.json` → generated `OptFlags` fields), `OptConfig` refuses unknown keys, `bit_exact` deleted. P7d (in progress) `2ae8eaf`: `plan_source` plans a source's state from its typed format (the per-format ladder and the contour seed deleted; `io_check` → `sink_check`); `8f7f8fa`: Rust reads histogram buckets off the ops (`expected_encoding` wire field deleted). Next: Rust computes each output's planned schema (the remaining `expected_*` wire fields), then `OpSpec`/`ParamValue` |
 > | P8 — API reshaping | pending |
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
@@ -60,7 +60,13 @@ Read this section, then the phase text for P7 onwards below.
 - P7c is in (`66ff9bb`, `0df1790`, `9e3b6af`): `node_pass` runs the
   node-scope passes in Rust; the pass list, `OptConfig` and the generated
   `OptFlags` fields come from one Rust catalogue.
-- Next: **P7d — the rest of the Python planner** (below). The P7 line-count
+- P7d so far: `plan_source` (`2ae8eaf`), histogram buckets read off the ops
+  in Rust (`8f7f8fa`). `Pipeline.output_encoding()` is now unused internally
+  and is deleted with the P8 signature changes.
+- Next: **Rust computes each output's planned schema** from the node's source
+  and ops (`plan::source_state` + `plan::step`, assertions on the wire), so the
+  `expected_domain/dtype/shape/ndim` and `shape_asserted` output fields and
+  their Python publishers go; then the Python `OpSpec`/`ParamValue`. The P7 line-count
   target is in the ledger; P7 also takes the Python `OpSpec`/`ParamValue`
   (the planner's own op representation, which P6 could not delete without
   it).
@@ -78,6 +84,7 @@ stands (lines, by area; `py-gen` is `_ops_generated.py`, generated):
 | P5 `f3d7d94` | 18,085 | 209 | 20,964 | 14,093 | 1,607 | 55,443 |
 | P6 `2ae7651` | 17,728 | 209 | 20,956 | 13,752 | 1,862 | 55,266 |
 | P7c `9e3b6af` | 18,333 | 209 | 20,969 | 12,985 | 1,930 | 54,890 |
+| P7d (part) `8f7f8fa` | 18,465 | 209 | 20,969 | 12,905 | 1,930 | 54,909 |
 
 So far the phases have *moved* definitions into typed Rust (each carrying the
 docs, defaults and validation Python used to hold) more than they have
