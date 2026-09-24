@@ -1363,7 +1363,7 @@ def _op_json(op: str, **params: object) -> str:
             ("contour", "f64", None),
         ),
         (
-            _op_json("rasterize", width=8, height=8),
+            _op_json("rasterize", size=[8, 8], fill_value=255, background=0),
             ("contour", "u8", None),
             ("buffer", "u8", 3),
         ),

@@ -82,6 +82,10 @@ def annotation(ty: dict[str, Any]) -> str:
         return f"Sequence[{annotation(ty['inner'])}]"
     if kind == "one_of":
         return " | ".join(annotation(option) for option in ty["options"])
+    if kind == "column":
+        return "pl.Expr"
+    if kind == "node":
+        return "LazyPipelineExpr"
     msg = f"unknown catalogue type kind {kind!r}"
     raise ValueError(msg)
 
@@ -175,6 +179,8 @@ def _imports(methods: str) -> str:
         lines.append("    import polars as pl\n")
     if aliases:
         lines.append(f"    from polars_cv._types import {', '.join(aliases)}")
+    if "LazyPipelineExpr" in methods:
+        lines.append("    from polars_cv.lazy import LazyPipelineExpr")
     lines.append("    from polars_cv.pipeline import Pipeline")
     return "\n".join(lines)
 

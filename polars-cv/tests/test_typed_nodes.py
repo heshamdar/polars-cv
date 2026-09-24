@@ -637,9 +637,7 @@ class TestRasterizeShapeReference:
         # Doctor the rasterize op into a dangling shape reference.
         for op in spec["nodes"]["n0"]["ops"]:
             if op["op"] == "rasterize":
-                op.pop("width", None)
-                op.pop("height", None)
-                op["shape_ref"] = {"type": "literal", "value": "ghost"}
+                op["size"] = "ghost"
         expr = _plugin.call(
             "vb_graph",
             args=[pl.col("image")],

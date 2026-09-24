@@ -78,8 +78,8 @@ impl SourceSpec {
     /// Resolve a contour source's `(fill_value, background)` at `row_idx`.
     ///
     /// Both default when absent (255 / 0) and both may be per-row expressions,
-    /// mirroring `resolve_rasterize_style` for the `rasterize` op so the two
-    /// spellings of the same operation cannot diverge.
+    /// as the `rasterize` op's `Param<u8>` fields are (`ops::geometry`), so the
+    /// two spellings of the same operation cannot diverge.
     pub fn resolve_fill(
         &self,
         row_idx: usize,
@@ -103,9 +103,8 @@ impl SourceSpec {
 /// rejects the keyword at build time (`SINK_PARAM_APPLIES`); this is what stops
 /// a hand-built graph from carrying a field nothing reads.
 ///
-/// `OpSpec` below closes its end differently: a typed op is a
-/// `deny_unknown_fields` struct, and a legacy op's unread parameters are
-/// rejected at resolution (`OpParams`).
+/// `OpSpec` below closes its end differently: every op is a typed
+/// `deny_unknown_fields` struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SinkSpec {

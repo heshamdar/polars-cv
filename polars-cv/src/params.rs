@@ -11,7 +11,6 @@
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
-use std::collections::HashMap;
 
 /// What a **null** in a per-row expression parameter column means.
 ///
@@ -159,43 +158,6 @@ impl ParamValue {
             return Err(polars_err!(ComputeError: "Value {} cannot be negative", value));
         }
         Ok(value as usize)
-    }
-
-    /// Resolve this parameter to a literal string.
-    ///
-    /// Deliberately literal-only: this is the accessor for **structural**
-    /// string parameters — `cast(dtype)`, `normalize(method/out_dtype)`,
-    /// `histogram(output)` — which feed dtype inference and so must be fixed
-    /// at planning time. Non-structural enums resolve through
-    /// [`resolve_str`](Self::resolve_str) instead.
-    pub fn resolve_string(&self) -> PolarsResult<&str> {
-        match self {
-            ParamValue::Literal { value } => value.as_str().ok_or_else(
-                || polars_err!(ComputeError: "Expected string literal, got {:?}", value),
-            ),
-            ParamValue::Slot { .. } => Err(polars_err!(ComputeError:
-                    "This string parameter is structural (it fixes the output \
-                     dtype at planning time) and cannot be an expression")),
-        }
-    }
-
-    /// Resolve this parameter to a string, per row when it is bound to a column.
-    ///
-    /// For enum parameters with no shape or dtype effect, where a per-row value
-    /// is meaningful. Returns `None` under a plan-time probe context, telling
-    /// the caller to use its default (see [`ParamCtx::probe`]).
-    pub fn resolve_str<'a>(
-        &'a self,
-        row_idx: usize,
-        ctx: &ParamCtx<'a>,
-    ) -> PolarsResult<Option<&'a str>> {
-        match self {
-            ParamValue::Literal { value } => value.as_str().map(Some).ok_or_else(
-                || polars_err!(ComputeError: "Expected string literal, got {:?}", value),
-            ),
-            _ if ctx.is_probe() => Ok(None),
-            _ => self.slot_col(ctx)?.get_str(row_idx, ctx).map(Some),
-        }
     }
 }
 
@@ -427,7 +389,8 @@ fn float_to_i64(v: f64) -> Option<i64> {
 #[derive(Default)]
 pub struct ParamCtx<'a> {
     cols: Vec<ParamCol<'a>>,
-    probe: bool,
+    /// The placeholder value of a plan-time probe; `None` for execution.
+    probe: Option<i64>,
     null_policy: NullParamPolicy,
     /// Set by [`ParamCol::on_null`] when a null was read under
     /// [`NullParamPolicy::Null`]. `Cell` because resolvers take `&ParamCtx`;
@@ -445,7 +408,7 @@ impl<'a> ParamCtx<'a> {
     pub fn with_null_policy(inputs: &'a [Series], policy: NullParamPolicy) -> Self {
         ParamCtx {
             cols: inputs.iter().map(ParamCol::new).collect(),
-            probe: false,
+            probe: None,
             null_policy: policy,
             null_hit: Cell::new(false),
         }
@@ -461,14 +424,17 @@ impl<'a> ParamCtx<'a> {
     ///
     /// That substitution is sound only because a parameter may become per-row
     /// exclusively when it has **no effect on output shape, rank, or dtype**
-    /// (see `get::req_enum`), so which variant probing picks cannot change the
+    /// (a `Literal<T>` field cannot hold a slot), so which variant probing picks cannot change the
     /// inferred schema. Signalling this explicitly — rather than inferring it
     /// from the placeholder's dtype — keeps real execution strict: a user who
     /// routes an integer column into an enum parameter still gets an error.
-    pub fn probe(inputs: &'a [Series]) -> Self {
+    ///
+    /// `value` is the placeholder every column in `inputs` holds; see
+    /// [`probe_value`](Self::probe_value).
+    pub fn probe(inputs: &'a [Series], value: i64) -> Self {
         ParamCtx {
             cols: inputs.iter().map(ParamCol::new).collect(),
-            probe: true,
+            probe: Some(value),
             // Probe placeholders are synthesised non-null integers, so the
             // policy is unreachable here; `Raise` keeps probing strict.
             null_policy: NullParamPolicy::Raise,
@@ -478,6 +444,13 @@ impl<'a> ParamCtx<'a> {
 
     /// Whether this is a plan-time shape probe rather than real execution.
     pub fn is_probe(&self) -> bool {
+        self.probe.is_some()
+    }
+
+    /// The probe's placeholder value, for a dimension that comes from outside
+    /// the op (`rasterize(shape=<node>)`): reading it makes that dimension
+    /// vary across probes, which is how the planner learns it is unknown.
+    pub fn probe_value(&self) -> Option<i64> {
         self.probe
     }
 
@@ -524,126 +497,23 @@ impl<'a> ParamCtx<'a> {
     }
 }
 
-/// One op's parameter map, plus the record of which names were looked up.
+/// Per-row parameter readers shared by the untyped source spec.
 ///
-/// A legacy op (`LegacyOpSpec`, the not-yet-typed half of `OpSpec`) is the
-/// exception to this crate's `deny_unknown_fields` rule — its params are a
-/// free map — so the wire format cannot refuse a parameter
-/// no operation understands. Nothing else refused one either: `scale` and
-/// `clamp` both accepted an `out_dtype` that entered the op's identity (and so
-/// the CSE and compiled-graph cache keys) and was then read by no `resolve_op`
-/// arm and no dtype rule.
+/// One failure policy: an *absent* optional parameter takes its documented
+/// default, while one that is *present but invalid* — wrong type, out of range,
+/// or a per-row expression that fails to resolve — is always an error, never
+/// swallowed into the default.
 ///
-/// This type closes that hole at the only door into the arms. Every read goes
-/// through [`OpParams::get`] or [`OpParams::contains_key`] and is recorded;
-/// [`resolve_op`](crate::execute::resolve_op) then rejects anything the arm did
-/// not touch. An arm cannot opt out, because it never receives the underlying
-/// map — which is the point: a guard listing the parameters each op must
-/// remember to read would go stale the day someone adds one it has not heard
-/// of.
-///
-/// Reads are recorded in a bitmask over the map's key order rather than a set
-/// of names, so tracking allocates nothing: `resolve_op` runs per row for ops
-/// with expression parameters, and ops carry a handful of parameters at most.
-pub struct OpParams<'a> {
-    map: &'a HashMap<String, ParamValue>,
-    read: Cell<u64>,
-}
-
-impl<'a> OpParams<'a> {
-    /// The widest parameter map the read-tracking bitmask can cover.
-    const CAPACITY: usize = 64;
-
-    /// Wrap an op's parameters for tracked access.
-    pub fn new(map: &'a HashMap<String, ParamValue>) -> Self {
-        Self {
-            map,
-            read: Cell::new(0),
-        }
-    }
-
-    /// Record `name` as read, if the map carries it.
-    fn mark(&self, name: &str) {
-        if let Some(idx) = self.map.keys().position(|k| k == name) {
-            if idx < Self::CAPACITY {
-                self.read.set(self.read.get() | (1u64 << idx));
-            }
-        }
-    }
-
-    /// Look up a parameter, recording the read.
-    pub fn get(&self, name: &str) -> Option<&'a ParamValue> {
-        self.mark(name);
-        self.map.get(name)
-    }
-
-    /// Test for a parameter's presence, recording the read.
-    pub fn contains_key(&self, name: &str) -> bool {
-        self.mark(name);
-        self.map.contains_key(name)
-    }
-
-    /// Record `name` as read without returning it.
-    ///
-    /// For parameters an arm legitimately does not consume because a layer
-    /// above it does: `rasterize`'s `shape_ref` names another graph node, and
-    /// is resolved by `CompiledGraph::compile` before the op is reached. The
-    /// acknowledgement is explicit and lives on the arm, so the parameter is
-    /// *declared* as belonging to the op rather than special-cased inside the
-    /// checker, where it would read as a hole in the rule.
-    pub fn acknowledge(&self, name: &str) {
-        self.mark(name);
-    }
-
-    /// Parameter names present on the wire that nothing read.
-    ///
-    /// Empty is the only acceptable result; see [`OpParams`].
-    pub fn unread(&self) -> PolarsResult<Vec<&'a str>> {
-        if self.map.len() > Self::CAPACITY {
-            // Refusing to answer beats answering wrongly: past `CAPACITY` the
-            // mask cannot represent the read, and reporting those names as
-            // unread would be a false accusation while ignoring them would be
-            // a silent blind spot.
-            polars_bail!(ComputeError:
-                "operation has {} parameters, more than the {} the parameter-use \
-                 checker can track; raise OpParams::CAPACITY",
-                self.map.len(), Self::CAPACITY);
-        }
-        let read = self.read.get();
-        Ok(self
-            .map
-            .keys()
-            .enumerate()
-            .filter(|(idx, _)| read & (1u64 << idx) == 0)
-            .map(|(_, k)| k.as_str())
-            .collect())
-    }
-}
-
-/// Shared accessors for optional and enum-valued operation parameters.
-///
-/// These implement the **single parameter failure policy** for `resolve_op`:
-/// an *absent* optional parameter takes its documented default, while a
-/// parameter that is *present but invalid* — unknown enum string, wrong type,
-/// out-of-range value, or a per-row expression that fails to resolve — is
-/// always an error. Helpers never swallow a resolution error into a default
-/// (guarded by `execute::strict_param_tests`).
-///
-/// A **null** per-row value is the one thing that is not covered here, because
-/// it is not a matter of validity: it is governed by [`NullParamPolicy`] at
-/// [`ParamCol::on_null`], the layer below. Under `Raise` it reaches these
-/// helpers as an ordinary error and the policy above applies unchanged; under
-/// `Null` the error still propagates out of `resolve_op`, but the caller that
-/// owns the row recognises it and nulls the row instead. Either way, no helper
+/// A **null** per-row value is not a matter of validity: it is governed by
+/// [`NullParamPolicy`] at [`ParamCol::on_null`], the layer below. No helper
 /// here may turn a null into its default — that would silently compute a wrong
 /// result for a missing input.
+///
+/// Every op reads typed `Param<T>` fields now (`crate::ops`); what is left
+/// serves `SourceSpec`, until typed sources (typed-op plan P4) replace it.
 pub mod get {
-    use super::{OpParams, ParamCtx, ParamValue};
+    use super::{ParamCtx, ParamValue};
     use polars::prelude::*;
-
-    /// Every helper here reads through the tracking wrapper, so using one is
-    /// what records the parameter as consumed. There is no untracked overload.
-    type Params<'a> = OpParams<'a>;
 
     fn named(name: &str, e: PolarsError) -> PolarsError {
         polars_err!(ComputeError: "parameter '{}': {}", name, e)
@@ -651,22 +521,6 @@ pub mod get {
 
     /// Optional u8 with a default for absence; range-checked so 300 errors
     /// instead of silently truncating.
-    pub fn opt_u8(
-        params: &Params<'_>,
-        name: &str,
-        default: u8,
-        row_idx: usize,
-        ctx: &ParamCtx,
-    ) -> PolarsResult<u8> {
-        opt_u8_value(params.get(name), name, default, row_idx, ctx)
-    }
-
-    /// [`opt_u8`] for a parameter the caller already holds.
-    ///
-    /// `SourceSpec` keeps its per-row parameters in named fields rather than a
-    /// map, so it cannot look one up by name — but it must not grow a second
-    /// copy of this logic, or a future change to null handling or range
-    /// checking would have to land in two places.
     pub fn opt_u8_value(
         param: Option<&ParamValue>,
         name: &str,
@@ -683,62 +537,6 @@ pub mod get {
                         "parameter '{}' must be in 0..=255, got {}", name, v)
                 })
             }
-        }
-    }
-
-    /// Required enum-valued parameter, resolved per row against a canonical
-    /// `NAMED`-style table (plus parser-only aliases). Unknown values error
-    /// with the canonical names listed.
-    ///
-    /// `default` is used when the parameter is bound to a column under a
-    /// plan-time probe context, where no real value exists yet. Only pass a
-    /// parameter through here when its value has **no effect on output shape,
-    /// rank, or dtype** — that invariant is what makes probing with the
-    /// default sound (see [`ParamCtx::probe`]). Structural string parameters
-    /// must keep using [`ParamValue::resolve_string`], which rejects
-    /// expressions outright.
-    pub fn req_enum<T: Copy>(
-        params: &Params<'_>,
-        name: &str,
-        canonical: &[(&str, T)],
-        aliases: &[(&str, T)],
-        default: T,
-        row_idx: usize,
-        ctx: &ParamCtx,
-    ) -> PolarsResult<T> {
-        let param = params
-            .get(name)
-            .ok_or_else(|| polars_err!(ComputeError: "Missing required parameter: {}", name))?;
-        let Some(s) = param
-            .resolve_str(row_idx, ctx)
-            .map_err(|e| named(name, e))?
-        else {
-            return Ok(default);
-        };
-        view_buffer::naming::lookup(canonical, s)
-            .or_else(|| view_buffer::naming::lookup(aliases, s))
-            .ok_or_else(|| {
-                polars_err!(ComputeError:
-                    "parameter '{}': unknown value '{}', expected one of {:?}",
-                    name, s, view_buffer::naming::names(canonical)
-                )
-            })
-    }
-
-    /// Optional enum-valued parameter with a default for absence.
-    pub fn opt_enum<T: Copy>(
-        params: &Params<'_>,
-        name: &str,
-        canonical: &[(&str, T)],
-        aliases: &[(&str, T)],
-        default: T,
-        row_idx: usize,
-        ctx: &ParamCtx,
-    ) -> PolarsResult<T> {
-        if params.contains_key(name) {
-            req_enum(params, name, canonical, aliases, default, row_idx, ctx)
-        } else {
-            Ok(default)
         }
     }
 }
@@ -788,14 +586,6 @@ mod tests {
             value: serde_json::json!([0.485, 0.456, 0.406]),
         };
         assert!(param.is_literal());
-    }
-
-    #[test]
-    fn test_literal_string() {
-        let param = ParamValue::Literal {
-            value: serde_json::json!("hello"),
-        };
-        assert_eq!(param.resolve_string().unwrap(), "hello");
     }
 
     #[test]
@@ -881,7 +671,7 @@ mod tests {
             let result: PolarsResult<()> = match idx {
                 0 => param.resolve_i64(0, &ctx).map(|_| ()),
                 1 => ctx.col(idx).and_then(|c| c.get_f64(0, &ctx)).map(|_| ()),
-                2 => param.resolve_str(0, &ctx).map(|_| ()),
+                2 => ctx.col(idx).and_then(|c| c.get_str(0, &ctx)).map(|_| ()),
                 _ => ctx.col(idx).and_then(|c| c.get_bool(0, &ctx)).map(|_| ()),
             };
             assert!(result.is_err(), "slot {idx} should error");

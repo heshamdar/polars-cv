@@ -449,9 +449,10 @@ def _validate_enum(value: str, enum_cls: type, label: str):
     """Validate a *literal* string against a user-facing enum.
 
     The single validation shape for every literal enum-valued parameter:
-    ``Invalid <label> '<value>'. Valid: [...]``. Enums that may vary per row go
-    through ``pipeline._enum_param`` instead, so reaching here with an
-    expression means the parameter is structural.
+    ``Invalid <label> '<value>'. Valid: [...]``. An op's enum parameters are
+    typed in its Rust definition and validated there; this serves the
+    geometry accessors and sources, so reaching here with an expression means
+    the parameter is structural.
 
     Lives beside the enums rather than in ``pipeline.py`` because the geometry
     accessors need the same check and importing it from the builder module
@@ -470,7 +471,7 @@ def _validate_enum(value: str, enum_cls: type, label: str):
 def _enum_or_expr(value: "Any", enum_cls: type, label: str) -> "Any":
     """Validate a literal enum value, or pass an expression through untouched.
 
-    The geometry accessors' counterpart to ``pipeline._enum_param``: a literal
+    The geometry accessors' counterpart to a typed op's ``Param<Enum>`` field: a literal
     is checked here and fails at build time naming the accepted spellings; an
     expression cannot be checked until the row exists, so it is handed to
     ``_ArgBinder``, which appends it as a per-row plugin input. Rust then reads

@@ -191,63 +191,22 @@ pub(crate) fn resolve_op_from_json_probe(
 
     let op_spec: crate::pipeline::OpSpec = serde_json::from_str(op_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    let (op_spec, placeholders) = match op_spec {
-        // Every slot of a typed op reads a placeholder column holding `probe`.
+    // Every slot of a typed op reads a placeholder column holding `probe`. A
+    // legacy spec gets none: `resolve_op` refuses it (`LEGACY_OPS` is empty).
+    let placeholders = match &op_spec {
         crate::pipeline::OpSpec::Typed(op) => {
-            let placeholders = vec![Series::new("".into(), &[probe]); op.min_inputs()];
-            (crate::pipeline::OpSpec::Typed(op), placeholders)
+            vec![Series::new("".into(), &[probe]); op.min_inputs()]
         }
-        crate::pipeline::OpSpec::Legacy(spec) => {
-            let (spec, placeholders) = legacy_probe_spec(spec, probe);
-            (crate::pipeline::OpSpec::Legacy(spec), placeholders)
-        }
+        crate::pipeline::OpSpec::Legacy(_) => Vec::new(),
     };
     // A *probe* context: placeholders are integers, so a dynamic enum or flag
     // param cannot be read from one. `ParamCtx::probe` tells the enum/bool
     // accessors to substitute their default instead. Sound because only params
     // with no shape/rank/dtype effect are allowed to be dynamic, so the variant
     // probing picks cannot change the inferred schema.
-    let ctx = ParamCtx::probe(&placeholders);
+    let ctx = ParamCtx::probe(&placeholders, probe);
     crate::execute::resolve_op(&op_spec, 0, &ctx)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
-}
-
-/// Point a legacy op's per-row params at placeholder columns holding `probe`.
-fn legacy_probe_spec(
-    mut op_spec: crate::pipeline::LegacyOpSpec,
-    probe: i64,
-) -> (crate::pipeline::LegacyOpSpec, Vec<Series>) {
-    use crate::params::ParamValue;
-    // rasterize-by-shape-reference carries no width/height (they come from
-    // another node's buffer at execution, via the RasterizeShapeRef
-    // resolver). Give introspection placeholder dims so the op resolves; the
-    // structural schema never depends on their values.
-    //
-    // They are *slot* placeholders, not literals, because `op_infer_shape`
-    // does read their values: it reports a dimension as known only when it is
-    // identical across probes, and a literal placeholder would publish a 1x1
-    // canvas as fact for a mask sized by another node.
-    if op_spec.op == "rasterize" && op_spec.params.contains_key("shape_ref") {
-        for dim in ["width", "height"] {
-            op_spec
-                .params
-                .entry(dim.to_string())
-                .or_insert(ParamValue::Slot { idx: 0 });
-        }
-    }
-    // Re-point every per-row param at its own placeholder column holding
-    // `probe`; the slot indices the op arrived with name real inputs that a
-    // plan-time call does not have.
-    let mut placeholders: Vec<Series> = Vec::new();
-    for p in op_spec.params.values_mut() {
-        if matches!(p, ParamValue::Slot { .. }) {
-            *p = ParamValue::Slot {
-                idx: placeholders.len(),
-            };
-            placeholders.push(Series::new("".into(), &[probe]));
-        }
-    }
-    (op_spec, placeholders)
 }
 
 /// Plan-time output shape for a single-buffer op — the single authority for

@@ -806,6 +806,13 @@
     ]
   },
   {
+    "name": "extract_shape",
+    "python": "extract_shape",
+    "visibility": "public",
+    "doc": "Extract buffer shape as a struct {height, width, channels}.\n\nDomain transition: buffer → vector",
+    "fields": []
+  },
+  {
     "name": "flip",
     "python": "flip",
     "visibility": "public",
@@ -928,6 +935,54 @@
     "visibility": "public",
     "doc": "Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1].",
     "fields": []
+  },
+  {
+    "name": "label_reduce",
+    "python": "label_reduce",
+    "visibility": "public",
+    "doc": "Score contour regions against the current buffer values.\n\nThis is the buffer-space variant of label reduction. It accepts contours\nvia a Polars expression and returns one score per contour.\n\nDomain transition: buffer -> vector",
+    "fields": [
+      {
+        "name": "contours",
+        "doc": "Contour-set expression (`List[Contour]`) to score.",
+        "positional": false,
+        "type": {
+          "kind": "column"
+        }
+      },
+      {
+        "name": "reduction",
+        "doc": "Reduction over contour region values (`\"max\"`, `\"mean\"`, `\"sum\"`).",
+        "positional": false,
+        "default": "max",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LabelReduction",
+          "variants": [
+            "max",
+            "mean",
+            "sum"
+          ]
+        }
+      },
+      {
+        "name": "region_mode",
+        "doc": "Region selection mode. ``\"interior\"`` — only pixels strictly inside the\ncontour polygon. ``\"boundary\"`` — interior pixels *plus* pixels on the\ncontour boundary (avoids zero-score artifacts for sub-pixel contours).\n``\"bbox\"`` — all pixels within the bounding box.",
+        "positional": false,
+        "default": "interior",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "LabelRegionMode",
+          "variants": [
+            "interior",
+            "boundary",
+            "bbox"
+          ]
+        }
+      }
+    ]
   },
   {
     "name": "letterbox",
@@ -1307,6 +1362,58 @@
         "type": {
           "kind": "scalar",
           "per_row": false,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "rasterize",
+    "python": "rasterize",
+    "visibility": "internal",
+    "doc": "Rasterize contours to a mask.\n\nThe builder is ``Pipeline.rasterize``, whose ``width``/``height`` or\n``shape`` arguments become ``size``; it also records the shape reference's\ngraph dependency and its canvas assertion.\n\nDomain transition: contour → buffer",
+    "fields": [
+      {
+        "name": "size",
+        "doc": "``[height, width]`` of the mask (each may be a Polars expression), or\nanother node whose buffer's height and width the mask takes.",
+        "positional": false,
+        "type": {
+          "kind": "one_of",
+          "options": [
+            {
+              "kind": "array",
+              "len": 2,
+              "inner": {
+                "kind": "scalar",
+                "per_row": true,
+                "py": "int"
+              }
+            },
+            {
+              "kind": "node"
+            }
+          ]
+        }
+      },
+      {
+        "name": "fill_value",
+        "doc": "Inside value (default 255). Accepts a Polars expression for per-row\ndynamic values.",
+        "positional": false,
+        "default": 255,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "background",
+        "doc": "Outside value (default 0). Accepts a Polars expression for per-row\ndynamic values.",
+        "positional": false,
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
           "py": "int"
         }
       }

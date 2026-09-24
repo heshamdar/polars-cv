@@ -43,7 +43,7 @@ def test_rasterize_has_no_anti_alias_parameter() -> None:
     """``rasterize`` must not accept ``anti_alias``.
 
     It was threaded from the builder through the op spec, the JSON graph,
-    ``resolve_rasterize_style``, ``GeometryOp::Rasterize`` and into
+    the op's style resolver, ``GeometryOp::Rasterize`` and into
     ``geometry::rasterize``, whose signature named it ``_anti_alias`` and
     ignored it. Beyond being a documented no-op it was not free: it entered the
     op's identity, so two pipelines that behave identically hashed differently
