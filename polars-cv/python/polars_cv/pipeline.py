@@ -571,13 +571,14 @@ class Pipeline(_OpsMixin):
     def output_encoding(self) -> str | None:
         """Get the sink encoding selector for this pipeline's output, if any.
 
-        Most outputs are encoded by their (domain, sink-format) pair. A few share
-        a domain but need a distinct Polars schema; this names that encoding so it
-        can be carried alongside the domain rather than overloading it.
+        Most outputs are encoded by their (domain, sink-format) pair. The one
+        exception is histogram ``buckets``: a ``vector``-domain output encoded as
+        ``List(Struct[lower_edge, upper_edge, count, normalized])``. Returns
+        ``"histogram_buckets"`` for it, else ``None``.
 
-        Currently the only such case is histogram ``buckets``: a ``vector``-domain
-        output encoded as ``List(Struct[lower_edge, upper_edge, count,
-        normalized])``. Returns ``"histogram_buckets"`` for it, else ``None``.
+        Introspection only: the executor reads the same fact off the ops itself
+        (``UnifiedGraph::from_json``). Scheduled for removal with the public API
+        reshaping (typed-op P8).
         """
         if self._ops:
             last = self._ops[-1]

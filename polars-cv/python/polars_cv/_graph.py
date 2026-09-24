@@ -56,11 +56,6 @@ class GraphNode:
         return self.pipeline.output_dtype()
 
     @property
-    def output_encoding(self) -> str | None:
-        """Get the sink encoding selector of this node's pipeline, if any."""
-        return self.pipeline.output_encoding()
-
-    @property
     def expected_ndim(self) -> int | None:
         """Get the expected number of dimensions of this node's pipeline."""
         return self.pipeline._expected_ndim
@@ -634,7 +629,6 @@ class PipelineGraph:
                     "expected_shape": node.expected_shape if node else None,
                     "shape_asserted": node.shape_asserted if node else False,
                     "expected_ndim": node.expected_ndim if node else None,
-                    "expected_encoding": node.output_encoding if node else None,
                 }
         else:
             # Single output mode - use "_output" as the key
@@ -652,7 +646,6 @@ class PipelineGraph:
                 "expected_shape": node.expected_shape if node else None,
                 "shape_asserted": node.shape_asserted if node else False,
                 "expected_ndim": node.expected_ndim if node else None,
-                "expected_encoding": node.output_encoding if node else None,
             }
 
         graph_spec = {

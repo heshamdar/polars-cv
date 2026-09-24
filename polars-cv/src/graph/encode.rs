@@ -958,7 +958,7 @@ mod contour_sink_tests {
             expected_shape: None,
             shape_asserted: false,
             expected_ndim: None,
-            expected_encoding: None,
+            histogram_buckets: false,
         }
     }
 

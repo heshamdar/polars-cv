@@ -253,6 +253,16 @@ REMOVED: tuple[Removed, ...] = (
     ),
     Removed("io_check", "P7d: plan_source (validates and plans) and sink_check"),
     Removed("_seed_from_contour_rasterize", "P7d: plan::source_state"),
+    Removed(
+        "expected_encoding",
+        "P7d: Rust reads histogram buckets off the ops",
+        # The test that the wire key is now refused sends it.
+        allowed_in=frozenset({"polars-cv/src/graph/types.rs"}),
+    ),
+    Removed(
+        "unknown_expected_encoding_is_a_compile_error",
+        "P7d: expected_encoding is no longer a wire field",
+    ),
 )
 
 

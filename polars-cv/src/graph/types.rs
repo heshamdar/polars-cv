@@ -50,15 +50,12 @@ pub struct OutputSpec {
     /// Expected number of dimensions for list sinks.
     #[serde(default)]
     pub expected_ndim: Option<usize>,
-    /// Optional sink encoding selector, independent of the output domain.
-    ///
-    /// Some outputs share a domain but need a distinct Polars schema. For
-    /// example histogram buckets are a `vector`-domain output, but are encoded
-    /// as `List(Struct[lower_edge, upper_edge, count, normalized])`. Python sets
-    /// this to `"histogram_buckets"` for that case; `None` means encode by the
-    /// (domain, format) pair as usual.
-    #[serde(default)]
-    pub expected_encoding: Option<String>,
+    /// The output is histogram buckets: a `vector`-domain output encoded as
+    /// `List(Struct[lower_edge, upper_edge, count, normalized])` rather than by
+    /// its (domain, format) pair. Read off the output node's ops at load
+    /// ([`UnifiedGraph::from_json`]), never sent on the wire.
+    #[serde(skip)]
+    pub histogram_buckets: bool,
 }
 /// Result type for individual row execution.
 ///
@@ -133,6 +130,32 @@ mod row_error_policy_tests {
         ))
         .map(|_| String::new())
         .unwrap_or_else(|e| e.to_string())
+    }
+
+    /// Histogram buckets are recognised from the node's own last step (or its
+    /// lineage's, through an op-less node), not from a wire field Python had to
+    /// remember to set.
+    #[test]
+    fn histogram_buckets_are_read_off_the_ops() {
+        let graph = |ops: &str, extra: &str| {
+            UnifiedGraph::from_json(&format!(
+                r#"{{"nodes": {{"n0": {{"source": {{"format": "image_bytes"}}, "ops": {ops}}},
+                     "n1": {{"source": {{"format": "blob"}}, "ops": [], "upstream": ["n0"]}}}},
+                    "outputs": {{"a": {{"node": "n0", "sink": {{"format": "native"}}{extra}}},
+                                 "b": {{"node": "n1", "sink": {{"format": "native"}}}}}}}}"#
+            ))
+        };
+        let buckets = r#"[{"op": "histogram", "bins": 4, "range": null, "closed": "left", "output": "buckets"}]"#;
+        let g = graph(buckets, "").unwrap();
+        assert!(g.outputs["a"].histogram_buckets && g.outputs["b"].histogram_buckets);
+        let counts = buckets.replace("buckets", "counts");
+        assert!(!graph(&counts, "").unwrap().outputs["a"].histogram_buckets);
+        let err = graph(buckets, r#", "expected_encoding": "histogram_buckets""#).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown field `expected_encoding`"),
+            "{err}"
+        );
     }
 
     /// An engine toggle the engine does not have is refused, not ignored:
@@ -240,7 +263,39 @@ impl UnifiedGraph {
             );
         }
         graph.cached_order = graph.compute_topological_order()?;
+        let buckets: Vec<(String, bool)> = graph
+            .outputs
+            .iter()
+            .map(|(alias, spec)| (alias.clone(), graph.ends_in_histogram_buckets(&spec.node)))
+            .collect();
+        for (alias, flag) in buckets {
+            if let Some(spec) = graph.outputs.get_mut(&alias) {
+                spec.histogram_buckets = flag;
+            }
+        }
         Ok(graph)
+    }
+
+    /// Whether `node_id`'s buffer is histogram buckets: its last step, or, for
+    /// a node with no ops, its primary upstream's.
+    fn ends_in_histogram_buckets(&self, node_id: &str) -> bool {
+        let Some(node) = self.nodes.get(node_id) else {
+            return false;
+        };
+        match node.ops.last() {
+            Some(op) => {
+                let json = serde_json::to_string(op).expect("an op always serializes");
+                matches!(
+                    crate::resolve_op_from_json(&json),
+                    Ok(crate::graph::step::GraphStep::Histogram(h))
+                        if h.output == view_buffer::ops::HistogramOutput::Buckets
+                )
+            }
+            None => node
+                .upstream
+                .first()
+                .is_some_and(|up| self.ends_in_histogram_buckets(up)),
+        }
     }
     /// Check if this is a single-output graph (returns Binary instead of Struct).
     pub fn is_single_output(&self) -> bool {

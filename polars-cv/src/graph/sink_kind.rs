@@ -82,7 +82,7 @@ impl SinkKind {
     /// because a fallback is exactly what let a mismatched pair reach execution
     /// disguised as a Binary column.
     pub(crate) fn resolve(spec: &OutputSpec) -> PolarsResult<Self> {
-        if spec.expected_encoding.as_deref() == Some("histogram_buckets") {
+        if spec.histogram_buckets {
             return Ok(Self::HistogramBuckets);
         }
         let domain = spec.expected_domain.as_str();
@@ -138,7 +138,7 @@ mod tests {
             expected_shape: None,
             shape_asserted: false,
             expected_ndim: None,
-            expected_encoding: None,
+            histogram_buckets: false,
         }
     }
 
@@ -278,7 +278,7 @@ mod tests {
     fn every_kind_is_produced_by_some_pair() {
         let mut produced: BTreeSet<&str> = PAIRS.iter().map(|&(_, _, k)| kind_name(k)).collect();
         let mut buckets = spec("vector", "list");
-        buckets.expected_encoding = Some("histogram_buckets".to_string());
+        buckets.histogram_buckets = true;
         produced.insert(kind_name(SinkKind::resolve(&buckets).unwrap()));
 
         let missing: Vec<String> = acknowledged_kinds()
@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn the_encoding_outranks_the_pair() {
         let mut s = spec("buffer", "numpy");
-        s.expected_encoding = Some("histogram_buckets".to_string());
+        s.histogram_buckets = true;
         assert_eq!(SinkKind::resolve(&s).unwrap(), SinkKind::HistogramBuckets);
     }
 
