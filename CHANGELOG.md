@@ -327,6 +327,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   on `LazyPipelineExpr`) and `ColumnRef` (`label_reduce`'s contour column).
   `ParamCtx` carries the plan-time probe value, which a node-sized `rasterize`
   reads so its canvas plans as unknown.
+- **Typed-op migration, P6 (legacy protocol deleted).** `TypedOp` is the wire
+  op; `pipeline.rs` (`OpSpec`, `LegacyOpSpec`, the name dispatcher),
+  `LEGACY_OPS`, `resolve_op`, the untyped Rust `ParamValue`, the `known_ops`,
+  `enum_variants` and `enum_names` FFIs and Python's `OP_NAMES` are deleted.
+  The 20 user-facing enums in `polars_cv._types` (`DType`, `FilterType`,
+  `Winding`, …) are generated from the Rust `named_variants!` tables through
+  a new `enum_catalog` FFI and `tests/golden/enum_catalog.json`, docstrings
+  included, so the per-enum parity tests are gone. `RowErrorPolicy` and
+  `NullParamPolicy` parse through their `NAMED` tables instead of serde, so a
+  hand-built graph's unknown `on_error`/`on_null_param` now reads
+  `unknown RowErrorPolicy "x", expected one of [...]`.
 - **Typed-op migration, P5 (geometry namespaces).** The `.contour`/`.point`/
   `.bbox` accessors' kwargs are typed structs (`Param<T>` parameters,
   `ColumnRef` operands, `#[derive(Op)]`); each expression kwarg carries its own
