@@ -1,10 +1,9 @@
 """Guards for spec-parameter applicability: source keywords and sink keywords.
 
 A parameter that the chosen format never reads is rejected — not warned about,
-not dropped. The source keywords are listed against the formats whose decode
-reads them (`SOURCE_PARAM_APPLIES`); each sink format is a typed Rust struct
-carrying exactly the fields its encoder reads (`src/formats/sink.rs`), and the
-builder validates a sink against it over `io_check`. These tests
+not dropped. Each source and sink format is a typed Rust struct carrying
+exactly the fields its decode or encode reads (`src/formats/`), and the builder
+validates what the caller passed against it over `io_check`. These tests
 exist because the question used to be answered per parameter: of the source's
 seven scoped keywords one raised, one warned and five were silently dropped,
 while `.sink()` — an open `**kwargs` — accepted literally any keyword, spread it
@@ -25,12 +24,7 @@ import pytest
 
 import polars_cv
 from polars_cv import Pipeline
-from polars_cv._types import (
-    PARAM_HINTS,
-    SOURCE_PARAM_APPLIES,
-    SinkFormat,
-    SourceFormat,
-)
+from polars_cv._types import SinkFormat, SourceFormat
 
 from .conftest import plugin_required
 
@@ -81,33 +75,45 @@ def _sample_for(name: str) -> object:
     return _SAMPLE_VALUES[name]
 
 
-def test_every_source_parameter_declares_where_it_applies() -> None:
-    """No `source()` keyword may sit outside the applicability table.
+#: Each format's fields in its typed definition (`src/formats/`, committed as
+#: `tests/golden/io_catalog.json`).
+_IO_CATALOG = json.loads(
+    (Path(__file__).parent / "golden" / "io_catalog.json").read_text()
+)
+_SOURCE_FIELDS: dict[str, set[str]] = {
+    fmt["name"]: {field["name"] for field in fmt["fields"]}
+    for fmt in _IO_CATALOG["sources"]
+}
 
-    The table is what the rejection reads, so a parameter missing from it is
-    a parameter that applies everywhere by omission — silently ignored by the
-    formats that do not read it, which is exactly the state this replaced
-    (`width` on an image source, `require_contiguous` on a contour source,
-    `allowed_roots` on anything but a path source: all accepted, all dropped).
+#: The `source()` keywords that are spelled differently on the wire: a contour
+#: canvas is one `size` field, `[height, width]` or a node.
+_WIRE_FIELD = {"width": "size", "height": "size", "shape": "size"}
+
+
+def test_every_source_parameter_is_a_typed_source_field() -> None:
+    """Every `source()` keyword is a field of some typed source, and back.
+
+    A keyword that is no format's field could only be dropped; a field no
+    keyword reaches is a setting the builder cannot make.
     """
     import inspect
 
-    declared = set(SOURCE_PARAM_APPLIES)
     keywords = {
         name
         for name, param in inspect.signature(Pipeline.source).parameters.items()
         if name not in ("self", "format")
         and param.kind is not inspect.Parameter.VAR_KEYWORD
     }
-    assert declared == keywords, (
-        f"undeclared: {sorted(keywords - declared)}; "
-        f"declared but not a parameter: {sorted(declared - keywords)}"
+    fields = set().union(*_SOURCE_FIELDS.values())
+    assert {_WIRE_FIELD.get(k, k) for k in keywords} == fields, (
+        f"keywords {sorted(keywords)} do not cover the typed source fields "
+        f"{sorted(fields)}"
     )
     assert set(_SAMPLE_VALUES) == keywords, (
         f"the applicability sweep has no sample value for "
         f"{sorted(keywords - set(_SAMPLE_VALUES))}"
     )
-    assert {name for kind, name in PARAM_HINTS if kind == "source"} <= keywords
+    assert set(_SOURCE_FIELDS) == {f.value for f in SourceFormat}
 
 
 def test_source_applicability_reads_every_parameter() -> None:
@@ -135,16 +141,16 @@ def test_source_applicability_reads_every_parameter() -> None:
     )
 
 
+@plugin_required
 @pytest.mark.parametrize("fmt", [f.value for f in SourceFormat])
-@pytest.mark.parametrize("name", sorted(SOURCE_PARAM_APPLIES))
+@pytest.mark.parametrize("name", sorted(_SAMPLE_VALUES))
 def test_a_parameter_is_rejected_by_every_format_that_ignores_it(
     name: str, fmt: str
 ) -> None:
-    """The whole (parameter x format) grid, decided by the table.
+    """The whole (parameter x format) grid, decided by the typed sources.
 
-    Applicable pairs must be accepted — a build error here would mean the table
-    is stricter than the decode. Inapplicable pairs must raise: not warn, not
-    proceed. Formats with their own requirements (`raw` needs a dtype, `contour`
+    Applicable pairs must be accepted. Inapplicable pairs must raise, naming
+    where the field does apply: not warn, not proceed. Formats with their own requirements (`raw` needs a dtype, `contour`
     needs a canvas) can still reject an *applicable* pair for that reason, so
     only the rejection message is asserted, not the fact of raising.
     """
@@ -157,11 +163,11 @@ def test_a_parameter_is_rejected_by_every_format_that_ignores_it(
         kwargs["dtype"] = "u8"  # raw has no type metadata to infer from
     kwargs[name] = _sample_for(name)
 
-    applies = SourceFormat(fmt) in SOURCE_PARAM_APPLIES[name]
-    if applies:
+    field = _WIRE_FIELD.get(name, name)
+    if field in _SOURCE_FIELDS[fmt]:
         Pipeline().source(fmt, **kwargs)  # type: ignore[arg-type]
         return
-    with pytest.raises(ValueError, match=f"{name} does not apply"):
+    with pytest.raises(ValueError, match=f"'{field}' does not apply .*it applies to"):
         Pipeline().source(fmt, **kwargs)  # type: ignore[arg-type]
 
 
@@ -173,9 +179,7 @@ def test_a_parameter_is_rejected_by_every_format_that_ignores_it(
 #: (`src/formats/sink.rs`, committed as `tests/golden/io_catalog.json`).
 _SINK_FIELDS: dict[str, set[str]] = {
     fmt["name"]: {field["name"] for field in fmt["fields"]}
-    for fmt in json.loads(
-        (Path(__file__).parent / "golden" / "io_catalog.json").read_text()
-    )["sinks"]
+    for fmt in _IO_CATALOG["sinks"]
 }
 
 #: A non-default value per sink keyword, for the grid below.

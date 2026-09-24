@@ -6,7 +6,8 @@ definitions in ``src/ops/`` and pinned there by the Rust test
 ``catalog_matches_the_committed_file``; this script reads that file, never the
 compiled extension, so it runs without a build. It writes:
 
-- ``SinkFormat``: the sink formats, from ``tests/golden/io_catalog.json`` (the
+- ``SourceFormat``/``SinkFormat``: the source and sink formats, from
+  ``tests/golden/io_catalog.json`` (the
   Rust ``formats`` registry, pinned by ``io_catalog_matches_the_committed_file``);
 - ``TYPED_OPS``: the op names that cross the wire in the typed form;
 - ``OP_FIELDS``: each typed op's field types, which the builder's one encoder
@@ -212,6 +213,8 @@ def render(catalog: list[dict[str, Any]], io: dict[str, Any]) -> str:
     methods = "\n".join(method(op) for op in catalog if op["visibility"] != "lazy_only")
     text = (
         _HEADER.format(imports=_imports(methods))
+        + "\n\n"
+        + format_enum("SourceFormat", "source", io["sources"])
         + "\n\n"
         + format_enum("SinkFormat", "sink", io["sinks"])
         + "\n\n#: Ops whose wire form is typed (bare values and slots).\n"

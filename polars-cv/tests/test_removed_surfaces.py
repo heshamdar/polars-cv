@@ -220,12 +220,14 @@ def test_contour_source_rejects_a_dtype_assertion() -> None:
 
     The dtype is now published from the rasterize contract instead, so the
     parameter has nothing left to say. ``.cast(...)`` after the source is the
-    supported way to change it, and it runs through the real cast op.
+    supported way to change it, and it runs through the real cast op. The
+    typed contour source has no ``dtype`` field, so the rejection names the
+    formats that do take one (the ``.cast`` hint went with the hand-kept hint
+    table, typed-op P4).
     """
-    with pytest.raises(ValueError, match="dtype does not apply"):
-        Pipeline().source("contour", width=8, height=8, dtype="f32")
-    with pytest.raises(ValueError, match="use .cast"):
-        Pipeline().source("contour", width=8, height=8, dtype="u8")
+    for dtype in ("f32", "u8"):
+        with pytest.raises(ValueError, match="'dtype' does not apply to the 'contour'"):
+            Pipeline().source("contour", width=8, height=8, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------

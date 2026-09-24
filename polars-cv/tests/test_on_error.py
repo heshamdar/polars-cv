@@ -39,7 +39,7 @@ class TestOnErrorValidation:
 
     def test_invalid_on_error(self) -> None:
         """Invalid on_error value raises ValueError."""
-        with pytest.raises(ValueError, match="on_error must be"):
+        with pytest.raises(ValueError, match="'on_error'.*expected one of"):
             Pipeline().source("image_bytes", on_error="skip")
 
     def test_on_error_serialized(self) -> None:

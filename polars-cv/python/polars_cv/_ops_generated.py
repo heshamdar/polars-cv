@@ -19,6 +19,19 @@ if TYPE_CHECKING:
     from polars_cv.pipeline import Pipeline
 
 
+class SourceFormat(str, Enum):
+    """Every source format (typed per format in ``src/formats/``)."""
+
+    ARRAY = "array"
+    AUTO = "auto"
+    BLOB = "blob"
+    CONTOUR = "contour"
+    FILE_PATH = "file_path"
+    IMAGE_BYTES = "image_bytes"
+    LIST = "list"
+    RAW = "raw"
+
+
 class SinkFormat(str, Enum):
     """Every sink format (typed per format in ``src/formats/``)."""
 

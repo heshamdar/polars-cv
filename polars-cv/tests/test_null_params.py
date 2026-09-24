@@ -674,7 +674,8 @@ class TestSourceAndSinkParamSites:
             schema={"img": pl.Binary, "cnt": None, "fill": pl.Int64},
         )
         with pytest.raises(
-            pl.exceptions.ComputeError, match=r"parameter 'fill_value' must be in 0"
+            pl.exceptions.ComputeError,
+            match=r"'fill' at row 0: 300 is out of range for u8",
         ):
             df.with_columns(out=mask.sink("numpy"))
 

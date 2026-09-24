@@ -37,6 +37,7 @@ use crate::contour::parse_contour_list;
 use crate::execute::{
     decode_contour_source, decode_contour_source_with_dims, decode_image_bytes, resolve_op,
 };
+use crate::formats::source::Source;
 use crate::ops::geometry::RasterSize;
 use crate::ops::{NodeRef, TypedOp};
 use crate::params::{ParamCtx, ParamValue};
@@ -86,9 +87,9 @@ enum ResolvedStep<'a> {
 /// One executed node, prepared at compile time.
 struct NodePlan {
     id: String,
-    /// The node's source spec (its ops are compiled into `resolvers`).
-    source: crate::pipeline::SourceSpec,
-    /// The source's decode path, parsed from `source.format`.
+    /// The node's source (its ops are compiled into `resolvers`).
+    source: Source,
+    /// The source's decode path (`Auto` is resolved once per batch).
     format: SourceFormat,
     /// Input column, for a root node.
     column: Option<usize>,
@@ -228,42 +229,22 @@ impl CompiledGraph {
                 id: node_id.clone(),
                 column,
                 upstream,
-                // Parsed once at the edge: the row loop checks a flag instead
-                // of comparing strings.
-                source_null: crate::fetch::parse_on_error(
-                    node.source.on_error.as_str(),
-                    &format!("source node '{node_id}'"),
-                )?,
+                source_null: node.source.nulls_on_error(),
                 cloud_options: node
                     .source
-                    .cloud_options
-                    .as_ref()
+                    .path_settings()
+                    .0
                     .map(crate::cloud::CloudOptions::from_map),
                 path_policy: node
                     .source
-                    .allowed_roots
-                    .as_ref()
-                    .map(|roots| crate::fetch::PathPolicy::new(roots))
+                    .path_settings()
+                    .1
+                    .map(crate::fetch::PathPolicy::new)
                     .unwrap_or_default(),
                 resolvers,
+                format: SourceFormat::of(&node.source),
                 source: node.source.clone(),
-                // `validate_graph_structure` has already refused an unknown name.
-                format: SourceFormat::parse(&node.source.format).ok_or_else(|| {
-                    polars_err!(ComputeError:
-                        "Node '{}': unknown source format '{}'", node_id, node.source.format)
-                })?,
             });
-        }
-
-        // A node no output reaches is never executed, but its settings are
-        // still validated, as they were when every node was parsed here.
-        for (node_id, node) in &graph.nodes {
-            if !node_index.contains_key(node_id) {
-                crate::fetch::parse_on_error(
-                    node.source.on_error.as_str(),
-                    &format!("source node '{node_id}'"),
-                )?;
-            }
         }
 
         Ok(CompiledGraph {
@@ -729,7 +710,14 @@ impl CompiledGraph {
                         if source_format == SourceFormat::Contour {
                             match input_series.get(row_idx) {
                                 Ok(value) if !value.is_null() => {
-                                    if let Some(shape_node_id) = source.shape_node.as_deref() {
+                                    let Source::Contour(contour) = source else {
+                                        return Err(format!(
+                                            "internal: source '{node_id}' decoded as contour"
+                                        ));
+                                    };
+                                    if let RasterSize::FromNode(NodeRef(shape_node_id)) =
+                                        &contour.size
+                                    {
                                         // The fifth cross-node operand read.
                                         // `Ok(None)` (rather than `continue
                                         // 'nodes`) because this sits inside the
@@ -760,8 +748,8 @@ impl CompiledGraph {
                                         }
                                         let height = shape[0] as u32;
                                         let width = shape[1] as u32;
-                                        let (fill_value, background) = match source
-                                            .resolve_fill(row_idx, ctx)
+                                        let (fill_value, background) = match contour
+                                            .fill(row_idx, ctx)
                                         {
                                             Ok(v) => v,
                                             Err(e) => {
@@ -775,7 +763,7 @@ impl CompiledGraph {
                                             Err(e) => Err(format!("Contour decode error: {e}")),
                                         }
                                     } else {
-                                        match decode_contour_source(&value, row_idx, source, ctx) {
+                                        match decode_contour_source(&value, row_idx, contour, ctx) {
                                             Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
                                             Err(e) => Err(format!("Contour decode error: {e}")),
                                         }
@@ -835,8 +823,8 @@ impl CompiledGraph {
                             if input_series.dtype() == &DataType::Null {
                                 Ok(None)
                             } else {
-                                let dtype_opt = source.dtype.as_deref();
-                                let require_contiguous = source.require_contiguous;
+                                let dtype_opt = source.dtype();
+                                let require_contiguous = source.require_contiguous();
                                 match decode_list_or_array_source(
                                     input_series,
                                     row_idx,
@@ -864,13 +852,13 @@ impl CompiledGraph {
                                 if let Some((buffer, offset, len)) =
                                     get_binary_row_buffer(input_ca, row_idx)
                                 {
-                                    match decode_binary_zero_copy(
-                                        buffer,
-                                        offset,
-                                        len,
-                                        source_format.name(),
-                                        source.dtype.as_deref(),
-                                    ) {
+                                    // Raw bytes take the declared dtype; a blob
+                                    // carries its own.
+                                    let raw_dtype = match source_format {
+                                        SourceFormat::Raw => source.dtype(),
+                                        _ => None,
+                                    };
+                                    match decode_binary_zero_copy(buffer, offset, len, raw_dtype) {
                                         Ok(buf) => Ok(Some(NodeOutput::from_buffer(buf))),
                                         Err(e) => Err(format!("Zero-copy decode error: {e}")),
                                     }
@@ -882,8 +870,8 @@ impl CompiledGraph {
                                 // only encoded image bytes remain.
                                 if source_format != SourceFormat::ImageBytes {
                                     return Err(format!(
-                                        "internal: source format '{}' reached the image decoder",
-                                        source_format.name()
+                                        "internal: source format {:?} reached the image decoder",
+                                        source_format
                                     ));
                                 }
                                 match input_ca.get(row_idx) {
@@ -1285,32 +1273,8 @@ impl CompiledGraph {
     }
 }
 
-/// Source formats the executor can decode. Kept in sync with the row loop's
-/// source dispatch through [`SourceFormat`].
-///
-/// The other half of this vocabulary is Python's `SourceFormat` enum
-/// (`python/polars_cv/_types.py`), which is what a user actually names. The two
-/// must be equal — a Python-only format builds a graph this list rejects, a
-/// Rust-only one is a decode path nothing can reach — and
-/// `test_source_formats_match_the_rust_vocabulary` pins them by reading this
-/// declaration, so keep it a plain `&[&str]` literal.
-const KNOWN_SOURCE_FORMATS: &[&str] = &[
-    "array",
-    "auto",
-    "blob",
-    "contour",
-    "file_path",
-    "image_bytes",
-    "list",
-    "raw",
-];
-
-/// A source's decode path: its wire name from [`KNOWN_SOURCE_FORMATS`], parsed
-/// once at compile time (and, for `Auto`, resolved once per batch) so the row
-/// loop dispatches on a value instead of comparing strings (CR-37).
-///
-/// `source_format_names_match_the_vocabulary` holds [`SourceFormat::ALL`] and
-/// the literal list equal, so neither can gain a name the other lacks.
+/// A source's decode path, derived once at compile time (and, for `Auto`,
+/// resolved once per batch) so the row loop dispatches on a value (CR-37).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SourceFormat {
     Array,
@@ -1324,32 +1288,18 @@ enum SourceFormat {
 }
 
 impl SourceFormat {
-    const ALL: [SourceFormat; 8] = [
-        SourceFormat::Array,
-        SourceFormat::Auto,
-        SourceFormat::Blob,
-        SourceFormat::Contour,
-        SourceFormat::FilePath,
-        SourceFormat::ImageBytes,
-        SourceFormat::List,
-        SourceFormat::Raw,
-    ];
-
-    fn name(self) -> &'static str {
-        match self {
-            SourceFormat::Array => "array",
-            SourceFormat::Auto => "auto",
-            SourceFormat::Blob => "blob",
-            SourceFormat::Contour => "contour",
-            SourceFormat::FilePath => "file_path",
-            SourceFormat::ImageBytes => "image_bytes",
-            SourceFormat::List => "list",
-            SourceFormat::Raw => "raw",
+    /// The decode path of a typed source.
+    fn of(source: &Source) -> Self {
+        match source {
+            Source::Array(_) => SourceFormat::Array,
+            Source::Auto(_) => SourceFormat::Auto,
+            Source::Blob(_) => SourceFormat::Blob,
+            Source::Contour(_) => SourceFormat::Contour,
+            Source::FilePath(_) => SourceFormat::FilePath,
+            Source::ImageBytes(_) => SourceFormat::ImageBytes,
+            Source::List(_) => SourceFormat::List,
+            Source::Raw(_) => SourceFormat::Raw,
         }
-    }
-
-    fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|f| f.name() == name)
     }
 }
 
@@ -1568,12 +1518,6 @@ fn resolve_auto_format(series: &Series) -> Result<SourceFormat, String> {
 /// errors. Compile-time rejection gives one clear error instead.
 fn validate_graph_structure(graph: &UnifiedGraph) -> PolarsResult<()> {
     for (node_id, node) in &graph.nodes {
-        if SourceFormat::parse(&node.source.format).is_none() {
-            polars_bail!(ComputeError:
-                "Node '{}': unknown source format '{}' (expected one of {:?})",
-                node_id, node.source.format, KNOWN_SOURCE_FORMATS
-            );
-        }
         if !graph.column_bindings.contains_key(node_id) && node.upstream.is_empty() {
             polars_bail!(ComputeError:
                 "Node '{}' has neither an input column binding nor an upstream node",
@@ -1620,12 +1564,8 @@ fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
         .max()
         .unwrap_or(1);
     for node in graph.nodes.values_mut() {
-        let source_params = [
-            node.source.width.as_mut(),
-            node.source.height.as_mut(),
-            node.source.fill_value.as_mut(),
-            node.source.background.as_mut(),
-        ];
+        node.source
+            .visit_slots(&mut |_, slot| inputs = inputs.max(slot + 1));
         for op in &node.ops {
             if let OpSpec::Typed(op) = op {
                 inputs = inputs.max(op.min_inputs());
@@ -1635,11 +1575,7 @@ fn prepare_graph_params(graph: &mut UnifiedGraph) -> PolarsResult<usize> {
             OpSpec::Legacy(spec) => Some(spec.params.values_mut()),
             OpSpec::Typed(_) => None,
         });
-        for p in source_params
-            .into_iter()
-            .flatten()
-            .chain(op_params.flatten())
-        {
+        for p in op_params.flatten() {
             prepare_param(p, &mut inputs)?;
         }
     }
@@ -2495,24 +2431,6 @@ mod tests {
         let out = out.unwrap();
         let third = ViewBuffer::from_blob(out.binary().unwrap().get(2).unwrap()).unwrap();
         assert_eq!(third.as_slice::<f32>(), &[3.0, 6.0]);
-    }
-
-    /// The enum the row loop dispatches on and the wire vocabulary the planner
-    /// and Python are pinned to are the same set of names.
-    #[test]
-    fn source_format_names_match_the_vocabulary() {
-        let mut from_enum: Vec<&str> = SourceFormat::ALL.iter().map(|f| f.name()).collect();
-        let mut from_list: Vec<&str> = KNOWN_SOURCE_FORMATS.to_vec();
-        from_enum.sort_unstable();
-        from_list.sort_unstable();
-        assert_eq!(from_enum, from_list);
-        for name in KNOWN_SOURCE_FORMATS {
-            assert_eq!(
-                SourceFormat::parse(name).map(SourceFormat::name),
-                Some(*name)
-            );
-        }
-        assert_eq!(SourceFormat::parse("image-bytes"), None);
     }
 
     #[test]

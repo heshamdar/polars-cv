@@ -17,6 +17,7 @@
 
 pub mod sink;
 pub mod sink_dtype;
+pub mod source;
 
 use serde::Serialize;
 
@@ -176,12 +177,14 @@ pub(crate) use formats;
 /// Both ends' catalogues, as committed in `tests/golden/io_catalog.json`.
 #[derive(Serialize)]
 struct IoCatalog {
+    sources: Vec<OpDesc>,
     sinks: Vec<OpDesc>,
 }
 
 /// The source/sink catalogue as committed in `tests/golden/io_catalog.json`.
 pub fn io_catalog_json() -> String {
     let catalog = IoCatalog {
+        sources: source::Source::catalog(),
         sinks: sink::Sink::catalog(),
     };
     let mut text = serde_json::to_string_pretty(&catalog).expect("the catalogue serializes");

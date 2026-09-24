@@ -6,37 +6,38 @@
 use polars::prelude::*;
 
 use view_buffer::{
-    geometry::rasterize::rasterize, DType, ImageAdapter, ImageCodec, PlannedDType, ViewBuffer,
+    geometry::rasterize::rasterize, ImageAdapter, ImageCodec, PlannedDType, ViewBuffer,
 };
 
 use crate::formats::sink::Sink;
+use crate::formats::source::{ContourSource, Source};
 use crate::graph::step::GraphStep;
+use crate::ops::geometry::RasterSize;
 use crate::params::ParamCtx;
-use crate::pipeline::{OpSpec, SourceSpec};
-use view_buffer::naming;
+use crate::pipeline::OpSpec;
 
 /// Decode a contour source by parsing the geometry and rasterizing to ViewBuffer.
 ///
 /// The column may hold one contour per row or a whole set (`List[Contour]`) —
 /// `parse_contour_set` accepts both, and the set is painted as a union, exactly
 /// as the `rasterize` op paints the set `extract_contours` produces.
+///
+/// For the explicit `[height, width]` canvas; a canvas taken from another node
+/// is resolved by the graph executor, which calls
+/// [`decode_contour_source_with_dims`] (see `compiled.rs`).
 pub fn decode_contour_source(
     value: &AnyValue,
     row_idx: usize,
-    source: &SourceSpec,
+    source: &ContourSource,
     ctx: &ParamCtx,
 ) -> PolarsResult<ViewBuffer> {
-    // Parse via the plugin's single contour parser (contour.rs).
-    let contours = crate::contour::parse_contour_set(value)?;
-
-    // Resolve dimensions
-    let (width, height) = resolve_contour_dimensions(row_idx, source, ctx)?;
-
-    // Get fill and background values (both per-row capable)
-    let (fill_value, background) = source.resolve_fill(row_idx, ctx)?;
-
-    // Rasterize the contours to a ViewBuffer
-    Ok(rasterize(&contours, width, height, fill_value, background))
+    let RasterSize::Fixed([height, width]) = &source.size else {
+        polars_bail!(ComputeError:
+            "internal: a node-sized contour source reached the fixed-size decode");
+    };
+    let (width, height) = (width.resolve(row_idx, ctx)?, height.resolve(row_idx, ctx)?);
+    let (fill_value, background) = source.fill(row_idx, ctx)?;
+    decode_contour_source_with_dims(value, width, height, fill_value, background)
 }
 
 /// Decode a contour source with explicit dimensions (for graph execution with shape inference).
@@ -55,32 +56,6 @@ pub fn decode_contour_source_with_dims(
 
     // Rasterize the contours to a ViewBuffer
     Ok(rasterize(&contours, width, height, fill_value, background))
-}
-
-/// Resolve contour dimensions from pipeline source spec.
-fn resolve_contour_dimensions(
-    row_idx: usize,
-    source: &SourceSpec,
-    ctx: &ParamCtx,
-) -> PolarsResult<(u32, u32)> {
-    // shape_node sources never reach this function: the graph executor
-    // resolves the referenced node's dimensions and calls
-    // `decode_contour_source_with_dims` instead (see compiled.rs).
-
-    // Get explicit width and height
-    let width = source
-        .width
-        .as_ref()
-        .ok_or_else(|| polars_err!(ComputeError: "Contour source requires 'width' parameter"))?
-        .resolve_usize(row_idx, ctx)? as u32;
-
-    let height = source
-        .height
-        .as_ref()
-        .ok_or_else(|| polars_err!(ComputeError: "Contour source requires 'height' parameter"))?
-        .resolve_usize(row_idx, ctx)? as u32;
-
-    Ok((width, height))
 }
 
 /// Decode a JPEG at a reduced IDCT scale sufficient for `max_size` pixels on
@@ -125,11 +100,11 @@ fn decode_jpeg_scaled(bytes: &[u8], max_size: u32) -> Option<ViewBuffer> {
 /// whole `SourceSpec` to overwrite the format string first (CR-37). `blob`/`raw`
 /// sources never reach it: they decode zero-copy via
 /// `graph::decode::decode_binary_zero_copy`.
-pub fn decode_image_bytes(bytes: &[u8], source: &SourceSpec) -> PolarsResult<ViewBuffer> {
+pub fn decode_image_bytes(bytes: &[u8], source: &Source) -> PolarsResult<ViewBuffer> {
     // An explicit decode-scale assertion lets JPEG decode skip work via IDCT
     // scaling; other formats fall through to a full decode.
     let scaled = source
-        .decode_max_size
+        .decode_max_size()
         .and_then(|max_size| decode_jpeg_scaled(bytes, max_size));
     let buf = match scaled {
         Some(buf) => buf,
@@ -138,8 +113,7 @@ pub fn decode_image_bytes(bytes: &[u8], source: &SourceSpec) -> PolarsResult<Vie
     };
     // If source spec declares an expected dtype, cast to it.
     // This is a no-op when the decoded dtype already matches.
-    if let Some(ref dtype_str) = source.dtype {
-        let target = parse_dtype(dtype_str)?;
+    if let Some(target) = source.dtype() {
         if buf.dtype() != target {
             return Ok(buf.cast(target));
         }
@@ -211,12 +185,4 @@ pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsRes
         // rather than guessed at if a spec is built by hand.
         OpSpec::Legacy(spec) => polars_bail!(ComputeError: "Unknown operation: {}", spec.op),
     }
-}
-
-/// Parse a dtype string to DType (canonical short names from `DType::NAMED`).
-fn parse_dtype(s: &str) -> PolarsResult<DType> {
-    DType::from_short_name(s).ok_or_else(|| {
-        polars_err!(ComputeError:
-            "Unknown dtype: {}, expected one of {:?}", s, naming::names(DType::NAMED))
-    })
 }

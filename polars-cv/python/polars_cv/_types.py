@@ -19,12 +19,12 @@ except ImportError:
 
 import polars as pl
 
-from polars_cv._ops_generated import TYPED_OPS, SinkFormat
+from polars_cv._ops_generated import TYPED_OPS, SinkFormat, SourceFormat
 
 from ._dtype_names import NUMPY_TO_SHORT
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    pass
 
 # Type alias for values that can be either literals or expressions
 LiteralOrExpr: TypeAlias = Union[int, float, str, pl.Expr]
@@ -34,19 +34,6 @@ FloatOrExpr: TypeAlias = Union[float, pl.Expr]
 # ``rotate(expand)`` — stays a plain ``bool``.
 BoolOrExpr: TypeAlias = Union[bool, pl.Expr]
 StrOrExpr: TypeAlias = Union[str, pl.Expr]
-
-
-class SourceFormat(str, Enum):
-    """Supported input source formats."""
-
-    AUTO = "auto"  # Infer decode path from the column dtype (the default)
-    IMAGE_BYTES = "image_bytes"  # Decode PNG/JPEG (auto-detect)
-    BLOB = "blob"  # VIEW protocol binary
-    RAW = "raw"  # Raw bytes (requires dtype and shape)
-    FILE_PATH = "file_path"  # Read from file path (local, cloud, or HTTP URL)
-    CONTOUR = "contour"  # Contour struct data
-    LIST = "list"  # Polars nested List column (requires dtype)
-    ARRAY = "array"  # Polars fixed-size Array column (requires dtype)
 
 
 class RowErrorPolicy(str, Enum):
@@ -928,135 +915,39 @@ class SourceSpec:
         )
 
     def to_dict(self, slot_of: SlotOf) -> dict[str, Any]:
-        """Serialize for the plugin wire (see :meth:`ParamValue.to_dict`)."""
+        """Serialize for the plugin wire: the typed source of its format.
+
+        Every setting the caller gave is emitted, whichever format it is for;
+        the format's Rust definition (``src/formats/source.rs``) refuses one it
+        does not read, naming the formats it applies to. An absent setting is
+        its default. A contour canvas is one ``size`` field: ``[height,
+        width]`` or the id of the node whose buffer fixes it.
+        """
         result: dict[str, Any] = {"format": self.format.value}
         if self.dtype is not None:
             result["dtype"] = self.dtype.value
-        # Include contour-specific parameters if source is contour
-        if self.format == SourceFormat.CONTOUR:
-            if self.width is not None:
-                result["width"] = self.width.to_dict(slot_of)
-            if self.height is not None:
-                result["height"] = self.height.to_dict(slot_of)
-            if self.fill_value is not None:
-                result["fill_value"] = self.fill_value.to_dict(slot_of)
-            if self.background is not None:
-                result["background"] = self.background.to_dict(slot_of)
-            if self.shape_node is not None:
-                result["shape_node"] = self.shape_node
-        # Include require_contiguous for list/array sources ("auto" may resolve
-        # to a list/array column at runtime).
-        if self.format in (SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO):
-            result["require_contiguous"] = self.require_contiguous
-        # Cloud credentials must round-trip for file_path sources so graph
-        # execution can authenticate remote reads ("auto" may resolve to
-        # file_path from a String column at runtime).
-        if (
-            self.format in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
-            and self.cloud_options is not None
-        ):
+        if self.shape_node is not None:
+            result["size"] = self.shape_node
+        elif self.width is not None or self.height is not None:
+            result["size"] = [
+                None if p is None else p.to_wire(slot_of)
+                for p in (self.height, self.width)
+            ]
+        if self.fill_value is not None:
+            result["fill_value"] = self.fill_value.to_wire(slot_of)
+        if self.background is not None:
+            result["background"] = self.background.to_wire(slot_of)
+        if self.cloud_options is not None:
             result["cloud_options"] = self.cloud_options.to_dict()
+        if self.require_contiguous:
+            result["require_contiguous"] = True
         if self.decode_max_size is not None:
             result["decode_max_size"] = self.decode_max_size
         if self.on_error != "raise":
             result["on_error"] = self.on_error
-        # A path allowlist rides for the source formats that read paths.
-        # Emitted only when set, so an unrestricted source's spec — and the
-        # graph-cache key built from it — is byte-identical to before.
-        if (
-            self.format in (SourceFormat.FILE_PATH, SourceFormat.AUTO)
-            and self.allowed_roots is not None
-        ):
+        if self.allowed_roots is not None:
             result["allowed_roots"] = list(self.allowed_roots)
         return result
-
-
-# ---------------------------------------------------------------------------
-# Which format each spec parameter applies to
-# ---------------------------------------------------------------------------
-
-#: Which source formats each :meth:`Pipeline.source` keyword applies to.
-#:
-#: Each parameter is listed against exactly the formats whose decode path reads
-#: it. Set arithmetic where the fact is genuinely "all of them" or "all but
-#: one", so a new format does not silently fall outside a parameter that should
-#: cover it.
-SOURCE_PARAM_APPLIES: "dict[str, frozenset[SourceFormat]]" = {
-    # Every source carries an element dtype except the contour one, whose
-    # rasterize fixes u8 (`OutputDTypeRule::Fixed(U8)`).
-    "dtype": frozenset(SourceFormat) - {SourceFormat.CONTOUR},
-    # The canvas and its colours: read only by the contour decode's rasterize.
-    "width": frozenset({SourceFormat.CONTOUR}),
-    "height": frozenset({SourceFormat.CONTOUR}),
-    "shape": frozenset({SourceFormat.CONTOUR}),
-    "fill_value": frozenset({SourceFormat.CONTOUR}),
-    "background": frozenset({SourceFormat.CONTOUR}),
-    # Path reads: `file_path`, and `auto` when a String column resolves to one.
-    "cloud_options": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
-    "allowed_roots": frozenset({SourceFormat.FILE_PATH, SourceFormat.AUTO}),
-    # Zero-copy contiguity applies to the nested-column decode.
-    "require_contiguous": frozenset(
-        {SourceFormat.LIST, SourceFormat.ARRAY, SourceFormat.AUTO}
-    ),
-    # JPEG IDCT scaling, applied where bytes are decoded as an image.
-    "decode_max_size": frozenset(
-        {SourceFormat.AUTO, SourceFormat.IMAGE_BYTES, SourceFormat.FILE_PATH}
-    ),
-    # Every source can fail to decode, including a contour that will not parse.
-    "on_error": frozenset(SourceFormat),
-}
-
-#: What to do instead, for the parameters where a caller has a real
-#: alternative. Keyed by ``(kind, parameter)``.
-PARAM_HINTS: "dict[tuple[str, str], str]" = {
-    ("source", "dtype"): (
-        "rasterizing always produces u8 — use .cast(...) after the source"
-    ),
-}
-
-
-def reject_inapplicable_params(
-    *,
-    kind: str,
-    fmt: "SourceFormat",
-    supplied: "Mapping[str, Any]",
-    applies: "Mapping[str, frozenset[Any]]",
-) -> None:
-    """Reject spec parameters the chosen format never reads.
-
-    **The single answer to "does this parameter do anything here?"**, for both
-    ends of the pipeline. Each surface used to answer it per parameter and
-    differently: of the source's seven scoped keywords one raised, one warned
-    and five were dropped silently, while every scoped sink keyword but
-    ``dtype`` was dropped silently. A parameter that does nothing is not a
-    harmless no-op — ``source("image_bytes", width=224)`` reads as a decode
-    size, and ``sink("png", quality=50)`` reads as compression.
-
-    A name absent from *applies* is rejected as well as one that is present but
-    inapplicable. That is what closes an open ``**kwargs`` surface: ``.sink()``
-    took any keyword at all and serialized it into the graph, so
-    ``sink("jpeg", qualtiy=50)`` silently encoded at the default quality.
-
-    Args:
-        kind: ``"source"`` or ``"sink"``, for the message and the hint lookup.
-        fmt: The chosen format.
-        supplied: Parameter name → value, for what the caller actually passed.
-        applies: The authority for this kind (:data:`SOURCE_PARAM_APPLIES`).
-    """
-    for name in sorted(supplied):
-        formats = applies.get(name)
-        if formats is None:
-            known = ", ".join(sorted(applies))
-            raise ValueError(f"{name} is not a {kind} parameter (known: {known}).")
-        if fmt in formats:
-            continue
-        spelled = ", ".join(sorted(f.value for f in formats))
-        hint = PARAM_HINTS.get((kind, name))
-        msg = (
-            f"{name} does not apply to the '{fmt.value}' {kind} "
-            f"(it applies to: {spelled})"
-        )
-        raise ValueError(f"{msg}; {hint}." if hint else f"{msg}.")
 
 
 def is_supplied(value: Any, default: Any) -> bool:
@@ -1068,8 +959,11 @@ def is_supplied(value: Any, default: Any) -> bool:
     than answering, so comparing one would raise "the truth value of an Expr is
     ambiguous" instead of reporting it as supplied.
 
-    Only needed where a parameter surface has defaults to compare against —
-    ``.sink()`` takes ``**kwargs``, where every key present was passed.
+    ``Pipeline.source()`` sends exactly the settings the caller passed, so the
+    typed source can refuse one its format does not read; until its signature
+    stops carrying value defaults (typed-op plan P8), this is how "passed" is
+    told apart from "left at the default". ``.sink()`` takes ``**kwargs``,
+    where every key present was passed.
     """
     if value is default:
         return False

@@ -231,6 +231,8 @@ pub enum TypeDesc {
     /// An input column read as data ([`ColumnRef`]); Python passes an
     /// expression, never a value.
     Column,
+    /// A string-to-string map (`source(cloud_options=)`).
+    Map,
 }
 
 /// A type an op field may have.
@@ -266,6 +268,25 @@ impl<T: WireScalar> FieldType for Param<T> {
 impl<T: WireScalar> FieldType for Literal<T> {
     fn describe() -> TypeDesc {
         scalar_desc::<T>(false)
+    }
+    fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
+}
+
+/// Literal text (a path root, say): never per-row.
+impl FieldType for String {
+    fn describe() -> TypeDesc {
+        TypeDesc::Scalar {
+            per_row: false,
+            py: "str",
+            variants: Vec::new(),
+        }
+    }
+    fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
+}
+
+impl FieldType for std::collections::HashMap<String, String> {
+    fn describe() -> TypeDesc {
+        TypeDesc::Map
     }
     fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
 }

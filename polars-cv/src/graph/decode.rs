@@ -72,27 +72,25 @@ fn aligned_copy(bytes: &[u8]) -> polars_buffer::Buffer<u8> {
 /// * `buffer` - The polars-arrow buffer containing the data.
 /// * `offset` - Byte offset into the buffer.
 /// * `len` - Length of the data in bytes.
-/// * `source_format` - "blob" or "raw".
-/// * `dtype_str` - Required for "raw", ignored for "blob" (embedded in header).
+/// * `raw_dtype` - `Some` for a raw source (its declared element dtype),
+///   `None` for a blob (the dtype is in its header).
 pub(crate) fn decode_binary_zero_copy(
     buffer: polars_buffer::Buffer<u8>,
     offset: usize,
     len: usize,
-    source_format: &str,
-    dtype_str: Option<&str>,
+    raw_dtype: Option<view_buffer::DType>,
 ) -> Result<ViewBuffer, String> {
-    match source_format {
-        "blob" => decode_blob_zero_copy(buffer, offset, len),
-        "raw" => {
-            let dtype_s = dtype_str.ok_or("Raw source format requires dtype")?;
-            let dtype = parse_dtype_str(dtype_s)?;
+    match raw_dtype {
+        None => decode_blob_zero_copy(buffer, offset, len),
+        Some(dtype) => {
             let element_size = dtype.size_of();
             // A remainder is bytes the caller supplied that no element would
             // read; dropping them silently is a truncation, not a decode.
             if !len.is_multiple_of(element_size) {
                 return Err(format!(
-                    "Raw source: {len} bytes is not a multiple of the {dtype_s} element \
-                     size ({element_size} bytes)"
+                    "Raw source: {len} bytes is not a multiple of the {} element \
+                     size ({element_size} bytes)",
+                    dtype.short_name()
                 ));
             }
             let num_elements = len / element_size;
@@ -103,7 +101,6 @@ pub(crate) fn decode_binary_zero_copy(
                 dtype,
             ))
         }
-        other => Err(format!("Unsupported binary source format: {other}")),
     }
 }
 /// Decode a blob (VIEW protocol) with zero-copy.
@@ -200,18 +197,18 @@ pub(super) fn parse_dtype_str(dtype_str: &str) -> Result<view_buffer::DType, Str
 /// Uses zero-copy when the data is contiguous (FixedSizeList/Array types),
 /// falling back to copy-based flattening for jagged List types.
 ///
-/// If `dtype_str` is provided, it will be used. Otherwise, the dtype will be
+/// If `dtype` is provided, it will be used. Otherwise, the dtype will be
 /// inferred from the Polars column type.
 ///
 /// If `require_contiguous` is true and zero-copy is not possible, an error is returned.
 pub(crate) fn decode_list_or_array_source(
     series: &Series,
     row_idx: usize,
-    dtype_str: Option<&str>,
+    dtype: Option<view_buffer::DType>,
     require_contiguous: bool,
 ) -> Result<Option<ViewBuffer>, String> {
-    let dtype = if let Some(dtype_s) = dtype_str {
-        parse_dtype_str(dtype_s)?
+    let dtype = if let Some(dtype) = dtype {
+        dtype
     } else {
         dtype_from_polars_datatype(series.dtype()).ok_or_else(|| {
             format!(
@@ -969,7 +966,7 @@ mod array_source_view_tests {
         let s = array_column(flat.clone(), &[4]);
         let base = leaf_ptr::<u8>(&s, 0);
         for row in 0..3 {
-            let vb = decode_list_or_array_source(&s, row, Some("u8"), true)
+            let vb = decode_list_or_array_source(&s, row, Some(view_buffer::DType::U8), true)
                 .unwrap()
                 .unwrap();
             assert_eq!(vb.as_slice::<u8>(), &flat[row * 4..row * 4 + 4]);
@@ -981,7 +978,7 @@ mod array_source_view_tests {
     fn sliced_and_multi_chunk_columns_read_the_right_rows() {
         let flat: Vec<u8> = (0..12).collect();
         let sliced = array_column(flat.clone(), &[4]).slice(1, 2);
-        let vb = decode_list_or_array_source(&sliced, 0, Some("u8"), true)
+        let vb = decode_list_or_array_source(&sliced, 0, Some(view_buffer::DType::U8), true)
             .unwrap()
             .unwrap();
         assert_eq!(vb.as_slice::<u8>(), &flat[4..8]);
@@ -991,7 +988,7 @@ mod array_source_view_tests {
             .append(&array_column((100..108).collect::<Vec<u8>>(), &[4]))
             .unwrap();
         assert_eq!(chunked.n_chunks(), 2);
-        let vb = decode_list_or_array_source(&chunked, 4, Some("u8"), true)
+        let vb = decode_list_or_array_source(&chunked, 4, Some(view_buffer::DType::U8), true)
             .unwrap()
             .unwrap();
         assert_eq!(vb.as_slice::<u8>(), &[104, 105, 106, 107]);
@@ -1005,7 +1002,7 @@ mod array_source_view_tests {
     fn nested_f32_rows_are_views_too() {
         let flat: Vec<f32> = (0..16).map(|i| i as f32).collect();
         let s = array_column(flat.clone(), &[2, 4]);
-        let vb = decode_list_or_array_source(&s, 1, Some("f32"), true)
+        let vb = decode_list_or_array_source(&s, 1, Some(view_buffer::DType::F32), true)
             .unwrap()
             .unwrap();
         assert_eq!(vb.shape(), &[2, 4]);
@@ -1054,7 +1051,7 @@ mod tests {
     fn decode(blob: Vec<u8>) -> Result<view_buffer::ViewBuffer, String> {
         let len = blob.len();
         let buffer = polars_buffer::Buffer::from(blob);
-        decode_binary_zero_copy(buffer, 0, len, "blob", None)
+        decode_binary_zero_copy(buffer, 0, len, None)
     }
 
     /// data_offset for a blob whose payload directly follows shape+strides.
