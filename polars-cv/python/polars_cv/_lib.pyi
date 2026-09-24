@@ -26,6 +26,9 @@ def node_pass(
 ) -> list[int] | None:
     """Run a node-scope logical pass; the node's new op order, or ``None``."""
 
+def pass_catalog() -> str:
+    """Return the optimisation-pass catalogue as JSON (see ``tests/golden/pass_catalog.json``)."""
+
 def plan_step(
     op_json: str,
     domain: str,

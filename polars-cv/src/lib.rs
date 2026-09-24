@@ -28,7 +28,7 @@ use polars::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
-use crate::passes::node_pass;
+use crate::passes::{node_pass, pass_catalog};
 use crate::plan::plan_step;
 use serde::Deserialize;
 
@@ -49,6 +49,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
     m.add_function(wrap_pyfunction!(plan_step, m)?)?;
     m.add_function(wrap_pyfunction!(node_pass, m)?)?;
+    m.add_function(wrap_pyfunction!(pass_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;

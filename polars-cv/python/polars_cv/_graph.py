@@ -302,7 +302,7 @@ class PipelineGraph:
         crop only past ``Pointwise`` ops.
 
         Every pass is output-preserving and byte-identical when toggled (see
-        ``polars_cv._optimize.PassSpec.bit_exact``).
+        ``tests/test_optimize_equivalence.py``).
 
         The passes rewrite node pipelines in place, so the graph first takes its
         own clone of each one: ``cv.pipe(p)`` holds the caller's ``Pipeline`` by

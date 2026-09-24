@@ -3,8 +3,7 @@
 The core guarantee: toggling optimization passes changes only the *physical*
 graph, never the result the user sees. This executes representative pipelines
 under a representative set of flag combinations and asserts the outputs agree
-byte-for-byte. Every current optimization is byte-exact (``PassSpec.bit_exact``
-is ``True`` for all of them); ``TestEveryOptimizationOnOffEquivalence`` pins a
+byte-for-byte. Every optimization is byte-exact; ``TestEveryOptimizationOnOffEquivalence`` pins a
 dedicated on/off differential for each registered pass so none can be added
 without one.
 """

@@ -135,6 +135,23 @@ mod row_error_policy_tests {
         .unwrap_or_else(|e| e.to_string())
     }
 
+    /// An engine toggle the engine does not have is refused, not ignored:
+    /// `OptConfig` and the Python `OptFlags` come from one list
+    /// (`engine_passes!`), and a stray key means the two builds disagree.
+    #[test]
+    fn an_unknown_engine_toggle_is_refused() {
+        let graph = |opt: &str| {
+            UnifiedGraph::from_json(&format!(
+                r#"{{"nodes": {{}}, "outputs": {{}}, "opt": {opt}}}"#
+            ))
+            .map(|_| String::new())
+            .unwrap_or_else(|e| e.to_string())
+        };
+        assert_eq!(graph(r#"{"scalar_fusion": false}"#), "");
+        let err = graph(r#"{"scalar_fusoin": false}"#);
+        assert!(err.contains("unknown field `scalar_fusoin`"), "{err}");
+    }
+
     /// The graph's policies parse through their `NAMED` tables, the same
     /// spellings the generated Python enums send: one vocabulary, no serde
     /// `rename_all` beside it to keep in step.

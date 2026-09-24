@@ -12,44 +12,56 @@ use crate::ops::{
     ViewDto, ViewOp,
 };
 
-/// Which engine-tier (Tier-2) optimizations [`ViewExpr::optimize_with`] applies.
-///
-/// Each field toggles one output-preserving rewrite so it can be A/B differential
-/// tested (output-on == output-off). Every field defaults to `true`, and the
-/// struct is `#[serde(default)]`, so a direct view-buffer caller, an older graph
-/// spec, or a spec omitting individual keys gets the full set enabled — the
-/// historical behavior. Mandatory correctness lowering (materialization,
-/// stride-preserving views, the f64 fusion exclusion) is *not* represented here:
-/// it is not optional, so it has no toggle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct OptConfig {
-    /// Cancel `flip(a) ∘ flip(a)` (involution).
-    pub view_flip_involution: bool,
-    /// Merge `transpose(p1) ∘ transpose(p2)` into one (or identity).
-    pub view_transpose_merge: bool,
-    /// Drop a `cast(T)` whose child is already dtype `T`.
-    pub cast_identity: bool,
+/// Declares [`OptConfig`] and [`ENGINE_PASSES`] from one list, so a toggle
+/// cannot exist without its catalogue entry or the other way round.
+macro_rules! engine_passes {
+    ($($(#[doc = $doc:literal])* $name:ident: $summary:literal),+ $(,)?) => {
+        /// Which engine-tier (Tier-2) optimizations [`ViewExpr::optimize_with`]
+        /// applies.
+        ///
+        /// Each field toggles one output-preserving rewrite so it can be A/B
+        /// differential tested (output-on == output-off). Every field defaults
+        /// to `true`, and the struct is `#[serde(default)]`, so a direct
+        /// view-buffer caller, an older graph spec, or a spec omitting
+        /// individual keys gets the full set enabled — the historical behavior.
+        /// An unknown key is refused: a toggle Python names and Rust does not
+        /// have would otherwise be silently ignored. Mandatory correctness
+        /// lowering (materialization, stride-preserving views, the f64 fusion
+        /// exclusion) is *not* represented here: it is not optional, so it has
+        /// no toggle.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+        pub struct OptConfig {
+            $($(#[doc = $doc])* pub $name: bool,)+
+        }
+
+        impl Default for OptConfig {
+            fn default() -> Self {
+                Self { $($name: true,)+ }
+            }
+        }
+
+        /// Every engine-tier pass: its [`OptConfig`] field name (the
+        /// `OptFlags` field Python generates from it) and a one-line summary.
+        pub const ENGINE_PASSES: &[(&str, &str)] = &[$((stringify!($name), $summary)),+];
+    };
+}
+
+engine_passes! {
     /// Collapse `cast(inner) ∘ cast(target)` when `inner` losslessly contains the
     /// grandchild dtype and dropping it keeps the final cast on the same
     /// conversion path (a narrowing intermediate, or a float intermediate between
     /// integer input and integer target, is kept).
-    pub cast_chain_collapse: bool,
+    cast_chain_collapse: "Drop a redundant intermediate cast from a cast chain when the intermediate dtype losslessly holds the input and dropping it keeps the final cast's conversion (a narrowing intermediate quantizes, and a float between an integer input and an integer target saturates, so both are kept).",
+    /// Drop a `cast(T)` whose child is already dtype `T`.
+    cast_identity: "Drop a cast whose target dtype already equals its input dtype.",
+    /// Cancel `flip(a) ∘ flip(a)` (involution).
+    view_flip_involution: "Cancel two adjacent flips over the same axes (flip∘flip = id).",
+    /// Merge `transpose(p1) ∘ transpose(p2)` into one (or identity).
+    view_transpose_merge: "Merge two adjacent transposes into one (or into the identity).",
     /// Fuse adjacent scalar/compute ops into a single kernel.
-    pub scalar_fusion: bool,
-}
-
-impl Default for OptConfig {
-    fn default() -> Self {
-        Self {
-            view_flip_involution: true,
-            view_transpose_merge: true,
-            cast_identity: true,
-            cast_chain_collapse: true,
-            scalar_fusion: true,
-        }
-    }
+    scalar_fusion: "Fuse adjacent scalar/compute ops into one kernel (f64 chains stay unfused — a mandatory precision guard, not this toggle).",
 }
 
 /// A node in the expression graph.

@@ -60,38 +60,15 @@ class TestRegistry:
     def test_pass_names_are_unique(self) -> None:
         assert len(PASS_NAMES) == len(set(PASS_NAMES))
 
-    def test_every_pass_declares_its_equivalence_class_and_tier(self) -> None:
-        # bit_exact and tier are required (no default) so a new pass cannot omit
-        # them; tier must be one of the two known values.
+    def test_every_pass_declares_a_summary_and_a_known_tier(self) -> None:
         for spec in OPTIMIZATION_PASSES:
             assert isinstance(spec, PassSpec)
-            assert isinstance(spec.bit_exact, bool)
             assert spec.summary
             assert spec.tier in ("logical", "engine")
 
     def test_tier_partitions_the_registry(self) -> None:
         assert set(LOGICAL_PASS_NAMES) | set(ENGINE_PASS_NAMES) == set(PASS_NAMES)
         assert set(LOGICAL_PASS_NAMES).isdisjoint(ENGINE_PASS_NAMES)
-
-    def test_flags_match_registry_both_directions(self) -> None:
-        """Every registered pass has an OptFlags field and vice versa.
-
-        The canonical-path guard: a pass without a switch, or a switch without a
-        pass, fails here rather than silently diverging. Covers both tiers.
-        """
-        flag_fields = {f.name for f in dataclasses.fields(OptFlags)}
-        assert flag_fields == set(PASS_NAMES)
-
-    def test_every_logical_pass_is_a_rust_pass(self) -> None:
-        """The logical passes are exactly the Rust ``LogicalPass`` variants.
-
-        Rust runs the node-scope ones (``node_pass``) and names all of them;
-        a logical pass Rust does not know would fail ``optimize()``, and a Rust
-        pass missing here would never be toggled or applied.
-        """
-        from polars_cv._ops_generated import LogicalPass
-
-        assert set(LOGICAL_PASS_NAMES) == {p.value for p in LogicalPass}
 
     def test_every_flag_field_is_boolean_defaulting_on(self) -> None:
         defaults = OptFlags()
