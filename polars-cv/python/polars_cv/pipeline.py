@@ -4772,13 +4772,6 @@ class Pipeline:
 
         Used for graph serialization where sink is handled separately.
 
-        The node-level ``domain``/``output_dtype`` are Python-side
-        visualization metadata (consumed by ``_graph_viz.parse_logical_graph``
-        for intermediate nodes, which the terminal-only ``OutputSpec`` cannot
-        supply). Rust's ``GraphNode`` declares but ignores them, computing its
-        own schema from the ops; both are derived from the same ``op_schema``
-        authority, so they cannot drift.
-
         Serialization only serializes: it emits ``self._ops`` verbatim and runs
         no optimization — every pass is applied by ``PipelineGraph.optimize``
         before serialization (see ``polars_cv._optimize``).
@@ -4790,16 +4783,12 @@ class Pipeline:
         ``expected_shape`` on the output spec, which Rust does read.
 
         Returns:
-            Dictionary with source, ops, domain, and output_dtype.
+            Dictionary with source and ops.
         """
-        spec: dict = {
+        return {
             "source": self._source.to_dict() if self._source else None,
             "ops": [op.to_dict() for op in self._ops],
-            "domain": self._current_domain,
-            "output_dtype": self._output_dtype,
         }
-
-        return spec
 
     # --- Serialization ---
 
