@@ -132,6 +132,22 @@ REMOVED: tuple[Removed, ...] = (
     Removed("resolve_bool", "P3: Param<bool> reads its column directly"),
     Removed("_add_binary_op", "P3: Pipeline._add_node_op encodes by catalogue"),
     Removed("_add_channel_merge", "P3: Pipeline._add_node_op encodes by catalogue"),
+    # Typed-op P3 exit: every op is typed, so the name-keyed legacy resolution
+    # and everything that served it are gone. `LEGACY_OPS`/`LegacyOpSpec` stay
+    # (empty / unreachable from the wire) until P6 deletes the protocol.
+    Removed("resolve_op_inner", "P3: every op resolves through OpDef"),
+    Removed("OpParams", "P3: serde rejects an unknown field on a typed op"),
+    Removed("req_enum", "P3: Param<Enum> fields"),
+    Removed("opt_enum", "P3: Param<Enum> fields"),
+    Removed("resolve_str", "P3: Param<Enum> reads its column directly"),
+    Removed("resolve_string", "P3: Literal<T> structural fields"),
+    Removed("legacy_probe_spec", "P3: typed ops probe through their slots"),
+    Removed("resolve_rasterize_style", "P3: Rasterize::with_size"),
+    Removed("_enum_param", "P3: _encode_field encodes Param<Enum> fields"),
+    Removed("strict_param_tests", "P3: typed rejection table in ops::tests"),
+    Removed("unread_param_tests", "P3: deny_unknown_fields on every op"),
+    Removed("resolve_op_arms_are_all_known_ops", "P3: no name-keyed arms"),
+    Removed("known_ops_all_resolve", "P3: no name-keyed arms"),
 )
 
 

@@ -27,6 +27,7 @@ pub mod filter;
 pub mod geometry;
 pub mod histogram;
 pub mod image;
+pub mod label;
 pub mod param;
 pub mod phash;
 pub mod reduce;
@@ -37,7 +38,7 @@ use serde::Serialize;
 
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
-pub use param::{FieldType, Literal, Param, TypeDesc};
+pub use param::{ColumnRef, FieldType, Literal, NodeRef, Param, TypeDesc};
 
 /// One field of an op, as the catalogue describes it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -221,12 +222,15 @@ typed_ops! {
     "erode" => Erode(image::Erode) {"ksize": 3, "iterations": 1},
     "extract_contours" => ExtractContours(geometry::ExtractContours)
         {"mode": "tree", "method": "none", "min_area": 2.0},
+    "extract_shape" => ExtractShape(reduce::ExtractShape) {},
     "flip" => Flip(view::Flip) {"axes": [1]},
     "floor" => Floor(compute::Floor) {},
     "grayscale" => Grayscale(image::Grayscale) {},
     "histogram" => Histogram(histogram::Histogram)
         {"bins": 8, "range": null, "closed": "left", "output": "counts"},
     "invert" => Invert(compute::Invert) {},
+    "label_reduce" => LabelReduce(label::LabelReduce)
+        {"contours": {"$slot": 1}, "reduction": "mean", "region_mode": "bbox"},
     "letterbox" => Letterbox(image::Letterbox)
         {"height": 4, "width": 4, "value": 0.0, "filter": "bilinear"},
     "maximum" => Maximum(binary::Maximum) {"other": "n0"},
@@ -241,6 +245,7 @@ typed_ops! {
     "pad_to_size" => PadToSize(image::PadToSize)
         {"height": 4, "width": 4, "position": "center", "value": 0.0},
     "perceptual_hash" => PerceptualHash(phash::PerceptualHash) {"algorithm": "perceptual", "hash_size": 64},
+    "rasterize" => Rasterize(geometry::Rasterize) {"size": [8, 6], "fill_value": 1, "background": 0},
     "ratio" => Ratio(binary::Ratio) {"other": "n0"},
     "reciprocal" => Reciprocal(compute::Reciprocal) {},
     "reduce_argmax" => ReduceArgmax(reduce::ReduceArgmax) {"axis": 0},
@@ -520,7 +525,7 @@ mod tests {
     }
 
     /// A present but invalid value is an error naming the field — never read
-    /// as a default. Ported from the legacy `strict_param_tests` as each op
+    /// as a default. Ported from the legacy strict-parameter tests as each op
     /// migrated; the serde error is now what enforces it.
     #[test]
     fn an_invalid_value_is_rejected_naming_its_field() {
@@ -607,6 +612,32 @@ mod tests {
                 "'other'",
                 "graph node id",
             ),
+            (
+                json!({"op": "label_reduce", "contours": [[0, 0]],
+                    "reduction": "max", "region_mode": "interior"}),
+                "'contours'",
+                "expression",
+            ),
+            (
+                json!({"op": "rasterize", "size": [8], "fill_value": 255, "background": 0}),
+                "'size'",
+                "",
+            ),
+            (
+                json!({"op": "rasterize", "size": [8, 8], "fill_value": "red", "background": 0}),
+                "'fill_value'",
+                "",
+            ),
+            (
+                json!({"op": "rasterize", "size": [8, 8], "fill_value": 300, "background": 0}),
+                "'fill_value'",
+                "",
+            ),
+            (
+                json!({"op": "rasterize", "size": [8, 8], "fill_value": 255, "background": -1}),
+                "'background'",
+                "",
+            ),
         ];
         for (spec, field, also) in cases {
             let err = parse_err(spec.clone());
@@ -647,6 +678,30 @@ mod tests {
         assert_eq!(binary, BinaryOp::NAMED.len());
     }
 
+    /// `rasterize(shape=<node>)` takes its canvas from another node's buffer,
+    /// which only the graph executor has. A plan-time probe sees dimensions
+    /// that vary with the probe (so the planner reports them unknown); any
+    /// other resolution is a compile path that skipped the executor's
+    /// special case, and must fail rather than invent a size.
+    #[test]
+    fn a_node_sized_rasterize_resolves_only_under_a_probe() {
+        let op = TypedOp::from_fields(
+            "rasterize",
+            json!({"size": "n0", "fill_value": 255, "background": 0}),
+        )
+        .unwrap()
+        .unwrap();
+        let err = op.resolve(0, &ParamCtx::empty()).unwrap_err().to_string();
+        assert!(err.contains("graph executor"), "{err}");
+        let dims = |probe: i64| match op.resolve(0, &ParamCtx::probe(&[], probe)).unwrap() {
+            GraphStep::Geometry(view_buffer::GeometryOp::Rasterize { width, height, .. }) => {
+                (width, height)
+            }
+            step => panic!("{step:?}"),
+        };
+        assert_ne!(dims(3), dims(5));
+    }
+
     #[test]
     fn channel_merge_needs_another_channel() {
         let op = TypedOp::from_fields("channel_merge", json!({"others": []}))
@@ -658,7 +713,7 @@ mod tests {
 
     #[test]
     fn a_measure_with_no_parameters_refuses_a_stray_one() {
-        // `unread_param_tests` pinned this on the legacy tracker with
+        // The legacy unread-parameter tracker pinned this with
         // `contour_perimeter`; the typed form refuses the key at the boundary.
         for op in [
             "contour_perimeter",

@@ -5,18 +5,14 @@ This binds together the canonical ``NAMED`` tables (view-buffer), the
 executor's parameter parsers, and the actual kernels — a renamed or
 mis-tabled variant fails here, not in a user's pipeline.
 
-Invalid values are rejected at two independent layers, each with its own
-tests: the Python builders raise ``ValueError`` (builder unit tests), and the
-Rust executor rejects unknown strings / wrong types / out-of-range values
-(``strict_param_tests`` in ``execute.rs``). This file also carries a source
-ratchet asserting the two historic error-swallowing idioms never return to
-``resolve_op``.
+Invalid values are rejected by each op's typed Rust definition, which refuses
+unknown strings / wrong types / out-of-range values when the pipeline is built
+(``ops::tests::an_invalid_value_is_rejected_naming_its_field``).
 """
 
 from __future__ import annotations
 
 import io
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -257,44 +253,6 @@ class TestEnumValuesExecutable:
             .extract_contours(method=method)
         )
         _run(pipe, "native", image_bytes)
-
-
-class TestParamPolicyRatchet:
-    """Source ratchet: the two historic error-swallowing idioms must never
-    return to ``resolve_op``. The policy (absent optional -> default,
-    present-but-invalid -> error) is implemented by ``params::get`` and
-    behaviorally guarded by ``strict_param_tests`` in execute.rs; this scan
-    only blocks the exact known-bad shortcuts."""
-
-    def test_no_error_swallowing_in_resolve_op(self) -> None:
-        execute_rs = Path(__file__).parent.parent / "src" / "execute.rs"
-        src = execute_rs.read_text()
-
-        # The positive half. Both assertions below are "this string is absent",
-        # which is also true of a file that no longer mentions `resolve_usize`
-        # at all or no longer routes parameters through `params::get` -- a
-        # rename, a move, or a rewrite would leave this scan green while
-        # checking nothing. Confirm the idioms it is ratcheting *against* still
-        # have something to be ratcheted against.
-        assert "resolve_usize" in src, (
-            "execute.rs no longer mentions resolve_usize, so the two "
-            "assertions below hold vacuously. Either the resolver was renamed "
-            "(update this scan) or this file is no longer where parameters are "
-            "resolved (move it)."
-        )
-        assert "get::" in src, (
-            "execute.rs no longer calls params::get, which is the policy these "
-            "assertions exist to protect; this scan is guarding nothing."
-        )
-
-        assert ".resolve_usize(row_idx, ctx).ok()" not in src, (
-            "resolve_op swallows a parameter resolution error into None; "
-            "use params::get::maybe_usize instead"
-        )
-        assert ".resolve_usize(row_idx, ctx).unwrap_or(" not in src, (
-            "resolve_op swallows a parameter resolution error into a default; "
-            "use params::get::opt_* instead"
-        )
 
 
 @plugin_required
@@ -901,3 +859,16 @@ class TestInputSlotsAreValidated:
         df = pl.DataFrame({"c": [self.SQUARE], "w": [10.0]})
         with pytest.raises(Exception, match="input slot"):
             df.with_columns(n=self._call({"ref_width": 7}, [pl.col("w")]))
+
+
+def test_label_reduce_contours_must_be_an_expression() -> None:
+    """``label_reduce(contours=)`` is an operand column, never a value.
+
+    The step reads the whole row's contour list out of that input column, so a
+    literal has nowhere to go: it must be refused while the pipeline is built,
+    naming the parameter, not reach execution as a bogus slot.
+    """
+    pipe = Pipeline().source("image_bytes").grayscale()
+    for literal in ([[(0, 0), (1, 0), (1, 1)]], "contours", 3):
+        with pytest.raises(TypeError, match=r"contours.*Polars expression"):
+            pipe.label_reduce(contours=literal)  # type: ignore[arg-type]

@@ -2,8 +2,8 @@
 
 A parameter is *expression-eligible* iff its value has no effect on the output
 shape, rank or dtype — the rule stated in the root ``CLAUDE.md`` — and the way
-a parameter opts in is ``Pipeline._track_expr`` (directly, via
-``_enum_param``, or — for a typed op — ``_encode_field`` on a ``Param`` field). The visible
+a parameter opts in is ``Pipeline._track_expr`` (directly, or — for a typed
+op — through ``_encode_field`` on a ``Param`` field). The visible
 consequence of opting in is the annotation: ``IntOrExpr``, ``FloatOrExpr``,
 ``BoolOrExpr``, ``StrOrExpr`` or a bare ``pl.Expr`` union.
 

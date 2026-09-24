@@ -25,8 +25,6 @@ from polars_cv._types import (
     FloatOrExpr,
     HashAlgorithm,
     IntOrExpr,
-    LabelReduction,
-    LabelRegionMode,
     NullParamPolicy,
     OpSpec,
     ParamValue,
@@ -176,8 +174,8 @@ def _names_nodes(ty: "dict[str, Any]") -> bool:
     """Whether a catalogue field type holds a graph-node reference."""
     if ty["kind"] == "node":
         return True
-    inner = ty.get("inner")
-    return inner is not None and _names_nodes(inner)
+    nested = [ty["inner"]] if "inner" in ty else ty.get("options", [])
+    return any(_names_nodes(t) for t in nested)
 
 
 def _output_shape_equals_input(
@@ -255,30 +253,6 @@ def _asserted_rank(dims: "Sequence[int | None]") -> int:
             )
             raise ValueError(msg)
     return len(dims)
-
-
-def _enum_param(
-    value: "str | pl.Expr",
-    enum_cls: type,
-    label: str,
-    track: "Callable[[Any], ParamValue]",
-) -> "ParamValue":
-    """Build an enum-valued parameter that may vary per row.
-
-    A literal is validated eagerly against *enum_cls*, exactly as
-    :func:`_validate_enum` does. An expression cannot be checked at build time,
-    so validation moves to execution, where Rust rejects an unknown value with
-    the same "expected one of [...]" error.
-
-    Only use this for enums with **no effect on output shape, rank or dtype** —
-    the invariant that lets plan-time shape probing substitute the default (see
-    ``ParamCtx::probe`` in ``params.rs``). Structural enums (``cast(dtype)``,
-    ``normalize(method)``, ``histogram(output)``) must stay on
-    :func:`_validate_enum` plus a literal ``ParamValue``.
-    """
-    if isinstance(value, pl.Expr):
-        return track(value)
-    return ParamValue(is_expr=False, value=_validate_enum(value, enum_cls, label).value)
 
 
 def _same(value: "Any") -> "Any":
@@ -362,6 +336,13 @@ def _encode_field(
     kind = ty["kind"]
     if kind == "optional":
         return None if value is None else _encode_field(p, value, ty["inner"], where)
+    if kind == "column":
+        # An input column the step reads as data (`label_reduce(contours=)`):
+        # only an expression has a column to give.
+        if not isinstance(value, pl.Expr):
+            msg = f"{where} must be a Polars expression, got {type(value).__name__}"
+            raise TypeError(msg)
+        return p._track_expr(value)
     if kind == "node":
         # An operand expression crosses as its node id; the graph wiring
         # (upstream edges) is the lazy layer's job, not the op's.
@@ -1377,22 +1358,22 @@ class Pipeline(_OpsMixin):
         Args:
             shape: The node a ``shape=`` source takes its canvas from, or
                 ``None`` for the explicit ``width``/``height`` form. Carried
-                into the spec as ``shape_ref`` so the op's own contract reports
+                into the spec as its ``size`` so the op's own contract reports
                 the canvas as unknown, and read for its published H/W below —
                 the two halves ``rasterize(shape=)`` also uses.
         """
         source = self._source
         assert source is not None  # set by the caller, immediately above
+        if shape is not None:
+            size = ParamValue(is_expr=False, value=shape._node_id)
+        else:
+            # Both are present together; the builder rejected a lone one above.
+            size = ParamValue(is_expr=False, value=[source.height, source.width])
         params: dict[str, ParamValue] = {
+            "size": size,
             "fill_value": source.fill_value,
             "background": source.background,
         }  # ty: ignore[invalid-assignment]
-        if shape is not None:
-            params["shape_ref"] = ParamValue(is_expr=False, value=shape._node_id)
-        else:
-            # Both are present together; the builder rejected a lone one above.
-            params["width"] = source.width  # ty: ignore[invalid-assignment]
-            params["height"] = source.height  # ty: ignore[invalid-assignment]
         spec = OpSpec(op="rasterize", params=params)
         contract = _op_contract_for(spec)
 
@@ -2489,116 +2470,43 @@ class Pipeline(_OpsMixin):
             msg = "Specify width/height or shape, not both"
             raise ValueError(msg)
 
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {
-                "fill_value": p._track_expr(fill_value),
-                "background": p._track_expr(background),
-            }
+        if shape is None:
+            if width is None or height is None:
+                msg = "Both width and height must be specified"
+                raise ValueError(msg)
+            # H/W come from `GeometryOp::Rasterize::infer_shape` and the
+            # single-channel output from the op's `fixed:1` channel rule; none
+            # of it is re-derived here.
+            return self._rasterize(
+                size=[height, width], fill_value=fill_value, background=background
+            )
 
-            if has_explicit:
-                if width is None or height is None:
-                    msg = "Both width and height must be specified"
-                    raise ValueError(msg)
-                params["width"] = p._track_expr(width)
-                params["height"] = p._track_expr(height)
-                # No hint assignment here: the canvas size is fixed by these
-                # params, so `GeometryOp::Rasterize::infer_shape` is the
-                # authority and `_push_op` reads it via `op_infer_shape`.
-                # Setting the hints here instead made them a side effect of
-                # building the params, which the lazy continuation replay
-                # (which re-pushes an already-built spec) silently skipped.
-            else:
-                # 'shape' parameter - store as reference for graph composition.
-                # This will be resolved during graph execution.
-                from polars_cv.lazy import LazyPipelineExpr
+        from polars_cv.lazy import LazyPipelineExpr
 
-                if not isinstance(shape, LazyPipelineExpr):
-                    msg = "'shape' must be a LazyPipelineExpr"
-                    raise TypeError(msg)
-                params["shape_ref"] = ParamValue(is_expr=False, value=shape._node_id)
-                # The referenced node must execute before this one; graph wiring
-                # (cv.pipe / LazyPipelineExpr.pipe) adds it as an upstream dep.
-                p._shape_refs.append(shape)
-                # Recorded as an assertion at this op's position: the canvas
-                # comes from another node's buffer, so no contract on *this*
-                # op can supply it. Assertions are replayed positionally, so
-                # this survives a continuation like a user `assert_shape`.
-                # Recorded one position *past* this op, so it is applied after
-                # the op's own (unknown) inferred shape rather than before.
-                #
-                # Tagged `shape_ref`, not `assert_shape`: the canvas comes from
-                # another node's *inferred* hints, so if execution disagrees
-                # that is a contract bug and keeps the contract-bug wording.
-                asserted = p._assertions.setdefault(
-                    len(p._ops) + 1, ShapeAssertion(source="shape_ref")
-                )
-                for dim, concrete in Pipeline._shape_ref_dims(shape).items():
-                    setattr(p._shape_hints, dim, concrete)
-                    asserted.dims[dim] = concrete
-            return params
-
-        # H/W come from `GeometryOp::Rasterize::infer_shape` for the explicit
-        # width/height form, and from the referenced node for the `shape=`
-        # form; the single-channel output comes from the op's `fixed:1`
-        # channel rule. None of it is re-derived here.
-        return self._append_op("rasterize", _params)
-
-    # --- Buffer Reduction Operations (buffer → scalar) ---
-
-    def extract_shape(self) -> "Pipeline":
-        """
-        Extract buffer shape as a struct {height, width, channels}.
-
-        Domain transition: buffer → vector
-        """
-        return self._append_op("extract_shape", lambda p: {})
-
-    def label_reduce(
-        self,
-        *,
-        contours: pl.Expr,
-        reduction: str | pl.Expr = "max",
-        region_mode: str | pl.Expr = "interior",
-    ) -> "Pipeline":
-        """
-        Score contour regions against the current buffer values.
-
-        This is the buffer-space variant of label reduction. It accepts contours
-        via a Polars expression and returns one score per contour.
-
-        Domain transition: buffer -> vector
-
-        Args:
-            contours: Contour-set expression (`List[Contour]`) to score.
-            reduction: Reduction over contour region values (`"max"`, `"mean"`, `"sum"`).
-            region_mode: Region selection mode.
-                ``"interior"`` — only pixels strictly inside the contour polygon.
-                ``"boundary"`` — interior pixels *plus* pixels on the contour boundary
-                (avoids zero-score artifacts for sub-pixel contours).
-                ``"bbox"`` — all pixels within the bounding box.
-
-        Returns:
-            New pipeline with label reduction appended.
-
-        Raises:
-            ValueError: If current domain is not buffer or args are invalid.
-            TypeError: If `contours` is not a Polars expression.
-        """
-        if not isinstance(contours, pl.Expr):
-            msg = "`contours` must be a Polars expression"
+        if not isinstance(shape, LazyPipelineExpr):
+            msg = "'shape' must be a LazyPipelineExpr"
             raise TypeError(msg)
-        return self._append_op(
-            "label_reduce",
-            lambda p: {
-                "contours": p._track_expr(contours),
-                "reduction": _enum_param(
-                    reduction, LabelReduction, "reduction", p._track_expr
-                ),
-                "region_mode": _enum_param(
-                    region_mode, LabelRegionMode, "region_mode", p._track_expr
-                ),
-            },
+        new = self._rasterize(size=shape, fill_value=fill_value, background=background)
+        # The referenced node must execute before this one; graph wiring
+        # (cv.pipe / LazyPipelineExpr.pipe) adds it as an upstream dep.
+        new._shape_refs.append(shape)
+        # The canvas comes from another node's buffer, so no contract on this
+        # op can supply it: it is recorded as an assertion at this op's
+        # position, which the lazy continuation replays like a user
+        # `assert_shape`, and applied the way `_push_op` applies one — last,
+        # over the op's own (unknown) inferred size.
+        #
+        # Tagged `shape_ref`, not `assert_shape`: the canvas comes from another
+        # node's *inferred* hints, so if execution disagrees that is a contract
+        # bug and keeps the contract-bug wording.
+        position = len(new._ops)
+        asserted = new._assertions.setdefault(
+            position, ShapeAssertion(source="shape_ref")
         )
+        for dim, concrete in Pipeline._shape_ref_dims(shape).items():
+            asserted.dims[dim] = concrete
+        new._apply_assertions_at(position)
+        return new
 
     def scale_contour(
         self,

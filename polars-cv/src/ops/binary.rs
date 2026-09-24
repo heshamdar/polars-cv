@@ -9,8 +9,7 @@ use polars_cv_macros::Op;
 use serde::{Deserialize, Serialize};
 use view_buffer::BinaryOp;
 
-use super::param::NodeRef;
-use super::{OpDef, Param};
+use super::{NodeRef, OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
 

@@ -66,7 +66,7 @@ fn variant_name(dto: &ViewDto) -> &'static str {
 /// enum's variants without a derive or a second list, and a second list is what
 /// this is replacing. The parse asserts it found a plausible match rather than
 /// silently matching nothing — the failure mode a scan has to be protected
-/// from. Same shape as `resolve_op_arms_are_all_known_ops` in the plugin crate.
+/// from.
 fn acknowledged_variants() -> Vec<String> {
     let src = include_str!("apply_op_coverage.rs");
     let body = src

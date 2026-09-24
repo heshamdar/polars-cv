@@ -34,6 +34,12 @@ pub enum Param<T> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Literal<T>(pub T);
 
+/// An input column the step reads as *data* — `label_reduce`'s contour set —
+/// rather than a parameter value resolved per row. Always a slot: a literal
+/// has nowhere to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColumnRef(pub usize);
+
 /// Another graph node, by id: the operand of a binary op, a mask, a merged
 /// channel. Graph topology, so never per-row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +169,25 @@ impl<'de, T: WireScalar> Deserialize<'de> for Literal<T> {
     }
 }
 
+impl Serialize for ColumnRef {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        Param::<i64>::Slot(self.0).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for ColumnRef {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        match as_slot(&value) {
+            Some(slot) => slot.map(ColumnRef).map_err(D::Error::custom),
+            None => Err(D::Error::custom(format!(
+                "this parameter is an input column and must be a Polars \
+                 expression, got the literal {value}"
+            ))),
+        }
+    }
+}
+
 impl Serialize for NodeRef {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&self.0)
@@ -203,6 +228,9 @@ pub enum TypeDesc {
     OneOf { options: Vec<TypeDesc> },
     /// Another graph node ([`NodeRef`]); Python passes the operand expression.
     Node,
+    /// An input column read as data ([`ColumnRef`]); Python passes an
+    /// expression, never a value.
+    Column,
 }
 
 /// A type an op field may have.
@@ -240,6 +268,15 @@ impl<T: WireScalar> FieldType for Literal<T> {
         scalar_desc::<T>(false)
     }
     fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
+}
+
+impl FieldType for ColumnRef {
+    fn describe() -> TypeDesc {
+        TypeDesc::Column
+    }
+    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
+        f(self.0);
+    }
 }
 
 impl FieldType for NodeRef {

@@ -623,32 +623,21 @@ mod tests {
     /// via `resolve_op` must actually execute. This is the geometry analog of
     /// view-buffer's `apply_op_coverage` probe.
     ///
-    /// `GeometryOp` now carries only variants the graph routes, so a variant
+    /// `GeometryOp` carries only variants the graph routes, so a variant
     /// `execute_geometry_op` cannot handle is a non-exhaustive-match compile
     /// error rather than a runtime string. What remains for this test is the
-    /// other direction: that resolving and running each op *works*, and that the
-    /// `probe_params` table lists exactly the geometry ops `resolve_op` produces,
-    /// so registering a new one without a probe fails here rather than silently
-    /// escaping coverage.
+    /// other direction: that resolving and running each op *works*. Every
+    /// registered op carries a sample, so a new geometry op is covered by
+    /// registering it.
     #[test]
     fn every_graph_geometry_op_executes() {
-        use crate::execute::{resolve_op, LEGACY_OPS};
+        use crate::execute::resolve_op;
         use crate::graph::step::GraphStep;
-        use crate::params::{ParamCtx, ParamValue};
+        use crate::params::ParamCtx;
         use crate::pipeline::OpSpec;
-        use serde_json::json;
-        use std::collections::{BTreeSet, HashMap};
         use view_buffer::geometry::Contour;
         use view_buffer::ops::{Domain, NodeOutput};
         use view_buffer::ViewBuffer;
-
-        // Representative params for every geometry-producing op.
-        fn probe_params(op: &str) -> Option<Vec<(&'static str, serde_json::Value)>> {
-            Some(match op {
-                "rasterize" => vec![("width", json!(8)), ("height", json!(8))],
-                _ => return None,
-            })
-        }
 
         let sample_contours = || {
             NodeOutput::from_contours(vec![Contour::from_tuples(&[
@@ -665,41 +654,7 @@ mod tests {
             ))
         };
 
-        let mut executed: BTreeSet<&str> = BTreeSet::new();
-        for &op_name in LEGACY_OPS {
-            let params: HashMap<String, ParamValue> = probe_params(op_name)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), ParamValue::Literal { value: v }))
-                .collect();
-            let spec = OpSpec::Legacy(crate::pipeline::LegacyOpSpec {
-                op: op_name.to_string(),
-                params,
-            });
-            // Non-geometry ops may need params we didn't supply — not our concern.
-            let step = match resolve_op(&spec, 0, &ParamCtx::empty()) {
-                Ok(step) => step,
-                Err(_) => continue,
-            };
-            let GraphStep::Geometry(geo) = step else {
-                continue;
-            };
-            executed.insert(op_name);
-
-            let input = if geo.input_domain() == Domain::Buffer {
-                sample_buffer()
-            } else {
-                sample_contours()
-            };
-            if let Err(err) = execute_geometry_op(input, &geo) {
-                panic!(
-                    "graph op '{op_name}' resolves to GeometryOp::{geo:?} but does \
-                     not execute: {err}"
-                );
-            }
-        }
-
-        // Typed ops carry their own samples; a geometry one must execute too.
+        let mut executed = 0;
         for op in crate::ops::TypedOp::samples() {
             let name = op.name();
             let step = resolve_op(&OpSpec::Typed(op), 0, &ParamCtx::empty())
@@ -711,24 +666,13 @@ mod tests {
                     sample_contours()
                 };
                 if let Err(err) = execute_geometry_op(input, &geo) {
-                    panic!("typed op '{name}' resolves to {geo:?} but does not execute: {err}");
+                    panic!("op '{name}' resolves to {geo:?} but does not execute: {err}");
                 }
+                executed += 1;
             }
         }
-
-        // Ratchet: the probe table must match exactly the geometry ops that
-        // `resolve_op` actually produces, so a newly-registered graph geometry
-        // op cannot be added without a probe (and a removed one cannot leave a
-        // stale probe behind).
-        let probed: BTreeSet<&str> = LEGACY_OPS
-            .iter()
-            .copied()
-            .filter(|n| probe_params(n).is_some())
-            .collect();
-        assert_eq!(
-            probed, executed,
-            "geometry probe table out of sync with the graph's geometry ops"
-        );
+        // extract_contours, rasterize, four measures, four transforms.
+        assert!(executed >= 10, "only {executed} geometry ops executed");
     }
 
     #[test]

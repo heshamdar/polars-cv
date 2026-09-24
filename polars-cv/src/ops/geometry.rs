@@ -1,13 +1,14 @@
-//! Contour extraction (buffer → contour), measures and transforms (contour →
-//! scalar, vector or contour).
+//! Contour extraction (buffer → contour), rasterization (contour → buffer),
+//! measures and transforms (contour → scalar, vector or contour).
 
 use polars::prelude::*;
 use polars_cv_macros::Op;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use view_buffer::geometry::ops::{ApproxMethod, ExtractMode, ScaleOrigin};
 use view_buffer::GeometryOp;
 
-use super::{OpDef, Param};
+use super::{FieldType, NodeRef, OpDef, Param, TypeDesc};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
 
@@ -186,5 +187,127 @@ impl OpDef for ContourSimplify {
         geometry(GeometryOp::Simplify {
             tolerance: tolerance.resolve(row, ctx)?,
         })
+    }
+}
+
+/// Rasterize contours to a mask.
+///
+/// The builder is ``Pipeline.rasterize``, whose ``width``/``height`` or
+/// ``shape`` arguments become ``size``; it also records the shape reference's
+/// graph dependency and its canvas assertion.
+///
+/// Domain transition: contour → buffer
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
+#[serde(deny_unknown_fields)]
+#[op(visibility = "internal")]
+pub struct Rasterize {
+    /// ``[height, width]`` of the mask (each may be a Polars expression), or
+    /// another node whose buffer's height and width the mask takes.
+    pub size: RasterSize,
+    /// Inside value (default 255). Accepts a Polars expression for per-row
+    /// dynamic values.
+    #[param(default = 255)]
+    pub fill_value: Param<u8>,
+    /// Outside value (default 0). Accepts a Polars expression for per-row
+    /// dynamic values.
+    #[param(default = 0)]
+    pub background: Param<u8>,
+}
+
+/// Where a rasterized mask's canvas size comes from.
+///
+/// Two variants rather than optional width/height plus an optional node, so a
+/// spec cannot carry both and have one ignored. On the wire a string is a node
+/// id, anything else the `[height, width]` pair.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum RasterSize {
+    /// Explicit `[height, width]`.
+    Fixed([Param<u32>; 2]),
+    /// The height and width of another node's buffer, known only when the
+    /// graph executor has run that node (`CompiledGraph`'s
+    /// `OpResolver::RasterizeShapeRef`).
+    FromNode(NodeRef),
+}
+
+impl<'de> Deserialize<'de> for RasterSize {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        if value.is_string() {
+            serde_json::from_value(value).map(RasterSize::FromNode)
+        } else {
+            serde_json::from_value(value).map(RasterSize::Fixed)
+        }
+        .map_err(D::Error::custom)
+    }
+}
+
+impl FieldType for RasterSize {
+    fn describe() -> TypeDesc {
+        TypeDesc::OneOf {
+            options: vec![
+                <[Param<u32>; 2] as FieldType>::describe(),
+                <NodeRef as FieldType>::describe(),
+            ],
+        }
+    }
+    fn visit_slots(&self, f: &mut dyn FnMut(usize)) {
+        match self {
+            RasterSize::Fixed(dims) => dims.visit_slots(f),
+            RasterSize::FromNode(node) => node.visit_slots(f),
+        }
+    }
+}
+
+impl Rasterize {
+    /// The engine op for a canvas of `width` x `height`, with this op's fill
+    /// and background resolved for `row`. The one place both size forms
+    /// become a `GeometryOp`.
+    pub(crate) fn with_size(
+        &self,
+        width: u32,
+        height: u32,
+        row: usize,
+        ctx: &ParamCtx,
+    ) -> PolarsResult<GeometryOp> {
+        Ok(GeometryOp::Rasterize {
+            width,
+            height,
+            fill_value: self.fill_value.resolve(row, ctx)?,
+            background: self.background.resolve(row, ctx)?,
+        })
+    }
+}
+
+impl OpDef for Rasterize {
+    fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
+        let Rasterize {
+            size,
+            fill_value: _,
+            background: _,
+        } = self;
+        let (width, height) = match size {
+            RasterSize::Fixed([height, width]) => {
+                (width.resolve(row, ctx)?, height.resolve(row, ctx)?)
+            }
+            // A plan-time probe reads its placeholder, so the dimensions vary
+            // across probes and the planner reports them unknown; the
+            // builder's canvas assertion then supplies what it knows.
+            RasterSize::FromNode(_) => match ctx.probe_value() {
+                Some(probe) => {
+                    let dim = u32::try_from(probe).map_err(
+                        |_| polars_err!(ComputeError: "probe value {} is not a dimension", probe),
+                    )?;
+                    (dim, dim)
+                }
+                None => polars_bail!(ComputeError:
+                    "rasterize(shape=<node>) takes its size from another node's \
+                     buffer, which only the graph executor has; this spec reached \
+                     a path that resolves it without one"),
+            },
+        };
+        Ok(GraphStep::Geometry(
+            self.with_size(width, height, row, ctx)?,
+        ))
     }
 }

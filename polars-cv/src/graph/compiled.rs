@@ -37,8 +37,10 @@ use crate::contour::parse_contour_list;
 use crate::execute::{
     decode_contour_source, decode_contour_source_with_dims, decode_image_bytes, resolve_op,
 };
+use crate::ops::geometry::RasterSize;
+use crate::ops::{NodeRef, TypedOp};
 use crate::params::{ParamCtx, ParamValue};
-use crate::pipeline::{LegacyOpSpec, OpSpec};
+use crate::pipeline::OpSpec;
 
 use super::step::GraphStep;
 
@@ -67,7 +69,7 @@ pub(crate) enum OpResolver {
     /// dependency, so it has already run); the remaining params resolve from
     /// the spec like any dynamic op.
     RasterizeShapeRef {
-        spec: LegacyOpSpec,
+        op: crate::ops::geometry::Rasterize,
         shape_node: String,
     },
 }
@@ -76,7 +78,7 @@ pub(crate) enum OpResolver {
 enum ResolvedStep<'a> {
     Step(Cow<'a, GraphStep>),
     RasterizeShapeRef {
-        spec: &'a LegacyOpSpec,
+        op: &'a crate::ops::geometry::Rasterize,
         shape_node: &'a str,
     },
 }
@@ -191,25 +193,19 @@ impl CompiledGraph {
             let node = &graph.nodes[node_id];
             let mut resolvers: Vec<OpResolver> = Vec::with_capacity(node.ops.len());
             for spec in &node.ops {
-                // rasterize(shape=<node>) carries a shape_ref instead of
-                // width/height; it gets a dedicated resolver because its
-                // dimensions come from another node's output, not a param.
-                if let OpSpec::Legacy(legacy) = spec {
-                    if let Some(shape_ref) = legacy
-                        .params
-                        .get("shape_ref")
-                        .filter(|_| legacy.op == "rasterize")
-                    {
-                        let shape_node = shape_ref.resolve_string()?.to_string();
-                        if !graph.nodes.contains_key(&shape_node) {
+                // rasterize(shape=<node>) takes its canvas from another
+                // node's output, not a param, so it gets a dedicated resolver.
+                if let OpSpec::Typed(TypedOp::Rasterize(op)) = spec {
+                    if let RasterSize::FromNode(NodeRef(shape_node)) = &op.size {
+                        if !graph.nodes.contains_key(shape_node) {
                             return Err(polars_err!(ComputeError:
                                 "Node '{}': rasterize shape reference '{}' is not a node in the graph",
                                 node_id, shape_node
                             ));
                         }
                         resolvers.push(OpResolver::RasterizeShapeRef {
-                            spec: legacy.clone(),
-                            shape_node,
+                            op: op.clone(),
+                            shape_node: shape_node.clone(),
                         });
                         continue;
                     }
@@ -938,8 +934,8 @@ impl CompiledGraph {
                                         Err(e) => return Err(format!("Op resolution error: {e}")),
                                     }
                                 }
-                                OpResolver::RasterizeShapeRef { spec, shape_node } => dto_scratch
-                                    .push(ResolvedStep::RasterizeShapeRef { spec, shape_node }),
+                                OpResolver::RasterizeShapeRef { op, shape_node } => dto_scratch
+                                    .push(ResolvedStep::RasterizeShapeRef { op, shape_node }),
                             }
                         }
                     }
@@ -968,7 +964,7 @@ impl CompiledGraph {
                     let mut pending_buffer_ops = PendingSegment::default();
                     for (step_idx, step) in dto_scratch.iter().enumerate() {
                         let graph_step = match step {
-                            ResolvedStep::RasterizeShapeRef { spec, shape_node } => {
+                            ResolvedStep::RasterizeShapeRef { op, shape_node } => {
                                 // Dimensions come from the referenced node's
                                 // buffer (already executed: it is upstream).
                                 current_output =
@@ -1000,22 +996,10 @@ impl CompiledGraph {
                                 let height = dims[0] as u32;
                                 let width = dims[1] as u32;
                                 ctx.clear_null();
-                                let style_params = crate::params::OpParams::new(&spec.params);
-                                let (fill_value, background) =
-                                    match crate::execute::resolve_rasterize_style(
-                                        &style_params,
-                                        row_idx,
-                                        ctx,
-                                    ) {
-                                        Ok(style) => style,
-                                        Err(_) if ctx.took_null() => continue 'nodes,
-                                        Err(e) => return Err(e.to_string()),
-                                    };
-                                let geo_op = view_buffer::GeometryOp::Rasterize {
-                                    width,
-                                    height,
-                                    fill_value,
-                                    background,
+                                let geo_op = match op.with_size(width, height, row_idx, ctx) {
+                                    Ok(geo_op) => geo_op,
+                                    Err(_) if ctx.took_null() => continue 'nodes,
+                                    Err(e) => return Err(e.to_string()),
                                 };
                                 current_output = execute_geometry_op(current_output, &geo_op)?;
                                 continue;
@@ -2055,8 +2039,6 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeSet;
 
-    use crate::execute::LEGACY_OPS;
-
     /// The variant a step belongs to.
     ///
     /// Exhaustive, so adding a `GraphStep` fails to compile here. That alone
@@ -2113,41 +2095,12 @@ mod tests {
     ///
     /// A variant no op produces is dead vocabulary that every match still has
     /// to answer for; a variant that exists but is unreachable is also one the
-    /// execution graphs below cannot really be covering. Driven from
-    /// `LEGACY_OPS` rather than a probe list, so the axis is the op registry.
+    /// execution graphs below cannot really be covering. Driven from the
+    /// typed catalogue's samples rather than a probe list, so the axis is the
+    /// op registry.
     #[test]
     fn every_graph_step_variant_is_reachable_from_a_known_op() {
-        fn probe_params(op: &str) -> Vec<(&'static str, ParamValue)> {
-            use serde_json::json;
-            fn lit(v: serde_json::Value) -> ParamValue {
-                ParamValue::Literal { value: v }
-            }
-            // `label_reduce` takes its contour set as an operand column, so
-            // its probe is a slot.
-            let col = |_name: &str| ParamValue::Slot { idx: 1 };
-            match op {
-                "label_reduce" => vec![("contours", col("c"))],
-                "rasterize" => vec![("width", lit(json!(8))), ("height", lit(json!(8)))],
-                "reduce_percentile" => vec![("q", lit(json!(0.5)))],
-                "threshold" => vec![("value", lit(json!(128.0)))],
-                _ => vec![],
-            }
-        }
-
         let mut reachable: BTreeSet<&'static str> = BTreeSet::new();
-        for &op_name in LEGACY_OPS {
-            let params: HashMap<String, ParamValue> = probe_params(op_name)
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
-            let spec = OpSpec::Legacy(crate::pipeline::LegacyOpSpec {
-                op: op_name.to_string(),
-                params,
-            });
-            if let Ok(step) = resolve_op(&spec, 0, &ParamCtx::empty()) {
-                reachable.insert(step_name(&step));
-            }
-        }
         for op in crate::ops::TypedOp::samples() {
             let step = resolve_op(&OpSpec::Typed(op), 0, &ParamCtx::empty())
                 .expect("a registered sample resolves");
@@ -2192,11 +2145,10 @@ mod tests {
                     OpResolver::Dynamic(spec) => {
                         resolve_op(spec, 0, &ParamCtx::empty()).ok().map(Cow::Owned)
                     }
-                    OpResolver::RasterizeShapeRef { spec, .. } => {
-                        resolve_op(&OpSpec::Legacy(spec.clone()), 0, &ParamCtx::empty())
-                            .ok()
-                            .map(Cow::Owned)
-                    }
+                    OpResolver::RasterizeShapeRef { op, .. } => op
+                        .with_size(1, 1, 0, &ParamCtx::empty())
+                        .ok()
+                        .map(|geo| Cow::Owned(GraphStep::Geometry(geo))),
                 };
                 if let Some(step) = step {
                     seen.insert(step_name(&step));
@@ -2370,7 +2322,8 @@ mod tests {
                 "nodes": {"n0": {"source": {"format": "blob"},
                                   "ops": [{"op": "label_reduce",
                                            "contours": {"$slot": 1},
-                                           "reduction": {"type": "literal", "value": "max"}}]}},
+                                           "reduction": "max",
+                                           "region_mode": "interior"}]}},
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "vector"}},
                 "column_bindings": {"n0": 0}
             }"#,

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     import polars as pl
 
     from polars_cv._types import BoolOrExpr, FloatOrExpr, IntOrExpr
+    from polars_cv.lazy import LazyPipelineExpr
     from polars_cv.pipeline import Pipeline
 
 #: Ops whose wire form is typed (bare values and slots).
@@ -54,11 +55,13 @@ TYPED_OPS: frozenset[str] = frozenset(
         "equalize_histogram",
         "erode",
         "extract_contours",
+        "extract_shape",
         "flip",
         "floor",
         "grayscale",
         "histogram",
         "invert",
+        "label_reduce",
         "letterbox",
         "maximum",
         "minimum",
@@ -69,6 +72,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "pad",
         "pad_to_size",
         "perceptual_hash",
+        "rasterize",
         "ratio",
         "reciprocal",
         "reduce_argmax",
@@ -247,6 +251,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "inner": {"kind": "scalar", "per_row": True, "py": "float"},
         },
     },
+    "extract_shape": {},
     "flip": {
         "axes": {
             "kind": "list",
@@ -288,6 +293,21 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
     },
     "invert": {},
+    "label_reduce": {
+        "contours": {"kind": "column"},
+        "reduction": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LabelReduction",
+            "variants": ["max", "mean", "sum"],
+        },
+        "region_mode": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "LabelRegionMode",
+            "variants": ["interior", "boundary", "bbox"],
+        },
+    },
     "letterbox": {
         "height": {"kind": "scalar", "per_row": True, "py": "int"},
         "width": {"kind": "scalar", "per_row": True, "py": "int"},
@@ -378,6 +398,21 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["average", "difference", "perceptual", "blockhash"],
         },
         "hash_size": {"kind": "scalar", "per_row": False, "py": "int"},
+    },
+    "rasterize": {
+        "size": {
+            "kind": "one_of",
+            "options": [
+                {
+                    "kind": "array",
+                    "len": 2,
+                    "inner": {"kind": "scalar", "per_row": True, "py": "int"},
+                },
+                {"kind": "node"},
+            ],
+        },
+        "fill_value": {"kind": "scalar", "per_row": True, "py": "int"},
+        "background": {"kind": "scalar", "per_row": True, "py": "int"},
     },
     "ratio": {"other": {"kind": "node"}},
     "reciprocal": {},
@@ -886,6 +921,13 @@ class _OpsMixin:
             "extract_contours", {"mode": mode, "method": method, "min_area": min_area}
         )
 
+    def extract_shape(self) -> Pipeline:
+        """Extract buffer shape as a struct {height, width, channels}.
+
+        Domain transition: buffer → vector
+        """
+        return self._append_typed("extract_shape", {})
+
     def flip(self, axes: Sequence[int]) -> Pipeline:
         """Flip along specified axes.
 
@@ -930,6 +972,34 @@ class _OpsMixin:
     def invert(self) -> Pipeline:
         """Invert pixel values: `255 - pixel` for u8, `1.0 - pixel` for float [0,1]."""
         return self._append_typed("invert", {})
+
+    def label_reduce(
+        self,
+        *,
+        contours: pl.Expr,
+        reduction: str | pl.Expr = "max",
+        region_mode: str | pl.Expr = "interior",
+    ) -> Pipeline:
+        """Score contour regions against the current buffer values.
+
+        This is the buffer-space variant of label reduction. It accepts contours
+        via a Polars expression and returns one score per contour.
+
+        Domain transition: buffer -> vector
+
+        Args:
+            contours: Contour-set expression (`List[Contour]`) to score.
+            reduction: Reduction over contour region values (`"max"`, `"mean"`,
+                `"sum"`).
+            region_mode: Region selection mode. ``"interior"`` — only pixels strictly
+                inside the contour polygon. ``"boundary"`` — interior pixels *plus*
+                pixels on the contour boundary (avoids zero-score artifacts for sub-
+                pixel contours). ``"bbox"`` — all pixels within the bounding box.
+        """
+        return self._append_typed(
+            "label_reduce",
+            {"contours": contours, "reduction": reduction, "region_mode": region_mode},
+        )
 
     def letterbox(
         self,
@@ -1092,6 +1162,34 @@ class _OpsMixin:
         """
         return self._append_typed(
             "perceptual_hash", {"algorithm": algorithm, "hash_size": hash_size}
+        )
+
+    def _rasterize(
+        self,
+        *,
+        size: Sequence[IntOrExpr] | LazyPipelineExpr,
+        fill_value: IntOrExpr = 255,
+        background: IntOrExpr = 0,
+    ) -> Pipeline:
+        """Rasterize contours to a mask.
+
+        The builder is ``Pipeline.rasterize``, whose ``width``/``height`` or
+        ``shape`` arguments become ``size``; it also records the shape reference's
+        graph dependency and its canvas assertion.
+
+        Domain transition: contour → buffer
+
+        Args:
+            size: ``[height, width]`` of the mask (each may be a Polars expression), or
+                another node whose buffer's height and width the mask takes.
+            fill_value: Inside value (default 255). Accepts a Polars expression for per-
+                row dynamic values.
+            background: Outside value (default 0). Accepts a Polars expression for per-
+                row dynamic values.
+        """
+        return self._append_typed(
+            "rasterize",
+            {"size": size, "fill_value": fill_value, "background": background},
         )
 
     def reciprocal(self) -> Pipeline:

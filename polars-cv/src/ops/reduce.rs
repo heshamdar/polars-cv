@@ -158,3 +158,17 @@ arg_reductions! {
     ReduceArgmax "Index of the maximum value along an axis." => ArgMax;
     ReduceArgmin "Index of the minimum value along an axis." => ArgMin;
 }
+
+/// Extract buffer shape as a struct {height, width, channels}.
+///
+/// Domain transition: buffer → vector
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractShape {}
+
+impl OpDef for ExtractShape {
+    fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
+        let ExtractShape {} = self;
+        Ok(GraphStep::ExtractShape)
+    }
+}

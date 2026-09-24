@@ -178,8 +178,7 @@ rank, or dtype**. Everything else follows from that one invariant.
    normalize `mean`/`std`, channel_swap `order`. On a typed op these are
    `Vec<Param<T>>` (or `[Param<T>; N]`) fields, encoded element by element by
    `_encode_field`.
-3. *Non-structural enums and flags*, typed `Param<Enum>`/`Param<bool>` fields
-   (`label_reduce` still goes through `_enum_param` until it is typed):
+3. *Non-structural enums and flags*, typed `Param<Enum>`/`Param<bool>` fields:
    resize/letterbox `filter`, rotate/warp_affine `interpolation`, `pad(mode)`,
    `pad_to_size(position)`, `convolve2d(border)`, extract_contours
    `mode`/`method`, label_reduce `reduction`/`region_mode`,
