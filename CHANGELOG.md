@@ -99,6 +99,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `channel_merge`'s `others` (were `other_node`/`other_nodes`), and
   `rasterize`'s `size`: `[height, width]` or the id of the node whose canvas it
   takes (was `width`/`height` or `shape_ref`). (Typed-op plan P2–P3.)
+- **Sources and sinks are typed per format.** Each `source()` and `.sink()`
+  format is one Rust definition carrying exactly the settings it reads, and the
+  builder validates what the caller passed against it, so a keyword the format
+  does not read is refused naming where it does apply (`'quality' does not
+  apply to the 'webp' sink (it applies to: jpeg)`), as is a misspelled one
+  (`'qualtiy' is not a sink parameter`). `SourceFormat`/`SinkFormat` are
+  generated from those definitions. In a hand-built graph: a contour source's
+  canvas is one `size` field (`[height, width]` or a node id; was
+  `width`/`height`/`shape_node`); an unknown or inapplicable source/sink field,
+  an unknown `on_error`, or a sink `dtype` other than `"f16"`/`"float16"` (which
+  Rust used to accept and ignore) is rejected by name. Error wording follows the
+  definitions, e.g. `source 'raw': missing field `dtype``; the `.cast` hint for
+  a contour source's `dtype` is gone. (Typed-op plan P4.)
 - **Expression parameters cross the plugin boundary as positional slots.** A
   parameter given as a `pl.Expr` serializes as `{"$slot": n}`, the index of the
   plugin input column that carries it; the graph assigns each distinct
@@ -314,6 +327,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   on `LazyPipelineExpr`) and `ColumnRef` (`label_reduce`'s contour column).
   `ParamCtx` carries the plan-time probe value, which a node-sized `rasterize`
   reads so its canvas plans as unknown.
+- **Typed-op migration, P4 (typed sources and sinks).** New module
+  `polars-cv/src/formats/`: a `formats!` registry of `#[derive(Op)]` structs,
+  one per source/sink format, with its own catalogue
+  (`tests/golden/io_catalog.json`, `io_catalog` FFI) and an `io_check` FFI the
+  builder validates through. Deleted: `SOURCE_PARAM_APPLIES`,
+  `SINK_PARAM_APPLIES`, `PARAM_HINTS`, `reject_inapplicable_params`,
+  `KNOWN_SOURCE_FORMATS`, `SourceSpec`/`SinkSpec` (Rust), the hand
+  `SourceFormat`/`SinkFormat` enums, `ImageCodec::from_sink_format`, and — with
+  nothing untyped left to read — `ParamValue`'s resolvers and `params::get`.
+  `SinkDType` is the one dtype name outside `dtype_table!` (half precision is
+  only an encode-time downcast), in its own file with a stated exemption.
 - **Typed-op migration, P1 (positional slots).** `_types.SlotTable` is the one
   expression-identity authority; the process-wide `expr_key` registry, Rust's
   name->slot binding and the planning probe re-serializers are deleted and
