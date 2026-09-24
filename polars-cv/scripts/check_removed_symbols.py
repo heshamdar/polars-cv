@@ -201,6 +201,20 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_update_hw_from_infer_shape", "P7a: plan_step infers H/W"),
     Removed("_require_input_domain", "P7a: plan_step checks the input domain"),
     Removed("update_dtype", "P7a: a binary op passes other_dtype instead"),
+    Removed("op_schema", "P7b: per-op entering states replace the batch folds"),
+    Removed(
+        "_compute_output_domain_dtype_ndim",
+        "P7b: a slice replays from its entering state",
+    ),
+    Removed("_hint_snapshots", "P7b: _entering holds each op's whole state"),
+    Removed("_initial_output_dtype", "P7b: _state_at(0)"),
+    Removed("_initial_expected_ndim", "P7b: _state_at(0)"),
+    Removed("_rewrite_ops", "P7b: _replay recomputes rather than re-keys"),
+    Removed("_POSITION_KEYED_FIELDS", "P7b: _replay recomputes rather than re-keys"),
+    Removed("_set_ops_slice", "P7b: _replay"),
+    Removed("_commit_reordered_ops", "P7b: _replay"),
+    Removed("_commit_eliminated_ops", "P7b: _replay"),
+    Removed("_entering_dims_at", "P7b: _entering_dims reads a PlanState"),
 )
 
 

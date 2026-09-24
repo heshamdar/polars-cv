@@ -300,7 +300,7 @@ class SlotTable:
 
 
 def planning_slots(expr: pl.Expr) -> int:  # noqa: ARG001 - deliberately ignored
-    """The slot resolver for plan-time FFI calls (``op_schema`` and friends).
+    """The slot resolver for plan-time FFI calls (``plan_step`` and friends).
 
     Planning never reads a slot's data: the Rust planner replaces every slot
     with a probe placeholder. So any index is sound here — and only here. A

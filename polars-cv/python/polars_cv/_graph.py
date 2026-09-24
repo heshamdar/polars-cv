@@ -478,7 +478,7 @@ class PipelineGraph:
         Returns:
             The node_id of the newly created shared node.
         """
-        from polars_cv.pipeline import Pipeline
+        from polars_cv.pipeline import Pipeline, _assertion_window
 
         shared_id = f"_cse_{uuid.uuid4().hex[:8]}"
 
@@ -490,24 +490,17 @@ class PipelineGraph:
         # spec today: `_to_dict` hoists the *set* of non-default policies
         # across all nodes, and the template node keeps its own. Copying them
         # is what keeps that true if the hoist ever reads one node.
+        template = template_node.pipeline
         shared_pipeline = Pipeline()
-        shared_pipeline._copy_state_from(template_node.pipeline)
-        # The prefix ops keep their original indices, so everything keyed by
-        # op position carries over unshifted (identity elimination reads the
-        # entering-hints snapshots).
-        shared_pipeline._set_ops_slice(prefix_ops, shift=0)
-
-        # Compute the correct domain and dtype for the prefix operations.
-        # The fold starts at op 0, so it is seeded with the template's
-        # post-source (pre-op) state, not its final tracked state.
-        domain, dtype, ndim = Pipeline._compute_output_domain_dtype_ndim(
-            prefix_ops,
-            initial_dtype=template_node.pipeline._initial_output_dtype,
-            initial_ndim=template_node.pipeline._initial_expected_ndim,
+        shared_pipeline._copy_state_from(template)
+        # The template's leading ops *are* the prefix (CSE matched them), so
+        # the shared node replays them from the template's entering state.
+        prefix_len = len(prefix_ops)
+        shared_pipeline._replay(
+            range(prefix_len),
+            start=template._state_at(0),
+            assertions=_assertion_window(template._assertions, 0, prefix_len),
         )
-        shared_pipeline._current_domain = domain
-        shared_pipeline._output_dtype = dtype
-        shared_pipeline._expected_ndim = ndim
 
         # Create the shared node
         shared_node = GraphNode(
@@ -533,14 +526,18 @@ class PipelineGraph:
             shared_id: The ID of the shared node to use as upstream.
             prefix_len: Number of operations that are now in the shared node.
         """
-        # Remove the prefix operations from this node's pipeline. Everything
-        # keyed by op index (entering-hints snapshots, assert_shape positions)
-        # shifts with them.
-        node.pipeline._set_ops_slice(node.pipeline._ops[prefix_len:], shift=prefix_len)
-        # The node's pre-op state is now the shared node's output state.
-        shared_pipeline = self._nodes[shared_id].pipeline
-        node.pipeline._initial_output_dtype = shared_pipeline._output_dtype
-        node.pipeline._initial_expected_ndim = shared_pipeline._expected_ndim
+        from polars_cv.pipeline import _assertion_window
+
+        # Keep only the suffix, replayed from the state entering it (the
+        # shared node's output state); assert_shape positions shift with it.
+        pipeline = node.pipeline
+        pipeline._replay(
+            range(prefix_len, len(pipeline._ops)),
+            start=pipeline._state_at(prefix_len),
+            assertions=_assertion_window(
+                pipeline._assertions, prefix_len, len(pipeline._ops)
+            ),
+        )
 
         # Set the shared node as upstream
         if not node.upstream:

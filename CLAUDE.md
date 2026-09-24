@@ -343,7 +343,7 @@ Rust: view-buffer (the engine)
 ### Key Rust Modules
 
 **polars-cv/src/**
-- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `plan_step`/`op_schema`/`op_contract`/`enum_catalog`/`op_catalog`/`io_catalog`/`io_check` FFI the Python planner reads (`plan.rs` holds `plan_step`, one call per appended op)
+- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `plan_step`/`op_contract`/`enum_catalog`/`op_catalog`/`io_catalog`/`io_check` FFI the Python planner reads (`plan.rs` holds `plan_step`, one call per appended op)
 - `ops/` — the typed op catalogue: one `#[derive(Op)]` struct per op, registered in `typed_ops!`; `TypedOp` is the wire op and `OpDef::resolve` maps it to a `GraphStep` (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants)
 - `formats/` — the typed sources and sinks, one struct per format in a `formats!` registry
 - `execute.rs` — source decoding helpers (image bytes, contours) and byte-sink encoding

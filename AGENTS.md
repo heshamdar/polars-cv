@@ -197,7 +197,7 @@ changes; they explain *why* the code is shaped the way it is.
   Rust (`OutputRankRule`/`OutputChannelRule` in
   `view-buffer/src/ops/shape_rule.rs`), and applied in Rust for the Python
   planner by `plan_step` (one call per appended op, `polars-cv/src/plan.rs`).
-  The passes still read `op_schema`/`op_contract`/`op_infer_shape`. The planner contains no per-op
+  The passes read each op's recorded entering state plus `op_contract`/`op_infer_shape`. The planner contains no per-op
   special cases and no parallel contract table. Planning-time schema must equal
   execution-time schema; guarded by `tests/test_sanitation.py`.
 - **Graph steps vs engine ops.** Graph-level steps (`GraphStep` in
@@ -224,8 +224,9 @@ changes; they explain *why* the code is shaped the way it is.
   `test_lazy_pipeline_method_parity`); the type stub is regenerated via
   `scripts/gen_lazy_stub.py` and guarded by `test_lazy_stub_is_current`.
 - **One mandatory append path.** `Pipeline._push_op()` is the only code allowed
-  to *append* to `_ops` (`_set_ops_slice` replaces the list wholesale for CSE
-  and re-keys the position-keyed side tables; `_clone` copies everything), and
+  to *append* to `_ops` (`_replay` rebuilds the list for a slice, reorder or
+  deletion by appending the kept ops again from a recorded state; `_clone`
+  copies everything), and
   it applies an operation's *entire* plan-time effect:
   the input-domain check, the schema fold (domain/dtype/ndim) and the shape
   hints, all computed by one `plan_step` call before anything changes. Builders call it through `_append_op`; the lazy continuation
@@ -252,7 +253,7 @@ side channel.
 
 | Fact | Single authority | Rejection mechanism |
 |------|------------------|---------------------|
-| Appending an op to a `Pipeline` (domain check + schema fold + shape hints, one `plan_step`) | `Pipeline._push_op()` | `test_op_append_is_structurally_exclusive` — AST walk failing if anything but `_push_op`/`_set_ops_slice`/`_clone` touches `_ops` |
+| Appending an op to a `Pipeline` (domain check + schema fold + shape hints, one `plan_step`) | `Pipeline._push_op()` | `test_op_append_is_structurally_exclusive` — AST walk failing if anything but `_push_op`/`_replay`/`_clone` touches `_ops` or `_entering` |
 | An op's rank / channel / dtype / memory / spatial / identity contract | `Op` trait methods, **no defaults** | Compile error: a new op that omits one does not build |
 | An op's accepted input domains | `op_contract(...)["input_domains"]` (Rust `GraphStep::input_domains`, exhaustive — no catch-all arm) | `test_domain_vocabulary_declared_once` — `Pipeline` may not carry `DOMAIN_*` constants or a `_validate_domain`; execution reads the same contract via `step_buffer_operand` rather than restating it per arm |
 | An op's H/W effect | view-buffer `infer_shape`, read by `plan_step` (and `op_infer_shape` for identity elimination) | No inferable shape ⇒ hints invalidated, never carried forward |

@@ -128,11 +128,7 @@ pub(crate) fn step(
 }
 
 /// An op's output domain and rank over the incoming ones.
-///
-/// Shared with the `op_schema` FFI, which the batch folds (identity
-/// elimination, lazy continuations) still read until the plan carries its
-/// per-position state.
-pub(crate) fn fold(step: &GraphStep, domain: &str, ndim: Option<usize>) -> (String, Option<usize>) {
+fn fold(step: &GraphStep, domain: &str, ndim: Option<usize>) -> (String, Option<usize>) {
     let out_domain = match step.output_domain() {
         Domain::Any => domain.to_string(),
         d => d.name().to_string(),
@@ -156,7 +152,7 @@ pub(crate) fn fold(step: &GraphStep, domain: &str, ndim: Option<usize>) -> (Stri
 ///
 /// Histogram buckets are struct-encoded by the sink, so their element dtype is
 /// an encoding concern, not a schema one: `"auto"`.
-pub(crate) fn single_input_dtype(step: &GraphStep, dtype: &str) -> Result<String, String> {
+fn single_input_dtype(step: &GraphStep, dtype: &str) -> Result<String, String> {
     match step {
         GraphStep::Histogram(h) if h.output == HistogramOutput::Buckets => Ok("auto".to_string()),
         _ => crate::output_dtype_for(step, dtype),

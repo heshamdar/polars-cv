@@ -17,14 +17,6 @@ from typing import Any
 __version__: str
 __source_hash__: str
 
-def op_schema(
-    spec_json: str,
-    domain: str,
-    dtype: str,
-    ndim: int | None,
-) -> tuple[str, str, int | None]:
-    """Resolve one op's full schema effect: ``(domain, dtype, ndim)``."""
-
 def op_contract(spec_json: str) -> dict[str, Any]:
     """Return the full contract for a single serialized op spec."""
 

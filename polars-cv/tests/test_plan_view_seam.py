@@ -25,7 +25,7 @@ pytestmark = pytest.mark.structural
 #: a test to the Python planner that P7 deletes.
 _PRIVATE = re.compile(
     r"\._(shape_hints|ops|source|output_dtype|expected_ndim|current_domain|"
-    r"hint_snapshots|assertions|asserted_dims|shape_declared|initial_\w+)\b"
+    r"entering|state_at|assertions|asserted_dims|shape_declared)\b"
 )
 
 #: Files allowed to read those fields, and why.
@@ -60,7 +60,7 @@ class TestFixtures:
             "n = len(p._ops)",
             "fmt = pipe._source.format",
             "assert lazy._pipeline._output_dtype == 'f32'",
-            "x = p._initial_expected_ndim",
+            "x = p._entering[0].state.ndim",
         ],
     )
     def test_a_private_read_is_flagged(self, line: str) -> None:

@@ -47,7 +47,6 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(op_identity_rule, m)?)?;
-    m.add_function(wrap_pyfunction!(op_schema, m)?)?;
     m.add_function(wrap_pyfunction!(op_infer_shape, m)?)?;
     m.add_function(wrap_pyfunction!(plan_step, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
@@ -169,7 +168,7 @@ fn identity_rule_name(rule: view_buffer::IdentityRule) -> String {
 
 /// Resolve one serialized op spec to its `ViewDto`, mapping errors to Python.
 ///
-/// Shared by `op_schema` and `op_contract` so neither re-implements the
+/// Shared by `plan_step` and `op_contract` so neither re-implements the
 /// deserialize → resolve path.
 ///
 /// Expression parameters (dynamic, per-row values like a column-driven resize
@@ -347,7 +346,7 @@ fn infer_shape_probe(
     Ok(Some(out.iter().map(|&x| x as i64).collect()))
 }
 
-/// Shared dtype resolution for `op_schema` (and, transitively, `op_contract`).
+/// Shared dtype resolution for `plan_step` (and, transitively, `op_contract`).
 ///
 /// This is the single authority the Python schema layer defers to instead of
 /// re-applying a parallel dtype rule: it composes view-buffer's
@@ -378,31 +377,6 @@ pub(crate) fn output_dtype_for(
 
     let in_dt = parse_dtype(input_dtype)?;
     Ok(dtype_short_name(rule.resolve(in_dt)).to_string())
-}
-
-/// Resolve one op's full schema effect: `(domain, dtype, ndim)`.
-///
-/// The single planning-time authority the Python `Pipeline` consults per
-/// appended op — including the param-dependent cases (`cast` target,
-/// `histogram` output mode, reduction `axis` presence) that previously lived
-/// as Python-side special cases. Inputs are the pipeline's current state;
-/// `"auto"` dtype and `None` ndim propagate where a rule cannot resolve them.
-///
-/// One deliberate special case: `histogram(output="buckets")` reports dtype
-/// `"auto"` — buckets are struct-encoded by the sink, so an element dtype is
-/// an encoding concern, not a schema one.
-#[pyfunction]
-#[pyo3(signature = (op_json, input_domain, input_dtype, input_ndim=None))]
-fn op_schema(
-    op_json: &str,
-    input_domain: &str,
-    input_dtype: &str,
-    input_ndim: Option<usize>,
-) -> PyResult<(String, String, Option<usize>)> {
-    let step = resolve_op_from_json(op_json).map_err(py_value_error)?;
-    let (domain, ndim) = plan::fold(&step, input_domain, input_ndim);
-    let dtype = plan::single_input_dtype(&step, input_dtype).map_err(py_value_error)?;
-    Ok((domain, dtype, ndim))
 }
 
 /// The field names of the `{x, y}` point struct the geometry surfaces publish.

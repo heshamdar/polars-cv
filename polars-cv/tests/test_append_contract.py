@@ -54,20 +54,17 @@ pytestmark = pytest.mark.structural
 
 #: The only functions permitted to touch ``Pipeline._ops``.
 #:
-#: There are exactly two ways ``_ops`` is assigned, and both maintain the state
-#: that rides alongside it:
+#: There are exactly two ways ``_ops`` (and ``_entering``, the state entering
+#: each op, kept in step with it) is assigned:
 #:
-#: * ``_push_op`` appends one op at the end and advances the tracked state.
-#:   Appending never disturbs existing op indices, so it re-keys nothing.
-#: * ``_rewrite_ops`` is the single wholesale-rewrite primitive. It is the *only*
-#:   place ``_ops`` is reassigned for a rewrite, and it refuses to run unless the
-#:   caller supplies a re-keyed replacement for every field in
-#:   ``_POSITION_KEYED_FIELDS``. The three rewrite passes (CSE's
-#:   ``_set_ops_slice``, the pushdown's ``_commit_reordered_ops``, identity
-#:   elimination's ``_commit_eliminated_ops``) each compute their own re-key and
-#:   route through it — so none of them touches ``_ops`` directly, and none can
-#:   forget a position-keyed table the way the CSE path once forgot
-#:   ``_assertions``.
+#: * ``_push_op`` appends one op at the end, records the state entering it and
+#:   advances the tracked state.
+#: * ``_replay`` is the single wholesale rewrite. A slice (CSE, a
+#:   sub-pipeline), a reorder (the pushdown) and a deletion (identity
+#:   elimination) name the ops they keep and the state to start from, and it
+#:   appends them again through ``_push_op`` — so every per-position fact is
+#:   recomputed, and no rewrite carries re-key arithmetic of its own (which is
+#:   how the CSE path once forgot ``_assertions``).
 #:
 #: ``_clone`` is listed because it is the copy constructor: it duplicates every
 #: field including all the side tables (via ``_copy_state_from`` /
@@ -75,10 +72,13 @@ pytestmark = pytest.mark.structural
 _OPS_MUTATORS = frozenset(
     {
         "_push_op",
-        "_rewrite_ops",
+        "_replay",
         "_clone",
     }
 )
+
+#: The per-position fields only the mutators above may write.
+_POSITIONAL = frozenset({"_ops", "_entering"})
 
 
 def _pipeline_ast() -> ast.ClassDef:
@@ -90,7 +90,8 @@ def _pipeline_ast() -> ast.ClassDef:
 
 
 def _mutates_ops(node: ast.AST) -> bool:
-    """True if *node* appends to, assigns into, replaces or aliases ``*._ops``.
+    """True if *node* appends to, assigns into, replaces or aliases ``*._ops``
+    (or ``*._entering``, which is kept in step with it).
 
     Aliasing counts (``ops = self._ops`` then ``ops.append(...)``) because it
     is the obvious way around a guard that only looks for ``._ops.append``.
@@ -98,7 +99,7 @@ def _mutates_ops(node: ast.AST) -> bool:
     for sub in ast.walk(node):
         # ops = x._ops  — an alias the mutation can then happen through
         if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.Attribute):
-            if sub.value.attr == "_ops":
+            if sub.value.attr in _POSITIONAL:
                 return True
         # x._ops.append(...) / .extend(...) / .insert(...) / .clear(...)
         if (
@@ -106,7 +107,7 @@ def _mutates_ops(node: ast.AST) -> bool:
             and isinstance(sub.func, ast.Attribute)
             and sub.func.attr in {"append", "extend", "insert", "clear", "pop"}
             and isinstance(sub.func.value, ast.Attribute)
-            and sub.func.value.attr == "_ops"
+            and sub.func.value.attr in _POSITIONAL
         ):
             return True
         # x._ops[i] = ... and x._ops += ...
@@ -117,9 +118,9 @@ def _mutates_ops(node: ast.AST) -> bool:
             targets = [sub.target]
         for t in targets:
             if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Attribute):
-                if t.value.attr == "_ops":
+                if t.value.attr in _POSITIONAL:
                     return True
-            if isinstance(t, ast.Attribute) and t.attr == "_ops":
+            if isinstance(t, ast.Attribute) and t.attr in _POSITIONAL:
                 return True
     return False
 
@@ -149,9 +150,8 @@ def test_op_append_is_structurally_exclusive() -> None:
     assert not offenders, (
         f"only {sorted(_OPS_MUTATORS)} may touch Pipeline._ops, but these also "
         f"do: {sorted(set(offenders))}. Route appends through _append_op() / "
-        f"_push_op() and wholesale rewrites through _rewrite_ops() so the "
-        f"plan-time state and the position-keyed side tables cannot be updated "
-        f"by halves."
+        f"_push_op() and wholesale rewrites through _replay() so the ops and "
+        f"the state entering each cannot be updated by halves."
     )
 
 
@@ -202,15 +202,13 @@ def test_every_pipeline_field_survives_a_copy() -> None:
         "_current_domain": "contour",
         "_output_dtype": "f64",
         "_expected_ndim": 7,
-        "_initial_output_dtype": "i16",
-        "_initial_expected_ndim": 5,
         "_on_error": "null",
         "_on_null_param": "null",
         "_shape_declared": True,
         "_ops": ["sentinel-op"],
         "_expr_refs": ["sentinel-expr"],
         "_asserted_dims": {"height"},
-        "_hint_snapshots": {3: ("h", "w")},
+        "_entering": ["sentinel-position"],
         "_shape_refs": ["sentinel-ref"],
         "_shape_hints": None,
         "_assertions": {2: None},
@@ -248,58 +246,37 @@ def test_every_pipeline_field_survives_a_copy() -> None:
     )
 
 
-def test_position_keyed_fields_are_real_pipeline_state() -> None:
-    """``_POSITION_KEYED_FIELDS`` must name actual ``Pipeline`` fields.
+def test_replay_takes_its_assertions_explicitly() -> None:
+    """``_replay`` cannot be called without saying where the assertions go.
 
-    The registry is the single authority for "which fields are keyed by op
-    position and so must be re-keyed on every ``_ops`` rewrite". A typo'd or
-    stale name would make ``_rewrite_ops`` demand a key no rewrite can sensibly
-    supply, or (worse) let a real position-keyed field slip out of the set. Every
-    entry must be a genuine field, which is exactly the set ``_STATE_COPIERS``
-    enumerates.
+    The one re-key a rewrite still owns is the assertions' (a slice shifts
+    them); a keyword-only parameter with no default makes forgetting it a
+    ``TypeError`` rather than an assertion silently kept at the wrong place.
     """
-    from polars_cv.pipeline import _POSITION_KEYED_FIELDS, _STATE_COPIERS
+    import inspect
 
-    unknown = set(_POSITION_KEYED_FIELDS) - set(_STATE_COPIERS)
-    assert not unknown, (
-        f"_POSITION_KEYED_FIELDS names fields that are not Pipeline state: "
-        f"{sorted(unknown)}"
+    params = inspect.signature(Pipeline._replay).parameters
+    for name in ("start", "assertions"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, name
+        assert params[name].default is inspect.Parameter.empty, name
+
+
+@plugin_required
+def test_a_slice_replays_the_states_it_keeps() -> None:
+    """A sub-pipeline over ``[start, end)`` has exactly the states the whole
+    pipeline had there — entering each kept op, and at ``end``."""
+    pipe = (
+        Pipeline()
+        .source("blob", dtype="u8")
+        .assert_shape(dims=[10, 20, 3])
+        .resize(height=4, width=6)
+        .grayscale()
+        .pad(top=1, bottom=1, left=1, right=1)
     )
-
-
-def test_rewrite_ops_enforces_exact_position_keyed_coverage() -> None:
-    """``_rewrite_ops`` is the unskippable op-index rewrite primitive.
-
-    It is the op-index counterpart to ``_STATE_COPIERS`` +
-    ``test_pipeline_state_copy_is_complete``: the *only* place ``_ops`` is
-    reassigned for a rewrite, and it refuses to run unless the caller supplies a
-    re-keyed replacement for **every** position-keyed field and no others. That
-    is what makes a new position-keyed field a hard failure at every rewrite
-    caller at once, instead of the silent omission that let CSE re-key
-    ``_hint_snapshots`` but forget ``_assertions``.
-    """
-    from polars_cv.pipeline import _POSITION_KEYED_FIELDS
-
-    full = {name: {} for name in _POSITION_KEYED_FIELDS}
-
-    # Missing a required field -> raise (the drift this guard exists to prevent).
-    for missing in _POSITION_KEYED_FIELDS:
-        partial = {k: v for k, v in full.items() if k != missing}
-        with pytest.raises(ValueError, match=missing):
-            Pipeline()._rewrite_ops([], position_keyed=partial)
-
-    # An unknown field -> raise (a stale/typo'd remap must not pass silently).
-    with pytest.raises(ValueError, match="_not_a_field"):
-        Pipeline()._rewrite_ops([], position_keyed={**full, "_not_a_field": {}})
-
-    # Exact coverage -> the ops and every position-keyed field are replaced.
-    p = Pipeline()
-    new_ops = ["sentinel-op"]
-    keyed = {name: {7: object()} for name in _POSITION_KEYED_FIELDS}
-    p._rewrite_ops(new_ops, position_keyed=keyed)
-    assert p._ops == new_ops
-    for name, value in keyed.items():
-        assert getattr(p, name) is value
+    for start, end in [(0, 3), (1, 3), (1, 2), (0, 1)]:
+        sub = pipe._create_sub_pipeline(start, end)
+        assert sub._entering == pipe._entering[start:end], (start, end)
+        assert sub._state() == pipe._state_at(end), (start, end)
 
 
 def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:

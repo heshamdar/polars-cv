@@ -1660,7 +1660,7 @@ fn resolve_one_output_spec(graph: &UnifiedGraph, spec: &mut OutputSpec, dt: &Dat
         // is the input nesting depth; derive the OUTPUT rank by folding the
         // output node's op rank rules from it, rather than assigning the input
         // depth directly (which would be wrong after a rank-changing op such as
-        // channel_select). Reuses the same OutputRankRule authority as op_schema.
+        // channel_select). Reuses the same OutputRankRule authority as plan_step.
         if spec.expected_ndim.is_none() && ndim > 0 {
             spec.expected_ndim = fold_output_rank(graph, &spec.node, ndim);
         }
