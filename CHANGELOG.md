@@ -81,6 +81,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Graph nodes no longer serialize `alias`, `domain` or `output_dtype`.** The
+  plugin declared them only to stay closed under `deny_unknown_fields` and read
+  none of them; they only served the graph visualizer, which now reads them
+  from the Python graph. A graph JSON still carrying them is rejected.
+  (Typed-op plan P0.)
 - **Every `.cv.pipe(...)` call runs its rows in parallel.** Rows are split
   into ranges on the plugin's thread pool (sized by `POLARS_MAX_THREADS`) and
   reassembled in order, so eager `with_columns`/`select` on a single-chunk
