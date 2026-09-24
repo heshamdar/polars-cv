@@ -1,9 +1,10 @@
 """Guards for spec-parameter applicability: source keywords and sink keywords.
 
 A parameter that the chosen format never reads is rejected — not warned about,
-not dropped. One table per surface (`SOURCE_PARAM_APPLIES`, `SINK_PARAM_APPLIES`)
-lists each parameter against the formats whose decode or encode actually reads
-it, and one checker (`reject_inapplicable_params`) answers both. These tests
+not dropped. The source keywords are listed against the formats whose decode
+reads them (`SOURCE_PARAM_APPLIES`); each sink format is a typed Rust struct
+carrying exactly the fields its encoder reads (`src/formats/sink.rs`), and the
+builder validates a sink against it over `io_check`. These tests
 exist because the question used to be answered per parameter: of the source's
 seven scoped keywords one raised, one warned and five were silently dropped,
 while `.sink()` — an open `**kwargs` — accepted literally any keyword, spread it
@@ -17,7 +18,6 @@ from __future__ import annotations
 
 import ast
 import json
-import re
 from pathlib import Path
 
 import polars as pl
@@ -27,7 +27,6 @@ import polars_cv
 from polars_cv import Pipeline
 from polars_cv._types import (
     PARAM_HINTS,
-    SINK_PARAM_APPLIES,
     SOURCE_PARAM_APPLIES,
     SinkFormat,
     SourceFormat,
@@ -170,6 +169,15 @@ def test_a_parameter_is_rejected_by_every_format_that_ignores_it(
 # Sink keywords
 # ---------------------------------------------------------------------------
 
+#: Each sink format and the fields its typed definition reads
+#: (`src/formats/sink.rs`, committed as `tests/golden/io_catalog.json`).
+_SINK_FIELDS: dict[str, set[str]] = {
+    fmt["name"]: {field["name"] for field in fmt["fields"]}
+    for fmt in json.loads(
+        (Path(__file__).parent / "golden" / "io_catalog.json").read_text()
+    )["sinks"]
+}
+
 #: A non-default value per sink keyword, for the grid below.
 _SINK_SAMPLES: dict[str, object] = {
     "quality": 50,
@@ -185,61 +193,47 @@ def _sinkable() -> "pl.Expr":
     )
 
 
-def test_every_sink_wire_field_declares_where_it_applies() -> None:
-    """The table must cover exactly the fields the sink sends to Rust.
-
-    `.sink()` takes `**kwargs`, so unlike `source()` there is no signature to
-    compare against — the wire struct is the surface. Reading `SinkSpec` from
-    the Rust source is a scan, with the limits scans have: it matches `pub`
-    fields by name and knows one serde alias (`out_dtype` is spelled `dtype` by
-    the user). It cannot tell whether the encoder *reads* a field, which is why
-    the grid below asserts behaviour rather than trusting the list.
-    """
-    rust = (Path(polars_cv.__file__).parents[2] / "src" / "pipeline.rs").read_text()
-    body = rust.split("pub struct SinkSpec {", 1)[1].split("\n}", 1)[0]
-    fields = set(re.findall(r"pub (\w+):", body)) - {"format"}
-    spelled = {"out_dtype": "dtype"}
-    declared = {spelled.get(f, f) for f in fields}
-    assert declared == set(SINK_PARAM_APPLIES), (
-        f"on the wire but undeclared: {sorted(declared - set(SINK_PARAM_APPLIES))}; "
-        f"declared but not on the wire: {sorted(set(SINK_PARAM_APPLIES) - declared)}"
+def test_every_sink_field_has_a_sample() -> None:
+    """The grid below covers every field any sink format declares."""
+    fields = set().union(*_SINK_FIELDS.values())
+    assert fields == set(_SINK_SAMPLES), (
+        f"no sample for {sorted(fields - set(_SINK_SAMPLES))}; "
+        f"stale sample for {sorted(set(_SINK_SAMPLES) - fields)}"
     )
-    assert set(_SINK_SAMPLES) == set(SINK_PARAM_APPLIES)
-    assert {name for kind, name in PARAM_HINTS if kind == "sink"} <= set(
-        SINK_PARAM_APPLIES
-    )
+    assert set(_SINK_FIELDS) == {f.value for f in SinkFormat}
 
 
 @plugin_required
 @pytest.mark.parametrize("fmt", [f.value for f in SinkFormat])
-@pytest.mark.parametrize("name", sorted(SINK_PARAM_APPLIES))
+@pytest.mark.parametrize("name", sorted(_SINK_SAMPLES))
 def test_a_sink_parameter_is_rejected_by_every_format_that_ignores_it(
     name: str, fmt: str
 ) -> None:
-    """The whole (keyword x sink format) grid, decided by the table.
+    """The whole (keyword x sink format) grid, decided by the typed sinks.
 
     `quality` is the case worth naming: `SinkSpec` called it "JPEG and WebP"
     and the sink docstring said "jpeg/webp", but the WebP arm of `encode_image`
     calls an encoder that takes no quality. A webp quality was accepted and
-    dropped; it is now rejected, which says the true thing.
+    dropped; it is rejected, naming where it does apply, while the pipeline is
+    built.
     """
     kwargs = {name: _SINK_SAMPLES[name]}
-    if SinkFormat(fmt) in SINK_PARAM_APPLIES[name]:
+    if name in _SINK_FIELDS[fmt]:
         _sinkable().sink(fmt, return_expr=False, **kwargs)
         return
-    with pytest.raises(ValueError, match=f"{name} does not apply"):
+    with pytest.raises(ValueError, match=f"'{name}' does not apply .*it applies to"):
         _sinkable().sink(fmt, return_expr=False, **kwargs)
 
 
 @plugin_required
 def test_a_misspelled_sink_keyword_is_rejected() -> None:
-    """An open `**kwargs` accepted anything; the table closes it.
+    """An open `**kwargs` accepted anything; the typed sink closes it.
 
     `sink("jpeg", qualtiy=50)` built a graph carrying `qualtiy`, which serde
     dropped as an unknown field — so the query encoded at quality 85 and said
     nothing.
     """
-    with pytest.raises(ValueError, match="qualtiy is not a sink parameter"):
+    with pytest.raises(ValueError, match="'qualtiy' is not a sink parameter"):
         _sinkable().sink("jpeg", return_expr=False, qualtiy=50)
 
 
@@ -267,19 +261,19 @@ def test_the_sink_wire_rejects_an_unknown_field() -> None:
 
 @plugin_required
 def test_the_quality_declaration_matches_what_the_encoders_do() -> None:
-    """Check the table's `quality` claim against the encoders themselves.
+    """Check the typed sinks' `quality` claim against the encoders themselves.
 
-    The grid above holds the table only to its own word: declare `quality` for
-    webp and the grid happily accepts webp qualities again. This asserts the
-    thing the declaration rests on — for each image sink, whether the bytes
-    change with quality must equal what the table says. `SinkSpec` called the
-    field "JPEG and WebP" and the sink docstring said "jpeg/webp", but the WebP
-    arm of `encode_image` calls an encoder that takes no quality, so restoring
-    that reading fails here, where it is wrong.
+    The grid above holds the definitions only to their own word: give the webp
+    sink a `quality` field and the grid happily accepts webp qualities again.
+    `SinkSpec` called the field "JPEG and WebP" and the sink docstring said
+    "jpeg/webp", but the WebP arm of `encode_image` calls an encoder that takes
+    no quality. So: the one format that declares `quality` must encode
+    differently at 10 and 95, and every other image format must refuse the
+    field on the wire itself — there is no way left to hand an encoder a
+    quality it ignores.
 
-    Driven through a hand-built graph because the builder now refuses the
-    keyword for the formats under test: that is the point, and it is the only
-    way to observe what an encoder does with a field it is handed anyway.
+    Driven through a hand-built graph, because the builder refuses the keyword
+    before the wire is reached.
     """
     import io
 
@@ -308,12 +302,16 @@ def test_the_quality_declaration_matches_what_the_encoders_do() -> None:
         )
         return df.lazy().select(out=expr).collect()["out"][0]
 
-    for fmt in ("png", "jpeg", "webp", "tiff"):
-        declared = SinkFormat(fmt) in SINK_PARAM_APPLIES["quality"]
-        observed = encoded(fmt, 10) != encoded(fmt, 95)
-        assert observed == declared, (
-            f"SINK_PARAM_APPLIES says the {fmt} encoder "
-            f"{'reads' if declared else 'ignores'} quality, but its output "
-            f"{'changed' if observed else 'did not change'} between quality 10 "
-            f"and 95"
-        )
+    declared = [
+        f for f in ("png", "jpeg", "webp", "tiff") if "quality" in _SINK_FIELDS[f]
+    ]
+    assert declared == ["jpeg"], declared
+    assert encoded("jpeg", 10) != encoded("jpeg", 95), (
+        "the jpeg sink declares quality but its output did not change between "
+        "quality 10 and 95"
+    )
+    for fmt in ("png", "webp", "tiff"):
+        with pytest.raises(
+            pl.exceptions.ComputeError, match="'quality' does not apply"
+        ):
+            encoded(fmt, 10)

@@ -28,7 +28,10 @@
 
 use polars::prelude::*;
 
+use view_buffer::ImageCodec;
+
 use super::types::OutputSpec;
+use crate::formats::sink::Sink;
 
 /// The output shape a `(domain, format)` pair resolves to.
 ///
@@ -83,37 +86,40 @@ impl SinkKind {
             return Ok(Self::HistogramBuckets);
         }
         let domain = spec.expected_domain.as_str();
-        let format = spec.sink.format.as_str();
-        match (domain, format) {
-            ("buffer", "numpy" | "torch") => Ok(Self::NumpyStruct),
-            ("buffer", "ndarray") => Ok(Self::NdArray),
-            ("buffer", "png" | "jpeg" | "webp" | "tiff") => Ok(Self::EncodedImage),
-            ("buffer", "blob") => Ok(Self::Blob),
-            ("buffer", "list") => Ok(Self::BufferList),
-            ("buffer", "array") => Ok(Self::BufferArray),
-            ("scalar", "native") => Ok(Self::Scalar),
-            ("vector", "native" | "list") => Ok(Self::VectorList),
-            ("vector", "array") => Ok(Self::VectorArray),
-            ("contour", "native") => Ok(Self::Contours),
+        match (domain, &spec.sink) {
+            ("buffer", Sink::Numpy(_) | Sink::Torch(_)) => Ok(Self::NumpyStruct),
+            ("buffer", Sink::NdArray(_)) => Ok(Self::NdArray),
+            ("buffer", Sink::Png(_) | Sink::Jpeg(_) | Sink::WebP(_) | Sink::Tiff(_)) => {
+                Ok(Self::EncodedImage)
+            }
+            ("buffer", Sink::Blob(_)) => Ok(Self::Blob),
+            ("buffer", Sink::List(_)) => Ok(Self::BufferList),
+            ("buffer", Sink::Array(_)) => Ok(Self::BufferArray),
+            ("scalar", Sink::Native(_)) => Ok(Self::Scalar),
+            ("vector", Sink::Native(_) | Sink::List(_)) => Ok(Self::VectorList),
+            ("vector", Sink::Array(_)) => Ok(Self::VectorArray),
+            ("contour", Sink::Native(_)) => Ok(Self::Contours),
             // Named separately from the catch-all so the message can say what
             // to do instead; the generic one cannot.
-            ("buffer", "native") => polars_bail!(ComputeError:
+            ("buffer", Sink::Native(_)) => polars_bail!(ComputeError:
                 "'native' sink is not defined for buffer outputs; use an explicit \
                  format (numpy, png, list, array, blob, ...)"
             ),
-            (domain, format) => polars_bail!(ComputeError:
+            (domain, sink) => polars_bail!(ComputeError:
                 "Unsupported output combination: domain '{}' with sink format '{}'",
-                domain, format
+                domain, sink.name()
             ),
         }
     }
 
-    /// The image codec's sink-format name, for the kinds that have one.
+    /// The image codec, for the kind that encodes through one.
     ///
-    /// Lets the planner's codec precondition read the format off the kind
-    /// rather than re-testing the string it was resolved from.
-    pub(crate) fn image_codec_format(self, spec: &OutputSpec) -> Option<&str> {
-        matches!(self, Self::EncodedImage).then(|| spec.sink.format.as_str())
+    /// Lets the planner's codec precondition read the codec off the kind
+    /// rather than re-testing the sink it was resolved from.
+    pub(crate) fn image_codec(self, spec: &OutputSpec) -> Option<ImageCodec> {
+        matches!(self, Self::EncodedImage)
+            .then(|| spec.sink.image_codec())
+            .flatten()
     }
 }
 
@@ -122,17 +128,11 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::pipeline::SinkSpec;
 
     fn spec(domain: &str, format: &str) -> OutputSpec {
         OutputSpec {
             node: "n".to_string(),
-            sink: SinkSpec {
-                format: format.to_string(),
-                quality: 85,
-                shape: None,
-                out_dtype: None,
-            },
+            sink: serde_json::from_value(serde_json::json!({"format": format})).unwrap(),
             expected_domain: domain.to_string(),
             expected_dtype: "u8".to_string(),
             expected_shape: None,
@@ -168,7 +168,9 @@ mod tests {
     /// need a shape, the list kinds a rank).
     fn buildable_spec(domain: &str, format: &str) -> OutputSpec {
         let mut s = spec(domain, format);
-        s.sink.shape = Some(vec![1]);
+        if let Sink::Array(array) = &mut s.sink {
+            array.shape = Some(vec![crate::ops::Literal(1)]);
+        }
         s.expected_ndim = Some(1);
         s
     }
@@ -323,10 +325,13 @@ mod tests {
     ///
     /// No Python path emits it, `SinkFormat` has no such member, and the schema
     /// half never had an arm for it — so a graph carrying it was already
-    /// rejected before those arms could run. It must stay rejected.
+    /// rejected before those arms could run. It must stay rejected: now by the
+    /// typed sink itself, before any kind is resolved.
     #[test]
     fn the_dead_binary_format_stays_rejected() {
-        assert!(SinkKind::resolve(&spec("buffer", "binary")).is_err());
-        assert!(SinkKind::resolve(&spec("vector", "binary")).is_err());
+        let err = serde_json::from_value::<Sink>(serde_json::json!({"format": "binary"}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown sink format 'binary'"), "{err}");
     }
 }

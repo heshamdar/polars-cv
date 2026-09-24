@@ -2,8 +2,8 @@
 //!
 //! These are the per-node specification types deserialized from the graph
 //! JSON produced by the Python planner: `SourceSpec` (how a node's input is
-//! decoded), `SinkSpec` (how an output is encoded) and `OpSpec` (one
-//! operation with its parameters). They are consumed by `graph::types`
+//! decoded) and `OpSpec` (one operation with its parameters). Sinks are typed
+//! per format in `crate::formats::sink`. They are consumed by `graph::types`
 //! (`GraphNode`/`OutputSpec`) and the executor.
 
 use polars::prelude::*;
@@ -17,7 +17,7 @@ use crate::params::ParamValue;
 /// Source format specification.
 ///
 /// `deny_unknown_fields` closes this end of the wire format, as `GraphNode`
-/// and `SinkSpec` do for theirs. It is needed *per struct*: serde's attribute
+/// and the typed sinks do for theirs. It is needed *per struct*: serde's attribute
 /// does not descend into nested types, so closing `GraphNode` left everything
 /// it holds — this included — accepting anything Python sent. That mattered
 /// most here, because `allowed_roots` is the path sandbox: a misspelled key
@@ -91,41 +91,6 @@ impl SourceSpec {
             opt_u8_value(self.background.as_ref(), "background", 0, row_idx, ctx)?,
         ))
     }
-}
-
-/// Sink format specification.
-///
-/// `deny_unknown_fields` closes this end of the wire format, as `GraphNode`
-/// does for the node end. `.sink()` takes `**kwargs` and spreads them straight
-/// into this object, so every key here was a user keyword: an unknown one was
-/// serialized into the graph and then dropped by serde, and `sink("jpeg",
-/// qualtiy=50)` encoded at the default quality with nothing said. Python now
-/// rejects the keyword at build time (`SINK_PARAM_APPLIES`); this is what stops
-/// a hand-built graph from carrying a field nothing reads.
-///
-/// `OpSpec` below closes its end differently: every op is a typed
-/// `deny_unknown_fields` struct.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SinkSpec {
-    /// The format of the output data.
-    pub format: String,
-    /// JPEG quality (jpeg only — the WebP encoder takes no quality argument).
-    #[serde(default = "default_quality")]
-    pub quality: u8,
-    /// Output shape (for array format).
-    #[serde(default)]
-    pub shape: Option<Vec<usize>>,
-    /// Output element dtype for the `numpy`/`torch` sink. Currently only
-    /// `"f16"` is meaningful: the buffer (which the engine has no f16 dtype for)
-    /// is downcast from float to half at encode time. `None` keeps the buffer's
-    /// native dtype. Accepts the wire key `dtype` (the user-facing sink kwarg).
-    #[serde(default, alias = "dtype")]
-    pub out_dtype: Option<String>,
-}
-
-fn default_quality() -> u8 {
-    85
 }
 
 /// A single operation in the pipeline.
@@ -261,13 +226,5 @@ mod tests {
         assert_eq!(source.on_error, "raise");
         assert!(source.decode_max_size.is_none());
         assert!(source.cloud_options.is_none());
-    }
-
-    #[test]
-    fn test_sink_spec_defaults() {
-        let sink: SinkSpec = serde_json::from_str(r#"{"format": "jpeg"}"#).unwrap();
-        assert_eq!(sink.format, "jpeg");
-        assert_eq!(sink.quality, 85);
-        assert!(sink.shape.is_none());
     }
 }

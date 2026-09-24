@@ -91,7 +91,7 @@ pub struct OpDesc {
 }
 
 impl OpDesc {
-    fn of<T: OpFields>(name: &'static str) -> Self {
+    pub(crate) fn of<T: OpFields>(name: &'static str) -> Self {
         OpDesc {
             name,
             python: T::PYTHON_NAME.unwrap_or(name),
@@ -301,7 +301,7 @@ impl TypedOp {
     }
 }
 
-fn path_error(e: &serde_path_to_error::Error<serde_json::Error>) -> String {
+pub(crate) fn path_error(e: &serde_path_to_error::Error<serde_json::Error>) -> String {
     let path = e.path().to_string();
     if path == "." {
         e.inner().to_string()

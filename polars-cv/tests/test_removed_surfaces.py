@@ -243,14 +243,15 @@ def test_the_python_sink_spec_dataclasses_are_gone() -> None:
     They were not inert. Each held a copy of which sink parameters apply to
     which format (``if format == JPEG or WEBP: result["quality"]``), and that
     copy was wrong in the same way the docstrings were — the WebP encoder takes
-    no quality. `SINK_PARAM_APPLIES` is the one place that fact now lives.
+    no quality. The typed sinks (`src/formats/sink.rs`) are the one place that
+    fact now lives.
     """
     import polars_cv._types as types_module
 
     for name in ("SinkSpec", "OutputSpec", "MultiSinkSpec"):
         assert not hasattr(types_module, name), (
             f"{name} was deleted as unreachable; the sink's wire format is "
-            f"Rust's SinkSpec and its parameter table is SINK_PARAM_APPLIES"
+            f"the typed Rust `Sink` (src/formats/sink.rs)"
         )
 
 

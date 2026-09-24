@@ -9,9 +9,10 @@ use view_buffer::{
     geometry::rasterize::rasterize, DType, ImageAdapter, ImageCodec, PlannedDType, ViewBuffer,
 };
 
+use crate::formats::sink::Sink;
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
-use crate::pipeline::{OpSpec, SinkSpec, SourceSpec};
+use crate::pipeline::{OpSpec, SourceSpec};
 use view_buffer::naming;
 
 /// Decode a contour source by parsing the geometry and rasterizing to ViewBuffer.
@@ -153,14 +154,14 @@ pub fn decode_image_bytes(bytes: &[u8], source: &SourceSpec) -> PolarsResult<Vie
 /// encoded as zero-copy structs (`crate::output`) and `list`/`array` as typed
 /// nested values, both directly in `graph::encode::encode_node_output` (the
 /// sole caller).
-pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>> {
-    if sink.format.as_str() == "blob" {
+pub fn encode_sink(buffer: &ViewBuffer, sink: &Sink) -> PolarsResult<Vec<u8>> {
+    if let Sink::Blob(_) = sink {
         // VIEW protocol: self-describing, so no codec precondition applies.
         return Ok(buffer.to_blob());
     }
 
-    let Some(codec) = ImageCodec::from_sink_format(sink.format.as_str()) else {
-        return Err(polars_err!(ComputeError: "Unknown sink format: {}", sink.format));
+    let Some(codec) = sink.image_codec() else {
+        return Err(polars_err!(ComputeError: "the '{}' sink is not a byte encoding", sink.name()));
     };
 
     // The same check the planner ran before publishing this query's schema
@@ -178,7 +179,7 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>
     match codec {
         ImageCodec::Png => ImageAdapter::encode(buffer, image::ImageFormat::Png)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode PNG: {:?}", e)),
-        ImageCodec::Jpeg => ImageAdapter::encode_jpeg(buffer, sink.quality)
+        ImageCodec::Jpeg => ImageAdapter::encode_jpeg(buffer, sink.quality())
             .map_err(|e| polars_err!(ComputeError: "Failed to encode JPEG: {:?}", e)),
         ImageCodec::WebP => ImageAdapter::encode(buffer, image::ImageFormat::WebP)
             .map_err(|e| polars_err!(ComputeError: "Failed to encode WebP: {:?}", e)),

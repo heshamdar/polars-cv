@@ -55,5 +55,11 @@ def known_ops() -> list[str]:
 def op_catalog() -> str:
     """Return the typed op catalogue as JSON (see ``tests/golden/op_catalog.json``)."""
 
+def io_catalog() -> str:
+    """Return the source/sink catalogue as JSON (see ``tests/golden/io_catalog.json``)."""
+
+def io_check(kind: str, spec_json: str) -> None:
+    """Validate one serialized source or sink against its typed format; raise ``ValueError``."""
+
 def enum_variants(name: str) -> list[str]:
     """Return the string variants of a Rust enum, for Python<->Rust parity checks."""

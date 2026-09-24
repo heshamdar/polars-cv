@@ -31,17 +31,6 @@ pub enum ImageCodec {
 }
 
 impl ImageCodec {
-    /// Parse the plugin's sink-format spelling.
-    pub fn from_sink_format(format: &str) -> Option<Self> {
-        match format {
-            "png" => Some(Self::Png),
-            "jpeg" => Some(Self::Jpeg),
-            "webp" => Some(Self::WebP),
-            "tiff" => Some(Self::Tiff),
-            _ => None,
-        }
-    }
-
     /// The codec's name, for error messages.
     pub fn name(self) -> &'static str {
         match self {
@@ -947,22 +936,6 @@ mod tests {
             assert!(codec.check_support(Some(DType::U8), Some(2), None).is_ok());
             assert!(codec.check_support(Some(DType::U8), Some(3), None).is_ok());
         }
-    }
-
-    #[test]
-    fn from_sink_format_covers_exactly_the_codec_sinks() {
-        for &codec in ALL_CODECS {
-            let spelling = match codec {
-                ImageCodec::Png => "png",
-                ImageCodec::Jpeg => "jpeg",
-                ImageCodec::WebP => "webp",
-                ImageCodec::Tiff => "tiff",
-            };
-            assert_eq!(ImageCodec::from_sink_format(spelling), Some(codec));
-        }
-        // `blob` is a VIEW dump, not a codec, and must not be parsed as one.
-        assert_eq!(ImageCodec::from_sink_format("blob"), None);
-        assert_eq!(ImageCodec::from_sink_format("numpy"), None);
     }
 
     #[test]

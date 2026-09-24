@@ -351,11 +351,12 @@ it a fully determined mask published no shape, and `sink("array")` demanded an
 explicit one.
 
 A `source()` or `.sink()` parameter that the chosen format never reads is
-rejected, from one table per surface (`SOURCE_PARAM_APPLIES`,
-`SINK_PARAM_APPLIES` in `_types.py`) read by one `reject_inapplicable_params`.
-A name absent from the table is rejected too, which is what closes `.sink()`'s
-open `**kwargs`; Rust's `SinkSpec` is `deny_unknown_fields` so the wire is shut
-as well. `source()` passes the check its own `locals()`, so the validated set is
+rejected. Sinks are typed per format in Rust (`src/formats/sink.rs`, each a
+`deny_unknown_fields` struct), and `.sink()` validates its keywords against
+that definition over `io_check`, so an unknown or misspelled keyword — what an
+open `**kwargs` used to accept — is refused while the pipeline is built, naming
+the formats it does apply to. Source keywords are still checked against
+`SOURCE_PARAM_APPLIES` in `_types.py` by `reject_inapplicable_params`. `source()` passes the check its own `locals()`, so the validated set is
 the parameter set, and `thumbnail()` reads the table since it writes
 `decode_max_size`. Do not add a per-parameter check beside it — that is what
 produced one raise, one warning and five silent drops on the source side, and an

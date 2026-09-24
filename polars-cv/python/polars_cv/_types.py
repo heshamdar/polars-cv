@@ -19,7 +19,7 @@ except ImportError:
 
 import polars as pl
 
-from polars_cv._ops_generated import TYPED_OPS
+from polars_cv._ops_generated import TYPED_OPS, SinkFormat
 
 from ._dtype_names import NUMPY_TO_SHORT
 
@@ -47,26 +47,6 @@ class SourceFormat(str, Enum):
     CONTOUR = "contour"  # Contour struct data
     LIST = "list"  # Polars nested List column (requires dtype)
     ARRAY = "array"  # Polars fixed-size Array column (requires dtype)
-
-
-class SinkFormat(str, Enum):
-    """Supported output sink formats."""
-
-    NUMPY = "numpy"  # NumPy-compatible bytes
-    TORCH = "torch"  # PyTorch-compatible bytes
-    NDARRAY = "ndarray"  # The numpy struct, tagged `polars_cv.ndarray`
-    PNG = "png"  # Re-encode as PNG
-    JPEG = "jpeg"  # Re-encode as JPEG
-    WEBP = "webp"  # Re-encode as WebP
-    TIFF = "tiff"  # Re-encode as TIFF with LZW compression (supports floating-point)
-    BLOB = "blob"  # VIEW protocol (for chaining)
-    ARRAY = "array"  # Polars Array type (fixed shape)
-    LIST = "list"  # Polars nested List (variable shape)
-    NATIVE = "native"  # Returns Polars-native type based on output domain
-    #                   - Buffer → error (use explicit format)
-    #                   - Contour → Struct matching CONTOUR_SCHEMA
-    #                   - Scalar → Float64
-    #                   - Vector → List[Float64]
 
 
 class RowErrorPolicy(str, Enum):
@@ -1026,32 +1006,11 @@ SOURCE_PARAM_APPLIES: "dict[str, frozenset[SourceFormat]]" = {
     "on_error": frozenset(SourceFormat),
 }
 
-#: Which sink formats each ``.sink()`` keyword applies to.
-#:
-#: The same fact for the other end of the pipeline, read from the same place:
-#: the Rust encoder's use of the `SinkSpec` field.
-#:
-#: `quality` is **jpeg only**. `SinkSpec` documents it as "JPEG and WebP" and
-#: the sink docstring said "jpeg/webp", but `encode_image` passes it to
-#: `encode_jpeg` alone — the WebP arm calls `ImageAdapter::encode`, which has no
-#: quality argument. A webp quality is therefore rejected rather than accepted
-#: and dropped; supporting it is an encoder change, not a parameter change.
-SINK_PARAM_APPLIES: "dict[str, frozenset[SinkFormat]]" = {
-    "quality": frozenset({SinkFormat.JPEG}),
-    "shape": frozenset({SinkFormat.ARRAY}),
-    "dtype": frozenset({SinkFormat.NUMPY, SinkFormat.TORCH, SinkFormat.NDARRAY}),
-}
-
 #: What to do instead, for the parameters where a caller has a real
 #: alternative. Keyed by ``(kind, parameter)``.
 PARAM_HINTS: "dict[tuple[str, str], str]" = {
     ("source", "dtype"): (
         "rasterizing always produces u8 — use .cast(...) after the source"
-    ),
-    ("sink", "dtype"): "cast inside the pipeline with .cast(...) instead",
-    ("sink", "quality"): (
-        "only the JPEG encoder takes a quality; the others encode at their "
-        "own fixed settings"
     ),
 }
 
@@ -1059,7 +1018,7 @@ PARAM_HINTS: "dict[tuple[str, str], str]" = {
 def reject_inapplicable_params(
     *,
     kind: str,
-    fmt: "SourceFormat | SinkFormat",
+    fmt: "SourceFormat",
     supplied: "Mapping[str, Any]",
     applies: "Mapping[str, frozenset[Any]]",
 ) -> None:
@@ -1082,8 +1041,7 @@ def reject_inapplicable_params(
         kind: ``"source"`` or ``"sink"``, for the message and the hint lookup.
         fmt: The chosen format.
         supplied: Parameter name → value, for what the caller actually passed.
-        applies: The authority for this kind (:data:`SOURCE_PARAM_APPLIES` or
-            :data:`SINK_PARAM_APPLIES`).
+        applies: The authority for this kind (:data:`SOURCE_PARAM_APPLIES`).
     """
     for name in sorted(supplied):
         formats = applies.get(name)

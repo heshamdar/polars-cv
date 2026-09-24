@@ -11,8 +11,9 @@ use std::sync::Arc;
 use view_buffer::geometry::Contour;
 use view_buffer::ViewBuffer;
 
+use crate::formats::sink::Sink;
 use crate::params::NullParamPolicy;
-use crate::pipeline::{SinkSpec, SourceSpec};
+use crate::pipeline::SourceSpec;
 
 use super::encode::{default_domain, default_dtype};
 
@@ -26,7 +27,7 @@ pub struct OutputSpec {
     /// The node ID to output.
     pub node: String,
     /// Sink specification.
-    pub sink: SinkSpec,
+    pub sink: Sink,
     /// Expected output domain for validation and type inference.
     #[serde(default = "default_domain")]
     pub expected_domain: String,
