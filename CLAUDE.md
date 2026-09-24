@@ -193,7 +193,9 @@ second, slow build into the loop, and both are now closed — keep them closed:
   `codegen-units = 1`) — minutes of work that `maturin develop` then overwrites.
   Always pass `--no-install-project` and let `maturin develop` be the only
   extension build. CI and the SessionStart hook do this; `test_build_efficiency.py`
-  guards it.
+  guards it. `uv run` used to hit the same build on every call; `[tool.uv]
+  package = false` in `pyproject.toml` now stops uv from ever building the
+  project (CR-43).
 - **Release artifacts fill the container.** A full `--release` tree is ~2 GB the
   dev loop never uses. The SessionStart hook clears a stale one on entry, and
   `scripts/dev-clean.sh` reclaims it on demand (`--all` also drops `target/debug`

@@ -81,6 +81,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`crop` rejects windows it cannot honour.** A negative `top`/`left`/`height`/
+  `width` is an error (a literal when the pipeline is built, a per-row value as
+  a row error), and so is a window that runs past the image. Previously a
+  negative offset was clamped to 0 while the extent was kept — returning a
+  *shifted* window — and an overrunning window was silently shrunk. `height`
+  and `width` are now independent: giving only one used to discard it. Row
+  errors follow `on_error`. (CR-42)
+- **`source("raw")` rejects a byte length that is not a whole number of
+  elements** instead of dropping the remainder. (CR-42)
+- **Dependency metadata.** Requires `polars>=1.41.1` (was `>=1.0`, which could
+  not import below 1.36.1 and failed the suite below 1.41.1) and `numpy>=2.0.2`
+  (was `>=2.2.6`). `networkx`/`graphviz`/`pydot` move to a `viz` extra
+  (`pip install 'polars-cv[viz]'`), needed only by `show_graph()`. Wheels are
+  tagged `cp310-abi3` to match `requires-python>=3.10`. A new CI job tests the
+  declared floors on Python 3.10. (CR-44)
+
 - **Inputs an op cannot handle are row errors, and some silent wrong results
   are now errors.** Every operation now checks its input shape before running,
   so a shape the plan could not see (e.g. from a `blob` source) is an ordinary
@@ -143,6 +159,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   gone. Guarded by `test_removed_surfaces.py`.
 
 ### Fixed
+
+- **A malformed VIEW blob can no longer cause undefined behaviour.** A blob
+  whose `data_offset` or strides were not multiples of the element size built a
+  misaligned typed slice in release builds (debug builds panicked). Both blob
+  decoders now read through one validated parser (`view_buffer::parse_blob`)
+  that rejects it as a row error; binary rows are copied to 8-byte-aligned
+  storage; and `ViewBuffer::as_ptr` checks alignment in every build.
+  `ViewBuffer::from_blob` also no longer reads past its own copy for a strided
+  blob. (CR-41)
+- **`uv run` no longer builds the extension at release LTO**
+  (`[tool.uv] package = false`). (CR-43)
 
 - **`blur()` uses AVX2 when the CPU has it, in the published wheels too.**
   The wheels target baseline x86-64; blur now dispatches at runtime to an AVX2

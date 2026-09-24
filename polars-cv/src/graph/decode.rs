@@ -18,12 +18,15 @@ use super::types::{OutputSpec, RowResult, TypedBufferData};
 
 /// Extract binary data from a BinaryChunked at a specific row.
 ///
-/// Returns the data as a polars-arrow buffer (involves copy for BinaryViewArray).
+/// Returns the row as a polars-arrow buffer. This is a copy: Polars stores
+/// binary as a `BinaryViewArray`, whose short values live inline in the view
+/// and whose long ones sit at arbitrary offsets in shared data buffers.
 ///
-/// Note: Polars uses BinaryViewArray internally which has a different memory layout
-/// than the traditional offset-based BinaryArray. For true zero-copy, we would need
-/// to handle the view-based representation. Currently, we copy the data to a buffer
-/// for simplicity and compatibility.
+/// The copy is placed at an 8-byte-aligned address (the largest element
+/// size). `parse_blob` validates a blob's offsets and strides *relative to
+/// its first byte*, and the typed views built over it are `&[T]`, so the
+/// blob's own start must be aligned for those checks to mean anything. A
+/// `Vec<u8>` only promises alignment 1 (CR-41).
 ///
 /// # Arguments
 /// * `binary_ca` - The binary chunked array.
@@ -39,9 +42,26 @@ pub(crate) fn get_binary_row_buffer(
     // `get` returns `None` for null (or out-of-bounds) rows, so it doubles as the
     // null check — no need to materialise a validity mask for the whole column.
     let bytes = binary_ca.get(row_idx)?;
-    let len = bytes.len();
-    let buffer = polars_buffer::Buffer::from(bytes.to_vec());
-    Some((buffer, 0, len))
+    Some((aligned_copy(bytes), 0, bytes.len()))
+}
+
+/// Copy `bytes` into a buffer whose first byte is 8-byte aligned.
+///
+/// Backed by a `Vec<u64>` so the alignment comes from the allocation's type,
+/// not from allocator behaviour. The tail word is zero-padded; callers carry
+/// the true length separately.
+fn aligned_copy(bytes: &[u8]) -> polars_buffer::Buffer<u8> {
+    let words: Vec<u64> = bytes
+        .chunks(8)
+        .map(|chunk| {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            u64::from_ne_bytes(word)
+        })
+        .collect();
+    polars_buffer::Buffer::from(words)
+        .try_transmute::<u8>()
+        .expect("u64 -> u8 reinterpretation cannot fail")
 }
 /// Decode a binary source (blob or raw) with zero-copy when possible.
 ///
@@ -67,6 +87,14 @@ pub(crate) fn decode_binary_zero_copy(
             let dtype_s = dtype_str.ok_or("Raw source format requires dtype")?;
             let dtype = parse_dtype_str(dtype_s)?;
             let element_size = dtype.size_of();
+            // A remainder is bytes the caller supplied that no element would
+            // read; dropping them silently is a truncation, not a decode.
+            if !len.is_multiple_of(element_size) {
+                return Err(format!(
+                    "Raw source: {len} bytes is not a multiple of the {dtype_s} element \
+                     size ({element_size} bytes)"
+                ));
+            }
             let num_elements = len / element_size;
             Ok(ViewBuffer::from_polars_buffer(
                 buffer,
@@ -80,135 +108,44 @@ pub(crate) fn decode_binary_zero_copy(
 }
 /// Decode a blob (VIEW protocol) with zero-copy.
 ///
-/// Parses the header from the slice (including shape and stride arrays),
-/// then creates a ViewBuffer pointing directly into the data portion of
-/// the original buffer. If the blob has a non-contiguous layout (indicated
-/// by the flags field), the stored strides are preserved.
+/// The header is parsed and validated by [`view_buffer::parse_blob`] — the
+/// same parser `ViewBuffer::from_blob` uses — and the resulting ViewBuffer
+/// points directly into `buffer`. A strided layout keeps its stored strides.
 fn decode_blob_zero_copy(
     buffer: polars_buffer::Buffer<u8>,
     base_offset: usize,
     total_len: usize,
 ) -> Result<ViewBuffer, String> {
-    use view_buffer::protocol::{u8_to_dtype, HEADER_SIZE, MAGIC_BYTES, VERSION};
-    if total_len < HEADER_SIZE {
-        return Err("Blob data too short for header".into());
-    }
-    // Read the header directly from the shared buffer — no copy needed, the
-    // final ViewBuffer references the same `buffer` for its data.
-    let slice = &buffer.as_slice()[base_offset..base_offset + total_len];
-    let magic = &slice[0..4];
-    if magic != MAGIC_BYTES {
-        return Err("Invalid blob magic bytes".into());
-    }
-    let version = u16::from_le_bytes([slice[4], slice[5]]);
-    if version != VERSION {
-        return Err(format!("Unsupported blob version: {version}"));
-    }
-    let dtype_code = slice[6];
-    let rank = slice[7] as usize;
-    let data_offset = u64::from_le_bytes(slice[8..16].try_into().unwrap()) as usize;
-    // Read flags field (bytes 16..24): 1 = contiguous
-    let flags = u64::from_le_bytes(slice[16..24].try_into().unwrap());
-    let dtype =
-        u8_to_dtype(dtype_code).ok_or_else(|| format!("Unknown dtype code: {dtype_code}"))?;
-
-    // Read shape array
-    let shape_start = HEADER_SIZE;
-    let mut shape = Vec::with_capacity(rank);
-    for i in 0..rank {
-        let pos = shape_start + i * 8;
-        if pos + 8 > total_len {
-            return Err("Blob truncated reading shape".into());
-        }
-        let dim = u64::from_le_bytes(slice[pos..pos + 8].try_into().unwrap()) as usize;
-        shape.push(dim);
-    }
-
-    // Read stride array (follows shape)
-    let stride_start = shape_start + rank * 8;
-    let mut strides = Vec::with_capacity(rank);
-    for i in 0..rank {
-        let pos = stride_start + i * 8;
-        if pos + 8 > total_len {
-            return Err("Blob truncated reading strides".into());
-        }
-        let s = i64::from_le_bytes(slice[pos..pos + 8].try_into().unwrap()) as isize;
-        strides.push(s);
-    }
-
-    let num_elements: usize = shape
-        .iter()
-        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
-        .ok_or_else(|| "Shape product overflow: dimensions too large".to_string())?;
-    let expected_data_len = num_elements
-        .checked_mul(dtype.size_of())
-        .ok_or_else(|| "Data length overflow: buffer too large".to_string())?;
-    // Every header field is untrusted input: the additions must be checked,
-    // or a near-usize::MAX data_offset wraps below total_len and defeats the
-    // truncation check (panicking in debug, mis-slicing in release).
-    let data_end = data_offset
-        .checked_add(expected_data_len)
-        .ok_or_else(|| "Blob data offset overflow".to_string())?;
-    if data_end > total_len {
-        return Err(
-            format!(
-                "Blob data truncated: offset={data_offset}, expected={expected_data_len}, total={total_len}"
-            ),
-        );
-    }
+    let blob = view_buffer::parse_blob(&buffer.as_slice()[base_offset..base_offset + total_len])?;
     let abs_data_offset = base_offset
-        .checked_add(data_offset)
+        .checked_add(blob.data_offset)
         .ok_or_else(|| "Blob data offset overflow".to_string())?;
-
-    // If flags indicate contiguous (1) or strides were not stored, use contiguous layout.
-    // Otherwise preserve the stored strides for non-contiguous views.
-    if flags == 1 || strides.is_empty() {
-        Ok(ViewBuffer::from_polars_buffer_slice(
-            buffer,
-            abs_data_offset,
-            expected_data_len,
-            shape,
-            dtype,
-        ))
-    } else {
-        // Stored strides are untrusted too. The strided window is every
-        // byte from data_offset to the end of the blob (a padded layout may
-        // legitimately span more than num_elements * size), and every
-        // element the (shape, strides) pair can address must fall inside it.
-        let window_len = total_len - data_offset;
-        if num_elements > 0 {
-            let mut min_reach: i128 = 0;
-            let mut max_reach: i128 = 0;
-            for (&dim, &stride) in shape.iter().zip(strides.iter()) {
-                let reach = (dim as i128 - 1) * stride as i128;
-                if reach >= 0 {
-                    max_reach += reach;
-                } else {
-                    min_reach += reach;
-                }
-            }
-            if min_reach < 0 {
-                return Err(format!(
-                    "Blob strides reach below the data start: shape={shape:?}, strides={strides:?}"
-                ));
-            }
-            let span_end = max_reach + dtype.size_of() as i128;
-            if span_end > window_len as i128 {
-                return Err(format!(
-                    "Blob strides reach outside the data: shape={shape:?}, \
-                     strides={strides:?}, span={span_end}, available={window_len}"
-                ));
-            }
-        }
-        Ok(ViewBuffer::from_polars_buffer_slice_with_strides(
-            buffer,
-            abs_data_offset,
-            window_len,
-            shape,
-            strides,
-            dtype,
-        ))
+    // `parse_blob` checked alignment relative to the blob's first byte; this
+    // is the absolute address the typed views will actually use.
+    let elem = blob.dtype.size_of();
+    if !(buffer.as_slice().as_ptr() as usize + abs_data_offset).is_multiple_of(elem) {
+        return Err(format!(
+            "Blob payload is not aligned to its {:?} element size ({elem} bytes)",
+            blob.dtype
+        ));
     }
+    Ok(match blob.strides {
+        None => ViewBuffer::from_polars_buffer_slice(
+            buffer,
+            abs_data_offset,
+            blob.data_len,
+            blob.shape,
+            blob.dtype,
+        ),
+        Some(strides) => ViewBuffer::from_polars_buffer_slice_with_strides(
+            buffer,
+            abs_data_offset,
+            blob.data_len,
+            blob.shape,
+            strides,
+            blob.dtype,
+        ),
+    })
 }
 /// The buffer element type a Polars *leaf* type holds, if it is one.
 ///
@@ -1124,6 +1061,74 @@ mod tests {
     /// data_offset for a blob whose payload directly follows shape+strides.
     fn payload_offset(rank: usize) -> u64 {
         (HEADER_SIZE + rank * 16) as u64
+    }
+
+    #[test]
+    fn misaligned_data_offset_is_rejected() {
+        // f32 payload one byte past an aligned offset: in bounds, misaligned.
+        let mut data = vec![0u8; 1];
+        data.extend_from_slice(&[0u8; 16]);
+        let blob = craft_blob(7, payload_offset(1) + 1, 1, &[4], &[4], &data);
+        let err = decode(blob).expect_err("misaligned offset must be rejected");
+        assert!(err.contains("not aligned"), "{err}");
+    }
+
+    #[test]
+    fn stride_that_is_not_a_whole_element_is_rejected() {
+        // 2x2 f32, row stride 6 bytes: every element stays inside the 16-byte
+        // payload, but element (1, 0) starts mid-f32.
+        let blob = craft_blob(7, payload_offset(2), 0, &[2, 2], &[6, 4], &[0u8; 16]);
+        let err = decode(blob).expect_err("misaligned stride must be rejected");
+        assert!(err.contains("not aligned"), "{err}");
+    }
+
+    #[test]
+    fn binary_rows_are_copied_to_an_aligned_address() {
+        use polars::prelude::*;
+        // Odd lengths and a sliced column, so no row starts on a natural
+        // boundary in the source.
+        let ca = BinaryChunked::from_slice(
+            "b".into(),
+            &[&[1u8, 2, 3][..], &[4u8; 13][..], &[5u8; 1][..]],
+        )
+        .slice(1, 2);
+        for row in 0..ca.len() {
+            let (buffer, offset, len) = super::get_binary_row_buffer(&ca, row).unwrap();
+            assert_eq!(offset, 0);
+            assert_eq!(&buffer.as_slice()[..len], ca.get(row).unwrap());
+            assert_eq!(buffer.as_slice().as_ptr() as usize % 8, 0);
+        }
+    }
+
+    #[test]
+    fn from_blob_copies_the_whole_strided_window() {
+        // Padded 2x2 u8 rows (stride 3): `from_blob` used to copy only the 4
+        // logical bytes and keep stride 3, reading past its own allocation.
+        let blob = craft_blob(
+            1,
+            payload_offset(2),
+            0,
+            &[2, 2],
+            &[3, 1],
+            &[10, 20, 99, 30, 40],
+        );
+        let buf = view_buffer::ViewBuffer::from_blob(&blob).expect("in-window blob decodes");
+        assert_eq!(buf.to_contiguous().as_slice::<u8>(), &[10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn from_blob_rejects_what_the_zero_copy_decode_rejects() {
+        let misaligned = craft_blob(7, payload_offset(1) + 1, 1, &[4], &[4], &[0u8; 17]);
+        assert!(view_buffer::ViewBuffer::from_blob(&misaligned).is_err());
+        let hostile = craft_blob(
+            1,
+            payload_offset(2),
+            0,
+            &[4, 4],
+            &[1_000_000, 1],
+            &[0u8; 16],
+        );
+        assert!(view_buffer::ViewBuffer::from_blob(&hostile).is_err());
     }
 
     #[test]

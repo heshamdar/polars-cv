@@ -46,7 +46,7 @@ pub use ops::{
 };
 
 // Re-exports - Protocol
-pub use protocol::{dtype_to_u8, u8_to_dtype, ViewHeader};
+pub use protocol::{dtype_to_u8, parse_blob, u8_to_dtype, BlobLayout, ViewHeader};
 
 // Re-exports - Interop
 pub use interop::{validate_layout, ExternalView};

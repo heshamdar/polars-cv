@@ -38,7 +38,7 @@ use crate::core::bytes::AlignedBytes;
 use crate::core::dtype::{DType, ViewType};
 use crate::core::layout::{ExternalLayout, Layout, LayoutFacts};
 use crate::ops::scalar::{FusedKernel, ScalarOp};
-use crate::protocol::{dtype_to_u8, u8_to_dtype, ViewHeader, HEADER_SIZE, MAGIC_BYTES, VERSION};
+use crate::protocol::{dtype_to_u8, ViewHeader, HEADER_SIZE, MAGIC_BYTES, VERSION};
 
 /// Errors that can occur during buffer operations.
 #[derive(Error, Debug)]
@@ -613,9 +613,12 @@ impl ViewBuffer {
     pub unsafe fn as_ptr<T>(&self) -> *const T {
         let ptr = self.data.as_ptr().add(self.layout.offset);
 
-        // Safety Recommendation 1: Alignment Check
-        // We use debug_assert to catch this in testing/debug builds.
-        debug_assert!(
+        // Checked in every build, not only debug: callers turn this pointer
+        // into a `&[T]`, and a misaligned slice is undefined behaviour rather
+        // than a wrong value. A panic here is caught per row by the plugin and
+        // reported as an engine bug; the constructors (e.g. `parse_blob`) are
+        // what keep untrusted data from reaching it (CR-41).
+        assert!(
             (ptr as usize).is_multiple_of(std::mem::align_of::<T>()),
             "ViewBuffer pointer is not aligned for type {}; address={:p}, align={}",
             std::any::type_name::<T>(),
@@ -1281,106 +1284,27 @@ impl ViewBuffer {
 
     /// Deserializes a ViewBuffer from a binary blob.
     ///
-    /// Reads the full VIEW protocol header including shape and strides.
-    /// If the blob was serialized with a non-contiguous layout, the stored
-    /// strides are preserved. Performs a copy of the data payload into a
-    /// new `Vec<u8>`.
+    /// The header is validated by [`crate::protocol::parse_blob`], the same
+    /// parser the plugin's zero-copy decode uses. The payload window is copied
+    /// into storage aligned to the element size, so the result owns its data
+    /// whatever the alignment of `data` itself. A strided layout keeps its
+    /// stored strides; its whole window is copied, since every element they
+    /// address has been checked to lie inside it.
     pub fn from_blob(data: &[u8]) -> Result<ViewBuffer, BufferError> {
-        if data.len() < HEADER_SIZE {
-            return Err(BufferError::InvalidProtocol(
-                "Data too short for header".into(),
-            ));
-        }
-
-        // 1. Read Header
-        // Read header using ptr::read_unaligned to avoid UB from unaligned access.
-        // The input &[u8] may not be aligned to ViewHeader's required alignment.
-        let header = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const ViewHeader) };
-
-        // Validate Magic
-        if header.magic != MAGIC_BYTES {
-            return Err(BufferError::InvalidProtocol("Invalid magic bytes".into()));
-        }
-        if header.version != VERSION {
-            return Err(BufferError::InvalidProtocol(format!(
-                "Unsupported version: {}",
-                header.version
-            )));
-        }
-
-        let rank = header.rank as usize;
-        let flags = header.flags;
-        let dtype = u8_to_dtype(header.dtype).ok_or_else(|| {
-            BufferError::InvalidProtocol(format!("Unknown dtype code: {}", header.dtype))
-        })?;
-        let data_offset = header.data_offset as usize;
-
-        // 2. Read Shape & Strides
-        let shape_start = HEADER_SIZE;
-        let stride_start = shape_start + (rank * 8);
-
-        if data_offset > data.len() {
-            return Err(BufferError::InvalidProtocol(
-                "Data offset out of bounds".into(),
-            ));
-        }
-
-        let mut shape = Vec::with_capacity(rank);
-        let mut strides = Vec::with_capacity(rank);
-
-        let mut pos = shape_start;
-        for _ in 0..rank {
-            if pos + 8 > data.len() {
-                return Err(BufferError::InvalidProtocol("Truncated shape data".into()));
-            }
-            let bytes: [u8; 8] = data[pos..pos + 8].try_into().unwrap();
-            shape.push(u64::from_le_bytes(bytes) as usize);
-            pos += 8;
-        }
-
-        pos = stride_start;
-        for _ in 0..rank {
-            if pos + 8 > data.len() {
-                return Err(BufferError::InvalidProtocol("Truncated stride data".into()));
-            }
-            let bytes: [u8; 8] = data[pos..pos + 8].try_into().unwrap();
-            strides.push(i64::from_le_bytes(bytes) as isize);
-            pos += 8;
-        }
-
-        // 3. Extract Data
-        // Safe Baseline: Copy into new Vec
-        let raw_data = &data[data_offset..];
-
-        // Validate size against shape/dtype
-        let expected_elements: usize = shape.iter().product();
-        let expected_bytes = expected_elements * dtype.size_of();
-
-        if raw_data.len() < expected_bytes {
-            return Err(BufferError::InvalidProtocol(format!(
-                "Data payload too short. Expected {} bytes, got {}",
-                expected_bytes,
-                raw_data.len()
-            )));
-        }
-
-        // Create owned buffer
-        let vec_data = raw_data[0..expected_bytes].to_vec();
-
-        // 4. Construct ViewBuffer — use stored strides if non-contiguous
-        let layout = if flags == 1 || strides.is_empty() {
-            Layout::new_contiguous(shape, dtype)
-        } else {
-            Layout {
-                shape,
+        let blob = crate::protocol::parse_blob(data).map_err(BufferError::InvalidProtocol)?;
+        let window = &data[blob.data_offset..blob.data_offset + blob.data_len];
+        let bytes = AlignedBytes::copy_from_slice_aligned(window, blob.dtype.size_of());
+        let layout = match blob.strides {
+            None => Layout::new_contiguous(blob.shape, blob.dtype),
+            Some(strides) => Layout {
+                shape: blob.shape,
                 strides,
                 offset: 0,
-                dtype,
-            }
+                dtype: blob.dtype,
+            },
         };
-
         Ok(ViewBuffer {
-            data: BufferStorage::Rust(Arc::new(AlignedBytes::from(vec_data))),
+            data: BufferStorage::Rust(Arc::new(bytes)),
             layout,
         })
     }

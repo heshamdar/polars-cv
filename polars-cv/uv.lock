@@ -3188,14 +3188,18 @@ wheels = [
 [[package]]
 name = "polars-cv"
 version = "0.28.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
-    { name = "graphviz" },
-    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "polars" },
+]
+
+[package.optional-dependencies]
+viz = [
+    { name = "graphviz" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pydot" },
 ]
 
@@ -3214,15 +3218,19 @@ bench = [
     { name = "torchvision" },
 ]
 dev = [
+    { name = "graphviz" },
     { name = "hypothesis" },
     { name = "imagehash" },
     { name = "jupyterlab-execute-time" },
     { name = "jupytext" },
     { name = "matplotlib" },
     { name = "maturin" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "pre-commit" },
+    { name = "pydot" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -3239,12 +3247,13 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "graphviz", specifier = ">=0.21" },
-    { name = "networkx", specifier = ">=3.4.2" },
-    { name = "numpy", specifier = ">=2.2.6" },
-    { name = "polars", specifier = ">=1.0,<2.0" },
-    { name = "pydot", specifier = ">=4.0.1" },
+    { name = "graphviz", marker = "extra == 'viz'", specifier = ">=0.21" },
+    { name = "networkx", marker = "extra == 'viz'", specifier = ">=3.4.2" },
+    { name = "numpy", specifier = ">=2.0.2" },
+    { name = "polars", specifier = ">=1.41.1,<2.0" },
+    { name = "pydot", marker = "extra == 'viz'", specifier = ">=4.0.1" },
 ]
+provides-extras = ["viz"]
 
 [package.metadata.requires-dev]
 bench = [
@@ -3260,15 +3269,18 @@ bench = [
     { name = "torchvision", specifier = ">=0.15" },
 ]
 dev = [
+    { name = "graphviz", specifier = ">=0.21" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "imagehash", specifier = ">=4.3" },
     { name = "jupyterlab-execute-time", specifier = ">=3.3.0" },
     { name = "jupytext", specifier = ">=1.18.1" },
     { name = "matplotlib", specifier = ">=3.9.4" },
     { name = "maturin", specifier = ">=1.7,<2.0" },
+    { name = "networkx", specifier = ">=3.4.2" },
     { name = "opencv-python", specifier = ">=4.8" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pre-commit", specifier = ">=4.5.1" },
+    { name = "pydot", specifier = ">=4.0.1" },
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.9.0" },
