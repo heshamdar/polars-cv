@@ -981,11 +981,15 @@ matrix; the entries here track status only.
 - **Fix:** a Rust `Plan` pyclass owns the fold; Python becomes a thin recorder.
   Plan phase P7.
 
-### CR-47 — Source/sink params are policed by applicability tables · `Open` · Low (design)
+### CR-47 — Source/sink params are policed by applicability tables · `Fixed` · Low (design)
 
 - **Location:** `_types.py` `SOURCE_PARAM_APPLIES`/`SINK_PARAM_APPLIES`;
   `pipeline.rs` `SourceSpec`/`SinkSpec` (`format: String`).
 - **Fix:** tagged enums per format. Plan phase P4.
+- **Resolution (P4):** every source and sink format is a typed struct in
+  `polars-cv/src/formats/` (`formats!` registry, `io_catalog.json`); the
+  builder validates through the same deserializer (`io_check`), and both
+  applicability tables, their checker and hint table are deleted.
 
 ### CR-48 — Geometry accessors carry a second per-row parameter mechanism · `Open` · Low (design)
 
