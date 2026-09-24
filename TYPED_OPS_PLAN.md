@@ -4,16 +4,16 @@
 > (see `CODE_REVIEW_FINDINGS.md`). Update the progress table as phases land; a plan
 > that lives only in a session ends with it.
 >
-> **Integration branch:** `claude/codebase-quality-review-wnfwqz` (the plan's
-> "one long-lived branch"; named by the session's branch rules rather than
-> `typed-ops`).
+> **Integration branch:** `claude/codebase-quality-review-7rtgcb` (the plan's
+> "one long-lived branch", continued from `…-wnfwqz` by fast-forward; named by
+> the session's branch rules rather than `typed-ops`).
 >
 > | Phase | Status |
 > |---|---|
 > | P0 — Safety net and seams | **done** — corpus (214 cases), signature snapshot, pickle pin, removed-symbol gate, `_plan_view` seam (30 files), baselines, dead `GraphNode` fields |
 > | P1 — Positional expression slots | **done** — `{"$slot": n}` wire form from a graph-wide `SlotTable`; `expr_key`/`expr_column_names`/name binding deleted; per-call slot bound check; `shape_node` id; CR-50 logged |
 > | P2 — Catalogue foundation + spike | **done, one gate item over** — `#[derive(Op)]`/`typed_ops!`, `Param`/`Literal`, name-keyed dispatcher (`LEGACY_OPS` 81), `crop`/`resize`/`warp_affine`/`histogram` typed with generated builders, catalogue ↔ `.so` ↔ generated-module checks, mkdocs inherited members. Gate: corpus ✓, signatures ✓, `mkdocs --strict` ✓ (generated `Args:` render), release `.so` 32,192,392 B (+58 KB, +0.2%), release build 839 s cold (baseline 819 s). Plan build µs/append (release; P0 → P1 → P2): `mixed` 82.8 → 80.7 → **78.0**; `chain` 49.8 → 51.7 → **53.7**; `lazy_continuation` 83.5 → 86.6 → **90.7**. The two legacy-only scenarios are over baseline (~2 µs each from P1's slot table and P2's dispatcher map on the legacy path); both paths shrink in P3 and go in P6/P7 |
-> | P3 — Migrate every op | **in progress** — P3.1 view, P3.2 compute, P3.3 image, P3.4 colour/filter/rotate/reductions/phash/channel done (60 typed); P3.5 binary + geometry + graph-level (25 left in `LEGACY_OPS`) next. See **Handover** below |
+> | P3 — Migrate every op | **done** — all 85 ops typed (P3.1 view, P3.2 compute, P3.3 image, P3.4 colour/filter/rotate/reductions/phash/channel, P3.5a geometry, P3.5b binary/mask/merge, P3.5c rasterize/label_reduce/extract_shape); `LEGACY_OPS` empty; name-keyed resolution deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `af41c23` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P4 — Typed sources and sinks | pending |
 > | P5 — Geometry namespaces | pending |
 > | P6 — Delete the legacy protocol | pending |
@@ -22,26 +22,29 @@
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
 
-## Handover (2026-09-24, mid-P3)
+## Handover (2026-09-24, P3 closed)
 
 Written so a fresh session can continue without the originating conversation.
-Read this section, then the phase text for P3.5 onwards below.
+Read this section, then the phase text for P4 onwards below.
 
 ### State
 
-- Branch `claude/codebase-quality-review-wnfwqz`, pushed. Commits for this
-  plan: P0 (up to `5a83210`), P1 `cb6fc46`, P2 `1faec46`, P3.1 `dd52de0`,
-  P3.2 `dfa8a94`, P3.3 `b8e23ba`, P3.4 `c774819`. (P3.4's message says
-  "22 left"; the true count is **25**.)
-- Every commit passed the fast lane; the full `scripts/verify.sh` last ran green
-  at the P2 boundary. Run it again at the P3 exit.
-- Typed ops (60): see `TypedOp::NAMES` / `tests/golden/op_catalog.json`.
-- Still legacy (25, `execute.rs` `LEGACY_OPS`): `add` `apply_mask`
-  `bitwise_and` `bitwise_or` `bitwise_xor` `blend` `channel_merge`
-  `contour_area` `contour_bounding_box` `contour_centroid` `contour_convex_hull`
-  `contour_perimeter` `contour_scale` `contour_simplify` `contour_translate`
-  `divide` `extract_contours` `extract_shape` `label_reduce` `maximum`
-  `minimum` `multiply` `rasterize` `ratio` `subtract`.
+- Integration work continued on branch `claude/codebase-quality-review-7rtgcb`
+  (fast-forwarded from `…-wnfwqz`, pushed). Commits for this plan: P0 (up to
+  `5a83210`), P1 `cb6fc46`, P2 `1faec46`, P3.1 `dd52de0`, P3.2 `dfa8a94`, P3.3
+  `b8e23ba`, P3.4 `c774819`, P3.5a `d13274b`, P3.5b `0c637e1`, P3.5c
+  `af41c23`, then the P3 exit (changelog, ledger, this section).
+- Every op is typed (`TypedOp::NAMES`, `tests/golden/op_catalog.json`).
+  `LEGACY_OPS` is `&[]`; `LegacyOpSpec`, `OpSpec::Legacy` and the dispatcher's
+  legacy arm remain for P6, and `resolve_op` refuses a legacy spec outright.
+- Already gone (earlier than P6 planned, because nothing read them once the
+  last arm went): `resolve_op_inner`, `OpParams`, the `get::*` readers except
+  `opt_u8_value`, `ParamValue::resolve_{f64,bool,str,string}`,
+  `legacy_probe_spec`. `ParamValue` itself survives only for `SourceSpec`
+  (P4).
+- Next: **P4 — typed sources and sinks** (below). The recipe that follows
+  was written for op families but carries over: typed struct, register,
+  delete the untyped path, port tests, re-bless and regenerate, verify.
 
 ### How a family is migrated (the recipe every P3 commit followed)
 
@@ -91,32 +94,25 @@ now the validator; same input rejected at the same point — say so in the
 commit), wire-shape assertions in `test_serialization.py`, and none in the
 golden corpus or signature snapshot (both must stay green unchanged).
 
-### P3.5 specifics (remaining work, in suggested order)
+### How P3.5 landed (for reference)
 
-- **Geometry ops** `contour_*` (Python names `area`, `perimeter`, `centroid`,
-  `bounding_box`, `convex_hull`, `translate`, `scale_contour`, `simplify` —
-  check `pipeline.py` for each `_append_op("contour_…")` caller and use
-  `#[op(python = …)]`). `execute::unread_param_tests` uses
-  `contour_perimeter` as its fabricated legacy case — move it to another
-  legacy op, or delete the test when the last legacy op goes (P6 deletes
-  `OpParams` anyway). `encode.rs::every_graph_geometry_op_executes` already
-  covers typed samples.
-- **Binary family** (`add` … `ratio`, `bitwise_*`, `blend`): Python methods live
-  on `LazyPipelineExpr` (`lazy.py`, `_add_binary_op`, operand is another node
-  id `other_node`). Plan: one generic typed op or one per name reading
-  `BinaryOp::NAMED`; `gen_ops.py` does not yet place `lazy_only` ops (it raises
-  — extend `method_name`/render to emit a `LazyPipelineExpr` mixin, or keep the
-  lazy methods hand-written and make the op `internal`). `binary_output_dtype`
-  FFI and `parse_binary_op` in `lib.rs` read `BinaryOp::NAMED`.
-- **Graph-level ops**: `rasterize` (split `RasterSize::{Fixed{width,height} |
-  FromNode(node)}`; delete the `shape_ref` probe injection in
-  `lib.rs::legacy_probe_spec` and the `OpResolver::RasterizeShapeRef`
-  special case keyed on the legacy spec; `resolve_rasterize_style` is shared
-  with the contour source), `extract_contours`, `label_reduce` (its
-  `contours` is a slot read as data via `ParamCol::get_any`), `extract_shape`,
-  `apply_mask`, `channel_merge` (`other_nodes`).
-- **P3 exit**: `LEGACY_OPS` empty (keep the const until P6 deletes the legacy
-  protocol), full `scripts/verify.sh`, CHANGELOG, this table, CR-45 progress.
+- **Geometry** (`ops/geometry.rs`): the eight contour measures/transforms and
+  `extract_contours`; `scale_contour` is sugar over an internal op (enum-member
+  default).
+- **Binary family, `apply_mask`, `channel_merge`** (`ops/binary.rs`): operands
+  are a `NodeRef` field (catalogue kind `node`); wire field names follow the
+  lazy signatures (`other`, `mask`, `others`). Visibility `lazy_only`:
+  `gen_ops.py` emits no `Pipeline` method, and
+  `test_every_lazy_only_op_is_a_lazy_method_with_its_fields` pins each to its
+  hand-written `LazyPipelineExpr` method. `Pipeline._add_node_op` is the one
+  graph hook; `_op_reads_sibling_nodes` reads node-typed fields from
+  `OP_FIELDS`.
+- **`rasterize`**: internal op, `size: RasterSize::{Fixed([h, w]) |
+  FromNode(node)}`; the sugar records the shape reference's upstream edge and
+  canvas assertion. `CompiledGraph`'s `RasterizeShapeRef` resolver keys on the
+  typed variant and shares `Rasterize::with_size`.
+- **`label_reduce`**: `contours: ColumnRef` (slot-only, catalogue kind
+  `column`); builder generated.
 
 ### Gotchas learned
 
@@ -142,6 +138,25 @@ golden corpus or signature snapshot (both must stay green unchanged).
 
 Where the implementation departs from the text below, and why. The text is left
 as planned so the deviation stays visible.
+
+- **P3 — the binary family's lazy methods are not generated.** Each
+  `lazy_only` builder constructs a new graph node its own way (a binary op
+  starts a BLOB-source pipeline and takes its dtype from
+  `binary_output_dtype`; `apply_mask` clones the left operand's pipeline;
+  `channel_merge` is variadic), which the generator cannot express. They stay
+  hand-written on `LazyPipelineExpr`, held to the catalogue by a guard test
+  (method exists, is defined there, parameters equal the op's fields).
+- **P3 — one struct per binary op, not a generic `Binary{op}`.** The wire and
+  every name-keyed consumer (`binary_output_dtype`, CSE, graph viz) keep the
+  op name; `binary_ops_are_exactly_the_named_table` holds the structs to
+  `BinaryOp::NAMED`, so the table is still the one list.
+- **P3 — the name-keyed resolver and its read-tracker are deleted now, not in
+  P6.** With `LEGACY_OPS` empty they had no reachable arm, and the
+  no-dead-code rule wins over the phase boundary. P6 keeps the rest of its
+  list (`LegacyOpSpec`, the dispatcher's legacy arm, `LEGACY_OPS`).
+- **P3 — `ParamCtx` carries the probe value.** A node-sized `rasterize` has
+  no slot, so it reads the probe placeholder directly to make its canvas vary
+  across probes (unknown at plan time) instead of the deleted slot injection.
 
 - **P2 — `#[derive(Op)]` (crate `polars-cv-macros`) instead of a `define_op!`
   `macro_rules!`.** A declarative macro cannot take doc comments plus per-field

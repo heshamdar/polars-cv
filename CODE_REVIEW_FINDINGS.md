@@ -967,8 +967,11 @@ matrix; the entries here track status only.
   `SlotTable` (`Expr.meta.eq` identity); `expr_key`, `expr_column_names` and
   the Rust name binding are deleted. P2 (catalogue + spike) done — `crop`,
   `resize`, `warp_affine`, `histogram` are `#[derive(Op)]` structs with
-  generated Python builders; `LEGACY_OPS` holds the remaining 81. P3 in
-  progress: 60 ops typed, 25 legacy left (see the plan's Handover section).
+  generated Python builders; `LEGACY_OPS` holds the remaining 81. P3 (every
+  op typed) done — all 85 ops are typed, `LEGACY_OPS` is empty, and the
+  name-keyed resolution (`resolve_op_inner`, `OpParams`, the `get::*` readers,
+  the arm-scan guards) is deleted. Remaining for this finding: P6 deletes
+  `LegacyOpSpec`, the empty `LEGACY_OPS` and the dispatcher's legacy arm.
 
 ### CR-46 — The planner is split across the FFI and folded twice · `Open` · Medium (design)
 
