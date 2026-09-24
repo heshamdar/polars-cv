@@ -820,7 +820,7 @@ class TestSpatialPushdownGuard:
         # node-splitting keeps this shape off the public API, so this is the
         # only way to exercise the barrier.
         pipe = Pipeline().source("image_bytes").grayscale()
-        pipe._add_binary_op("apply_mask", "mask_node", invert=False)
+        pipe._add_node_op("apply_mask", {"mask": "mask_node", "invert": False})
         pipe = pipe.crop(top=0, left=0, height=8, width=8)
         assert op_names(pipe) == ["grayscale", "apply_mask", "crop"]
 

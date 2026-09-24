@@ -34,6 +34,11 @@ pub enum Param<T> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Literal<T>(pub T);
 
+/// Another graph node, by id: the operand of a binary op, a mask, a merged
+/// channel. Graph topology, so never per-row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRef(pub String);
+
 impl<T: WireScalar> Param<T> {
     /// The value at `row`: the literal, or the bound column's value.
     ///
@@ -158,6 +163,23 @@ impl<'de, T: WireScalar> Deserialize<'de> for Literal<T> {
     }
 }
 
+impl Serialize for NodeRef {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeRef {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match serde_json::Value::deserialize(d)? {
+            serde_json::Value::String(id) => Ok(NodeRef(id)),
+            other => Err(D::Error::custom(format!(
+                "expected a graph node id (a string), got {other}"
+            ))),
+        }
+    }
+}
+
 /// How the catalogue describes a field's type to the Python generator.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -179,6 +201,8 @@ pub enum TypeDesc {
     List { inner: Box<TypeDesc> },
     /// One of several shapes, told apart by the value (see the owning type).
     OneOf { options: Vec<TypeDesc> },
+    /// Another graph node ([`NodeRef`]); Python passes the operand expression.
+    Node,
 }
 
 /// A type an op field may have.
@@ -214,6 +238,13 @@ impl<T: WireScalar> FieldType for Param<T> {
 impl<T: WireScalar> FieldType for Literal<T> {
     fn describe() -> TypeDesc {
         scalar_desc::<T>(false)
+    }
+    fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
+}
+
+impl FieldType for NodeRef {
+    fn describe() -> TypeDesc {
+        TypeDesc::Node
     }
     fn visit_slots(&self, _f: &mut dyn FnMut(usize)) {}
 }

@@ -197,19 +197,6 @@ impl ParamValue {
             _ => self.slot_col(ctx)?.get_str(row_idx, ctx).map(Some),
         }
     }
-
-    /// Resolve this parameter to a boolean, per row when bound to a column.
-    ///
-    /// Returns `None` under a plan-time probe context, as [`resolve_str`] does.
-    pub fn resolve_bool(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<Option<bool>> {
-        match self {
-            ParamValue::Literal { value } => value.as_bool().map(Some).ok_or_else(
-                || polars_err!(ComputeError: "Expected boolean literal, got {:?}", value),
-            ),
-            _ if ctx.is_probe() => Ok(None),
-            _ => self.slot_col(ctx)?.get_bool(row_idx, ctx).map(Some),
-        }
-    }
 }
 
 // ============================================================================
@@ -754,28 +741,6 @@ pub mod get {
             Ok(default)
         }
     }
-
-    /// Optional boolean parameter, resolved per row.
-    ///
-    /// The per-row counterpart of [`opt_bool`], for flags with no shape or
-    /// dtype effect (e.g. `apply_mask(invert)`). Flags that
-    /// *do* change the output shape — `rotate(expand)` — must keep using
-    /// [`opt_bool`], which is literal-only.
-    pub fn opt_bool_dyn(
-        params: &Params<'_>,
-        name: &str,
-        default: bool,
-        row_idx: usize,
-        ctx: &ParamCtx,
-    ) -> PolarsResult<bool> {
-        match params.get(name) {
-            None => Ok(default),
-            Some(p) => Ok(p
-                .resolve_bool(row_idx, ctx)
-                .map_err(|e| named(name, e))?
-                .unwrap_or(default)),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -917,7 +882,7 @@ mod tests {
                 0 => param.resolve_i64(0, &ctx).map(|_| ()),
                 1 => ctx.col(idx).and_then(|c| c.get_f64(0, &ctx)).map(|_| ()),
                 2 => param.resolve_str(0, &ctx).map(|_| ()),
-                _ => param.resolve_bool(0, &ctx).map(|_| ()),
+                _ => ctx.col(idx).and_then(|c| c.get_bool(0, &ctx)).map(|_| ()),
             };
             assert!(result.is_err(), "slot {idx} should error");
             assert!(ctx.took_null(), "slot {idx} should flag the null");

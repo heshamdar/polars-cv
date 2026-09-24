@@ -7,8 +7,8 @@ A single-op sweep cannot reach these. What is checked here:
 * the steps ``op_infer_shape`` refuses, which wipe the H/W hints — the
   requirement there is that a shape-dependent sink is *rejected while
   planning*, never accepted and then wrong;
-* every binary op, with the operand axis read from Rust's ``BINARY_OPS``
-  registry rather than a list written here;
+* every binary op, with the operand axis read from Rust's ``BinaryOp::NAMED``
+  table rather than a list written here;
 * the two spellings of a continuation (``.pipe(p.op())`` vs ``.pipe(p).op()``)
   against each other *and* against the data — ``test_append_contract`` pins
   the first pair to each other but never to execution;
@@ -40,7 +40,7 @@ H, W = 20, 32
 def _binary_op_names() -> list[str]:
     """The binary-op vocabulary, read from the Rust registry.
 
-    ``BINARY_OPS`` in ``src/execute.rs`` is the single authority and it is
+    ``BinaryOp::NAMED`` in view-buffer is the single authority and it is
     surfaced as the ``BinaryOp`` enum over ``enum_variants``. Reading it here
     means a new binary op joins this sweep automatically.
     """

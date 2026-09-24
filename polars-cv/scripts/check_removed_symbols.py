@@ -126,6 +126,12 @@ REMOVED: tuple[Removed, ...] = (
     # `Option<Param<f64>>`.
     Removed("maybe_f64", "P3: Option<Param<f64>> min_area"),
     Removed("resolve_f64", "P3: Param<f64> reads its column directly"),
+    # Typed-op P3 (binary family): operands are typed `NodeRef` fields and
+    # flags are `Param<bool>`.
+    Removed("opt_bool_dyn", "P3: Param<bool> invert"),
+    Removed("resolve_bool", "P3: Param<bool> reads its column directly"),
+    Removed("_add_binary_op", "P3: Pipeline._add_node_op encodes by catalogue"),
+    Removed("_add_channel_merge", "P3: Pipeline._add_node_op encodes by catalogue"),
 )
 
 

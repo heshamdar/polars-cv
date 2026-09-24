@@ -11,7 +11,11 @@ compiled extension, so it runs without a build. It writes:
   (``Pipeline._append_typed``) reads;
 - ``_OpsMixin``: one builder method per op (``_``-prefixed for an internal op
   that hand-written sugar wraps), with the signature, defaults
-  and docstring the Rust definition declares. ``Pipeline`` inherits it.
+  and docstring the Rust definition declares. ``Pipeline`` inherits it. A
+  ``lazy_only`` op (one combining this expression with other graph nodes) has
+  no ``Pipeline`` method: its builder is ``LazyPipelineExpr``'s, which owns the
+  graph wiring, and ``test_every_lazy_only_op_is_a_lazy_method_with_its_fields``
+  pins that method to the op's fields.
 
 Usage::
 
@@ -181,7 +185,7 @@ def render(catalog: list[dict[str, Any]]) -> str:
     fields = {
         op["name"]: {f["name"]: f["type"] for f in op["fields"]} for op in catalog
     }
-    methods = "\n".join(method(op) for op in catalog)
+    methods = "\n".join(method(op) for op in catalog if op["visibility"] != "lazy_only")
     text = (
         _HEADER.format(imports=_imports(methods))
         + "\n#: Ops whose wire form is typed (bare values and slots).\n"

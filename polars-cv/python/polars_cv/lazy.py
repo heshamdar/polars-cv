@@ -507,7 +507,7 @@ class LazyPipelineExpr:
 
         # Create a new pipeline that references the mask
         new_pipeline = self._pipeline._clone()
-        new_pipeline._add_binary_op("apply_mask", mask._node_id, invert=invert)
+        new_pipeline._add_node_op("apply_mask", {"mask": mask, "invert": invert})
 
         return LazyPipelineExpr(
             column=self._column,
@@ -541,13 +541,9 @@ class LazyPipelineExpr:
             >>> merged = sel(2).channel_merge(sel(1), sel(0))  # RGB -> BGR
             ```
         """
-        if not others:
-            raise ValueError(
-                "channel_merge requires at least one other channel expression"
-            )
-
+        # The op's Rust definition rejects an empty `others`.
         new_pipeline = self._pipeline._clone()
-        new_pipeline._add_channel_merge([o._node_id for o in others])
+        new_pipeline._add_node_op("channel_merge", {"others": list(others)})
 
         return LazyPipelineExpr(
             column=self._column,
@@ -1103,7 +1099,7 @@ class LazyPipelineExpr:
         # Carry it from the left operand so a downstream list/array sink knows the
         # nesting depth at plan time.
         new_pipeline._expected_ndim = self._pipeline._expected_ndim
-        new_pipeline._add_binary_op(op, other._node_id)
+        new_pipeline._add_node_op(op, {"other": other}, update_dtype=False)
 
         return LazyPipelineExpr(
             column=None,  # No direct column - receives from upstream

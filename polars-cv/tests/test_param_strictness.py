@@ -693,7 +693,7 @@ class TestFlagParamsAcceptExpressions:
     """Non-structural boolean flags resolve per row.
 
     These were declared per-row in Rust before the Python builders emitted
-    anything but a literal, leaving `get::opt_bool_dyn` unreachable and the
+    anything but a literal, leaving the per-row flag reader unreachable and the
     docs claiming a capability that did not exist.
     """
 

@@ -149,7 +149,7 @@ impl<'a> GeomParams<'a> {
     /// Resolve a boolean parameter from a bound input, else the literal kwarg.
     ///
     /// A bound input must be a genuine Boolean column, matching how the graph
-    /// engine's `get::opt_bool_dyn` treats flags: silently accepting a numeric
+    /// engine's typed `Param<bool>` treats flags: silently accepting a numeric
     /// column would turn a mis-routed expression into a wrong result rather
     /// than an error.
     pub fn bool(&self, name: &str, literal: bool, row: usize) -> PolarsResult<bool> {
