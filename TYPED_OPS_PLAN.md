@@ -17,7 +17,7 @@
 > | P4 — Typed sources and sinks | **done** — `src/formats/` (`formats!` registry, `io_catalog.json`, `io_check`); both applicability tables, `PARAM_HINTS`, `KNOWN_SOURCE_FORMATS`, `SourceSpec`/`SinkSpec` and the last untyped param readers deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `910afb2` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P5 — Geometry namespaces | **done** — `ContourKwargs`/`PointKwargs` are typed (`Param<T>`, `ColumnRef`, `#[derive(Op)]`); `input_slots`, `InputSlots`, `parse_named`/`require_named` deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `f3d7d94` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P6 — Delete the legacy protocol | **done** — `pipeline.rs` (`OpSpec`/`LegacyOpSpec`/dispatcher), `LEGACY_OPS`, `resolve_op`, the untyped `ParamValue`, `known_ops`, `OP_NAMES` (P6a); 20 Python enums generated from the registries via `enum_catalog.json` and their parity tests deleted (P6b); `enum_variants`/`enum_names` and the serde-name tests deleted, graph policies parse through `NAMED` (P6c). Python `OpSpec`/`ParamValue` deferred to P7, enum helpers kept (see deviations). Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `2ae7651` (slow lane, `cargo deny`, `mkdocs --strict` included) |
-> | P7 — Planner into Rust | **in progress** — P7a `a6f0aa1`: one `plan_step` FFI per append (`src/plan.rs`: domain check, schema fold, H/W, channels, rank clipping; binary dtype via `other_dtype`); `op_output_channels`, `binary_output_dtype` and eight Python helpers deleted. P7b `98d7592`: per-op entering state (`PlanState` in `_entering`) and one rewrite primitive, `_replay`, for CSE, sub-pipelines, pushdown and identity elimination; `op_schema`, the batch folds, `_hint_snapshots`, `_rewrite_ops` and the three commit helpers deleted. Next: P7c passes into Rust, P7d continuation/CSE and the `Plan` pyclass |
+> | P7 — Planner into Rust | **in progress** — P7a `a6f0aa1`: one `plan_step` FFI per append (`src/plan.rs`: domain check, schema fold, H/W, channels, rank clipping; binary dtype via `other_dtype`); `op_output_channels`, `binary_output_dtype` and eight Python helpers deleted. P7b `98d7592`: per-op entering state (`PlanState` in `_entering`) and one rewrite primitive, `_replay`, for CSE, sub-pipelines, pushdown and identity elimination; `op_schema`, the batch folds, `_hint_snapshots`, `_rewrite_ops` and the three commit helpers deleted. P7c `66ff9bb`, `0df1790`, `9e3b6af`: identity elimination and the spatial pushdown run in Rust (`src/passes.rs`, `node_pass`, dispatched on a generated `LogicalPass`); `op_contract`, `op_identity_rule`, `op_infer_shape` and their string vocabularies deleted (tests ported to Rust); the pass list is a Rust catalogue (`pass_catalog.json` → generated `OptFlags` fields), `OptConfig` refuses unknown keys, `bit_exact` deleted. Next: P7d — the remaining Python planner state (`OpSpec`/`ParamValue`, assertions, `output_encoding`) and `explain`/`_graph_viz` on the recorded states |
 > | P8 — API reshaping | pending |
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
@@ -57,7 +57,10 @@ Read this section, then the phase text for P7 onwards below.
   every rewrite of the op list is `_replay` (re-append from a recorded
   state). The state still lives in Python; the Rust `Plan` pyclass takes it
   over with the passes.
-- Next: **P7c — optimiser passes into Rust** (below). The P7 line-count
+- P7c is in (`66ff9bb`, `0df1790`, `9e3b6af`): `node_pass` runs the
+  node-scope passes in Rust; the pass list, `OptConfig` and the generated
+  `OptFlags` fields come from one Rust catalogue.
+- Next: **P7d — the rest of the Python planner** (below). The P7 line-count
   target is in the ledger; P7 also takes the Python `OpSpec`/`ParamValue`
   (the planner's own op representation, which P6 could not delete without
   it).
@@ -74,6 +77,7 @@ stands (lines, by area; `py-gen` is `_ops_generated.py`, generated):
 | P4 `910afb2` | 18,193 | 209 | 20,964 | 14,099 | 1,607 | 55,430 |
 | P5 `f3d7d94` | 18,085 | 209 | 20,964 | 14,093 | 1,607 | 55,443 |
 | P6 `2ae7651` | 17,728 | 209 | 20,956 | 13,752 | 1,862 | 55,266 |
+| P7c `9e3b6af` | 18,333 | 209 | 20,969 | 12,985 | 1,930 | 54,890 |
 
 So far the phases have *moved* definitions into typed Rust (each carrying the
 docs, defaults and validation Python used to hold) more than they have
