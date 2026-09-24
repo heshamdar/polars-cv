@@ -574,8 +574,8 @@ pub struct ParamCtx<'a> {
     null_policy: NullParamPolicy,
     /// Set by [`ParamCol::on_null`] when a null was read under
     /// [`NullParamPolicy::Null`]. `Cell` because resolvers take `&ParamCtx`;
-    /// the context is per-call and the row loop that reads the flag is
-    /// single-threaded, so no `Sync` bound is introduced.
+    /// each row range of a call builds its own context and reads the flag on
+    /// its own thread, so no `Sync` bound is introduced.
     null_hit: Cell<bool>,
 }
 

@@ -81,6 +81,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **Every `.cv.pipe(...)` call runs its rows in parallel.** Rows are split
+  into ranges on the plugin's thread pool (sized by `POLARS_MAX_THREADS`) and
+  reassembled in order, so eager `with_columns`/`select` on a single-chunk
+  column is multi-core: 3–4× faster on 4 cores in the measured cases, with
+  streaming unchanged. Under `on_error="raise"` the reported error is still the
+  earliest failing row's. The one-time "ran on one thread" warning and its
+  `POLARS_CV_ENGINE_WARN_SECONDS` / `POLARS_CV_SILENCE_ENGINE_WARNING`
+  variables are removed. (CR-32)
 - **`crop` rejects windows it cannot honour.** A negative `top`/`left`/`height`/
   `width` is an error (a literal when the pipeline is built, a per-row value as
   a row error), and so is a window that runs past the image. Previously a

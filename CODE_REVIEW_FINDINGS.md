@@ -449,9 +449,36 @@ drift. Timings are from the **debug** build on a 4-core container, so only the
   readable name only for error messages. Guard with the repro above as a
   regression test, watched failing first.
 
-### CR-32 — Multi-core execution depends on how Polars happens to chunk the input · `Resolved (re-scoped)` · Low
+### CR-32 — Multi-core execution depends on how Polars happens to chunk the input · `Resolved` · Low
 
-> **Resolved.** `engine_warning.rs` now decides when each call finishes. It
+> **Resolved (P1, 2026-09-24): the call is parallel.** The re-scoping below
+> was reversed by the quality review: eager `with_columns` is the README's
+> first example, so a single-core eager path is the default experience, not a
+> corner. `CompiledGraph::execute` now splits a call's rows into contiguous
+> ranges (a few per thread) that run on the plugin's own `THREAD_POOL`. A
+> plugin links its own polars-core, so it cannot join the host's pool; the
+> plugin's pool is sized by `POLARS_MAX_THREADS` and concurrent calls share
+> it, since callers block while their rows run. Each range has its own
+> `ParamCtx` and scratch; results are concatenated in order; under
+> `on_error="raise"` the earliest failing range's error wins, so the report
+> is the one a sequential run gives. The CR-37 plan cache is now shared across
+> ranges and keyed by layout (up to 16 per segment), so a segment is still
+> planned once per layout per call. Measured on 4 cores (debug build,
+> before → after): 400 PNG rows resize+blur, eager 11.37 s → 2.94 s,
+> streaming 2.90 s → 2.95 s; 200k cheap rows, eager 2.60 s → 0.83 s,
+> streaming 0.74 s → 0.75 s; 8 rows at 1024², eager 3.60 s → 0.96 s,
+> streaming 0.91 s → 0.96 s. Streaming neither gains nor loses. The engine
+> warning, whose advice ("ran on one thread") became false, is deleted.
+> Guards: `compiled.rs::a_call_runs_its_rows_on_several_threads` (watched
+> failing: "256 rows ran on 1 thread(s)"); `tests/test_parallel_rows.py`
+> (order, earliest error, null alignment on a single-chunk 300-row frame —
+> watched failing against two deliberate mutations: reversed range order,
+> last-range error wins); the unchanged plan-count assertions in
+> `static_segments_plan_once_per_source_layout`; and
+> `test_removed_surfaces.py::test_the_single_thread_engine_warning_is_gone`.
+
+> **Previously resolved (re-scoped)** by improving the warning:
+> `engine_warning.rs` now decided when each call finishes. It
 > warns once if that call ran longer than `POLARS_CV_ENGINE_WARN_SECONDS`
 > (default 2 s) and no other plugin call overlapped it. Overlap is tracked per
 > call with a global counter of overlapping starts, so one overlap earlier in
@@ -844,7 +871,10 @@ parallelism) are tracked for later phases, not here.
 > updated: `test_offset_crop_with_full_extent_is_not_eliminated` now asserts
 > the offset crop errors under every flag subset (deleting it would turn the
 > error into a success), and `test_a_continuation_carries_its_own_parameter`
-> uses in-bounds heights.
+> uses in-bounds heights. `examples/02_image_transforms.py` cropped rows
+> 14..90 of a 72-row image (it silently got 58 rows); its crop now fits. That
+> surfaced only in the slow lane (`test_examples_run`), after the P0 commit,
+> because only the fast lane was run for it.
 
 - **Location:** `polars-cv/src/execute.rs` `"crop"` arm;
   `polars-cv/src/graph/decode.rs` `decode_binary_zero_copy` (`"raw"`).
