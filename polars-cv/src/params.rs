@@ -185,15 +185,6 @@ impl ParamValue {
         }
     }
 
-    /// Resolve this parameter to a concrete u32 value.
-    pub fn resolve_u32(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<u32> {
-        let value = self.resolve_i64(row_idx, ctx)?;
-        if value < 0 || value > u32::MAX as i64 {
-            return Err(polars_err!(ComputeError: "Value {} out of range for u32", value));
-        }
-        Ok(value as u32)
-    }
-
     /// Resolve this parameter to a concrete usize value.
     pub fn resolve_usize(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<usize> {
         let value = self.resolve_i64(row_idx, ctx)?;
@@ -818,21 +809,6 @@ pub mod get {
         }
     }
 
-    /// Optional u32 with a default for absence.
-    pub fn opt_u32(
-        params: &Params<'_>,
-        name: &str,
-        default: u32,
-        row_idx: usize,
-        ctx: &ParamCtx,
-    ) -> PolarsResult<u32> {
-        params
-            .get(name)
-            .map(|p| p.resolve_u32(row_idx, ctx).map_err(|e| named(name, e)))
-            .transpose()
-            .map(|v| v.unwrap_or(default))
-    }
-
     /// Optional u32 for a **structural** parameter that fixes the output
     /// shape/length (e.g. `perceptual_hash(hash_size)`). Literal-only: a bound
     /// expression `Slot` (or any non-literal form) errors, because letting the
@@ -1152,7 +1128,7 @@ mod tests {
         let ctx = ParamCtx::with_null_policy(&inputs, NullParamPolicy::Raise);
         let param = ParamValue::Slot { idx: 0 };
         assert_eq!(param.resolve_i64(2, &ctx).unwrap(), 30);
-        assert_eq!(param.resolve_u32(1, &ctx).unwrap(), 20);
+        assert_eq!(param.resolve_i64(1, &ctx).unwrap(), 20);
     }
 
     #[test]

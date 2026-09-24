@@ -180,30 +180,49 @@ typed_ops! {
     "add_constant" => AddConstant(compute::AddConstant) {"value": 1.0},
     "adjust_contrast" => AdjustContrast(compute::AdjustContrast) {"factor": 1.5},
     "adjust_gamma" => AdjustGamma(compute::AdjustGamma) {"gamma": 0.5},
+    "blur" => Blur(image::Blur) {"sigma": 1.0},
+    "canny" => Canny(image::Canny) {"low_threshold": 50.0, "high_threshold": 150.0},
     "cast" => Cast(compute::Cast) {"dtype": "f32"},
     "ceil" => Ceil(compute::Ceil) {},
     "clamp" => Clamp(compute::Clamp) {"min": 0.0, "max": 1.0},
     "clamp_max" => ClampMax(compute::ClampMax) {"value": 1.0},
     "clamp_min" => ClampMin(compute::ClampMin) {"value": 0.0},
     "crop" => Crop(view::Crop) {"top": 1, "left": 1, "height": 2, "width": 2},
+    "dilate" => Dilate(image::Dilate) {"ksize": 3, "iterations": 1},
+    "equalize_histogram" => EqualizeHistogram(image::EqualizeHistogram) {},
+    "erode" => Erode(image::Erode) {"ksize": 3, "iterations": 1},
     "flip" => Flip(view::Flip) {"axes": [1]},
     "floor" => Floor(compute::Floor) {},
+    "grayscale" => Grayscale(image::Grayscale) {},
     "histogram" => Histogram(histogram::Histogram)
         {"bins": 8, "range": null, "closed": "left", "output": "counts"},
     "invert" => Invert(compute::Invert) {},
+    "letterbox" => Letterbox(image::Letterbox)
+        {"height": 4, "width": 4, "value": 0.0, "filter": "bilinear"},
+    "morphology_gradient" => MorphologyGradient(image::MorphologyGradient) {"ksize": 3},
     "neg" => Neg(compute::Neg) {},
     "normalize" => Normalize(compute::Normalize)
         {"method": "preset", "mean": [0.5], "std": [0.25], "out_dtype": "f32"},
+    "pad" => Pad(image::Pad)
+        {"top": 1, "bottom": 1, "left": 1, "right": 1, "value": 0.0, "mode": "constant"},
+    "pad_to_size" => PadToSize(image::PadToSize)
+        {"height": 4, "width": 4, "position": "center", "value": 0.0},
     "reciprocal" => Reciprocal(compute::Reciprocal) {},
     "relu" => Relu(compute::Relu) {},
     "reshape" => Reshape(view::Reshape) {"shape": [2, 2, 1]},
     "resize" => Resize(image::Resize) {"height": 4, "width": 4, "filter": "bilinear"},
+    "resize_max" => ResizeMax(image::ResizeMax) {"max_size": 4, "filter": "bilinear"},
+    "resize_min" => ResizeMin(image::ResizeMin) {"min_size": 4, "filter": "bilinear"},
+    "resize_scale" => ResizeScale(image::ResizeScale) {"scale_x": 0.5, "scale_y": 0.5, "filter": "bilinear"},
+    "resize_to_height" => ResizeToHeight(image::ResizeToHeight) {"height": 4, "filter": "bilinear"},
+    "resize_to_width" => ResizeToWidth(image::ResizeToWidth) {"width": 4, "filter": "bilinear"},
     "round" => Round(compute::Round) {},
     "scale" => Scale(compute::Scale) {"factor": 2.0},
     "sign" => Sign(compute::Sign) {},
     "sqrt" => Sqrt(compute::Sqrt) {},
     "square" => Square(compute::Square) {},
     "subtract_constant" => SubtractConstant(compute::SubtractConstant) {"value": 1.0},
+    "threshold" => Threshold(image::Threshold) {"value": 128.0},
     "transpose" => Transpose(view::Transpose) {"axes": [1, 0, 2]},
     "trunc" => Trunc(compute::Trunc) {},
     "warp_affine" => WarpAffine(affine::WarpAffine) {
@@ -446,7 +465,7 @@ mod tests {
             err.contains("'interpolation'") && err.contains("nearest") && err.contains("bilinear"),
             "{err}"
         );
-        // `FilterType`'s parser-only "triangle" is not a wire spelling: the
+        // "triangle" (a former parser-only alias, deleted) is not a spelling: the
         // `NAMED` table is the one list of names (typed-op P2).
         let err = parse_err(json!({"op": "resize", "height": 4, "width": 4,
                                    "filter": "triangle"}));

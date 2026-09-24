@@ -107,6 +107,9 @@ REMOVED: tuple[Removed, ...] = (
     # Typed-op P3 (compute family): `NormalizeMethod` is a fieldless
     # `named_variants!` enum, so no enum is registered without a table.
     Removed("REGISTERED_WITHOUT_A_TABLE", "P3: every registered enum has a table"),
+    # Typed-op P3 (image family): every resize variant reads a typed
+    # `Param<FilterType>`, whose only spellings are `NAMED`.
+    Removed("resolve_filter", "P3: Param<FilterType>"),
 )
 
 

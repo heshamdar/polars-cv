@@ -61,6 +61,54 @@
     ]
   },
   {
+    "name": "blur",
+    "python": "blur",
+    "visibility": "public",
+    "doc": "Apply Gaussian blur.",
+    "fields": [
+      {
+        "name": "sigma",
+        "doc": "Standard deviation for Gaussian kernel.",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "canny",
+    "python": "canny",
+    "visibility": "public",
+    "doc": "Canny edge detection: Gaussian blur, Sobel gradients, non-maximum\nsuppression and double-threshold hysteresis. Output is a U8 binary edge\nmap (0 or 255).\n\nExample:\n    >>> edges = Pipeline().source(\"image_bytes\").canny(low_threshold=50, high_threshold=150)",
+    "fields": [
+      {
+        "name": "low_threshold",
+        "doc": "Lower hysteresis threshold.",
+        "positional": false,
+        "default": 50.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "high_threshold",
+        "doc": "Upper hysteresis threshold.",
+        "positional": false,
+        "default": 150.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
     "name": "cast",
     "python": "cast",
     "visibility": "public",
@@ -218,6 +266,73 @@
     ]
   },
   {
+    "name": "dilate",
+    "python": "dilate",
+    "visibility": "public",
+    "doc": "Morphological dilation (local maximum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n   >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).dilate(ksize=3)",
+    "fields": [
+      {
+        "name": "ksize",
+        "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
+        "positional": false,
+        "default": 3,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "iterations",
+        "doc": "Number of times the operation is applied. Accepts a Polars\nexpression for per-row dynamic values.",
+        "positional": false,
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "equalize_histogram",
+    "python": "equalize_histogram",
+    "visibility": "public",
+    "doc": "Apply histogram equalization for contrast enhancement: map each pixel\nthrough the normalized CDF, per channel. Output is U8.\n\nExample:\n    >>> eq = Pipeline().source(\"image_bytes\").grayscale().equalize_histogram()",
+    "fields": []
+  },
+  {
+    "name": "erode",
+    "python": "erode",
+    "visibility": "public",
+    "doc": "Morphological erosion (local minimum over a `ksize × ksize` square). Requires single-channel input (e.g. after `.grayscale()` or `.threshold()`).\n\nExample:\n   >>> mask = Pipeline().source(\"image_bytes\").grayscale().threshold(128).erode(ksize=3)",
+    "fields": [
+      {
+        "name": "ksize",
+        "doc": "Size of the square structuring element. Must be odd and >= 1.\nAccepts a Polars expression for per-row dynamic values.",
+        "positional": false,
+        "default": 3,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "iterations",
+        "doc": "Number of times the operation is applied. Accepts a Polars\nexpression for per-row dynamic values.",
+        "positional": false,
+        "default": 1,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
     "name": "flip",
     "python": "flip",
     "visibility": "public",
@@ -243,6 +358,13 @@
     "python": "floor",
     "visibility": "public",
     "doc": "Round toward negative infinity. Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "grayscale",
+    "python": "grayscale",
+    "visibility": "public",
+    "doc": "Convert to grayscale (luminance 0.299R + 0.587G + 0.114B).",
     "fields": []
   },
   {
@@ -335,6 +457,82 @@
     "fields": []
   },
   {
+    "name": "letterbox",
+    "python": "letterbox",
+    "visibility": "public",
+    "doc": "Resize image maintaining aspect ratio and pad to exact target size: fit\nwithin the target, then pad with centered positioning.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").letterbox(height=224, width=224)",
+    "fields": [
+      {
+        "name": "height",
+        "doc": "Target height (literal or expression).",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Target width (literal or expression).",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "value",
+        "doc": "Fill value for padding (default 0, typically black). Accepts a Polars\nexpression for per-row dynamic values.",
+        "positional": false,
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resampling filter for the resize step (default \"lanczos3\").",
+        "positional": false,
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "morphology_gradient",
+    "python": "morphology_gradient",
+    "visibility": "public",
+    "doc": "Morphological gradient (dilate - erode): an edge outline. Requires\nsingle-channel input.\n\nExample:\n    >>> edges = Pipeline().source(\"image_bytes\").grayscale().threshold(128).morphology_gradient(ksize=3)",
+    "fields": [
+      {
+        "name": "ksize",
+        "doc": "Size of the square structuring element. Must be odd and >= 1. Accepts a\nPolars expression for per-row dynamic values.",
+        "positional": false,
+        "default": 3,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
     "name": "neg",
     "python": "neg",
     "visibility": "public",
@@ -423,6 +621,141 @@
     ]
   },
   {
+    "name": "pad",
+    "python": "pad",
+    "visibility": "public",
+    "doc": "Add padding to the image.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").pad(top=10, bottom=10)\n    >>> pipe = Pipeline().source(\"image_bytes\").pad(left=20, right=20, value=128)",
+    "fields": [
+      {
+        "name": "top",
+        "doc": "Padding on top edge.",
+        "positional": false,
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "bottom",
+        "doc": "Padding on bottom edge.",
+        "positional": false,
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "left",
+        "doc": "Padding on left edge.",
+        "positional": false,
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "right",
+        "doc": "Padding on right edge.",
+        "positional": false,
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "value",
+        "doc": "Fill value for \"constant\" mode (default 0). Accepts a Polars expression\nfor per-row dynamic values.",
+        "positional": false,
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "mode",
+        "doc": "Padding mode - \"constant\", \"edge\", \"reflect\", \"symmetric\".",
+        "positional": false,
+        "default": "constant",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "PadMode",
+          "variants": [
+            "constant",
+            "edge",
+            "reflect",
+            "symmetric"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "pad_to_size",
+    "python": "pad_to_size",
+    "visibility": "public",
+    "doc": "Pad image to exact target size (computed at runtime). A larger image is\nnot cropped - resize first if needed.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").pad_to_size(height=100, width=200)",
+    "fields": [
+      {
+        "name": "height",
+        "doc": "Target height.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "width",
+        "doc": "Target width.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "position",
+        "doc": "Where to place original content: \"center\" (default), \"top-left\" or\n\"bottom-right\".",
+        "positional": false,
+        "default": "center",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "PadPosition",
+          "variants": [
+            "center",
+            "top-left",
+            "bottom-right"
+          ]
+        }
+      },
+      {
+        "name": "value",
+        "doc": "Fill value for padding (default 0). Accepts a Polars expression for\nper-row dynamic values.",
+        "positional": false,
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
     "name": "reciprocal",
     "python": "reciprocal",
     "visibility": "public",
@@ -504,6 +837,196 @@
     ]
   },
   {
+    "name": "resize_max",
+    "python": "resize_max",
+    "visibility": "public",
+    "doc": "Resize image so the maximum dimension equals target, preserving aspect ratio (200x100 with max_size=50 gives 50x25).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_max(224)",
+    "fields": [
+      {
+        "name": "max_size",
+        "doc": "Target for the maximum dimension (literal or expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "positional": false,
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize_min",
+    "python": "resize_min",
+    "visibility": "public",
+    "doc": "Resize image so the minimum dimension equals target, preserving aspect ratio (200x100 with min_size=50 gives 100x50).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_min(224)",
+    "fields": [
+      {
+        "name": "min_size",
+        "doc": "Target for the minimum dimension (literal or expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "positional": false,
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize_scale",
+    "python": "resize_scale",
+    "visibility": "internal",
+    "doc": "Resize image by scale factor: `new_width = input_width * scale_x`,\n`new_height = input_height * scale_y`, computed at runtime.\n\nThe public `Pipeline.resize_scale` is sugar over this op that also accepts\none uniform `scale`.",
+    "fields": [
+      {
+        "name": "scale_x",
+        "doc": "X (width) scale factor.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "scale_y",
+        "doc": "Y (height) scale factor.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "positional": false,
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize_to_height",
+    "python": "resize_to_height",
+    "visibility": "public",
+    "doc": "Resize image to target height, preserving aspect ratio (width is computed at runtime).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_to_height(224)",
+    "fields": [
+      {
+        "name": "height",
+        "doc": "Target height (literal or expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "positional": false,
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "resize_to_width",
+    "python": "resize_to_width",
+    "visibility": "public",
+    "doc": "Resize image to target width, preserving aspect ratio (height is computed at runtime).\n\nExample:\n   >>> pipe = Pipeline().source(\"image_bytes\").resize_to_width(224)",
+    "fields": [
+      {
+        "name": "width",
+        "doc": "Target width (literal or expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "filter",
+        "doc": "Resize filter (\"nearest\", \"bilinear\", \"lanczos3\").",
+        "positional": false,
+        "default": "lanczos3",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "FilterType",
+          "variants": [
+            "nearest",
+            "bilinear",
+            "catmullrom",
+            "gaussian",
+            "lanczos3"
+          ]
+        }
+      }
+    ]
+  },
+  {
     "name": "round",
     "python": "round",
     "visibility": "public",
@@ -558,6 +1081,24 @@
       {
         "name": "value",
         "doc": "Constant subtrahend (literal or per-row expression).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "threshold",
+    "python": "threshold",
+    "visibility": "public",
+    "doc": "Apply binary threshold: a U8 mask, 255 where the element exceeds `value`\nand 0 elsewhere (for u8 input typically 0-255; for [0, 1] floats e.g. 0.5).",
+    "fields": [
+      {
+        "name": "value",
+        "doc": "Threshold value (int or float, or Polars expression).",
         "positional": true,
         "type": {
           "kind": "scalar",
