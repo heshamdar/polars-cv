@@ -476,17 +476,17 @@ class TestAlphaEncoding:
 class TestChannelRuleHasOneAuthority:
     """The channel hint comes from view-buffer's rule, not a Python copy of it.
 
-    ``_update_channels_from_rule`` used to re-derive the answer by parsing the
+    The Python planner used to re-derive the answer by parsing the
     stringified rule, and disagreed with ``OutputChannelRule::apply`` on
     ``NotApplicable``: ``apply`` says "no channel count", Python left the hint
     untouched. It stayed invisible because every ``NotApplicable`` op also drops
-    below rank 3 — where ``_drop_hints_below_rank`` clears channels anyway —
+    below rank 3 — where the rank clipping clears channels anyway —
     except ``histogram(output="quantized")``, which preserves rank *and* was
     mislabelled ``NotApplicable`` while actually preserving channels. The two
     errors cancelled.
 
-    Both have been fixed: quantized declares ``PreserveChannels``, and Python
-    reads ``apply`` through ``op_output_channels``. These pin the outcome so a
+    Both have been fixed: quantized declares ``PreserveChannels``, and the
+    planner's one Rust call (``plan_step``) applies the rule. These pin the outcome so a
     future change to either cannot quietly re-introduce the pair.
     """
 
@@ -522,26 +522,6 @@ class TestChannelRuleHasOneAuthority:
                 f"{output}: a bin vector has no channel count"
             )
 
-    def test_python_holds_no_copy_of_the_rule_arithmetic(self) -> None:
-        """The planner must not re-implement ``OutputChannelRule::apply``.
-
-        A source scan, because the property is "this code does not exist". The
-        rule *strings* still reach Python through ``op_contract`` for the
-        vocabulary checks in ``test_sanitation``; what must not come back is
-        Python branching on them to compute a channel count.
-        """
-        import inspect
-
-        from polars_cv.pipeline import Pipeline as P
-
-        src = inspect.getsource(P._update_channels_from_rule)
-        for spelling in ("strip_restore", "fixed:", '"preserve"', '"n/a"'):
-            assert spelling not in src, (
-                f"{spelling!r} is back in _update_channels_from_rule: the "
-                f"channel arithmetic belongs to OutputChannelRule::apply, "
-                f"reached via op_output_channels"
-            )
-
     def test_the_ffi_agrees_with_the_planner(self) -> None:
         """Two ways to the same fact must give the same answer.
 
@@ -550,8 +530,9 @@ class TestChannelRuleHasOneAuthority:
         is about.
         """
 
-        from polars_cv._lib import op_output_channels
+        from polars_cv._lib import plan_step
 
         pipe = Pipeline().source("image_bytes").assert_shape(channels=4).grayscale()
-        assert op_output_channels(op_json(pipe, -1), 4) == 1
+        step = plan_step(op_json(pipe, -1), "buffer", "u8", 3, [None, None, 4])
+        assert (2, 1) in step["dims"]
         assert planned(pipe).channels == 1

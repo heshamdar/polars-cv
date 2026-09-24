@@ -195,8 +195,9 @@ changes; they explain *why* the code is shaped the way it is.
 - **Single schema authority (view-buffer).** Each op's schema effect — output
   domain, dtype, rank, and channel count — is declared once, on the op itself in
   Rust (`OutputRankRule`/`OutputChannelRule` in
-  `view-buffer/src/ops/shape_rule.rs`), and read by the Python planner through the
-  `op_schema`/`op_contract`/`op_output_dtype` FFI. The planner contains no per-op
+  `view-buffer/src/ops/shape_rule.rs`), and applied in Rust for the Python
+  planner by `plan_step` (one call per appended op, `polars-cv/src/plan.rs`).
+  The passes still read `op_schema`/`op_contract`/`op_infer_shape`. The planner contains no per-op
   special cases and no parallel contract table. Planning-time schema must equal
   execution-time schema; guarded by `tests/test_sanitation.py`.
 - **Graph steps vs engine ops.** Graph-level steps (`GraphStep` in
@@ -226,8 +227,8 @@ changes; they explain *why* the code is shaped the way it is.
   to *append* to `_ops` (`_set_ops_slice` replaces the list wholesale for CSE
   and re-keys the position-keyed side tables; `_clone` copies everything), and
   it applies an operation's *entire* plan-time effect:
-  the input-domain check, the `op_schema` fold (domain/dtype/ndim) and the
-  shape hints. Builders call it through `_append_op`; the lazy continuation
+  the input-domain check, the schema fold (domain/dtype/ndim) and the shape
+  hints, all computed by one `plan_step` call before anything changes. Builders call it through `_append_op`; the lazy continuation
   replays through it too, which is what makes `.pipe(p.op())` and
   `.pipe(p).op()` agree by construction. Guarded structurally by
   `tests/test_append_contract.py` — an AST check that nothing else touches
@@ -251,10 +252,10 @@ side channel.
 
 | Fact | Single authority | Rejection mechanism |
 |------|------------------|---------------------|
-| Appending an op to a `Pipeline` (domain check + `op_schema` fold + shape hints) | `Pipeline._push_op()` | `test_op_append_is_structurally_exclusive` — AST walk failing if anything but `_push_op`/`_set_ops_slice`/`_clone` touches `_ops` |
+| Appending an op to a `Pipeline` (domain check + schema fold + shape hints, one `plan_step`) | `Pipeline._push_op()` | `test_op_append_is_structurally_exclusive` — AST walk failing if anything but `_push_op`/`_set_ops_slice`/`_clone` touches `_ops` |
 | An op's rank / channel / dtype / memory / spatial / identity contract | `Op` trait methods, **no defaults** | Compile error: a new op that omits one does not build |
 | An op's accepted input domains | `op_contract(...)["input_domains"]` (Rust `GraphStep::input_domains`, exhaustive — no catch-all arm) | `test_domain_vocabulary_declared_once` — `Pipeline` may not carry `DOMAIN_*` constants or a `_validate_domain`; execution reads the same contract via `step_buffer_operand` rather than restating it per arm |
-| An op's H/W effect | view-buffer `infer_shape`, read via `op_infer_shape` | No inferable shape ⇒ hints invalidated, never carried forward |
+| An op's H/W effect | view-buffer `infer_shape`, read by `plan_step` (and `op_infer_shape` for identity elimination) | No inferable shape ⇒ hints invalidated, never carried forward |
 | Which ops exist | Rust `ops::TypedOp` (`typed_ops!` registry) → generated Python `TYPED_OPS` | `the_catalogue_is_the_op_set` (the frozen op set), `test_every_op_is_emitted_by_a_builder` (works with no `.so`); an unregistered name fails deserialization |
 | A typed op's fields, types, defaults, docs and Python signature | Its struct in `polars-cv/src/ops/` (`#[derive(Op)]`), via `tests/golden/op_catalog.json` → `scripts/gen_ops.py` → `_ops_generated.py` | serde (`deny_unknown_fields`, required by the derive) rejects an unknown/missing/mistyped field; `catalog_matches_the_committed_file` (Rust) and `test_the_committed_catalog_is_the_built_one` (built `.so` + generated module) |
 | Every spelling of a dtype (short / VIEW wire code / numpy) | `dtype_table!` in `view-buffer/src/core/dtype.rs` | `dtype_single_authority.rs` + `test_no_second_dtype_spelling_table` (a partial dispatch is reported) |

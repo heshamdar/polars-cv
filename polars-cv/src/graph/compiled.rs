@@ -1720,7 +1720,7 @@ fn fold_output_dtype(
     // As in `fold_output_rank`, the primary upstream carries the lineage.
     // Multi-input steps whose dtype genuinely depends on both operands (the
     // binary ops) declare `PreserveInput` and are resolved by the Python
-    // planner's `binary_output_dtype`, which has both sides; reaching here with
+    // planner's `plan_step` (given the other operand's dtype); reaching here with
     // one still-unknown operand simply yields unknown.
     let mut dtype = match node.upstream.first() {
         Some(up) => fold_output_dtype(graph, up, source_dtype)?,

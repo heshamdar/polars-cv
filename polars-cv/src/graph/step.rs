@@ -111,9 +111,10 @@ impl GraphStep {
             GraphStep::Geometry(op) => op.output_domain(),
             GraphStep::Reduction(op) => op.output_domain(),
             GraphStep::Histogram(op) => op.output_domain(),
-            GraphStep::Binary { .. }
-            | GraphStep::ApplyMask { .. }
-            | GraphStep::ChannelMerge { .. } => Domain::Buffer,
+            // Same container as its operands: `hash_a ^ hash_b` stays a
+            // vector, two images stay a buffer.
+            GraphStep::Binary { .. } => Domain::Any,
+            GraphStep::ApplyMask { .. } | GraphStep::ChannelMerge { .. } => Domain::Buffer,
             // Perceptual hash produces a fixed-length 1-D fingerprint.
             GraphStep::PerceptualHash(_)
             | GraphStep::ExtractShape

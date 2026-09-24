@@ -31,7 +31,7 @@ several minutes. Reach for `--release` only when benchmarking.
 
 | File | Responsibility |
 |------|---------------|
-| `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, and the planner-facing FFI (`op_schema`, `op_contract`, `binary_output_dtype`, `enum_catalog`, `op_catalog`, `io_catalog`, `io_check`) |
+| `lib.rs` | PyO3 module entry, `vb_graph` expression function, `unified_output_dtype`, and the planner-facing FFI (`op_schema`, `op_contract`, `plan_step`, `enum_catalog`, `op_catalog`, `io_catalog`, `io_check`) |
 | `image_metadata.rs` | Header-only metadata plugin functions (`image_width`, `image_height`, `image_channels`, `image_dtype`) |
 | `fetch.rs` | Stage one of every path-based read: path column → bytes (`prefetch`, `row_bytes`, `parse_on_error`). Shared by the `file_path` source and `read_bytes.rs`; owns `PathPolicy`, the `allowed_roots` sandbox both of them check against. Fetch concurrency is **not** a knob here — it is polars' process-wide `POLARS_CONCURRENCY_BUDGET` semaphore, taken one permit per request in `cloud.rs` |
 | `read_bytes.rs` | `read_file_bytes` plugin function — `fetch.rs` with the decode omitted, for byte-identical passthrough |

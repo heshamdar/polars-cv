@@ -271,8 +271,8 @@ class LazyPipelineExpr:
             #
             # Folding per-op is the point: the previous code replayed only the
             # hints and assigned `_expected_ndim` afterwards, so every replayed
-            # op saw `ndim = None` and `_update_hw_from_infer_shape` returned
-            # at its opening guard — the H/W half of the replay never ran. It
+            # op saw `ndim = None` and the H/W update was skipped at its
+            # opening guard — the H/W half of the replay never ran. It
             # cannot be fixed by hoisting that assignment, either: a
             # rank-changing op must infer against its own input rank, not the
             # chain's final one. Batch re-folds (CSE prefixes) seed from the
@@ -1055,21 +1055,15 @@ class LazyPipelineExpr:
         # already applied by the upstream node
         new_pipeline = PipelineClass()
         new_pipeline._source = SourceSpec(format=SourceFormat.BLOB)
-        # Copy the domain; the dtype comes from view-buffer's two-input authority
-        # (binary_output_dtype) so the planned dtype reflects the operator's
-        # promotion across BOTH operands (e.g. true division of two u8 -> f32),
-        # not just the left operand. "auto" operands propagate "auto".
-        from polars_cv._lib import binary_output_dtype
-
+        # The op applies to the left operand's output, so it starts from that
+        # state; its dtype rule reads both operands (true division of two u8
+        # is f32), so the other operand's dtype goes with it.
         new_pipeline._current_domain = self._pipeline._current_domain
-        new_pipeline._output_dtype = binary_output_dtype(
-            op, self._pipeline._output_dtype, other._pipeline._output_dtype
-        )
-        # A binary op broadcasts two equal-rank buffers, so the rank is preserved.
-        # Carry it from the left operand so a downstream list/array sink knows the
-        # nesting depth at plan time.
+        new_pipeline._output_dtype = self._pipeline._output_dtype
         new_pipeline._expected_ndim = self._pipeline._expected_ndim
-        new_pipeline._add_node_op(op, {"other": other}, update_dtype=False)
+        new_pipeline._add_node_op(
+            op, {"other": other}, other_dtype=other._pipeline._output_dtype
+        )
 
         return LazyPipelineExpr(
             column=None,  # No direct column - receives from upstream
