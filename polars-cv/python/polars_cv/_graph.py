@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from polars_cv._graph_viz import get_graphviz_out
+from polars_cv._ops_generated import LogicalPass
 from polars_cv._types import SlotTable
 
 if TYPE_CHECKING:
@@ -312,49 +313,23 @@ class PipelineGraph:
 
         for node in self._nodes.values():
             node.pipeline = node.pipeline._clone()
-        handlers = self._pass_handlers()
         for spec in OPTIMIZATION_PASSES:
-            if spec.tier != "logical":
+            if spec.tier != "logical" or not flags.enabled(spec.name):
                 continue
-            if not flags.enabled(spec.name):
-                continue
-            scope, run = handlers[spec.name]
-            if scope == "graph":
-                run(self)
-            else:  # "node": rewrite each node's ops in place
+            if spec.name == LogicalPass.COMMON_SUBEXPRESSION_ELIMINATION:
+                # Graph scope: it needs the expressions' identities, which
+                # only Python holds.
+                self._optimize_common_subexpressions()
+            else:
+                # Node scope: Rust (`node_pass`) decides, and refuses a name
+                # that is not a `LogicalPass`.
                 for node in self._nodes.values():
-                    run(node.pipeline)
+                    node.pipeline._run_node_pass(spec.name)
         # Engine-tier flags do not rewrite the Python graph; they ride to Rust in
         # the serialized `opt` object, keyed by the Rust `OptConfig` field names.
         self._opt_config = flags.engine_opt()
         self._optimized = True
         return self
-
-    @staticmethod
-    def _pass_handlers() -> "dict[str, tuple[str, Any]]":
-        """Each **logical**-tier pass's applicator, keyed by name.
-
-        A ``"graph"`` handler takes the whole :class:`PipelineGraph` and may
-        rewrite topology (CSE splits siblings onto a shared prefix node); a
-        ``"node"`` handler takes one node :class:`Pipeline` and rewrites its ops
-        in place. This map's keys must equal :data:`LOGICAL_PASS_NAMES` (engine
-        passes have no Python handler) — a logical pass without a handler, or a
-        handler without a logical pass, fails
-        ``test_pass_handlers_cover_every_logical_pass``.
-        """
-        from polars_cv.pipeline import Pipeline
-
-        return {
-            "common_subexpression_elimination": (
-                "graph",
-                PipelineGraph._optimize_common_subexpressions,
-            ),
-            "identity_elimination": ("node", Pipeline._eliminate_identities_inplace),
-            "spatial_window_pushdown": (
-                "node",
-                Pipeline._hoist_spatial_windows_inplace,
-            ),
-        }
 
     # --- CSE Optimization ---
 

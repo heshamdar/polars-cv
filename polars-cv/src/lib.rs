@@ -19,6 +19,7 @@ mod naming;
 mod ops;
 mod output;
 mod params;
+mod passes;
 mod plan;
 mod point;
 mod read_bytes;
@@ -27,6 +28,7 @@ use polars::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
+use crate::passes::node_pass;
 use crate::plan::plan_step;
 use serde::Deserialize;
 
@@ -49,6 +51,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(op_identity_rule, m)?)?;
     m.add_function(wrap_pyfunction!(op_infer_shape, m)?)?;
     m.add_function(wrap_pyfunction!(plan_step, m)?)?;
+    m.add_function(wrap_pyfunction!(node_pass, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;

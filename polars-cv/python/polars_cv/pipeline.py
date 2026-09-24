@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import polars as pl
 
-from polars_cv._ops_generated import OP_FIELDS, _OpsMixin
+from polars_cv._ops_generated import OP_FIELDS, LogicalPass, _OpsMixin
 from polars_cv._types import (
     HINT_DIMS,
     CloudOptions,
@@ -141,74 +141,6 @@ def _source_param_defaults() -> "dict[str, Any]":
 
 
 _SOURCE_DEFAULTS: "dict[str, Any] | None" = None
-
-
-def _op_contract_for(spec: "OpSpec") -> dict:
-    """Read one operation's Rust contract (spatial rule, window flag, ...).
-
-    The spatial-window pushdown's reader; appends go through ``plan_step``.
-    """
-    from polars_cv._lib import op_contract
-
-    return op_contract(json.dumps(spec.to_dict(planning_slots)))
-
-
-def _op_reads_sibling_nodes(op: "OpSpec") -> bool:
-    """Whether ``op`` consumes another graph node's buffer.
-
-    A binary op (``apply_mask``, ``add``) or ``channel_merge`` combines this
-    node's buffer with a sibling node's at matching ``(y, x)``. Such an op is
-    spatially ``Pointwise``, but hoisting a crop earlier past it would shrink only
-    *this* operand and leave the sibling full-size, so a spatial window may not
-    cross it whatever its spatial rule. The catalogue says which fields name
-    another node (a ``node`` type, alone or in a list), so this reads the op's
-    declared fields rather than a list of parameter names.
-    """
-    return any(_names_nodes(ty) for ty in OP_FIELDS.get(op.op, {}).values())
-
-
-def _names_nodes(ty: "dict[str, Any]") -> bool:
-    """Whether a catalogue field type holds a graph-node reference."""
-    if ty["kind"] == "node":
-        return True
-    nested = [ty["inner"]] if "inner" in ty else ty.get("options", [])
-    return any(_names_nodes(t) for t in nested)
-
-
-def _output_shape_equals_input(
-    out_dims: "Sequence[int | None]", entering_dims: "Sequence[int | None]"
-) -> bool:
-    """Whether an op's inferred output shape equals the shape entering it.
-
-    Used by identity elimination to decide a ``WhenShapePreserved`` op. Two
-    ``op_infer_shape`` conventions are folded in:
-
-    * a **negative** output dim is ``op_infer_shape``'s "this is the unknown
-      input axis, carried through unchanged" (e.g. a crop leaving the channel
-      axis to the input), so it counts as preserved and matches any entering
-      size;
-    * a concrete output dim must equal the entering size exactly; an entering
-      size that is unknown (``None``) therefore cannot match a concrete output,
-      and an unknown output (``None``) is never treated as a match.
-
-    So a full-frame crop or a same-shape reshape returns ``True`` while a partial
-    crop or a real reshape returns ``False`` — and any unproven dimension keeps
-    the op (the pass removes only what it can prove is a no-op).
-    """
-    if len(out_dims) != len(entering_dims):
-        return False
-    for out, enter in zip(out_dims, entering_dims):
-        if out is not None and out < 0:
-            continue  # preserved sentinel — same as the input dim
-        if out is None or out != enter:
-            return False
-    return True
-
-
-#: The spatial-window pushdown transfer function returns this when a window may
-#: not cross an op — a hard stop, distinct from "crosses unchanged" (the window
-#: itself). See :meth:`Pipeline._spatial_transfer`.
-_SPATIAL_BARRIER = object()
 
 
 def _asserted_rank(dims: "Sequence[int | None]") -> int:
@@ -2273,222 +2205,43 @@ class Pipeline(_OpsMixin):
         # entering-hints snapshot and applies the channel rule.
         self._push_op(OpSpec(op=op_name, params=params), other_dtype=other_dtype)
 
-    # --- Spatial-window pushdown ---
-    #
-    # Structured as a pushdown, the way Polars' ``slice_pushdown`` carries a
-    # slice toward the source: a spatial window (a crop / ROI) moves earlier
-    # past each op it commutes with, the op's ``SpatialDependency`` (read from
-    # ``op_contract``'s ``spatial_rule``) deciding whether — and how — it passes.
-    # The three pieces are the transfer function (:meth:`_spatial_transfer`), the
-    # driver (:meth:`_compute_spatial_pushdown`), and the commit
-    # (:meth:`_replay`); later spatial optimizations widen the
-    # transfer function's arms rather than adding a pass. Phase 1 moves a crop
-    # past a run of ``Pointwise`` ops within one node.
+    # --- Node-scope optimisation passes ---
 
-    def _spatial_transfer(
-        self, window: "OpSpec", op: "OpSpec", contract: dict
-    ) -> "OpSpec | object":
-        """How a spatial ``window`` crosses one preceding ``op``.
+    def _run_node_pass(self, name: str) -> None:
+        """Apply the node-scope logical pass ``name`` to this pipeline, in place.
 
-        Returns the window rewritten for crossing ``op`` — unchanged for a
-        ``Pointwise`` op, whose output at ``(y, x)`` depends only on its input at
-        ``(y, x)``, so a crop commutes exactly — or :data:`_SPATIAL_BARRIER` if
-        it may not cross.
-
-        The arms are exactly the ``SpatialDependency`` vocabulary
-        (``op_contract``'s ``spatial_rule``), so this is the honest consumer of
-        that single authority. Widening it — not adding a pass — is how later
-        spatial optimizations land: ``neighborhood:<r>`` would return the window
-        dilated by ``r`` (a halo, not bit-exact); ``geometric`` would return the
-        window mapped through the op's inverse transform (needs the
-        coordinate-remap descriptor ``GeometricEffect`` does not carry yet).
-        ``global`` is always a barrier.
-
-        A multi-input op (one reading a sibling node's buffer) is a hard barrier
-        regardless of its spatial rule: hoisting the window past it would crop
-        only this operand and leave the sibling full-size. See
-        :func:`_op_reads_sibling_nodes`.
+        The pass itself is Rust (``node_pass``, ``src/passes.rs``): it reads
+        the ops and the state at every op boundary and answers with the new op
+        order — a subset for identity elimination, a permutation for the
+        spatial-window pushdown — or ``None`` when nothing changes. The new
+        order is committed by :meth:`_replay`, so every per-position fact is
+        recomputed for it. Assertion boundaries do not move: identity
+        elimination leaves an asserting node alone, and the pushdown never
+        moves a crop across one.
         """
-        if _op_reads_sibling_nodes(op):
-            return _SPATIAL_BARRIER
-        rule = contract["spatial_rule"]
-        if rule == "pointwise":
-            return window
-        return _SPATIAL_BARRIER
+        from polars_cv._lib import node_pass
 
-    @staticmethod
-    def _is_spatial_window(op: "OpSpec") -> bool:
-        """Whether ``op`` is a spatial window this pass hoists.
-
-        Reads the Rust ``is_spatial_window`` authority (``op_contract``) rather
-        than matching an op name: "is a hoistable H/W crop/ROI" is an op-identity
-        fact the engine owns, the counterpart to the ``spatial_rule`` the transfer
-        function reads. Only an H/W-only crop qualifies today — the engine leaves
-        the channel axis at full extent — so a window commutes with a
-        channel-changing pointwise op (e.g. ``grayscale``). The assertion pins the
-        builder's guarantee that a recognised window carries no channel parameter.
-        """
-        if not _op_contract_for(op)["is_spatial_window"]:
-            return False
-        assert "channel" not in op.params and "channels" not in op.params, (
-            "an is_spatial_window op unexpectedly carries a channel parameter; "
-            "the H/W-only commutation assumption no longer holds"
+        if not self._ops:
+            return
+        states = []
+        for position in range(len(self._ops) + 1):
+            state = self._state_at(position)
+            hw = [
+                None
+                if (hint := state.hints.get(dim)) is None or hint.is_expr
+                else int(hint.value)
+                for dim in HINT_DIMS[:2]
+            ]
+            states.append((state.dtype, state.ndim, hw))
+        order = node_pass(
+            name,
+            [json.dumps(op.to_dict(planning_slots)) for op in self._ops],
+            states,
+            sorted(self._assertions),
+            self._shape_declared,
         )
-        return True
-
-    def _compute_spatial_pushdown(self, ops: "list[OpSpec]") -> "list[int]":
-        """Hoist each crop to the front of the ``Pointwise`` run before it.
-
-        Returns the new order, as the original index of each op.
-        A crop is moved to the start of the maximal contiguous run of ops
-        immediately preceding it that the transfer function lets it cross; the
-        run stops at the first barrier. An ``assert_shape`` op-boundary in the
-        run is also a barrier — a crop is never moved across a shape the user
-        pinned — and, to stay simple, a crop whose run contains such a boundary
-        is left in place.
-
-        Two crops never contend: a crop is itself a barrier (``Geometric``), so
-        one crop's pointwise run cannot reach across another. Processing crops
-        left to right therefore keeps the invariant that, when a crop at
-        original index ``i`` is reached, the entries already placed for original
-        indices ``j..i-1`` (its pointwise run) are the last ``i-j`` of
-        ``result`` — so slicing ``result[j:]`` picks out exactly that run.
-        """
-        assertion_boundaries = set(self._assertions.keys())
-        result: list[int] = []  # original indices, in new order
-        for i, op in enumerate(ops):
-            if not self._is_spatial_window(op):
-                result.append(i)
-                continue
-            # Extend the run leftward over ops the window crosses unchanged.
-            j = i
-            while j - 1 >= 0:
-                prev = ops[j - 1]
-                if (
-                    self._spatial_transfer(op, prev, _op_contract_for(prev))
-                    is _SPATIAL_BARRIER
-                ):
-                    break
-                j -= 1
-            # Moving the crop to boundary j changes the shape at every boundary
-            # in (j, i]; a user assertion on any of them would be violated, so
-            # leave the crop where it is when one is in the way.
-            if any(b in assertion_boundaries for b in range(j + 1, i + 1)):
-                result.append(i)
-                continue
-            run = result[j:]
-            result[j:] = [i, *run]
-        return result
-
-    def _hoist_spatial_windows_inplace(self) -> None:
-        """Apply the spatial-window pushdown to this pipeline's ops, in place.
-
-        The Tier-1 entry point (called by ``PipelineGraph.optimize`` per node).
-        A no-op when nothing moves, so it is safe to call unconditionally on an
-        already-optimized or window-free pipeline.
-        """
-        order = self._compute_spatial_pushdown(self._ops)
-        if order == list(range(len(self._ops))):
-            return
-        # A crop only moves within a stretch holding no assertion boundary
-        # (`_compute_spatial_pushdown`), so no assertion key moves; the replay
-        # recomputes every entering shape for the new order.
-        self._replay(order, start=self._state_at(0), assertions=self._assertions)
-
-    # ---- Identity elimination (Tier-1) --------------------------------------
-    #
-    # Delete ops that are value-, dtype-, shape- and channel-preserving no-ops.
-    # Which ops *can* be a no-op is the Rust ``IdentityRule`` authority
-    # (``op_identity_rule``); the condition is evaluated here against the state
-    # entering each op and the state it leaves, both recorded by ``_push_op``
-    # (``_entering``). No shape/dtype math is re-implemented, and — unlike the
-    # crop-specific ``_is_spatial_window`` recogniser in the pushdown — no op
-    # name is matched: the classification lives entirely in the Rust contract.
-
-    def _eliminate_identities_inplace(self) -> None:
-        """Drop no-op ops from this pipeline's ops, in place.
-
-        The Tier-1 entry point (called by ``PipelineGraph.optimize`` per node).
-        A removed op is a no-op, so it changes no output byte — elimination is
-        output-preserving even inside a dict-sink observed or multi-consumer
-        node — and every verdict is read off the states recorded before any op
-        drops out.
-
-        Conservative around user shape assertions: a node carrying any
-        ``assert_shape`` is left untouched, so no positional assertion key has to
-        be re-derived across a deletion. Assertions are rare; this keeps the pass
-        simple and never silently moves a pinned shape.
-        """
-        if not self._ops or self._assertions:
-            return
-        survivors = [
-            i for i, op in enumerate(self._ops) if not self._op_is_identity_at(i, op)
-        ]
-        if len(survivors) == len(self._ops):
-            return
-        self._replay(survivors, start=self._state_at(0), assertions=self._assertions)
-
-    def _op_is_identity_at(self, index: int, spec: "OpSpec") -> bool:
-        """Whether ``spec`` at ``index`` is a removable no-op.
-
-        Reads the op's ``IdentityRule`` and evaluates it against the state
-        entering the op and the one it leaves (:meth:`_state_at`). Any unknown —
-        an ``auto`` dtype, an unknown dimension, or an expression where a
-        literal value is required — resolves to *not* an identity: the pass
-        removes an op only when it can prove it does nothing.
-        """
-        from polars_cv._lib import op_identity_rule, op_infer_shape
-
-        op_json = json.dumps(spec.to_dict(planning_slots))
-        rule = op_identity_rule(op_json)
-        if rule == "never":
-            return False
-        if rule == "always":
-            # ``Always`` names its identity-deciding params, and the FFI forces
-            # ``never`` when any of them is per-row — so an op whose deciding
-            # param is an expression (a ``pad`` amount) never reaches here. A
-            # remaining expression on an irrelevant param (a ``pad`` fill
-            # ``value`` behind zero amounts) leaves the op a genuine no-op, so
-            # nothing more to check.
-            return True
-
-        entering = self._state_at(index)
-        if rule == "when_dtype_preserved":
-            if entering.dtype == "auto":
-                return False
-            return self._state_at(index + 1).dtype == entering.dtype
-        if rule == "when_shape_preserved":
-            entering_dims = self._entering_dims(entering)
-            if entering_dims is None:
-                return False
-            out_dims = op_infer_shape(op_json, entering_dims)
-            if out_dims is None:
-                return False
-            return _output_shape_equals_input(out_dims, entering_dims)
-        return False
-
-    def _entering_dims(self, entering: PlanState) -> "list[int | None] | None":
-        """The dimensions of ``entering``, or ``None`` when rank is unknown.
-
-        Length ``ndim``; H/W come from its hints, and every other axis is
-        reported ``None`` (unknown). That is enough for the WhenShapePreserved
-        ops, whose H/W is the only axis they resize.
-
-        ``None`` too when a shape declaration reached this pipeline
-        (``_shape_declared``): the hints may then carry a *claimed* H/W — via a
-        CSE suffix that kept the hints but not the assertion, or a lazy
-        continuation seeded from an asserting upstream — and deleting an op on
-        the strength of a claim changes the output whenever the claim is wrong.
-        """
-        ndim = entering.ndim
-        if ndim is None or self._shape_declared:
-            return None
-        dims: "list[int | None]" = [None] * ndim
-        for axis, dim in enumerate(HINT_DIMS[:2][:ndim]):
-            hint = entering.hints.get(dim)
-            if hint is not None and not hint.is_expr:
-                dims[axis] = int(hint.value)
-        return dims
+        if order is not None:
+            self._replay(order, start=self._state_at(0), assertions=self._assertions)
 
     def _to_spec_dict(self, slot_of: "SlotOf") -> dict:
         """
@@ -2599,7 +2352,6 @@ class Pipeline(_OpsMixin):
         Returns:
             A one-line ``Pipeline().…`` rendering of the chain.
         """
-        from polars_cv._graph import PipelineGraph
         from polars_cv._optimize import OPTIMIZATION_PASSES, resolve_opt_flags
 
         if not optimized:
@@ -2612,11 +2364,11 @@ class Pipeline(_OpsMixin):
         # hand-listed). Only logical, node-scope passes change the op chain this
         # renders: CSE is graph-scope and inert for a lone pipeline, and
         # engine-tier passes are Rust lowering with no effect on the logical ops.
-        handlers = PipelineGraph._pass_handlers()
         for spec in OPTIMIZATION_PASSES:
-            if spec.tier != "logical":
-                continue
-            scope, run = handlers[spec.name]
-            if scope == "node" and flags.enabled(spec.name):
-                run(physical)
+            if (
+                spec.tier == "logical"
+                and spec.name != LogicalPass.COMMON_SUBEXPRESSION_ELIMINATION
+                and flags.enabled(spec.name)
+            ):
+                physical._run_node_pass(spec.name)
         return repr(physical)

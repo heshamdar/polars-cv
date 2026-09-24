@@ -17,6 +17,15 @@ from typing import Any
 __version__: str
 __source_hash__: str
 
+def node_pass(
+    pass_name: str,
+    ops: list[str],
+    states: list[tuple[str, int | None, list[int | None]]],
+    assertions: list[int],
+    shape_declared: bool,
+) -> list[int] | None:
+    """Run a node-scope logical pass; the node's new op order, or ``None``."""
+
 def op_contract(spec_json: str) -> dict[str, Any]:
     """Return the full contract for a single serialized op spec."""
 

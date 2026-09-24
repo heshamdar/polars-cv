@@ -82,14 +82,16 @@ class TestRegistry:
         flag_fields = {f.name for f in dataclasses.fields(OptFlags)}
         assert flag_fields == set(PASS_NAMES)
 
-    def test_pass_handlers_cover_every_logical_pass(self) -> None:
-        """Every **logical** pass has an ``optimize()`` handler and vice versa.
+    def test_every_logical_pass_is_a_rust_pass(self) -> None:
+        """The logical passes are exactly the Rust ``LogicalPass`` variants.
 
-        Engine passes have no Python handler (they ride to Rust as flags), so the
-        handler map is pinned to ``LOGICAL_PASS_NAMES`` — a logical pass without a
-        handler, or a handler without a logical pass, fails here.
+        Rust runs the node-scope ones (``node_pass``) and names all of them;
+        a logical pass Rust does not know would fail ``optimize()``, and a Rust
+        pass missing here would never be toggled or applied.
         """
-        assert set(PipelineGraph._pass_handlers()) == set(LOGICAL_PASS_NAMES)
+        from polars_cv._ops_generated import LogicalPass
+
+        assert set(LOGICAL_PASS_NAMES) == {p.value for p in LogicalPass}
 
     def test_every_flag_field_is_boolean_defaulting_on(self) -> None:
         defaults = OptFlags()
@@ -824,7 +826,7 @@ class TestSpatialPushdownGuard:
         pipe = pipe.crop(top=0, left=0, height=8, width=8)
         assert op_names(pipe) == ["grayscale", "apply_mask", "crop"]
 
-        pipe._hoist_spatial_windows_inplace()
+        pipe._run_node_pass("spatial_window_pushdown")
         # The crop stays put: apply_mask reads a sibling node, so it is a barrier.
         assert op_names(pipe) == ["grayscale", "apply_mask", "crop"]
 
@@ -834,5 +836,5 @@ class TestSpatialPushdownGuard:
         # the barrier above is what stopped it (not an inert pass).
         pipe = Pipeline().source("image_bytes").grayscale().invert()
         pipe = pipe.crop(top=1, left=1, height=8, width=8)
-        pipe._hoist_spatial_windows_inplace()
+        pipe._run_node_pass("spatial_window_pushdown")
         assert op_names(pipe) == ["crop", "grayscale", "invert"]

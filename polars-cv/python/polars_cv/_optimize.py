@@ -8,8 +8,8 @@ an equivalent physical graph.
 
 This module owns the **single authority** for which optimizations exist —
 :data:`OPTIMIZATION_PASSES` — and the control surface that toggles them,
-:class:`OptFlags`. It spans both tiers: the logical (Tier-1) passes applied in
-Python, and the per-row engine-lowering rewrites (scalar fusion, cast
+:class:`OptFlags`. It spans both tiers: the logical (Tier-1) passes applied by
+``PipelineGraph.optimize``, and the per-row engine-lowering rewrites (scalar fusion, cast
 elimination, flip/transpose algebra) that run in the Rust engine on the
 *already optimized* graph. Each pass carries a ``tier`` saying how it is
 toggled; engine flags ride to Rust in the graph's ``opt`` object. Mandatory
@@ -64,9 +64,11 @@ class PassSpec:
 #:
 #: ``tier`` says *how* a pass is toggled:
 #:
-#: - ``"logical"`` passes are applied in Python by ``PipelineGraph.optimize``
-#:   (they rewrite the logical graph before serialization). When their flag is
-#:   off the pass simply is not applied.
+#: - ``"logical"`` passes are applied by ``PipelineGraph.optimize`` (they
+#:   rewrite the logical graph before serialization): CSE in Python, which holds
+#:   the expression identities, and the node-scope ones in Rust (``node_pass``,
+#:   ``src/passes.rs``), whose ``LogicalPass`` names them all. When their flag
+#:   is off the pass simply is not applied.
 #: - ``"engine"`` passes are the per-row lowering rewrites in the Rust engine
 #:   (``ViewExpr::optimize_with``). Their flag is *serialized* into the graph's
 #:   ``opt`` object and gates the matching field of the Rust ``OptConfig`` — the
@@ -157,7 +159,7 @@ ENGINE_PASS_NAMES: tuple[str, ...] = tuple(
     p.name for p in OPTIMIZATION_PASSES if p.tier == "engine"
 )
 
-#: Logical-tier pass names — applied in Python by ``PipelineGraph.optimize``.
+#: Logical-tier pass names — applied by ``PipelineGraph.optimize``.
 LOGICAL_PASS_NAMES: tuple[str, ...] = tuple(
     p.name for p in OPTIMIZATION_PASSES if p.tier == "logical"
 )
@@ -173,7 +175,7 @@ class OptFlags:
     predated the explicit phase.
     """
 
-    # Logical tier (applied in Python).
+    # Logical tier (applied by PipelineGraph.optimize).
     common_subexpression_elimination: bool = True
     identity_elimination: bool = True
     spatial_window_pushdown: bool = True
