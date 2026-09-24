@@ -25,7 +25,7 @@ pub enum BorderMode {
     Reflect,
 }
 
-crate::naming::named_variants!(BorderMode {
+crate::naming::named_variants!(BorderMode: "Border-handling mode for 2D convolution (``convolve2d``).\n\n- REPLICATE: Replicate the nearest edge pixel.\n- ZERO: Treat out-of-bounds pixels as zero.\n- REFLECT: Reflect pixels around the edge (dcba|abcd|dcba)." {
     "replicate" => Replicate,
     "zero" => Zero,
     "reflect" => Reflect,

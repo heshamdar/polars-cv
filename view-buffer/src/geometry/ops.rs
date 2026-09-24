@@ -109,19 +109,19 @@ pub enum ApproxMethod {
     Approx,
 }
 
-crate::naming::named_variants!(ScaleOrigin {
+crate::naming::named_variants!(ScaleOrigin: "Point a contour scale operation is measured from (``.contour.scale``)." {
     "centroid" => Centroid,
     "bbox_center" => BBoxCenter,
     "origin" => Origin,
 });
 
-crate::naming::named_variants!(ExtractMode {
+crate::naming::named_variants!(ExtractMode: "Contour retrieval mode for ``extract_contours``.\n\n- EXTERNAL: Outermost contours only (default).\n- TREE: Full nesting hierarchy.\n- ALL: Every contour, without hierarchy." {
     "external" => External,
     "tree" => Tree,
     "all" => All,
 });
 
-crate::naming::named_variants!(ApproxMethod {
+crate::naming::named_variants!(ApproxMethod: "Contour point-approximation method for ``extract_contours``.\n\n- NONE: Keep every boundary point.\n- SIMPLE: Drop redundant collinear points (default).\n- APPROX: Douglas-Peucker style approximation." {
     "none" => None,
     "simple" => Simple,
     "approx" => Approx,

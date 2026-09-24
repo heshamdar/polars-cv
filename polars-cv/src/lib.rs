@@ -52,6 +52,7 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_check, m)?)?;
     m.add_function(wrap_pyfunction!(point_schema, m)?)?;
     m.add_function(wrap_pyfunction!(contour_schema, m)?)?;
@@ -624,6 +625,14 @@ fn op_catalog() -> String {
 #[pyfunction]
 fn io_catalog() -> String {
     crate::formats::io_catalog_json()
+}
+
+/// The enum catalogue as JSON (`tests/golden/enum_catalog.json`): every
+/// registered enum's name, doc and spellings, which `scripts/gen_ops.py`
+/// generates the Python enum classes from.
+#[pyfunction]
+fn enum_catalog() -> String {
+    crate::naming::enum_catalog_json()
 }
 
 /// Validate one serialized source or sink (`kind`) against its typed format, so

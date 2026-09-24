@@ -59,8 +59,8 @@ pub enum Winding {
 // The long spellings are aliases rather than a second table: the plugin has
 // always accepted them, and dropping them here to make the list tidier would
 // remove working behaviour. They ride in `NAMED`, so `enum_variants` surfaces
-// them and the Python mirror has to carry them too.
-crate::naming::named_variants!(Winding {
+// them and the generated Python enum carries them too.
+crate::naming::named_variants!(Winding: "Winding direction of a contour ring (``.contour.ensure_winding``).\n\nLong spellings included: the plugin has always accepted\n``\"clockwise\"``/``\"counterclockwise\"`` alongside the short forms." {
     "ccw" | "counterclockwise" => CounterClockwise,
     "cw" | "clockwise" => Clockwise,
 });

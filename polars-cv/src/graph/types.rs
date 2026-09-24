@@ -124,7 +124,7 @@ pub enum RowErrorPolicy {
 // `row_error_policy_names_match_serde` below — the deserializer stays the one
 // that reads the graph JSON, and this becomes the one that publishes the
 // vocabulary.
-view_buffer::naming::named_variants!(RowErrorPolicy {
+view_buffer::naming::named_variants!(RowErrorPolicy: "What a failing row does to a graph query.\n\nApplies to errors raised while producing a row — source decode, op\nexecution, output encode:\n- RAISE: propagate the first error, failing the whole expression.\n- NULL: a failing row yields null; other rows proceed.\n- NULL_WITH_MESSAGE: as NULL, plus an `_error` field." {
     "raise" => Raise,
     "null" => Null,
     "null_with_message" => NullWithMessage,

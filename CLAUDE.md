@@ -56,7 +56,7 @@ The enforcement standard is stricter than "prefer the shared path":
   re-enumerates one of those, you are creating the second copy — read from the
   authority instead.
 - **Registering is the same act as being checked.** Adding an enum to the
-  registry is what surfaces it over FFI *and* what gets it parity-checked;
+  registry is what surfaces it over FFI *and* what generates its Python class;
   adding an op's line to `typed_ops!` is what makes it deserializable,
   resolvable, described to Python *and* covered by the registry-driven tests.
   Never add a hand-written arm alongside the registry.

@@ -14,7 +14,7 @@
 /// Declare `pub const NAMED: &[(&'static str, Self)]` for a fieldless enum.
 ///
 /// ```ignore
-/// named_variants!(BorderMode {
+/// named_variants!(BorderMode: "Border-handling mode for 2D convolution (``convolve2d``).\n\n- REPLICATE: Replicate the nearest edge pixel.\n- ZERO: Treat out-of-bounds pixels as zero.\n- REFLECT: Reflect pixels around the edge (dcba|abcd|dcba)." {
 ///     "replicate" => Replicate,
 ///     "zero" => Zero,
 ///     "reflect" => Reflect,
@@ -24,15 +24,14 @@
 /// A variant may carry additional accepted spellings after the canonical one:
 ///
 /// ```ignore
-/// named_variants!(Winding {
+/// named_variants!(Winding: "Winding direction of a contour ring (``.contour.ensure_winding``).\n\nLong spellings included: the plugin has always accepted\n``\"clockwise\"``/``\"counterclockwise\"`` alongside the short forms." {
 ///     "ccw" | "counterclockwise" => CounterClockwise,
 ///     "cw" | "clockwise" => Clockwise,
 /// });
 /// ```
 ///
 /// Aliases join `NAMED` — so they are accepted by the parser *and* surfaced
-/// over `enum_variants`, which is what keeps the Python mirror honest about
-/// them. They do not appear separately in the exhaustiveness guard, because
+/// over `enum_variants` and in the generated Python enum. They do not appear separately in the exhaustiveness guard, because
 /// each variant is still named exactly once there.
 ///
 /// Exported from the crate so the **plugin** crate can declare its own
@@ -44,7 +43,7 @@
 /// second list this module exists to abolish.
 #[macro_export]
 macro_rules! named_variants {
-    ($ty:ident { $($name:literal $(| $alias:literal)* => $variant:ident),+ $(,)? }) => {
+    ($ty:ident $(: $doc:literal)? { $($name:literal $(| $alias:literal)* => $variant:ident),+ $(,)? }) => {
         impl $ty {
             /// Canonical Python-facing name of every variant.
             ///
@@ -57,6 +56,7 @@ macro_rules! named_variants {
 
         impl $crate::naming::NamedEnum for $ty {
             const ENUM_NAME: &'static str = stringify!($ty);
+            const DOC: &'static str = $crate::naming::first_or_empty(&[$($doc)?]);
             fn variant_names() -> Vec<&'static str> {
                 $crate::naming::names(Self::NAMED)
             }
@@ -95,8 +95,19 @@ pub use crate::named_variants;
 pub trait NamedEnum {
     /// The enum's own name, as Python knows it.
     const ENUM_NAME: &'static str;
+    /// Its description, the generated Python enum's docstring (empty when the
+    /// invocation gives none).
+    const DOC: &'static str;
     /// Its variant names, in declaration order.
     fn variant_names() -> Vec<&'static str>;
+}
+
+/// The doc a `named_variants!` invocation gave, or `""`.
+pub const fn first_or_empty(docs: &[&'static str]) -> &'static str {
+    match docs {
+        [doc, ..] => doc,
+        [] => "",
+    }
 }
 
 /// Register every enum whose names cross the FFI.
@@ -126,12 +137,13 @@ pub trait NamedEnum {
 #[macro_export]
 macro_rules! registry {
     ($name:ident: $($ty:path),+ $(,)?) => {
-        /// Every enum surfaced across the FFI: `(name, variant names)`.
-        pub const $name: &[(&str, fn() -> Vec<&'static str>)] = &[
+        /// Every enum surfaced across the FFI: `(name, variant names, doc)`.
+        pub const $name: &[(&str, fn() -> Vec<&'static str>, &str)] = &[
             $((
                 <$ty as $crate::naming::NamedEnum>::ENUM_NAME,
                 <$ty as $crate::naming::NamedEnum>::variant_names
                     as fn() -> Vec<&'static str>,
+                <$ty as $crate::naming::NamedEnum>::DOC,
             )),+
         ];
     };
@@ -164,12 +176,12 @@ registry!(
 
 /// Look up a registered enum's variant names.
 pub fn registered_variants(name: &str) -> Option<Vec<&'static str>> {
-    REGISTRY.iter().find_map(|(n, f)| (*n == name).then(f))
+    REGISTRY.iter().find_map(|(n, f, _)| (*n == name).then(f))
 }
 
 /// The names of every registered enum.
 pub fn registered_names() -> Vec<&'static str> {
-    REGISTRY.iter().map(|(n, _)| *n).collect()
+    REGISTRY.iter().map(|(n, _, _)| *n).collect()
 }
 
 /// Look up the enum value for `name` in a `NAMED`-style table.
@@ -357,7 +369,7 @@ mod tests {
     /// checked.
     #[test]
     fn registered_enums_have_unique_names() {
-        for (enum_name, variants) in REGISTRY {
+        for (enum_name, variants, _) in REGISTRY {
             let names = variants();
             assert!(!names.is_empty(), "{enum_name}: no variants");
             for (i, name) in names.iter().enumerate() {
@@ -420,10 +432,10 @@ mod tests {
     /// This is the hole the registry would otherwise leave open. `REGISTRY` is
     /// what surfaces an enum over the `enum_variants` FFI, what gets its names
     /// checked for duplicates above, and what puts it in `enum_names()` — which
-    /// the Python suite iterates to decide what to parity-check. So an enum
-    /// with a `named_variants!` table that is *not* registered is invisible to
-    /// every one of those: it would ship with a Python mirror free to disagree
-    /// with it and nothing to notice. Not registering must therefore fail here,
+    /// the plugin's enum catalogue (and so the generated Python enums) is built
+    /// from. So an enum with a `named_variants!` table that is *not* registered
+    /// is invisible to every one of those: Python would have no class for it,
+    /// or a hand-written one free to disagree with it. Not registering must therefore fail here,
     /// not silently opt the enum out.
     ///
     /// The reverse direction matters as much: it is what stops this test from
@@ -444,7 +456,7 @@ mod tests {
             "these enums declare a named_variants! table but are not in \
              REGISTRY: {unregistered:?}. Add each to the registry! invocation \
              in this module — that one line is what surfaces it to Python and \
-             what gets it parity-checked. Leaving it out does not make it \
+             what generates its Python class. Leaving it out does not make it \
              private, it makes it unchecked."
         );
 

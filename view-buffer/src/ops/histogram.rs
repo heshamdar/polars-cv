@@ -41,7 +41,7 @@ pub enum HistogramClosed {
     Right,
 }
 
-crate::naming::named_variants!(HistogramOutput {
+crate::naming::named_variants!(HistogramOutput: "Histogram output mode selection.\n\nControls what the histogram operation returns:\n- COUNTS: Bin counts as a 1D array\n- NORMALIZED: Histogram normalized to sum to 1.0\n- QUANTIZED: Input array with pixels replaced by bin indices\n- EDGES: Bin edge values\n- BUCKETS: List of bucket structs (lower_edge, upper_edge, count, normalized)" {
     "counts" => Counts,
     "normalized" => Normalized,
     "quantized" => Quantized,
@@ -49,7 +49,7 @@ crate::naming::named_variants!(HistogramOutput {
     "buckets" => Buckets,
 });
 
-crate::naming::named_variants!(HistogramClosed {
+crate::naming::named_variants!(HistogramClosed: "Interval inclusiveness for histogram binning.\n\n- LEFT: Intervals are left-closed ``[a, b)``.\n- RIGHT: Intervals are right-closed ``(a, b]``." {
     "left" => Left,
     "right" => Right,
 });

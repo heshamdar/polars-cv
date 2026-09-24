@@ -30,13 +30,13 @@ pub enum LabelRegionMode {
     Bbox,
 }
 
-crate::naming::named_variants!(LabelReduction {
+crate::naming::named_variants!(LabelReduction: "Reduction over a contour region's pixel values (``label_reduce``)." {
     "max" => Max,
     "mean" => Mean,
     "sum" => Sum,
 });
 
-crate::naming::named_variants!(LabelRegionMode {
+crate::naming::named_variants!(LabelRegionMode: "Region selection for ``label_reduce``.\n\n- INTERIOR: Pixels strictly inside the contour polygon.\n- BOUNDARY: Interior pixels plus pixels on the contour boundary.\n- BBOX: All pixels within the bounding box." {
     "interior" => Interior,
     "boundary" => Boundary,
     "bbox" => Bbox,

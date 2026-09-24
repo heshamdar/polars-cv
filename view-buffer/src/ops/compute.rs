@@ -49,7 +49,7 @@ pub enum NormalizeMethod {
     Preset,
 }
 
-crate::naming::named_variants!(NormalizeMethod {
+crate::naming::named_variants!(NormalizeMethod: "Normalization methods (``PRESET``: channel-wise with preset mean/std values)." {
     "minmax" => MinMax,
     "zscore" => ZScore,
     "preset" => Preset,

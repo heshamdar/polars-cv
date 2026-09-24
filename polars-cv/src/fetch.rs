@@ -323,7 +323,7 @@ pub enum FetchErrorPolicy {
     Null,
 }
 
-view_buffer::naming::named_variants!(FetchErrorPolicy {
+view_buffer::naming::named_variants!(FetchErrorPolicy: "What an unreadable path does to the query.\n\nSettled at fetch time, before any graph node runs, which is why it is not\n:class:`RowErrorPolicy`: ``.cv.read_bytes()`` has no graph at all, and\n``source(\"file_path\")`` resolves its bytes before the graph starts.\n- RAISE: an unreadable path fails the whole query.\n- NULL: an unreadable path yields null for that row only." {
     "raise" => Raise,
     "null" => Null,
 });
