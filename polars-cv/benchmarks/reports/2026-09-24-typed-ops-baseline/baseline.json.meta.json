@@ -1,0 +1,26 @@
+{
+  "git_sha": "91d51de98b8dde722f0d06f92ddf3663a4a4fe60",
+  "timestamp_utc": "2026-09-24T07:47:17.362371+00:00",
+  "num_threads": 1,
+  "adapters": [
+    "polars-cv-eager",
+    "polars-cv-streaming"
+  ],
+  "config": {
+    "image_counts": [
+      300
+    ],
+    "image_sizes": [
+      [
+        256,
+        256
+      ]
+    ],
+    "warmup_iterations": 3,
+    "benchmark_iterations": 10,
+    "suite_repeats": 3,
+    "scenarios": [
+      "pipelines"
+    ]
+  }
+}

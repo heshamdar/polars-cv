@@ -109,6 +109,24 @@ def test_graph_json_carries_no_shape_hints() -> None:
         )
 
 
+@plugin_required
+def test_graph_json_carries_no_visualization_metadata() -> None:
+    """Nodes must not serialize ``alias``, ``domain`` or ``output_dtype``.
+
+    Rust declared all three on ``GraphNode`` only so the node stayed closed
+    under ``deny_unknown_fields`` — the executor read none of them, and they
+    entered the compiled-graph cache key. They existed for the graph
+    visualizer, which now reads them from the Python graph it already holds.
+    """
+    pipe = Pipeline().source("image_bytes", dtype="u8").resize(height=8, width=8)
+    graph = pl.col("img").cv.pipe(pipe).sink("png", return_expr=False)
+    spec = json.loads(graph._to_json())
+
+    for node_id, node in spec["nodes"].items():
+        for key in ("alias", "domain", "output_dtype"):
+            assert key not in node, f"node {node_id} still serializes {key!r}"
+
+
 # ---------------------------------------------------------------------------
 # The graph wire format is closed in both directions
 # ---------------------------------------------------------------------------

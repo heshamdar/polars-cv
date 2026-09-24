@@ -752,14 +752,12 @@ mod tests {
             "nodes": {
                 "_node_0": {
                     "source": {"format": "image_bytes"},
-                    "ops": [],
-                    "alias": "original"
+                    "ops": []
                 },
                 "_node_1": {
                     "source": {"format": "blob"},
                     "ops": [],
-                    "upstream": ["_node_0"],
-                    "alias": "processed"
+                    "upstream": ["_node_0"]
                 }
             },
             "outputs": {
@@ -778,8 +776,8 @@ mod tests {
     fn test_unified_topological_order() {
         let json = r#"{
             "nodes": {
-                "a": {"source": {"format": "image_bytes"}, "ops": [], "alias": "out_a"},
-                "b": {"source": {"format": "blob"}, "ops": [], "upstream": ["a"], "alias": "out_b"}
+                "a": {"source": {"format": "image_bytes"}, "ops": []},
+                "b": {"source": {"format": "blob"}, "ops": [], "upstream": ["a"]}
             },
             "outputs": {
                 "out_a": {"node": "a", "sink": {"format": "numpy"}},

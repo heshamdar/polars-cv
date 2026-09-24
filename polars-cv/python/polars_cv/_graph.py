@@ -705,8 +705,6 @@ class PipelineGraph:
             # We'll add sink info to the output specification
             node_spec = node.pipeline._to_spec_dict()
             node_spec["upstream"] = node.upstream
-            if node.alias is not None:
-                node_spec["alias"] = node.alias
             nodes_dict[node_id] = node_spec
 
         # Build unified outputs dict (always use "outputs" format)

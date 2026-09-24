@@ -391,20 +391,4 @@ pub struct GraphNode {
     /// Upstream node IDs this node depends on.
     #[serde(default)]
     pub upstream: Vec<String>,
-    /// User-defined alias the Python planner attaches for multi-output. The
-    /// executor keys its outputs off `UnifiedGraph.outputs`, not this field, so
-    /// it is deserialized-but-unread — declared, like `domain`/`output_dtype`
-    /// below, only so the node stays closed under `deny_unknown_fields`.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub alias: Option<String>,
-    /// Planner metadata for graph visualization only; the executor computes
-    /// its own schema from `ops`. Declared so the node stays closed.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub domain: Option<String>,
-    /// See [`GraphNode::domain`].
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub output_dtype: Option<String>,
 }

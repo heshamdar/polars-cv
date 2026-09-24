@@ -53,21 +53,26 @@ class LogicalGraph:
 OUTPUT_NODE_ID = "__output__"
 
 
-def parse_logical_graph(spec: Dict[str, Any]) -> LogicalGraph:
+def parse_logical_graph(pipeline_graph: PipelineGraph) -> LogicalGraph:
+    """The display graph: ops and wiring from the serialized spec, and each
+    node's alias and planned domain/dtype from the Python graph itself (the
+    plugin wire format carries no display metadata)."""
+    spec = pipeline_graph._to_dict()
     graph = LogicalGraph()
 
     # Parse compute + source nodes
     for node_id, payload in spec["nodes"].items():
         upstream = payload.get("upstream", [])
         is_source = len(upstream) == 0
+        node = pipeline_graph._nodes[node_id]
 
         graph.nodes[node_id] = ComputeNode(
             node_id=node_id,
             kind=NodeKind.SOURCE if is_source else NodeKind.COMPUTE,
-            alias=payload.get("alias"),
+            alias=node.alias,
             ops=payload.get("ops", []),
-            domain=payload["domain"],
-            dtype=payload["output_dtype"],
+            domain=node.pipeline.current_domain(),
+            dtype=node.pipeline.output_dtype(),
             upstream=upstream,
             source_format=payload["source"]["format"] if is_source else None,
         )
@@ -177,9 +182,7 @@ def get_graphviz_out(graph: PipelineGraph) -> Source:
             "Graph visualization requires 'networkx', 'graphviz', and 'pydot'. "
             "Install them with: pip install 'polars-cv[viz]'"
         )
-    spec = graph._to_dict()
-
-    logical = parse_logical_graph(spec)
+    logical = parse_logical_graph(graph)
     dag = build_dag(logical)
     dot = visualize_dag(dag)
 
