@@ -13,7 +13,7 @@
 > | P0 — Safety net and seams | **done** — corpus (214 cases), signature snapshot, pickle pin, removed-symbol gate, `_plan_view` seam (30 files), baselines, dead `GraphNode` fields |
 > | P1 — Positional expression slots | **done** — `{"$slot": n}` wire form from a graph-wide `SlotTable`; `expr_key`/`expr_column_names`/name binding deleted; per-call slot bound check; `shape_node` id; CR-50 logged |
 > | P2 — Catalogue foundation + spike | **done, one gate item over** — `#[derive(Op)]`/`typed_ops!`, `Param`/`Literal`, name-keyed dispatcher (`LEGACY_OPS` 81), `crop`/`resize`/`warp_affine`/`histogram` typed with generated builders, catalogue ↔ `.so` ↔ generated-module checks, mkdocs inherited members. Gate: corpus ✓, signatures ✓, `mkdocs --strict` ✓ (generated `Args:` render), release `.so` 32,192,392 B (+58 KB, +0.2%), release build 839 s cold (baseline 819 s). Plan build µs/append (release; P0 → P1 → P2): `mixed` 82.8 → 80.7 → **78.0**; `chain` 49.8 → 51.7 → **53.7**; `lazy_continuation` 83.5 → 86.6 → **90.7**. The two legacy-only scenarios are over baseline (~2 µs each from P1's slot table and P2's dispatcher map on the legacy path); both paths shrink in P3 and go in P6/P7 |
-> | P3 — Migrate every op | next |
+> | P3 — Migrate every op | **in progress** — P3.1 view, P3.2 compute, P3.3 image, P3.4 colour/filter/rotate/reductions/phash/channel done (60 typed); P3.5 binary + geometry + graph-level (25 left in `LEGACY_OPS`) next. See **Handover** below |
 > | P4 — Typed sources and sinks | pending |
 > | P5 — Geometry namespaces | pending |
 > | P6 — Delete the legacy protocol | pending |
@@ -21,6 +21,122 @@
 > | P8 — API reshaping | pending |
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
+
+## Handover (2026-09-24, mid-P3)
+
+Written so a fresh session can continue without the originating conversation.
+Read this section, then the phase text for P3.5 onwards below.
+
+### State
+
+- Branch `claude/codebase-quality-review-wnfwqz`, pushed. Commits for this
+  plan: P0 (up to `5a83210`), P1 `cb6fc46`, P2 `1faec46`, P3.1 `dd52de0`,
+  P3.2 `dfa8a94`, P3.3 `b8e23ba`, P3.4 `c774819`. (P3.4's message says
+  "22 left"; the true count is **25**.)
+- Every commit passed the fast lane; the full `scripts/verify.sh` last ran green
+  at the P2 boundary. Run it again at the P3 exit.
+- Typed ops (60): see `TypedOp::NAMES` / `tests/golden/op_catalog.json`.
+- Still legacy (25, `execute.rs` `LEGACY_OPS`): `add` `apply_mask`
+  `bitwise_and` `bitwise_or` `bitwise_xor` `blend` `channel_merge`
+  `contour_area` `contour_bounding_box` `contour_centroid` `contour_convex_hull`
+  `contour_perimeter` `contour_scale` `contour_simplify` `contour_translate`
+  `divide` `extract_contours` `extract_shape` `label_reduce` `maximum`
+  `minimum` `multiply` `rasterize` `ratio` `subtract`.
+
+### How a family is migrated (the recipe every P3 commit followed)
+
+1. **Rust definition** in `polars-cv/src/ops/<family>.rs`: a struct with
+   `#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]` and
+   `#[serde(deny_unknown_fields)]`; fields are `Param<T>` (per-row capable) or
+   `Literal<T>` (structural), `Option<_>`, `Vec<_>`, `[_; N]`; every field and
+   the struct need a doc comment (they become the Python docstring and
+   `Args:`). Markers: `#[param(positional)]`, `#[param(default = <literal>)]`,
+   struct-level `#[op(python = "name")]` and `#[op(visibility = "internal")]`.
+   Field names and order must reproduce the frozen Python signature
+   (`tests/golden/signatures.json`) — the wire follows the signature. An
+   `OpDef::resolve` that opens with an exhaustive destructure and returns the
+   same `GraphStep` the legacy arm built (port the arm body). Repeated shapes
+   use a small local `macro_rules!` (see `compute.rs`, `image.rs`,
+   `reduce.rs`).
+2. **Register** one line with a valid sample in `typed_ops!` (`ops/mod.rs`),
+   kept sorted; add `pub mod` for a new family file.
+3. **Delete** the names from `LEGACY_OPS` (only inside that const — the name
+   can also appear in test lists) and their `resolve_op_inner` arms; then
+   delete every helper the compiler reports dead (`cargo check -p polars-cv`
+   *and* `cargo clippy` — clippy sees dead code the `--tests` check hides) and
+   the tests that only exercised those helpers.
+4. **Port tests**: legacy tests that named a migrated op (`strict_param_tests`,
+   `unread_param_tests`, hand-built graph JSON in `graph/compiled.rs` /
+   `encode.rs`) move to typed form — rejection cases go into
+   `ops::tests::an_invalid_value_is_rejected_naming_its_field`; graph JSON uses
+   bare values (`"q": 50.0`, not `{"type":"literal",...}`).
+5. **Re-bless + regenerate**: `POLARS_CV_BLESS=1 scripts/with-pyo3-env.sh
+   cargo test -p polars-cv` (rewrites `tests/golden/op_catalog.json`), then
+   `python scripts/gen_ops.py` and `python scripts/gen_lazy_stub.py` (put
+   `.venv/bin` on `PATH` so ruff is found).
+6. **Python**: delete the hand-written `Pipeline` methods (they are now
+   inherited from `_ops_generated._OpsMixin`). A method whose signature carries
+   sugar (extra keywords, enum-member defaults, argument resolution) stays
+   hand-written and calls the generated `_<name>` of an `internal` op
+   (`scale`, `clamp`, `resize_scale`, `perceptual_hash`). Keep `OP_NAMES`.
+7. **Verify**: `maturin develop` (debug), fast lane
+   (`pytest tests/ -m "not network and not slow"`), `ruff check`/`format`,
+   `uvx ty check --project polars-cv`, clippy, `cargo test -p view-buffer
+   --all-features`, `python scripts/check_removed_symbols.py` (add each
+   deleted symbol to `REMOVED`), then commit. The pre-commit hook fails on a
+   stale `.so` — rebuild after any Rust edit, including doc/fmt changes.
+
+Expected test churn per family: error-message regexes (the Rust definition is
+now the validator; same input rejected at the same point — say so in the
+commit), wire-shape assertions in `test_serialization.py`, and none in the
+golden corpus or signature snapshot (both must stay green unchanged).
+
+### P3.5 specifics (remaining work, in suggested order)
+
+- **Geometry ops** `contour_*` (Python names `area`, `perimeter`, `centroid`,
+  `bounding_box`, `convex_hull`, `translate`, `scale_contour`, `simplify` —
+  check `pipeline.py` for each `_append_op("contour_…")` caller and use
+  `#[op(python = …)]`). `execute::unread_param_tests` uses
+  `contour_perimeter` as its fabricated legacy case — move it to another
+  legacy op, or delete the test when the last legacy op goes (P6 deletes
+  `OpParams` anyway). `encode.rs::every_graph_geometry_op_executes` already
+  covers typed samples.
+- **Binary family** (`add` … `ratio`, `bitwise_*`, `blend`): Python methods live
+  on `LazyPipelineExpr` (`lazy.py`, `_add_binary_op`, operand is another node
+  id `other_node`). Plan: one generic typed op or one per name reading
+  `BinaryOp::NAMED`; `gen_ops.py` does not yet place `lazy_only` ops (it raises
+  — extend `method_name`/render to emit a `LazyPipelineExpr` mixin, or keep the
+  lazy methods hand-written and make the op `internal`). `binary_output_dtype`
+  FFI and `parse_binary_op` in `lib.rs` read `BinaryOp::NAMED`.
+- **Graph-level ops**: `rasterize` (split `RasterSize::{Fixed{width,height} |
+  FromNode(node)}`; delete the `shape_ref` probe injection in
+  `lib.rs::legacy_probe_spec` and the `OpResolver::RasterizeShapeRef`
+  special case keyed on the legacy spec; `resolve_rasterize_style` is shared
+  with the contour source), `extract_contours`, `label_reduce` (its
+  `contours` is a slot read as data via `ParamCol::get_any`), `extract_shape`,
+  `apply_mask`, `channel_merge` (`other_nodes`).
+- **P3 exit**: `LEGACY_OPS` empty (keep the const until P6 deletes the legacy
+  protocol), full `scripts/verify.sh`, CHANGELOG, this table, CR-45 progress.
+
+### Gotchas learned
+
+- The planner's shape probe (`lib.rs::infer_shape_probe`) now runs the op's
+  own `validate` and raises only rank-level failures
+  (`ValidationError::depends_only_on_rank`); size-level build-time checks were
+  deliberately left for P9. `op_infer_shape` returns `None` for "not
+  inferable" and raises `ValueError` only for invalid parameters.
+- Under a plan-time probe a per-row `Param` reads a placeholder integer; a
+  named enum/bool returns `WireScalar::probe_value()`. An op whose validity
+  couples a per-row value to a literal (convolve2d `ksize`) must special-case
+  `ctx.is_probe()`.
+- `OpSpec`'s dispatcher parses each op once into a map and never clones it
+  (a clone cost ~13 µs/append; see the P2 row).
+- Named enums get their wire form only from `NAMED` (`WireScalar`, emitted by
+  `named_variants!`); side-table aliases were unreachable from Python and have
+  been deleted (`FilterType`, `ColorSpace`).
+- Disk is tight in the container (~4 GB free after `scripts/dev-clean.sh`);
+  a release build needs ~2 GB. Benchmarks need `maturin develop --release`,
+  then rebuild debug.
 
 ## Deviations recorded during execution
 
