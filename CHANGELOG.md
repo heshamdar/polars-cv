@@ -248,6 +248,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Internal
 
+- **Typed-op migration, P0 (safety net).** See `TYPED_OPS_PLAN.md`. A golden
+  behaviour corpus (`tests/golden/op_corpus.json`, 214 cases), a frozen builder
+  call surface (`tests/golden/signatures.json`), a pickle/copy pin, the
+  removed-symbol gate (`scripts/check_removed_symbols.py`), a single test seam
+  for planner state (`tests/_plan_view.py`, 30 files migrated, guarded), and
+  performance baselines (`benchmarks/reports/2026-09-24-typed-ops-baseline/`,
+  new `benchmarks/plan_build.py`).
 - `scripts/verify.sh` and the pre-commit clippy hook run cargo under the PyO3
   environment `maturin develop` sets (`scripts/with-pyo3-env.sh`). Without it the
   two invalidated each other's builds, costing ~2 minutes of polars-stack
