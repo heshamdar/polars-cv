@@ -48,8 +48,6 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(op_schema, m)?)?;
     m.add_function(wrap_pyfunction!(op_infer_shape, m)?)?;
     m.add_function(wrap_pyfunction!(op_output_channels, m)?)?;
-    m.add_function(wrap_pyfunction!(enum_variants, m)?)?;
-    m.add_function(wrap_pyfunction!(enum_names, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;
@@ -479,58 +477,9 @@ fn binary_output_dtype(op_name: &str, left: &str, right: &str) -> PyResult<Strin
     Ok(dtype_short_name(op.output_dtype(l, r)).to_string())
 }
 
-/// Return the string variants of a Rust enum, for Python<->Rust parity checks.
-///
-/// Reads `view_buffer::naming::REGISTRY`, so registering an enum there is what
-/// makes it queryable from Python — one act, not two. Its names come from the
-/// same canonical `NAMED` table the executor's parameter parser consumes, so
-/// the names surfaced to Python and the names the executor accepts cannot
-/// drift.
-///
-/// The graph's source/sink formats are not here because they have no Rust
-/// enum: the boundary carries them as plain strings and Python's
-/// `SourceFormat`/`SinkFormat` are their single definition. view-buffer's
-/// shadowing copies were deleted with its unreachable composition layer, so
-/// there is no longer a format vocabulary to reconcile.
-///
-/// Two registries are consulted, not one: most vocabularies are the engine's,
-/// but a few describe things the engine has no concept of (how a graph handles
-/// a failing row, what a null parameter means, how a path read reports an
-/// unreadable file) and live in [`crate::naming::PLUGIN_REGISTRY`]. Both are
-/// read the same way, and there is no hand-written arm for either — the arm
-/// `BinaryOp` used to need is gone, its table having moved next to the enum.
-#[pyfunction]
-fn enum_variants(name: &str) -> PyResult<Vec<String>> {
-    let variants: Vec<&str> = view_buffer::naming::registered_variants(name)
-        .or_else(|| crate::naming::registered_variants(name))
-        .ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "no canonical Rust enum named {name}; known: {:?}",
-                enum_names()
-            ))
-        })?;
-    Ok(variants.into_iter().map(str::to_string).collect())
-}
-
-/// The name of every enum `enum_variants` can answer for.
-///
-/// Exists so the Python parity tests can iterate the vocabularies rather than
-/// hand-listing them. A hand-written list is what let `LabelReduction` and
-/// `LabelRegionMode` sit unchecked: they had `NAMED` tables, and no test named
-/// them, so nothing noticed. A test that reads this cannot miss a new enum.
-#[pyfunction]
-fn enum_names() -> Vec<String> {
-    view_buffer::naming::registered_names()
-        .into_iter()
-        .chain(crate::naming::registered_names())
-        .map(str::to_string)
-        .collect()
-}
-
 /// The field names of the `{x, y}` point struct the geometry surfaces publish.
 ///
-/// Surfaced the way [`enum_variants`] surfaces the naming registry: a runtime
-/// accessor plus a Python parity test, rather than a generated module. That
+/// A runtime accessor plus a Python parity test, rather than a generated module. That
 /// keeps `polars_cv.geometry` importable with no compiled extension present,
 /// which a generated file would also do but at the cost of a generator and a
 /// regenerate-and-diff guard for two field names.

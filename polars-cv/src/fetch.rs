@@ -342,8 +342,8 @@ impl FetchErrorPolicy {
 /// `context` names what is being configured, e.g. `node 'src'`.
 ///
 /// Reads [`FetchErrorPolicy::NAMED`] rather than matching on string literals,
-/// so the values accepted here are exactly the ones `enum_variants` surfaces to
-/// Python — the expected-values half of the message included. Spelling them by
+/// so the values accepted here are exactly the generated Python enum's — the
+/// expected-values half of the message included. Spelling them by
 /// hand is how the two Python call sites came to carry their own copies of the
 /// list.
 pub fn parse_on_error(value: &str, context: &str) -> PolarsResult<bool> {

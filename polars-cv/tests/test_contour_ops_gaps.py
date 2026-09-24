@@ -368,8 +368,8 @@ class TestContourEnumParamsAreRejectedNotDefaulted:
     def test_the_long_winding_spellings_still_work(self, ccw_square: dict) -> None:
         """The aliases the parser has always accepted are kept, not dropped.
 
-        They live in ``Winding::NAMED`` as aliases, so they are also surfaced
-        over ``enum_variants`` and mirrored in ``_types.Winding`` — the
+        They live in ``Winding::NAMED`` as aliases, so the generated
+        ``_types.Winding`` carries them too — the
         previous annotation admitted only the short forms while the parser
         took both.
         """

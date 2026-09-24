@@ -19,6 +19,8 @@ A single-op sweep cannot reach these. What is checked here:
 
 from __future__ import annotations
 
+import json
+
 import polars as pl
 import pytest
 
@@ -41,12 +43,13 @@ def _binary_op_names() -> list[str]:
     """The binary-op vocabulary, read from the Rust registry.
 
     ``BinaryOp::NAMED`` in view-buffer is the single authority and it is
-    surfaced as the ``BinaryOp`` enum over ``enum_variants``. Reading it here
+    surfaced as the ``BinaryOp`` entry of the enum catalogue. Reading it here
     means a new binary op joins this sweep automatically.
     """
-    from polars_cv._lib import enum_variants
+    from polars_cv._lib import enum_catalog
 
-    return sorted(enum_variants("BinaryOp"))
+    (desc,) = [e for e in json.loads(enum_catalog()) if e["name"] == "BinaryOp"]
+    return sorted(desc["variants"])
 
 
 def _df(pattern: str = "single", *, channels: int = 3) -> pl.DataFrame:

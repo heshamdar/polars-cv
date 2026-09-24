@@ -87,8 +87,8 @@ pub enum BinaryOp {
 //
 // This table used to be `BINARY_OPS` in the polars-cv crate, which made
 // `BinaryOp` the one enum-shaped vocabulary the registry could not hold — and
-// so the one that needed a hand-written arm in `enum_variants`, exempted by
-// name from the parity test. Nothing required it to live there: the enum is
+// so the one that needed a hand-written FFI arm and a parity-test exemption.
+// Nothing required it to live there: the enum is
 // this crate's, and the names describe engine semantics, not plugin ones.
 //
 // Declaring it here puts it under the same exhaustiveness guard as every other

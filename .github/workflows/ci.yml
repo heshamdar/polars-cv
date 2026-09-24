@@ -140,7 +140,7 @@ jobs:
           # 427 of these 651 tests are `@plugin_required`, and without the
           # extension they do not politely skip -- sixteen fail outright and
           # `test_schema_parity_chains.py` aborts collection, because its
-          # `parametrize` reads `enum_variants` from `_lib` at import time.
+          # `parametrize` reads `enum_catalog` from `_lib` at import time.
           pytest tests/ -q -m "structural and not slow"
 
           echo "=== Running Python Tests ==="

@@ -3,9 +3,9 @@
 //! Every string-valued operation parameter maps to a Rust enum defined in
 //! this crate. The `named_variants!` macro declares the **single authority**
 //! for that enum's Python-facing names: a `NAMED` table consumed by both the
-//! polars-cv parameter parser (accepting these names) and the `enum_variants`
-//! FFI (surfacing them to Python parity tests). Parser and surfaced names
-//! therefore cannot drift.
+//! polars-cv parameter parser (accepting these names) and the enum catalogue
+//! the Python enums are generated from. Parser and Python names therefore
+//! cannot drift.
 //!
 //! The macro also emits a hidden exhaustive `match` over the listed variants,
 //! so adding an enum variant without extending its `NAMED` table is a compile
@@ -31,7 +31,7 @@
 /// ```
 ///
 /// Aliases join `NAMED` — so they are accepted by the parser *and* surfaced
-/// over `enum_variants` and in the generated Python enum. They do not appear separately in the exhaustiveness guard, because
+/// in the generated Python enum. They do not appear separately in the exhaustiveness guard, because
 /// each variant is still named exactly once there.
 ///
 /// Exported from the crate so the **plugin** crate can declare its own
@@ -39,16 +39,16 @@
 /// and cannot move here — `RowErrorPolicy` describes graph execution and
 /// `NullParamPolicy` describes per-row parameter resolution, neither of which
 /// this crate has a concept of — and the alternative to lending them the macro
-/// was a hand-written arm in `enum_variants` per enum, which is exactly the
-/// second list this module exists to abolish.
+/// a hand-written Python class per enum, which is exactly the second list this
+/// module exists to abolish.
 #[macro_export]
 macro_rules! named_variants {
     ($ty:ident $(: $doc:literal)? { $($name:literal $(| $alias:literal)* => $variant:ident),+ $(,)? }) => {
         impl $ty {
             /// Canonical Python-facing name of every variant.
             ///
-            /// Single authority for parameter parsing and the `enum_variants`
-            /// FFI — see `view_buffer::naming`.
+            /// Single authority for parameter parsing and the generated Python
+            /// enum — see `view_buffer::naming`.
             pub const NAMED: &'static [(&'static str, $ty)] = &[
                 $(($name, $ty::$variant) $(, ($alias, $ty::$variant))*),+
             ];
@@ -113,23 +113,14 @@ pub const fn first_or_empty(docs: &[&'static str]) -> &'static str {
 /// Register every enum whose names cross the FFI.
 ///
 /// One line per enum, and that line is the whole registration. The entries are
-/// read by this module's uniqueness test *and*, through
-/// [`registered_variants`]/[`registered_names`], by the plugin's
-/// `enum_variants`/`enum_names` FFI — so adding an enum here is what makes
-/// Python able to query it and what gets its names checked for duplicates.
-/// There is no second list to update.
+/// read by this module's uniqueness test *and* by the plugin's enum catalogue
+/// (`enum_catalog_json`), which the Python enums are generated from — so
+/// adding an enum here is what gives Python its class and what gets its names
+/// checked for duplicates. There is no second list to update.
 ///
-/// Both lists this replaced had already drifted: the uniqueness test omitted
-/// `LabelReduction` and `LabelRegionMode`, and Python's parity tests named
-/// neither, so a divergence in either would have shipped unnoticed.
-///
-/// Do not add a hand-written arm to `enum_variants` for a new enum. There is no
-/// longer any enum outside a registry: `BinaryOp` used to be the exception —
-/// its name table sat in the plugin crate, so it needed a bespoke arm and an
-/// exemption from the parity test — and the table has moved next to the enum,
-/// here. An enum that genuinely belongs to the plugin (`RowErrorPolicy` and
-/// friends) declares itself with the exported [`named_variants!`] and lands in
-/// that crate's own `registry!`, which the FFI chains onto this one.
+/// An enum that genuinely belongs to the plugin (`RowErrorPolicy` and friends)
+/// declares itself with the exported [`named_variants!`] and lands in that
+/// crate's own `registry!`, which the catalogue chains onto this one.
 ///
 /// Exported alongside `named_variants!` for that purpose. The generated const
 /// is named by the caller, so the two registries can coexist without one
@@ -173,16 +164,6 @@ registry!(
     crate::geometry::label::LabelRegionMode,
     crate::ops::NormalizeMethod,
 );
-
-/// Look up a registered enum's variant names.
-pub fn registered_variants(name: &str) -> Option<Vec<&'static str>> {
-    REGISTRY.iter().find_map(|(n, f, _)| (*n == name).then(f))
-}
-
-/// The names of every registered enum.
-pub fn registered_names() -> Vec<&'static str> {
-    REGISTRY.iter().map(|(n, _, _)| *n).collect()
-}
 
 /// Look up the enum value for `name` in a `NAMED`-style table.
 pub fn lookup<T: Copy>(table: &[(&str, T)], name: &str) -> Option<T> {
@@ -430,10 +411,9 @@ mod tests {
     /// Declaring a `NAMED` table and registering it are the same act.
     ///
     /// This is the hole the registry would otherwise leave open. `REGISTRY` is
-    /// what surfaces an enum over the `enum_variants` FFI, what gets its names
-    /// checked for duplicates above, and what puts it in `enum_names()` — which
-    /// the plugin's enum catalogue (and so the generated Python enums) is built
-    /// from. So an enum with a `named_variants!` table that is *not* registered
+    /// what gets an enum's names checked for duplicates above and what puts it
+    /// in the plugin's enum catalogue, which the generated Python enums are
+    /// built from. So an enum with a `named_variants!` table that is *not* registered
     /// is invisible to every one of those: Python would have no class for it,
     /// or a hand-written one free to disagree with it. Not registering must therefore fail here,
     /// not silently opt the enum out.
@@ -445,9 +425,9 @@ mod tests {
     #[test]
     fn every_named_enum_is_registered() {
         let declared = declared_enums();
-        let registered: std::collections::BTreeSet<String> = super::registered_names()
-            .into_iter()
-            .map(str::to_string)
+        let registered: std::collections::BTreeSet<String> = super::REGISTRY
+            .iter()
+            .map(|(n, _, _)| n.to_string())
             .collect();
 
         let unregistered: Vec<&String> = declared.difference(&registered).collect();

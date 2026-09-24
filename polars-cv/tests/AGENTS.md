@@ -65,7 +65,7 @@ pipeline, and five seconds is what makes them affordable in a pre-commit hook.
 
 **The lane needs the compiled extension.** 427 of the 651 are
 `@plugin_required`, because a great many structural facts are only observable
-through the FFI: the enum-parity sweep reads `enum_variants`, and
+through the FFI: the catalogue checks read `enum_catalog`/`op_catalog`, and
 `test_param_applicability` sweeps real `source()`/`sink()` calls. Without a
 `.so` they do not politely skip — sixteen fail outright, and
 `test_schema_parity_chains.py` aborts *collection*, because its `parametrize`

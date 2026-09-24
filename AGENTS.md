@@ -259,7 +259,7 @@ side channel.
 | A typed op's fields, types, defaults, docs and Python signature | Its struct in `polars-cv/src/ops/` (`#[derive(Op)]`), via `tests/golden/op_catalog.json` → `scripts/gen_ops.py` → `_ops_generated.py` | serde (`deny_unknown_fields`, required by the derive) rejects an unknown/missing/mistyped field; `catalog_matches_the_committed_file` (Rust) and `test_the_committed_catalog_is_the_built_one` (built `.so` + generated module) |
 | Every spelling of a dtype (short / VIEW wire code / numpy) | `dtype_table!` in `view-buffer/src/core/dtype.rs` | `dtype_single_authority.rs` + `test_no_second_dtype_spelling_table` (a partial dispatch is reported) |
 | Enum variant names crossing the FFI | `named_variants!` + `naming::REGISTRY` (engine) chained with `naming::PLUGIN_REGISTRY` (plugin-owned enums: `RowErrorPolicy`, `NullParamPolicy`, `FetchErrorPolicy`) | `every_named_enum_is_registered` (a `NAMED` table not in the registry fails), `registered_enums_have_unique_names`, `plugin_enums_have_unique_names`, `plugin_enums_do_not_shadow_engine_enums`; the Python classes are generated from the registries (`enum_catalog.json` → `gen_ops.py`, bar the stated `NOT_GENERATED` exceptions), pinned by `enum_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one` |
-| A policy enum's *wire* spelling vs its published one | serde `rename_all` reads the wire, `NAMED` publishes it | `row_error_policy_names_match_serde`, `null_param_policy_names_match_serde` — nothing else compares the two, and a rename on one side alone lets Python send a value the graph cannot parse |
+| A graph policy's wire spelling (`on_error`, `on_null_param`) | Its `NAMED` table, read by `ops::param::literal_field` (no serde derive on the enum) | `graph_policies_parse_through_their_named_tables`; there is no second spelling to compare |
 | Source/sink formats, and which parameters each reads | One `#[derive(Op)]` struct per format in `polars-cv/src/formats/` (`formats!` registry → `tests/golden/io_catalog.json` → generated `SourceFormat`/`SinkFormat`); the builder checks what the caller passed over `io_check` | Deserialization: an unknown format or field is refused, and a field the format does not read names where it applies (`deny_unknown_fields` on every format struct); `io_catalog_matches_the_committed_file` and `test_the_committed_catalog_is_the_built_one`; `test_param_applicability.py` sweeps parameter × format grids from the catalogue and checks the `quality` claim against the encoders |
 | `LazyPipelineExpr`'s method surface | generated from `Pipeline` at import | `test_lazy_pipeline_method_parity`, `test_lazy_stub_is_current` |
 | The graph wire format's node fields | `GraphNode` with `#[serde(deny_unknown_fields)]` | Deserialization error — a stale or misspelled key fails the query |
@@ -279,15 +279,10 @@ cannot refuse an unknown key — is gone: every op is a closed struct (its
 `#[derive(Op)]` refuses to compile without `deny_unknown_fields`), and the
 untyped legacy spec was deleted in typed-op P6.
 
-`BinaryOp` used to be a second exception — its name table sat in the plugin
-crate, so it needed a hand-written arm in `enum_variants` and a by-name
-exemption from the parity test. The table moved next to the enum in
-view-buffer, and the exception went with it. An enum that genuinely belongs to
-the plugin now declares itself with the same exported `named_variants!` and
-lands in `PLUGIN_REGISTRY`, which the FFI chains onto the engine's. **Do not
-add an arm to `enum_variants`**: registering is what surfaces an enum to Python
-*and* what makes the parity test demand a mirror for it, and an arm gets you
-the first without the second.
+An enum that belongs to the plugin rather than the engine declares itself with
+the same exported `named_variants!` and lands in `PLUGIN_REGISTRY`, which the
+enum catalogue chains onto the engine's `REGISTRY`. Registering is what
+generates its Python class; there is no FFI arm or Python mirror to add.
 
 ## The Single-Authority Refactor: What Was Done, What Is Left
 

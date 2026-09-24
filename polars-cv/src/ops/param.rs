@@ -169,6 +169,13 @@ impl<'de, T: WireScalar> Deserialize<'de> for Literal<T> {
     }
 }
 
+/// `#[serde(deserialize_with)]` for a plain field read as a [`Literal`]: the
+/// graph's policies, which have no op to hang a `Literal<T>` on but must parse
+/// through the same `NAMED` table rather than a serde `rename_all` beside it.
+pub fn literal_field<'de, D: Deserializer<'de>, T: WireScalar>(d: D) -> Result<T, D::Error> {
+    Literal::<T>::deserialize(d).map(|l| l.0)
+}
+
 impl Serialize for ColumnRef {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         Param::<i64>::Slot(self.0).serialize(s)

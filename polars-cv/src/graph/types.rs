@@ -105,8 +105,7 @@ impl RowResult {
 /// Applies to `Result`-level errors while producing a row (source decode,
 /// op resolution/execution, output encode), including engine panics, which the
 /// executor catches per row and treats as that row's error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RowErrorPolicy {
     /// Propagate the first error and fail the whole expression (default).
     #[default]
@@ -118,12 +117,6 @@ pub enum RowErrorPolicy {
     NullWithMessage,
 }
 
-// These names must match what `#[serde(rename_all = "snake_case")]` above
-// produces, because serde is what parses the wire value while this table is
-// what Python is told to send. They are checked against each other by
-// `row_error_policy_names_match_serde` below — the deserializer stays the one
-// that reads the graph JSON, and this becomes the one that publishes the
-// vocabulary.
 view_buffer::naming::named_variants!(RowErrorPolicy: "What a failing row does to a graph query.\n\nApplies to errors raised while producing a row — source decode, op\nexecution, output encode:\n- RAISE: propagate the first error, failing the whole expression.\n- NULL: a failing row yields null; other rows proceed.\n- NULL_WITH_MESSAGE: as NULL, plus an `_error` field." {
     "raise" => Raise,
     "null" => Null,
@@ -132,22 +125,34 @@ view_buffer::naming::named_variants!(RowErrorPolicy: "What a failing row does to
 
 #[cfg(test)]
 mod row_error_policy_tests {
-    use super::RowErrorPolicy;
+    use super::UnifiedGraph;
 
-    /// Every `NAMED` spelling must parse through serde to the variant it names.
-    ///
-    /// Two mechanisms describe one vocabulary here: serde's `rename_all` reads
-    /// the wire, and `NAMED` tells Python what to write. A rename on either
-    /// side alone would leave Python confidently sending a value the graph
-    /// cannot parse, and neither `deny_unknown_fields` nor the parity test
-    /// would notice — the parity test compares Python to `NAMED`, not `NAMED`
-    /// to serde.
+    fn graph_with(field: &str, value: &str) -> String {
+        UnifiedGraph::from_json(&format!(
+            r#"{{"nodes": {{}}, "outputs": {{}}, "{field}": "{value}"}}"#
+        ))
+        .map(|_| String::new())
+        .unwrap_or_else(|e| e.to_string())
+    }
+
+    /// The graph's policies parse through their `NAMED` tables, the same
+    /// spellings the generated Python enums send: one vocabulary, no serde
+    /// `rename_all` beside it to keep in step.
     #[test]
-    fn row_error_policy_names_match_serde() {
-        for (name, expected) in RowErrorPolicy::NAMED {
-            let parsed: RowErrorPolicy = serde_json::from_str(&format!("\"{name}\""))
-                .unwrap_or_else(|e| panic!("serde rejects the NAMED spelling {name:?}: {e}"));
-            assert_eq!(parsed, *expected, "{name} parses to the wrong variant");
+    fn graph_policies_parse_through_their_named_tables() {
+        for (field, enum_name, good, bad) in [
+            (
+                "on_error",
+                "RowErrorPolicy",
+                "null_with_message",
+                "NullWithMessage",
+            ),
+            ("on_null_param", "NullParamPolicy", "null", "Null"),
+        ] {
+            assert_eq!(graph_with(field, good), "", "{field}={good}");
+            let err = graph_with(field, bad);
+            let named = format!("unknown {enum_name} \"{bad}\", expected one of");
+            assert!(err.contains(&named), "{field}={bad}: {err}");
         }
     }
 }
@@ -170,13 +175,13 @@ pub struct UnifiedGraph {
     #[serde(default)]
     pub version: u32,
     /// Per-row error policy for the whole graph.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::ops::param::literal_field")]
     pub on_error: RowErrorPolicy,
     /// What a null in a per-row expression parameter means for the affected
     /// rows. Independent of [`on_error`](Self::on_error): under
     /// [`NullParamPolicy::Null`] a null parameter is not an error at all, so it
     /// yields a null result without weakening error reporting for anything else.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::ops::param::literal_field")]
     pub on_null_param: NullParamPolicy,
     /// Which engine-tier (Tier-2) optimizations to apply when executing buffer-op
     /// chains. Absent (older specs) or partially specified means all enabled, via

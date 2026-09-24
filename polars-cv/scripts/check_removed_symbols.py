@@ -176,6 +176,18 @@ REMOVED: tuple[Removed, ...] = (
     Removed("_encode_literal", "P6: ParamValue.to_wire"),
     Removed("_UNIFORM_PARITY_ENUMS", "P6: the Python enums are generated"),
     Removed("test_every_rust_enum_is_parity_checked", "P6: generated enums"),
+    Removed("enum_variants", "P6: tests read the enum_catalog FFI"),
+    Removed("enum_names", "P6: tests read the enum_catalog FFI"),
+    Removed("registered_variants", "P6: only the enum catalogue reads REGISTRY"),
+    Removed("registered_names", "P6: only the enum catalogue reads REGISTRY"),
+    Removed(
+        "row_error_policy_names_match_serde",
+        "P6: the graph policies parse through NAMED (literal_field)",
+    ),
+    Removed(
+        "null_param_policy_names_match_serde",
+        "P6: the graph policies parse through NAMED (literal_field)",
+    ),
 )
 
 

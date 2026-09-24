@@ -8,7 +8,6 @@
 //! means.
 
 use polars::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 
 /// What a **null** in a per-row expression parameter column means.
@@ -24,8 +23,7 @@ use std::cell::Cell;
 ///
 /// There is deliberately no "fallback default" variant: `pl.col("w").fill_null(1.0)`
 /// already expresses that in Polars itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NullParamPolicy {
     /// A null parameter fails the expression (the default).
     #[default]
@@ -35,8 +33,6 @@ pub enum NullParamPolicy {
     Null,
 }
 
-// As with `RowErrorPolicy`, these must agree with the `rename_all` above;
-// `null_param_policy_names_match_serde` checks that they do.
 view_buffer::naming::named_variants!(NullParamPolicy: "What a null in a per-row expression parameter means.\n\nDeliberately separate from :class:`RowErrorPolicy`: under ``NULL`` a null\nparameter is not an error, so it records no ``_error`` message and does not\nweaken reporting for genuine decode/encode/operation failures.\n- RAISE: a null parameter fails the expression.\n- NULL: the affected node produces no output for that row." {
     "raise" => Raise,
     "null" => Null,
@@ -380,31 +376,6 @@ impl<'a> ParamCtx<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every `NAMED` spelling must parse through serde to the variant it names.
-    ///
-    /// The twin of `row_error_policy_names_match_serde` in `graph::types`, for
-    /// the same reason: serde's `rename_all` reads the wire while `NAMED` tells
-    /// Python what to write, and nothing else compares the two. A rename on one
-    /// side would leave Python sending a value the graph cannot parse.
-    ///
-    /// Only this direction is checked. The reverse — that serde accepts
-    /// *nothing* `NAMED` does not publish — would need to enumerate serde's
-    /// accepted spellings, which it does not expose; a `#[serde(alias)]`
-    /// added to a variant would therefore pass unpublished to Python. Say so
-    /// rather than claim a round trip this does not make.
-    ///
-    /// A second copy of a *test* over a different type, not a second copy of a
-    /// fact — the registry cannot express "deserialize this" generically,
-    /// because it stores name functions rather than the types themselves.
-    #[test]
-    fn null_param_policy_names_match_serde() {
-        for (name, expected) in NullParamPolicy::NAMED {
-            let parsed: NullParamPolicy = serde_json::from_str(&format!("\"{name}\""))
-                .unwrap_or_else(|e| panic!("serde rejects the NAMED spelling {name:?}: {e}"));
-            assert_eq!(parsed, *expected, "{name} parses to the wrong variant");
-        }
-    }
 
     #[test]
     fn test_slot_typed_read() {
