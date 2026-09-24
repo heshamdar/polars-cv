@@ -3,7 +3,7 @@
 A parameter that the chosen format never reads is rejected — not warned about,
 not dropped. Each source and sink format is a typed Rust struct carrying
 exactly the fields its decode or encode reads (`src/formats/`), and the builder
-validates what the caller passed against it over `io_check`. These tests
+validates what the caller passed against it (`plan_source`, `sink_check`). These tests
 exist because the question used to be answered per parameter: of the source's
 seven scoped keywords one raised, one warned and five were silently dropped,
 while `.sink()` — an open `**kwargs` — accepted literally any keyword, spread it

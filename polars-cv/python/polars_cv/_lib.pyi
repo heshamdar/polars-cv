@@ -57,5 +57,9 @@ def io_catalog() -> str:
 def enum_catalog() -> str:
     """Return the registered-enum catalogue as JSON (see ``tests/golden/enum_catalog.json``)."""
 
-def io_check(kind: str, spec_json: str) -> None:
-    """Validate one serialized source or sink against its typed format; raise ``ValueError``."""
+def sink_check(spec_json: str) -> None:
+    """Validate one serialized sink against its typed format; raise ``ValueError``."""
+
+def plan_source(source_json: str) -> dict[str, Any]:
+    """Validate a serialized source and return its planned state:
+    ``{"domain", "dtype", "ndim", "dims"}``."""

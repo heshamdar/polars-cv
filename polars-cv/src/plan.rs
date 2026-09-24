@@ -159,6 +159,83 @@ fn single_input_dtype(step: &GraphStep, dtype: &str) -> Result<String, String> {
     }
 }
 
+impl State {
+    /// This state with `step` applied.
+    fn after(mut self, step: Step) -> State {
+        self.domain = step.domain;
+        self.dtype = step.dtype;
+        self.ndim = step.ndim;
+        for (dim, replaced) in self.dims.iter_mut().zip(step.dims) {
+            if let Some(size) = replaced {
+                *dim = size;
+            }
+        }
+        self
+    }
+}
+
+/// The state a source hands the first op.
+///
+/// Exhaustive over the formats: what each decodes to is a fact about the
+/// format. A contour source decodes by rasterizing, so its state is the
+/// `rasterize` op's over the contour domain — the source and the op cannot
+/// publish different masks.
+pub(crate) fn source_state(source: &crate::formats::source::Source) -> Result<State, String> {
+    use crate::formats::source::Source;
+
+    let buffer = |dtype: Option<view_buffer::DType>, ndim: Option<usize>| State {
+        domain: "buffer".to_string(),
+        dtype: dtype.map_or("auto", |d| d.short_name()).to_string(),
+        ndim,
+        dims: [None; 3],
+    };
+    let dtype = source.dtype();
+    Ok(match source {
+        // Raw bytes decode to a flat 1-D buffer of the declared dtype.
+        Source::Raw(_) => buffer(dtype, Some(1)),
+        // Decoded images are always `[H, W, C]`; the dtype is the caller's
+        // assertion or unknown until decode (PNG u8, 16-bit PNG u16, TIFF ...).
+        Source::ImageBytes(_) | Source::FilePath(_) => buffer(dtype, Some(3)),
+        // Rank follows the column (nesting depth, blob header, or the path the
+        // column's dtype routes to), known only with the input.
+        Source::Auto(_) | Source::Blob(_) | Source::List(_) | Source::Array(_) => {
+            buffer(dtype, None)
+        }
+        Source::Contour(s) => {
+            let rasterize = crate::ops::TypedOp::Rasterize(crate::ops::geometry::Rasterize {
+                size: s.size.clone(),
+                fill_value: s.fill_value,
+                background: s.background,
+            });
+            let op_json = serde_json::to_string(&rasterize).map_err(|e| e.to_string())?;
+            let contours = State {
+                domain: "contour".to_string(),
+                dtype: "auto".to_string(),
+                ndim: None,
+                dims: [None; 3],
+            };
+            let planned = step(&op_json, &contours, None)?;
+            contours.after(planned)
+        }
+    })
+}
+
+/// Python entry point for [`source_state`]: validate a serialized source
+/// against its typed format, and return the state it starts a pipeline in,
+/// `{"domain", "dtype", "ndim", "dims"}` with `dims` all three hints.
+#[pyfunction]
+pub(crate) fn plan_source<'py>(py: Python<'py>, source_json: &str) -> PyResult<Bound<'py, PyDict>> {
+    let source: crate::formats::source::Source =
+        serde_json::from_str(source_json).map_err(|e| py_value_error(e.to_string()))?;
+    let state = source_state(&source).map_err(py_value_error)?;
+    let result = PyDict::new(py);
+    result.set_item("domain", state.domain)?;
+    result.set_item("dtype", state.dtype)?;
+    result.set_item("ndim", state.ndim)?;
+    result.set_item("dims", state.dims)?;
+    Ok(result)
+}
+
 /// The input shape to hand `infer_shape`, or `None` to not ask.
 ///
 /// Unknown input rank normally means "do not ask" — `infer_shape` indexes its
@@ -317,6 +394,45 @@ mod tests {
         .unwrap();
         assert_eq!(out.domain, "buffer");
         assert_eq!(out.dims, [Some(Some(8)), Some(Some(6)), Some(Some(1))]);
+    }
+
+    #[test]
+    fn each_source_format_plans_its_own_state() {
+        let plan = |v: serde_json::Value| {
+            let source = serde_json::from_value(v).unwrap();
+            let s = source_state(&source).unwrap();
+            (s.domain, s.dtype, s.ndim, s.dims)
+        };
+        let buffer = |dtype: &str, ndim| ("buffer".to_string(), dtype.to_string(), ndim, [None; 3]);
+        assert_eq!(
+            plan(json!({"format": "raw", "dtype": "u16"})),
+            buffer("u16", Some(1))
+        );
+        assert_eq!(
+            plan(json!({"format": "image_bytes"})),
+            buffer("auto", Some(3))
+        );
+        assert_eq!(
+            plan(json!({"format": "file_path", "dtype": "f32"})),
+            buffer("f32", Some(3))
+        );
+        assert_eq!(plan(json!({"format": "auto"})), buffer("auto", None));
+        assert_eq!(
+            plan(json!({"format": "list", "dtype": "f32"})),
+            buffer("f32", None)
+        );
+        let contour = |size: serde_json::Value| json!({"format": "contour", "size": size, "fill_value": 255, "background": 0});
+        assert_eq!(
+            plan(contour(json!([10, 12]))),
+            (
+                "buffer".to_string(),
+                "u8".to_string(),
+                Some(3),
+                [Some(10), Some(12), Some(1)]
+            )
+        );
+        // A canvas from another node is not a fact about this source.
+        assert_eq!(plan(contour(json!("n0"))).3, [None, None, Some(1)]);
     }
 
     /// `infer_shape` (the probing shape authority `step` reads): literal
