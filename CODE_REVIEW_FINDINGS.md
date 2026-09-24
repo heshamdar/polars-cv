@@ -991,11 +991,15 @@ matrix; the entries here track status only.
   builder validates through the same deserializer (`io_check`), and both
   applicability tables, their checker and hint table are deleted.
 
-### CR-48 — Geometry accessors carry a second per-row parameter mechanism · `Open` · Low (design)
+### CR-48 — Geometry accessors carry a second per-row parameter mechanism · `Fixed` · Low (design)
 
 - **Location:** `geom_params.rs` (`InputSlots` by name), `contour.rs`/`point.rs`
   kwargs, `_namespace.py` `_ArgBinder`.
 - **Fix:** the same `Param<T>` + positional slots. Plan phase P5.
+- **Resolution (P5):** `ContourKwargs`/`PointKwargs` are `#[derive(Op)]`
+  structs of `Param<T>` and `ColumnRef` fields; `_ArgBinder` writes
+  `{"$slot": n}` into each expression kwarg, and `GeomParams` checks the
+  derived slots against the inputs. The name map and its readers are deleted.
 
 ### CR-49 — Plan-time shapes are inferred by probing four magic values · `Open` · Low (design)
 

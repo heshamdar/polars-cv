@@ -327,6 +327,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   on `LazyPipelineExpr`) and `ColumnRef` (`label_reduce`'s contour column).
   `ParamCtx` carries the plan-time probe value, which a node-sized `rasterize`
   reads so its canvas plans as unknown.
+- **Typed-op migration, P5 (geometry namespaces).** The `.contour`/`.point`/
+  `.bbox` accessors' kwargs are typed structs (`Param<T>` parameters,
+  `ColumnRef` operands, `#[derive(Op)]`); each expression kwarg carries its own
+  `{"$slot": n}`, so the `input_slots` name→index map, `InputSlots`,
+  `parse_named`/`require_named` and the name-keyed `GeomParams` readers are
+  deleted. A hand-written call still passing `input_slots` is refused. A
+  per-row enum value outside its table now reads `unknown Winding "CW",
+  expected one of [...]` (was `Unsupported winding direction 'CW'`).
 - **Typed-op migration, P4 (typed sources and sinks).** New module
   `polars-cv/src/formats/`: a `formats!` registry of `#[derive(Op)]` structs,
   one per source/sink format, with its own catalogue
