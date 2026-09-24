@@ -161,16 +161,6 @@ impl ParamValue {
         Ok(value as usize)
     }
 
-    /// Resolve this parameter to a concrete f64 value.
-    pub fn resolve_f64(&self, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<f64> {
-        match self {
-            ParamValue::Literal { value } => value.as_f64().ok_or_else(
-                || polars_err!(ComputeError: "Expected float literal, got {:?}", value),
-            ),
-            _ => self.slot_col(ctx)?.get_f64(row_idx, ctx),
-        }
-    }
-
     /// Resolve this parameter to a literal string.
     ///
     /// Deliberately literal-only: this is the accessor for **structural**
@@ -672,20 +662,6 @@ pub mod get {
         polars_err!(ComputeError: "parameter '{}': {}", name, e)
     }
 
-    /// Optional f64 where absence is meaningful (e.g. `min_area`: absent
-    /// means "no filter"). Present-but-invalid still errors.
-    pub fn maybe_f64(
-        params: &Params<'_>,
-        name: &str,
-        row_idx: usize,
-        ctx: &ParamCtx,
-    ) -> PolarsResult<Option<f64>> {
-        params
-            .get(name)
-            .map(|p| p.resolve_f64(row_idx, ctx).map_err(|e| named(name, e)))
-            .transpose()
-    }
-
     /// Optional u8 with a default for absence; range-checked so 300 errors
     /// instead of silently truncating.
     pub fn opt_u8(
@@ -850,14 +826,6 @@ mod tests {
     }
 
     #[test]
-    fn test_literal_f64() {
-        let param = ParamValue::Literal {
-            value: serde_json::json!(1.5),
-        };
-        assert_eq!(param.resolve_f64(0, &ParamCtx::empty()).unwrap(), 1.5);
-    }
-
-    #[test]
     fn test_literal_string() {
         let param = ParamValue::Literal {
             value: serde_json::json!("hello"),
@@ -947,7 +915,7 @@ mod tests {
             ctx.clear_null();
             let result: PolarsResult<()> = match idx {
                 0 => param.resolve_i64(0, &ctx).map(|_| ()),
-                1 => param.resolve_f64(0, &ctx).map(|_| ()),
+                1 => ctx.col(idx).and_then(|c| c.get_f64(0, &ctx)).map(|_| ()),
                 2 => param.resolve_str(0, &ctx).map(|_| ()),
                 _ => param.resolve_bool(0, &ctx).map(|_| ()),
             };

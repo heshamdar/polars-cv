@@ -645,19 +645,6 @@ mod tests {
         // Representative params for every geometry-producing op.
         fn probe_params(op: &str) -> Option<Vec<(&'static str, serde_json::Value)>> {
             Some(match op {
-                "contour_area" => vec![],
-                "contour_perimeter" => vec![],
-                "contour_centroid" => vec![],
-                "contour_bounding_box" => vec![],
-                "contour_convex_hull" => vec![],
-                "contour_translate" => vec![("dx", json!(1.0)), ("dy", json!(2.0))],
-                "contour_scale" => vec![
-                    ("sx", json!(2.0)),
-                    ("sy", json!(2.0)),
-                    ("origin", json!("centroid")),
-                ],
-                "contour_simplify" => vec![("tolerance", json!(0.5))],
-                "extract_contours" => vec![],
                 "rasterize" => vec![("width", json!(8)), ("height", json!(8))],
                 _ => return None,
             })

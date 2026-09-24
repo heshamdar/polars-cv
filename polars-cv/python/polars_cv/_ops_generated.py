@@ -31,12 +31,21 @@ TYPED_OPS: frozenset[str] = frozenset(
         "clamp",
         "clamp_max",
         "clamp_min",
+        "contour_area",
+        "contour_bounding_box",
+        "contour_centroid",
+        "contour_convex_hull",
+        "contour_perimeter",
+        "contour_scale",
+        "contour_simplify",
+        "contour_translate",
         "convolve2d",
         "crop",
         "cvt_color",
         "dilate",
         "equalize_histogram",
         "erode",
+        "extract_contours",
         "flip",
         "floor",
         "grayscale",
@@ -125,6 +134,28 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     },
     "clamp_max": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "clamp_min": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "contour_area": {"signed": {"kind": "scalar", "per_row": True, "py": "bool"}},
+    "contour_bounding_box": {},
+    "contour_centroid": {},
+    "contour_convex_hull": {},
+    "contour_perimeter": {},
+    "contour_scale": {
+        "sx": {"kind": "scalar", "per_row": True, "py": "float"},
+        "sy": {"kind": "scalar", "per_row": True, "py": "float"},
+        "origin": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "ScaleOrigin",
+            "variants": ["centroid", "bbox_center", "origin"],
+        },
+    },
+    "contour_simplify": {
+        "tolerance": {"kind": "scalar", "per_row": True, "py": "float"}
+    },
+    "contour_translate": {
+        "dx": {"kind": "scalar", "per_row": True, "py": "float"},
+        "dy": {"kind": "scalar", "per_row": True, "py": "float"},
+    },
     "convolve2d": {
         "kernel": {
             "kind": "list",
@@ -173,6 +204,24 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "erode": {
         "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
         "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
+    },
+    "extract_contours": {
+        "mode": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "ExtractMode",
+            "variants": ["external", "tree", "all"],
+        },
+        "method": {
+            "kind": "scalar",
+            "per_row": True,
+            "py": "ApproxMethod",
+            "variants": ["none", "simple", "approx"],
+        },
+        "min_area": {
+            "kind": "optional",
+            "inner": {"kind": "scalar", "per_row": True, "py": "float"},
+        },
     },
     "flip": {
         "axes": {
@@ -578,6 +627,90 @@ class _OpsMixin:
         """
         return self._append_typed("clamp_min", {"value": value})
 
+    def area(self, *, signed: BoolOrExpr = False) -> Pipeline:
+        """Compute the area of the contour using the Shoelace formula.
+
+        Domain transition: contour → scalar
+
+        Args:
+            signed: If True, return signed area (negative for CW winding).
+        """
+        return self._append_typed("contour_area", {"signed": signed})
+
+    def bounding_box(self) -> Pipeline:
+        """Compute the axis-aligned bounding box of the contour.
+
+        Domain transition: contour → vector (returns [x, y, width, height])
+        """
+        return self._append_typed("contour_bounding_box", {})
+
+    def centroid(self) -> Pipeline:
+        """Compute the centroid (center of mass) of the contour.
+
+        Domain transition: contour → vector (returns [x, y])
+        """
+        return self._append_typed("contour_centroid", {})
+
+    def convex_hull(self) -> Pipeline:
+        """Compute the convex hull of the contour.
+
+        Domain: contour → contour
+        """
+        return self._append_typed("contour_convex_hull", {})
+
+    def perimeter(self) -> Pipeline:
+        """Compute the perimeter (arc length) of the contour.
+
+        Domain transition: contour → scalar
+        """
+        return self._append_typed("contour_perimeter", {})
+
+    def _scale_contour(
+        self, *, sx: FloatOrExpr, sy: FloatOrExpr, origin: str | pl.Expr = "centroid"
+    ) -> Pipeline:
+        """Scale the contour about *origin*.
+
+        Domain: contour → contour
+
+        Args:
+            sx: X scale factor.
+            sy: Y scale factor.
+            origin: Point to scale about — ``"centroid"`` (the default),
+                ``"bbox_center"`` or ``"origin"``. Accepts an expression for a per-row
+                choice: which point the scale is measured from changes no output shape,
+                rank or dtype, so it meets the eligibility rule for a per-row parameter.
+
+        Note:
+            The default is ``"centroid"``, which is what this method has always
+            done — it previously hardcoded it with no way to choose. The
+            ``.contour.scale`` accessor defaults to ``"origin"`` instead; pass
+            *origin* explicitly if you need the two to agree.
+        """
+        return self._append_typed(
+            "contour_scale", {"sx": sx, "sy": sy, "origin": origin}
+        )
+
+    def simplify(self, *, tolerance: FloatOrExpr) -> Pipeline:
+        """Simplify the contour using the Douglas-Peucker algorithm.
+
+        Domain: contour → contour
+
+        Args:
+            tolerance: Maximum distance from the original contour.
+        """
+        return self._append_typed("contour_simplify", {"tolerance": tolerance})
+
+    def translate(self, *, dx: FloatOrExpr, dy: FloatOrExpr) -> Pipeline:
+        """Translate the contour by an offset.
+
+        Domain: contour → contour
+
+        Args:
+            dx: X offset (horizontal translation).
+            dy: Y offset (vertical translation).
+        """
+        return self._append_typed("contour_translate", {"dx": dx, "dy": dy})
+
     def convolve2d(
         self,
         kernel: Sequence[FloatOrExpr],
@@ -691,6 +824,38 @@ class _OpsMixin:
            >>> mask = Pipeline().source("image_bytes").grayscale().threshold(128).erode(ksize=3)
         """
         return self._append_typed("erode", {"ksize": ksize, "iterations": iterations})
+
+    def extract_contours(
+        self,
+        *,
+        mode: str | pl.Expr = "external",
+        method: str | pl.Expr = "simple",
+        min_area: FloatOrExpr | None = None,
+    ) -> Pipeline:
+        """Extract contours from binary mask.
+
+        The traced outline passes through the **centres** of the boundary pixels,
+        so it sits half a pixel inside the region it describes: a blob filling
+        ``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the
+        result therefore erodes it by a pixel per round trip.
+
+        Borders come back as a flat list with no hierarchy. ``mode="all"`` yields
+        the exterior plus one border for each enclosed background region — holes
+        that touch or nest enclose one region between them — and reassembling a
+        holed contour from those is the caller's job. ``mode="external"`` keeps
+        only the outermost, discarding hole borders.
+
+        Domain transition: buffer → contour
+
+        Args:
+            mode: "external" (outer only), "tree" (full hierarchy), "all".
+            method: "simple" (remove redundant), "none" (all points), "approx".
+            min_area: Filter small contours. Accepts a Polars expression for per-row
+                dynamic thresholds.
+        """
+        return self._append_typed(
+            "extract_contours", {"mode": mode, "method": method, "min_area": min_area}
+        )
 
     def flip(self, axes: Sequence[int]) -> Pipeline:
         """Flip along specified axes.

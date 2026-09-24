@@ -1356,7 +1356,11 @@ def _op_json(op: str, **params: object) -> str:
         # domain transitions.
         (_op_json("extract_shape"), ("buffer", "u8", 3), ("vector", "f64", 1)),
         # extract_contours: contour coordinates are f64 by the geometry contract.
-        (_op_json("extract_contours"), ("buffer", "u8", 3), ("contour", "f64", None)),
+        (
+            _op_json("extract_contours", mode="external", method="simple"),
+            ("buffer", "u8", 3),
+            ("contour", "f64", None),
+        ),
         (
             _op_json("rasterize", width=8, height=8),
             ("contour", "u8", None),

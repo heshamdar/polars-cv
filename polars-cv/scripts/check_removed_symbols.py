@@ -122,6 +122,10 @@ REMOVED: tuple[Removed, ...] = (
     Removed("as_param_slice", "P3: typed list fields"),
     Removed("_param_list", "P3: _encode_field encodes typed list fields"),
     Removed("is_wire_param", "P3: no nested param lists to hoist"),
+    # Typed-op P3 (geometry family): `extract_contours(min_area)` is an
+    # `Option<Param<f64>>`.
+    Removed("maybe_f64", "P3: Option<Param<f64>> min_area"),
+    Removed("resolve_f64", "P3: Param<f64> reads its column directly"),
 )
 
 

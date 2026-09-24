@@ -232,16 +232,7 @@ pub const LEGACY_OPS: &[&str] = &[
     "bitwise_xor",
     "blend",
     "channel_merge",
-    "contour_area",
-    "contour_bounding_box",
-    "contour_centroid",
-    "contour_convex_hull",
-    "contour_perimeter",
-    "contour_scale",
-    "contour_simplify",
-    "contour_translate",
     "divide",
-    "extract_contours",
     "extract_shape",
     "label_reduce",
     "maximum",
@@ -311,7 +302,6 @@ fn resolve_op_inner(
     ctx: &ParamCtx,
 ) -> PolarsResult<GraphStep> {
     match op_name {
-        // Affine warp operation
         // Geometry operations
         "rasterize" => {
             // `rasterize(shape=<node>)` names another graph node to take the
@@ -329,78 +319,6 @@ fn resolve_op_inner(
                 background,
             }))
         }
-        "extract_contours" => {
-            use view_buffer::geometry::ops::{ApproxMethod, ExtractMode};
-
-            let mode = get::opt_enum(
-                params,
-                "mode",
-                ExtractMode::NAMED,
-                &[],
-                ExtractMode::External,
-                row_idx,
-                ctx,
-            )?;
-            let method = get::opt_enum(
-                params,
-                "method",
-                ApproxMethod::NAMED,
-                &[],
-                ApproxMethod::Simple,
-                row_idx,
-                ctx,
-            )?;
-            let min_area = get::maybe_f64(params, "min_area", row_idx, ctx)?;
-
-            Ok(GraphStep::Geometry(GeometryOp::ExtractContours {
-                mode,
-                method,
-                min_area,
-            }))
-        }
-
-        // Geometry measure operations
-        "contour_area" => {
-            let signed = get::opt_bool_dyn(params, "signed", false, row_idx, ctx)?;
-            Ok(GraphStep::Geometry(GeometryOp::Area { signed }))
-        }
-        "contour_perimeter" => Ok(GraphStep::Geometry(GeometryOp::Perimeter)),
-        "contour_centroid" => Ok(GraphStep::Geometry(GeometryOp::Centroid)),
-        "contour_bounding_box" => Ok(GraphStep::Geometry(GeometryOp::BoundingBox)),
-        "contour_convex_hull" => Ok(GraphStep::Geometry(GeometryOp::ConvexHull)),
-
-        // Geometry transforms
-        "contour_translate" => {
-            let dx = get_param(params, "dx")?.resolve_f64(row_idx, ctx)?;
-            let dy = get_param(params, "dy")?.resolve_f64(row_idx, ctx)?;
-            Ok(GraphStep::Geometry(GeometryOp::Translate { dx, dy }))
-        }
-        "contour_scale" => {
-            let sx = get_param(params, "sx")?.resolve_f64(row_idx, ctx)?;
-            let sy = get_param(params, "sy")?.resolve_f64(row_idx, ctx)?;
-            // Read from `ScaleOrigin::NAMED`, the same authority the
-            // `.contour.scale` accessor parses against. This arm used to
-            // hardcode `Centroid` with no parameter at all, so the two
-            // same-named surfaces could not be made to agree: the namespace
-            // defaulted to `Origin` and this one was permanently centroid.
-            // The default stays `Centroid` — that is what this op has always
-            // done, and changing it would silently move existing output.
-            let origin = get::req_enum(
-                params,
-                "origin",
-                view_buffer::geometry::ops::ScaleOrigin::NAMED,
-                &[],
-                view_buffer::geometry::ops::ScaleOrigin::Centroid,
-                row_idx,
-                ctx,
-            )?;
-            Ok(GraphStep::Geometry(GeometryOp::Scale { sx, sy, origin }))
-        }
-        "contour_simplify" => {
-            let tolerance = get_param(params, "tolerance")?.resolve_f64(row_idx, ctx)?;
-            Ok(GraphStep::Geometry(GeometryOp::Simplify { tolerance }))
-        }
-
         // Binary operations (two-buffer): one arm for the whole family,
         // dispatched through the BINARY_OPS name table.
         name if naming::lookup(BINARY_OPS, name).is_some() => {
@@ -551,18 +469,6 @@ mod strict_param_tests {
     }
 
     #[test]
-    fn extract_contours_unknown_mode_errors() {
-        let err = resolve_err(&op_with("extract_contours", &[("mode", json!("outer"))]));
-        assert!(err.contains("mode"), "{err}");
-    }
-
-    #[test]
-    fn extract_contours_unknown_method_errors() {
-        let err = resolve_err(&op_with("extract_contours", &[("method", json!("fancy"))]));
-        assert!(err.contains("method"), "{err}");
-    }
-
-    #[test]
     fn rasterize_invalid_fill_value_errors() {
         let base = [("width", json!(8)), ("height", json!(8))];
         let mut params = base.to_vec();
@@ -589,10 +495,8 @@ mod strict_param_tests {
         // Booleans are structural literals: a string/number must error, not
         // silently read as `false`.
         #[allow(clippy::type_complexity)]
-        let cases: &[(&str, &str, &[(&str, serde_json::Value)])] = &[
-            ("contour_area", "signed", &[]),
-            ("apply_mask", "invert", &[("other_node", json!("m"))]),
-        ];
+        let cases: &[(&str, &str, &[(&str, serde_json::Value)])] =
+            &[("apply_mask", "invert", &[("other_node", json!("m"))])];
         for (op, bool_param, base) in cases {
             let mut params = base.to_vec();
             params.push((bool_param, json!("yes")));
@@ -829,7 +733,7 @@ mod unread_param_tests {
     /// This keeps the legacy tracker honest until its last op migrates.
     #[test]
     fn a_parameter_no_arm_reads_is_rejected() {
-        let cases: &[UnreadCase<'_>] = &[("contour_perimeter", &[], "sigma")];
+        let cases: &[UnreadCase<'_>] = &[("extract_shape", &[], "sigma")];
         for (op, base, stray) in cases {
             let mut params = base.to_vec();
             params.push((stray, json!("u8")));

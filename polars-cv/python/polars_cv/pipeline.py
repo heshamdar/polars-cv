@@ -18,12 +18,9 @@ from polars_cv._ops_generated import OP_FIELDS, _OpsMixin
 from polars_cv._types import (
     HINT_DIMS,
     SOURCE_PARAM_APPLIES,
-    ApproxMethod,
-    BoolOrExpr,
     CloudOptions,
     Domain,
     DType,
-    ExtractMode,
     FetchErrorPolicy,
     FloatOrExpr,
     HashAlgorithm,
@@ -2531,47 +2528,6 @@ class Pipeline(_OpsMixin):
         # channel rule. None of it is re-derived here.
         return self._append_op("rasterize", _params)
 
-    def extract_contours(
-        self,
-        *,
-        mode: str | pl.Expr = "external",
-        method: str | pl.Expr = "simple",
-        min_area: FloatOrExpr | None = None,
-    ) -> "Pipeline":
-        """
-        Extract contours from binary mask.
-
-        Args:
-            mode: "external" (outer only), "tree" (full hierarchy), "all".
-            method: "simple" (remove redundant), "none" (all points), "approx".
-            min_area: Filter small contours. Accepts a Polars expression for
-                per-row dynamic thresholds.
-
-        The traced outline passes through the **centres** of the boundary pixels,
-        so it sits half a pixel inside the region it describes: a blob filling
-        ``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the
-        result therefore erodes it by a pixel per round trip.
-
-        Borders come back as a flat list with no hierarchy. ``mode="all"`` yields
-        the exterior plus one border for each enclosed background region — holes
-        that touch or nest enclose one region between them — and reassembling a
-        holed contour from those is the caller's job. ``mode="external"`` keeps
-        only the outermost, discarding hole borders.
-
-        Domain transition: buffer → contour
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {
-                "mode": _enum_param(mode, ExtractMode, "mode", p._track_expr),
-                "method": _enum_param(method, ApproxMethod, "method", p._track_expr),
-            }
-            if min_area is not None:
-                params["min_area"] = p._track_expr(min_area)
-            return params
-
-        return self._append_op("extract_contours", _params)
-
     # --- Buffer Reduction Operations (buffer → scalar) ---
 
     def extract_shape(self) -> "Pipeline":
@@ -2629,95 +2585,6 @@ class Pipeline(_OpsMixin):
             },
         )
 
-    # --- Contour Measure Operations (contour → scalar/vector) ---
-
-    def area(self, *, signed: BoolOrExpr = False) -> "Pipeline":
-        """
-        Compute the area of the contour using the Shoelace formula.
-
-        Domain transition: contour → scalar
-
-        Args:
-            signed: If True, return signed area (negative for CW winding).
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not contour.
-        """
-        return self._append_op(
-            "contour_area", lambda p: {"signed": p._track_expr(signed)}
-        )
-
-    def perimeter(self) -> "Pipeline":
-        """
-        Compute the perimeter (arc length) of the contour.
-
-        Domain transition: contour → scalar
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not contour.
-        """
-        return self._append_op("contour_perimeter", lambda p: {})
-
-    def centroid(self) -> "Pipeline":
-        """
-        Compute the centroid (center of mass) of the contour.
-
-        Domain transition: contour → vector (returns [x, y])
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not contour.
-        """
-        return self._append_op("contour_centroid", lambda p: {})
-
-    def bounding_box(self) -> "Pipeline":
-        """
-        Compute the axis-aligned bounding box of the contour.
-
-        Domain transition: contour → vector (returns [x, y, width, height])
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not contour.
-        """
-        return self._append_op("contour_bounding_box", lambda p: {})
-
-    # --- Contour Transform Operations (contour → contour) ---
-
-    def translate(self, *, dx: FloatOrExpr, dy: FloatOrExpr) -> "Pipeline":
-        """
-        Translate the contour by an offset.
-
-        Domain: contour → contour
-
-        Args:
-            dx: X offset (horizontal translation).
-            dy: Y offset (vertical translation).
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not contour.
-        """
-        return self._append_op(
-            "contour_translate",
-            lambda p: {
-                "dx": p._track_expr(dx),
-                "dy": p._track_expr(dy),
-            },
-        )
-
     def scale_contour(
         self,
         *,
@@ -2739,61 +2606,15 @@ class Pipeline(_OpsMixin):
                 no output shape, rank or dtype, so it meets the eligibility
                 rule for a per-row parameter.
 
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not contour.
-
         Note:
             The default is ``"centroid"``, which is what this method has always
             done — it previously hardcoded it with no way to choose. The
             ``.contour.scale`` accessor defaults to ``"origin"`` instead; pass
             *origin* explicitly if you need the two to agree.
         """
-        return self._append_op(
-            "contour_scale",
-            lambda p: {
-                "sx": p._track_expr(sx),
-                "sy": p._track_expr(sy),
-                "origin": _enum_param(
-                    origin, ScaleOrigin, "scale_contour origin", p._track_expr
-                ),
-            },
-        )
-
-    def simplify(self, *, tolerance: FloatOrExpr) -> "Pipeline":
-        """
-        Simplify the contour using Douglas-Peucker algorithm.
-
-        Domain: contour → contour
-
-        Args:
-            tolerance: Maximum distance from original contour.
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not contour.
-        """
-        return self._append_op(
-            "contour_simplify", lambda p: {"tolerance": p._track_expr(tolerance)}
-        )
-
-    def convex_hull(self) -> "Pipeline":
-        """
-        Compute the convex hull of the contour.
-
-        Domain: contour → contour
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If current domain is not contour.
-        """
-        return self._append_op("contour_convex_hull", lambda p: {})
+        # The Rust definition validates every argument; this method only keeps
+        # the signature, whose default is the Python enum member.
+        return self._scale_contour(sx=sx, sy=sy, origin=origin)
 
     # --- Validation ---
 
