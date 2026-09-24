@@ -323,6 +323,14 @@ current instead.
    take the policy as a *required* argument, so a new caller cannot reach a
    path by omitting it.
 
+**In progress: the typed op protocol ([`TYPED_OPS_PLAN.md`](TYPED_OPS_PLAN.md),
+CR-45…CR-49).** It replaces the name + untyped-param-map protocol with one typed
+definition per op, a generated Python builder and a Rust planner. It is not the
+"table-driven `resolve_op`" dropped above: that kept the untyped map and moved the
+arms into a table; this removes the untyped map, so the registries, parity tests
+and read-tracker that guard it are deleted rather than re-tabulated. The plan file
+holds the phase status and the deletion matrix — keep it current.
+
 **Where deferred work is tracked.** Verified *defects* — a behaviour the code
 should have but does not — are pinned executably in
 `polars-cv/tests/test_known_gaps.py`, one `xfail(strict=True)` each, so a fix
