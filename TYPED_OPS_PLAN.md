@@ -15,17 +15,17 @@
 > | P2 — Catalogue foundation + spike | **done, one gate item over** — `#[derive(Op)]`/`typed_ops!`, `Param`/`Literal`, name-keyed dispatcher (`LEGACY_OPS` 81), `crop`/`resize`/`warp_affine`/`histogram` typed with generated builders, catalogue ↔ `.so` ↔ generated-module checks, mkdocs inherited members. Gate: corpus ✓, signatures ✓, `mkdocs --strict` ✓ (generated `Args:` render), release `.so` 32,192,392 B (+58 KB, +0.2%), release build 839 s cold (baseline 819 s). Plan build µs/append (release; P0 → P1 → P2): `mixed` 82.8 → 80.7 → **78.0**; `chain` 49.8 → 51.7 → **53.7**; `lazy_continuation` 83.5 → 86.6 → **90.7**. The two legacy-only scenarios are over baseline (~2 µs each from P1's slot table and P2's dispatcher map on the legacy path); both paths shrink in P3 and go in P6/P7 |
 > | P3 — Migrate every op | **done** — all 85 ops typed (P3.1 view, P3.2 compute, P3.3 image, P3.4 colour/filter/rotate/reductions/phash/channel, P3.5a geometry, P3.5b binary/mask/merge, P3.5c rasterize/label_reduce/extract_shape); `LEGACY_OPS` empty; name-keyed resolution deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `af41c23` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P4 — Typed sources and sinks | **done** — `src/formats/` (`formats!` registry, `io_catalog.json`, `io_check`); both applicability tables, `PARAM_HINTS`, `KNOWN_SOURCE_FORMATS`, `SourceSpec`/`SinkSpec` and the last untyped param readers deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `910afb2` (slow lane, `cargo deny`, `mkdocs --strict` included) |
-> | P5 — Geometry namespaces | pending |
+> | P5 — Geometry namespaces | **done** — `ContourKwargs`/`PointKwargs` are typed (`Param<T>`, `ColumnRef`, `#[derive(Op)]`); `input_slots`, `InputSlots`, `parse_named`/`require_named` deleted. Gate: corpus ✓, signatures ✓, full `scripts/verify.sh` PASS at `f3d7d94` (slow lane, `cargo deny`, `mkdocs --strict` included) |
 > | P6 — Delete the legacy protocol | pending |
 > | P7 — Planner into Rust | pending |
 > | P8 — API reshaping | pending |
 > | P9 — Symbolic shapes | pending |
 > | P10 — Final sweep | pending |
 
-## Handover (2026-09-24, P4 closed)
+## Handover (2026-09-24, P5 closed)
 
 Written so a fresh session can continue without the originating conversation.
-Read this section, then the phase text for P5 onwards below.
+Read this section, then the phase text for P6 onwards below.
 
 ### State
 
@@ -33,7 +33,7 @@ Read this section, then the phase text for P5 onwards below.
   plan: P0 (up to `5a83210`), P1 `cb6fc46`, P2 `1faec46`, P3.1 `dd52de0`,
   P3.2 `dfa8a94`, P3.3 `b8e23ba`, P3.4 `c774819`, P3.5a `d13274b`, P3.5b
   `0c637e1`, P3.5c `af41c23`, P3 exit `c92c1e9`, P4a (sinks) `0da9163`, P4b
-  (sources) `910afb2`, then the P4 exit.
+  (sources) `910afb2`, P4 exit `8d79321`, P5 `f3d7d94`, then the P5 exit.
 - Every op, source and sink is typed. `LEGACY_OPS` is `&[]`; `LegacyOpSpec`,
   `OpSpec::Legacy`, the dispatcher's legacy arm and the untyped `ParamValue`
   (now only a wire shape the legacy arm parses) remain for P6.
@@ -43,9 +43,11 @@ Read this section, then the phase text for P5 onwards below.
   it applies) and `io_catalog.json`; Python validates through `io_check`.
   `is_supplied` stays until P8 (the frozen `source()` signature still carries
   value defaults).
-- Next: **P5 — geometry namespaces** (below): the `.contour`/`.point`/`.bbox`
-  accessors still bind per-row parameters by name (`InputSlots`,
-  `_ArgBinder`).
+- The geometry namespaces' kwargs are typed the same way (P5): `Param<T>`
+  fields and `ColumnRef` operands, `{"$slot": n}` on the wire, checked by
+  `GeomParams` against the derived slots.
+- Next: **P6 — delete the legacy protocol** (below). Set a line-count target
+  first (see the ledger): P6 is where the net reduction is supposed to start.
 
 ### Line counts per phase
 
@@ -57,10 +59,11 @@ stands (lines, by area; `py-gen` is `_ops_generated.py`, generated):
 | P0 end `5a83210` | 16,921 | 0 | 20,809 | 16,068 | 0 | 55,208 |
 | P3 exit `c92c1e9` | 17,781 | 209 | 20,991 | 14,299 | 1,575 | 55,468 |
 | P4 `910afb2` | 18,193 | 209 | 20,964 | 14,099 | 1,607 | 55,430 |
+| P5 `f3d7d94` | 18,085 | 209 | 20,964 | 14,093 | 1,607 | 55,443 |
 
 So far the phases have *moved* definitions into typed Rust (each carrying the
 docs, defaults and validation Python used to hold) more than they have
-removed code: hand-written Python is down 1,969 lines, the plugin up 1,272.
+removed code: hand-written Python is down 1,975 lines, the plugin up 1,164.
 The net reductions the plan is for sit in P6 (legacy protocol, registries,
 19 enum mirrors, parity tests) and P7 (the Python planner and its FFIs); set a
 target for each before starting it.
