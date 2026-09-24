@@ -5,7 +5,7 @@ use polars_cv_macros::Op;
 use serde::{Deserialize, Serialize};
 use view_buffer::{ViewDto, ViewOp};
 
-use super::{OpDef, Param};
+use super::{Literal, OpDef, Param};
 use crate::graph::step::GraphStep;
 use crate::params::ParamCtx;
 
@@ -52,4 +52,65 @@ impl OpDef for Crop {
             end,
         })))
     }
+}
+
+/// Transpose dimensions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
+#[serde(deny_unknown_fields)]
+pub struct Transpose {
+    /// New order of axes: a permutation of every input axis.
+    #[param(positional)]
+    pub axes: Vec<Literal<u32>>,
+}
+
+impl OpDef for Transpose {
+    fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
+        let Transpose { axes } = self;
+        Ok(GraphStep::Buffer(ViewDto::View(ViewOp::Transpose(
+            axes_of(axes),
+        ))))
+    }
+}
+
+/// Reshape array to new dimensions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
+#[serde(deny_unknown_fields)]
+pub struct Reshape {
+    /// New shape. The number of entries fixes the output rank; each entry may
+    /// be a Polars expression.
+    #[param(positional)]
+    pub shape: Vec<Param<u32>>,
+}
+
+impl OpDef for Reshape {
+    fn resolve(&self, row: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
+        let Reshape { shape } = self;
+        let shape = shape
+            .iter()
+            .map(|d| d.resolve(row, ctx).map(|d| d as usize))
+            .collect::<PolarsResult<_>>()?;
+        Ok(GraphStep::Buffer(ViewDto::View(ViewOp::Reshape(shape))))
+    }
+}
+
+/// Flip along specified axes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Op)]
+#[serde(deny_unknown_fields)]
+pub struct Flip {
+    /// Axes to flip.
+    #[param(positional)]
+    pub axes: Vec<Literal<u32>>,
+}
+
+impl OpDef for Flip {
+    fn resolve(&self, _row: usize, _ctx: &ParamCtx) -> PolarsResult<GraphStep> {
+        let Flip { axes } = self;
+        Ok(GraphStep::Buffer(ViewDto::View(ViewOp::Flip(axes_of(
+            axes,
+        )))))
+    }
+}
+
+fn axes_of(axes: &[Literal<u32>]) -> Vec<usize> {
+    axes.iter().map(|a| a.get() as usize).collect()
 }

@@ -266,11 +266,14 @@ impl Op for ComputeOp {
                     }
                 }
 
-                if !self.accepted_input_dtypes().accepts(input_dtypes[0]) {
-                    return Err(ValidationError::DTypeRequirement {
-                        expected: vec![DType::F32, DType::F64],
-                        got: input_dtypes[0],
-                    });
+                // A shape-only caller (plan-time validation) passes no dtype.
+                if let Some(&dtype) = input_dtypes.first() {
+                    if !self.accepted_input_dtypes().accepts(dtype) {
+                        return Err(ValidationError::DTypeRequirement {
+                            expected: vec![DType::F32, DType::F64],
+                            got: dtype,
+                        });
+                    }
                 }
                 Ok(())
             }

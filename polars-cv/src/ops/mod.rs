@@ -176,9 +176,12 @@ macro_rules! typed_ops {
 
 typed_ops! {
     "crop" => Crop(view::Crop) {"top": 1, "left": 1, "height": 2, "width": 2},
+    "flip" => Flip(view::Flip) {"axes": [1]},
     "histogram" => Histogram(histogram::Histogram)
         {"bins": 8, "range": null, "closed": "left", "output": "counts"},
+    "reshape" => Reshape(view::Reshape) {"shape": [2, 2, 1]},
     "resize" => Resize(image::Resize) {"height": 4, "width": 4, "filter": "bilinear"},
+    "transpose" => Transpose(view::Transpose) {"axes": [1, 0, 2]},
     "warp_affine" => WarpAffine(affine::WarpAffine) {
         "matrix": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         "output_size": [4, 4],

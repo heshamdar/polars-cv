@@ -31,7 +31,7 @@ def op_contract(spec_json: str) -> dict[str, Any]:
 def op_output_channels(spec_json: str, input_channels: int | None) -> int | None:
     """Plan-time output channel count for a single op."""
 
-def op_infer_shape(spec_json: str, dims: list[int | None]) -> list[int | None]:
+def op_infer_shape(spec_json: str, dims: list[int | None]) -> list[int | None] | None:
     """Plan-time output shape for a single-buffer op. Raises ``ValueError`` when
     no shape is inferable."""
 

@@ -200,6 +200,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **`transpose` with a repeated axis is rejected when the pipeline is built.**
+  `transpose([0, 0, 1])` passed the builder (which checked only count and
+  range) and failed per row. Axis lists for `transpose`/`flip` are now checked
+  at build time by the engine op's own `validate`, whenever the rank is known.
+  `transpose`, `reshape` and `flip` are typed ops (typed-op P3).
 - **A malformed VIEW blob can no longer cause undefined behaviour.** A blob
   whose `data_offset` or strides were not multiples of the element size built a
   misaligned typed slice in release builds (debug builds panicked). Both blob

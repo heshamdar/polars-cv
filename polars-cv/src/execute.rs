@@ -317,7 +317,6 @@ pub const LEGACY_OPS: &[&str] = &[
     "erode",
     "extract_contours",
     "extract_shape",
-    "flip",
     "floor",
     "grayscale",
     "invert",
@@ -345,7 +344,6 @@ pub const LEGACY_OPS: &[&str] = &[
     "reduce_std",
     "reduce_sum",
     "relu",
-    "reshape",
     "resize_max",
     "resize_min",
     "resize_scale",
@@ -360,7 +358,6 @@ pub const LEGACY_OPS: &[&str] = &[
     "subtract",
     "subtract_constant",
     "threshold",
-    "transpose",
     "trunc",
 ];
 
@@ -428,32 +425,6 @@ fn resolve_op_inner(
     ctx: &ParamCtx,
 ) -> PolarsResult<GraphStep> {
     match op_name {
-        // View operations
-        "transpose" => {
-            let axes = get_param(params, "axes")?.as_int_list()?;
-            buffer_step(ViewDto::View(ViewOp::Transpose(axes)))
-        }
-        "reshape" => {
-            // Borrow the compiled `List` on the hot path; parse once otherwise.
-            let shape_param = get_param(params, "shape")?;
-            let owned_shape;
-            let shape_params: &[ParamValue] = match shape_param.as_param_slice() {
-                Some(slice) => slice,
-                None => {
-                    owned_shape = shape_param.as_param_list()?;
-                    &owned_shape
-                }
-            };
-            let shape: Vec<usize> = shape_params
-                .iter()
-                .map(|p| p.resolve_usize(row_idx, ctx))
-                .collect::<PolarsResult<_>>()?;
-            buffer_step(ViewDto::View(ViewOp::Reshape(shape)))
-        }
-        "flip" => {
-            let axes = get_param(params, "axes")?.as_int_list()?;
-            buffer_step(ViewDto::View(ViewOp::Flip(axes)))
-        }
         // Compute operations
         "cast" => {
             let dtype_str = get_param(params, "dtype")?.resolve_string()?;

@@ -80,13 +80,10 @@ class TestJsonRustCompatibility:
     def test_flip_axes_list(self) -> None:
         """Flip axes are serialized as int lists."""
         data = json.loads(Pipeline().source().flip([0, 1])._to_json())
-        axes = data["ops"][0]["axes"]
-        assert axes["type"] == "literal"
-        assert axes["value"] == [0, 1]
+        # A typed op's field is the value itself.
+        assert data["ops"][0]["axes"] == [0, 1]
 
     def test_transpose_axes_list(self) -> None:
         """Transpose axes are serialized as int lists."""
         data = json.loads(Pipeline().source().transpose([2, 0, 1])._to_json())
-        axes = data["ops"][0]["axes"]
-        assert axes["type"] == "literal"
-        assert axes["value"] == [2, 0, 1]
+        assert data["ops"][0]["axes"] == [2, 0, 1]
