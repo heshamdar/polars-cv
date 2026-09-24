@@ -84,7 +84,7 @@ stands (lines, by area; `py-gen` is `_ops_generated.py`, generated):
 | P5 `f3d7d94` | 18,085 | 209 | 20,964 | 14,093 | 1,607 | 55,443 |
 | P6 `2ae7651` | 17,728 | 209 | 20,956 | 13,752 | 1,862 | 55,266 |
 | P7c `9e3b6af` | 18,333 | 209 | 20,969 | 12,985 | 1,930 | 54,890 |
-| P7d (part) `8f7f8fa` | 18,465 | 209 | 20,969 | 12,905 | 1,930 | 54,909 |
+| P7d (part) `8f7f8fa` | 18,479 | 209 | 20,969 | 12,895 | 1,930 | 54,892 |
 
 So far the phases have *moved* definitions into typed Rust (each carrying the
 docs, defaults and validation Python used to hold) more than they have
