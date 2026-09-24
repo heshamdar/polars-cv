@@ -6,8 +6,8 @@
 use polars::prelude::*;
 
 use view_buffer::{
-    geometry::rasterize::rasterize, BinaryOp, DType, GeometryOp, ImageAdapter, ImageCodec,
-    PlannedDType, ViewBuffer,
+    geometry::rasterize::rasterize, DType, GeometryOp, ImageAdapter, ImageCodec, PlannedDType,
+    ViewBuffer,
 };
 
 use crate::graph::step::GraphStep;
@@ -15,18 +15,6 @@ use crate::params::{get, OpParams, ParamCtx, ParamValue};
 use crate::pipeline::{OpSpec, SinkSpec, SourceSpec};
 use view_buffer::geometry::label::{LabelReduction, LabelRegionMode};
 use view_buffer::naming;
-
-/// The Python-facing name of every two-buffer binary operation.
-///
-/// An alias for `BinaryOp::NAMED`, which is where this table now lives —
-/// beside the enum, in view-buffer, under the same exhaustiveness guard as
-/// every other vocabulary. It used to be a hand-written list in this crate,
-/// which is what made `BinaryOp` the one enum the registry could not hold and
-/// the FFI had to special-case.
-///
-/// Kept as a name because `resolve_op` and `resolve_op_arms_are_all_known_ops`
-/// both read it and both read better for it.
-pub(crate) const BINARY_OPS: &[(&str, BinaryOp)] = BinaryOp::NAMED;
 
 /// Parse rasterize's optional style parameters `(fill_value, background)` —
 /// shared with the graph executor's rasterize-by-shape-ref path so the two
@@ -224,24 +212,7 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>
 /// top-level match arms in [`resolve_op_inner`]: `known_ops_all_resolve`
 /// guards the forward direction and `resolve_op_arms_are_all_known_ops` the
 /// reverse, so a migrated op cannot leave its arm behind.
-pub const LEGACY_OPS: &[&str] = &[
-    "add",
-    "apply_mask",
-    "bitwise_and",
-    "bitwise_or",
-    "bitwise_xor",
-    "blend",
-    "channel_merge",
-    "divide",
-    "extract_shape",
-    "label_reduce",
-    "maximum",
-    "minimum",
-    "multiply",
-    "rasterize",
-    "ratio",
-    "subtract",
-];
+pub const LEGACY_OPS: &[&str] = &["extract_shape", "label_reduce", "rasterize"];
 
 /// Resolve an operation specification to a [`GraphStep`].
 ///
@@ -319,19 +290,6 @@ fn resolve_op_inner(
                 background,
             }))
         }
-        // Binary operations (two-buffer): one arm for the whole family,
-        // dispatched through the BINARY_OPS name table.
-        name if naming::lookup(BINARY_OPS, name).is_some() => {
-            let op = naming::lookup(BINARY_OPS, name).expect("guard checked membership");
-            let other_node_id = get_param(params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            Ok(GraphStep::Binary {
-                op,
-                other: other_node_id,
-            })
-        }
-
         // Reduction operations
         "extract_shape" => {
             // Extract shape returns buffer dimensions as a vector
@@ -370,46 +328,6 @@ fn resolve_op_inner(
                 contours_slot,
                 reduction,
                 region_mode,
-            })
-        }
-
-        // Histogram operation
-        // Channel operations
-        "channel_merge" => {
-            let other_nodes_param = get_param(params, "other_nodes")?;
-            let other_node_ids = match other_nodes_param {
-                ParamValue::Literal {
-                    value: serde_json::Value::Array(arr),
-                } => arr
-                    .iter()
-                    .map(|v| {
-                        v.as_str().map(str::to_string).ok_or_else(|| {
-                            polars_err!(ComputeError:
-                                "parameter 'other_nodes' must be an array of node-ID strings, got {}", v)
-                        })
-                    })
-                    .collect::<PolarsResult<Vec<_>>>()?,
-                _ => {
-                    return Err(
-                        polars_err!(ComputeError: "parameter 'other_nodes' must be an array of node IDs"),
-                    )
-                }
-            };
-            Ok(GraphStep::ChannelMerge {
-                others: other_node_ids,
-            })
-        }
-
-        // Intensity operations
-        // Mask operation
-        "apply_mask" => {
-            let mask_node_id = get_param(params, "other_node")?
-                .resolve_string()?
-                .to_string();
-            let invert = get::opt_bool_dyn(params, "invert", false, row_idx, ctx)?;
-            Ok(GraphStep::ApplyMask {
-                mask: mask_node_id,
-                invert,
             })
         }
 
@@ -488,27 +406,6 @@ mod strict_param_tests {
         params.push(("background", json!(-1)));
         let err = resolve_err(&op_with("rasterize", &params));
         assert!(err.contains("background"), "{err}");
-    }
-
-    #[test]
-    fn bool_param_rejects_non_bool() {
-        // Booleans are structural literals: a string/number must error, not
-        // silently read as `false`.
-        #[allow(clippy::type_complexity)]
-        let cases: &[(&str, &str, &[(&str, serde_json::Value)])] =
-            &[("apply_mask", "invert", &[("other_node", json!("m"))])];
-        for (op, bool_param, base) in cases {
-            let mut params = base.to_vec();
-            params.push((bool_param, json!("yes")));
-            let err = resolve_err(&op_with(op, &params));
-            assert!(err.contains(bool_param), "{op}.{bool_param}: {err}");
-        }
-    }
-
-    #[test]
-    fn channel_merge_rejects_non_string_node_ids() {
-        let err = resolve_err(&op_with("channel_merge", &[("other_nodes", json!([1, 2]))]));
-        assert!(err.contains("other_nodes"), "{err}");
     }
 }
 
@@ -629,48 +526,29 @@ mod known_ops_tests {
                 }
             }
         }
-        // Every op in LEGACY_OPS is either a string arm found above or covered
-        // by one of the known guard arms below, so the scan cannot rot to a
-        // subset without this failing. A count floor was used here before; it
-        // was both too weak (10 arms could drop out of indent 8 unnoticed) and
-        // too brittle (deprecating an op tripped it), so the relationship is
-        // pinned instead of a magic number.
-        let guarded: Vec<&str> = BINARY_OPS.iter().map(|(n, _)| *n).collect();
+        // Every op in LEGACY_OPS is a string arm found above, so the scan
+        // cannot rot to a subset without this failing. A count floor was used
+        // here before; it was both too weak (10 arms could drop out of indent
+        // 8 unnoticed) and too brittle (deprecating an op tripped it), so the
+        // relationship is pinned instead of a magic number.
         let unaccounted: Vec<&&str> = LEGACY_OPS
             .iter()
-            .filter(|n| !arm_names.contains(n) && !guarded.contains(n))
+            .filter(|n| !arm_names.contains(n))
             .collect();
         assert!(
             unaccounted.is_empty(),
-            "these LEGACY_OPS have no string arm and are not in a known guarded \
-             family: {unaccounted:?} — either resolve_op changed shape or the \
-             source scan has rotted"
+            "these LEGACY_OPS have no string arm: {unaccounted:?} — either \
+             resolve_op changed shape or the source scan has rotted"
         );
-        // Guard arms register a whole family at once. Each one needs a rule
-        // above tying its table to LEGACY_OPS; a new one has none, so fail
-        // until it is given one rather than let it register ops invisibly.
-        const KNOWN_GUARD_ARMS: &[&str] = &[
-            // Registers the whole binary-op family; its table is checked
-            // against LEGACY_OPS below.
-            "name if naming::lookup(BINARY_OPS, name).is_some()",
-            // The catch-all that produces the "Unknown operation" error this
-            // scan terminates on. Registers nothing.
-            "other",
-        ];
+        // A guard arm registers ops without naming them. The one that did —
+        // the binary family, dispatched through `BinaryOp::NAMED` — is typed
+        // now, so the only non-string arm left is the catch-all that produces
+        // the "Unknown operation" error this scan terminates on.
         for arm in &guard_arms {
-            assert!(
-                KNOWN_GUARD_ARMS.contains(arm),
-                "resolve_op has an unrecognised guard arm '{arm}'. Guard arms \
-                 register ops without naming them, so add it to \
-                 KNOWN_GUARD_ARMS here along with a check that its table is \
-                 fully listed in LEGACY_OPS (see BINARY_OPS below)."
-            );
-        }
-        // The guarded binary-op family must still be fully registered.
-        for (name, _) in BINARY_OPS {
-            assert!(
-                LEGACY_OPS.contains(name),
-                "BINARY_OPS entry '{name}' is missing from LEGACY_OPS"
+            assert_eq!(
+                *arm, "other",
+                "resolve_op has a guard arm '{arm}' that registers ops without \
+                 naming them; list them as string arms instead"
             );
         }
         for name in &arm_names {

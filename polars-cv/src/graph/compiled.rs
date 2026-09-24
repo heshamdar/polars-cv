@@ -2126,11 +2126,6 @@ mod tests {
             // its probe is a slot.
             let col = |_name: &str| ParamValue::Slot { idx: 1 };
             match op {
-                "add" | "subtract" | "multiply" | "divide" | "minimum" | "maximum" | "ratio" => {
-                    vec![("other_node", lit(json!("n0")))]
-                }
-                "apply_mask" => vec![("other_node", lit(json!("n0")))],
-                "channel_merge" => vec![("other_nodes", lit(json!(["n0"])))],
                 "label_reduce" => vec![("contours", col("c"))],
                 "rasterize" => vec![("width", lit(json!(8))), ("height", lit(json!(8)))],
                 "reduce_percentile" => vec![("q", lit(json!(0.5)))],
@@ -2250,7 +2245,7 @@ mod tests {
                 "nodes": {
                     "n0": {"source": {"format": "blob"}},
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
-                           "ops": [{"op": "add", "other_node": {"type": "literal", "value": "n0"}}]}
+                           "ops": [{"op": "add", "other": "n0"}]}
                 },
                 "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
@@ -2266,7 +2261,7 @@ mod tests {
                 "nodes": {
                     "n0": {"source": {"format": "blob"}},
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
-                           "ops": [{"op": "apply_mask", "other_node": {"type": "literal", "value": "n0"}}]}
+                           "ops": [{"op": "apply_mask", "mask": "n0", "invert": false}]}
                 },
                 "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}
@@ -2282,7 +2277,7 @@ mod tests {
                 "nodes": {
                     "n0": {"source": {"format": "blob"}},
                     "n1": {"source": {"format": "blob"}, "upstream": ["n0"],
-                           "ops": [{"op": "channel_merge", "other_nodes": {"type": "literal", "value": ["n0"]}}]}
+                           "ops": [{"op": "channel_merge", "others": ["n0"]}]}
                 },
                 "outputs": {"_output": {"node": "n1", "sink": {"format": "blob"}}},
                 "column_bindings": {"n0": 0}

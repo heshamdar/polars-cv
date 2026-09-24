@@ -165,12 +165,19 @@ def _op_reads_sibling_nodes(op: "OpSpec") -> bool:
     node's buffer with a sibling node's at matching ``(y, x)``. Such an op is
     spatially ``Pointwise``, but hoisting a crop earlier past it would shrink only
     *this* operand and leave the sibling full-size, so a spatial window may not
-    cross it whatever its spatial rule. The sibling reference rides on the
-    ``other_node`` / ``other_nodes`` params, which are Python graph-construction
-    wiring (node ids), so this fact is owned here rather than in the engine
-    contract.
+    cross it whatever its spatial rule. The catalogue says which fields name
+    another node (a ``node`` type, alone or in a list), so this reads the op's
+    declared fields rather than a list of parameter names.
     """
-    return "other_node" in op.params or "other_nodes" in op.params
+    return any(_names_nodes(ty) for ty in OP_FIELDS.get(op.op, {}).values())
+
+
+def _names_nodes(ty: "dict[str, Any]") -> bool:
+    """Whether a catalogue field type holds a graph-node reference."""
+    if ty["kind"] == "node":
+        return True
+    inner = ty.get("inner")
+    return inner is not None and _names_nodes(inner)
 
 
 def _output_shape_equals_input(
@@ -355,6 +362,14 @@ def _encode_field(
     kind = ty["kind"]
     if kind == "optional":
         return None if value is None else _encode_field(p, value, ty["inner"], where)
+    if kind == "node":
+        # An operand expression crosses as its node id; the graph wiring
+        # (upstream edges) is the lazy layer's job, not the op's.
+        from polars_cv.lazy import LazyPipelineExpr
+
+        if isinstance(value, LazyPipelineExpr):
+            value = value._node_id
+        return ParamValue(is_expr=False, value=value)
     if kind == "one_of":
         # The options differ in shape: a sequence picks the sequence option.
         wants_seq = _is_sequence(value)
@@ -848,9 +863,9 @@ class Pipeline(_OpsMixin):
         """Append ``spec`` **in place** and run its full plan-time update.
 
         **The single mutator of ``_ops`` in the package.** :meth:`_append_op`
-        wraps it for the immutable builder path; the graph hooks
-        (:meth:`_add_binary_op`, :meth:`_add_channel_merge`) call it directly
-        because they mutate an already-cloned pipeline. Both the schema fold
+        wraps it for the immutable builder path; the graph hook
+        (:meth:`_add_node_op`) calls it directly because it mutates an
+        already-cloned pipeline. Both the schema fold
         and the shape-hint update are unconditional, so no caller can append
         an op while tracking only half its effect.
 
@@ -860,7 +875,7 @@ class Pipeline(_OpsMixin):
         Args:
             spec: The operation to append.
             contract: A pre-read contract, reused to avoid a second FFI call.
-            update_dtype: Only :meth:`_add_binary_op` passes False. A
+            update_dtype: Only a binary op's :meth:`_add_node_op` passes False. A
                 two-input dtype rule is not expressible through ``op_schema``;
                 the lazy layer resolves it via ``binary_output_dtype``
                 instead. The shape-hint update still runs.
@@ -2739,61 +2754,38 @@ class Pipeline(_OpsMixin):
 
     # --- Graph Composition Support ---
 
-    def _add_binary_op(
+    def _add_node_op(
         self,
-        op: str,
-        other_node_id: str,
-        **kwargs,
+        op_name: str,
+        values: "dict[str, Any]",
+        *,
+        update_dtype: bool = True,
     ) -> None:
-        """
-        Add a binary operation referencing another node.
+        """Append a ``lazy_only`` op — one reading other graph nodes — in place.
 
-        This is used internally by LazyPipelineExpr composition.
+        Used by the ``LazyPipelineExpr`` methods that combine expressions
+        (the binary ops, ``apply_mask``, ``channel_merge``) on a pipeline they
+        have already cloned. Each field is encoded by its catalogue type, as
+        :meth:`_append_typed` does: an operand expression becomes its node id,
+        and any other value (e.g. ``apply_mask(invert=)``) may be per-row.
 
         Args:
-            op: Operation name (e.g., "add", "multiply", "apply_mask").
-            other_node_id: The node ID of the other operand.
-            **kwargs: Additional operation parameters.
+            op_name: The op's wire name.
+            values: Its arguments, by catalogue field name.
+            update_dtype: False for a binary op, whose two-input dtype rule
+                ``op_schema`` cannot express; the lazy layer resolves it via
+                ``binary_output_dtype`` instead.
         """
-        params: dict[str, ParamValue] = {
-            "other_node": ParamValue(is_expr=False, value=other_node_id),
-        }
-        # `other_node` above is graph topology and stays literal; the
-        # remaining kwargs are ordinary op params (e.g. `apply_mask(invert)`),
-        # so an expression among them resolves per row like anywhere else.
-        for key, value in kwargs.items():
-            params[key] = self._track_expr(value)
-
+        fields = OP_FIELDS[op_name]
+        params: dict[str, ParamValue] = {}
+        for name, value in values.items():
+            encoded = _encode_field(self, value, fields[name], f"{op_name}({name}=)")
+            if encoded is not None:
+                params[name] = encoded
         # Binary ops are elementwise, so H/W pass through unchanged — but the
         # append still routes through `_push_op`, which records the
-        # entering-hints snapshot and applies the channel rule. `op_schema`
-        # cannot express a two-input dtype rule, so the dtype is left to the
-        # lazy layer's `binary_output_dtype`.
-        self._push_op(OpSpec(op=op, params=params), update_dtype=False)
-
-    def _add_channel_merge(self, other_node_ids: list[str]) -> None:
-        """
-        Add a ``channel_merge`` op referencing other buffer nodes.
-
-        Stacks this pipeline's single-channel ``[H, W]`` buffer with the
-        single-channel buffers produced by ``other_node_ids`` along a new
-        channel axis, yielding ``[H, W, C]`` (``C = len(other_node_ids) + 1``).
-        Used internally by :meth:`LazyPipelineExpr.channel_merge`.
-
-        Args:
-            other_node_ids: Node IDs of the other single-channel operands.
-        """
-        # Rank ([H, W] → [H, W, C]) and channel count change; both are sourced
-        # from the Rust contract (op_schema for domain/dtype/ndim, the channel
-        # rule for the channel hint) rather than re-declared here.
-        self._push_op(
-            OpSpec(
-                op="channel_merge",
-                params={
-                    "other_nodes": ParamValue(is_expr=False, value=other_node_ids),
-                },
-            )
-        )
+        # entering-hints snapshot and applies the channel rule.
+        self._push_op(OpSpec(op=op_name, params=params), update_dtype=update_dtype)
 
     # --- Spatial-window pushdown ---
     #

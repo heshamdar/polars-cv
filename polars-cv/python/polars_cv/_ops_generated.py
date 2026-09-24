@@ -19,13 +19,20 @@ if TYPE_CHECKING:
 TYPED_OPS: frozenset[str] = frozenset(
     [
         "abs",
+        "add",
         "add_constant",
         "adjust_contrast",
         "adjust_gamma",
+        "apply_mask",
+        "bitwise_and",
+        "bitwise_or",
+        "bitwise_xor",
+        "blend",
         "blur",
         "canny",
         "cast",
         "ceil",
+        "channel_merge",
         "channel_select",
         "channel_swap",
         "clamp",
@@ -43,6 +50,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "crop",
         "cvt_color",
         "dilate",
+        "divide",
         "equalize_histogram",
         "erode",
         "extract_contours",
@@ -52,12 +60,16 @@ TYPED_OPS: frozenset[str] = frozenset(
         "histogram",
         "invert",
         "letterbox",
+        "maximum",
+        "minimum",
         "morphology_gradient",
+        "multiply",
         "neg",
         "normalize",
         "pad",
         "pad_to_size",
         "perceptual_hash",
+        "ratio",
         "reciprocal",
         "reduce_argmax",
         "reduce_argmin",
@@ -82,6 +94,7 @@ TYPED_OPS: frozenset[str] = frozenset(
         "sign",
         "sqrt",
         "square",
+        "subtract",
         "subtract_constant",
         "threshold",
         "transpose",
@@ -93,9 +106,18 @@ TYPED_OPS: frozenset[str] = frozenset(
 #: Each typed op's field types, as the catalogue describes them.
 OP_FIELDS: dict[str, dict[str, Any]] = {
     "abs": {},
+    "add": {"other": {"kind": "node"}},
     "add_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "adjust_contrast": {"factor": {"kind": "scalar", "per_row": True, "py": "float"}},
     "adjust_gamma": {"gamma": {"kind": "scalar", "per_row": True, "py": "float"}},
+    "apply_mask": {
+        "mask": {"kind": "node"},
+        "invert": {"kind": "scalar", "per_row": True, "py": "bool"},
+    },
+    "bitwise_and": {"other": {"kind": "node"}},
+    "bitwise_or": {"other": {"kind": "node"}},
+    "bitwise_xor": {"other": {"kind": "node"}},
+    "blend": {"other": {"kind": "node"}},
     "blur": {"sigma": {"kind": "scalar", "per_row": True, "py": "float"}},
     "canny": {
         "low_threshold": {"kind": "scalar", "per_row": True, "py": "float"},
@@ -121,6 +143,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         }
     },
     "ceil": {},
+    "channel_merge": {"others": {"kind": "list", "inner": {"kind": "node"}}},
     "channel_select": {"index": {"kind": "scalar", "per_row": True, "py": "int"}},
     "channel_swap": {
         "order": {
@@ -200,6 +223,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
         "iterations": {"kind": "scalar", "per_row": True, "py": "int"},
     },
+    "divide": {"other": {"kind": "node"}},
     "equalize_histogram": {},
     "erode": {
         "ksize": {"kind": "scalar", "per_row": True, "py": "int"},
@@ -275,7 +299,10 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
             "variants": ["nearest", "bilinear", "catmullrom", "gaussian", "lanczos3"],
         },
     },
+    "maximum": {"other": {"kind": "node"}},
+    "minimum": {"other": {"kind": "node"}},
     "morphology_gradient": {"ksize": {"kind": "scalar", "per_row": True, "py": "int"}},
+    "multiply": {"other": {"kind": "node"}},
     "neg": {},
     "normalize": {
         "method": {
@@ -352,6 +379,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
         },
         "hash_size": {"kind": "scalar", "per_row": False, "py": "int"},
     },
+    "ratio": {"other": {"kind": "node"}},
     "reciprocal": {},
     "reduce_argmax": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
     "reduce_argmin": {"axis": {"kind": "scalar", "per_row": False, "py": "int"}},
@@ -462,6 +490,7 @@ OP_FIELDS: dict[str, dict[str, Any]] = {
     "sign": {},
     "sqrt": {},
     "square": {},
+    "subtract": {"other": {"kind": "node"}},
     "subtract_constant": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "threshold": {"value": {"kind": "scalar", "per_row": True, "py": "float"}},
     "transpose": {

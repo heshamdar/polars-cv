@@ -501,7 +501,7 @@ def _emitted_op_names_from_source():
     """Op names actually emitted by the Python builders, scanned from source.
 
     Pipeline builders emit ``op="<name>"`` literals (pipeline.py) and the binary
-    helpers emit ``_binary_op("<name>")`` / ``_add_binary_op("<name>")``
+    helpers emit ``_binary_op("<name>")`` / ``_add_node_op("<name>")``
     (lazy.py). Scanning the source keeps the comparison drift-proof without a
     second hand-maintained list.
     """
@@ -514,7 +514,7 @@ def _emitted_op_names_from_source():
     names |= set(re.findall(r'op="([a-z_0-9]+)"', text))
     names |= set(re.findall(r'_append_op\(\s*"([a-z_0-9]+)"', text))
     lazy = (pkg / "lazy.py").read_text()
-    names |= set(re.findall(r'_(?:add_)?binary_op\("([a-z_]+)"', lazy))
+    names |= set(re.findall(r'_(?:binary_op|add_node_op)\("([a-z_]+)"', lazy))
     generated = (pkg / "_ops_generated.py").read_text()
     names |= set(re.findall(r'_append_typed\(\s*"([a-z_0-9]+)"', generated))
     return names
@@ -553,7 +553,8 @@ def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
     src = rust_src_dir()
 
     text = (src / "execute.rs").read_text()
-    m = re.search(r"pub const LEGACY_OPS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
+    # One line or one name per line: rustfmt picks by length.
+    m = re.search(r"pub const LEGACY_OPS: &\[&str\] = &\[(.*?)\];", text, re.S)
     assert m, "could not find LEGACY_OPS in execute.rs — scan is out of date"
     # Strip comments first: this codebase explains absences inline (`// "sobel"
     # is deliberately absent`), and a quoted name in one would read as an op.
@@ -2927,3 +2928,36 @@ def test_the_committed_catalog_is_the_built_one() -> None:
     assert module.OUTPUT.read_text() == module.generate(), (
         "_ops_generated.py is out of date. Run: python scripts/gen_ops.py"
     )
+
+
+def test_every_lazy_only_op_is_a_lazy_method_with_its_fields() -> None:
+    """A ``lazy_only`` op's builder is hand-written on ``LazyPipelineExpr``.
+
+    Such an op combines this expression with other graph nodes (a binary op,
+    ``apply_mask``, ``channel_merge``), so ``gen_ops.py`` emits no ``Pipeline``
+    method for it. The catalogue still owns its fields: the lazy method must
+    exist, be defined on ``LazyPipelineExpr`` itself (not forwarded from a
+    ``Pipeline`` method), and take exactly the catalogue's fields, in order —
+    the wire follows the signature, as for every generated method.
+    """
+    import inspect
+    from pathlib import Path
+
+    from polars_cv.lazy import LazyPipelineExpr
+
+    root = Path(__file__).resolve().parent.parent
+    catalog = json.loads((root / "tests" / "golden" / "op_catalog.json").read_text())
+    lazy_only = [op for op in catalog if op["visibility"] == "lazy_only"]
+    assert lazy_only, "no lazy_only op in the catalogue — the scan matched nothing"
+    for op in lazy_only:
+        name = op["python"]
+        method = LazyPipelineExpr.__dict__.get(name)
+        assert callable(method), f"lazy_only op {op['name']!r} has no lazy method"
+        assert not hasattr(Pipeline, name), (
+            f"lazy_only op {op['name']!r} must not be a Pipeline method"
+        )
+        params = list(inspect.signature(method).parameters)[1:]
+        assert params == [f["name"] for f in op["fields"]], (
+            f"{name}: signature {params} is not the catalogue's fields"
+        )
+        assert op["name"] in Pipeline.OP_NAMES

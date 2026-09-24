@@ -19,6 +19,7 @@
 //! name in neither set is an error.
 
 pub mod affine;
+pub mod binary;
 pub mod channel;
 pub mod color;
 pub mod compute;
@@ -183,13 +184,20 @@ macro_rules! typed_ops {
 
 typed_ops! {
     "abs" => Abs(compute::Abs) {},
+    "add" => Add(binary::Add) {"other": "n0"},
     "add_constant" => AddConstant(compute::AddConstant) {"value": 1.0},
     "adjust_contrast" => AdjustContrast(compute::AdjustContrast) {"factor": 1.5},
     "adjust_gamma" => AdjustGamma(compute::AdjustGamma) {"gamma": 0.5},
+    "apply_mask" => ApplyMask(binary::ApplyMask) {"mask": "n0", "invert": true},
+    "bitwise_and" => BitwiseAnd(binary::BitwiseAnd) {"other": "n0"},
+    "bitwise_or" => BitwiseOr(binary::BitwiseOr) {"other": "n0"},
+    "bitwise_xor" => BitwiseXor(binary::BitwiseXor) {"other": "n0"},
+    "blend" => Blend(binary::Blend) {"other": "n0"},
     "blur" => Blur(image::Blur) {"sigma": 1.0},
     "canny" => Canny(image::Canny) {"low_threshold": 50.0, "high_threshold": 150.0},
     "cast" => Cast(compute::Cast) {"dtype": "f32"},
     "ceil" => Ceil(compute::Ceil) {},
+    "channel_merge" => ChannelMerge(binary::ChannelMerge) {"others": ["n0", "n1"]},
     "channel_select" => ChannelSelect(channel::ChannelSelect) {"index": 0},
     "channel_swap" => ChannelSwap(channel::ChannelSwap) {"order": [2, 1, 0]},
     "clamp" => Clamp(compute::Clamp) {"min": 0.0, "max": 1.0},
@@ -208,6 +216,7 @@ typed_ops! {
     "crop" => Crop(view::Crop) {"top": 1, "left": 1, "height": 2, "width": 2},
     "cvt_color" => CvtColor(color::CvtColor) {"from_space": "rgb", "to_space": "hsv"},
     "dilate" => Dilate(image::Dilate) {"ksize": 3, "iterations": 1},
+    "divide" => Divide(binary::Divide) {"other": "n0"},
     "equalize_histogram" => EqualizeHistogram(image::EqualizeHistogram) {},
     "erode" => Erode(image::Erode) {"ksize": 3, "iterations": 1},
     "extract_contours" => ExtractContours(geometry::ExtractContours)
@@ -220,7 +229,10 @@ typed_ops! {
     "invert" => Invert(compute::Invert) {},
     "letterbox" => Letterbox(image::Letterbox)
         {"height": 4, "width": 4, "value": 0.0, "filter": "bilinear"},
+    "maximum" => Maximum(binary::Maximum) {"other": "n0"},
+    "minimum" => Minimum(binary::Minimum) {"other": "n0"},
     "morphology_gradient" => MorphologyGradient(image::MorphologyGradient) {"ksize": 3},
+    "multiply" => Multiply(binary::Multiply) {"other": "n0"},
     "neg" => Neg(compute::Neg) {},
     "normalize" => Normalize(compute::Normalize)
         {"method": "preset", "mean": [0.5], "std": [0.25], "out_dtype": "f32"},
@@ -229,6 +241,7 @@ typed_ops! {
     "pad_to_size" => PadToSize(image::PadToSize)
         {"height": 4, "width": 4, "position": "center", "value": 0.0},
     "perceptual_hash" => PerceptualHash(phash::PerceptualHash) {"algorithm": "perceptual", "hash_size": 64},
+    "ratio" => Ratio(binary::Ratio) {"other": "n0"},
     "reciprocal" => Reciprocal(compute::Reciprocal) {},
     "reduce_argmax" => ReduceArgmax(reduce::ReduceArgmax) {"axis": 0},
     "reduce_argmin" => ReduceArgmin(reduce::ReduceArgmin) {"axis": 0},
@@ -254,6 +267,7 @@ typed_ops! {
     "sign" => Sign(compute::Sign) {},
     "sqrt" => Sqrt(compute::Sqrt) {},
     "square" => Square(compute::Square) {},
+    "subtract" => Subtract(binary::Subtract) {"other": "n0"},
     "subtract_constant" => SubtractConstant(compute::SubtractConstant) {"value": 1.0},
     "threshold" => Threshold(image::Threshold) {"value": 128.0},
     "transpose" => Transpose(view::Transpose) {"axes": [1, 0, 2]},
@@ -578,6 +592,21 @@ mod tests {
                 "",
             ),
             (json!({"op": "contour_simplify"}), "tolerance", ""),
+            (
+                json!({"op": "apply_mask", "mask": "m", "invert": "yes"}),
+                "'invert'",
+                "",
+            ),
+            (
+                json!({"op": "channel_merge", "others": [1, 2]}),
+                "'others[0]'",
+                "graph node id",
+            ),
+            (
+                json!({"op": "add", "other": {"$slot": 1}}),
+                "'other'",
+                "graph node id",
+            ),
         ];
         for (spec, field, also) in cases {
             let err = parse_err(spec.clone());
@@ -587,6 +616,44 @@ mod tests {
         for op in ["reduce_max", "reduce_min", "reduce_mean"] {
             parse(json!({"op": op, "axis": null})).unwrap();
         }
+    }
+
+    /// The binary ops are one typed op per `BinaryOp::NAMED` entry, each
+    /// resolving to its own variant — so the table stays the one list of
+    /// names, and a new `BinaryOp` without an op fails here.
+    #[test]
+    fn binary_ops_are_exactly_the_named_table() {
+        use view_buffer::BinaryOp;
+        for (name, op) in BinaryOp::NAMED {
+            let typed = TypedOp::from_fields(name, json!({"other": "n0"}))
+                .unwrap_or_else(|| panic!("BinaryOp '{name}' is not a typed op"))
+                .unwrap();
+            match typed.resolve(0, &ParamCtx::empty()).unwrap() {
+                GraphStep::Binary { op: got, other } => {
+                    assert_eq!((got, other.as_str()), (*op, "n0"), "{name}")
+                }
+                step => panic!("'{name}' resolves to {step:?}"),
+            }
+        }
+        let binary = TypedOp::samples()
+            .into_iter()
+            .filter(|op| {
+                matches!(
+                    op.resolve(0, &ParamCtx::empty()),
+                    Ok(GraphStep::Binary { .. })
+                )
+            })
+            .count();
+        assert_eq!(binary, BinaryOp::NAMED.len());
+    }
+
+    #[test]
+    fn channel_merge_needs_another_channel() {
+        let op = TypedOp::from_fields("channel_merge", json!({"others": []}))
+            .unwrap()
+            .unwrap();
+        let err = op.resolve(0, &ParamCtx::empty()).unwrap_err().to_string();
+        assert!(err.contains("at least one"), "{err}");
     }
 
     #[test]

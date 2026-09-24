@@ -7,6 +7,22 @@
     "fields": []
   },
   {
+    "name": "add",
+    "python": "add",
+    "visibility": "lazy_only",
+    "doc": "Element-wise addition (saturating for integer dtypes).\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
     "name": "add_constant",
     "python": "add_constant",
     "visibility": "public",
@@ -56,6 +72,97 @@
           "kind": "scalar",
           "per_row": true,
           "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "apply_mask",
+    "python": "apply_mask",
+    "visibility": "lazy_only",
+    "doc": "Apply a binary mask to this image.\n\nDomain: buffer → buffer",
+    "fields": [
+      {
+        "name": "mask",
+        "doc": "The mask's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
+        }
+      },
+      {
+        "name": "invert",
+        "doc": "If True, invert the mask (keep exterior, zero interior).",
+        "positional": false,
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
+        }
+      }
+    ]
+  },
+  {
+    "name": "bitwise_and",
+    "python": "bitwise_and",
+    "visibility": "lazy_only",
+    "doc": "Element-wise bitwise AND.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "bitwise_or",
+    "python": "bitwise_or",
+    "visibility": "lazy_only",
+    "doc": "Element-wise bitwise OR.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "bitwise_xor",
+    "python": "bitwise_xor",
+    "visibility": "lazy_only",
+    "doc": "Element-wise bitwise XOR.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "blend",
+    "python": "blend",
+    "visibility": "lazy_only",
+    "doc": "Normalized multiplication, e.g. (a/255) * (b/255) * 255 for u8.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
         }
       }
     ]
@@ -144,6 +251,25 @@
     "visibility": "public",
     "doc": "Round toward positive infinity. Domain: buffer → buffer.",
     "fields": []
+  },
+  {
+    "name": "channel_merge",
+    "python": "channel_merge",
+    "visibility": "lazy_only",
+    "doc": "Merge single-channel buffers into one multi-channel image.\n\nDomain: buffer → buffer ([H, W] → [H, W, C])",
+    "fields": [
+      {
+        "name": "others",
+        "doc": "The other single-channel operands' nodes, in channel order after this\none.",
+        "positional": true,
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "node"
+          }
+        }
+      }
+    ]
   },
   {
     "name": "channel_select",
@@ -574,6 +700,22 @@
     ]
   },
   {
+    "name": "divide",
+    "python": "divide",
+    "visibility": "lazy_only",
+    "doc": "Element-wise division (integer division by zero yields 0).\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
     "name": "equalize_histogram",
     "python": "equalize_histogram",
     "visibility": "public",
@@ -845,6 +987,38 @@
     ]
   },
   {
+    "name": "maximum",
+    "python": "maximum",
+    "visibility": "lazy_only",
+    "doc": "Element-wise maximum.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
+    "name": "minimum",
+    "python": "minimum",
+    "visibility": "lazy_only",
+    "doc": "Element-wise minimum.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
+  },
+  {
     "name": "morphology_gradient",
     "python": "morphology_gradient",
     "visibility": "public",
@@ -859,6 +1033,22 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "multiply",
+    "python": "multiply",
+    "visibility": "lazy_only",
+    "doc": "Element-wise multiplication (saturating for integer dtypes).\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
         }
       }
     ]
@@ -1118,6 +1308,22 @@
           "kind": "scalar",
           "per_row": false,
           "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "ratio",
+    "python": "ratio",
+    "visibility": "lazy_only",
+    "doc": "Ratio a/b scaled to the dtype's full range.\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
         }
       }
     ]
@@ -1656,6 +1862,22 @@
     "visibility": "public",
     "doc": "Square (`x * x`). Domain: buffer → buffer.",
     "fields": []
+  },
+  {
+    "name": "subtract",
+    "python": "subtract",
+    "visibility": "lazy_only",
+    "doc": "Element-wise subtraction (saturating for integer dtypes).\n\nDomain: buffer → buffer (element-wise with another buffer node).",
+    "fields": [
+      {
+        "name": "other",
+        "doc": "The other operand's node.",
+        "positional": true,
+        "type": {
+          "kind": "node"
+        }
+      }
+    ]
   },
   {
     "name": "subtract_constant",
