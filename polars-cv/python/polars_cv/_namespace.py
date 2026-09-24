@@ -115,18 +115,14 @@ class _GeomNullPolicy:
 class _ArgBinder:
     """Builds a plugin call whose parameters may be literals or expressions.
 
-    The geometry namespaces bypass the ``vb_graph`` graph engine, so they have
-    no ``ParamValue`` machinery. Their per-row channel is instead the plugin's
-    *input series*: an expression-valued parameter is appended as an extra
-    argument and Rust reads it at the current row.
-
-    Position alone cannot identify those inputs. Several of these functions
-    already read *optional* data operands positionally (``point.rotate``'s
-    ``origin``, ``correspond``' ``order``), so an appended parameter
-    would be indistinguishable from an omitted operand. Every variable
-    argument — data operand and dynamic parameter alike — is therefore
-    registered in ``input_slots``, a ``name -> index`` map passed as a kwarg,
-    and Rust looks inputs up by name rather than by position.
+    The geometry namespaces bypass the ``vb_graph`` graph engine but use its
+    per-row wire form: a kwarg is either the literal value or ``{"$slot": n}``,
+    where ``n`` is the position of the plugin input holding the value per row
+    (the Rust side reads it as a typed ``Param<T>``; a data operand is a
+    ``ColumnRef``). Each expression is appended as an input and its position is
+    written into its own kwarg, so no input is identified by name or by an
+    assumed position — optional operands (``point.rotate``'s ``origin``,
+    ``correspond``'s ``order``) cannot be confused with an appended parameter.
 
     Index 0 is always the namespace's own expression (``_plugin`` prepends it),
     so the first appended argument lands at index 1.
@@ -135,11 +131,10 @@ class _ArgBinder:
     def __init__(self) -> None:
         self._args: list[pl.Expr] = []
         self._kwargs: dict[str, Any] = {}
-        self._slots: dict[str, int] = {}
 
     def _append(self, name: str, expr: pl.Expr) -> None:
         # +1 leaves room for the namespace's own expression at index 0.
-        self._slots[name] = len(self._args) + 1
+        self._kwargs[name] = {"$slot": len(self._args) + 1}
         self._args.append(expr)
 
     def add_data(self, name: str, expr: pl.Expr | None) -> None:
@@ -154,11 +149,11 @@ class _ArgBinder:
         *,
         cast: Callable[[Any], Any] = float,
     ) -> None:
-        """Register a parameter as either a per-row input or a scalar kwarg.
+        """Register a parameter as either a per-row input or a literal kwarg.
 
-        A scalar rides in ``_kwargs`` under ``cast`` (``float`` by default, but
-        ``str`` / ``int`` / ``bool`` for enum and flag parameters); a ``pl.Expr``
-        becomes a per-row input.
+        A literal rides in the kwargs under ``cast`` (``float`` by default, but
+        ``str`` / ``int`` / ``bool`` for enum and flag parameters); a
+        ``pl.Expr`` becomes a per-row input.
         """
         if value is None:
             return
@@ -173,14 +168,13 @@ class _ArgBinder:
         function_name: str,
         **kwargs: Any,
     ) -> pl.Expr:
-        """Invoke ``function_name`` with the collected args, kwargs and slots."""
+        """Invoke ``function_name`` with the collected args and kwargs."""
         return namespace._plugin(
             function_name,
             args=self._args,
             kwargs={
                 **self._kwargs,
                 **kwargs,
-                "input_slots": self._slots,
                 # Injected centrally so no geometry method has to declare it;
                 # Rust reads it in `GeomParams::new`.
                 "on_null": namespace._on_null,  # ty: ignore[unresolved-attribute]

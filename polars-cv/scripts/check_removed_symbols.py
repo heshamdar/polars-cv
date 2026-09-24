@@ -162,6 +162,12 @@ REMOVED: tuple[Removed, ...] = (
     Removed("resolve_fill", "P4: ContourSource::fill"),
     Removed("opt_u8_value", "P4: Param<u8> fill_value/background"),
     Removed("resolve_usize", "P4: Param<u32> contour size"),
+    # Typed-op P5: the geometry namespaces' kwargs are typed (`Param<T>`,
+    # `ColumnRef`) and each expression kwarg carries its own `{"$slot": n}`.
+    Removed("InputSlots", "P5: slots ride in the typed kwargs"),
+    Removed("parse_named", "P5: Param<Enum> kwargs"),
+    Removed("require_named", "P5: Param<Enum> kwargs"),
+    Removed("required_f64", "P5: GeomParams::required"),
 )
 
 

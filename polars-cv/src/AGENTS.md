@@ -49,7 +49,7 @@ several minutes. Reach for `--release` only when benchmarking.
 | `cloud_auth.rs` | Bearer-token sourcing for the OAuth backends (GCS/Azure): federated ADC delegation to `gcloud`, `token_command`, expiry-aware caching |
 | `contour.rs` | Contour namespace plugin functions (IoU, matching, label_reduce, bbox variants) |
 | `point.rs` | Point geometry plugin functions |
-| `geom_params.rs` | `GeomParams` — per-row parameter resolution for those namespace functions, reading expression params off the extra inputs named in the graph-free `input_slots` map |
+| `geom_params.rs` | `GeomParams` — per-row resolution of those namespace functions' typed kwargs (`Param<T>` fields, `ColumnRef` operands), with the shared null policy and the check that every extra input is read exactly once |
 
 **The graph wire format is closed, struct by struct.** `GraphNode`,
 `UnifiedGraph`, `OutputSpec`, `SourceSpec`, `SinkSpec` and `GraphKwargs` each
@@ -173,7 +173,7 @@ Runs at Polars planning time (NOT execution time). Parses the graph JSON, resolv
 
 `tests/test_sanitation.py::test_namespace_plugin_symbols_match_registrations` pins both directions of this surface — add any new module carrying a namespace `#[polars_expr]` to the file list it scans, or the symbol silently escapes the check.
 
-Because they bypass `vb_graph`, these functions get no `ParamCtx`. Their per-row parameters ride in as **extra input series**: Python's `_ArgBinder` appends each expression-valued parameter to the inputs and records its name in an `input_slots` name→index map inside the kwargs, which `geom_params.rs` reads back through the same `ParamCol` accessors `params.rs` uses. Names, not positions — several of these functions already take optional data operands (`scores`, `origin`) positionally, where an appended parameter would be indistinguishable from an omitted operand. `GeomParams` rejects an out-of-range index and a map that does not account for every input, so a binder/reader drift fails loudly instead of silently dropping an operand.
+These functions bypass `vb_graph` but use its per-row wire form. Their kwargs are typed structs (`ContourKwargs`, `PointKwargs`, `#[derive(Op)]` so they are closed and their slots are visited): a parameter is a `Param<T>` — the literal, or `{"$slot": n}` naming the extra input Python's `_ArgBinder` appended — and an optional data operand is a `ColumnRef`. `GeomParams` resolves them through the same `ParamCol` accessors `params.rs` uses, and rejects an out-of-range slot or an extra input no kwarg reads, so a binder/reader drift fails loudly instead of silently dropping an operand.
 
 Key functions in `contour.rs`:
 - `contour_pairwise_iou`, `contour_correspond`, `contour_label_reduce`

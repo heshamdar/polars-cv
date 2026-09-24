@@ -191,8 +191,9 @@ class TestPointExpressionParams:
     def test_rotate_per_row_angle_with_origin_operand(self) -> None:
         """The optional `origin` operand and a dynamic `angle` coexist.
 
-        Both occupy plugin input slots, which is exactly the collision the
-        name-keyed `input_slots` map exists to prevent.
+        Both occupy plugin input slots; each kwarg names its own position
+        (`{"$slot": n}`), so an optional operand cannot be mistaken for an
+        appended parameter.
         """
         df = _two_rows(
             p=[{"x": 0.0, "y": 0.0}] * 2,
