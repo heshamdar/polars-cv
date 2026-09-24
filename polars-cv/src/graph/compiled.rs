@@ -2296,7 +2296,7 @@ mod tests {
         let out = exec(
             r#"{
                 "nodes": {"n0": {"source": {"format": "blob"},
-                                  "ops": [{"op": "extract_contours"}]}},
+                                  "ops": [{"op": "extract_contours", "mode": "external", "method": "simple"}]}},
                 "outputs": {"_output": {"node": "n0", "sink": {"format": "native"}, "expected_domain": "contour"}},
                 "column_bindings": {"n0": 0}
             }"#,

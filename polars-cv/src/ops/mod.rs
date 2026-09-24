@@ -23,6 +23,7 @@ pub mod channel;
 pub mod color;
 pub mod compute;
 pub mod filter;
+pub mod geometry;
 pub mod histogram;
 pub mod image;
 pub mod param;
@@ -194,6 +195,14 @@ typed_ops! {
     "clamp" => Clamp(compute::Clamp) {"min": 0.0, "max": 1.0},
     "clamp_max" => ClampMax(compute::ClampMax) {"value": 1.0},
     "clamp_min" => ClampMin(compute::ClampMin) {"value": 0.0},
+    "contour_area" => ContourArea(geometry::ContourArea) {"signed": false},
+    "contour_bounding_box" => ContourBoundingBox(geometry::ContourBoundingBox) {},
+    "contour_centroid" => ContourCentroid(geometry::ContourCentroid) {},
+    "contour_convex_hull" => ContourConvexHull(geometry::ContourConvexHull) {},
+    "contour_perimeter" => ContourPerimeter(geometry::ContourPerimeter) {},
+    "contour_scale" => ContourScale(geometry::ContourScale) {"sx": 2.0, "sy": 0.5, "origin": "bbox_center"},
+    "contour_simplify" => ContourSimplify(geometry::ContourSimplify) {"tolerance": 1.5},
+    "contour_translate" => ContourTranslate(geometry::ContourTranslate) {"dx": 1.0, "dy": -2.0},
     "convolve2d" => Convolve2d(filter::Convolve2d)
         {"kernel": [0, 0, 0, 0, 1, 0, 0, 0, 0], "ksize": 3, "normalize": false, "border": "replicate"},
     "crop" => Crop(view::Crop) {"top": 1, "left": 1, "height": 2, "width": 2},
@@ -201,6 +210,8 @@ typed_ops! {
     "dilate" => Dilate(image::Dilate) {"ksize": 3, "iterations": 1},
     "equalize_histogram" => EqualizeHistogram(image::EqualizeHistogram) {},
     "erode" => Erode(image::Erode) {"ksize": 3, "iterations": 1},
+    "extract_contours" => ExtractContours(geometry::ExtractContours)
+        {"mode": "tree", "method": "none", "min_area": 2.0},
     "flip" => Flip(view::Flip) {"axes": [1]},
     "floor" => Floor(compute::Floor) {},
     "grayscale" => Grayscale(image::Grayscale) {},
@@ -541,6 +552,32 @@ mod tests {
                 "'normalize'",
                 "",
             ),
+            (
+                json!({"op": "extract_contours", "mode": "outer", "method": "simple"}),
+                "'mode'",
+                "external",
+            ),
+            (
+                json!({"op": "extract_contours", "mode": "external", "method": "fancy"}),
+                "'method'",
+                "simple",
+            ),
+            (
+                json!({"op": "contour_area", "signed": "yes"}),
+                "'signed'",
+                "",
+            ),
+            (
+                json!({"op": "contour_scale", "sx": 1.0, "sy": 1.0, "origin": "middle"}),
+                "'origin'",
+                "centroid",
+            ),
+            (
+                json!({"op": "contour_translate", "dx": "far", "dy": 0.0}),
+                "'dx'",
+                "",
+            ),
+            (json!({"op": "contour_simplify"}), "tolerance", ""),
         ];
         for (spec, field, also) in cases {
             let err = parse_err(spec.clone());
@@ -549,6 +586,24 @@ mod tests {
         // An absent (null) axis is a global reduction, not an error.
         for op in ["reduce_max", "reduce_min", "reduce_mean"] {
             parse(json!({"op": op, "axis": null})).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_measure_with_no_parameters_refuses_a_stray_one() {
+        // `unread_param_tests` pinned this on the legacy tracker with
+        // `contour_perimeter`; the typed form refuses the key at the boundary.
+        for op in [
+            "contour_perimeter",
+            "contour_centroid",
+            "contour_bounding_box",
+            "contour_convex_hull",
+        ] {
+            let err = parse_err(json!({"op": op, "sigma": "u8"}));
+            assert!(
+                err.contains(&format!("operation '{op}'")) && err.contains("sigma"),
+                "{err}"
+            );
         }
     }
 

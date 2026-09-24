@@ -249,6 +249,143 @@
     ]
   },
   {
+    "name": "contour_area",
+    "python": "area",
+    "visibility": "public",
+    "doc": "Compute the area of the contour using the Shoelace formula.\n\nDomain transition: contour → scalar",
+    "fields": [
+      {
+        "name": "signed",
+        "doc": "If True, return signed area (negative for CW winding).",
+        "positional": false,
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
+        }
+      }
+    ]
+  },
+  {
+    "name": "contour_bounding_box",
+    "python": "bounding_box",
+    "visibility": "public",
+    "doc": "Compute the axis-aligned bounding box of the contour.\n\nDomain transition: contour → vector (returns [x, y, width, height])",
+    "fields": []
+  },
+  {
+    "name": "contour_centroid",
+    "python": "centroid",
+    "visibility": "public",
+    "doc": "Compute the centroid (center of mass) of the contour.\n\nDomain transition: contour → vector (returns [x, y])",
+    "fields": []
+  },
+  {
+    "name": "contour_convex_hull",
+    "python": "convex_hull",
+    "visibility": "public",
+    "doc": "Compute the convex hull of the contour.\n\nDomain: contour → contour",
+    "fields": []
+  },
+  {
+    "name": "contour_perimeter",
+    "python": "perimeter",
+    "visibility": "public",
+    "doc": "Compute the perimeter (arc length) of the contour.\n\nDomain transition: contour → scalar",
+    "fields": []
+  },
+  {
+    "name": "contour_scale",
+    "python": "scale_contour",
+    "visibility": "internal",
+    "doc": "Scale the contour about *origin*.\n\nDomain: contour → contour\n\nNote:\n    The default is ``\"centroid\"``, which is what this method has always\n    done — it previously hardcoded it with no way to choose. The\n    ``.contour.scale`` accessor defaults to ``\"origin\"`` instead; pass\n    *origin* explicitly if you need the two to agree.",
+    "fields": [
+      {
+        "name": "sx",
+        "doc": "X scale factor.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "sy",
+        "doc": "Y scale factor.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "origin",
+        "doc": "Point to scale about — ``\"centroid\"`` (the default), ``\"bbox_center\"``\nor ``\"origin\"``. Accepts an expression for a per-row choice: which\npoint the scale is measured from changes no output shape, rank or\ndtype, so it meets the eligibility rule for a per-row parameter.",
+        "positional": false,
+        "default": "centroid",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "ScaleOrigin",
+          "variants": [
+            "centroid",
+            "bbox_center",
+            "origin"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "contour_simplify",
+    "python": "simplify",
+    "visibility": "public",
+    "doc": "Simplify the contour using the Douglas-Peucker algorithm.\n\nDomain: contour → contour",
+    "fields": [
+      {
+        "name": "tolerance",
+        "doc": "Maximum distance from the original contour.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "contour_translate",
+    "python": "translate",
+    "visibility": "public",
+    "doc": "Translate the contour by an offset.\n\nDomain: contour → contour",
+    "fields": [
+      {
+        "name": "dx",
+        "doc": "X offset (horizontal translation).",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "dy",
+        "doc": "Y offset (vertical translation).",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
     "name": "convolve2d",
     "python": "convolve2d",
     "visibility": "public",
@@ -469,6 +606,59 @@
           "kind": "scalar",
           "per_row": true,
           "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extract_contours",
+    "python": "extract_contours",
+    "visibility": "public",
+    "doc": "Extract contours from binary mask.\n\nThe traced outline passes through the **centres** of the boundary pixels,\nso it sits half a pixel inside the region it describes: a blob filling\n``w x h`` pixels comes back bounding ``(w-1) x (h-1)``. Rasterizing the\nresult therefore erodes it by a pixel per round trip.\n\nBorders come back as a flat list with no hierarchy. ``mode=\"all\"`` yields\nthe exterior plus one border for each enclosed background region — holes\nthat touch or nest enclose one region between them — and reassembling a\nholed contour from those is the caller's job. ``mode=\"external\"`` keeps\nonly the outermost, discarding hole borders.\n\nDomain transition: buffer → contour",
+    "fields": [
+      {
+        "name": "mode",
+        "doc": "\"external\" (outer only), \"tree\" (full hierarchy), \"all\".",
+        "positional": false,
+        "default": "external",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "ExtractMode",
+          "variants": [
+            "external",
+            "tree",
+            "all"
+          ]
+        }
+      },
+      {
+        "name": "method",
+        "doc": "\"simple\" (remove redundant), \"none\" (all points), \"approx\".",
+        "positional": false,
+        "default": "simple",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "ApproxMethod",
+          "variants": [
+            "none",
+            "simple",
+            "approx"
+          ]
+        }
+      },
+      {
+        "name": "min_area",
+        "doc": "Filter small contours. Accepts a Polars expression for per-row dynamic\nthresholds.",
+        "positional": false,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
         }
       }
     ]
