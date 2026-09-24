@@ -110,6 +110,18 @@ REMOVED: tuple[Removed, ...] = (
     # Typed-op P3 (image family): every resize variant reads a typed
     # `Param<FilterType>`, whose only spellings are `NAMED`.
     Removed("resolve_filter", "P3: Param<FilterType>"),
+    # Typed-op P3 (colour/filter/reductions/phash/channel): the per-parameter
+    # legacy readers these ops used are gone with them.
+    Removed("from_str_name", "P3: Literal<ColorSpace> reads NAMED only"),
+    Removed("resolve_interpolation", "P3: Param<InterpolationType>"),
+    Removed("resolve_border_value", "P3: Param<f64> border_value"),
+    Removed("maybe_usize_literal", "P3: Option<Literal<u32>> axis"),
+    Removed("opt_u32_literal", "P3: Literal<u32> hash_size"),
+    Removed("resolve_f32_list", "P3: Vec<Param<f32>>"),
+    Removed("resolve_usize_list", "P3: Vec<Param<u32>>"),
+    Removed("as_param_slice", "P3: typed list fields"),
+    Removed("_param_list", "P3: _encode_field encodes typed list fields"),
+    Removed("is_wire_param", "P3: no nested param lists to hoist"),
 )
 
 

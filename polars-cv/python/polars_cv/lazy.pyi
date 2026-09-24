@@ -19,7 +19,6 @@ from polars_cv._types import (
     HashAlgorithm,
     IntOrExpr,
     ScaleOrigin,
-    StrOrExpr,
 )
 from polars_cv.pipeline import Pipeline
 
@@ -121,7 +120,7 @@ class LazyPipelineExpr:
     def ceil(self) -> LazyPipelineExpr: ...
     def centroid(self) -> LazyPipelineExpr: ...
     def channel_select(self, *, index: IntOrExpr) -> LazyPipelineExpr: ...
-    def channel_swap(self, *, order: list[IntOrExpr]) -> LazyPipelineExpr: ...
+    def channel_swap(self, *, order: Sequence[IntOrExpr]) -> LazyPipelineExpr: ...
     def clamp(
         self,
         min_val: FloatOrExpr,
@@ -135,11 +134,11 @@ class LazyPipelineExpr:
     def convex_hull(self) -> LazyPipelineExpr: ...
     def convolve2d(
         self,
-        kernel: list[FloatOrExpr],
+        kernel: Sequence[FloatOrExpr],
         ksize: IntOrExpr,
         *,
         normalize: BoolOrExpr = ...,
-        border: StrOrExpr = ...,
+        border: str | pl.Expr = ...,
     ) -> LazyPipelineExpr: ...
     def crop(
         self,

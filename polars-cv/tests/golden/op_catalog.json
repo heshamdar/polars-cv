@@ -146,6 +146,45 @@
     "fields": []
   },
   {
+    "name": "channel_select",
+    "python": "channel_select",
+    "visibility": "public",
+    "doc": "Extract a single channel from a multi-channel image: a 2D [H, W] buffer\nfrom a [H, W, C] input.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").channel_select(index=0)  # Red channel",
+    "fields": [
+      {
+        "name": "index",
+        "doc": "Channel index to extract (0-based). Accepts a Polars expression for\nper-row dynamic selection.",
+        "positional": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "channel_swap",
+    "python": "channel_swap",
+    "visibility": "public",
+    "doc": "Reorder channels in a multi-channel image.\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").channel_swap(order=[2, 1, 0])",
+    "fields": [
+      {
+        "name": "order",
+        "doc": "New channel ordering, e.g. [2, 1, 0] for RGB-to-BGR. **Each index may be\na literal or a Polars expression**, so the permutation can vary per row.\nThe list *length* is the channel count and must be literal.",
+        "positional": false,
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
     "name": "clamp",
     "python": "clamp",
     "visibility": "internal",
@@ -210,6 +249,64 @@
     ]
   },
   {
+    "name": "convolve2d",
+    "python": "convolve2d",
+    "visibility": "public",
+    "doc": "Apply generic 2D convolution with an arbitrary kernel.\n\nDomain: buffer → buffer\n\nExample:\n    ```python\n    >>> edge = Pipeline().source(\"image_bytes\").convolve2d(\n    ...     kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],\n    ...     ksize=3,\n    ... )\n    ```",
+    "fields": [
+      {
+        "name": "kernel",
+        "doc": "Flattened kernel values (row-major, ``ksize × ksize``). **Each\ncoefficient may be a literal float or a Polars expression**, so a batch\ncan convolve with a different kernel per row. The kernel *length* is\nstructural and must be a literal odd square.",
+        "positional": true,
+        "type": {
+          "kind": "list",
+          "inner": {
+            "kind": "scalar",
+            "per_row": true,
+            "py": "float"
+          }
+        }
+      },
+      {
+        "name": "ksize",
+        "doc": "Kernel dimension (must be odd; kernel is ``ksize × ksize``). Accepts a\nPolars expression for per-row dynamic values.",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      },
+      {
+        "name": "normalize",
+        "doc": "If True, divide output by the sum of absolute kernel values.",
+        "positional": false,
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "bool"
+        }
+      },
+      {
+        "name": "border",
+        "doc": "Border handling mode (``\"replicate\"``, ``\"zero\"``, ``\"reflect\"``).",
+        "positional": false,
+        "default": "replicate",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "BorderMode",
+          "variants": [
+            "replicate",
+            "zero",
+            "reflect"
+          ]
+        }
+      }
+    ]
+  },
+  {
     "name": "crop",
     "python": "crop",
     "visibility": "public",
@@ -261,6 +358,50 @@
             "per_row": true,
             "py": "int"
           }
+        }
+      }
+    ]
+  },
+  {
+    "name": "cvt_color",
+    "python": "convert_color",
+    "visibility": "public",
+    "doc": "Convert between color spaces.\n\nDomain: buffer → buffer\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").convert_color(\"rgb\", \"hsv\")",
+    "fields": [
+      {
+        "name": "from_space",
+        "doc": "Source color space (rgb, bgr, hsv, lab, ycbcr, gray).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "ColorSpace",
+          "variants": [
+            "rgb",
+            "bgr",
+            "hsv",
+            "lab",
+            "ycbcr",
+            "gray"
+          ]
+        }
+      },
+      {
+        "name": "to_space",
+        "doc": "Target color space (rgb, bgr, hsv, lab, ycbcr, gray).",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "ColorSpace",
+          "variants": [
+            "rgb",
+            "bgr",
+            "hsv",
+            "lab",
+            "ycbcr",
+            "gray"
+          ]
         }
       }
     ]
@@ -756,10 +897,209 @@
     ]
   },
   {
+    "name": "perceptual_hash",
+    "python": "perceptual_hash",
+    "visibility": "internal",
+    "doc": "Compute a perceptual hash fingerprint.\n\nThe public `Pipeline.perceptual_hash` is sugar over this op (its signature\ndefault is the Python `HashAlgorithm` member).",
+    "fields": [
+      {
+        "name": "algorithm",
+        "doc": "\"perceptual\" (pHash), \"average\" (aHash), \"difference\" (dHash).",
+        "positional": false,
+        "default": "perceptual",
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "HashAlgorithm",
+          "variants": [
+            "average",
+            "difference",
+            "perceptual",
+            "blockhash"
+          ]
+        }
+      },
+      {
+        "name": "hash_size",
+        "doc": "Number of bits in the hash (must be power of 2). It fixes the output\nvector length, so it is literal-only.",
+        "positional": false,
+        "default": 64,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
     "name": "reciprocal",
     "python": "reciprocal",
     "visibility": "public",
     "doc": "Reciprocal (`1 / x`; ±inf at zero). Domain: buffer → buffer.",
+    "fields": []
+  },
+  {
+    "name": "reduce_argmax",
+    "python": "reduce_argmax",
+    "visibility": "public",
+    "doc": "Index of the maximum value along an axis.\n\nUnlike other reductions it always requires an axis: a global index\nis ambiguous for a multi-dimensional array. Domain transition:\nbuffer → buffer (reduced shape, i64 dtype).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis along which to find the index.",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_argmin",
+    "python": "reduce_argmin",
+    "visibility": "public",
+    "doc": "Index of the minimum value along an axis.\n\nUnlike other reductions it always requires an axis: a global index\nis ambiguous for a multi-dimensional array. Domain transition:\nbuffer → buffer (reduced shape, i64 dtype).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis along which to find the index.",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_max",
+    "python": "reduce_max",
+    "visibility": "public",
+    "doc": "Reduce buffer by computing the maximum value.\n\nDomain transition: axis=None: buffer → scalar; axis=N: buffer →\nbuffer (reduced shape).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
+        "positional": true,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_mean",
+    "python": "reduce_mean",
+    "visibility": "public",
+    "doc": "Compute arithmetic mean.\n\nDomain transition: axis=None: buffer → scalar; axis=N: buffer →\nbuffer (reduced shape).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
+        "positional": true,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_min",
+    "python": "reduce_min",
+    "visibility": "public",
+    "doc": "Reduce buffer by computing the minimum value.\n\nDomain transition: axis=None: buffer → scalar; axis=N: buffer →\nbuffer (reduced shape).",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis to reduce along. None for global reduction. It fixes the\noutput rank, so it is literal-only.",
+        "positional": true,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_percentile",
+    "python": "reduce_percentile",
+    "visibility": "public",
+    "doc": "Compute the q-th percentile of all values (linear interpolation, as numpy's\ndefault).\n\nDomain transition: buffer -> scalar",
+    "fields": [
+      {
+        "name": "q",
+        "doc": "Percentile to compute, in [0, 100]. Accepts a Polars expression for\nper-row dynamic values.",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_popcount",
+    "python": "reduce_popcount",
+    "visibility": "public",
+    "doc": "Count set bits (1s) in the buffer.\n\nDomain transition: buffer → scalar",
+    "fields": []
+  },
+  {
+    "name": "reduce_std",
+    "python": "reduce_std",
+    "visibility": "public",
+    "doc": "Reduce buffer by computing the standard deviation.\n\nDomain transition: axis=None: buffer -> scalar; axis=N: buffer -> buffer\n(reduced shape).\n\nExample:\n    >>> pipe = Pipeline().source(\"image_bytes\").reduce_std(ddof=1)",
+    "fields": [
+      {
+        "name": "axis",
+        "doc": "Axis to reduce along. None for global reduction.",
+        "positional": true,
+        "type": {
+          "kind": "optional",
+          "inner": {
+            "kind": "scalar",
+            "per_row": false,
+            "py": "int"
+          }
+        }
+      },
+      {
+        "name": "ddof",
+        "doc": "Delta degrees of freedom. 0 for population std (default), 1 for sample\nstd. Accepts a Polars expression for per-row dynamic values.",
+        "positional": true,
+        "default": 0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "int"
+        }
+      }
+    ]
+  },
+  {
+    "name": "reduce_sum",
+    "python": "reduce_sum",
+    "visibility": "public",
+    "doc": "Sum all elements in the buffer.\n\nDomain transition: buffer → scalar",
     "fields": []
   },
   {
@@ -1022,6 +1362,61 @@
             "gaussian",
             "lanczos3"
           ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "rotate",
+    "python": "rotate",
+    "visibility": "public",
+    "doc": "Rotate image by specified angle.\n\nFor angles of 90, 180, or 270 degrees, this uses zero-copy view operations\n(``interpolation`` and ``border_value`` do not apply: nothing is resampled\nand no out-of-bounds region is exposed). For arbitrary angles, the rotation\nis performed via an affine transformation using the specified\ninterpolation and border value. For combined rotation + scale or explicit\noutput sizing, use :meth:`rotate_and_scale` or :meth:`warp_affine`.\n\nDomain: buffer -> buffer\n\nExample:\n    ```python\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(90)\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(45, expand=True)\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(pl.col(\"angle\"))\n    >>> pipe = Pipeline().source(\"image_bytes\").rotate(30, interpolation=\"nearest\")\n    ```",
+    "fields": [
+      {
+        "name": "angle",
+        "doc": "Rotation angle in degrees (positive = clockwise). Can be a literal float\nor Polars expression.",
+        "positional": true,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
+        }
+      },
+      {
+        "name": "expand",
+        "doc": "If True, expand output dimensions to fit rotated image. If False\n(default), keep original dimensions (corners may be cropped).",
+        "positional": false,
+        "default": false,
+        "type": {
+          "kind": "scalar",
+          "per_row": false,
+          "py": "bool"
+        }
+      },
+      {
+        "name": "interpolation",
+        "doc": "Interpolation method for arbitrary angles -- ``\"bilinear\"`` (default) or\n``\"nearest\"``. Not applicable to 90/180/270 degree rotations.",
+        "positional": false,
+        "default": "bilinear",
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "InterpolationType",
+          "variants": [
+            "nearest",
+            "bilinear"
+          ]
+        }
+      },
+      {
+        "name": "border_value",
+        "doc": "Fill value for out-of-bounds pixels (default 0). Not applicable to\n90/180/270 degree rotations.",
+        "positional": false,
+        "default": 0.0,
+        "type": {
+          "kind": "scalar",
+          "per_row": true,
+          "py": "float"
         }
       }
     ]

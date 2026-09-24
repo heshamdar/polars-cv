@@ -34,17 +34,6 @@ crate::naming::named_variants!(ColorSpace {
 });
 
 impl ColorSpace {
-    /// Additional parser-accepted spellings, not surfaced as canonical names.
-    pub const ALIASES: &'static [(&'static str, ColorSpace)] =
-        &[("grey", ColorSpace::Gray), ("grayscale", ColorSpace::Gray)];
-
-    /// Parse a color space from a string (case-insensitive; accepts aliases).
-    pub fn from_str_name(s: &str) -> Option<Self> {
-        let lower = s.to_lowercase();
-        crate::naming::lookup(Self::NAMED, &lower)
-            .or_else(|| crate::naming::lookup(Self::ALIASES, &lower))
-    }
-
     /// Number of channels for this color space.
     pub fn channels(&self) -> usize {
         match self {
