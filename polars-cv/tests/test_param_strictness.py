@@ -33,9 +33,9 @@ from polars_cv._types import (
     NormalizeMethod,
     PadMode,
     PadPosition,
-    ParamValue,
 )
 from tests._expr_param_runner import assert_matches_per_row_literals
+from tests._plan_view import EXPR, ops_of, planned
 from tests.conftest import plugin_required
 
 #: Every test here is a structural guard: it checks the *shape* of the codebase
@@ -509,8 +509,8 @@ class TestEnumParamsAcceptExpressions:
             .source("image_bytes")
             .resize(height=7, width=5, filter=pl.col("f"))
         )
-        assert pipe._shape_hints.height == ParamValue(is_expr=False, value=7)
-        assert pipe._shape_hints.width == ParamValue(is_expr=False, value=5)
+        assert planned(pipe).height == 7
+        assert planned(pipe).width == 5
 
     def test_rotate_interpolation_accepts_expr(self, image_bytes: bytes) -> None:
         _assert_matches_per_row_literals(
@@ -730,7 +730,7 @@ class TestFlagParamsAcceptExpressions:
             .extract_contours()
             .area(signed=pl.col("s"))
         )
-        assert pipe._ops[-1].params["signed"].is_expr
+        assert ops_of(pipe)[-1].params["signed"] == EXPR
         out = df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("native"))
         assert out.height == 2
 

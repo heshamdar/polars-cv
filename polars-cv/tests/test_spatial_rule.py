@@ -11,12 +11,12 @@ There is deliberately no consumer of the rule yet (reordering passes are a
 later phase); this only pins the contract surface.
 """
 
-import json
 import re
 
 import pytest
 
 from polars_cv import Pipeline
+from tests._plan_view import op_json
 from tests.conftest import plugin_required
 
 # Known spatial-rule vocabulary: pointwise | neighborhood:<radius> | global |
@@ -28,8 +28,7 @@ def _last_spec_contract(pipe: Pipeline) -> dict:
     """``op_contract`` for a pipeline's final op."""
     from polars_cv._lib import op_contract
 
-    spec = pipe._ops[-1]
-    return op_contract(json.dumps(spec.to_dict()))
+    return op_contract(op_json(pipe, -1))
 
 
 def _src() -> Pipeline:

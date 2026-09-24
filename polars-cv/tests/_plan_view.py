@@ -65,6 +65,56 @@ def planned(p: "Pipeline | LazyPipelineExpr") -> PlanView:
     )
 
 
-def ops_of(p: "Pipeline | LazyPipelineExpr") -> list[dict]:
-    """The wire form of each op appended to *p*, in order."""
-    return [op.to_dict() for op in _pipeline(p)._ops]
+@dataclass(frozen=True)
+class OpView:
+    """One appended op: its name and its parameters as plain values.
+
+    A literal parameter is its value (lists element-wise); a per-row
+    expression is :data:`EXPR`. Independent of the wire encoding, which the
+    typed-op migration changes.
+    """
+
+    op: str
+    params: dict[str, Any]
+
+
+def _plain(value: Any) -> Any:
+    if hasattr(value, "is_expr") and hasattr(value, "value"):  # a ParamValue
+        return EXPR if value.is_expr else _plain(value.value)
+    if isinstance(value, dict) and value.get("type") in ("literal", "expr"):
+        return EXPR if value["type"] == "expr" else _plain(value.get("value"))
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    return value
+
+
+def ops_of(p: "Pipeline | LazyPipelineExpr") -> list[OpView]:
+    """Each op appended to *p*, in order."""
+    return [
+        OpView(op.op, {name: _plain(v) for name, v in op.params.items()})
+        for op in _pipeline(p)._ops
+    ]
+
+
+def op_names(p: "Pipeline | LazyPipelineExpr") -> list[str]:
+    """The name of each op appended to *p*, in order."""
+    return [op.op for op in ops_of(p)]
+
+
+def source_of(p: "Pipeline | LazyPipelineExpr") -> Any:
+    """*p*'s source specification (``None`` for a continuation pipeline).
+
+    Returned as-is until the typed-source phase (P4) gives it a stable view.
+    """
+    return _pipeline(p)._source
+
+
+def op_json(p: "Pipeline | LazyPipelineExpr", index: int) -> str:
+    """The wire JSON of one appended op, for tests of the op-level FFI.
+
+    Only the ``op_*`` FFI tests need the wire form; they are rewritten when the
+    planner moves into Rust (``TYPED_OPS_PLAN.md``, P7) and this goes with them.
+    """
+    import json
+
+    return json.dumps(_pipeline(p)._ops[index].to_dict())

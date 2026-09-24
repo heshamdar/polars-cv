@@ -19,6 +19,7 @@ import polars as pl
 import pytest
 
 from polars_cv import CloudOptions, Pipeline, numpy_from_struct
+from tests._plan_view import source_of
 from tests.conftest import plugin_required
 
 
@@ -170,8 +171,8 @@ class TestCloudOptionsRoundTrip:
         """`auto` resolves to `file_path` for a String column, so it reads them."""
         opts = CloudOptions(aws_region="eu-west-1")
         pipe = Pipeline().source("auto", cloud_options=opts)
-        assert pipe._source is not None
-        assert pipe._source.cloud_options == opts
+        assert source_of(pipe) is not None
+        assert source_of(pipe).cloud_options == opts
 
 
 @plugin_required

@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 
 from polars_cv import Pipeline, numpy_from_struct
+from tests._plan_view import planned
 from tests.conftest import plugin_required
 
 if TYPE_CHECKING:
@@ -347,13 +348,13 @@ class TestEdgeCases:
     def test_pipeline_dtype_tracking_lab(self) -> None:
         """Verify pipeline tracks f32 dtype after LAB conversion."""
         pipe = Pipeline().source("image_bytes").convert_color("rgb", "lab")
-        assert pipe._output_dtype == "f32"
+        assert planned(pipe).dtype == "f32"
 
     def test_pipeline_dtype_tracking_hsv(self) -> None:
         """Verify pipeline preserves u8 dtype for HSV conversion."""
         pipe = Pipeline().source("image_bytes").convert_color("rgb", "hsv")
         # auto from image_bytes, preserved by cvt_color (non-LAB)
-        assert pipe._output_dtype == "auto"
+        assert planned(pipe).dtype == "auto"
 
 
 # ===========================================================================
