@@ -81,6 +81,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Changed
 
+- **`crop`, `resize`, `warp_affine` and `histogram` are typed ops.** Each is one
+  Rust definition (`polars-cv/src/ops/`) from which the Python builder method is
+  generated; call signatures are unchanged. Their wire form is the value itself
+  (`"height": 224`, `"filter": "bilinear"`) or `{"$slot": n}`, and the Rust
+  definition is now the only validator, so errors are reported by it — naming
+  the op, the field and the valid values (`operation 'resize': 'filter':
+  unknown FilterType "bogus", expected one of [...]`, `'top': -5 cannot be
+  negative`). A misspelled or extra field in a hand-built graph is rejected by
+  name. On the wire, `warp_affine`'s `output_height`/`output_width` are one
+  `output_size` field and `histogram`'s `range_min`/`range_max` one `range`
+  field, matching the Python signatures; a `range_min` without `range_max` used
+  to be silently ignored. (Typed-op plan P2.)
 - **Expression parameters cross the plugin boundary as positional slots.** A
   parameter given as a `pl.Expr` serializes as `{"$slot": n}`, the index of the
   plugin input column that carries it; the graph assigns each distinct
@@ -173,6 +185,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Removed
 
+- **`resize(filter=)` no longer accepts `"triangle"` from a per-row column.**
+  It was a parser-only alias for `"bilinear"` that the Python builder already
+  rejected as a literal, so only a column value could reach it. Use
+  `"bilinear"`. (The legacy resize variants keep it until they are migrated.)
 - **The `affine_fusion` optimization pass, and the `rotate_affine_params` FFI it
   used.** Collapsing a run of warps into one composed warp folds several
   interpolation passes into one (and drops the intermediate clip of an
@@ -266,6 +282,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   for planner state (`tests/_plan_view.py`, 30 files migrated, guarded), and
   performance baselines (`benchmarks/reports/2026-09-24-typed-ops-baseline/`,
   new `benchmarks/plan_build.py`).
+- **Typed-op migration, P2 (catalogue).** New crate `polars-cv-macros`
+  (`#[derive(Op)]`) and module `polars-cv/src/ops/`: `Param<T>`/`Literal<T>`
+  fields, the `typed_ops!` registry, and `op_catalog.json` →
+  `scripts/gen_ops.py` → `python/polars_cv/_ops_generated.py`, which `Pipeline`
+  inherits. `OpSpec` deserialization dispatches by name to the typed or the
+  legacy (`LEGACY_OPS`, was `KNOWN_OPS`) path with no fallback between them.
+  The API docs render inherited members.
 - **Typed-op migration, P1 (positional slots).** `_types.SlotTable` is the one
   expression-identity authority; the process-wide `expr_key` registry, Rust's
   name->slot binding and the planning probe re-serializers are deleted and

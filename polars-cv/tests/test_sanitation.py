@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 import os
 import re
 from pathlib import Path
@@ -378,7 +379,7 @@ def test_registry_parity_all_rust_ops_are_reachable():
 
     The forward test guards ``OP_NAMES ⊆ known_ops()``. This is the reverse
     direction: ``known_ops() ⊆ OP_NAMES``. Together they pin an exact equality,
-    so a Rust ``resolve_op`` arm registered in ``KNOWN_OPS`` cannot sit
+    so a Rust op registered in ``known_ops()`` cannot sit
     unreachable from any ``Pipeline``/lazy builder (the gap that hid
     ``channel_merge`` and the graph-path contour ops before this suite existed).
 
@@ -391,7 +392,7 @@ def test_registry_parity_all_rust_ops_are_reachable():
     pipeline_ops = set(Pipeline.OP_NAMES)
     unreachable = rust_ops - pipeline_ops
     assert not unreachable, (
-        "Rust ops in KNOWN_OPS with no Python builder that emits them "
+        "Rust ops in known_ops() with no Python builder that emits them "
         f"(dead or unconnected graph path): {sorted(unreachable)}"
     )
 
@@ -514,6 +515,8 @@ def _emitted_op_names_from_source():
     names |= set(re.findall(r'_append_op\(\s*"([a-z_0-9]+)"', text))
     lazy = (pkg / "lazy.py").read_text()
     names |= set(re.findall(r'_(?:add_)?binary_op\("([a-z_]+)"', lazy))
+    generated = (pkg / "_ops_generated.py").read_text()
+    names |= set(re.findall(r'_append_typed\(\s*"([a-z_0-9]+)"', generated))
     return names
 
 
@@ -533,7 +536,7 @@ def test_op_names_covers_all_emitted_ops():
 
 @requires_checkout
 def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
-    """``Pipeline.OP_NAMES`` must equal Rust's ``KNOWN_OPS``, checked from source.
+    """``Pipeline.OP_NAMES`` must equal Rust's op registry, checked from source.
 
     The two ``test_registry_parity_*`` tests already pin this equality in both
     directions, but both are ``@plugin_required`` and skip when the extension
@@ -542,7 +545,7 @@ def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
     track the working tree, so a contributor adding a builder op and running
     the suite before rebuilding gets two skips where they expect two failures.
 
-    Reading ``KNOWN_OPS`` out of the Rust source needs no plugin, so the drift
+    Reading the registry out of the Rust source needs no plugin, so the drift
     is caught in that window too. Source-scanning is the weaker technique and
     is used here only because the stronger one is unavailable by construction;
     it asserts it parsed a plausible registry rather than matching nothing.
@@ -550,17 +553,23 @@ def test_op_names_matches_rust_known_ops_without_the_plugin() -> None:
     src = rust_src_dir()
 
     text = (src / "execute.rs").read_text()
-    m = re.search(r"pub const KNOWN_OPS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
-    assert m, "could not find KNOWN_OPS in execute.rs — scan is out of date"
+    m = re.search(r"pub const LEGACY_OPS: &\[&str\] = &\[(.*?)\n\];", text, re.S)
+    assert m, "could not find LEGACY_OPS in execute.rs — scan is out of date"
     # Strip comments first: this codebase explains absences inline (`// "sobel"
     # is deliberately absent`), and a quoted name in one would read as an op.
     body = re.sub(r"(?m)//.*$", "", m.group(1))
     rust_ops = set(re.findall(r'"([a-z0-9_]+)"', body))
-    assert len(rust_ops) > 50, f"KNOWN_OPS scan found only {len(rust_ops)} ops"
+    # The typed half of the registry: the committed catalogue, which the Rust
+    # test `catalog_matches_the_committed_file` pins to the definitions.
+    catalog = json.loads(
+        (src.parent / "tests" / "golden" / "op_catalog.json").read_text()
+    )
+    rust_ops |= {op["name"] for op in catalog}
+    assert len(rust_ops) > 50, f"op registry scan found only {len(rust_ops)} ops"
 
     declared = set(Pipeline.OP_NAMES)
     assert declared == rust_ops, (
-        "Pipeline.OP_NAMES has drifted from Rust KNOWN_OPS: "
+        "Pipeline.OP_NAMES has drifted from the Rust op registry: "
         f"python-only={sorted(declared - rust_ops)}, "
         f"rust-only={sorted(rust_ops - declared)}"
     )
@@ -610,6 +619,10 @@ _REQUIRED_LIB_HOOKS = (
     # `test_python_types_match_the_rust_declaration` so Python's
     # `EXTENSION_TYPES` cannot drift from `ext_types::ExtType::ALL`.
     "extension_types",
+    # The typed op catalogue, read by `test_the_committed_catalog_is_the_built_one`
+    # so the committed JSON the Python builder is generated from cannot lag the
+    # built extension.
+    "op_catalog",
 )
 
 
@@ -1288,12 +1301,14 @@ def test_explicit_lazy_methods_take_a_lazy_operand():
 
 
 def _op_json(op: str, **params: object) -> str:
-    import json
+    """An all-literal op's wire JSON, in whichever form (typed or legacy) the
+    op crosses the boundary in — ``OpSpec.to_dict`` decides, not this helper."""
+    from polars_cv._types import OpSpec, ParamValue, planning_slots
 
-    spec: dict = {"op": op}
-    for k, v in params.items():
-        spec[k] = {"type": "literal", "value": v}
-    return json.dumps(spec)
+    spec = OpSpec(
+        op, {k: ParamValue(is_expr=False, value=v) for k, v in params.items()}
+    )
+    return json.dumps(spec.to_dict(planning_slots))
 
 
 @plugin_required
@@ -1306,27 +1321,31 @@ def _op_json(op: str, **params: object) -> str:
         # (dtype is an encoding concern -> "auto"); counts/normalized/edges are
         # typed vectors.
         (
-            _op_json("histogram", bins=8, closed="left", output="quantized"),
+            _op_json(
+                "histogram", bins=8, range=None, closed="left", output="quantized"
+            ),
             ("buffer", "u8", 3),
             ("buffer", "u32", 3),
         ),
         (
-            _op_json("histogram", bins=8, closed="left", output="buckets"),
+            _op_json("histogram", bins=8, range=None, closed="left", output="buckets"),
             ("buffer", "u8", 3),
             ("vector", "auto", 1),
         ),
         (
-            _op_json("histogram", bins=8, closed="left", output="counts"),
+            _op_json("histogram", bins=8, range=None, closed="left", output="counts"),
             ("buffer", "u8", 3),
             ("vector", "u64", 1),
         ),
         (
-            _op_json("histogram", bins=8, closed="left", output="normalized"),
+            _op_json(
+                "histogram", bins=8, range=None, closed="left", output="normalized"
+            ),
             ("buffer", "u8", 3),
             ("vector", "f64", 1),
         ),
         (
-            _op_json("histogram", bins=8, closed="left", output="edges"),
+            _op_json("histogram", bins=8, range=None, closed="left", output="edges"),
             ("buffer", "u8", 3),
             ("vector", "f64", 1),
         ),
@@ -1533,7 +1552,12 @@ def test_enum_validation_uniform(build, label: str, enum_name: str, good: str) -
     and asserts that variant is one the Rust enum actually publishes rather
     than a name hard-coded here that both sides might have dropped.
     """
-    with pytest.raises(ValueError, match=rf"Invalid {label} '__bogus__'"):
+    # Legacy ops raise `_validate_enum`'s message; typed ops (typed-op P2+) the
+    # Rust definition's, naming the enum and its valid values. P6 replaces
+    # this with one catalogue-driven check.
+    with pytest.raises(
+        ValueError, match=rf"Invalid {label} '__bogus__'|unknown \w+ \"__bogus__\""
+    ):
         build("__bogus__")
 
     build(good)  # must not raise
@@ -2868,3 +2892,34 @@ class TestContourAndBboxSchemaHaveOneDeclaration:
             f"polars-cv/src/geom_schema.rs is the authority -- call "
             f"point_fields()/point_struct_dtype() instead of respelling it."
         )
+
+
+@plugin_required
+def test_the_committed_catalog_is_the_built_one() -> None:
+    """``tests/golden/op_catalog.json`` must be what the built extension emits.
+
+    The Rust test ``catalog_matches_the_committed_file`` pins the file to the
+    definitions; this pins it to the ``.so`` actually loaded, and the generated
+    module to the file, so the builder Python runs is the one Rust accepts.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from polars_cv._lib import op_catalog
+
+    root = Path(__file__).resolve().parent.parent
+    committed = (root / "tests" / "golden" / "op_catalog.json").read_text()
+    assert op_catalog() == committed, (
+        "op_catalog.json differs from the built extension: rebuild (maturin "
+        "develop) or re-bless (POLARS_CV_BLESS=1 cargo test -p polars-cv "
+        "catalog_matches)"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "gen_ops", root / "scripts" / "gen_ops.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.OUTPUT.read_text() == module.generate(), (
+        "_ops_generated.py is out of date. Run: python scripts/gen_ops.py"
+    )

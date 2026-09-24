@@ -568,7 +568,7 @@ class TestEnumParamsAcceptExpressions:
             .source("image_bytes")
             .resize(height=8, width=8, filter=pl.col("f"))
         )
-        with pytest.raises(Exception, match="unknown value"):
+        with pytest.raises(Exception, match='unknown FilterType "not-a-filter"'):
             df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
     def test_wrong_dtype_for_enum_param_errors(self, image_bytes: bytes) -> None:
@@ -583,7 +583,7 @@ class TestEnumParamsAcceptExpressions:
             df.with_columns(r=pl.col("image").cv.pipe(pipe).sink("numpy"))
 
     def test_literal_enum_still_validated_at_build_time(self) -> None:
-        with pytest.raises(ValueError, match="Invalid filter"):
+        with pytest.raises(ValueError, match='unknown FilterType "bogus"'):
             Pipeline().source("image_bytes").resize(height=8, width=8, filter="bogus")
 
 

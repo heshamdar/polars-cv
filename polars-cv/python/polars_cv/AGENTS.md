@@ -170,7 +170,7 @@ rank, or dtype**. Everything else follows from that one invariant.
    thresholds, contrast/gamma/brightness/sharpen factors, morphology
    ksize/iterations, channel_select index, convolve2d ksize, rasterize and
    contour-source `width`/`height`/`fill_value`/`background`, histogram
-   `range_min`/`range_max`, extract_contours `min_area`, reduce_percentile q,
+   `range` (both ends), extract_contours `min_area`, reduce_percentile q,
    reduce_std ddof.
 2. *Per-element lists*, via `_param_list` — the list **length** stays structural
    while each element may be an expression: warp_affine `matrix`, `reshape`

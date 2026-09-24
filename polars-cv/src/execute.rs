@@ -6,8 +6,8 @@
 use polars::prelude::*;
 
 use view_buffer::{
-    geometry::rasterize::rasterize, AffineParams, BinaryOp, ComputeOp, DType, FilterType,
-    GeometryOp, ImageAdapter, ImageCodec, ImageOp, ImageOpKind, InterpolationType, NormalizeMethod,
+    geometry::rasterize::rasterize, BinaryOp, ComputeOp, DType, FilterType, GeometryOp,
+    ImageAdapter, ImageCodec, ImageOp, ImageOpKind, InterpolationType, NormalizeMethod,
     PlannedDType, ScalarOp, ViewBuffer, ViewDto, ViewOp,
 };
 
@@ -271,15 +271,16 @@ pub fn encode_sink(buffer: &ViewBuffer, sink: &SinkSpec) -> PolarsResult<Vec<u8>
     }
 }
 
-/// The complete set of operation names `resolve_op` can execute.
+/// The operations still resolved by name through [`resolve_op_inner`].
 ///
-/// This is the single registry of executable ops, surfaced to Python via
-/// `_lib.known_ops()` so the planner/tests can check that every op a `Pipeline`
-/// emits is executable (B1). It must list exactly the top-level match arms in
-/// [`resolve_op`]; the `known_ops_all_resolve` unit test guards the forward
-/// direction (every entry resolves), and `unknown_op_is_rejected` guards that
-/// the catch-all still rejects names that are not arms.
-pub const KNOWN_OPS: &[&str] = &[
+/// The typed-op migration (`TYPED_OPS_PLAN.md`) moves ops from here into the
+/// typed catalogue (`crate::ops::TypedOp`) family by family; the two sets are
+/// disjoint and together are exactly the executable ops
+/// (`typed_and_legacy_ops_partition_the_op_set`). It must list exactly the
+/// top-level match arms in [`resolve_op_inner`]: `known_ops_all_resolve`
+/// guards the forward direction and `resolve_op_arms_are_all_known_ops` the
+/// reverse, so a migrated op cannot leave its arm behind.
+pub const LEGACY_OPS: &[&str] = &[
     "abs",
     "add",
     "add_constant",
@@ -309,7 +310,6 @@ pub const KNOWN_OPS: &[&str] = &[
     "contour_simplify",
     "contour_translate",
     "convolve2d",
-    "crop",
     "cvt_color",
     "dilate",
     "divide",
@@ -320,7 +320,6 @@ pub const KNOWN_OPS: &[&str] = &[
     "flip",
     "floor",
     "grayscale",
-    "histogram",
     "invert",
     "label_reduce",
     "letterbox",
@@ -347,7 +346,6 @@ pub const KNOWN_OPS: &[&str] = &[
     "reduce_sum",
     "relu",
     "reshape",
-    "resize",
     "resize_max",
     "resize_min",
     "resize_scale",
@@ -364,7 +362,6 @@ pub const KNOWN_OPS: &[&str] = &[
     "threshold",
     "transpose",
     "trunc",
-    "warp_affine",
 ];
 
 /// A fusable single-buffer engine op, as a resolved step.
@@ -382,6 +379,12 @@ fn buffer_step(dto: ViewDto) -> PolarsResult<GraphStep> {
 /// Every parameter on the spec must be read by the arm that handles it. See
 /// [`resolve_op_inner`] for why, and [`OpParams`] for how.
 pub fn resolve_op(op_spec: &OpSpec, row_idx: usize, ctx: &ParamCtx) -> PolarsResult<GraphStep> {
+    let op_spec = match op_spec {
+        // Typed: serde has already rejected any field the op does not declare,
+        // and the op's `OpDef` destructures every one it does.
+        OpSpec::Typed(op) => return op.resolve(row_idx, ctx),
+        OpSpec::Legacy(spec) => spec,
+    };
     let params = OpParams::new(&op_spec.params);
     let step = resolve_op_inner(&op_spec.op, &params, row_idx, ctx)?;
 
@@ -451,36 +454,6 @@ fn resolve_op_inner(
             let axes = get_param(params, "axes")?.as_int_list()?;
             buffer_step(ViewDto::View(ViewOp::Flip(axes)))
         }
-        "crop" => {
-            // Every bound is an index, so a negative one is an error, not a
-            // value to clamp: clamping `top=-5` to 0 while keeping the height
-            // returned a shifted window. `height`/`width` are independent —
-            // an absent one means "to the end of that axis" (`usize::MAX`).
-            // A window that runs past the input is rejected by
-            // `ViewOp::Crop`'s `validate`, which is where the input shape is
-            // known (CR-42).
-            let index = |name: &str, p: &ParamValue| -> PolarsResult<usize> {
-                let v = p.resolve_i64(row_idx, ctx)?;
-                usize::try_from(v).map_err(|_| {
-                    polars_err!(ComputeError: "crop: '{}' cannot be negative (got {})", name, v)
-                })
-            };
-            let top = index("top", get_param(params, "top")?)?;
-            let left = index("left", get_param(params, "left")?)?;
-            let end_of = |origin: usize, extent: &str| -> PolarsResult<usize> {
-                match params.get(extent) {
-                    None => Ok(usize::MAX),
-                    Some(p) => origin
-                        .checked_add(index(extent, p)?)
-                        .filter(|&e| e != usize::MAX)
-                        .ok_or_else(|| polars_err!(ComputeError: "crop: '{}' overflows", extent)),
-                }
-            };
-            let start = vec![top, left, 0];
-            let end = vec![end_of(top, "height")?, end_of(left, "width")?, usize::MAX];
-            buffer_step(ViewDto::View(ViewOp::Crop { start, end }))
-        }
-
         // Compute operations
         "cast" => {
             let dtype_str = get_param(params, "dtype")?.resolve_string()?;
@@ -560,19 +533,6 @@ fn resolve_op_inner(
         }
 
         // Image operations
-        "resize" => {
-            let height = get_param(params, "height")?.resolve_u32(row_idx, ctx)?;
-            let width = get_param(params, "width")?.resolve_u32(row_idx, ctx)?;
-            let filter = resolve_filter(params, row_idx, ctx)?;
-
-            buffer_step(ViewDto::Image(ImageOp {
-                kind: ImageOpKind::Resize {
-                    width,
-                    height,
-                    filter,
-                },
-            }))
-        }
         "resize_scale" => {
             let scale_x = get_param(params, "scale_x")?.resolve_f32(row_idx, ctx)?;
             let scale_y = get_param(params, "scale_y")?.resolve_f32(row_idx, ctx)?;
@@ -760,70 +720,6 @@ fn resolve_op_inner(
         }
 
         // Affine warp operation
-        "warp_affine" => {
-            // Each matrix element is its own ParamValue so any of the six can be
-            // a per-row expression (a different affine per row in one call). The
-            // compiled graph pre-parses this into a `List`, borrowed here with no
-            // per-row allocation; the JSON-introspection path parses once.
-            let matrix_param = get_param(params, "matrix")?;
-            let owned_matrix;
-            let matrix_params: &[ParamValue] = match matrix_param.as_param_slice() {
-                Some(slice) => slice,
-                None => {
-                    owned_matrix = matrix_param.as_param_list()?;
-                    &owned_matrix
-                }
-            };
-            if matrix_params.len() != 6 {
-                return Err(polars_err!(
-                    ComputeError: "warp_affine: matrix must have exactly 6 elements, got {}",
-                    matrix_params.len()
-                ));
-            }
-            let matrix_vec: Vec<f64> = matrix_params
-                .iter()
-                .map(|p| p.resolve_f64(row_idx, ctx))
-                .collect::<PolarsResult<Vec<f64>>>()?;
-            let matrix: [f64; 6] = matrix_vec
-                .try_into()
-                .map_err(|_| polars_err!(ComputeError: "warp_affine: matrix conversion failed"))?;
-
-            let output_height = get_param(params, "output_height")?.resolve_u32(row_idx, ctx)?;
-            let output_width = get_param(params, "output_width")?.resolve_u32(row_idx, ctx)?;
-
-            let interpolation = resolve_interpolation(params, row_idx, ctx)?;
-            let border_value = resolve_border_value(params, row_idx, ctx)?;
-
-            let affine = AffineParams {
-                matrix,
-                output_height,
-                output_width,
-                interpolation,
-                border_value,
-            };
-            // Warping is inverse mapping — for each output pixel, ask where it
-            // came from — so a matrix that collapses the plane onto a line or a
-            // point has no answer. The runner used to substitute the identity
-            // for one, handing back the input as though the transform had been
-            // applied. Reject it here, where the user supplied it, and name the
-            // determinant so the offending coefficients are findable.
-            //
-            // Not under a plan-time probe: every expression parameter is bound
-            // to the *same* placeholder there, so a per-row matrix arrives as
-            // six equal coefficients and is singular by construction. Its real
-            // values only exist per row, which is where this same arm runs for
-            // a dynamic op — so the check still covers them, just later.
-            if !ctx.is_probe() && !affine.is_invertible() {
-                return Err(polars_err!(ComputeError:
-                    "warp_affine: matrix {:?} is singular (determinant {}), so it \
-                     has no inverse and the warp is undefined. A row of zeros, a \
-                     zero scale factor on an axis, or two proportional rows will \
-                     do this.",
-                    affine.matrix, affine.determinant()));
-            }
-            buffer_step(ViewDto::Compute(ComputeOp::Affine(affine)))
-        }
-
         // Perceptual hash operation — a graph-level vector producer (image
         // buffer → 1-D u8 fingerprint), executed via `apply_perceptual_hash`.
         "perceptual_hash" => {
@@ -1041,44 +937,6 @@ fn resolve_op_inner(
         }
 
         // Histogram operation
-        "histogram" => {
-            use view_buffer::ops::histogram::{HistogramClosed, HistogramOp, HistogramOutput};
-
-            let bins_param = get_param(params, "bins")?;
-            let (bins_count, edges) = if let Some(edges) = bins_param.as_f64_vec() {
-                // If it's a vector, those are the edges
-                (edges.len().saturating_sub(1), Some(edges))
-            } else {
-                (bins_param.resolve_usize(row_idx, ctx)?, None)
-            };
-
-            // `closed` and `output` shape the histogram's dtype/semantics at plan
-            // time, so both stay literal-only.
-            let closed = get::req_enum_literal(params, "closed", HistogramClosed::NAMED, &[])?;
-            let output = get::req_enum_literal(params, "output", HistogramOutput::NAMED, &[])?;
-
-            // Parse optional range
-            let range = if params.contains_key("range_min") && params.contains_key("range_max") {
-                let range_min = get_param(params, "range_min")?.resolve_f64(row_idx, ctx)?;
-                let range_max = get_param(params, "range_max")?.resolve_f64(row_idx, ctx)?;
-                Some((range_min, range_max))
-            } else {
-                None
-            };
-
-            let mut op = HistogramOp::new(bins_count)
-                .with_output(output)
-                .with_closed(closed);
-            if let Some(e) = edges {
-                op = op.with_edges(e);
-            }
-            if let Some((min, max)) = range {
-                op = op.with_range(min, max);
-            }
-
-            Ok(GraphStep::Histogram(op))
-        }
-
         // Channel operations
         "channel_select" => {
             let index = get_param(params, "index")?.resolve_usize(row_idx, ctx)?;
@@ -1261,13 +1119,13 @@ mod strict_param_tests {
     use std::collections::HashMap;
 
     fn op_with(name: &str, params: &[(&str, serde_json::Value)]) -> OpSpec {
-        OpSpec {
+        OpSpec::Legacy(crate::pipeline::LegacyOpSpec {
             op: name.to_string(),
             params: params
                 .iter()
                 .map(|(k, v)| (k.to_string(), ParamValue::Literal { value: v.clone() }))
                 .collect::<HashMap<_, _>>(),
-        }
+        })
     }
 
     /// Build the per-element encoding a list-valued param now uses: an array of
@@ -1397,37 +1255,18 @@ mod strict_param_tests {
     }
 
     #[test]
-    fn interpolation_shared_between_rotate_and_warp_affine() {
+    fn rotate_rejects_an_unknown_interpolation() {
         let rotate_err = resolve_err(&op_with(
             "rotate",
             &[("angle", json!(45.0)), ("interpolation", json!("cubic"))],
         ));
-        // The matrix is a list of per-element ParamValue dicts (each element may
-        // be a per-row expression), matching what the Python planner emits.
-        let ident = json!([
-            {"type": "literal", "value": 1.0},
-            {"type": "literal", "value": 0.0},
-            {"type": "literal", "value": 0.0},
-            {"type": "literal", "value": 0.0},
-            {"type": "literal", "value": 1.0},
-            {"type": "literal", "value": 0.0},
-        ]);
-        let warp_err = resolve_err(&op_with(
-            "warp_affine",
-            &[
-                ("matrix", ident),
-                ("output_height", json!(8)),
-                ("output_width", json!(8)),
-                ("interpolation", json!("cubic")),
-            ],
-        ));
-        for err in [&rotate_err, &warp_err] {
-            assert!(err.contains("interpolation"), "{err}");
-            assert!(
-                err.contains("nearest") && err.contains("bilinear"),
-                "error must list valid names: {err}"
-            );
-        }
+        // warp_affine's copy of this vocabulary is the same `InterpolationType`
+        // through the typed catalogue (`ops::tests`).
+        assert!(rotate_err.contains("interpolation"), "{rotate_err}");
+        assert!(
+            rotate_err.contains("nearest") && rotate_err.contains("bilinear"),
+            "error must list valid names: {rotate_err}"
+        );
     }
 }
 
@@ -1438,24 +1277,24 @@ mod known_ops_tests {
 
     /// Build an OpSpec with no params (enough to exercise the name dispatch).
     fn op(name: &str) -> OpSpec {
-        OpSpec {
+        OpSpec::Legacy(crate::pipeline::LegacyOpSpec {
             op: name.to_string(),
             params: HashMap::new(),
-        }
+        })
     }
 
-    /// Every name in KNOWN_OPS must be a real resolve_op arm: with empty params
+    /// Every name in LEGACY_OPS must be a real resolve_op arm: with empty params
     /// most arms fail with a missing-param error, but none may fall through to
     /// the "Unknown operation" catch-all.
     #[test]
     fn known_ops_all_resolve() {
         let ctx = ParamCtx::empty();
-        for name in KNOWN_OPS {
+        for name in LEGACY_OPS {
             if let Err(e) = resolve_op(&op(name), 0, &ctx) {
                 let msg = e.to_string();
                 assert!(
                     !msg.contains("Unknown operation"),
-                    "KNOWN_OPS lists '{name}' but resolve_op has no arm for it: {msg}"
+                    "LEGACY_OPS lists '{name}' but resolve_op has no arm for it: {msg}"
                 );
             }
         }
@@ -1472,7 +1311,7 @@ mod known_ops_tests {
     }
 
     /// Reverse guard: every top-level match arm in `resolve_op_inner` must be
-    /// listed in KNOWN_OPS, so a new arm cannot silently bypass the registry
+    /// listed in LEGACY_OPS, so a new arm cannot silently bypass the registry
     /// (the forward direction is covered by `known_ops_all_resolve`).
     ///
     /// The scan reads this file's source between the `resolve_op_inner` header
@@ -1526,7 +1365,7 @@ mod known_ops_tests {
                 // every other shape. rustfmt moves `=>` to the next line once
                 // the condition is long enough, and an `@` binding never had
                 // one -- both let a whole op family become executable with no
-                // KNOWN_OPS entry. "Anything I do not recognise is ignored"
+                // LEGACY_OPS entry. "Anything I do not recognise is ignored"
                 // was the bug; "anything I do not recognise fails" is the
                 // guard.
                 let pattern = trimmed
@@ -1548,29 +1387,29 @@ mod known_ops_tests {
                 }
             }
         }
-        // Every op in KNOWN_OPS is either a string arm found above or covered
+        // Every op in LEGACY_OPS is either a string arm found above or covered
         // by one of the known guard arms below, so the scan cannot rot to a
         // subset without this failing. A count floor was used here before; it
         // was both too weak (10 arms could drop out of indent 8 unnoticed) and
         // too brittle (deprecating an op tripped it), so the relationship is
         // pinned instead of a magic number.
         let guarded: Vec<&str> = BINARY_OPS.iter().map(|(n, _)| *n).collect();
-        let unaccounted: Vec<&&str> = KNOWN_OPS
+        let unaccounted: Vec<&&str> = LEGACY_OPS
             .iter()
             .filter(|n| !arm_names.contains(n) && !guarded.contains(n))
             .collect();
         assert!(
             unaccounted.is_empty(),
-            "these KNOWN_OPS have no string arm and are not in a known guarded \
+            "these LEGACY_OPS have no string arm and are not in a known guarded \
              family: {unaccounted:?} — either resolve_op changed shape or the \
              source scan has rotted"
         );
         // Guard arms register a whole family at once. Each one needs a rule
-        // above tying its table to KNOWN_OPS; a new one has none, so fail
+        // above tying its table to LEGACY_OPS; a new one has none, so fail
         // until it is given one rather than let it register ops invisibly.
         const KNOWN_GUARD_ARMS: &[&str] = &[
             // Registers the whole binary-op family; its table is checked
-            // against KNOWN_OPS below.
+            // against LEGACY_OPS below.
             "name if naming::lookup(BINARY_OPS, name).is_some()",
             // The catch-all that produces the "Unknown operation" error this
             // scan terminates on. Registers nothing.
@@ -1582,32 +1421,32 @@ mod known_ops_tests {
                 "resolve_op has an unrecognised guard arm '{arm}'. Guard arms \
                  register ops without naming them, so add it to \
                  KNOWN_GUARD_ARMS here along with a check that its table is \
-                 fully listed in KNOWN_OPS (see BINARY_OPS below)."
+                 fully listed in LEGACY_OPS (see BINARY_OPS below)."
             );
         }
         // The guarded binary-op family must still be fully registered.
         for (name, _) in BINARY_OPS {
             assert!(
-                KNOWN_OPS.contains(name),
-                "BINARY_OPS entry '{name}' is missing from KNOWN_OPS"
+                LEGACY_OPS.contains(name),
+                "BINARY_OPS entry '{name}' is missing from LEGACY_OPS"
             );
         }
         for name in &arm_names {
             assert!(
-                KNOWN_OPS.contains(name),
-                "resolve_op has an arm for '{name}' that is missing from KNOWN_OPS"
+                LEGACY_OPS.contains(name),
+                "resolve_op has an arm for '{name}' that is missing from LEGACY_OPS"
             );
         }
     }
 
-    /// KNOWN_OPS must be sorted and unique so the registry is easy to scan and
+    /// LEGACY_OPS must be sorted and unique so the registry is easy to scan and
     /// diff against the Python OP_NAMES set.
     #[test]
     fn known_ops_sorted_and_unique() {
-        for pair in KNOWN_OPS.windows(2) {
+        for pair in LEGACY_OPS.windows(2) {
             assert!(
                 pair[0] < pair[1],
-                "KNOWN_OPS must be sorted/unique; '{}' !< '{}'",
+                "LEGACY_OPS must be sorted/unique; '{}' !< '{}'",
                 pair[0],
                 pair[1]
             );
@@ -1623,13 +1462,13 @@ mod unread_param_tests {
 
     /// Build an `OpSpec` from a name and literal params.
     fn op_with(name: &str, params: &[(&str, serde_json::Value)]) -> OpSpec {
-        OpSpec {
+        OpSpec::Legacy(crate::pipeline::LegacyOpSpec {
             op: name.to_string(),
             params: params
                 .iter()
                 .map(|(k, v)| (k.to_string(), ParamValue::Literal { value: v.clone() }))
                 .collect::<HashMap<_, _>>(),
-        }
+        })
     }
 
     /// `(op name, base params, the parameter under test)`.
@@ -1660,15 +1499,6 @@ mod unread_param_tests {
                 "out_dtype",
             ),
             ("grayscale", &[], "sigma"),
-            (
-                "resize",
-                &[
-                    ("height", json!(4)),
-                    ("width", json!(4)),
-                    ("filter", json!("nearest")),
-                ],
-                "antialias",
-            ),
         ];
         for (op, base, stray) in cases {
             let mut params = base.to_vec();
@@ -1682,68 +1512,15 @@ mod unread_param_tests {
         }
     }
 
-    /// A singular matrix must be refused where the user supplies it.
-    ///
-    /// The runner substituted the identity for one, so a caller who asked for a
-    /// degenerate transform got their input back and no signal that nothing had
-    /// happened. `AffineParams::is_invertible` is the single authority; this
-    /// pins the boundary that consults it.
-    #[test]
-    fn warp_affine_rejects_a_singular_matrix() {
-        let elements = |m: [f64; 6]| {
-            serde_json::Value::Array(
-                m.iter()
-                    .map(|v| json!({"type": "literal", "value": v}))
-                    .collect(),
-            )
-        };
-        let spec = |m: [f64; 6]| {
-            op_with(
-                "warp_affine",
-                &[
-                    ("matrix", elements(m)),
-                    ("output_height", json!(8)),
-                    ("output_width", json!(8)),
-                ],
-            )
-        };
-
-        let err = resolve_err(&spec([0.0, 0.0, 0.0, 0.0, 1.0, 0.0]));
-        assert!(
-            err.contains("singular") && err.contains("determinant"),
-            "the error must say what is wrong and name the determinant: {err}"
-        );
-
-        // An extreme but invertible transform is still accepted — the check is
-        // for degeneracy, not for poor conditioning.
-        assert!(
-            resolve_op(
-                &spec([1e-6, 0.0, 0.0, 0.0, 1e-6, 0.0]),
-                0,
-                &ParamCtx::empty()
-            )
-            .is_ok(),
-            "a heavily stretched but invertible matrix must resolve"
-        );
-    }
-
     /// The known-good half: a checker that rejects everything proves nothing.
     ///
     /// These specs carry parameters read through *helpers* rather than a
-    /// literal `get_param` call in the arm (`resolve_filter`,
-    /// `resolve_border_value`, `resolve_rasterize_style`) plus `rasterize`'s
+    /// literal `get_param` call in the arm (`resolve_border_value`,
+    /// `resolve_rasterize_style`) plus `rasterize`'s
     /// `shape_ref`, which a layer above the arm consumes. All must resolve.
     #[test]
     fn parameters_read_through_helpers_are_accepted() {
         let cases: &[AcceptedCase<'_>] = &[
-            (
-                "resize",
-                &[
-                    ("height", json!(4)),
-                    ("width", json!(4)),
-                    ("filter", json!("nearest")),
-                ],
-            ),
             (
                 "rotate",
                 &[

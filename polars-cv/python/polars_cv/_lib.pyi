@@ -52,5 +52,8 @@ def rotation_matrix_2d(
 def known_ops() -> list[str]:
     """Return the names of every operation the executor can resolve."""
 
+def op_catalog() -> str:
+    """Return the typed op catalogue as JSON (see ``tests/golden/op_catalog.json``)."""
+
 def enum_variants(name: str) -> list[str]:
     """Return the string variants of a Rust enum, for Python<->Rust parity checks."""

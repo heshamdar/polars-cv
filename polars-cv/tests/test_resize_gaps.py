@@ -49,7 +49,7 @@ class TestResizeFilterTypes:
 
     def test_invalid_filter_raises(self) -> None:
         """Invalid filter name should raise ValueError at pipeline build time."""
-        with pytest.raises(ValueError, match="Invalid filter"):
+        with pytest.raises(ValueError, match="unknown FilterType"):
             Pipeline().source("image_bytes").resize(
                 height=32, width=32, filter="cubic_magic"
             )

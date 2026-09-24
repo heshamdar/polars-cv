@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from polars_cv._ops_generated import OP_FIELDS, _OpsMixin
 from polars_cv._types import (
     HINT_DIMS,
     SOURCE_PARAM_APPLIES,
@@ -29,8 +30,6 @@ from polars_cv._types import (
     FilterType,
     FloatOrExpr,
     HashAlgorithm,
-    HistogramClosed,
-    HistogramOutput,
     InterpolationType,
     IntOrExpr,
     LabelReduction,
@@ -387,7 +386,46 @@ _STATE_COPIERS: "dict[str, Callable[[Any], Any]]" = {
 _POSITION_KEYED_FIELDS: "tuple[str, ...]" = ("_hint_snapshots", "_assertions")
 
 
-class Pipeline:
+def _encode_field(
+    p: "Pipeline", value: Any, ty: "dict[str, Any]", where: str
+) -> "ParamValue | None":
+    """Encode one typed-op argument per its catalogue type (``OP_FIELDS``).
+
+    ``None`` for an absent optional field. A sequence field is encoded element
+    by element, so each element may be an expression; anything else in its
+    place is passed through for the Rust definition to reject. An expression
+    for a structural (literal-only) field is refused by ``ParamValue``.
+    """
+    kind = ty["kind"]
+    if kind == "optional":
+        return None if value is None else _encode_field(p, value, ty["inner"], where)
+    if kind == "one_of":
+        # The options differ in shape: a sequence picks the sequence option.
+        wants_seq = _is_sequence(value)
+        for option in ty["options"]:
+            if (option["kind"] in ("array", "list")) == wants_seq:
+                return _encode_field(p, value, option, where)
+        msg = f"{where}: no catalogue option takes {type(value).__name__}"
+        raise TypeError(msg)
+    if kind in ("array", "list") and _is_sequence(value):
+        return ParamValue(
+            is_expr=False,
+            value=[
+                _encode_field(p, v, ty["inner"], f"{where}[{i}]")
+                for i, v in enumerate(value)
+            ],
+        )
+    if kind == "scalar" and ty["per_row"]:
+        return p._track_expr(value)
+    return ParamValue(is_expr=False, value=value)
+
+
+def _is_sequence(value: Any) -> bool:
+    """A list-like argument (list, tuple, numpy array), not a string or expr."""
+    return not isinstance(value, (str, bytes, pl.Expr)) and hasattr(value, "__iter__")
+
+
+class Pipeline(_OpsMixin):
     """
     Modular pipeline builder for image and array operations.
 
@@ -437,12 +475,13 @@ class Pipeline:
 
     # Registry of every operation name a pipeline can emit (via builder methods
     # here and the binary-op helpers in lazy.py). It must be *equal* to the Rust
-    # executor's registry (``_lib.known_ops()`` / ``KNOWN_OPS``), not merely a
+    # executor's registry (``_lib.known_ops()``: the typed catalogue plus
+    # ``LEGACY_OPS``), not merely a
     # subset: an op here that Rust cannot resolve fails at execution, and an op
     # Rust knows that is missing here cannot be built at all. Both directions
     # are enforced by ``test_registry_parity_*``, and by
     # ``test_op_names_matches_rust_known_ops_without_the_plugin``, which reads
-    # KNOWN_OPS from the Rust source so the check still runs when the extension
+    # both halves from source so the check still runs when the extension
     # is stale or unbuilt (when the other two quietly skip).
     #
     # It is a hand-written mirror on purpose — deriving it from ``known_ops()``
@@ -820,6 +859,28 @@ class Pipeline:
         # rule, so an append still costs a constant number of FFI calls.
         new._push_op(spec)
         return new
+
+    def _append_typed(self, op_name: str, values: "dict[str, Any]") -> "Pipeline":
+        """Append a typed op (one in the generated catalogue).
+
+        The generated builder methods (``_ops_generated._OpsMixin``) call this
+        with their arguments as given; each field is encoded by the one rule
+        its catalogue type names. Values are *not* validated here: the op's
+        Rust definition rejects a wrong type, a value out of range, an unknown
+        enum name or a wrong length when :meth:`_push_op` plans the op, so
+        there is no second copy of any of those rules.
+        """
+        fields = OP_FIELDS[op_name]
+
+        def _params(p: "Pipeline") -> dict[str, ParamValue]:
+            params: dict[str, ParamValue] = {}
+            for name, value in values.items():
+                encoded = _encode_field(p, value, fields[name], f"{op_name}({name}=)")
+                if encoded is not None:
+                    params[name] = encoded
+            return params
+
+        return self._append_op(op_name, _params)
 
     def _push_op(
         self,
@@ -1965,37 +2026,6 @@ class Pipeline:
         """
         return self.flip(axes=[0])
 
-    def crop(
-        self,
-        *,
-        top: IntOrExpr = 0,
-        left: IntOrExpr = 0,
-        height: IntOrExpr | None = None,
-        width: IntOrExpr | None = None,
-    ) -> "Pipeline":
-        """
-        Extract a rectangular region.
-
-        Args:
-            top: Top offset.
-            left: Left offset.
-            height: Crop height (None = to end).
-            width: Crop width (None = to end).
-        """
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            params: dict[str, ParamValue] = {
-                "top": p._track_expr(top),
-                "left": p._track_expr(left),
-            }
-            if height is not None:
-                params["height"] = p._track_expr(height)
-            if width is not None:
-                params["width"] = p._track_expr(width)
-            return params
-
-        return self._append_op("crop", _params)
-
     # --- Compute Operations ---
 
     def cast(self, dtype: str) -> "Pipeline":
@@ -2920,34 +2950,6 @@ class Pipeline:
 
     # --- Image Operations ---
 
-    def resize(
-        self,
-        *,
-        height: IntOrExpr,
-        width: IntOrExpr,
-        filter: str | pl.Expr = "lanczos3",
-    ) -> "Pipeline":
-        """
-        Resize image to specified dimensions.
-
-        Args:
-            height: Target height.
-            width: Target width.
-            filter: Interpolation: "nearest", "bilinear", "lanczos3" (default).
-
-        Example:
-            >>> Pipeline().source("image_bytes").resize(height=224, width=224)
-        """
-
-        return self._append_op(
-            "resize",
-            lambda p: {
-                "height": p._track_expr(height),
-                "width": p._track_expr(width),
-                "filter": _enum_param(filter, FilterType, "filter", p._track_expr),
-            },
-        )
-
     def resize_scale(
         self,
         *,
@@ -3410,82 +3412,6 @@ class Pipeline:
         )
 
     # --- Affine Transform Operations ---
-
-    def warp_affine(
-        self,
-        matrix: list[FloatOrExpr],
-        output_size: tuple[IntOrExpr, IntOrExpr],
-        *,
-        interpolation: str | pl.Expr = "bilinear",
-        border_value: FloatOrExpr = 0.0,
-    ) -> "Pipeline":
-        """
-        Apply a 2x3 affine transformation matrix.
-
-        The matrix ``[a, b, tx, c, d, ty]`` is a **forward** mapping from
-        source to destination (same convention as OpenCV ``warpAffine``)::
-
-            x_dst = a * x_src + b * y_src + tx
-            y_dst = c * x_src + d * y_src + ty
-
-        The kernel inverts this matrix internally for interpolation.
-
-        Domain: buffer → buffer
-
-        Args:
-            matrix: Six-element sequence representing the 2x3 affine matrix
-                ``[a, b, tx, c, d, ty]`` (forward mapping). **Each element may be
-                a literal float or a Polars expression**, so a batch can apply a
-                different (e.g. random) affine per row in one call — the matrix is
-                resolved per row at execution.
-            output_size: ``(height, width)`` of the output image. Each element
-                accepts a Polars expression for per-row dynamic values.
-            interpolation: Interpolation method -- ``"bilinear"`` (default)
-                or ``"nearest"``.
-            border_value: Pixel value for out-of-bounds regions (default 0).
-
-        Returns:
-            Self for chaining.
-
-        Raises:
-            ValueError: If *matrix* does not have 6 elements or domain is wrong.
-
-        Example:
-            ```python
-            >>> # Translate image by (50, 30)
-            >>> pipe = Pipeline().source("image_bytes").warp_affine(
-            ...     matrix=[1.0, 0.0, 50.0, 0.0, 1.0, 30.0],
-            ...     output_size=(224, 224),
-            ... )
-            >>>
-            >>> # Per-sample random affine: each row uses its own matrix columns
-            >>> pipe = Pipeline().source("image_bytes").warp_affine(
-            ...     matrix=[pl.col("a"), pl.col("b"), pl.col("tx"),
-            ...             pl.col("c"), pl.col("d"), pl.col("ty")],
-            ...     output_size=(224, 224),
-            ... )
-            ```
-        """
-        matrix = list(matrix)
-        if len(matrix) != 6:
-            msg = f"Affine matrix must have 6 elements, got {len(matrix)}"
-            raise ValueError(msg)
-        h, w = output_size
-        # Each matrix element is tracked independently so any of them may be a
-        # per-row expression (resolved element-by-element in Rust via
-        # as_param_list); the element *count* stays structural.
-        return self._append_op(
-            "warp_affine",
-            lambda p: {
-                "matrix": _param_list(matrix, p._track_expr),
-                "output_height": p._track_expr(h),
-                "output_width": p._track_expr(w),
-                "interpolation": _enum_param(
-                    interpolation, InterpolationType, "interpolation", p._track_expr
-                ),
-                "border_value": p._track_expr(border_value),
-            },
-        )
 
     def shear(
         self,
@@ -4050,52 +3976,6 @@ class Pipeline:
                 ),
             },
         )
-
-    def histogram(
-        self,
-        bins: IntOrExpr | list[float] = 256,
-        range: tuple[FloatOrExpr, FloatOrExpr] | None = None,
-        closed: str = "left",
-        output: str = "buckets",
-    ) -> "Pipeline":
-        """
-        Compute pixel value histogram.
-
-        Args:
-            bins: Number of bins (default 256), a Polars expression for
-                per-row dynamic bin count, or an explicit list of bin edges.
-            range: (min, max) tuple. Auto-detected if None.
-            closed: "left" or "right" interval inclusiveness (default "left").
-            output: "buckets" (list of structs), "counts" (bin counts),
-                    "normalized" (sum to 1.0), "quantized" (pixel indices),
-                    "edges" (bin edges).
-
-        Example:
-            >>> Pipeline().source("image_bytes").grayscale().histogram(bins=8)
-        """
-
-        # Validate output mode
-        output_mode = _validate_enum(output, HistogramOutput, "histogram output mode")
-        closed_mode = _validate_enum(closed, HistogramClosed, "closed mode")
-
-        def _params(p: "Pipeline") -> dict[str, ParamValue]:
-            bins_param: ParamValue
-            if isinstance(bins, list):
-                bins_param = ParamValue(is_expr=False, value=bins)
-            else:
-                bins_param = p._track_expr(bins)
-
-            params: dict[str, ParamValue] = {
-                "bins": bins_param,
-                "closed": ParamValue(is_expr=False, value=closed_mode.value),
-                "output": ParamValue(is_expr=False, value=output_mode.value),
-            }
-            if range is not None:
-                params["range_min"] = p._track_expr(range[0])
-                params["range_max"] = p._track_expr(range[1])
-            return params
-
-        return self._append_op("histogram", _params)
 
     # --- Contour Measure Operations (contour → scalar/vector) ---
 

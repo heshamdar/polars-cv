@@ -171,8 +171,8 @@ class LazyPipelineExpr:
     def grayscale(self) -> LazyPipelineExpr: ...
     def histogram(
         self,
-        bins: IntOrExpr | list[float] = ...,
-        range: tuple[FloatOrExpr, FloatOrExpr] | None = ...,
+        bins: IntOrExpr | Sequence[float] = ...,
+        range: Sequence[FloatOrExpr] | None = ...,
         closed: str = ...,
         output: str = ...,
     ) -> LazyPipelineExpr: ...
@@ -328,8 +328,8 @@ class LazyPipelineExpr:
     def trunc(self) -> LazyPipelineExpr: ...
     def warp_affine(
         self,
-        matrix: list[FloatOrExpr],
-        output_size: tuple[IntOrExpr, IntOrExpr],
+        matrix: Sequence[FloatOrExpr],
+        output_size: Sequence[IntOrExpr],
         *,
         interpolation: str | pl.Expr = ...,
         border_value: FloatOrExpr = ...,

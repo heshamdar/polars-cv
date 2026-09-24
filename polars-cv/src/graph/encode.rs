@@ -632,7 +632,7 @@ mod tests {
     /// escaping coverage.
     #[test]
     fn every_graph_geometry_op_executes() {
-        use crate::execute::{resolve_op, KNOWN_OPS};
+        use crate::execute::{resolve_op, LEGACY_OPS};
         use crate::graph::step::GraphStep;
         use crate::params::{ParamCtx, ParamValue};
         use crate::pipeline::OpSpec;
@@ -679,16 +679,16 @@ mod tests {
         };
 
         let mut executed: BTreeSet<&str> = BTreeSet::new();
-        for &op_name in KNOWN_OPS {
+        for &op_name in LEGACY_OPS {
             let params: HashMap<String, ParamValue> = probe_params(op_name)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), ParamValue::Literal { value: v }))
                 .collect();
-            let spec = OpSpec {
+            let spec = OpSpec::Legacy(crate::pipeline::LegacyOpSpec {
                 op: op_name.to_string(),
                 params,
-            };
+            });
             // Non-geometry ops may need params we didn't supply — not our concern.
             let step = match resolve_op(&spec, 0, &ParamCtx::empty()) {
                 Ok(step) => step,
@@ -712,11 +712,28 @@ mod tests {
             }
         }
 
+        // Typed ops carry their own samples; a geometry one must execute too.
+        for op in crate::ops::TypedOp::samples() {
+            let name = op.name();
+            let step = resolve_op(&OpSpec::Typed(op), 0, &ParamCtx::empty())
+                .expect("a registered sample resolves");
+            if let GraphStep::Geometry(geo) = step {
+                let input = if geo.input_domain() == Domain::Buffer {
+                    sample_buffer()
+                } else {
+                    sample_contours()
+                };
+                if let Err(err) = execute_geometry_op(input, &geo) {
+                    panic!("typed op '{name}' resolves to {geo:?} but does not execute: {err}");
+                }
+            }
+        }
+
         // Ratchet: the probe table must match exactly the geometry ops that
         // `resolve_op` actually produces, so a newly-registered graph geometry
         // op cannot be added without a probe (and a removed one cannot leave a
         // stale probe behind).
-        let probed: BTreeSet<&str> = KNOWN_OPS
+        let probed: BTreeSet<&str> = LEGACY_OPS
             .iter()
             .copied()
             .filter(|n| probe_params(n).is_some())
