@@ -539,9 +539,11 @@ _REQUIRED_LIB_HOOKS = (
     "io_catalog",
     # The enum catalogue the Python enum classes are generated from.
     "enum_catalog",
-    # Validates a serialized source/sink against its typed format, so the
-    # builder refuses an inapplicable keyword while it is written.
-    "io_check",
+    # Validate a serialized source (planning its state) or sink against its
+    # typed format, so the builder refuses an inapplicable keyword while it is
+    # written.
+    "plan_source",
+    "sink_check",
 )
 
 

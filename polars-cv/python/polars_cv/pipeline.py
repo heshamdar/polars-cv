@@ -883,55 +883,6 @@ class Pipeline(_OpsMixin):
             dims[dim] = value if value is not None and not value.is_expr else None
         return dims
 
-    def _seed_from_contour_rasterize(self, *, shape: "LazyPipelineExpr | None") -> None:
-        """Publish the ``contour`` source's plan-time buffer contract.
-
-        The source decodes by rasterizing (Rust ``decode_contour_source``), so
-        what it hands the first op is what the ``rasterize`` op hands its
-        successor — an ``[H, W, 1]`` u8 mask. Rank, dtype, channels and canvas
-        are therefore read from ``GeometryOp::Rasterize``'s contract, through
-        the same :meth:`_plan_step` :meth:`_push_op` uses, and are not restated
-        here. Hard-coding rank 3
-        and leaving the dtype ``"auto"`` is what made ``sink("list")`` and
-        ``sink("array")`` unplannable on a contour source (both need a concrete
-        element dtype) and forced a no-op ``.cast("u8")``.
-
-        The fold runs from the *contour* domain, because that is what the
-        column holds — the same transition the op declares, so the two routes
-        to a mask cannot publish different plan-time state.
-
-        The spec built here is **not** appended to ``_ops``: the rasterize
-        happens inside the source's own decode, and appending it would
-        rasterize a second time. Only its plan-time effect is read.
-
-        Args:
-            shape: The node a ``shape=`` source takes its canvas from, or
-                ``None`` for the explicit ``width``/``height`` form. Carried
-                into the spec as its ``size`` so the op's own contract reports
-                the canvas as unknown, and read for its published H/W below —
-                the two halves ``rasterize(shape=)`` also uses.
-        """
-        source = self._source
-        assert source is not None  # set by the caller, immediately above
-        if shape is not None:
-            size = ParamValue(is_expr=False, value=shape._node_id)
-        else:
-            # Both are present together; the builder rejected a lone one above.
-            size = ParamValue(is_expr=False, value=[source.height, source.width])
-        params: dict[str, ParamValue] = {
-            "size": size,
-            "fill_value": source.fill_value,
-            "background": source.background,
-        }  # ty: ignore[invalid-assignment]
-        spec = OpSpec(op="rasterize", params=params)
-        # The column holds contours, of no buffer rank yet.
-        self._current_domain = Domain.CONTOUR.value
-        self._expected_ndim = None
-        self._apply_step(self._plan_step(spec))
-        if shape is not None:
-            for dim, concrete in self._shape_ref_dims(shape).items():
-                setattr(self._shape_hints, dim, concrete)
-
     # --- Source (required, starts the chain) ---
 
     def source(
@@ -1086,7 +1037,7 @@ class Pipeline(_OpsMixin):
         # (`test_source_applicability_reads_every_parameter`).
         passed = dict(locals())
 
-        from polars_cv._lib import io_check
+        from polars_cv._lib import plan_source
         from polars_cv.lazy import LazyPipelineExpr
 
         new = self._clone()
@@ -1150,7 +1101,7 @@ class Pipeline(_OpsMixin):
 
         # Every setting the caller passed goes into the spec, whichever format
         # it is for: the format's Rust definition refuses one it does not
-        # read, naming where it does apply (`io_check` below). The contour
+        # read, naming where it does apply (`plan_source` below). The contour
         # colours always go — that decode reads them.
         is_contour = fmt == SourceFormat.CONTOUR
         new._source = SourceSpec(
@@ -1173,60 +1124,25 @@ class Pipeline(_OpsMixin):
             decode_max_size=decode_max_size,
             allowed_roots=tuple(allowed_roots) if allowed_roots is not None else None,
         )
-        io_check("source", json.dumps(new._source.to_dict(planning_slots)))
-
-        if is_contour:
-            new._seed_from_contour_rasterize(shape=shape)
-        else:
-            # Set dtype and ndim based on source format
-            if fmt == SourceFormat.RAW:
-                # Raw bytes always carry a dtype: the typed raw source requires
-                # one, so `io_check` above refused a spec without it.
-                # Raw decodes to a flat 1-D buffer (decode.rs), so rank 1 is a
-                # true known value — never guess 3. reshape()/assert_shape()
-                # lifts the rank when the caller needs a higher-rank sink.
-                assert dtype_enum is not None
-                new._expected_ndim = 1
-                new._output_dtype = dtype_enum.value
-            elif fmt in (SourceFormat.BLOB, SourceFormat.AUTO):
-                # Blob and Auto are both non-self-declaring at plan time:
-                # dtype/rank are unknown here, so an explicit dtype assertion
-                # (e.g. for list/array sinks) is the only thing that can pin
-                # them. Blob is self-describing at decode. For Auto the concrete
-                # decode path is chosen from the column dtype at runtime; for
-                # List/Array columns Rust does resolve the leaf dtype at
-                # plan-time-with-input (resolved_output_specs), while a
-                # Binary/String column stays "auto" (image dtype isn't known
-                # until decode).
-                new._expected_ndim = None
-                if dtype_enum is not None:
-                    new._output_dtype = dtype_enum.value
-                else:
-                    new._output_dtype = "auto"
-            elif fmt in (SourceFormat.IMAGE_BYTES, SourceFormat.FILE_PATH):
-                # Decoded images are always 3D [H, W, C]
-                new._expected_ndim = 3
-                if dtype_enum is not None:
-                    # User asserted dtype — at runtime, decoded images with
-                    # a different dtype will be cast to this type.
-                    new._output_dtype = dtype_enum.value
-                else:
-                    # Dtype unknown until runtime (TIFF=f32, PNG=u8, etc.)
-                    new._output_dtype = "auto"
-            elif fmt in (SourceFormat.LIST, SourceFormat.ARRAY):
-                # For list/array sources, infer dtype and ndim from the
-                # Polars column at planning time when not explicitly given.
-                if dtype_enum is not None:
-                    # User provided explicit dtype — use it. Rank stays unknown
-                    # here and is derived from the polars column's true nesting
-                    # depth at plan-time-with-input (resolved_output_specs),
-                    # never guessed as 3. (Consistent with the no-dtype branch.)
-                    new._output_dtype = dtype_enum.value
-                    new._expected_ndim = None
-                else:
-                    # Mark as "auto" so Rust resolves from input_fields
-                    new._output_dtype = "auto"
-                    new._expected_ndim = None
+        # The format's Rust definition validates the spec (refusing a setting
+        # it does not read, naming where it applies) and says what state the
+        # decode starts the pipeline in.
+        planned = plan_source(json.dumps(new._source.to_dict(planning_slots)))
+        new._current_domain = planned["domain"]
+        new._output_dtype = planned["dtype"]
+        new._expected_ndim = planned["ndim"]
+        new._asserted_dims.clear()
+        for dim, size in zip(HINT_DIMS, planned["dims"]):
+            setattr(
+                new._shape_hints,
+                dim,
+                None if size is None else ParamValue(is_expr=False, value=size),
+            )
+        if shape is not None:
+            # A contour canvas taken from another node: that node's published
+            # H/W, which no definition of this source can know.
+            for dim, concrete in new._shape_ref_dims(shape).items():
+                setattr(new._shape_hints, dim, concrete)
 
         return new
 
@@ -1281,7 +1197,7 @@ class Pipeline(_OpsMixin):
             msg = f"max_size must be a positive int, got {max_size!r}"
             raise ValueError(msg)
 
-        from polars_cv._lib import io_check
+        from polars_cv._lib import plan_source
 
         new = self._clone()
         assert new._source is not None  # guaranteed: checked on self above
@@ -1291,7 +1207,7 @@ class Pipeline(_OpsMixin):
         # does for `source(decode_max_size=)`. The two used to disagree about
         # `auto` when each kept its own list.
         try:
-            io_check("source", json.dumps(new._source.to_dict(planning_slots)))
+            plan_source(json.dumps(new._source.to_dict(planning_slots)))
         except ValueError as e:
             msg = f"thumbnail() only applies where decode_max_size does: {e}"
             raise ValueError(msg) from None

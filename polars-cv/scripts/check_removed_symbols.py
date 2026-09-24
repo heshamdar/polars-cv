@@ -251,6 +251,8 @@ REMOVED: tuple[Removed, ...] = (
         "test_every_logical_pass_is_a_rust_pass",
         "P7c: OptFlags and the pass list are generated from one catalogue",
     ),
+    Removed("io_check", "P7d: plan_source (validates and plans) and sink_check"),
+    Removed("_seed_from_contour_rasterize", "P7d: plan::source_state"),
 )
 
 

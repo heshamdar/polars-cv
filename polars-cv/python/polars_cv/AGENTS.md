@@ -356,7 +356,7 @@ A `source()` or `.sink()` parameter that the chosen format never reads is
 rejected. Each source and sink format is a typed Rust struct carrying exactly
 the fields its decode or encode reads (`src/formats/`, each
 `deny_unknown_fields`), and the builder validates what the caller passed
-against that definition over `io_check` — the deserializer the graph itself
+against that definition (`plan_source`, `sink_check`) — the deserializer the graph itself
 uses — so an unknown, misspelled or inapplicable keyword is refused while the
 pipeline is built, naming the formats it does apply to. `source()` sends
 exactly the keywords the caller passed (read from its own `locals()`, told
@@ -366,10 +366,11 @@ produced one raise, one warning and five silent drops on the source side, and an
 open keyword surface on the sink side.
 
 `source("contour")` publishes that same contract: its decode *is* a rasterize,
-so `_seed_from_contour_rasterize` folds `GeometryOp::Rasterize`'s rules (rank 3,
-u8, one channel, the canvas) through the same FFI instead of the source hand-
-writing a rank. The spec it builds is never appended to `_ops` — the rasterize
-already happens inside the decode. Whatever the two routes to a mask publish,
+so its planned state (`plan_source` → `plan::source_state`) is the
+`rasterize` op's over the contour domain (rank 3, u8, one channel, the canvas),
+computed by the same `plan::step`, instead of the source hand-writing a rank.
+No op is appended to `_ops` — the rasterize already happens inside the
+decode. Whatever the two routes to a mask publish,
 they publish it identically (`TestContourSourcePlanTimeContract`).
 
 ## Common Pitfalls

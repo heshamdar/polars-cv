@@ -146,9 +146,9 @@ def _validate_sink_params(fmt: str, kwargs: "dict[str, Any]") -> None:
     a ``dtype`` other than half precision all raise here, while the pipeline is
     being built, rather than at ``collect()``.
     """
-    from polars_cv._lib import io_check
+    from polars_cv._lib import sink_check
 
-    io_check("sink", json.dumps({"format": fmt, **kwargs}, default=list))
+    sink_check(json.dumps({"format": fmt, **kwargs}, default=list))
 
 
 class LazyPipelineExpr:
