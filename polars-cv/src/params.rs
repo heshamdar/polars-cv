@@ -290,7 +290,7 @@ impl<'a> ParamCtx<'a> {
         }
     }
 
-    /// Build a *plan-time probe* context (see `lib.rs::op_infer_shape`).
+    /// Build a *plan-time probe* context (see `lib.rs::infer_shape`).
     ///
     /// Shape probing binds every expression parameter to an integer
     /// placeholder so it can detect which output dimensions depend on a

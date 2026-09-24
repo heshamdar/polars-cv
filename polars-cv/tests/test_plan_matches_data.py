@@ -17,7 +17,6 @@ import numpy as np
 import polars as pl
 
 from polars_cv import Pipeline
-from tests._plan_view import op_json
 from tests._schema_parity import assert_plan_equals_exec
 from tests.conftest import plugin_required
 
@@ -83,90 +82,3 @@ class TestPlanMatchesDataSources:
         df = pl.DataFrame({"x": [img]})
         out = _assert_plan_matches_data(df, pl.col("x").cv.pipe(pipe).sink("list"))
         assert out == pl.List(pl.List(pl.UInt8))
-
-
-@plugin_required
-class TestOpInferShapeAuthority:
-    """op_infer_shape is the single geometry authority: literal params/known
-    dims give exact output dims; expression params/unknown dims propagate to
-    None. Probing includes 90-degree multiples so rotate's discontinuous fast
-    path (90/180/270 swap H/W) is detected."""
-
-    @staticmethod
-    def _op_json(pipe: Pipeline) -> str:
-        return op_json(pipe, -1)
-
-    def test_resize_literal_dims_are_known(self) -> None:
-        from polars_cv._lib import op_infer_shape
-
-        j = self._op_json(
-            Pipeline().source("image_bytes").resize(height=224, width=100)
-        )
-        # The channel axis is the unknown input axis carried through unchanged,
-        # which the FFI reports as -1 ("preserved"), not a size.
-        assert op_infer_shape(j, [None, None, None]) == [224, 100, -1]
-
-    def test_resize_expression_dim_is_unknown(self) -> None:
-        from polars_cv._lib import op_infer_shape
-
-        j = self._op_json(
-            Pipeline().source("image_bytes").resize(height=pl.col("h"), width=100)
-        )
-        assert op_infer_shape(j, [None, None, 3]) == [None, 100, 3]
-
-    def test_pad_adds_known_borders(self) -> None:
-        from polars_cv._lib import op_infer_shape
-
-        j = self._op_json(
-            Pipeline().source("image_bytes").pad(top=1, bottom=2, left=3, right=4)
-        )
-        assert op_infer_shape(j, [10, 10, 3]) == [13, 17, 3]
-
-    def test_literal_90_rotate_swaps_hw(self) -> None:
-        from polars_cv._lib import op_infer_shape
-
-        j = self._op_json(Pipeline().source("image_bytes").rotate(90))
-        assert op_infer_shape(j, [100, 50, 3]) == [50, 100, 3]
-
-    def test_expression_angle_rotate_is_unknown(self) -> None:
-        # A per-row angle could be a 90-multiple (H/W swap) at runtime, so the
-        # spatial dims are unknown at plan time even on a known image.
-        from polars_cv._lib import op_infer_shape
-
-        j = self._op_json(Pipeline().source("image_bytes").rotate(pl.col("a")))
-        assert op_infer_shape(j, [100, 50, 3]) == [None, None, 3]
-
-    def test_rasterize_literal_canvas_is_known_from_no_input(self) -> None:
-        """The contour domain has no input shape; the canvas is the op's own.
-
-        Asked with no input dims, because that is what a contour input is —
-        `infer_shape` reads none for this op. Answering here is what lets the
-        planner publish a shape for a mask at all.
-        """
-        from polars_cv._lib import op_infer_shape
-
-        j = self._op_json(
-            Pipeline()
-            .source("image_bytes")
-            .extract_contours()
-            .rasterize(width=12, height=10)
-        )
-        assert op_infer_shape(j, []) == [10, 12, 1]
-
-    def test_rasterize_by_shape_reference_is_unknown(self) -> None:
-        """A canvas that comes from another node is not a fact about this op.
-
-        `shape=<node>` carries no width/height, so introspection has to supply
-        placeholders for the op to resolve at all. Literal placeholders made
-        this report a 1x1 canvas — identical across probes, therefore published
-        as known — which is a fabricated shape for a mask sized elsewhere.
-        """
-        from polars_cv._lib import op_infer_shape
-
-        shape = pl.col("i").cv.pipe(
-            Pipeline().source("image_bytes").resize(width=32, height=16)
-        )
-        j = self._op_json(
-            Pipeline().source("image_bytes").extract_contours().rasterize(shape=shape)
-        )
-        assert op_infer_shape(j, []) == [None, None, 1]

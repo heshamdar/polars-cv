@@ -47,9 +47,6 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // literal until the next bump, which is the whole window the check exists
     // for. This moves whenever the built artifact could differ.
     m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
-    m.add_function(wrap_pyfunction!(op_contract, m)?)?;
-    m.add_function(wrap_pyfunction!(op_identity_rule, m)?)?;
-    m.add_function(wrap_pyfunction!(op_infer_shape, m)?)?;
     m.add_function(wrap_pyfunction!(plan_step, m)?)?;
     m.add_function(wrap_pyfunction!(node_pass, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
@@ -91,87 +88,9 @@ pub(crate) fn py_value_error(msg: String) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(msg)
 }
 
-/// Canonical string for an output-dtype rule.
-///
-/// This is the shared vocabulary the Python planner reads (via `op_contract`)
-/// to infer output dtypes: `preserve`, `promote`, `fixed:<dtype>`.
-fn dtype_rule_name(rule: view_buffer::OutputDTypeRule) -> String {
-    use view_buffer::OutputDTypeRule as R;
-    match rule {
-        R::PreserveInput => "preserve".to_string(),
-        R::PromoteToFloat => "promote".to_string(),
-        R::Fixed(d) => format!("fixed:{}", dtype_short_name(d)),
-        R::ForceF64 => "fixed:f64".to_string(),
-        R::ForceI64 => "fixed:i64".to_string(),
-        R::ForceU64 => "fixed:u64".to_string(),
-        R::ForceU32 => "fixed:u32".to_string(),
-    }
-}
-
-/// Canonical string for an output-rank rule.
-///
-/// The plan-time vocabulary the Python schema layer reads (it no longer
-/// re-declares the effect): `preserve`, `reduce_one`, `fixed:<n>`, `unknown`.
-fn rank_rule_name(rule: view_buffer::OutputRankRule) -> String {
-    use view_buffer::OutputRankRule as R;
-    match rule {
-        R::PreserveRank => "preserve".to_string(),
-        R::ReduceByOne => "reduce_one".to_string(),
-        R::Fixed(n) => format!("fixed:{n}"),
-        R::Unknown => "unknown".to_string(),
-    }
-}
-
-/// Canonical string for an output-channel rule.
-///
-/// The vocabulary the Python planner reads for channel inference: `preserve`,
-/// `fixed:<n>`, `strip_restore:<color_channels>`, `n/a`, `unknown`.
-fn channel_rule_name(rule: view_buffer::OutputChannelRule) -> String {
-    use view_buffer::OutputChannelRule as R;
-    match rule {
-        R::PreserveChannels => "preserve".to_string(),
-        R::Fixed(n) => format!("fixed:{n}"),
-        R::StripProcessRestore { color_channels } => format!("strip_restore:{color_channels}"),
-        R::NotApplicable => "n/a".to_string(),
-        R::Unknown => "unknown".to_string(),
-    }
-}
-
-/// Canonical string for a spatial-dependency rule.
-///
-/// The plan-time vocabulary the Python planner reads for spatial-window
-/// (crop/ROI) commutation: `pointwise`, `neighborhood:<radius>`, `global`,
-/// `geometric`. The neighborhood radius is emitted so the planner can size a
-/// halo without re-deriving it.
-fn spatial_rule_name(rule: view_buffer::SpatialDependency) -> String {
-    use view_buffer::SpatialDependency as S;
-    match rule {
-        S::Pointwise => "pointwise".to_string(),
-        S::Neighborhood(support) => format!("neighborhood:{}", support.radius),
-        S::Global => "global".to_string(),
-        S::Geometric(_) => "geometric".to_string(),
-    }
-}
-
-/// String spelling of an [`IdentityRule`](view_buffer::IdentityRule) crossing
-/// the FFI — a bespoke `_name` helper like `spatial_rule_name`, not the
-/// `named_variants!` registry, so nothing is owed to the parity machinery.
-fn identity_rule_name(rule: view_buffer::IdentityRule) -> String {
-    use view_buffer::IdentityRule as I;
-    match rule {
-        I::Never => "never".to_string(),
-        // The deciding-param gate (an expression-bound deciding param forces
-        // `never`) is applied in `op_identity_rule`, which has the original spec;
-        // the bare variant spells as `always`.
-        I::Always { .. } => "always".to_string(),
-        I::WhenShapePreserved { .. } => "when_shape_preserved".to_string(),
-        I::WhenDtypePreserved => "when_dtype_preserved".to_string(),
-    }
-}
-
 /// Resolve one serialized op spec to its `ViewDto`, mapping errors to Python.
 ///
-/// Shared by `plan_step` and `op_contract` so neither re-implements the
+/// Shared by `plan_step` and the passes so neither re-implements the
 /// deserialize → resolve path.
 ///
 /// Expression parameters (dynamic, per-row values like a column-driven resize
@@ -189,7 +108,7 @@ pub(crate) fn resolve_op_from_json(op_json: &str) -> Result<crate::graph::step::
 }
 
 /// Like [`resolve_op_from_json`] but binds each expression param to a specific
-/// `probe` value instead of `1`. Used by `op_infer_shape` to detect which
+/// `probe` value instead of `1`. Used by [`infer_shape`] to detect which
 /// output dimensions depend on a per-row expression (they vary across probes)
 /// versus which are fixed by literal params (identical across probes).
 pub(crate) fn resolve_op_from_json_probe(
@@ -210,8 +129,8 @@ pub(crate) fn resolve_op_from_json_probe(
     op.resolve(0, &ctx).map_err(|e| format!("resolve_op: {e}"))
 }
 
-/// Plan-time output shape for a single-buffer op — the single authority for
-/// per-dimension H/W geometry the Python planner reads instead of re-deriving.
+/// An op's plan-time output shape — the single authority for per-dimension
+/// geometry the planner (`plan::step`, identity elimination) reads.
 ///
 /// `input_dims` carries the current per-dimension sizes, each `None` when the
 /// dimension is unknown at plan time. The returned dims propagate unknowns: a
@@ -225,18 +144,7 @@ pub(crate) fn resolve_op_from_json_probe(
 /// angle still resolves to its exact branch.
 ///
 /// `None` when the step has no inferable shape (a graph-level step, a
-/// data-dependent output); a `ValueError` when the op's parameters do not fit
-/// the input — the two used to share `ValueError`, and the planner swallowed
-/// both as "not inferable".
-#[pyfunction]
-fn op_infer_shape(
-    op_json: &str,
-    input_dims: Vec<Option<i64>>,
-) -> PyResult<Option<Vec<Option<i64>>>> {
-    infer_shape(op_json, &input_dims).map_err(py_value_error)
-}
-
-/// [`op_infer_shape`], for the Rust planner ([`plan::step`]).
+/// data-dependent output); `Err` when the op's parameters do not fit the input.
 pub(crate) fn infer_shape(
     op_json: &str,
     input_dims: &[Option<i64>],
@@ -253,7 +161,7 @@ pub(crate) fn infer_shape(
     // Rank is structural (never data-dependent), so it must be stable across
     // probes; a variation signals a contract bug rather than an unknown.
     if runs.iter().any(|r| r.len() != first.len()) {
-        return Err("op_infer_shape: output rank varied across shape probes".to_string());
+        return Err("infer_shape: output rank varied across shape probes".to_string());
     }
     Ok(Some(
         (0..first.len())
@@ -280,7 +188,7 @@ pub(crate) fn infer_shape(
     ))
 }
 
-/// `op_infer_shape`'s "this output axis is the unknown input axis, unchanged".
+/// [`infer_shape`]'s "this output axis is the unknown input axis, unchanged".
 const PRESERVED_DIM: i64 = -1;
 
 /// The value an unknown input dim takes in one probe run.
@@ -292,7 +200,7 @@ fn unknown_dim_probe(probe: i64) -> i64 {
     2 * probe + 1
 }
 
-/// One probe of [`op_infer_shape`]: resolve the op with expression params bound
+/// One probe of [`infer_shape`]: resolve the op with expression params bound
 /// to `probe`, substitute each unknown input dim with `probe`, and run the op's
 /// `infer_shape`.
 /// `Ok(None)` when the op has no inferable shape; `Err` when its parameters do
@@ -349,7 +257,7 @@ fn infer_shape_probe(
     Ok(Some(out.iter().map(|&x| x as i64).collect()))
 }
 
-/// Shared dtype resolution for `plan_step` (and, transitively, `op_contract`).
+/// Shared dtype resolution for `plan_step`.
 ///
 /// This is the single authority the Python schema layer defers to instead of
 /// re-applying a parallel dtype rule: it composes view-buffer's
@@ -505,93 +413,6 @@ fn io_check(kind: &str, spec_json: &str) -> PyResult<()> {
         }
     };
     result.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
-}
-
-/// Return the full contract for a single serialized op spec.
-///
-/// Returns a dict with the canonical `dtype_rule`, `rank_rule`, `channel_rule`,
-/// `spatial_rule` and `is_spatial_window` plus `input_domains` and
-/// `output_domain` (from
-/// view-buffer's `Domain::name()`). This is the single authority the Python schema layer reads
-/// instead of re-declaring, covering the dtype, dimensionality/channel and
-/// domain knowledge that previously lived in parallel Python tables
-/// (`OPERATION_CONTRACTS` and `_OPERATION_OUTPUT_DOMAIN`).
-///
-/// Input domain is published only as the *set* `input_domains`. A singular
-/// `input_domain` key was published alongside it and read by nothing: two
-/// spellings of one fact across an FFI boundary, free to disagree the moment a
-/// step's accepted set stopped being a single domain — which is exactly what
-/// binary ops and reductions did. `GraphStep::input_domain` remains internal to
-/// the executor, where the primary domain is what geometry encoding needs.
-#[pyfunction]
-fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
-    let dto = resolve_op_from_json(op_json).map_err(py_value_error)?;
-    let dict = pyo3::types::PyDict::new(py);
-    dict.set_item("dtype_rule", dtype_rule_name(dto.output_dtype_rule()))?;
-    dict.set_item("rank_rule", rank_rule_name(dto.output_rank_rule()))?;
-    dict.set_item("channel_rule", channel_rule_name(dto.output_channel_rule()))?;
-    dict.set_item("spatial_rule", spatial_rule_name(dto.spatial_dependency()))?;
-    dict.set_item("is_spatial_window", dto.is_spatial_window())?;
-    dict.set_item(
-        "input_domains",
-        dto.input_domains()
-            .iter()
-            .map(|d| d.name())
-            .collect::<Vec<_>>(),
-    )?;
-    dict.set_item("output_domain", dto.output_domain().name())?;
-    Ok(dict.into())
-}
-
-/// The op's identity rule — under what condition an identity-elimination pass
-/// may delete it. See [`IdentityRule`](view_buffer::IdentityRule).
-///
-/// Deliberately **not** part of [`op_contract`], whose published contract is
-/// "structural, independent of any parameter value". The `Always` verdict *does*
-/// depend on literal parameter values (`pad(0, 0, 0, 0)`), so it lives in its
-/// own function.
-///
-/// Expression-parameter safety is *structural*, resting on the op's declaration
-/// rather than on which placeholder value [`resolve_op_from_json`] happens to
-/// bind. A value-sensitive verdict — `Always`, or a `WhenShapePreserved` whose
-/// candidacy rests on a literal (a crop's `(0, 0)` origin) — names the parameters
-/// whose literal values it read
-/// ([`IdentityRule::deciding_params`](view_buffer::IdentityRule::deciding_params)):
-/// if any deciding param was expression-bound in the *original* spec, the op
-/// cannot be proven a no-op at plan time and comes back `never`, regardless of
-/// what the neutralized placeholder resolved to. An expression on an *irrelevant*
-/// param (a `pad` fill value behind zero amounts) is not a deciding param, so it
-/// correctly leaves the op `always`.
-///
-/// This removes the coupling to the placeholder value: an op that is a no-op at
-/// the placeholder can no longer be spoofed, because the gate keys on whether
-/// the deciding param was per-row, not on its value.
-#[pyfunction]
-fn op_identity_rule(op_json: &str) -> PyResult<String> {
-    // The names of parameters that are per-row (slots) in the *original* spec,
-    // before `resolve_op_from_json` neutralizes them to a placeholder.
-    let op: crate::ops::TypedOp = serde_json::from_str(op_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    let mut expr_params: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    op.visit_slots(&mut |name, _| {
-        expr_params.insert(name);
-    });
-
-    let rule = resolve_op_from_json(op_json)
-        .map_err(py_value_error)?
-        .identity_rule();
-    // A per-row deciding param means the no-op condition cannot be proven at
-    // plan time: the op keeps computing on rows where the value is not the
-    // identity value, so it is not removable. Read through the one accessor so
-    // every variant that names deciding params is gated, not just `Always`.
-    if rule
-        .deciding_params()
-        .iter()
-        .any(|p| expr_params.contains(p))
-    {
-        return Ok("never".to_string());
-    }
-    Ok(identity_rule_name(rule))
 }
 
 // ============================================================================

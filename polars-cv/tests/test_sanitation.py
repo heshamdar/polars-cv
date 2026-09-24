@@ -51,7 +51,6 @@ from tests._discovery import (
 )
 from tests._dtype_ratchet import dispatch_offenders
 from tests._kwargs_scan import all_deserialized_structs, open_structs
-from tests._op_cases import build_case, comparable_ops
 from tests._schema_parity import assert_plan_equals_exec, leaf_dtype
 from tests.conftest import plugin_required
 
@@ -497,23 +496,16 @@ def test_registry_parity_no_dead_contracts():
     """Ops the Pipeline never emits are not executable (B2: sobel/laplacian/sharpen)."""
     import json
 
-    lib = _lib()
-    contract_fn = getattr(lib, "op_contract", None) if lib is not None else None
-    assert callable(contract_fn), "_lib.op_contract() is missing from the plugin"
+    from polars_cv._lib import plan_step
+
     # sobel/laplacian/sharpen lower to convolve2d; they are not real executable
-    # ops, so resolving them must fail (their standalone contracts are dead, B2).
+    # ops, so planning them must fail (their standalone contracts are dead, B2).
     for lowered in ("sobel", "laplacian", "sharpen"):
         with pytest.raises(ValueError, match="Unknown operation"):
-            contract_fn(json.dumps({"op": lowered}))
+            plan_step(json.dumps({"op": lowered}), "buffer", "u8", 3, [None] * 3)
 
 
 _REQUIRED_LIB_HOOKS = (
-    "op_contract",
-    # The op's identity rule, read by the identity-elimination pass to decide
-    # whether an op is a removable no-op. Separate from `op_contract` because its
-    # `Always` verdict depends on literal parameter values.
-    "op_identity_rule",
-    "op_infer_shape",
     # One appended op's whole plan-time effect (domain check, schema, H/W,
     # channels, rank clipping), the builder's one call per append.
     "plan_step",
@@ -681,127 +673,6 @@ def test_op_schema_rules_are_required_not_defaulted():
             f"Op::{rule} must be a required trait method with no default body "
             "so ops cannot inherit a silent, possibly-wrong structural default"
         )
-
-
-# ---------------------------------------------------------------------------
-# 2b. Contract authority (A1/A10) — the planner reads view-buffer's per-op
-# contract (dtype, domain, rank, channel) instead of re-declaring it in Python.
-# ---------------------------------------------------------------------------
-#
-# view-buffer's ViewDto is the single authority; the Python planner no longer
-# keeps a parallel dtype/ndim/alpha table. These tests pin the planner to that
-# authority so a Python special-case can't silently drift from execution (the
-# class of bug that made the old blur contract say u8 while execution produced
-# f32).
-
-# Every op with a callable case, driven from `tests/_op_cases.py` — the table
-# `test_op_case_table_is_complete` pins to `_chainable_pipeline_ops()` in both
-# directions. This replaced a local op -> builder map that named 22 of the ~90
-# ops, so the other ~70 never had their domain or rank/channel rule checked
-# against the Rust contract at all: the failure mode of every hand-maintained
-# list in this repo, sitting inside the file that polices them.
-
-
-@plugin_required
-@pytest.mark.parametrize("op_name", comparable_ops())
-def test_planner_domain_is_sourced_from_rust(op_name):
-    """The planner derives each op's output domain from the view-buffer
-    contract (ViewDto::output_domain) rather than a Python domain table (A10).
-
-    The former Pipeline._OPERATION_OUTPUT_DOMAIN dict is gone; this guards
-    against the tracked domain (``plan_step``) diverging from the contract.
-    ``any`` means "the input's", so it is checked against the entering domain.
-    """
-    import json
-
-    contract_fn = getattr(_lib(), "op_contract", None)
-    if not callable(contract_fn):
-        pytest.skip("_lib.op_contract() not built")
-
-    pipe = build_case(op_name)
-    rust_domain = contract_fn(json.dumps(pipe._ops[-1].to_dict(planning_slots)))[
-        "output_domain"
-    ]
-    if rust_domain == "any":
-        rust_domain = pipe._state_at(len(pipe._ops) - 1).domain
-    planned_domain = pipe._current_domain
-    assert planned_domain == rust_domain, (
-        f"{op_name}: planner domain {planned_domain!r} != Rust authority "
-        f"{rust_domain!r}"
-    )
-
-
-@plugin_required
-@pytest.mark.parametrize("op_name", comparable_ops())
-def test_contract_exposes_rank_and_channel_rules(op_name):
-    """Every op's contract exposes a rank_rule and channel_rule in the known
-    vocabulary — the single authority the Python planner reads instead of
-    re-declaring its own ndim/alpha rules."""
-    import json
-
-    contract_fn = getattr(_lib(), "op_contract", None)
-    if not callable(contract_fn):
-        pytest.skip("_lib.op_contract() not built")
-
-    contract = contract_fn(
-        json.dumps(build_case(op_name)._ops[-1].to_dict(planning_slots))
-    )
-    rank, channel = contract["rank_rule"], contract["channel_rule"]
-
-    assert rank in ("preserve", "reduce_one", "unknown") or (
-        rank.startswith("fixed:") and rank.split(":", 1)[1].isdigit()
-    ), f"{op_name}: unexpected rank_rule {rank!r}"
-    assert channel in ("preserve", "n/a", "unknown") or (
-        channel.startswith(("fixed:", "strip_restore:"))
-        and channel.split(":", 1)[1].isdigit()
-    ), f"{op_name}: unexpected channel_rule {channel!r}"
-
-
-#: Exactly the keys ``op_contract`` publishes. Pinned as a set, in both
-#: directions, so the boundary cannot grow a second spelling of a fact it
-#: already carries.
-#:
-#: ``spatial_rule`` is the op's declared spatial dependency (pointwise /
-#: neighborhood / global / geometric) — a distinct structural fact, not a second
-#: spelling of dtype/rank/channel. It is surfaced for plan-time spatial-window
-#: reordering and introspection; its round-trip is pinned by
-#: ``test_spatial_rule.py``.
-_CONTRACT_KEYS = frozenset(
-    {
-        "dtype_rule",
-        "rank_rule",
-        "channel_rule",
-        "spatial_rule",
-        "is_spatial_window",
-        "input_domains",
-        "output_domain",
-    }
-)
-
-
-@plugin_required
-def test_contract_publishes_no_second_spelling():
-    """``op_contract`` publishes each fact once.
-
-    It used to carry both ``input_domain`` (a single ``Domain``) and
-    ``input_domains`` (the accepted set). Only the set was read, and the two
-    were free to disagree the moment a step accepted more than one domain —
-    which binary ops and reductions do. An unread key on an FFI boundary is not
-    inert: it is the next author's authority.
-    """
-    import json
-
-    contract_fn = getattr(_lib(), "op_contract", None)
-    if not callable(contract_fn):
-        pytest.skip("_lib.op_contract() not built")
-
-    spec = Pipeline().source("image_bytes").grayscale()._ops[-1]
-    keys = set(contract_fn(json.dumps(spec.to_dict(planning_slots))))
-    assert keys == _CONTRACT_KEYS, (
-        f"op_contract's key set changed: added {sorted(keys - _CONTRACT_KEYS)}, "
-        f"removed {sorted(_CONTRACT_KEYS - keys)}. Every key here is read by "
-        f"the Python planner; add one only with the reader that needs it."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1092,7 +963,7 @@ def test_explicit_lazy_methods_take_a_lazy_operand():
 def _op_json(op: str, **params: object) -> str:
     """An all-literal op's wire JSON, in whichever form (typed or legacy) the
     op crosses the boundary in — ``OpSpec.to_dict`` decides, not this helper."""
-    from polars_cv._types import OpSpec, ParamValue, planning_slots
+    from polars_cv._types import OpSpec, ParamValue
 
     spec = OpSpec(
         op, {k: ParamValue(is_expr=False, value=v) for k, v in params.items()}

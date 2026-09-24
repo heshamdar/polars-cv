@@ -308,4 +308,88 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("rewrites the graph"), "{err}");
     }
+
+    /// A verdict resting on a parameter's literal value is not provable when
+    /// that parameter is per-row; a per-row parameter the verdict does not
+    /// read (a pad's fill behind zero amounts) leaves it provable.
+    #[test]
+    fn only_a_per_row_deciding_param_keeps_an_identity() {
+        let pad = |top: serde_json::Value, value: serde_json::Value| json!({"op": "pad", "top": top, "bottom": 0, "left": 0, "right": 0, "value": value, "mode": "constant"});
+        let s = [image(4, 5), image(4, 5)];
+        let eliminated = |op: serde_json::Value| {
+            let o = ops(&[op]);
+            run(LogicalPass::IdentityElimination, &node(&o, &s, &[])).unwrap() == Some(vec![])
+        };
+        assert!(!eliminated(pad(json!({"$slot": 0}), json!(0.0))));
+        assert!(eliminated(pad(json!(0), json!({"$slot": 0}))));
+        // A crop is a candidate only at a literal (0, 0) origin.
+        let crop = |top: serde_json::Value, left: serde_json::Value| json!({"op": "crop", "top": top, "left": left, "height": 4, "width": 5});
+        assert!(eliminated(crop(json!(0), json!(0))));
+        assert!(!eliminated(crop(json!(1), json!(0))));
+        assert!(!eliminated(crop(json!(0), json!(1))));
+        assert!(!eliminated(crop(json!({"$slot": 0}), json!(0))));
+        assert!(!eliminated(crop(json!(0), json!({"$slot": 0}))));
+    }
+
+    /// The spatial rule of one representative op per class, through the typed
+    /// op's resolution (what the pushdown reads).
+    #[test]
+    fn representative_ops_have_their_true_spatial_rule() {
+        let rule = |op: serde_json::Value| -> String {
+            match crate::resolve_op_from_json(&op.to_string())
+                .unwrap()
+                .spatial_dependency()
+            {
+                SpatialDependency::Pointwise => "pointwise".into(),
+                SpatialDependency::Neighborhood(support) => {
+                    format!("neighborhood:{}", support.radius)
+                }
+                SpatialDependency::Global => "global".into(),
+                SpatialDependency::Geometric(_) => "geometric".into(),
+            }
+        };
+        let cases = [
+            (json!({"op": "cast", "dtype": "f32"}), "pointwise"),
+            (json!({"op": "invert"}), "pointwise"),
+            (json!({"op": "grayscale"}), "pointwise"),
+            (json!({"op": "threshold", "value": 128.0}), "pointwise"),
+            (
+                json!({"op": "convolve2d", "kernel": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], "ksize": 3, "normalize": false, "border": "replicate"}),
+                "neighborhood:1",
+            ),
+            // ceil(3 * sigma)
+            (json!({"op": "blur", "sigma": 1.0}), "neighborhood:3"),
+            (json!({"op": "blur", "sigma": 2.0}), "neighborhood:6"),
+            (json!({"op": "adjust_contrast", "factor": 1.5}), "global"),
+            (json!({"op": "equalize_histogram"}), "global"),
+            // Hysteresis links edges non-locally.
+            (
+                json!({"op": "canny", "low_threshold": 50.0, "high_threshold": 150.0}),
+                "global",
+            ),
+            (
+                json!({"op": "perceptual_hash", "algorithm": "perceptual", "hash_size": 64}),
+                "global",
+            ),
+            (json!({"op": "reduce_sum"}), "global"),
+            (
+                json!({"op": "resize", "height": 8, "width": 8, "filter": "bilinear"}),
+                "geometric",
+            ),
+            (
+                json!({"op": "rotate", "angle": 30.0, "expand": false, "interpolation": "nearest", "border_value": 0.0}),
+                "geometric",
+            ),
+            (
+                json!({"op": "pad", "top": 1, "bottom": 0, "left": 0, "right": 0, "value": 0.0, "mode": "constant"}),
+                "geometric",
+            ),
+            (CROP(), "geometric"),
+            (json!({"op": "flip", "axes": [0]}), "geometric"),
+            (json!({"op": "transpose", "axes": [1, 0, 2]}), "geometric"),
+        ];
+        for (op, expected) in cases {
+            assert_eq!(rule(op.clone()), expected, "{op}");
+        }
+    }
 }

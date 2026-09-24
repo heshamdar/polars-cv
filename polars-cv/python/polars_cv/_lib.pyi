@@ -26,9 +26,6 @@ def node_pass(
 ) -> list[int] | None:
     """Run a node-scope logical pass; the node's new op order, or ``None``."""
 
-def op_contract(spec_json: str) -> dict[str, Any]:
-    """Return the full contract for a single serialized op spec."""
-
 def plan_step(
     op_json: str,
     domain: str,
@@ -39,13 +36,6 @@ def plan_step(
 ) -> dict[str, Any]:
     """One op's plan-time effect: ``{"domain", "dtype", "ndim", "dims"}``, where
     ``dims`` lists ``(axis, size)`` for the hints the op replaces."""
-
-def op_infer_shape(spec_json: str, dims: list[int | None]) -> list[int | None] | None:
-    """Plan-time output shape for a single-buffer op. Raises ``ValueError`` when
-    no shape is inferable."""
-
-def op_identity_rule(op_json: str) -> Any:
-    """The op's identity rule — the condition an identity-elimination pass uses."""
 
 def rotation_matrix_2d(
     angle_deg: float,

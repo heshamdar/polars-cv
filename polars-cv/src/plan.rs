@@ -318,4 +318,50 @@ mod tests {
         assert_eq!(out.domain, "buffer");
         assert_eq!(out.dims, [Some(Some(8)), Some(Some(6)), Some(Some(1))]);
     }
+
+    /// `infer_shape` (the probing shape authority `step` reads): literal
+    /// params and known dims give exact dims, a per-row param or unknown dim
+    /// gives `None`, and an unknown input axis carried through reads `-1`.
+    #[test]
+    fn infer_shape_propagates_known_and_unknown_dims() {
+        let shape = |op: serde_json::Value, dims: &[Option<i64>]| {
+            crate::infer_shape(&op.to_string(), dims).unwrap()
+        };
+        let resize = |h: serde_json::Value| json!({"op": "resize", "height": h, "width": 100, "filter": "bilinear"});
+        assert_eq!(
+            shape(resize(json!(224)), &[None, None, None]),
+            Some(vec![Some(224), Some(100), Some(-1)])
+        );
+        assert_eq!(
+            shape(resize(json!({"$slot": 0})), &[None, None, Some(3)]),
+            Some(vec![None, Some(100), Some(3)])
+        );
+        let pad = json!({"op": "pad", "top": 1, "bottom": 2, "left": 3, "right": 4, "value": 0.0, "mode": "constant"});
+        assert_eq!(
+            shape(pad, &[Some(10), Some(10), Some(3)]),
+            Some(vec![Some(13), Some(17), Some(3)])
+        );
+        let rotate = |angle: serde_json::Value| json!({"op": "rotate", "angle": angle, "expand": false, "interpolation": "nearest", "border_value": 0.0});
+        let image = [Some(100), Some(50), Some(3)];
+        // A literal 90 swaps H/W; a per-row angle might, so H/W are unknown.
+        assert_eq!(
+            shape(rotate(json!(90.0)), &image),
+            Some(vec![Some(50), Some(100), Some(3)])
+        );
+        assert_eq!(
+            shape(rotate(json!({"$slot": 0})), &image),
+            Some(vec![None, None, Some(3)])
+        );
+        // A contour input has no shape: the canvas is rasterize's own, or
+        // unknown when it comes from another node.
+        let rasterize = |size: serde_json::Value| json!({"op": "rasterize", "size": size, "fill_value": 255, "background": 0});
+        assert_eq!(
+            shape(rasterize(json!([10, 12])), &[]),
+            Some(vec![Some(10), Some(12), Some(1)])
+        );
+        assert_eq!(
+            shape(rasterize(json!("n0")), &[]),
+            Some(vec![None, None, Some(1)])
+        );
+    }
 }
