@@ -515,8 +515,9 @@ _REQUIRED_LIB_HOOKS = (
     "op_identity_rule",
     "op_schema",
     "op_infer_shape",
-    "op_output_channels",
-    "binary_output_dtype",
+    # One appended op's whole plan-time effect (domain check, schema, H/W,
+    # channels, rank clipping), the builder's one call per append.
+    "plan_step",
     # The 2x3 rotation+scale matrix about an arbitrary centre, read by the
     # planner's literal `rotate_and_scale` so `_rotation_matrix` does not
     # recompute the trig.
@@ -606,33 +607,50 @@ def _binary_op_names_from_source() -> set[str]:
     return set(re.findall(r'self\._binary_op\("([a-z_]+)"', lazy))
 
 
+def _binary_dtype(op: str, left: str, right: str) -> str:
+    """A binary op's planned dtype over two operand dtypes, via ``plan_step``."""
+    from polars_cv._lib import plan_step
+
+    op_json = json.dumps({"op": op, "other": "n0"})
+    return plan_step(op_json, "buffer", left, 3, [None] * 3, right)["dtype"]
+
+
 @plugin_required
-def test_binary_output_dtype_authority():
-    """The two-input dtype FFI resolves every binary op and encodes true division.
+def test_binary_dtype_authority():
+    """The planner resolves every binary op's two-input dtype, true division included.
 
-    Guards both the new ``binary_output_dtype`` hook and its op-name mapping
-    against the binary ops the Python API actually emits (drift-proof: the names
-    are scanned from source).
+    Checked against the binary ops the Python API actually emits (drift-proof:
+    the names are scanned from source).
     """
-    from polars_cv._lib import binary_output_dtype
-
     emitted = _binary_op_names_from_source()
     assert emitted, "no binary ops scanned from lazy.py — scan regex out of date?"
     for op in emitted:
-        # Every emitted binary op must resolve through the FFI without error.
-        result = binary_output_dtype(op, "u8", "u8")
+        result = _binary_dtype(op, "u8", "u8")
         assert result in {"u8", "f32"}, f"{op}: unexpected dtype {result}"
 
     # True division promotes integers to float; other ops use plain promotion.
-    assert binary_output_dtype("divide", "u8", "u8") == "f32"
-    assert binary_output_dtype("ratio", "u16", "u16") == "f32"
-    assert binary_output_dtype("divide", "f64", "f64") == "f64"
-    assert binary_output_dtype("add", "u8", "u8") == "u8"
-    assert binary_output_dtype("add", "u8", "u16") == "u16"
-    assert binary_output_dtype("add", "u8", "f32") == "f32"
+    assert _binary_dtype("divide", "u8", "u8") == "f32"
+    assert _binary_dtype("ratio", "u16", "u16") == "f32"
+    assert _binary_dtype("divide", "f64", "f64") == "f64"
+    assert _binary_dtype("add", "u8", "u8") == "u8"
+    assert _binary_dtype("add", "u8", "u16") == "u16"
+    assert _binary_dtype("add", "u8", "f32") == "f32"
     # An unknown operand dtype keeps the result unknown (handled by the sink).
-    assert binary_output_dtype("divide", "auto", "u8") == "auto"
-    assert binary_output_dtype("add", "u8", "auto") == "auto"
+    assert _binary_dtype("divide", "auto", "u8") == "auto"
+    assert _binary_dtype("add", "u8", "auto") == "auto"
+
+
+@plugin_required
+def test_the_other_operand_dtype_is_for_binary_ops_only():
+    """A binary op without its other operand's dtype, or any other op with one,
+    is refused rather than planned with the one-input rule."""
+    from polars_cv._lib import plan_step
+
+    add = json.dumps({"op": "add", "other": "n0"})
+    with pytest.raises(ValueError, match="needs the other operand"):
+        plan_step(add, "buffer", "u8", 3, [None] * 3)
+    with pytest.raises(ValueError, match="only a binary op"):
+        plan_step(json.dumps({"op": "grayscale"}), "buffer", "u8", 3, [None] * 3, "u8")
 
 
 @requires_checkout
@@ -1149,8 +1167,8 @@ def test_op_schema_authority(op_json, state_in, expected) -> None:
 
 @plugin_required
 def test_pipeline_state_matches_batch_fold() -> None:
-    """Incrementally tracked builder state equals the fold over op_schema
-    from the initial state — the two mechanisms share one authority."""
+    """Incrementally tracked builder state (``plan_step``) equals the batch fold
+    over ``op_schema`` from the initial state: the two share ``plan::fold``."""
     corpus = [
         Pipeline().source("blob", dtype="u8").grayscale().threshold(128),
         Pipeline().source("blob", dtype="u8").cast("f32").scale(2.0),
@@ -1193,17 +1211,17 @@ def test_pipeline_state_matches_batch_fold() -> None:
 
 @plugin_required
 def test_append_cost_is_linear(monkeypatch) -> None:
-    """Appending N ops makes exactly N op_schema calls (no full replay)."""
+    """Appending N ops makes exactly N plan_step calls (no full replay)."""
     import polars_cv._lib as lib
 
     calls = {"n": 0}
-    real = lib.op_schema
+    real = lib.plan_step
 
     def counting(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(lib, "op_schema", counting)
+    monkeypatch.setattr(lib, "plan_step", counting)
 
     pipe = Pipeline().source("blob", dtype="u8")
     n_ops = 6
@@ -1211,7 +1229,7 @@ def test_append_cost_is_linear(monkeypatch) -> None:
         pipe = pipe.scale(2.0).relu()
     assert len(pipe._ops) == n_ops
     assert calls["n"] == n_ops, (
-        f"expected exactly {n_ops} op_schema calls, got {calls['n']} — "
+        f"expected exactly {n_ops} plan_step calls, got {calls['n']} — "
         "per-append tracking must not replay prior ops"
     )
 

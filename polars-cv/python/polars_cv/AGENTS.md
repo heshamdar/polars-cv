@@ -107,11 +107,14 @@ ordering.
 
 ### Operation Contracts (view-buffer is the authority)
 
-Every operation's schema effect — output domain, dtype, rank (ndim) and channel
-count — comes from view-buffer's per-op `ViewDto` contract, surfaced to Python
-through `_lib.op_contract(op_json)` and `_lib.op_schema(op_json, domain, dtype, ndim)`.
-The Python planner (`_compute_output_domain_dtype_ndim` / `_update_channels_from_rule`)
-**reads** these rules; it does not re-declare them. There is no Python contract
+Every operation's schema effect — output domain, dtype, rank (ndim), H/W and
+channel count — comes from the op's Rust contract, applied in Rust by one call
+per appended op: `_lib.plan_step(op_json, domain, dtype, ndim, dims,
+other_dtype=None)` (`src/plan.rs`). `Pipeline._push_op` makes it through
+`_plan_step` and adopts the result with `_apply_step`; the batch folds
+(`_compute_output_domain_dtype_ndim`, identity elimination) read
+`_lib.op_schema`, which shares `plan::fold`. Python **reads** these rules; it
+does not re-declare them. There is no Python contract
 table to keep in sync.
 
 The contract fields read by the planner are:
@@ -141,10 +144,8 @@ Alpha channels are **always preserved** during image decoding. Image sources
 `.assert_shape(channels=4)`.
 
 Each op's alpha/channel behaviour is described by its view-buffer `channel_rule`
-(e.g. passthrough, drop-to-fixed, color-conversion). Channel inference is
-implemented in `Pipeline._update_channels_from_rule()`, called at the end of
-`_update_shape_hints()`, which reads `op_contract(...)["channel_rule"]` and
-applies it to the tracked channel count. Rust implements the matching behaviour
+(e.g. passthrough, drop-to-fixed, color-conversion). `plan_step` applies it
+(`OutputChannelRule::apply`) to the tracked channel count. Rust implements the matching behaviour
 based on the buffer's actual channel count.
 
 ### ParamValue — Literal vs Expression Parameters
@@ -322,10 +323,10 @@ rotation matrix via the `rotation_matrix_2d` FFI) and delegate to
 
 ### Shape Hints (single authority: view-buffer `infer_shape`)
 
-`_update_shape_hints()` no longer re-derives any per-dimension geometry in
-Python. It reads the op's view-buffer `infer_shape` through the `op_infer_shape`
-FFI (`_update_hw_from_infer_shape`), the same authority execution uses, so the
-tracked H/W cannot disagree with what the op produces.
+No per-dimension geometry is derived in Python. `plan_step` runs the op's
+view-buffer `infer_shape` (the probing `infer_shape` in `lib.rs`, also exposed
+as `op_infer_shape`), the same authority execution uses, so the tracked H/W
+cannot disagree with what the op produces.
 
 Not every step *has* an inferable shape: axis reductions, histograms, channel
 merge and the binary ops are graph-level steps `op_infer_shape` rejects. For
@@ -337,15 +338,15 @@ propagate automatically: an unknown input dim or a per-row expression param
 yields a `None` output dim. This covers every op uniformly — including rotation
 (static 90/270 swap, static-angle expand bounding box, and expression-angle
 "unknown", all computed by the Rust `RotateAffine`/`Rotate90` `infer_shape`).
-Channels stay with `_update_channels_from_rule` (the channel rule); rank stays
-with `op_schema`. The three fold together in `_apply_shape_contract`.
+Channels come from the channel rule and rank from `plan::fold`; `plan_step`
+applies all three and clips the hints to the output rank.
 
 An unknown input rank normally means "do not ask": `infer_shape` indexes the
 input shape, so a fabricated one publishes a fabricated result. The exception is
 a step that *builds* a buffer out of a non-buffer domain — `input_domains`
 excludes buffer, `output_domain` is buffer — whose output geometry comes from
 its own params and reads no input at all. `rasterize` is the case, and
-`_input_dims_for` recognises it from the contract rather than by name. Without
+`plan::input_dims` recognises it from the contract rather than by name. Without
 it a fully determined mask published no shape, and `sink("array")` demanded an
 explicit one.
 

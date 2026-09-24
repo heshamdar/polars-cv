@@ -763,7 +763,8 @@ SINKS_WITH_TYPED_ELEMENTS: "frozenset[SinkFormat]" = frozenset(
 #: The dimension a shape hint names, by position. The hints are **positional**:
 #: ``height`` is dimension 0, ``width`` dimension 1, ``channels`` dimension 2,
 #: whatever the data means by them. Every reader agrees on that order —
-#: ``Pipeline._current_input_dims`` builds ``op_infer_shape``'s input from it
+#: ``Pipeline._plan_step`` hands Rust the hints in it (and reads the replaced
+#: ones back by axis)
 #: and ``GraphNode.expected_shape`` publishes ``[H, W, C]`` from it — so the
 #: order is named once here rather than re-spelled at each site.
 #:

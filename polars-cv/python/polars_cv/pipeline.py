@@ -143,10 +143,9 @@ _SOURCE_DEFAULTS: "dict[str, Any] | None" = None
 
 
 def _op_contract_for(spec: "OpSpec") -> dict:
-    """Read one operation's Rust contract (domains + rank/channel rules).
+    """Read one operation's Rust contract (spatial rule, window flag, ...).
 
-    Single entry point so an append reads the contract exactly once and shares
-    it between the input-domain check and channel inference.
+    The spatial-window pushdown's reader; appends go through ``plan_step``.
     """
     from polars_cv._lib import op_contract
 
@@ -491,9 +490,9 @@ class Pipeline(_OpsMixin):
         be re-implemented here as Python special cases.
 
         Used by lazy continuations, which seed the fold with the upstream
-        node's state; incremental per-append tracking uses the same authority
-        via ``_update_output_dtype``, so the two cannot diverge (guarded by
-        ``test_pipeline_state_matches_batch_fold``).
+        node's state; incremental per-append tracking (``plan_step``) shares
+        the same Rust fold (``plan::fold``), so the two cannot diverge (guarded
+        by ``test_pipeline_state_matches_batch_fold``).
         """
         from polars_cv._lib import op_schema
 
@@ -727,48 +726,87 @@ class Pipeline(_OpsMixin):
 
         return self._append_op(op_name, _params)
 
-    def _push_op(
-        self,
-        spec: "OpSpec",
-        contract: dict | None = None,
-        *,
-        update_dtype: bool = True,
-    ) -> None:
-        """Append ``spec`` **in place** and run its full plan-time update.
+    def _push_op(self, spec: "OpSpec", *, other_dtype: "str | None" = None) -> None:
+        """Append ``spec`` **in place** and apply its full plan-time effect.
 
         **The single mutator of ``_ops`` in the package.** :meth:`_append_op`
         wraps it for the immutable builder path; the graph hook
         (:meth:`_add_node_op`) calls it directly because it mutates an
-        already-cloned pipeline. Both the schema fold
-        and the shape-hint update are unconditional, so no caller can append
-        an op while tracking only half its effect.
+        already-cloned pipeline. The effect — input-domain check, schema fold,
+        H/W, channels, rank clipping — is one Rust call (:meth:`_plan_step`),
+        made before anything changes, so an op cannot be appended with only part
+        of it applied.
 
         The guard is ``test_op_append_is_structurally_exclusive``, which walks
         this module's AST and fails if anything else mutates ``_ops``.
 
         Args:
             spec: The operation to append.
-            contract: A pre-read contract, reused to avoid a second FFI call.
-            update_dtype: Only a binary op's :meth:`_add_node_op` passes False. A
-                two-input dtype rule is not expressible through ``op_schema``;
-                the lazy layer resolves it via ``binary_output_dtype``
-                instead. The shape-hint update still runs.
+            other_dtype: A binary op's other operand's dtype, which its
+                two-input dtype rule reads. Rust refuses it for any other op,
+                and refuses a binary op without it.
         """
-        if contract is None:
-            contract = _op_contract_for(spec)
-        self._require_input_domain(spec, contract)
-        # The rank the op *consumes*, captured before the schema fold below
-        # advances it — `op_infer_shape` describes a transform of the input.
-        input_ndim = self._expected_ndim
+        planned = self._plan_step(spec, other_dtype=other_dtype)
+        # The H/W entering this op, by position: identity elimination judges a
+        # shape-preserving op against its own entering shape.
+        self._hint_snapshots[len(self._ops)] = (
+            copy.deepcopy(self._shape_hints.height),
+            copy.deepcopy(self._shape_hints.width),
+        )
         self._ops.append(spec)
-        if update_dtype:
-            self._update_output_dtype(spec)
-        self._update_shape_hints(contract=contract, input_ndim=input_ndim)
+        self._apply_step(planned)
         # An assertion recorded *after* this op outranks what the contract
         # inferred. rasterize(shape=<node>) is the case that needs it: its
         # canvas comes from another node's buffer, which no contract on this
         # op can describe.
         self._apply_assertions_at(len(self._ops))
+
+    def _plan_step(
+        self, spec: "OpSpec", *, other_dtype: "str | None" = None
+    ) -> "dict[str, Any]":
+        """``spec``'s plan-time effect on the current state, from Rust.
+
+        ``plan_step`` is the one authority: the input-domain check, the schema
+        fold (domain, dtype, rank), the H/W the op's ``infer_shape`` gives, its
+        channel rule and the clipping of hints to the output rank. A per-row
+        hint enters as unknown, since its size is not a plan-time integer.
+        """
+        from polars_cv._lib import plan_step
+
+        dims = [
+            None
+            if (hint := self._shape_hints.get(dim)) is None or hint.is_expr
+            else int(hint.value)
+            for dim in HINT_DIMS
+        ]
+        return plan_step(
+            json.dumps(spec.to_dict(planning_slots)),
+            self._current_domain,
+            self._output_dtype,
+            self._expected_ndim,
+            dims,
+            other_dtype,
+        )
+
+    def _apply_step(self, planned: "dict[str, Any]") -> None:
+        """Adopt a :meth:`_plan_step` result.
+
+        Only the hints the op replaces are touched; the rest (say, a per-row
+        H/W assertion under an op whose input rank is unknown) are kept. Every
+        replaced hint is the ops' inference, not the user's claim, so the
+        attribution is cleared; :meth:`_apply_assertions_at` re-marks what it
+        re-declares.
+        """
+        self._current_domain = planned["domain"]
+        self._output_dtype = planned["dtype"]
+        self._expected_ndim = planned["ndim"]
+        self._asserted_dims.clear()
+        for axis, size in planned["dims"]:
+            setattr(
+                self._shape_hints,
+                HINT_DIMS[axis],
+                None if size is None else ParamValue(is_expr=False, value=size),
+            )
 
     def _apply_assertions_at(self, position: int) -> None:
         """Check and overlay any shape declaration recorded at op ``position``.
@@ -825,7 +863,8 @@ class Pipeline(_OpsMixin):
         Two ways a declaration is not merely redundant but wrong:
 
         - the dimension does not exist at the tracked rank — the same invariant
-          :meth:`_drop_hints_below_rank` enforces against the ops, applied to
+          :meth:`_plan_step` enforces against the ops (hints are clipped to
+          the output rank), applied to
           the user;
         - the dimension is already known concretely and the declaration
           disagrees. One of the two is wrong and the planner cannot tell which,
@@ -941,271 +980,6 @@ class Pipeline(_OpsMixin):
             },
         )
 
-    def _require_input_domain(self, spec: "OpSpec", contract: dict) -> None:
-        """Reject an operation whose input domain is not the current domain.
-
-        The accepted domains are read from the op's Rust contract
-        (``op_contract(...)["input_domains"]``) rather than restated in Python.
-        It is the same authority the executor dispatches on, so the builder
-        cannot disagree with what will actually run — the input-domain mirror
-        of ``op_schema`` supplying the output domain.
-
-        It is a *set*: binary ops and reductions accept a buffer or a vector,
-        because a perceptual hash is a 1-D buffer encoded as a vector.
-        ``Domain::Any`` means the step accepts whatever it is handed.
-        """
-        accepted = contract["input_domains"]
-        if _DOMAIN_ANY in accepted or self._current_domain in accepted:
-            return
-        expected = " or ".join(accepted)
-        raise ValueError(
-            f"{spec.op}() expects {expected} input but pipeline is currently "
-            f"in {self._current_domain} domain. Add a domain-converting "
-            f"operation (e.g., rasterize() for contour→buffer, "
-            f"extract_contours() for buffer→contour)."
-        )
-
-    def _update_output_dtype(self, spec: "OpSpec") -> None:
-        """
-        Apply an operation's schema effect (domain, dtype, ndim) to the
-        pipeline's tracked state.
-
-        Incremental: exactly one ``op_schema`` FFI call per appended op (the
-        old implementation replayed every prior op from the already-evolved
-        state — O(n²) FFI calls, and a latent non-idempotency for axis
-        reductions' ndim). Domain now comes from the same single authority
-        as dtype and ndim; builder methods no longer assign
-        ``_current_domain`` by hand.
-
-        ``spec`` is passed rather than read off ``_ops[-1]`` so the contour
-        source can fold the same rasterize contract without appending an op it
-        does not execute (:meth:`_seed_from_contour_rasterize`).
-        """
-        from polars_cv._lib import op_schema
-
-        domain, dtype, ndim = op_schema(
-            json.dumps(spec.to_dict(planning_slots)),
-            self._current_domain,
-            self._output_dtype,
-            self._expected_ndim,
-        )
-        self._current_domain = domain
-        self._output_dtype = dtype
-        self._expected_ndim = ndim
-
-    def _update_shape_hints(self, contract: dict, input_ndim: "int | None") -> None:
-        """
-        Update shape hints based on the operation being added.
-
-        Height/width come from the op's view-buffer ``infer_shape`` (via
-        ``op_infer_shape``) — the single geometry authority — and channels from
-        its channel rule via :meth:`_update_channels_from_rule`. No shape math
-        is re-implemented in Python.
-
-        Always describes the op just appended (``_ops[-1]``); there is one
-        caller, :meth:`_push_op`, and both arguments are required so the
-        method cannot be invoked with a silently wrong default.
-
-        Args:
-            contract: The op contract :meth:`_push_op` already read, so an
-                append still costs a constant number of FFI calls.
-            input_ndim: The rank the op consumes, captured before the schema
-                fold advances ``_expected_ndim`` — ``infer_shape`` describes a
-                transform *of the input*, so the post-op rank would misstate
-                every rank-changing op. ``None`` means the rank is genuinely
-                unknown, not "look it up".
-        """
-        # Record the hints ENTERING this op (before the update below) so a
-        # plan-time pass can read an op's own entering H/W by position (identity
-        # elimination reads it for WhenShapePreserved ops; spatial-window
-        # pushdown keeps it for unmoved ops). Any assert_shape() between ops is
-        # naturally captured: it mutated _shape_hints before this append.
-        # `_push_op` appends before calling, so there is always an op here.
-        idx = len(self._ops) - 1
-        self._hint_snapshots[idx] = (
-            copy.deepcopy(self._shape_hints.height),
-            copy.deepcopy(self._shape_hints.width),
-        )
-        self._apply_shape_contract(self._ops[idx], contract, input_ndim)
-
-    def _apply_shape_contract(
-        self, spec: "OpSpec", contract: dict, input_ndim: "int | None"
-    ) -> None:
-        """Fold one op's shape contract into the hints: H/W, channels, rank.
-
-        Height/width come from the op's view-buffer ``infer_shape`` (via
-        ``op_infer_shape``) — the single geometry authority — channels from its
-        channel rule, and both are then clipped to the output rank. No shape
-        math is re-implemented in Python.
-
-        Shared with the contour source, whose decode *is* a rasterize
-        (:meth:`_seed_from_contour_rasterize`), so the source and the
-        ``rasterize`` op cannot publish different shapes for the same mask.
-        """
-        # Every hint below is about to be recomputed from the op's contracts,
-        # so nothing survives as "the user asserted this". `_apply_assertions_at`
-        # runs immediately after and re-marks whatever it re-declares.
-        self._asserted_dims.clear()
-        self._update_hw_from_infer_shape(
-            spec, self._input_dims_for(contract, input_ndim)
-        )
-        self._update_channels_from_rule(spec)
-        self._drop_hints_below_rank()
-
-    def _drop_hints_below_rank(self) -> None:
-        """Discard hints for dimensions the output rank does not have.
-
-        Rank is the authority (``op_schema``); a hint is only meaningful when
-        the dimension exists. This is its own invariant, not a patch over the
-        channel rule: an op can drop rank while the channel rule still has
-        something to say, and a dimension that does not exist cannot have a
-        size whatever any rule reports.
-
-        ``channel_select`` is the case that made it load-bearing — it drops
-        rank 3 → 2, and a stale channel count surviving onto a rank-2 output is
-        how ``expected_shape`` came to publish a three-dimensional shape for
-        two-dimensional data.
-        """
-        ndim = self._expected_ndim
-        if ndim is None:
-            return
-        if ndim < 3:
-            self._shape_hints.channels = None
-        if ndim < 2:
-            self._shape_hints.width = None
-        if ndim < 1:
-            self._shape_hints.height = None
-
-    def _update_channels_from_rule(self, spec: "OpSpec") -> None:
-        """Set the channel hint from the op's view-buffer channel rule.
-
-        Defers to ``op_output_channels``, which runs view-buffer's
-        ``OutputChannelRule::apply`` — the same authority that declares the
-        rule. Python holds no copy of the arithmetic: alpha handling
-        (``StripProcessRestore``), fixed counts, and every "not determinable"
-        case are answered once, in Rust.
-
-        This used to re-derive the answer by parsing the stringified rule, and
-        the two readings disagreed on ``NotApplicable``: ``apply`` returns
-        "no channel count", Python left the hint untouched. See
-        ``op_output_channels`` for why that stayed invisible.
-
-        An expression-valued incoming hint enters as ``None`` and so leaves as
-        ``None``: a per-row channel count is not a plan-time integer, which is
-        exactly how ``expected_shape`` and ``_current_input_dims`` already read
-        it. The assertion that produced it is replayed from ``_assertions``, not
-        from this hint, so nothing is lost.
-        """
-        from polars_cv._lib import op_output_channels
-
-        current = self._shape_hints.channels
-        input_channels = (
-            None if current is None or current.is_expr else int(current.value)
-        )
-        out = op_output_channels(
-            json.dumps(spec.to_dict(planning_slots)), input_channels
-        )
-        self._shape_hints.channels = (
-            None if out is None else ParamValue(is_expr=False, value=out)
-        )
-
-    def _current_input_dims(self, ndim: int) -> list[int | None]:
-        """The current per-dimension sizes as ``op_infer_shape`` input.
-
-        Length ``ndim``; each entry is the known size or ``None`` (unknown /
-        expression). The tracked hints hold H (dim 0), W (dim 1), C (dim 2);
-        higher dims are unknown.
-        """
-        dims: list[int | None] = [None] * ndim
-        h, w, c = (
-            self._shape_hints.height,
-            self._shape_hints.width,
-            self._shape_hints.channels,
-        )
-        if ndim >= 1 and h is not None and not h.is_expr:
-            dims[0] = int(h.value)
-        if ndim >= 2 and w is not None and not w.is_expr:
-            dims[1] = int(w.value)
-        if ndim >= 3 and c is not None and not c.is_expr:
-            dims[2] = int(c.value)
-        return dims
-
-    def _input_dims_for(
-        self, contract: dict, input_ndim: "int | None"
-    ) -> "list[int | None] | None":
-        """The input shape to hand ``op_infer_shape``, or ``None`` to not ask.
-
-        ``input_ndim`` is the rank the op *consumes*, and is required rather
-        than defaulted: falling back to ``self._expected_ndim`` would read the
-        *post*-op rank the schema fold just wrote, which is exactly the
-        misstatement this argument exists to prevent.
-
-        An unknown input rank normally means "do not ask" — ``infer_shape``
-        indexes the input shape, so a fabricated one would publish a fabricated
-        result. A step that *builds* a buffer out of a non-buffer domain is the
-        exception, and not by special-casing an op name: it consumes no buffer
-        (``input_domains`` excludes it) and produces one, so its output geometry
-        comes from its own parameters and there is no input shape to be unknown
-        about. ``rasterize`` is the case — its canvas is its ``width``/
-        ``height`` — and it is why its explicit-dims form published no shape at
-        all while its docstring said ``infer_shape`` supplied one.
-        """
-        if input_ndim is not None and input_ndim >= 1:
-            return self._current_input_dims(input_ndim)
-        buffer = Domain.BUFFER.value
-        if (
-            buffer not in contract["input_domains"]
-            and contract["output_domain"] == buffer
-        ):
-            return []
-        return None
-
-    def _update_hw_from_infer_shape(
-        self, spec: "OpSpec", dims: "list[int | None] | None"
-    ) -> None:
-        """Set H/W hints from the op's view-buffer ``infer_shape`` (single
-        authority), replacing the old per-op geometry.
-
-        Reads ``op_infer_shape`` — which propagates unknowns (an unknown input
-        dim or a per-row expression param yields a ``None`` output dim) — and
-        maps the leading two output dims onto the H/W hints. Channels stay with
-        :meth:`_update_channels_from_rule`; rank stays with ``op_schema``.
-
-        ``dims`` is the input shape :meth:`_input_dims_for` resolved, or
-        ``None`` when the op must not be asked at all.
-        """
-        if dims is None:
-            return
-        from polars_cv._lib import op_infer_shape
-
-        # A ValueError here is the op's parameters not fitting the input (its
-        # Rust `validate`), raised to the builder's caller as is.
-        out = op_infer_shape(json.dumps(spec.to_dict(planning_slots)), dims)
-        if out is None:
-            # No inferable shape for this step — an axis reduction, a
-            # histogram, a channel merge, a binary op.
-            #
-            # Invalidate rather than keep the pre-op values. Several of these
-            # steps *do* change H/W (an axis reduction drops a dimension), so
-            # leaving the old hints in place is how a pipeline came to publish
-            # `[100, 200, 2]` for data that executes as `[200, 3, 2]`. Unknown
-            # is always safe: `expected_shape` reports None and the sink asks
-            # for an explicit shape.
-            self._shape_hints.height = None
-            self._shape_hints.width = None
-            return
-
-        def _dim(i: int) -> "ParamValue | None":
-            # A negative dim is "the (unknown) input axis, unchanged": still
-            # unknown as a size.
-            dim = out[i] if i < len(out) else None
-            if dim is not None and dim >= 0:
-                return ParamValue(is_expr=False, value=int(dim))
-            return None
-
-        self._shape_hints.height = _dim(0)
-        self._shape_hints.width = _dim(1)
-
     @staticmethod
     def _shape_ref_dims(
         shape: "LazyPipelineExpr",
@@ -1234,8 +1008,8 @@ class Pipeline(_OpsMixin):
         what it hands the first op is what the ``rasterize`` op hands its
         successor — an ``[H, W, 1]`` u8 mask. Rank, dtype, channels and canvas
         are therefore read from ``GeometryOp::Rasterize``'s contract, through
-        the same ``op_contract`` / ``op_schema`` / ``op_infer_shape`` FFI
-        :meth:`_push_op` uses, and are not restated here. Hard-coding rank 3
+        the same :meth:`_plan_step` :meth:`_push_op` uses, and are not restated
+        here. Hard-coding rank 3
         and leaving the dtype ``"auto"`` is what made ``sink("list")`` and
         ``sink("array")`` unplannable on a contour source (both need a concrete
         element dtype) and forced a no-op ``.cast("u8")``.
@@ -1246,7 +1020,7 @@ class Pipeline(_OpsMixin):
 
         The spec built here is **not** appended to ``_ops``: the rasterize
         happens inside the source's own decode, and appending it would
-        rasterize a second time. Only its contract is read.
+        rasterize a second time. Only its plan-time effect is read.
 
         Args:
             shape: The node a ``shape=`` source takes its canvas from, or
@@ -1268,11 +1042,10 @@ class Pipeline(_OpsMixin):
             "background": source.background,
         }  # ty: ignore[invalid-assignment]
         spec = OpSpec(op="rasterize", params=params)
-        contract = _op_contract_for(spec)
-
+        # The column holds contours, of no buffer rank yet.
         self._current_domain = Domain.CONTOUR.value
-        self._update_output_dtype(spec)
-        self._apply_shape_contract(spec, contract, input_ndim=None)
+        self._expected_ndim = None
+        self._apply_step(self._plan_step(spec))
         if shape is not None:
             for dim, concrete in self._shape_ref_dims(shape).items():
                 setattr(self._shape_hints, dim, concrete)
@@ -2541,7 +2314,7 @@ class Pipeline(_OpsMixin):
         op_name: str,
         values: "dict[str, Any]",
         *,
-        update_dtype: bool = True,
+        other_dtype: "str | None" = None,
     ) -> None:
         """Append a ``lazy_only`` op — one reading other graph nodes — in place.
 
@@ -2554,9 +2327,8 @@ class Pipeline(_OpsMixin):
         Args:
             op_name: The op's wire name.
             values: Its arguments, by catalogue field name.
-            update_dtype: False for a binary op, whose two-input dtype rule
-                ``op_schema`` cannot express; the lazy layer resolves it via
-                ``binary_output_dtype`` instead.
+            other_dtype: A binary op's other operand's dtype (see
+                :meth:`_push_op`).
         """
         fields = OP_FIELDS[op_name]
         params: dict[str, ParamValue] = {}
@@ -2567,7 +2339,7 @@ class Pipeline(_OpsMixin):
         # Binary ops are elementwise, so H/W pass through unchanged — but the
         # append still routes through `_push_op`, which records the
         # entering-hints snapshot and applies the channel rule.
-        self._push_op(OpSpec(op=op_name, params=params), update_dtype=update_dtype)
+        self._push_op(OpSpec(op=op_name, params=params), other_dtype=other_dtype)
 
     # --- Spatial-window pushdown ---
     #

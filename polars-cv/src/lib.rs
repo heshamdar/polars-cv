@@ -19,12 +19,15 @@ mod naming;
 mod ops;
 mod output;
 mod params;
+mod plan;
 mod point;
 mod read_bytes;
 
 use polars::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::derive::polars_expr;
+
+use crate::plan::plan_step;
 use serde::Deserialize;
 
 /// Python module entry point for maturin.
@@ -42,12 +45,11 @@ fn polars_cv_lib(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // literal until the next bump, which is the whole window the check exists
     // for. This moves whenever the built artifact could differ.
     m.add("__source_hash__", env!("POLARS_CV_SOURCE_HASH"))?;
-    m.add_function(wrap_pyfunction!(binary_output_dtype, m)?)?;
     m.add_function(wrap_pyfunction!(op_contract, m)?)?;
     m.add_function(wrap_pyfunction!(op_identity_rule, m)?)?;
     m.add_function(wrap_pyfunction!(op_schema, m)?)?;
     m.add_function(wrap_pyfunction!(op_infer_shape, m)?)?;
-    m.add_function(wrap_pyfunction!(op_output_channels, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_step, m)?)?;
     m.add_function(wrap_pyfunction!(op_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(io_catalog, m)?)?;
     m.add_function(wrap_pyfunction!(enum_catalog, m)?)?;
@@ -77,9 +79,14 @@ fn dtype_short_name(dt: view_buffer::DType) -> &'static str {
 /// Inverse of [`dtype_short_name`]. Used to turn the Python schema layer's
 /// dtype strings into the `DType` the canonical [`OutputDTypeRule::resolve`]
 /// authority operates on.
-fn parse_dtype(s: &str) -> PyResult<view_buffer::DType> {
-    view_buffer::DType::from_short_name(s)
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown dtype {s:?}")))
+pub(crate) fn parse_dtype(s: &str) -> Result<view_buffer::DType, String> {
+    view_buffer::DType::from_short_name(s).ok_or_else(|| format!("unknown dtype {s:?}"))
+}
+
+/// A planner error (a plain message, so the planning core needs no
+/// interpreter) as the `ValueError` Python sees.
+pub(crate) fn py_value_error(msg: String) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(msg)
 }
 
 /// Canonical string for an output-dtype rule.
@@ -173,7 +180,7 @@ fn identity_rule_name(rule: view_buffer::IdentityRule) -> String {
 /// dimensional parameter, so the placeholder is sound and lets introspection
 /// work on the same live op specs the planner sees (which routinely carry
 /// expression params) rather than only literal-only ops.
-pub(crate) fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step::GraphStep> {
+pub(crate) fn resolve_op_from_json(op_json: &str) -> Result<crate::graph::step::GraphStep, String> {
     // Structural schema (domain/dtype/rank/channel rules) never depends on the
     // concrete value of a dimensional param, so any placeholder works here.
     resolve_op_from_json_probe(op_json, 1)
@@ -186,11 +193,10 @@ pub(crate) fn resolve_op_from_json(op_json: &str) -> PyResult<crate::graph::step
 pub(crate) fn resolve_op_from_json_probe(
     op_json: &str,
     probe: i64,
-) -> PyResult<crate::graph::step::GraphStep> {
+) -> Result<crate::graph::step::GraphStep, String> {
     use crate::params::ParamCtx;
 
-    let op: crate::ops::TypedOp = serde_json::from_str(op_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let op: crate::ops::TypedOp = serde_json::from_str(op_json).map_err(|e| e.to_string())?;
     // Every slot reads a placeholder column holding `probe`.
     let placeholders = vec![Series::new("".into(), &[probe]); op.min_inputs()];
     // A *probe* context: placeholders are integers, so a dynamic enum or flag
@@ -199,8 +205,7 @@ pub(crate) fn resolve_op_from_json_probe(
     // with no shape/rank/dtype effect are allowed to be dynamic, so the variant
     // probing picks cannot change the inferred schema.
     let ctx = ParamCtx::probe(&placeholders, probe);
-    op.resolve(0, &ctx)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("resolve_op: {e}")))
+    op.resolve(0, &ctx).map_err(|e| format!("resolve_op: {e}"))
 }
 
 /// Plan-time output shape for a single-buffer op — the single authority for
@@ -226,10 +231,18 @@ fn op_infer_shape(
     op_json: &str,
     input_dims: Vec<Option<i64>>,
 ) -> PyResult<Option<Vec<Option<i64>>>> {
+    infer_shape(op_json, &input_dims).map_err(py_value_error)
+}
+
+/// [`op_infer_shape`], for the Rust planner ([`plan::step`]).
+pub(crate) fn infer_shape(
+    op_json: &str,
+    input_dims: &[Option<i64>],
+) -> Result<Option<Vec<Option<i64>>>, String> {
     const PROBES: [i64; 4] = [7, 13, 90, 180];
     let mut runs: Vec<Vec<i64>> = Vec::with_capacity(PROBES.len());
     for &p in &PROBES {
-        match infer_shape_probe(op_json, &input_dims, p)? {
+        match infer_shape_probe(op_json, input_dims, p)? {
             Some(run) => runs.push(run),
             None => return Ok(None),
         }
@@ -238,9 +251,7 @@ fn op_infer_shape(
     // Rank is structural (never data-dependent), so it must be stable across
     // probes; a variation signals a contract bug rather than an unknown.
     if runs.iter().any(|r| r.len() != first.len()) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "op_infer_shape: output rank varied across shape probes",
-        ));
+        return Err("op_infer_shape: output rank varied across shape probes".to_string());
     }
     Ok(Some(
         (0..first.len())
@@ -279,30 +290,6 @@ fn unknown_dim_probe(probe: i64) -> i64 {
     2 * probe + 1
 }
 
-/// Plan-time output channel count for a single op — the single authority the
-/// Python planner reads instead of re-deriving the rule's arithmetic.
-///
-/// `input_channels` is the current channel hint, `None` when unknown at plan
-/// time. The result is `None` whenever the count is not determinable: the op
-/// produces no `[H, W, C]` image (`NotApplicable`), its effect is not knowable
-/// from the rule alone (`Unknown`), or a channel-dependent rule was given an
-/// unknown input.
-///
-/// This exists because the Python side used to re-implement
-/// `OutputChannelRule::apply` by parsing the stringified rule, and the two
-/// readings disagreed: `apply` returns `None` for `NotApplicable` while Python
-/// left the hint unchanged. That divergence was invisible only because every
-/// `NotApplicable` op also dropped below rank 3 — where the planner clears the
-/// channel hint anyway — except `histogram(output="quantized")`, which was
-/// mislabelled and happens to preserve channels. Two errors cancelling is not
-/// a contract, so the arithmetic now lives in one place.
-#[pyfunction]
-#[pyo3(signature = (op_json, input_channels=None))]
-fn op_output_channels(op_json: &str, input_channels: Option<usize>) -> PyResult<Option<usize>> {
-    let step = resolve_op_from_json(op_json)?;
-    Ok(step.output_channel_rule().apply(input_channels))
-}
-
 /// One probe of [`op_infer_shape`]: resolve the op with expression params bound
 /// to `probe`, substitute each unknown input dim with `probe`, and run the op's
 /// `infer_shape`.
@@ -312,7 +299,7 @@ fn infer_shape_probe(
     op_json: &str,
     input_dims: &[Option<i64>],
     probe: i64,
-) -> PyResult<Option<Vec<i64>>> {
+) -> Result<Option<Vec<i64>>, String> {
     use crate::graph::step::GraphStep;
 
     let step = resolve_op_from_json_probe(op_json, probe)?;
@@ -339,7 +326,7 @@ fn infer_shape_probe(
     // is a behaviour change for the symbolic-shape phase, P9.)
     if let Err(e) = op.validate(&[input_shape.as_slice()], &[]) {
         if e.depends_only_on_rank() {
-            return Err(pyo3::exceptions::PyValueError::new_err(e.to_string()));
+            return Err(e.to_string());
         }
     }
     // `infer_shape` implementations index their input shape directly. The
@@ -373,7 +360,10 @@ fn infer_shape_probe(
 /// structural `out_dtype` parameter (e.g. `normalize`) is not an override here:
 /// it is folded into the op's own `Fixed` rule, so it flows through
 /// `output_dtype_rule()` like any other fixed dtype.
-fn output_dtype_for(step: &crate::graph::step::GraphStep, input_dtype: &str) -> PyResult<String> {
+pub(crate) fn output_dtype_for(
+    step: &crate::graph::step::GraphStep,
+    input_dtype: &str,
+) -> Result<String, String> {
     use view_buffer::OutputDTypeRule as R;
     let rule = step.output_dtype_rule();
 
@@ -409,72 +399,10 @@ fn op_schema(
     input_dtype: &str,
     input_ndim: Option<usize>,
 ) -> PyResult<(String, String, Option<usize>)> {
-    use crate::graph::step::GraphStep;
-    use view_buffer::ops::{Domain, HistogramOutput, OutputRankRule};
-
-    let step = resolve_op_from_json(op_json)?;
-
-    let out_domain = step.output_domain();
-    let domain = if out_domain == Domain::Any {
-        input_domain.to_string()
-    } else {
-        out_domain.name().to_string()
-    };
-
-    let dtype = if matches!(&step, GraphStep::Histogram(op) if op.output == HistogramOutput::Buckets)
-    {
-        "auto".to_string()
-    } else {
-        output_dtype_for(&step, input_dtype)?
-    };
-
-    let ndim = match step.output_rank_rule() {
-        OutputRankRule::Fixed(n) => Some(n),
-        OutputRankRule::PreserveRank => input_ndim,
-        OutputRankRule::ReduceByOne => input_ndim.map(|n| n.saturating_sub(1).max(1)),
-        OutputRankRule::Unknown => None,
-    };
-    // Scalar/vector domains pin the dimensionality regardless of the rule.
-    let ndim = match domain.as_str() {
-        "scalar" => Some(0),
-        "vector" => Some(1),
-        _ => ndim,
-    };
-
+    let step = resolve_op_from_json(op_json).map_err(py_value_error)?;
+    let (domain, ndim) = plan::fold(&step, input_domain, input_ndim);
+    let dtype = plan::single_input_dtype(&step, input_dtype).map_err(py_value_error)?;
     Ok((domain, dtype, ndim))
-}
-
-/// Map a Python-facing binary op name to its view-buffer `BinaryOp`.
-///
-/// Reads `BinaryOp::NAMED` — the same table the binary ops are declared from and the
-/// registry surfaces — so the planner's two-input dtype query, the executor and
-/// Python cannot drift.
-fn parse_binary_op(name: &str) -> PyResult<view_buffer::BinaryOp> {
-    view_buffer::naming::lookup(view_buffer::BinaryOp::NAMED, name).ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(format!("unknown binary op {name:?}"))
-    })
-}
-
-/// Resolve the output dtype of a binary op given *both* operand dtypes.
-///
-/// This is the two-input analogue of [`output_dtype_for`]. Binary ops promote
-/// across both operands (and Divide/Ratio further promote to float for true
-/// division), so the planner cannot reuse the single-input rule — it defers to
-/// view-buffer's [`BinaryOp::output_dtype`] authority, the same one execution
-/// uses, so plan and exec dtypes are computed once.
-///
-/// Either operand may be the `"auto"` sentinel (an image source whose decoded
-/// dtype is not yet known); the result is then `"auto"`, and a downstream typed
-/// list/array sink requires the user to supply an explicit dtype.
-#[pyfunction]
-fn binary_output_dtype(op_name: &str, left: &str, right: &str) -> PyResult<String> {
-    if left == "auto" || right == "auto" {
-        return Ok("auto".to_string());
-    }
-    let op = parse_binary_op(op_name)?;
-    let l = parse_dtype(left)?;
-    let r = parse_dtype(right)?;
-    Ok(dtype_short_name(op.output_dtype(l, r)).to_string())
 }
 
 /// The field names of the `{x, y}` point struct the geometry surfaces publish.
@@ -620,7 +548,7 @@ fn io_check(kind: &str, spec_json: &str) -> PyResult<()> {
 /// the executor, where the primary domain is what geometry encoding needs.
 #[pyfunction]
 fn op_contract(py: Python<'_>, op_json: &str) -> PyResult<Py<PyAny>> {
-    let dto = resolve_op_from_json(op_json)?;
+    let dto = resolve_op_from_json(op_json).map_err(py_value_error)?;
     let dict = pyo3::types::PyDict::new(py);
     dict.set_item("dtype_rule", dtype_rule_name(dto.output_dtype_rule()))?;
     dict.set_item("rank_rule", rank_rule_name(dto.output_rank_rule()))?;
@@ -672,7 +600,9 @@ fn op_identity_rule(op_json: &str) -> PyResult<String> {
         expr_params.insert(name);
     });
 
-    let rule = resolve_op_from_json(op_json)?.identity_rule();
+    let rule = resolve_op_from_json(op_json)
+        .map_err(py_value_error)?
+        .identity_rule();
     // A per-row deciding param means the no-op condition cannot be proven at
     // plan time: the op keeps computing on rows where the value is not the
     // identity value, so it is not removable. Read through the one accessor so

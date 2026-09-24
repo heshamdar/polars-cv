@@ -178,7 +178,7 @@ def test_assert_shape_has_no_batch_parameter() -> None:
     """``assert_shape(batch=...)`` must raise, not be silently recorded.
 
     It reached ``ShapeHints.batch`` and stopped there. Nothing read it: not
-    ``has_all_dims``, not ``expected_shape``, not ``_current_input_dims``, and
+    ``has_all_dims``, not ``expected_shape``, not the planner's shape input, and
     not Rust — the node-level ``shape_hints`` wire field it was serialized into
     had already lost its last reader, and then the field itself. So a caller who
     declared a batch dimension got exactly the same plan as one who did not,

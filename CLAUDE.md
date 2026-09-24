@@ -343,7 +343,7 @@ Rust: view-buffer (the engine)
 ### Key Rust Modules
 
 **polars-cv/src/**
-- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `op_schema`/`op_contract`/`op_output_dtype`/`enum_catalog`/`op_catalog`/`io_catalog`/`io_check` FFI the Python planner reads
+- `lib.rs` — PyO3 module entry, `vb_graph` polars expression function, dtype inference, and the `plan_step`/`op_schema`/`op_contract`/`enum_catalog`/`op_catalog`/`io_catalog`/`io_check` FFI the Python planner reads (`plan.rs` holds `plan_step`, one call per appended op)
 - `ops/` — the typed op catalogue: one `#[derive(Op)]` struct per op, registered in `typed_ops!`; `TypedOp` is the wire op and `OpDef::resolve` maps it to a `GraphStep` (`graph/step.rs`: buffer ops wrap view-buffer's `ViewDto`; graph-only steps are their own variants)
 - `formats/` — the typed sources and sinks, one struct per format in a `formats!` registry
 - `execute.rs` — source decoding helpers (image bytes, contours) and byte-sink encoding
@@ -463,7 +463,7 @@ arm, both since removed) are documented alongside it.
    one line with a valid sample in `typed_ops!` (`ops/mod.rs`). A parameter
    read only under some branch becomes an enum variant, never an optional
    field that can be ignored. The Python planner picks up the op's schema
-   effect through the `op_schema` FFI — no Python-side schema special cases.
+   effect through `plan_step` — no Python-side schema special cases.
 3. Re-bless the catalogue (`POLARS_CV_BLESS=1 scripts/with-pyo3-env.sh cargo
    test -p polars-cv catalog_matches`), regenerate the builder (`python
    scripts/gen_ops.py`) and `maturin develop`. The generated method appends

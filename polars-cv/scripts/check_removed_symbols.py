@@ -188,6 +188,19 @@ REMOVED: tuple[Removed, ...] = (
         "null_param_policy_names_match_serde",
         "P6: the graph policies parse through NAMED (literal_field)",
     ),
+    Removed("op_output_channels", "P7a: plan_step applies the channel rule"),
+    Removed("binary_output_dtype", "P7a: plan_step(other_dtype=)"),
+    Removed("parse_binary_op", "P7a: plan_step reads the resolved GraphStep"),
+    Removed("_update_output_dtype", "P7a: one plan_step per append"),
+    Removed("_update_shape_hints", "P7a: one plan_step per append"),
+    Removed("_apply_shape_contract", "P7a: one plan_step per append"),
+    Removed("_drop_hints_below_rank", "P7a: plan_step clips hints to the rank"),
+    Removed("_update_channels_from_rule", "P7a: plan_step applies the channel rule"),
+    Removed("_current_input_dims", "P7a: plan_step builds infer_shape's input"),
+    Removed("_input_dims_for", "P7a: plan_step builds infer_shape's input"),
+    Removed("_update_hw_from_infer_shape", "P7a: plan_step infers H/W"),
+    Removed("_require_input_domain", "P7a: plan_step checks the input domain"),
+    Removed("update_dtype", "P7a: a binary op passes other_dtype instead"),
 )
 
 

@@ -13,7 +13,7 @@ rather than conventional:
   its op table is completeness-asserted against the real chainable-op list, so
   a new operation cannot join without a case.
 
-The predecessor of the first test ratcheted only ``_update_output_dtype`` while
+The predecessor of the first test ratcheted only the dtype update while
 naming this exact failure mode ("the eager/lazy drift class of bug"); an
 enumerated guard that lists one of two required calls is how the transpose and
 pad shape bugs shipped underneath it.
@@ -302,14 +302,15 @@ def test_rewrite_ops_enforces_exact_position_keyed_coverage() -> None:
         assert getattr(p, name) is value
 
 
-def test_push_op_updates_dtype_and_hints_unconditionally() -> None:
-    """``_push_op`` must apply *both* halves of the plan-time effect.
+def test_push_op_applies_the_whole_plan_step_unconditionally() -> None:
+    """``_push_op`` must apply the op's whole plan-time effect, every time.
 
-    Guards the body of the sole mutator itself: it is no longer enough that
-    callers route through it if it were to become selective about what it
-    updates. ``update_dtype=False`` exists only for the two-input binary rule
-    and is asserted to be the sole opt-out, with the hint update outside any
-    conditional.
+    Guards the body of the sole mutator itself: it is not enough that callers
+    route through it if it were to become selective. The effect is one Rust
+    call (``_plan_step``: domain check, schema, H/W, channels, rank clipping)
+    and its adoption (``_apply_step``); neither may sit inside a compound
+    statement, and the only parameter besides the op is the binary operand's
+    dtype, which Rust itself requires for exactly the binary ops.
     """
     fn = next(
         m
@@ -321,24 +322,15 @@ def test_push_op_updates_dtype_and_hints_unconditionally() -> None:
         for sub in ast.walk(fn)
         if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
     }
-    assert "_update_output_dtype" in called
-    assert "_update_shape_hints" in called
-    assert "_require_input_domain" in called, (
-        "_push_op must validate the input domain, so every append path gets "
-        "the check — not just the builder path through _append_op"
-    )
+    assert {"_plan_step", "_apply_step"} <= called, called
 
-    # `update_dtype` is the only opt-out, and it opts out of exactly one thing.
     args = [a.arg for a in fn.args.kwonlyargs] + [a.arg for a in fn.args.args]
-    flags = [a for a in args if a not in {"self", "spec", "contract"}]
-    assert flags == ["update_dtype"], (
-        f"_push_op grew a new opt-out: {flags}. Every additional flag is a way "
-        f"to append an op while skipping part of its plan-time effect."
+    flags = [a for a in args if a not in {"self", "spec"}]
+    assert flags == ["other_dtype"], (
+        f"_push_op grew a new parameter: {flags}. Every additional flag is a "
+        f"way to append an op while skipping part of its plan-time effect."
     )
 
-    # The hint update must not sit inside *any* compound statement: it applies
-    # to every op unconditionally. Checking only `ast.If` left try/for/while/with
-    # as ways to make it conditional while still passing.
     compound = (ast.If, ast.Try, ast.For, ast.While, ast.With)
     guarded = {
         sub.func.attr
@@ -347,9 +339,34 @@ def test_push_op_updates_dtype_and_hints_unconditionally() -> None:
         for sub in ast.walk(branch)
         if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
     }
-    assert "_update_shape_hints" not in guarded, (
-        "_update_shape_hints must run for every appended op, not conditionally"
+    assert not guarded & {"_plan_step", "_apply_step"}, (
+        "the plan step must run for every appended op, not conditionally"
     )
+
+
+def test_python_holds_no_copy_of_the_channel_rule_arithmetic() -> None:
+    """The package must not re-implement ``OutputChannelRule::apply``.
+
+    A source scan, because the property is "this code does not exist". The
+    rule *strings* still reach Python through ``op_contract`` for the
+    vocabulary checks in ``test_sanitation``; what must not come back is
+    package code reading them to compute a channel count. It scans the
+    whole package, so the arithmetic cannot return under another name.
+    Limits: a spelling built at runtime would pass unseen.
+    """
+    sources = {p: p.read_text() for p in package_modules()}
+    for path, src in sources.items():
+        for spelling in (
+            "strip_restore",
+            '"fixed:',
+            '"preserve"',
+            '"n/a"',
+            '"channel_rule"',
+        ):
+            assert spelling not in src, (
+                f"{spelling!r} is in {path.name}: the channel arithmetic "
+                f"belongs to OutputChannelRule::apply, reached via plan_step"
+            )
 
 
 # ---------------------------------------------------------------------------
